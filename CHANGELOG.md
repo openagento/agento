@@ -23,6 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `security_breach_after`.
 - Dependency: the `regex` module (bounded per-match timeout for admin-authored ingress patterns).
 
+### Added
+- **`agento run <code> --yolo`** — opt-in bypass mode for interactive sessions. With `--yolo` the
+  agent CLI skips its per-action approval prompts, the same bypass headless jobs always use (Claude
+  `--dangerously-skip-permissions`, Codex `--dangerously-bypass-approvals-and-sandbox`). Without it,
+  interactive keeps the CLI's normal approval prompting. The flag works in either position
+  (`run dev --yolo` or `run --yolo dev`) and is a no-op for headless (always bypass). Provider-agnostic:
+  `CliInvoker.interactive_command()` gained a `yolo` keyword; each agent module decides its own flag.
+
 ### Changed
 - **Shared Outlook mailbox behavior changed (breaking for any pre-existing shared-mailbox
   deployment).** Previously a shared UPN silently collapsed to "lowest `agent_view.id` wins, others

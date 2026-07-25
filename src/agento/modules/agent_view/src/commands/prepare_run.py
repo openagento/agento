@@ -48,6 +48,11 @@ class AgentViewPrepareRunCommand:
             "--model", default=None,
             help="Optional model override (falls back to agent_view/model).",
         )
+        parser.add_argument(
+            "--yolo", action="store_true",
+            help="Interactive bypass mode — build the interactive command with the "
+                 "provider's skip-approvals flag (headless is always bypass).",
+        )
 
     def execute(self, args: argparse.Namespace) -> None:
         from agento.framework.agent_manager.models import AgentProvider
@@ -138,7 +143,7 @@ class AgentViewPrepareRunCommand:
             if args.prompt:
                 command = invoker.headless_command(args.prompt, model=effective_model)
             else:
-                command = invoker.interactive_command()
+                command = invoker.interactive_command(yolo=getattr(args, "yolo", False))
 
         payload = {
             "agent_view_id": av.id,

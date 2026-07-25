@@ -37,13 +37,18 @@ def _mock_conn():
     return conn
 
 
-def _args(code="dev_01", prompt=None, model=None):
-    return argparse.Namespace(agent_view_code=code, prompt=prompt, model=model)
+def _args(code="dev_01", prompt=None, model=None, yolo=False):
+    return argparse.Namespace(
+        agent_view_code=code, prompt=prompt, model=model, yolo=yolo,
+    )
 
 
 class _FakeInvoker:
-    def interactive_command(self):
-        return ["claude"]
+    def interactive_command(self, *, yolo=False):
+        cmd = ["claude"]
+        if yolo:
+            cmd.append("--dangerously-skip-permissions")
+        return cmd
 
     def headless_command(self, prompt, *, model=None):
         cmd = ["claude", "-p", prompt, "--dangerously-skip-permissions"]
@@ -101,6 +106,33 @@ class TestAgentViewRuntimeCommand:
         assert payload["headless_command"] is None
         assert payload["home"] == "/workspace/build/it/dev_01/current"
         assert payload["provider"] == "claude"
+
+    @patch("agento.framework.cli_invoker.get_cli_invoker")
+    @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
+    @patch("agento.framework.db.get_connection_or_exit")
+    @patch("agento.framework.cli.runtime._load_framework_config")
+    @patch("agento.framework.workspace.get_agent_view_by_code")
+    def test_yolo_adds_bypass_flag_to_interactive_command(
+        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, mock_get_invoker, capsys,
+    ):
+        mock_config.return_value = ({}, None, None)
+        mock_get_conn.return_value = _mock_conn()
+        av = _make_agent_view()
+        mock_av_lookup.return_value = av
+        mock_resolve.return_value = AgentViewRuntime(
+            agent_view=av,
+            workspace=_make_workspace(),
+            provider="claude",
+            model="claude-opus-4-6",
+        )
+        mock_get_invoker.return_value = _FakeInvoker()
+
+        AgentViewRuntimeCommand().execute(_args(yolo=True))
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["interactive_command"] == [
+            "claude", "--dangerously-skip-permissions",
+        ]
 
     @patch("agento.framework.cli_invoker.get_cli_invoker")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")

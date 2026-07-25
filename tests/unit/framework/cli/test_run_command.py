@@ -52,12 +52,14 @@ def _base_runtime(provider="claude", model="claude-opus-4-6", *, prompt=False):
     }
 
 
-def _make_args(code="dev_01"):
-    return argparse.Namespace(agent_view_code=code, prompt=[])
+def _make_args(code="dev_01", *, prompt=None, yolo=False):
+    return argparse.Namespace(
+        agent_view_code=code, prompt=list(prompt or []), yolo=yolo,
+    )
 
 
 def _make_prompt_args(code="dev_01", prompt="jakie masz toole z mcp i skille?"):
-    return argparse.Namespace(agent_view_code=code, prompt=[prompt])
+    return argparse.Namespace(agent_view_code=code, prompt=[prompt], yolo=False)
 
 
 def _project_layout(tmp_path, *, include_current=True):
@@ -179,6 +181,35 @@ class TestRunCommand:
             RunCommand().execute(_make_args())
         _, argv = mock_execvp.call_args.args
         assert argv[-1] == "codex"
+
+    def test_yolo_flag_is_forwarded_to_prepare_run(self, tmp_path):
+        project_root, compose = _project_layout(tmp_path)
+        with (
+            patch("agento.framework.cli.run.find_project_root", return_value=project_root),
+            patch("agento.framework.cli.run.compose_file_flags", return_value=["-f", str(compose)]),
+            patch(
+                "agento.framework.cli.run._fetch_runtime", return_value=_base_runtime(),
+            ) as mock_fetch,
+            patch("agento.framework.cli.run.os.execvp"),
+        ):
+            RunCommand().execute(_make_args(yolo=True))
+        assert mock_fetch.call_args.kwargs["yolo"] is True
+
+    def test_trailing_yolo_token_is_recovered_from_remainder(self, tmp_path):
+        # `agento run dev --yolo` — argparse.REMAINDER swallows --yolo into `prompt`;
+        # it must still be treated as the flag (interactive), not a headless prompt.
+        project_root, compose = _project_layout(tmp_path)
+        with (
+            patch("agento.framework.cli.run.find_project_root", return_value=project_root),
+            patch("agento.framework.cli.run.compose_file_flags", return_value=["-f", str(compose)]),
+            patch(
+                "agento.framework.cli.run._fetch_runtime", return_value=_base_runtime(),
+            ) as mock_fetch,
+            patch("agento.framework.cli.run.os.execvp"),
+        ):
+            RunCommand().execute(_make_args(prompt=["--yolo"]))
+        assert mock_fetch.call_args.kwargs["yolo"] is True
+        assert mock_fetch.call_args.kwargs["prompt"] == ""
 
     def test_headless_claude_uses_headless_command_from_runtime(self, tmp_path):
         project_root, compose = _project_layout(tmp_path)

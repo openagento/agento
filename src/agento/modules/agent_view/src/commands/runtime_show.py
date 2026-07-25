@@ -40,6 +40,12 @@ class AgentViewRuntimeCommand:
             default=None,
             help="Optional model override (falls back to agent_view/model)",
         )
+        parser.add_argument(
+            "--yolo",
+            action="store_true",
+            help="Show the interactive command in bypass mode (with the provider's "
+                 "skip-approvals flag)",
+        )
 
     def execute(self, args: argparse.Namespace) -> None:
         from agento.framework.agent_view_runtime import resolve_agent_view_runtime
@@ -77,7 +83,9 @@ class AgentViewRuntimeCommand:
             except (ValueError, KeyError):
                 invoker = None
             if invoker is not None:
-                interactive_command = invoker.interactive_command()
+                interactive_command = invoker.interactive_command(
+                    yolo=getattr(args, "yolo", False),
+                )
                 if args.prompt:
                     headless_command = invoker.headless_command(
                         args.prompt, model=effective_model,

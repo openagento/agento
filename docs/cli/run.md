@@ -6,7 +6,18 @@ Two modes are selected automatically by presence of a prompt argument:
 
 | Invocation | Mode | Semantics |
 |---|---|---|
-| `agento run <code>` | **Interactive** | Opens a TTY session inside the sandbox (`docker exec -it`). Signals, paste, arrow keys work as if the CLI were local. |
+| `agento run <code>` | **Interactive** | Opens a TTY session inside the sandbox (`docker exec -it`). Signals, paste, arrow keys work as if the CLI were local. The agent's own per-action approval prompts apply — unless you pass `--yolo`. |
+
+### `--yolo` — skip interactive approval prompts
+
+By default an interactive session uses the agent CLI's normal in-session approval prompting. Pass `--yolo` to run in the same **bypass mode** headless jobs always use — Claude with `--dangerously-skip-permissions`, Codex with `--dangerously-bypass-approvals-and-sandbox` — so the session never stops to ask for per-action approval:
+
+```bash
+agento run dev_01 --yolo        # interactive, no approval prompts
+agento run --yolo dev_01        # same — flag may precede the code
+```
+
+This is safe by construction: the agent runs inside the isolated `sandbox` container with no credentials of its own (the toolbox is the only container with secrets). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
 | `agento run <code> "<prompt>"` | **Headless (one-shot)** | Runs the agent with the given prompt, streams output to your terminal, then exits with the agent's exit code (`docker exec -T`). Stdin is closed. |
 
 Shortcut: `ru`.
@@ -53,7 +64,7 @@ Exit code of the agent CLI is propagated to the shell, so headless mode composes
 
 ## What It Does
 
-1. Calls `docker compose exec -T cron agento agent_view:prepare-run <code>` to run the **same pre-spawn pipeline the consumer runs for a real job**: resolves a token from the LRU pool (stamping `used_at`), materializes a unique per-run artifacts directory under `workspace/artifacts/<workspace>/<agent_view>/<run_id>/`, writes that token's credentials into the artifacts HOME via the provider's `ConfigWriter`, and asks the provider's registered `CliInvoker` for the unified CLI **command** plus any **env-delivered credentials**. When a prompt is provided, the host passes `--prompt <prompt>` so cron returns the provider-specific **headless** command instead of the interactive one. The host code itself stays agent-agnostic.
+1. Calls `docker compose exec -T cron agento agent_view:prepare-run <code>` to run the **same pre-spawn pipeline the consumer runs for a real job**: resolves a token from the LRU pool (stamping `used_at`), materializes a unique per-run artifacts directory under `workspace/artifacts/<workspace>/<agent_view>/<run_id>/`, writes that token's credentials into the artifacts HOME via the provider's `ConfigWriter`, and asks the provider's registered `CliInvoker` for the unified CLI **command** plus any **env-delivered credentials**. When a prompt is provided, the host passes `--prompt <prompt>` so cron returns the provider-specific **headless** command instead of the interactive one; `--yolo` is forwarded the same way so the `CliInvoker` builds the interactive command in bypass mode. The host code itself stays agent-agnostic.
 2. Validates that a build exists on the host at `workspace/build/<workspace>/<agent_view>/current/`.
 3. Executes the returned command inside `sandbox` with `HOME` and `-w` (cwd) both set to the per-run artifacts dir. Any API-key values from the `env` field are injected via docker's **name-only** `-e KEY` form so the secret never appears in `ps`/argv — the value is read from the parent process's environment:
    - **Interactive:** `os.environ.update(env); os.execvp("docker", [..., "exec", "-it", "-u", "agent", "-e", "HOME=…", "-e", "TERM=…", *[("-e", k) for k in env], "-w", <working_dir>, "sandbox", *command])` — replaces the current process so the TTY transfer is clean.
@@ -75,8 +86,11 @@ The invoker implements two methods:
 
 ```python
 class MyAgentCliInvoker:
-    def interactive_command(self) -> list[str]:
-        return ["myagent"]
+    def interactive_command(self, *, yolo: bool = False) -> list[str]:
+        cmd = ["myagent"]
+        if yolo:                       # `agento run <code> --yolo`
+            cmd.append("--skip-approvals")
+        return cmd
 
     def headless_command(self, prompt: str, *, model: str | None = None) -> list[str]:
         cmd = ["myagent", "run", "--prompt", prompt]
@@ -125,6 +139,10 @@ agento agent_view:runtime dev_01
 #    "home": "/workspace/build/it/dev_01/current",
 #    "interactive_command": ["claude"],
 #    "headless_command": null}
+
+# Add --yolo to see the bypass-mode interactive command:
+agento agent_view:runtime dev_01 --yolo
+# → {..., "interactive_command": ["claude", "--dangerously-skip-permissions"]}
 
 # Ask for the headless command too by passing a prompt:
 agento agent_view:runtime dev_01 --prompt "hello"

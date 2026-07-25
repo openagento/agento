@@ -1,4 +1,4 @@
-"""`agento run <agent_view_code> [prompt]` — spawn the configured agent CLI.
+"""`agento run <agent_view_code> [--yolo] [prompt]` — spawn the configured agent CLI.
 
 Host-side LOCAL command. Two-step docker exec:
 1. Query cron for a full run profile via ``agent_view:prepare-run`` —
@@ -47,6 +47,13 @@ class RunCommand:
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("agent_view_code", help="Agent view code (e.g. dev_01)")
         parser.add_argument(
+            "--yolo",
+            action="store_true",
+            help="Interactive bypass mode — skip the agent's per-action approval prompts "
+                 "(claude --dangerously-skip-permissions / codex "
+                 "--dangerously-bypass-approvals-and-sandbox). Headless is always bypass.",
+        )
+        parser.add_argument(
             "prompt",
             nargs=argparse.REMAINDER,
             help="Optional one-shot prompt — when present, runs headless instead of interactive",
@@ -66,8 +73,19 @@ class RunCommand:
             print("Error: docker-compose.yml not found.", file=sys.stderr)
             sys.exit(1)
 
-        prompt = " ".join(args.prompt).strip()
-        runtime = _fetch_runtime(compose_flags, args.agent_view_code, prompt=prompt)
+        # ``prompt`` is captured via argparse.REMAINDER, which greedily swallows
+        # everything after the agent_view_code — including a ``--yolo`` typed in the
+        # natural trailing position (`agento run dev --yolo`). Recover it from the
+        # captured tokens so both `--yolo dev` and `dev --yolo` work.
+        prompt_tokens = list(args.prompt)
+        yolo = bool(getattr(args, "yolo", False))
+        if "--yolo" in prompt_tokens:
+            yolo = True
+            prompt_tokens = [t for t in prompt_tokens if t != "--yolo"]
+        prompt = " ".join(prompt_tokens).strip()
+        runtime = _fetch_runtime(
+            compose_flags, args.agent_view_code, prompt=prompt, yolo=yolo,
+        )
         provider = runtime.get("provider")
         if provider is None:
             print(
@@ -153,6 +171,7 @@ class RunCommand:
 
 def _fetch_runtime(
     compose_flags: list[str], agent_view_code: str, *, prompt: str = "",
+    yolo: bool = False,
 ) -> dict:
     """Ask cron to prepare a run environment; return parsed JSON.
 
@@ -168,6 +187,8 @@ def _fetch_runtime(
     ]
     if prompt:
         cmd.extend(["--prompt", prompt])
+    if yolo:
+        cmd.append("--yolo")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)

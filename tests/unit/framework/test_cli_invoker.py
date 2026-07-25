@@ -73,6 +73,12 @@ class TestClaudeCliInvokerImpl:
         from agento.modules.claude.src.cli import ClaudeCliInvoker
         assert ClaudeCliInvoker().interactive_command() == ["claude"]
 
+    def test_interactive_yolo_appends_bypass_flag(self):
+        from agento.modules.claude.src.cli import ClaudeCliInvoker
+        assert ClaudeCliInvoker().interactive_command(yolo=True) == [
+            "claude", "--dangerously-skip-permissions",
+        ]
+
     def test_headless_without_model(self):
         from agento.modules.claude.src.cli import ClaudeCliInvoker
         cmd = ClaudeCliInvoker().headless_command("hi")
@@ -93,6 +99,12 @@ class TestCodexCliInvokerImpl:
     def test_interactive_returns_binary(self):
         from agento.modules.codex.src.cli import CodexCliInvoker
         assert CodexCliInvoker().interactive_command() == ["codex"]
+
+    def test_interactive_yolo_appends_bypass_flag(self):
+        from agento.modules.codex.src.cli import CodexCliInvoker
+        assert CodexCliInvoker().interactive_command(yolo=True) == [
+            "codex", "--dangerously-bypass-approvals-and-sandbox",
+        ]
 
     def test_headless_without_model(self):
         from agento.modules.codex.src.cli import CodexCliInvoker

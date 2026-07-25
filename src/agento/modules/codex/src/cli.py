@@ -3,8 +3,11 @@ from __future__ import annotations
 
 
 class CodexCliInvoker:
-    def interactive_command(self) -> list[str]:
-        return ["codex"]
+    def interactive_command(self, *, yolo: bool = False) -> list[str]:
+        cmd = ["codex"]
+        if yolo:
+            cmd.append("--dangerously-bypass-approvals-and-sandbox")
+        return cmd
 
     def headless_command(
         self, prompt: str, *, model: str | None = None,

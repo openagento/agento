@@ -3,8 +3,11 @@ from __future__ import annotations
 
 
 class ClaudeCliInvoker:
-    def interactive_command(self) -> list[str]:
-        return ["claude"]
+    def interactive_command(self, *, yolo: bool = False) -> list[str]:
+        cmd = ["claude"]
+        if yolo:
+            cmd.append("--dangerously-skip-permissions")
+        return cmd
 
     def headless_command(
         self, prompt: str, *, model: str | None = None,

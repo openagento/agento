@@ -17,9 +17,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-def _make_args(agent_view_code="dev", prompt=None, model=None):
+def _make_args(agent_view_code="dev", prompt=None, model=None, yolo=False):
     return argparse.Namespace(
-        agent_view_code=agent_view_code, prompt=prompt, model=model,
+        agent_view_code=agent_view_code, prompt=prompt, model=model, yolo=yolo,
     )
 
 
@@ -121,6 +121,16 @@ class TestAgentViewPrepareRunCommand:
         assert payload["command"] == ["claude"]
         assert payload["env"] == {"ANTHROPIC_API_KEY": "sk-ant-SECRET"}
         assert payload["token_id"] == 42
+        invoker_stub.interactive_command.assert_called_once_with(yolo=False)
+
+    def test_yolo_flag_forwarded_to_interactive_command(
+        self, tmp_path, runtime_stub, token_stub, invoker_stub, writer_stub,
+    ):
+        _run_command(
+            _make_args(yolo=True), runtime_stub, token_stub, invoker_stub, writer_stub,
+            home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+        )
+        invoker_stub.interactive_command.assert_called_once_with(yolo=True)
 
     def test_headless_payload_includes_prompt_command(
         self, tmp_path, runtime_stub, token_stub, invoker_stub, writer_stub,

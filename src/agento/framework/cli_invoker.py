@@ -18,8 +18,13 @@ logger = logging.getLogger(__name__)
 class CliInvoker(Protocol):
     """How to invoke an agent's CLI binary in interactive or headless mode."""
 
-    def interactive_command(self) -> list[str]:
-        """Command to spawn the CLI in interactive TTY mode (no prompt)."""
+    def interactive_command(self, *, yolo: bool = False) -> list[str]:
+        """Command to spawn the CLI in interactive TTY mode (no prompt).
+
+        When ``yolo`` is True, include the provider's skip-approvals/bypass flag
+        so the interactive session runs without per-action approval prompts —
+        the same bypass the headless/job path always uses.
+        """
         ...
 
     def headless_command(
