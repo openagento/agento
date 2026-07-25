@@ -1,6 +1,7 @@
 """Router protocol, types, and routing chain for ingress identity resolution."""
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -35,10 +36,17 @@ class RoutingCandidate:
 
 @dataclass
 class RoutingResult:
-    """What a router returns."""
+    """What a router returns.
+
+    ``candidates`` is the router's OWN preference order; ``candidates[0]`` wins. Multiple
+    candidates alone do NOT imply ambiguity — a ranked router may legitimately return several.
+    A router that detects a genuine tie (e.g. distinct agent_views at the same priority) sets
+    ``ambiguous=True`` to signal that no single winner should be chosen.
+    """
 
     router_name: str
     candidates: list[RoutingCandidate]
+    ambiguous: bool = False
 
 
 @dataclass
@@ -61,11 +69,35 @@ class Router(Protocol):
     def resolve(self, conn: object, context: RoutingContext) -> RoutingResult | None: ...
 
 
-def resolve_agent_view(conn: object, context: RoutingContext) -> RoutingDecision | None:
+def _redact_identity_value(value: str) -> str:
+    """Log-safe rendering of an identity value (SEC-F3).
+
+    Email-shaped values (containing ``@``) are PII, so log the domain only plus a short sha256
+    prefix for correlation; any other value (e.g. jira's constant ``"jira"``) passes through
+    byte-for-byte. Generic email-shape redaction, not a per-channel branch.
+    """
+    if "@" in value:
+        domain = value.rsplit("@", 1)[-1]
+        digest = hashlib.sha256(value.encode()).hexdigest()[:8]
+        return f"<redacted>@{domain}#{digest}"
+    return value
+
+
+def resolve_agent_view(
+    conn: object, context: RoutingContext, *, fail_on_router_error: bool = False
+) -> RoutingDecision | None:
     """Run all registered routers and return the routing decision.
 
-    Runs ALL routers (not short-circuit) to detect ambiguity.
-    First matching router's first candidate wins.
+    Runs ALL routers (not short-circuit) to detect ambiguity. A router returns its candidate list
+    in its OWN preference order; ``candidates[0]`` wins. Multiple candidates alone do NOT imply
+    ambiguity — a ranked router may legitimately return several. A router that detects a genuine
+    tie sets ``RoutingResult.ambiguous=True``. The decision is ambiguous when more than one router
+    matched OR the winning router flagged a tie.
+
+    ``fail_on_router_error``: by default a per-router exception is swallowed and logged (a broken
+    router must not take down routing). When True the exception is re-raised — for callers (e.g.
+    the Outlook publisher) that must distinguish a transient router/DB error (hold the cursor) from
+    a deterministic no-match (advance).
     """
     routers = get_routers()
     all_results: list[RoutingResult] = []
@@ -76,6 +108,8 @@ def resolve_agent_view(conn: object, context: RoutingContext) -> RoutingDecision
             if result and result.candidates:
                 all_results.append(result)
         except Exception:
+            if fail_on_router_error:
+                raise
             logger.exception("Router %r raised an exception", router.name)
 
     em = get_event_manager()
@@ -83,7 +117,7 @@ def resolve_agent_view(conn: object, context: RoutingContext) -> RoutingDecision
     if not all_results:
         logger.info(
             "Routing failed: no router matched for %s/%s",
-            context.identity_type, context.identity_value,
+            context.identity_type, _redact_identity_value(context.identity_value),
         )
         em.dispatch("routing_fail_after", RoutingFailedEvent(context=context))
         return None
@@ -91,7 +125,7 @@ def resolve_agent_view(conn: object, context: RoutingContext) -> RoutingDecision
     winner = all_results[0]
     candidate = winner.candidates[0]
     agent_view = get_agent_view(conn, candidate.agent_view_id)
-    ambiguous = len(all_results) > 1
+    ambiguous = len(all_results) > 1 or winner.ambiguous
 
     decision = RoutingDecision(
         agent_view_id=candidate.agent_view_id,
@@ -105,7 +139,7 @@ def resolve_agent_view(conn: object, context: RoutingContext) -> RoutingDecision
     if ambiguous:
         logger.warning(
             "Routing ambiguous: %d routers matched for %s/%s, using %r",
-            len(all_results), context.identity_type, context.identity_value,
+            len(all_results), context.identity_type, _redact_identity_value(context.identity_value),
             winner.router_name,
         )
         em.dispatch(
@@ -121,7 +155,7 @@ def resolve_agent_view(conn: object, context: RoutingContext) -> RoutingDecision
     else:
         logger.info(
             "Routing resolved: %s/%s → agent_view %d via %r",
-            context.identity_type, context.identity_value,
+            context.identity_type, _redact_identity_value(context.identity_value),
             candidate.agent_view_id, winner.router_name,
         )
         em.dispatch(

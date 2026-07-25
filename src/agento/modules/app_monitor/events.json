@@ -7,5 +7,8 @@
   ],
   "security_breach_after": [
     {"name": "security_breach_alert", "class": "src.observers.SecurityBreachAlertObserver", "order": 100}
+  ],
+  "mailbox_stall_after": [
+    {"name": "mailbox_stall_alert", "class": "src.observers.MailboxStalledAlertObserver", "order": 100}
   ]
 }

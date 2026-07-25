@@ -167,11 +167,13 @@ CREATE TABLE IF NOT EXISTS ingress_identity (
     identity_type   VARCHAR(32)  NOT NULL,
     identity_value  VARCHAR(255) NOT NULL,
     agent_view_id   INT UNSIGNED NOT NULL,
+    priority        INT          NOT NULL DEFAULT 0,
     is_active       TINYINT(1)   NOT NULL DEFAULT 1,
     created_at      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_ingress_type_value (identity_type, identity_value),
     KEY idx_ingress_agent_view (agent_view_id),
+    KEY idx_ingress_type_active_priority (identity_type, is_active, priority),
     CONSTRAINT fk_ingress_agent_view
         FOREIGN KEY (agent_view_id) REFERENCES agent_view(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -204,4 +206,5 @@ INSERT INTO schema_migration (version) VALUES
     ('025_job_toolbox_mcp_connected'),
     ('026_job_requester'),
     ('027_widen_job_reference_keys'),
-    ('028_oauth_token_throttled_until');
+    ('028_oauth_token_throttled_until'),
+    ('029_ingress_identity_priority');

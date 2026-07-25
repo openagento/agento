@@ -1127,3 +1127,14 @@ docker compose restart
 ```
 
 No framework files touched. No PR to the main repo. Just a module directory in `app/code/` with `module.json`.
+
+---
+
+## Security hardening backlog
+
+- **Toolbox-only secret boundary in Python bootstrap** — `bootstrap` transiently decrypts
+  DEFAULT-scope `obscure` config in the cron/consumer/CLI, so non-toolbox Python processes hold
+  decrypted secrets (contradicting "Toolbox = only container with secrets"). Design + scope in
+  [docs/security/toolbox-only-secret-boundary.md](docs/security/toolbox-only-secret-boundary.md).
+  Surfaced by the Outlook sender-routing review (2026-07-24) as pre-existing and out of scope for
+  that feature.

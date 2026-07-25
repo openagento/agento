@@ -38,6 +38,7 @@ class IngressListCommand:
                         "identity_type": i.identity_type,
                         "identity_value": i.identity_value,
                         "agent_view_id": i.agent_view_id,
+                        "priority": i.priority,
                         "is_active": i.is_active,
                     }
                     for i in identities
@@ -49,6 +50,9 @@ class IngressListCommand:
                     return
                 for i in identities:
                     status = "active" if i.is_active else "inactive"
-                    print(f"  {i.identity_type}={i.identity_value} → agent_view_id={i.agent_view_id} [{status}]")
+                    print(
+                        f"  {i.identity_type}={i.identity_value} → agent_view_id={i.agent_view_id} "
+                        f"[priority={i.priority}, {status}]"
+                    )
         finally:
             conn.close()

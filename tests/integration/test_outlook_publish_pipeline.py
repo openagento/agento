@@ -14,11 +14,34 @@ import pytest
 import respx
 from httpx import Response
 
+from agento.framework import router_registry
+from agento.framework.ingress_identity import (
+    bind_identity,
+    is_regex_identity_type,
+    register_regex_identity_type,
+)
 from agento.framework.scoped_config import Scope, scoped_config_set
+from agento.modules.core.src.routers.identity_router import IdentityRouter
 from agento.modules.outlook.src.commands.publish import publish_all_views
 from agento.modules.outlook.src.cursor import load_cursors
 
 from .conftest import _test_connection, fetch_all_jobs
+
+
+@pytest.fixture
+def routing_registered():
+    """Ensure the outlook_sender regex identity type + the IdentityRouter are registered so
+    resolve_agent_view() runs in routed-mode tests (the session bootstrap already registers both,
+    but this makes the test self-contained and order-independent). Restores prior state on teardown."""
+    from agento.framework.ingress_identity import _REGEX_IDENTITY_TYPES
+
+    saved_types = set(_REGEX_IDENTITY_TYPES)
+    register_regex_identity_type("outlook_sender")
+    if not any(getattr(r, "name", None) == "identity" for r in router_registry.get_routers()):
+        router_registry.register_router(IdentityRouter(), order=100)
+    yield
+    _REGEX_IDENTITY_TYPES.clear()
+    _REGEX_IDENTITY_TYPES.update(saved_types)
 
 ALLOWED = "sklep@mycompanystudio.com, ops@mycompany.com"
 TOOLBOX_URL = "http://toolbox:3001"
@@ -41,10 +64,13 @@ def _clean_cursors():
 @pytest.fixture
 def two_views():
     """Create one workspace + two active agent_views, each with scoped outlook config (enabled +
-    allowed_senders). Returns (dev_id, ops_id). Cleans up workspace (cascades to agent_view) and the
-    agent_view-scoped core_config_data rows it wrote — none are in the autouse truncation set."""
+    allowed_senders + a distinct mailbox UPN so each is a size-1 DIRECT-mode group). Returns
+    (dev_id, ops_id). Cleans up workspace (cascades to agent_view + its ingress_identity rows) and
+    the agent_view-scoped core_config_data rows it wrote — none are in the autouse truncation set."""
     conn = _test_connection(autocommit=True)
-    av_ids = []
+    av_ids: list[int] = []
+    mailboxes = {"av-outlook-dev": "dev@example.com", "av-outlook-ops": "ops@example.com"}
+    codes = {}
     try:
         with conn.cursor() as cur:
             cur.execute("INSERT INTO workspace (code, label) VALUES ('ws-outlook-pv', 'outlook pv')")
@@ -55,9 +81,12 @@ def two_views():
                     (ws_id, code, code),
                 )
                 av_ids.append(cur.lastrowid)
+                codes[cur.lastrowid] = code
         for av_id in av_ids:
             scoped_config_set(conn, "outlook/enabled", "1", scope=Scope.AGENT_VIEW, scope_id=av_id)
             scoped_config_set(conn, "outlook/allowed_senders", ALLOWED, scope=Scope.AGENT_VIEW, scope_id=av_id)
+            scoped_config_set(conn, "outlook/outlook_mailbox_user_id", mailboxes[codes[av_id]],
+                              scope=Scope.AGENT_VIEW, scope_id=av_id)
         conn.commit()
         yield av_ids[0], av_ids[1]
     finally:
@@ -152,13 +181,29 @@ def test_spoof_and_stranger_blocked_per_view(int_db_config, two_views, caplog):
 
 
 @respx.mock
-def test_shared_mailbox_deduped_lowest_id_wins(int_db_config, two_views):
+def test_shared_mailbox_routes_by_sender(int_db_config, two_views, routing_registered):
+    """A UPN shared by >=2 views is ROUTED mode: polled once (by the lowest-id poll_owner) and each
+    message routed to a member view by matching the normalized sender against outlook_sender
+    ingress bindings (regex, priority). 'Lowest id wins' is GONE."""
     dev_id, ops_id = two_views  # dev_id < ops_id (insertion order)
-    shared = {"mailbox": "shared@example.com", "messages": [
-        {"id": "m-shared", "from": {"address": "sklep@mycompanystudio.com"}, "dmarc": "pass"}]}
-    respx.post(DELTA_URL).mock(
-        side_effect=_delta_stub({dev_id: shared, ops_id: shared})
-    )
+    conn = _test_connection(autocommit=True)
+    try:
+        for av_id in (dev_id, ops_id):
+            scoped_config_set(conn, "outlook/outlook_mailbox_user_id", "shared@example.com",
+                              scope=Scope.AGENT_VIEW, scope_id=av_id)
+        # sklep@... -> dev (exact), any @mycompany.com -> ops (domain fallback)
+        bind_identity(conn, "outlook_sender", r"sklep@mycompanystudio\.com", dev_id, priority=10)
+        bind_identity(conn, "outlook_sender", r"[^@]+@mycompany\.com", ops_id, priority=0)
+    finally:
+        conn.close()
+
+    assert is_regex_identity_type("outlook_sender")
+    shared = {"mailbox": "shared@example.com", "deltaLink": "L-shared", "messages": [
+        {"id": "m-dev", "from": {"address": "sklep@mycompanystudio.com"}, "dmarc": "pass"},
+        {"id": "m-ops", "from": {"address": "ops@mycompany.com"}, "dmarc": "pass"},
+    ]}
+    # both views resolve to the shared UPN, so only the poll_owner (dev_id, lowest) is polled
+    respx.post(DELTA_URL).mock(side_effect=_delta_stub({dev_id: shared, ops_id: shared}))
 
     conn = _test_connection(autocommit=False)
     try:
@@ -166,10 +211,105 @@ def test_shared_mailbox_deduped_lowest_id_wins(int_db_config, two_views):
     finally:
         conn.close()
 
-    assert count == 1
-    jobs = fetch_all_jobs()
-    assert len(jobs) == 1
-    assert jobs[0]["agent_view_id"] == dev_id  # lowest id wins
+    assert count == 2
+    jobs = {j["reference_id"]: j for j in fetch_all_jobs()}
+    assert jobs["m-dev"]["agent_view_id"] == dev_id   # sklep@ -> dev (exact binding)
+    assert jobs["m-ops"]["agent_view_id"] == ops_id   # ops@mycompany.com -> ops (domain fallback)
+    # the shared cursor advanced once, keyed by the normalized shared UPN
+    rconn = _test_connection(autocommit=False)
+    try:
+        assert load_cursors(rconn) == {"shared@example.com": "L-shared"}
+    finally:
+        rconn.close()
+
+
+@respx.mock
+def test_four_views_routed_and_direct_coexist(int_db_config, routing_registered):
+    """PRD §30 end-to-end: THREE views share one mailbox (ROUTED by sender), ONE solo view is
+    DIRECT — in a single poll pass. Asserts the full routing table: each matching sender lands a
+    job on ITS bound view; a non-matching (but allow-listed) sender yields NO job while the cursor
+    still advances; the solo mailbox publishes to its own view without routing; and a routed job
+    carries the TARGET view's scheduling priority (not the lowest-id poll_owner's default)."""
+    conn = _test_connection(autocommit=True)
+    av: dict[str, int] = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO workspace (code, label) VALUES ('ws-outlook-4v', 'outlook 4v')")
+            ws_id = cur.lastrowid
+            for code in ("av4-a", "av4-b", "av4-c", "av4-solo"):
+                cur.execute(
+                    "INSERT INTO agent_view (workspace_id, code, label) VALUES (%s, %s, %s)",
+                    (ws_id, code, code),
+                )
+                av[code] = cur.lastrowid
+        # The three shared-mailbox members MUST carry identical admit_mail policy (else the group
+        # is skipped as divergent) — same allowed_senders, same activation defaults via fallback.
+        shared_allowed = "*@partner.com, *@client.com, *@vendor.com, *@stranger.com"
+        for code in ("av4-a", "av4-b", "av4-c"):
+            scoped_config_set(conn, "outlook/enabled", "1", scope=Scope.AGENT_VIEW, scope_id=av[code])
+            scoped_config_set(conn, "outlook/allowed_senders", shared_allowed, scope=Scope.AGENT_VIEW, scope_id=av[code])
+            scoped_config_set(conn, "outlook/outlook_mailbox_user_id", "agents@company.com", scope=Scope.AGENT_VIEW, scope_id=av[code])
+        # Solo view: its OWN mailbox → direct mode.
+        scoped_config_set(conn, "outlook/enabled", "1", scope=Scope.AGENT_VIEW, scope_id=av["av4-solo"])
+        scoped_config_set(conn, "outlook/allowed_senders", "*@company.com", scope=Scope.AGENT_VIEW, scope_id=av["av4-solo"])
+        scoped_config_set(conn, "outlook/outlook_mailbox_user_id", "solo@company.com", scope=Scope.AGENT_VIEW, scope_id=av["av4-solo"])
+        # Target view B gets a distinct scheduling priority so we can prove the job priority comes
+        # from the TARGET, not the poll_owner (av4-a, lowest id, default priority).
+        scoped_config_set(conn, "agent_view/scheduling/priority", "7", scope=Scope.AGENT_VIEW, scope_id=av["av4-b"])
+        # Three sender→view bindings on the shared mailbox.
+        bind_identity(conn, "outlook_sender", r"alice@partner\.com", av["av4-a"], priority=10)
+        bind_identity(conn, "outlook_sender", r"[^@]+@client\.com", av["av4-b"], priority=5)
+        bind_identity(conn, "outlook_sender", r"bob@vendor\.com", av["av4-c"], priority=5)
+    finally:
+        conn.close()
+
+    shared = {"mailbox": "agents@company.com", "deltaLink": "L-agents", "messages": [
+        {"id": "m-a", "from": {"address": "alice@partner.com"}, "dmarc": "pass"},
+        {"id": "m-b", "from": {"address": "user@client.com"}, "dmarc": "pass"},
+        {"id": "m-c", "from": {"address": "bob@vendor.com"}, "dmarc": "pass"},
+        {"id": "m-x", "from": {"address": "nobody@stranger.com"}, "dmarc": "pass"},  # allow-listed, no binding
+    ]}
+    solo = {"mailbox": "solo@company.com", "deltaLink": "L-solo", "messages": [
+        {"id": "m-d", "from": {"address": "boss@company.com"}, "dmarc": "pass"},
+    ]}
+    # Only the poll_owner of each group is polled; map every member so whichever id is posted works.
+    by_view = {av["av4-a"]: shared, av["av4-b"]: shared, av["av4-c"]: shared, av["av4-solo"]: solo}
+    respx.post(DELTA_URL).mock(side_effect=_delta_stub(by_view))
+
+    try:
+        pconn = _test_connection(autocommit=False)
+        try:
+            count = publish_all_views(int_db_config, pconn, TOOLBOX_URL, logging.getLogger("it-outlook-4v"))
+        finally:
+            pconn.close()
+
+        jobs = {j["reference_id"]: j for j in fetch_all_jobs()}
+        # Routed: each matching sender → its bound view (poll_owner av4-a is NOT the target for b/c).
+        assert jobs["m-a"]["agent_view_id"] == av["av4-a"]   # alice@partner.com (exact)
+        assert jobs["m-b"]["agent_view_id"] == av["av4-b"]   # *@client.com (domain)
+        assert jobs["m-c"]["agent_view_id"] == av["av4-c"]   # bob@vendor.com
+        # Non-matching (but allow-listed) sender → NO job.
+        assert "m-x" not in jobs
+        # Solo mailbox → its own view, DIRECT mode.
+        assert jobs["m-d"]["agent_view_id"] == av["av4-solo"]
+        assert count == 4
+        # Routed job carries the TARGET view's scheduling priority (B=7), not the poll_owner's.
+        assert jobs["m-b"]["priority"] == 7
+        # Both mailboxes' cursors advanced once — the deterministic no-match on m-x does NOT hold.
+        rconn = _test_connection(autocommit=False)
+        try:
+            assert load_cursors(rconn) == {"agents@company.com": "L-agents", "solo@company.com": "L-solo"}
+        finally:
+            rconn.close()
+    finally:
+        cconn = _test_connection(autocommit=True)
+        try:
+            with cconn.cursor() as cur:
+                for av_id in av.values():
+                    cur.execute("DELETE FROM core_config_data WHERE scope = 'agent_view' AND scope_id = %s", (av_id,))
+                cur.execute("DELETE FROM workspace WHERE code = 'ws-outlook-4v'")
+        finally:
+            cconn.close()
 
 
 @respx.mock

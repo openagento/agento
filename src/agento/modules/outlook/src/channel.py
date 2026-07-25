@@ -4,6 +4,7 @@ import hashlib
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
 
 from agento.framework.channels.base import PromptFragments
 from agento.framework.event_manager import get_event_manager
@@ -130,8 +131,19 @@ class OutlookPromptChannel:
         )
 
 
+@dataclass(frozen=True)
+class OutlookAdmission:
+    """A message that passed the inbound security gate. ``sender`` is normalized (strip+lower) and
+    is the single audited identity used for BOTH routing (regex/priority) and the JobRequester."""
+
+    sender: str
+
+
 class OutlookPublisher:
-    """Publisher concern: enforce the inbound security gate, publish one job/email to the mailbox's agent_view."""
+    """Publisher concern: admit inbound mail through the security gate (``admit_mail``), then publish
+    an admitted message to a chosen agent_view (``publish_admitted_mail``). ``publish_mail`` is the
+    thin admit->publish wrapper used by direct (single-view) polling; routed (shared-mailbox) polling
+    admits once, routes by sender, then calls ``publish_admitted_mail`` for the resolved target."""
 
     @property
     def name(self) -> str:
@@ -140,15 +152,17 @@ class OutlookPublisher:
     def build_idempotency_key(self, message_id: str) -> str:
         return f"outlook:mail:{message_id}"
 
-    def publish_mail(
-        self, db_config: object, message_id: str, *, agent_view_id: int,
-        priority: int = 50, sender_email: str | None = None,
+    def admit_mail(
+        self, message_id: str, *, sender_email: str | None = None,
         dmarc: str | None = None, allowed_senders: list[str] | None = None,
         subject: str | None = None,
         to=None, cc=None, body_preview: str | None = None,
         agent_authored: bool = False, mailbox: str | None = None, aliases=None, cfg=None,
         logger: logging.Logger | None = None,
-    ) -> bool:
+    ) -> OutlookAdmission | None:
+        """Run the inbound security gate (allowed_senders -> DMARC -> activation) and return an
+        ``OutlookAdmission`` carrying the normalized sender, or ``None`` on any reject. NO job is
+        created here — publishing is a separate step (``publish_admitted_mail``)."""
         # 1. Normalize the claimed From address.
         sender = (sender_email or "").strip().lower()
 
@@ -162,7 +176,7 @@ class OutlookPublisher:
                     "Outlook sender not in allowed_senders; leaving unread",
                     extra={"message_id": message_id[:40], "sender_domain": sender_domain},
                 )
-            return False
+            return None
 
         # 3. DMARC GATE (unconditional — a hard DMARC pass is always required to publish). Two distinct
         #    non-pass cases, both fail-closed (never published):
@@ -195,7 +209,7 @@ class OutlookPublisher:
                     extra={"message_id": message_id[:40], "dmarc": verdict or "none",
                            "sender_domain": sender_domain},
                 )
-            return False
+            return None
 
         # 4. ACTIVATION GATE (stateless). Speak only when clearly meant to: addressed to the mailbox
         #    (direct) or summoned by token (mention), and never in response to another agent's mail
@@ -214,15 +228,25 @@ class OutlookPublisher:
                         "Outlook message not activated; leaving unread",
                         extra={"message_id": message_id[:40], "reason": decision.reason},
                     )
-                return False
+                return None
 
-        # 5. PUBLISH to the mailbox's agent_view (the mailbox identifies the view — the publisher
-        #    loop supplies agent_view_id + priority). DMARC pass cryptographically aligns the From
-        #    domain -> trust=DOMAIN.
+        return OutlookAdmission(sender=sender)
+
+    def publish_admitted_mail(
+        self, db_config: object, message_id: str, admission: OutlookAdmission, *,
+        agent_view_id: int, priority: int = 50, subject: str | None = None,
+        logger: logging.Logger | None = None,
+    ) -> bool:
+        """Publish an already-admitted message to ``agent_view_id``. The sender is taken ONLY from
+        ``admission.sender`` (already strip+lower) — the identity that passed the gate (and in routed
+        mode chose the route) IS the audited requester, used for BOTH the JobRequester.key sha256
+        digest AND the email field. DMARC pass cryptographically aligned the From domain -> trust=DOMAIN.
+        """
+        sender = admission.sender
         digest = hashlib.sha256(sender.encode()).hexdigest()
         requester = JobRequester(
             key=f"outlook:email:{digest}",  # 14 + 64 = 78 chars, always < 255
-            email=sender_email,  # JobRequester normalizes (strip+lower)
+            email=sender,  # already normalized (strip+lower)
             trust=RequesterTrust.DOMAIN,
             meta={"basis": "email_from", "dmarc": "pass"},
         )
@@ -235,6 +259,29 @@ class OutlookPublisher:
             reference_id=_build_reference_id(message_id, subject), logger=logger,
             agent_view_id=agent_view_id, priority=priority,
             skip_if_active=True, requester=requester,
+        )
+
+    def publish_mail(
+        self, db_config: object, message_id: str, *, agent_view_id: int,
+        priority: int = 50, sender_email: str | None = None,
+        dmarc: str | None = None, allowed_senders: list[str] | None = None,
+        subject: str | None = None,
+        to=None, cc=None, body_preview: str | None = None,
+        agent_authored: bool = False, mailbox: str | None = None, aliases=None, cfg=None,
+        logger: logging.Logger | None = None,
+    ) -> bool:
+        """Thin admit->publish wrapper (direct/single-view polling): admit the message through the
+        security gate, then publish it to ``agent_view_id`` on pass (else return False)."""
+        admission = self.admit_mail(
+            message_id, sender_email=sender_email, dmarc=dmarc, allowed_senders=allowed_senders,
+            subject=subject, to=to, cc=cc, body_preview=body_preview,
+            agent_authored=agent_authored, mailbox=mailbox, aliases=aliases, cfg=cfg, logger=logger,
+        )
+        if admission is None:
+            return False
+        return self.publish_admitted_mail(
+            db_config, message_id, admission, agent_view_id=agent_view_id,
+            priority=priority, subject=subject, logger=logger,
         )
 
     def _alert_security_breach(

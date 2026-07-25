@@ -28,6 +28,14 @@ echo "AGENTO_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../secrets.env
 3. If yes → encrypts with AES-256-CBC → stores as `aes256:{iv_hex}:{ciphertext_hex}` with `encrypted=1`.
 4. Toolbox reads DB at runtime → decrypts using the same `AGENTO_ENCRYPTION_KEY`.
 
+> **Known limitation:** the Python `bootstrap()` also transiently decrypts DEFAULT-scope `obscure`
+> values in the cron/consumer/CLI while resolving module config. For *toolbox-only* fields (e.g. the
+> Outlook Graph secret) this is unnecessary and the value is discarded unused; but `app_monitor`
+> intentionally consumes its obscure SMTP password cron-side (to send breach alerts), so not every
+> obscure field is unused Python-side. Making Python bootstrap never decrypt toolbox-only fields
+> (and migrating the app_monitor SMTP transport) is tracked separately — see
+> [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
+
 > **Don't** pass secrets as the positional `value` arg (`config:set path my-secret`). That leaks the value into `ps aux` for the duration of the command and into `~/.bash_history` / `~/.zsh_history` forever. Always omit the value so agento prompts / reads stdin. See [cli/config.md](../cli/config.md#secrets--never-pass-on-the-command-line) for the full rationale.
 
 ## Algorithm

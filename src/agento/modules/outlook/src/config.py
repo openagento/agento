@@ -8,11 +8,14 @@ class OutlookConfig:
     """Python-side Outlook config — NO Graph secrets.
 
     The Graph credentials (``outlook_tenant_id``, ``outlook_client_id``, ``outlook_client_secret``,
-    ``outlook_cert_pem``/``outlook_cert_password``) and the mailbox UPN (``outlook_mailbox_user_id``) live in ``system.json``
-    and are resolved by the TOOLBOX (the zero-trust boundary — "toolbox = only container with
-    secrets"). They are deliberately NOT fields here, exactly as ``JiraConfig`` omits ``jira_token``
-    despite the ``obscure`` schema. Bootstrap stores this dataclass in ``_MODULE_CONFIGS``, so keeping
-    the secret out of it means the cron/framework registry never holds the Graph secret.
+    ``outlook_cert_pem``/``outlook_cert_password``) live in ``system.json`` and are resolved by the
+    TOOLBOX (the zero-trust boundary). They are deliberately NOT fields here, exactly as ``JiraConfig``
+    omits ``jira_token`` despite the ``obscure`` schema. Bootstrap stores this dataclass in
+    ``_MODULE_CONFIGS``, so keeping the secret out of it means the framework registry never holds it.
+
+    The mailbox UPN (``outlook_mailbox_user_id``) is a NON-secret string and is likewise not a field
+    here; the Python publisher reads it directly via ``ScopedConfigService`` (per-path ``.get()``) to
+    group views by mailbox before polling. The toolbox also resolves it for the actual Graph calls.
     """
 
     enabled: bool = False

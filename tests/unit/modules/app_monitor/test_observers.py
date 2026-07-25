@@ -565,3 +565,59 @@ class TestSecurityBreachAlertObserver:
             raise OSError("network down")
         monkeypatch.setattr(obs, "send_alert", _boom)
         obs.SecurityBreachAlertObserver().execute(_BreachEvent())  # must not raise
+
+
+@dataclass
+class _StallEvent:
+    channel: str = "outlook"
+    mailbox: str = "shared@example.com"
+    reason: str = "no_bindings"
+    detail: str | None = "routed mode but no active outlook_sender bindings"
+
+
+class TestMailboxStalledAlertObserver:
+    def test_noop_when_no_email_to(self, monkeypatch):
+        _patch_config(monkeypatch, **{CFG_ALERT_EMAIL_TO: "", CFG_ALERT_SMTP_HOST: "smtp.example.com"})
+        sender = MagicMock()
+        monkeypatch.setattr(obs, "send_alert", sender)
+        obs.MailboxStalledAlertObserver().execute(_StallEvent())
+        sender.assert_not_called()
+
+    def test_noop_when_no_smtp_host(self, monkeypatch):
+        _patch_config(monkeypatch, **{CFG_ALERT_EMAIL_TO: "ops@example.com", CFG_ALERT_SMTP_HOST: ""})
+        sender = MagicMock()
+        monkeypatch.setattr(obs, "send_alert", sender)
+        obs.MailboxStalledAlertObserver().execute(_StallEvent())
+        sender.assert_not_called()
+
+    def test_sends_with_mailbox_reason_and_explanation_when_configured(self, monkeypatch):
+        _patch_config(monkeypatch, **_SMTP)
+        sender = MagicMock()
+        monkeypatch.setattr(obs, "send_alert", sender)
+        obs.MailboxStalledAlertObserver().execute(_StallEvent())
+        sender.assert_called_once()
+        _smtp_cfg, to, subject, body = sender.call_args.args
+        assert to == "ops@example.com"
+        assert "shared@example.com" in subject
+        assert "no_bindings" in subject
+        assert "outlook" in body
+        assert "no_bindings" in body
+        # the reason code is expanded into a human-readable explanation for ops
+        assert "dropped" in body.lower()
+
+    def test_unknown_reason_still_sends_generic_body(self, monkeypatch):
+        _patch_config(monkeypatch, **_SMTP)
+        sender = MagicMock()
+        monkeypatch.setattr(obs, "send_alert", sender)
+        obs.MailboxStalledAlertObserver().execute(_StallEvent(reason="brand_new_reason"))
+        sender.assert_called_once()
+        _smtp_cfg, _to, subject, _body = sender.call_args.args
+        assert "brand_new_reason" in subject
+
+    def test_smtp_failure_is_swallowed(self, monkeypatch):
+        _patch_config(monkeypatch, **_SMTP)
+
+        def _boom(*_a, **_kw):
+            raise OSError("network down")
+        monkeypatch.setattr(obs, "send_alert", _boom)
+        obs.MailboxStalledAlertObserver().execute(_StallEvent())  # must not raise

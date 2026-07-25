@@ -190,7 +190,17 @@ class CrmSyncCommand:
 
 After bootstrap, your channel is available via `get_channel("crm")` and your command as `agento crm-sync`.
 
-See [di.json format](module-json.md#dijson) for all capability types.
+If your channel routes inbound requests to different agent_views by a **regex sender pattern**
+(rather than an exact identity), declare the identity type in `di.json` so both the runtime router
+and the `ingress:bind` CLI treat its bindings as regexes:
+
+```json
+{ "regex_identity_types": ["crm_sender"] }
+```
+
+Operators then `agento ingress:bind crm_sender '<regex>' <view> --priority <n>`; highest priority
+wins, a tie between different views is ambiguous. See [di.json format](module-json.md#dijson) for
+all capability types.
 
 ## 10. Declare Config Schema (Optional)
 

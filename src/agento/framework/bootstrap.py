@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from .events import (
     ModuleReloadEvent,
     ModuleShutdownEvent,
 )
+from .ingress_identity import clear_regex_identity_types, register_regex_identity_type
 from .job_models import AgentType
 from .module_loader import ModuleManifest, import_class, scan_modules
 from .module_status import filter_enabled
@@ -52,6 +54,10 @@ logger = logging.getLogger(__name__)
 
 CORE_MODULES_DIR = str(Path(__file__).parent.parent / "modules")
 USER_MODULES_DIR = "/app/code"
+
+# Canonical identity-type form (fits ingress_identity.identity_type VARCHAR(32)); the module
+# manifest validator applies the same check. Linear pattern on a short type name — safe under `re`.
+_IDENTITY_TYPE_FORM = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 # Module config registry — {module_name: {field: value}}
 _MODULE_CONFIGS: dict[str, dict[str, Any]] = {}
@@ -118,6 +124,7 @@ def bootstrap(
     clear_commands()
     clear_onboardings()
     clear_routers()
+    clear_regex_identity_types()
     clear_event_manager()
     _MODULE_CONFIGS.clear()
     _MANIFESTS.clear()
@@ -177,6 +184,7 @@ def bootstrap(
         _load_commands(m)
         _load_onboarding(m)
         _load_routers(m)
+        _load_regex_identity_types(m)
 
         # Dispatch module_loaded (capabilities registered)
         em.dispatch("module_load_after", ModuleLoadedEvent(name=m.name, path=m.path))
@@ -398,3 +406,29 @@ def _load_routers(m: ModuleManifest) -> None:
             logger.debug("Registered router %r from module %s", decl["name"], m.name)
         except Exception:
             logger.exception("Failed to load router %r from module %s", decl.get("name"), m.name)
+
+
+def _load_regex_identity_types(m: ModuleManifest) -> None:
+    """Register a module's regex-matched ingress identity types (generic, channel-agnostic).
+
+    Reads di.json `regex_identity_types` and registers each entry matching the canonical form
+    ^[a-z][a-z0-9_]{0,31}$. A malformed declaration (not a list, or an entry that is non-string /
+    wrong shape) is logged and skipped — never raised — so a bad third-party manifest cannot crash
+    bootstrap (which also runs on every consumer hot-reload, past setup-time validation).
+    """
+    declared = m.provides.get("regex_identity_types", [])
+    if not isinstance(declared, list):
+        logger.error(
+            "Module %s declares regex_identity_types as %s, expected an array — ignoring",
+            m.name, type(declared).__name__,
+        )
+        return
+    for t in declared:
+        if isinstance(t, str) and _IDENTITY_TYPE_FORM.fullmatch(t):
+            register_regex_identity_type(t)
+            logger.debug("Registered regex identity type %r from module %s", t, m.name)
+        else:
+            logger.error(
+                "Module %s declares an invalid regex_identity_type %r (must match "
+                "^[a-z][a-z0-9_]{0,31}$), skipping", m.name, t,
+            )

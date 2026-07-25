@@ -45,6 +45,7 @@ dependencies = [
     "PyMySQL>=1.1",
     "cryptography>=43.0",
     "textual>=1.0,<2.0",
+    "regex>=2024.0",
 ]
 authors = [{name = "Marcin Klauza"}]
 license = {text = "MIT"}

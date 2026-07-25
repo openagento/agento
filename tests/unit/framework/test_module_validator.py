@@ -222,6 +222,79 @@ class TestSelectFieldValidation:
         assert any("options must be an array" in e for e in errors)
 
 
+class TestRegexIdentityTypesValidation:
+    """Rule-2: di.json `regex_identity_types` must be a list of canonical identity-type strings
+    (^[a-z][a-z0-9_]{0,31}$) so a malformed manifest is rejected BEFORE any DB change."""
+
+    def _make_module(self, tmp_path: Path, regex_types) -> Path:
+        mod = tmp_path / "regex-mod"
+        mod.mkdir(exist_ok=True)
+        (mod / "module.json").write_text(json.dumps({
+            "name": "regex-mod", "version": "1.0.0", "description": "Regex types",
+        }))
+        (mod / "di.json").write_text(json.dumps({"regex_identity_types": regex_types}))
+        return mod
+
+    def test_valid_list_passes(self, tmp_path: Path):
+        errors = validate_module(self._make_module(tmp_path, ["outlook_sender", "teams_channel"]))
+        assert errors == []
+
+    def test_absent_is_fine(self, tmp_path: Path):
+        mod = tmp_path / "regex-mod"
+        mod.mkdir()
+        (mod / "module.json").write_text(json.dumps({
+            "name": "regex-mod", "version": "1.0.0", "description": "no di",
+        }))
+        (mod / "di.json").write_text(json.dumps({"commands": []}))
+        assert validate_module(mod) == []
+
+    def test_non_list_rejected(self, tmp_path: Path):
+        errors = validate_module(self._make_module(tmp_path, "outlook_sender"))
+        assert any("'regex_identity_types' must be an array" in e for e in errors)
+
+    def test_explicit_null_rejected(self, tmp_path: Path):
+        # An explicit `null` is a PRESENT-but-malformed declaration — must be rejected as "not an
+        # array" (validation keys on key presence, not `is not None`), otherwise a setup-valid
+        # module's advertised routing capability silently vanishes at bootstrap.
+        errors = validate_module(self._make_module(tmp_path, None))
+        assert any("'regex_identity_types' must be an array" in e for e in errors)
+
+    def test_empty_string_entry_rejected(self, tmp_path: Path):
+        errors = validate_module(self._make_module(tmp_path, [""]))
+        assert any("regex_identity_types[0]" in e and "^[a-z]" in e for e in errors)
+
+    def test_over_32_chars_rejected(self, tmp_path: Path):
+        errors = validate_module(self._make_module(tmp_path, ["a" * 33]))
+        assert any("regex_identity_types[0]" in e for e in errors)
+
+    def test_exactly_32_chars_passes(self, tmp_path: Path):
+        # ^[a-z][a-z0-9_]{0,31}$ allows up to 32 chars total (fits VARCHAR(32)).
+        errors = validate_module(self._make_module(tmp_path, ["a" + "b" * 31]))
+        assert errors == []
+
+    def test_leading_trailing_whitespace_rejected(self, tmp_path: Path):
+        errors = validate_module(self._make_module(tmp_path, [" outlook_sender "]))
+        assert any("regex_identity_types[0]" in e for e in errors)
+
+    def test_control_char_rejected(self, tmp_path: Path):
+        errors = validate_module(self._make_module(tmp_path, ["outlook\tsender"]))
+        assert any("regex_identity_types[0]" in e for e in errors)
+
+    def test_uppercase_rejected(self, tmp_path: Path):
+        errors = validate_module(self._make_module(tmp_path, ["Outlook_Sender"]))
+        assert any("regex_identity_types[0]" in e for e in errors)
+
+    def test_non_string_entry_rejected(self, tmp_path: Path):
+        errors = validate_module(self._make_module(tmp_path, [123]))
+        assert any("regex_identity_types[0]" in e for e in errors)
+
+    def test_reports_the_offending_index(self, tmp_path: Path):
+        # a good entry at [0], a bad one at [1] -> only [1] flagged
+        errors = validate_module(self._make_module(tmp_path, ["good_type", "BadType"]))
+        assert any("regex_identity_types[1]" in e for e in errors)
+        assert not any("regex_identity_types[0]" in e for e in errors)
+
+
 class TestValidateAllSequenceCross:
     """Cross-module sequence validation: deps must exist on disk."""
 

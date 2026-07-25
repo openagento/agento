@@ -6,5 +6,6 @@
   "commands": [
     {"name": "outlook:publish", "class": "src.commands.publish.OutlookPublishCommand"}
   ],
+  "regex_identity_types": ["outlook_sender"],
   "onboarding": "src.onboarding.OutlookOnboarding"
 }

@@ -28,10 +28,12 @@ def _conflicting_mailbox_scopes(conn, mailbox, target_scope, target_scope_id):
     normalized mailbox UPN at a scope OTHER than the write target.
 
     The mailbox resolves ``agent_view -> workspace -> default``, so a duplicate at ANY scope means two
-    agent_views would poll the same inbox and the lowest-id view would silently win (see the publisher's
-    ``seen_mailboxes`` dedupe). Comparison is on the normalized UPN (strip + lowercase — the same key the
-    publisher/cursor use); the exact target row (same ``scope`` + ``scope_id``) is excluded so re-running
-    onboarding for the same view is not a self-conflict. Module-level for unit-testability.
+    agent_views resolve to the same inbox. That is now a supported configuration: the publisher polls
+    the shared mailbox ONCE and routes each message to a view by matching the sender against
+    ``outlook_sender`` ingress bindings (routed mode). This is surfaced during onboarding so the
+    operator sets up the bindings. Comparison is on the normalized UPN (strip + lowercase — the same
+    key the publisher/cursor use); the exact target row (same ``scope`` + ``scope_id``) is excluded so
+    re-running onboarding for the same view is not a self-conflict. Module-level for unit-testability.
     """
     normalized = (mailbox or "").strip().lower()
     if not normalized:
@@ -247,15 +249,19 @@ class OutlookOnboarding:
             # 0 or 1 active view -> default scope (a single view resolves it via fallback).
             target_scope, target_scope_id = Scope.DEFAULT, 0
 
-        # One-mailbox-per-view guard: the mailbox resolves agent_view -> workspace -> default, so the same
-        # UPN at ANY other scope means two views would share one inbox (lowest agent_view id wins, others
-        # skipped). Warn + confirm; never hard-block (a deliberate re-point is legitimate).
+        # Shared-mailbox notice: the mailbox resolves agent_view -> workspace -> default, so the same
+        # UPN at ANY other scope means two views share one inbox. This is now ROUTED mode — the inbox
+        # is polled once and each message is routed to a view by sender. Bind senders with:
+        #   agento ingress:bind outlook_sender '<regex>' <view> --priority <n>
+        # Warn + confirm; never hard-block (a deliberate shared mailbox is legitimate).
         conflicts = _conflicting_mailbox_scopes(conn, mailbox, target_scope, target_scope_id)
         if conflicts:
             where = ", ".join(f"{s}:{sid}" for s, sid in conflicts)
-            print(f"  WARNING: mailbox '{mailbox}' is already configured at scope(s) {where}.")
-            print("  Two agent_views resolving to the same mailbox share one inbox — the lowest")
-            print("  agent_view id wins and the others are skipped (see docs/modules/outlook.md).")
+            print(f"  NOTE: mailbox '{mailbox}' is already configured at scope(s) {where}.")
+            print("  Two agent_views resolving to the same mailbox share one inbox — it is polled once")
+            print("  and each message is routed to a view by sender (routed mode). Configure bindings:")
+            print("    agento ingress:bind outlook_sender '<regex>' <view> --priority <n>")
+            print("  (see docs/modules/outlook.md). Unmatched senders are not published.")
             if terminal.select(
                 "Proceed and set this mailbox anyway?",
                 ["No — abort (nothing saved)", "Yes — set it anyway"],

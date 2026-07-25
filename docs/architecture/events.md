@@ -142,6 +142,15 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 
 `routing_ambiguous_after` still resolves (first router wins by order), but flags the ambiguity for observability.
 
+### Inbound Channel Delivery
+
+| Event | Data Class | Fields | When |
+|-------|-----------|--------|------|
+| `security_breach_after` | `SecurityBreachEvent` | `channel, reason, sender, reference_id, detail` | An inbound channel rejects a message as a probable spoof (e.g. an allow-listed sender failing DMARC) |
+| `mailbox_stall_after` | `MailboxStalledEvent` | `channel, mailbox, reason, detail` | A shared mailbox is skipped/held by a **misconfiguration** (not a transient fault), so no mail is delivered until an operator reconciles it |
+
+`mailbox_stall_after.reason` is one of: `policy_divergence` (shared-mailbox members disagree on admit policy — the group is not polled), `no_bindings` (routed mode with zero active `outlook_sender` bindings — mail is dropped and the cursor advances), or `upn_mismatch` (the configured mailbox UPN disagrees with the resolved mailbox — the poll is held). Both events are dispatched by the **outlook** channel and observed by `app_monitor` (`SecurityBreachAlertObserver` / `MailboxStalledAlertObserver`), which email ops when SMTP alerting is configured. Both are internal events (defined in `framework/events.py`, not re-exported from `framework/contracts/`); dispatch is fail-closed regardless of whether any observer is registered.
+
 ### Workspace Build Lifecycle (Phase 10.5a)
 
 | Event | Data Class | Fields | When |

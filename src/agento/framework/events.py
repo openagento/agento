@@ -350,6 +350,22 @@ class SecurityBreachEvent:
     detail: str | None = None
 
 
+@dataclass
+class MailboxStalledEvent:
+    """Dispatched when an inbound channel's shared-mailbox poll is skipped or held by a
+    MISCONFIGURATION (not a transient fault), so no mail from that mailbox is delivered until an
+    operator reconciles it. Observers (e.g. app_monitor's ``MailboxStalledAlertObserver``) may
+    alert ops; dispatch is fail-closed regardless. ``reason`` is one of ``policy_divergence``
+    (shared members disagree on admit policy — group not polled), ``no_bindings`` (routed mode with
+    zero active bindings — mail dropped), or ``upn_mismatch`` (configured UPN != resolved mailbox —
+    poll held)."""
+
+    channel: str
+    mailbox: str
+    reason: str
+    detail: str | None = None
+
+
 # --- Workspace build events ---
 
 

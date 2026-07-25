@@ -125,7 +125,8 @@ Registers capabilities your module provides — channels, workflows, runtimes, C
   "commands": [
     {"name": "sync", "class": "src.commands.sync.SyncCommand"},
     {"name": "publish", "class": "src.commands.publish.PublishCommand"}
-  ]
+  ],
+  "regex_identity_types": ["outlook_sender"]
 }
 ```
 
@@ -140,6 +141,19 @@ Each section is optional — include only what your module provides. The `onboar
 | `sandbox_packages` | `provider`, `manager`, `package`, `binary`, `version_env_key`, `default_range` | Sandbox CLI version registry — drives `docker/.env` pin seeding, sandbox `--build-arg`s, and the `agento doctor` pin check |
 | `commands` | `name`, `class` | CLI command registry — adds `bin/agento <name>` subcommand |
 | `onboarding` | (single class path string) | Onboarding registry — interactive setup during `setup:upgrade` |
+| `regex_identity_types` | (array of identity-type strings) | Regex-identity-type registry — `is_regex_identity_type(type)` |
+
+#### `regex_identity_types`
+
+An array of ingress `identity_type` strings whose bindings are matched by **case-insensitive
+regex `fullmatch`** (highest `priority` wins) instead of exact string equality. The framework
+registry starts empty and is populated at bootstrap from each module's declaration, so the
+framework hardcodes no channel-specific type — the owning module declares its own, and disabling
+the module drops it. Each entry must match `^[a-z][a-z0-9_]{0,31}$` (fits `identity_type
+VARCHAR(32)`). Both the runtime matcher and the `ingress:bind` CLI validator gate on the same
+`is_regex_identity_type(...)` predicate. Example: the `outlook` module declares
+`["outlook_sender"]` so a shared mailbox can route inbound mail to different agent_views by sender
+pattern. See [routing](../architecture/routing.md).
 
 #### `sandbox_packages`
 

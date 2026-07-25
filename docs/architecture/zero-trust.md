@@ -2,6 +2,17 @@
 
 Toolbox is the **only** container with access to secrets. The AI agent has no credentials.
 
+> **Known limitation (aspirational, not yet fully enforced on the Python side).** `bootstrap()`
+> transiently decrypts **all** DEFAULT-scope `obscure` config while resolving module config, so the
+> cron, the consumer (every hot-reload), and the CLI briefly hold decrypted secrets. For
+> *toolbox-only* creds (e.g. the Outlook Graph secret) this decryption is unnecessary and the value
+> is discarded unused. But it is **not** universally unused: `app_monitor` intentionally consumes
+> the obscure SMTP password **cron-side** to send breach alerts (`observers.py`), so that credential
+> genuinely lives in the cron today and needs migration to a toolbox-owned transport. `secrets.env`
+> is also mounted into the cron service today, and the `CONFIG__*` ENV path is plaintext regardless.
+> A per-field `toolbox_only` classification + the app_monitor SMTP transport migration are the
+> tracked fix — see [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
+
 ## Security Boundary
 
 ```

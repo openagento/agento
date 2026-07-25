@@ -354,3 +354,51 @@ class SecurityBreachAlertObserver:
                 "SecurityBreachAlertObserver: SMTP send failed (channel=%s)",
                 channel, exc_info=True,
             )
+
+
+# Human-readable expansion of MailboxStalledEvent.reason codes, so the ops email is actionable
+# without opening the source. An unknown code still sends (generic line) — never a silent drop.
+_STALL_REASONS = {
+    "policy_divergence": "Shared-mailbox members disagree on admit-policy config; the group is NOT "
+                         "polled until the config is reconciled.",
+    "no_bindings": "Routed mode but no active outlook_sender bindings; ALL mail to this mailbox is "
+                   "being dropped (configure `agento ingress:bind outlook_sender ...`).",
+    "upn_mismatch": "Configured mailbox UPN disagrees with the resolved mailbox; the poll is held "
+                    "(no delivery) until the drift is resolved.",
+}
+
+
+class MailboxStalledAlertObserver:
+    """Send a plain-text alert when an inbound channel's shared mailbox stops delivering mail due to
+    a misconfiguration (divergent policy / no bindings / UPN mismatch).
+
+    Same fail-quiet contract as ``AlertEmailObserver``: silent no-op unless both ``alerts/email_to``
+    and ``alerts/smtp_host`` are configured; SMTP failures are logged but never propagated (the
+    dispatcher also swallows observer errors).
+    """
+
+    def execute(self, event) -> None:
+        cfg = _config()
+        to = (cfg.get(CFG_ALERT_EMAIL_TO) or "").strip()
+        smtp = _smtp_config()
+        if not to or smtp is None:
+            return  # not configured — silent no-op
+        channel = getattr(event, "channel", "?")
+        mailbox = getattr(event, "mailbox", "?")
+        reason = getattr(event, "reason", "?")
+        meaning = _STALL_REASONS.get(reason, "This mailbox is not delivering mail.")
+        subject = f"[agento] Mailbox not delivering — {mailbox} ({reason})"
+        body = "\n".join([
+            f"Channel:      {channel}",
+            f"Mailbox:      {mailbox}",
+            f"Reason:       {reason}",
+            f"Meaning:      {meaning}",
+            f"Detail:       {getattr(event, 'detail', '') or ''}",
+        ])
+        try:
+            send_alert(smtp, to, subject, body)
+        except Exception:
+            logger.warning(
+                "MailboxStalledAlertObserver: SMTP send failed (channel=%s mailbox=%s)",
+                channel, mailbox, exc_info=True,
+            )

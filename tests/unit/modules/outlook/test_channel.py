@@ -1,9 +1,11 @@
+import hashlib
 import logging
 from unittest.mock import MagicMock, patch
 
 from agento.framework.channels.base import Channel, PromptFragments
 from agento.framework.job_models import RequesterTrust
 from agento.modules.outlook.src.channel import (
+    OutlookAdmission,
     OutlookChannel,
     OutlookPublisher,
     _build_reference_id,
@@ -401,3 +403,78 @@ def test_question_mark_in_allowed_pattern_is_literal_not_quantifier():
             dmarc="pass", allowed_senders=patterns, logger=MagicMock(),
         ) is False
         mock_publish.assert_not_called()
+
+
+# ---- Channel split: admit_mail / publish_admitted_mail / publish_mail wrapper parity ----
+
+def test_admit_mail_returns_normalized_admission_on_pass():
+    # admit_mail runs the gate and returns an OutlookAdmission with a strip+lower sender — NO job.
+    p = OutlookPublisher()
+    with patch("agento.modules.outlook.src.channel.publish") as mock_publish:
+        admission = p.admit_mail(
+            "m1", sender_email="  SKLEP@MyCompanyStudio.COM  ", dmarc="pass",
+            allowed_senders=WHITELIST, logger=MagicMock(),
+        )
+    assert isinstance(admission, OutlookAdmission)
+    assert admission.sender == "sklep@mycompanystudio.com"  # strip + lower
+    mock_publish.assert_not_called()  # admission never publishes
+
+
+def test_admit_mail_rejects_off_allowlist_and_dmarc_fail():
+    p = OutlookPublisher()
+    assert p.admit_mail("m1", sender_email="stranger@elsewhere.com", dmarc="pass",
+                        allowed_senders=WHITELIST, logger=MagicMock()) is None
+    assert p.admit_mail("m2", sender_email="sklep@mycompanystudio.com", dmarc="fail",
+                        allowed_senders=WHITELIST, logger=MagicMock()) is None
+
+
+def test_publish_admitted_mail_uses_admission_sender_for_key_and_email():
+    # SUG3: the admitted sender IS the audited sender — used for BOTH the JobRequester.key sha256
+    # digest AND the email field. No separate sender_email is accepted here.
+    p = OutlookPublisher()
+    admission = OutlookAdmission(sender="sklep@mycompanystudio.com")
+    with patch("agento.modules.outlook.src.channel.publish", return_value=True) as mock_publish:
+        ok = p.publish_admitted_mail(object(), "m1", admission, agent_view_id=3, priority=55,
+                                     logger=MagicMock())
+    assert ok is True
+    requester = mock_publish.call_args.kwargs["requester"]
+    expected_digest = hashlib.sha256(b"sklep@mycompanystudio.com").hexdigest()
+    assert requester.email == "sklep@mycompanystudio.com"
+    assert requester.key == f"outlook:email:{expected_digest}"
+    assert requester.trust == RequesterTrust.DOMAIN
+    assert mock_publish.call_args.kwargs["agent_view_id"] == 3
+    assert mock_publish.call_args.kwargs["priority"] == 55
+
+
+def test_publish_mail_wrapper_is_admit_then_publish_admitted():
+    # publish_mail = admit_mail -> (None -> False) -> publish_admitted_mail. The requester it builds
+    # is byte-identical to admitting + publishing the same message directly (the wrapper re-passes
+    # the admission object, never a separately re-normalized sender_email).
+    p = OutlookPublisher()
+    raw = "  SKLEP@MyCompanyStudio.COM  "
+    normalized = "sklep@mycompanystudio.com"
+
+    with patch("agento.modules.outlook.src.channel.publish", return_value=True) as m_wrap:
+        assert p.publish_mail(object(), "m1", agent_view_id=2, priority=50, sender_email=raw,
+                              dmarc="pass", allowed_senders=WHITELIST, logger=MagicMock()) is True
+    wrap_req = m_wrap.call_args.kwargs["requester"]
+
+    admission = p.admit_mail("m1", sender_email=raw, dmarc="pass",
+                             allowed_senders=WHITELIST, logger=MagicMock())
+    with patch("agento.modules.outlook.src.channel.publish", return_value=True) as m_direct:
+        p.publish_admitted_mail(object(), "m1", admission, agent_view_id=2, priority=50, logger=MagicMock())
+    direct_req = m_direct.call_args.kwargs["requester"]
+
+    assert wrap_req.email == direct_req.email == normalized
+    assert wrap_req.key == direct_req.key == f"outlook:email:{hashlib.sha256(normalized.encode()).hexdigest()}"
+    assert wrap_req.trust == direct_req.trust
+    assert wrap_req.meta == direct_req.meta
+
+
+def test_publish_mail_returns_false_when_admission_rejected():
+    p = OutlookPublisher()
+    with patch("agento.modules.outlook.src.channel.publish") as mock_publish:
+        result = p.publish_mail(object(), "m1", agent_view_id=1, sender_email="stranger@elsewhere.com",
+                                dmarc="pass", allowed_senders=WHITELIST, logger=MagicMock())
+    assert result is False
+    mock_publish.assert_not_called()

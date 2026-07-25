@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 REQUIRED_MANIFEST_FIELDS = {"name", "version", "description"}
 VALID_FIELD_TYPES = {"string", "integer", "boolean", "obscure", "select", "multiselect", "json", "textarea"}
+# Canonical identity-type form (fits ingress_identity.identity_type VARCHAR(32)); rejects
+# whitespace / control chars / wrong shape that a bare "non-empty ≤32" check would let through.
+_IDENTITY_TYPE_FORM = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 
 def _resolve_class_path(module_dir: Path, class_path: str) -> bool:
@@ -101,6 +105,18 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                         errors.append(
                             f"di.json: {section} class '{entry['class']}' does not resolve to a .py file"
                         )
+            if "regex_identity_types" in di:
+                regex_types = di["regex_identity_types"]
+                # Key presence (not `is not None`): an explicit `null` is a malformed declaration
+                # and must be rejected as "not an array", not silently accepted.
+                if not isinstance(regex_types, list):
+                    errors.append("di.json: 'regex_identity_types' must be an array")
+                else:
+                    for i, t in enumerate(regex_types):
+                        if not isinstance(t, str) or not _IDENTITY_TYPE_FORM.fullmatch(t):
+                            errors.append(
+                                f"di.json: regex_identity_types[{i}] must match ^[a-z][a-z0-9_]{{0,31}}$"
+                            )
 
     # events.json
     events_path = module_dir / "events.json"

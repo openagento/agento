@@ -11,6 +11,7 @@ from agento.framework.bootstrap import bootstrap, get_manifests
 from agento.framework.channels import registry as channel_registry
 from agento.framework.event_manager import clear as clear_event_manager
 from agento.framework.event_manager import get_event_manager
+from agento.framework.ingress_identity import clear_regex_identity_types, is_regex_identity_type
 from agento.framework.job_models import AgentType
 from agento.framework.workflows import _WORKFLOW_MAP
 from agento.framework.workflows import clear as clear_workflows
@@ -22,10 +23,12 @@ def _clean_registries():
     channel_registry.clear()
     clear_workflows()
     clear_event_manager()
+    clear_regex_identity_types()
     yield
     channel_registry.clear()
     clear_workflows()
     clear_event_manager()
+    clear_regex_identity_types()
 
 
 def _write_module(modules_dir: Path, name: str, manifest: dict) -> Path:
@@ -215,6 +218,78 @@ class TestBootstrapObservers:
         manifests = get_manifests()
         assert len(manifests) == 1
         assert manifests[0].name == "m1"
+
+
+class TestBootstrapRegexIdentityTypes:
+    """C3: regex identity types are module-owned — declared via di.json `regex_identity_types`,
+    populated into the framework registry at bootstrap, dropped when the module is disabled."""
+
+    def test_di_json_populates_registry(self, tmp_path: Path):
+        _write_module(tmp_path, "regex-mod", {
+            "name": "regex-mod",
+            "provides": {"regex_identity_types": ["test_sender"]},
+        })
+        bootstrap(str(tmp_path))
+        assert is_regex_identity_type("test_sender")
+
+    def test_absent_when_module_disabled(self, tmp_path: Path, monkeypatch):
+        _write_module(tmp_path, "regex-mod", {
+            "name": "regex-mod",
+            "provides": {"regex_identity_types": ["test_sender"]},
+        })
+        monkeypatch.setattr(
+            "agento.framework.module_status.read_module_status",
+            lambda *a, **k: {"regex-mod": False},
+        )
+        bootstrap(str(tmp_path))
+        assert not is_regex_identity_type("test_sender")
+
+    def test_rebootstrap_clears_and_repopulates(self, tmp_path: Path):
+        import shutil
+
+        m1 = _write_module(tmp_path, "regex-mod", {
+            "name": "regex-mod",
+            "provides": {"regex_identity_types": ["test_sender"]},
+        })
+        bootstrap(str(tmp_path))
+        assert is_regex_identity_type("test_sender")
+
+        shutil.rmtree(m1)
+        _write_module(tmp_path, "other-mod", {
+            "name": "other-mod",
+            "provides": {"regex_identity_types": ["other_sender"]},
+        })
+        bootstrap(str(tmp_path))
+        assert not is_regex_identity_type("test_sender")  # cleared
+        assert is_regex_identity_type("other_sender")     # repopulated
+
+    def test_malformed_entry_skipped_valid_registered(self, tmp_path: Path):
+        # The loader applies the canonical form ^[a-z][a-z0-9_]{0,31}$ as a fail-safe backstop:
+        # a malformed entry is skipped (logged, never raised) and valid ones still register.
+        _write_module(tmp_path, "regex-mod", {
+            "name": "regex-mod",
+            "provides": {"regex_identity_types": ["good_type", "Bad Type", "", "x" * 40, 123]},
+        })
+        bootstrap(str(tmp_path))  # must not raise despite the malformed entries
+        assert is_regex_identity_type("good_type")
+        assert not is_regex_identity_type("Bad Type")
+        assert not is_regex_identity_type("")
+        assert not is_regex_identity_type("x" * 40)
+
+    @pytest.mark.parametrize("declared", ["abc", {"a": 1}, 123, None])
+    def test_malformed_container_does_not_crash_registers_nothing(self, tmp_path: Path, declared):
+        # The loader guards the CONTAINER before iterating: a non-list `regex_identity_types` is
+        # logged and skipped, never raised — so it can't crash bootstrap (which also runs on every
+        # consumer hot-reload, past setup-time validation). Critically, a string is NOT iterated
+        # char-by-char into 'a','b','c'.
+        _write_module(tmp_path, "bad-container-mod", {
+            "name": "bad-container-mod",
+            "provides": {"regex_identity_types": declared},
+        })
+        result = bootstrap(str(tmp_path))  # must not raise (TypeError on None/int, char-iter on str)
+        assert result is not None
+        for t in ("abc", "a", "b", "c"):
+            assert not is_regex_identity_type(t)
 
 
 # Used by test_lifecycle_events_dispatched

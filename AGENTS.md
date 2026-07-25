@@ -26,7 +26,7 @@ Automates Jira tasks using AI agents (Claude Code, OpenAI Codex) in Docker conta
 - **Concurrent execution:** `AGENTO_CONSUMER_MAX_WORKERS` env var (default 1). Per-run isolation makes it safe to increase.
 - **Consumer hot-reload:** every `AGENTO_CONSUMER_POLL_INTERVAL` (5s default) the consumer re-runs `bootstrap()` when idle — `mo:en/mo:di`, `config:set`, and `app/code/` edits apply live without restart. Caveat: edits to core module Python code (`src/agento/modules/`) still require a process restart due to `sys.modules` caching.
 - **Cron container env contract:** Any env var the cron/consumer needs from `docker-compose` must use the `AGENTO_*` prefix (e.g. `AGENTO_CONSUMER_MAX_WORKERS`). The entrypoint whitelist only persists `AGENTO_*`, `MYSQL_*`, `CONFIG__*`, `TZ`, `PYTHONPATH`, `PROVIDER`, `DISABLE_LLM`, and `DISABLE_AUTOUPDATER` across the `su - agent` env wipe — non-prefixed framework knobs are silently dropped. See [docs/architecture/cron-env-contract.md](docs/architecture/cron-env-contract.md).
-- **Routing:** Ingress identities map inbound requests to agent_views. Channels auto-resolve via `resolve_agent_view()` before publishing (exception: the **Outlook** channel routes by mailbox→agent_view — the mailbox identifies the view, not the sender; see [docs/modules/outlook.md](docs/modules/outlook.md)). Outlook reads are additionally bound to the triggering job's own message (privacy by construction), and the mailbox-enumeration tools (`outlook_search_messages`/`outlook_get_new_messages`) were removed.
+- **Routing:** Ingress identities map inbound requests to agent_views. Channels auto-resolve via `resolve_agent_view()` before publishing. The **Outlook** channel routes by mailbox→agent_view: a mailbox UPN owned by exactly one view is **direct mode** (the mailbox identifies the view); a UPN **shared by ≥2 views** is **routed mode** — polled once and each message routed to a view by matching the normalized sender against `outlook_sender` ingress bindings (regex `fullmatch`, highest `--priority` wins; a tie between different views is ambiguous → no job). See [docs/modules/outlook.md](docs/modules/outlook.md). Outlook reads are additionally bound to the triggering job's own message (privacy by construction), and the mailbox-enumeration tools (`outlook_search_messages`/`outlook_get_new_messages`) were removed.
 - **Agent view config:** Scoped DB paths `agent_view/provider`, `agent_view/model`, `agent_view/scheduling/priority`, `agent_view/instructions/agents_md`, `agent_view/instructions/soul_md` — resolved with agent_view → workspace → global fallback.
 - **Security:** Toolbox = only container with secrets. Agent has NO credentials. Tools and skills are **opt-in** (disabled by default) — least privilege: a tool/skill is available only when `is_enabled` resolves to `1` for the scope (agent_view > workspace > default). Adding a module or syncing a skill grants no access until explicitly enabled.
 - **DB tables:** singular names (e.g., `job`, `schedule`, `oauth_token`). Exception: `core_config_data` (Magento convention).
@@ -112,7 +112,10 @@ agento token:mark-error <id> "<msg>"                   # quarantine a token (sta
 agento token:reset <id>                                # clear error status without re-auth
 
 # Ingress identity binding (route inbound requests to agent_views)
-agento ingress:bind <type> <value> <agent_view_code>   # e.g. ingress:bind jira jira developer
+agento ingress:bind <type> <value> <agent_view_code> [--priority N]   # e.g. ingress:bind jira jira developer
+# Regex types (e.g. outlook_sender for a shared mailbox): <value> is a case-insensitive fullmatch
+# regex; --priority selects the winner (higher wins; ties between different views are ambiguous):
+agento ingress:bind outlook_sender '[^@]+@company\.com' sales --priority 10
 agento ingress:list [--type <type>] [--json]
 agento ingress:unbind <type> <value>
 

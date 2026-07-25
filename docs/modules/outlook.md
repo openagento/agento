@@ -7,11 +7,26 @@ channel, all Microsoft Graph secrets and HTTP live in the **Node.js toolbox** (t
 boundary); the Python module provides the channel, publisher, polling command, onboarding, and
 manifests.
 
-> **Routing model:** the **mailbox identifies the agent_view** — there is one mailbox per agent_view,
-> and the publisher polls each, publishing that mailbox's jobs to its own view (mirrors the Jira
-> per-agent_view contract). This is *not* sender→view routing: `outlook/allowed_senders` + DMARC are
-> purely the inbound **security** gate, not routing. (`ingress:bind email …` is no longer used for
-> Outlook; existing bindings are inert and removable with `ingress:unbind`.)
+> **Routing model — direct vs routed.** A mailbox owned by exactly **one** agent_view is **direct
+> mode**: the mailbox identifies the view, no routing and no binding required (mirrors the Jira
+> per-agent_view contract). A mailbox **shared** by two or more agent_views is **routed mode**: the
+> inbox is polled **once** (by the lowest-id member) and each message is routed to a view by matching
+> the normalized `From` against `outlook_sender` ingress bindings — **regex, case-insensitive
+> `fullmatch`, highest `priority` wins**; a tie between **different** views is ambiguous → no job.
+> `outlook/allowed_senders` + DMARC remain the inbound **security** gate in both modes (routing runs
+> only after a message is admitted). The legacy `ingress:bind email` type is inert for Outlook.
+>
+> Worked example — shared mailbox `agents@company.com` used by views `sales`, `support`, `vip`:
+>
+> | Binding | agent_view | priority | A message from… | routes to |
+> |---|---|---|---|---|
+> | `vip@company\.com` | `vip` | 50 | `vip@company.com` | `vip` (highest priority) |
+> | `support@company\.com` | `support` | 20 | `support@company.com` | `support` |
+> | `[^@]+@company\.com` | `sales` | 10 | `anna@company.com` | `sales` (catch-all fallback) |
+> | | | | `stranger@other.com` | no job (no binding matched) |
+>
+> Bind with `agento ingress:bind outlook_sender '<regex>' <view> --priority <n>`; inspect with
+> `agento ingress:list --type outlook_sender`.
 
 > **Security model in one line:** an inbound email creates a job **only** if its `From` is on the
 > `outlook/allowed_senders` allow-list **and** the message passes DMARC. DMARC is **always required**
@@ -43,7 +58,7 @@ Set via `agento config:set outlook/<key> <value>` (or `CONFIG__OUTLOOK__<KEY>` e
 | `outlook/outlook_client_secret` | **obscure** | Client secret (encrypted at rest). Use **either** this **or** a cert. |
 | `outlook/outlook_cert_pem` | **obscure** | Certificate PEM **contents** (cert + private key), encrypted at rest. Takes precedence over the secret when both are set. No file mount. |
 | `outlook/outlook_cert_password` | **obscure** | Optional passphrase for an encrypted PEM (leave unset if the PEM is unencrypted). |
-| `outlook/outlook_mailbox_user_id` | string | Mailbox UPN to poll — **per agent_view** (the mailbox identifies the target view). Set at the view's scope for multi-view; `default` works for a single-view deployment (resolved via fallback). |
+| `outlook/outlook_mailbox_user_id` | string | Mailbox UPN to poll — **per agent_view**. A UPN owned by exactly one view is **direct mode** (the mailbox identifies the view); a UPN **shared by ≥2 views** is **routed mode** (the message sender selects the view via `outlook_sender` bindings — see [routing](../architecture/routing.md)). Set at the view's scope for multi-view; `default` works for a single-view deployment (resolved via fallback). |
 | `outlook/allowed_senders` | string | **Comma-separated allow-list** of `From` addresses, resolved **per view**. Supports **glob wildcards** (`*@mycompany.com` matches any local part at that domain; `*` never crosses the `@`) and exact addresses. **Empty = block all.** |
 | `outlook/poll_top` | int | Delta **page size** per poll, resolved per view, clamped 1..50 (default `10`). The poll pages `@odata.nextLink` to the end, so this caps the per-page size, not the total fetched. |
 | `outlook/restrict_read_to_allowed_senders` | bool | **Default `true`.** When on, the agent read tools (`outlook_get_message` / `outlook_get_attachment`) only surface mail that passes the **same gate as the publisher** — sender on `allowed_senders` **and** a DMARC `pass` (the `From` header is forgeable; DMARC is the proof). Verdict undeterminable ⇒ not surfaced (fail-closed); empty `allowed_senders` ⇒ block all reads. Disabling it (`false`) lets the agent read **any** message in the mailbox, including spoofed / non-allow-listed / DMARC-failed mail — a documented **security risk**. (Reads are *additionally* bound to the triggering job's own message — see [Stateless activation & loop safety](#stateless-activation--loop-safety).) |
@@ -52,16 +67,24 @@ A DMARC pass is **always required** for allow-listed senders — it is not a con
 
 All per-view keys resolve with the standard 3-tier fallback **agent_view → workspace → default**, so a
 view normally inherits the global Azure app credentials and overrides only its `outlook_mailbox_user_id`
-(and, if it differs, `enabled`/`allowed_senders`). Two views resolving to the **same** mailbox UPN are
-deduped at poll time — the **lowest agent_view id wins** and a warning is logged.
+(and, if it differs, `enabled`). Two or more views resolving to the **same** mailbox UPN form a
+**routed-mode group**: the inbox is polled once (by the lowest-id member) and messages are routed to a
+view by sender (see the routing model above). Members of a shared mailbox **must** share identical
+`allowed_senders`/activation policy (a single poll admits with one config); a divergence is logged and
+the group is skipped until reconciled.
 
 The **per-agent_view publisher** reads only **non-secret** fields — `enabled`, `poll_top`, `allowed_senders`,
+`outlook_mailbox_user_id` (the mailbox UPN, resolved before polling to group views into direct/routed mode),
 and the activation/marker keys in [Stateless activation & loop safety](#stateless-activation--loop-safety) —
 via per-path config `.get()` (never `get_module()`), so the publisher itself never resolves the obscure Graph
 secret. The Graph credentials are consumed **toolbox-side** (that is where all Graph HTTP happens). Note the
-precise scope: the Graph secret is still a declared `obscure` field, and — as a **pre-existing** behavior
-outside this change's scope — the framework `bootstrap()` resolves DEFAULT/ENV-scope module config on the
-cron; the `OutlookConfig` dataclass drops the secret so it never reaches the job/registry. Loop suppression
+precise scope: the Graph secret is still a declared `obscure` field, and — as a **pre-existing**
+framework-wide behavior outside this change's scope — the framework `bootstrap()` **transiently
+decrypts** DEFAULT/ENV-scope obscure module config on the cron (and consumer, and CLI); the
+`OutlookConfig` dataclass drops the secret so it never reaches the job/registry, but the transient
+decrypt is real. This is a known limitation tracked by the
+[toolbox-only secret-boundary hardening PRD](../security/toolbox-only-secret-boundary.md) — the
+regex+priority routing change neither introduces nor worsens it. Loop suppression
 introduces **no new secret** — it is address-based and **auto-derived from the agent_views** (no
 hand-maintained list), so there is nothing extra to resolve or protect (see
 [Stateless activation & loop safety](#stateless-activation--loop-safety)).
@@ -121,9 +144,11 @@ with admin consent.
    DMARC policy — info log only, no breach, no alert, still no job. The verdict is parsed from the
    **first** `Authentication-Results` header (the one Exchange Online Protection prepends — lower
    headers are untrusted, anti-spoof).
-4. **Publish to the mailbox's agent_view** — the **mailbox identifies the agent_view**: the publisher
-   loop polls view X's mailbox and publishes those jobs directly to view X (no sender→view routing).
-   One job per message (idempotency `outlook:mail:<id>`), with the `From` stored in
+4. **Publish to the agent_view** — in **direct mode** (solo mailbox) the publisher publishes the
+   job to that mailbox's view. In **routed mode** (shared mailbox) the admitted sender is matched
+   against `outlook_sender` bindings and the job goes to the resolved target view (job scheduling
+   priority always comes from the **target** view, never the ingress binding priority). One job per
+   message either way (idempotency `outlook:mail:<id>`), with the `From` stored in
    `job.requester_email` and `requester_trust = domain`.
 
 ## Stateless activation & loop safety
@@ -211,8 +236,8 @@ Poll progress is tracked by a durable Graph **delta cursor**, not `isRead`. This
 bug where rejected/in-flight unread mail clogged a fixed `isRead eq false` window and starved valid mail
 behind it.
 
-- **State.** `outlook_poll_cursor` (one row per **normalized mailbox UPN** — the same key as the
-  `seen_mailboxes` dedupe) stores the full `@odata.deltaLink` URL Graph last returned. The publisher
+- **State.** `outlook_poll_cursor` (one row per **normalized mailbox UPN** — the same key the
+  publisher groups views by) stores the full `@odata.deltaLink` URL Graph last returned. The publisher
   loads all cursors once per run and passes them to the toolbox.
 - **Toolbox (`POST /api/outlook/delta`).** Resumes `mailFolders/Inbox/messages/delta` from the stored
   cursor, **paging `@odata.nextLink` to the end** (no fixed-window truncation), and returns
@@ -341,8 +366,11 @@ agento tool:enable outlook_mark_processed --agent-view <agent_view_code>
 agento setup:upgrade   # installs the outlook:publish crontab (polls every active view's mailbox every minute)
 ```
 
-(No `ingress:bind email` step — the mailbox identifies the agent_view. To run the loop for one view
-manually: `agento outlook:publish --agent-view <code>`.)
+(Direct mode — one view per mailbox — needs **no** ingress binding; the mailbox identifies the
+agent_view. **Routed mode** — a mailbox shared by ≥2 views — requires `outlook_sender` bindings:
+`agento ingress:bind outlook_sender '<regex>' <view> --priority <n>` per view; the message sender
+selects the target. The old `ingress:bind email` gate is unrelated and inert. To run the loop for
+one view/group manually: `agento outlook:publish --agent-view <code>`.)
 
 ### Verifying the acceptance criteria
 

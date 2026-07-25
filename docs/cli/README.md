@@ -40,7 +40,7 @@
 | `token:deregister <id>` | Disable token |
 | `token:usage` | Show token usage |
 | **Ingress** | |
-| `ingress:bind <type> <value> <agent_view>` | Bind inbound identity to agent_view |
+| `ingress:bind <type> <value> <agent_view> [--priority N]` | Bind inbound identity to agent_view. For regex identity types (e.g. `outlook_sender`), `<value>` is a case-insensitive `fullmatch` regex and `--priority` selects the winner (higher wins; ties between different views are ambiguous). |
 | `ingress:list [--type <type>] [--json]` | List all identity bindings |
 | `ingress:unbind <type> <value>` | Remove identity binding |
 | **Tools** | |

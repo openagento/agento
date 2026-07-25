@@ -2,10 +2,14 @@
 
 Maps inbound traffic (Teams, API, and other ingress-routed channels) to the right `agent_view` using a deterministic, module-extensible router chain.
 
-> **The Outlook channel does not use this.** Outlook routes by **mailbox → agent_view** (the mailbox
-> identifies the view — one mailbox per agent_view); `outlook/allowed_senders` + DMARC are its inbound
-> security gate, not routing. See [docs/modules/outlook.md](../modules/outlook.md). `ingress:bind email`
-> is inert for Outlook (harmless; removable with `ingress:unbind`).
+> **Outlook uses this in routed (shared-mailbox) mode.** A mailbox owned by exactly **one**
+> agent_view is **direct mode** — the mailbox identifies the view, no routing, no binding required
+> (`outlook/allowed_senders` + DMARC remain the inbound security gate). A mailbox **shared** by two
+> or more agent_views is **routed mode**: the inbox is polled once and each message is routed to a
+> view by matching the normalized sender against `outlook_sender` ingress bindings
+> (**regex, case-insensitive `fullmatch`, highest `priority` wins**; a tie between different views is
+> ambiguous → no job). See [docs/modules/outlook.md](../modules/outlook.md). The legacy
+> `ingress:bind email` type is inert for Outlook.
 
 ## How It Works
 
@@ -76,14 +80,23 @@ Register in `di.json`:
 
 ## Router Chain
 
-`resolve_agent_view(conn, context)` runs the chain:
+`resolve_agent_view(conn, context, *, fail_on_router_error=False)` runs the chain:
 
 1. Iterates all routers sorted by `(order, name)`
-2. Calls `resolve()` on each — exceptions are swallowed and logged
+2. Calls `resolve()` on each — a per-router exception is swallowed and logged by default; pass
+   `fail_on_router_error=True` to re-raise instead (so a caller can distinguish a transient
+   router/DB error from a deterministic no-match — the Outlook publisher uses this to hold the
+   cursor on a transient error but advance on a clean no-match)
 3. Collects all non-empty results
-4. First result's first candidate wins
-5. If multiple routers matched → `ambiguous=True` on the decision + `agento_routing_ambiguous` event
+4. First result's first candidate wins — a router returns its candidates in its own preference
+   order and `candidates[0]` wins; **multiple candidates alone do NOT imply ambiguity** (a ranked
+   router may legitimately return several)
+5. The decision is `ambiguous=True` when **more than one router matched OR the winning router
+   flagged a genuine tie** (`RoutingResult.ambiguous=True`) → `agento_routing_ambiguous` event
 6. If no router matched → returns `None` + `agento_routing_failed` event
+
+Router log statements redact the `identity_value`: an email-shaped value (`@`) is logged
+domain-only plus a short sha256 prefix; any other value passes through unchanged.
 
 ```python
 from agento.framework.router import resolve_agent_view, RoutingContext
@@ -103,6 +116,26 @@ The core module ships an `IdentityRouter` (order=100) that looks up the `ingress
 - Returns `None` for unknown or inactive identities
 - Confidence is always 1.0 (deterministic binding)
 
+**Exact vs regex identity types.** Most types match **exactly** (the unique `(type, value)` row).
+A module can declare a type as **regex-matched** via the generic `di.json` capability
+`regex_identity_types` (an array of type names matching `^[a-z][a-z0-9_]{0,31}$`, populated into a
+framework registry at bootstrap; the framework hardcodes no channel string). For a regex type, each
+active binding's `identity_value` is a **case-insensitive `fullmatch`** pattern; the highest
+`priority` wins, and a tie between **different** agent_views sets `RoutingResult.ambiguous=True`
+(no job). The reason string carries `binding_ids`/`priority`/`agent_view_id` only — never the raw
+pattern (which post-normalization may be PII). The Outlook module contributes `outlook_sender`.
+
+> **Regex dialect + ReDoS bound.** Matching uses the [`regex`](https://pypi.org/project/regex/)
+> engine pinned to the **`regex.VERSION0`** dialect — used identically by the `ingress:bind`
+> validator and the runtime matcher so a pattern accepted at bind time behaves the same at match
+> time. Because admin-authored patterns are matched against attacker-influenced senders, matching is
+> bounded by a **dual wall-clock budget** — a per-pattern limit (~0.1s) AND a total per-lookup
+> deadline (~0.5s) via the engine's in-process `timeout` — the only reliable in-process bound on
+> catastrophic backtracking. A timed-out or invalid pattern is skipped (rate-limited WARN by binding
+> id, never the raw pattern) and, once the total budget is spent, remaining bindings fail closed
+> (no match). The decision stays deterministic, so cursor discipline is unaffected. See
+> [DECISIONS.md](../../DECISIONS.md).
+
 > **`ingress_identity` vs `requester_*` — distinct concerns.** `ingress_identity` is routing
 > input: it maps an inbound identity to an `agent_view_id`. The `requester_*` columns on the
 > `job` row (`requester_key`/`requester_email`/`requester_trust`/`requester_meta`) are a
@@ -113,15 +146,19 @@ The core module ships an `IdentityRouter` (order=100) that looks up the `ingress
 ### CLI Commands
 
 ```bash
-# Bind an identity to an agent_view
-bin/agento ingress:bind email user@example.com default
+# Bind an identity to an agent_view (exact type)
+bin/agento ingress:bind jira jira developer
 
-# List all bindings
+# Bind a regex sender pattern for a shared Outlook mailbox (routed mode); higher priority wins
+bin/agento ingress:bind outlook_sender '[^@]+@company\.com' sales --priority 10
+bin/agento ingress:bind outlook_sender 'vip@company\.com' vip --priority 50
+
+# List all bindings (shows priority)
 bin/agento ingress:list
-bin/agento ingress:list --type email --json
+bin/agento ingress:list --type outlook_sender --json
 
 # Remove a binding
-bin/agento ingress:unbind email user@example.com
+bin/agento ingress:unbind outlook_sender '[^@]+@company\.com'
 ```
 
 ## Routing Events
