@@ -2,7 +2,9 @@ from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
-from agento.modules.outlook.src.channel import OutlookAdmission
+import pytest
+
+from agento.modules.outlook.src.channel import OutlookAdmission, _matches_allowed
 from agento.modules.outlook.src.commands.publish import publish_all_views
 
 P = "agento.modules.outlook.src.commands.publish"
@@ -13,10 +15,11 @@ def _views(*specs):
     return [SimpleNamespace(id=i, code=c) for (i, c) in specs]
 
 
-def _cfg(enabled=True, poll_top=10, allowed="sklep@x.com", mailbox=None):
+def _cfg(enabled=True, poll_top=10, allowed="sklep@x.com", mailbox=None, **extra):
     # Raw per-path strings, as ScopedConfigService.get() returns them (the publisher now reads
     # non-secret outlook config per path, never via get_module). The mailbox UPN groups views
     # BEFORE polling: a UPN owned by one view = direct mode, shared by >=2 = routed mode.
+    # `**extra` maps to extra outlook/<key> paths (e.g. summon_token=...) for activation-divergence.
     d = {
         "outlook/enabled": "1" if enabled else "0",
         "outlook/poll_top": str(poll_top),
@@ -24,7 +27,25 @@ def _cfg(enabled=True, poll_top=10, allowed="sklep@x.com", mailbox=None):
     }
     if mailbox is not None:
         d["outlook/outlook_mailbox_user_id"] = mailbox
+    for k, v in extra.items():
+        d[f"outlook/{k}"] = v
     return d
+
+
+def _admit_union(message_id, *, sender_email=None, allowed_senders=None, dmarc=None, **kw):
+    """Stand-in for admit_mail that actually EXERCISES the union pre-filter: admit only if the sender
+    matches the passed allow-list (the union in routed mode) AND DMARC passes."""
+    s = (sender_email or "").strip().lower()
+    if not _matches_allowed(s, allowed_senders):
+        return None
+    if (dmarc or "").lower() != "pass":
+        return None
+    return OutlookAdmission(sender=s)
+
+
+def _real_sender_allowed(sender, allowed_senders):
+    """Real matcher for pub.sender_allowed (the post-route per-view refinement)."""
+    return _matches_allowed((sender or "").strip().lower(), allowed_senders)
 
 
 class _FakeScoped:
@@ -485,6 +506,14 @@ def test_mailbox_mismatch_holds_cursor(MockClient, MockPub, mock_gaav, mock_prio
     assert any("mismatch" in str(c).lower() for c in logger.warning.call_args_list)
 
 
+@pytest.mark.parametrize("field,val_a,val_b", [
+    ("activation_modes", "direct", "direct,mention"),
+    ("summon_token", "@agento", "@bot"),
+    ("direct_requires_sole_recipient", "1", "0"),
+    ("mailbox_aliases", "", "team@x.com"),
+    ("allow_bot_collaboration", "0", "1"),
+])
+@patch(f"{P}.get_event_manager")
 @patch(f"{P}.save_cursor")
 @patch(f"{P}.load_cursors", return_value={})
 @patch(f"{P}.get_active_identities_for_type", return_value=[object()])
@@ -494,15 +523,17 @@ def test_mailbox_mismatch_holds_cursor(MockClient, MockPub, mock_gaav, mock_prio
 @patch(f"{P}.get_active_agent_views")
 @patch(f"{P}.OutlookPublisher")
 @patch(f"{P}.OutlookToolboxClient")
-def test_routed_group_with_divergent_policy_is_skipped_not_polled(
-    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save,
+def test_divergent_activation_field_still_stalls_and_dispatches_policy_divergence(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save, mock_em,
+    field, val_a, val_b,
 ):
-    # Members of a shared (routed) mailbox MUST agree on the admit_mail policy fields; a divergence
-    # (here allowed_senders) skips the group WITHOUT polling (a config error, never a hold-forever).
+    # IDENTICAL allowed_senders but a DIFFERENT mailbox-level activation field -> still a divergence
+    # for EVERY one of the five _MAILBOX_POLICY_FIELDS (allowed_senders is NOT in that set): group NOT
+    # polled, policy_divergence dispatched.
     mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
     client, pub = _patch_env(
-        {1: _cfg(mailbox="shared@x.com", allowed="a@x.com"),
-         2: _cfg(mailbox="shared@x.com", allowed="b@x.com")},  # divergent allowed_senders
+        {1: _cfg(mailbox="shared@x.com", **{field: val_a}),
+         2: _cfg(mailbox="shared@x.com", **{field: val_b})},
         lambda top, *, agent_view_id, cursors: {"mailbox": "shared@x.com", "deltaLink": "L", "messages": []},
     )
     MockClient.return_value = client
@@ -516,6 +547,8 @@ def test_routed_group_with_divergent_policy_is_skipped_not_polled(
     mock_save.assert_not_called()
     mock_resolve.assert_not_called()
     assert any("divergent" in str(c).lower() for c in logger.error.call_args_list)
+    evt = _one_stall_event(mock_em)
+    assert evt.reason == "policy_divergence" and evt.mailbox == "shared@x.com"
 
 
 @patch(f"{P}.save_cursor")
@@ -705,30 +738,40 @@ def _one_stall_event(mock_em):
 @patch(f"{P}.save_cursor")
 @patch(f"{P}.load_cursors", return_value={})
 @patch(f"{P}.get_active_identities_for_type", return_value=[object()])
-@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50)
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
 @patch(f"{P}.resolve_agent_view")
 @patch(f"{P}.ScopedConfigService", _FakeScoped)
 @patch(f"{P}.get_active_agent_views")
 @patch(f"{P}.OutlookPublisher")
 @patch(f"{P}.OutlookToolboxClient")
-def test_divergent_policy_dispatches_mailbox_stall_event(
+def test_divergent_allowed_senders_does_not_stall(
     MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save, mock_em,
 ):
+    # allowed_senders is now PER-VIEW: two members with DIFFERENT allow-lists must NOT stall the
+    # group (no policy_divergence) — the group is polled and mail is published normally.
     mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    shared = {"mailbox": "shared@x.com", "deltaLink": "L", "messages": [
+        {"id": "s1", "from": {"address": "a@dev.com"}, "dmarc": "pass"}]}
     client, pub = _patch_env(
-        {1: _cfg(mailbox="shared@x.com", allowed="a@x.com"),
-         2: _cfg(mailbox="shared@x.com", allowed="b@x.com")},  # divergent allowed_senders
-        lambda top, *, agent_view_id, cursors: {"mailbox": "shared@x.com", "deltaLink": "L", "messages": []},
+        {1: _cfg(mailbox="shared@x.com", allowed="*@dev.com"),
+         2: _cfg(mailbox="shared@x.com", allowed="*@ops.com")},  # divergent allowed_senders — OK now
+        lambda top, *, agent_view_id, cursors: shared,
     )
+    pub.admit_mail.side_effect = _admit_union
+    pub.sender_allowed.side_effect = _real_sender_allowed
+    pub.publish_admitted_mail.return_value = True
+    mock_resolve.side_effect = lambda conn, ctx, **kw: _decision(1)  # a@dev.com -> dev (id 1)
     MockClient.return_value = client
     MockPub.return_value = pub
 
-    publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+    count = publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
 
-    evt = _one_stall_event(mock_em)
-    assert evt.channel == "outlook"
-    assert evt.mailbox == "shared@x.com"
-    assert evt.reason == "policy_divergence"
+    assert count == 1  # polled + published, no stall
+    assert client.list_delta.call_count == 1
+    assert not any(
+        c.args and c.args[0] == "mailbox_stall_after" and c.args[1].reason == "policy_divergence"
+        for c in mock_em.return_value.dispatch.call_args_list
+    )
 
 
 @patch(f"{P}.get_event_manager")
@@ -785,3 +828,325 @@ def test_zero_bindings_dispatches_mailbox_stall_event(
     assert evt.channel == "outlook"
     assert evt.mailbox == "shared@x.com"
     assert evt.reason == "no_bindings"
+
+
+# --- Route-first per-view authorization: union pre-filter + post-route refinement ---------------
+
+
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.get_active_identities_for_type", return_value=[object()])
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
+@patch(f"{P}.resolve_agent_view")
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_routed_admit_receives_exact_sorted_union(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save,
+):
+    # admit_mail is called with the exact de-duped, sorted UNION of every member's allow-list.
+    mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    shared = {"mailbox": "shared@x.com", "deltaLink": "L", "messages": [
+        {"id": "s1", "from": {"address": "a@dev.com"}, "dmarc": "pass"}]}
+    client, pub = _patch_env(
+        {1: _cfg(mailbox="shared@x.com", allowed="*@dev.com"),
+         2: _cfg(mailbox="shared@x.com", allowed="b@ops.com,*@ops.com")},
+        lambda top, *, agent_view_id, cursors: shared,
+    )
+    seen = []
+
+    def _admit(mid, **kw):
+        seen.append(kw["allowed_senders"])
+        return _admit_union(mid, **kw)
+
+    pub.admit_mail.side_effect = _admit
+    pub.sender_allowed.side_effect = _real_sender_allowed
+    pub.publish_admitted_mail.return_value = True
+    mock_resolve.side_effect = lambda conn, ctx, **kw: _decision(1)
+    MockClient.return_value = client
+    MockPub.return_value = pub
+
+    publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    assert seen and all(a == ["*@dev.com", "*@ops.com", "b@ops.com"] for a in seen)
+
+
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.get_active_identities_for_type", return_value=[object()])
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
+@patch(f"{P}.resolve_agent_view")
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_shared_mailbox_with_divergent_allowlists_does_not_stall_and_routes_per_view(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save,
+):
+    # dev trusts *@dev.com, ops trusts *@ops.com; each sender lands on its own view.
+    mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    shared = {"mailbox": "shared@x.com", "deltaLink": "L", "messages": [
+        {"id": "s1", "from": {"address": "a@dev.com"}, "dmarc": "pass"},
+        {"id": "s2", "from": {"address": "b@ops.com"}, "dmarc": "pass"},
+    ]}
+    client, pub = _patch_env(
+        {1: _cfg(mailbox="shared@x.com", allowed="*@dev.com"),
+         2: _cfg(mailbox="shared@x.com", allowed="*@ops.com")},
+        lambda top, *, agent_view_id, cursors: shared,
+    )
+    pub.admit_mail.side_effect = _admit_union
+    pub.sender_allowed.side_effect = _real_sender_allowed
+    pub.publish_admitted_mail.return_value = True
+    route = {"a@dev.com": 1, "b@ops.com": 2}
+    mock_resolve.side_effect = lambda conn, ctx, **kw: _decision(route[ctx.identity_value])
+    MockClient.return_value = client
+    MockPub.return_value = pub
+
+    count = publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    assert count == 2
+    assert client.list_delta.call_count == 1
+    routed = {c.args[1]: c.kwargs["agent_view_id"] for c in pub.publish_admitted_mail.call_args_list}
+    assert routed == {"s1": 1, "s2": 2}
+    assert mock_save.called
+
+
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.get_active_identities_for_type", return_value=[object()])
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
+@patch(f"{P}.resolve_agent_view")
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_sender_outside_union_is_dropped_before_routing(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save,
+):
+    # A sender in NO member's allow-list is rejected by the union pre-filter BEFORE any routing work.
+    mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    shared = {"mailbox": "shared@x.com", "deltaLink": "L", "messages": [
+        {"id": "s1", "from": {"address": "stranger@evil.com"}, "dmarc": "pass"}]}
+    client, pub = _patch_env(
+        {1: _cfg(mailbox="shared@x.com", allowed="*@dev.com"),
+         2: _cfg(mailbox="shared@x.com", allowed="*@ops.com")},
+        lambda top, *, agent_view_id, cursors: shared,
+    )
+    pub.admit_mail.side_effect = _admit_union
+    MockClient.return_value = client
+    MockPub.return_value = pub
+
+    count = publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    assert count == 0
+    assert mock_resolve.call_count == 0  # union pre-filter short-circuits before routing
+    pub.publish_admitted_mail.assert_not_called()
+    assert mock_save.called  # deterministic drop advances the cursor
+
+
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.get_active_identities_for_type", return_value=[object()])
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
+@patch(f"{P}.resolve_agent_view")
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_post_route_refinement_drops_when_target_view_allowlist_rejects(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save,
+):
+    # d@dev.com passes the UNION (dev trusts it) but its binding routes it to OPS, whose own list
+    # rejects it -> deterministic drop (no job), cursor advances, no hold.
+    mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    shared = {"mailbox": "shared@x.com", "deltaLink": "L", "messages": [
+        {"id": "s1", "from": {"address": "d@dev.com"}, "dmarc": "pass"}]}
+    client, pub = _patch_env(
+        {1: _cfg(mailbox="shared@x.com", allowed="*@dev.com"),
+         2: _cfg(mailbox="shared@x.com", allowed="*@ops.com")},
+        lambda top, *, agent_view_id, cursors: shared,
+    )
+    pub.admit_mail.side_effect = _admit_union
+    pub.sender_allowed.side_effect = _real_sender_allowed
+    pub.publish_admitted_mail.return_value = True
+    mock_resolve.side_effect = lambda conn, ctx, **kw: _decision(2)  # routes to ops
+    MockClient.return_value = client
+    MockPub.return_value = pub
+
+    count = publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    assert count == 0
+    pub.publish_admitted_mail.assert_not_called()
+    assert mock_save.called  # advances (deterministic drop, no hold)
+
+
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.get_active_identities_for_type", return_value=[object()])
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
+@patch(f"{P}.resolve_agent_view")
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_union_empty_across_group_drops_everyone_fail_closed(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save,
+):
+    # Every member's allowed_senders empty -> union == [] -> the real matcher rejects all -> no jobs.
+    mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    shared = {"mailbox": "shared@x.com", "deltaLink": "L", "messages": [
+        {"id": "s1", "from": {"address": "a@dev.com"}, "dmarc": "pass"}]}
+    client, pub = _patch_env(
+        {1: _cfg(mailbox="shared@x.com", allowed=""),
+         2: _cfg(mailbox="shared@x.com", allowed="")},
+        lambda top, *, agent_view_id, cursors: shared,
+    )
+    pub.admit_mail.side_effect = _admit_union
+    MockClient.return_value = client
+    MockPub.return_value = pub
+
+    count = publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    assert count == 0
+    assert mock_resolve.call_count == 0
+    assert mock_save.called
+
+
+# --- Observability: per-poll drop summary event + log, effective-policy startup log ------------
+
+
+def _drop_scenario_env():
+    """Two messages in one routed poll: one unroutable (no binding) + one per-view-allowlist reject."""
+    shared = {"mailbox": "shared@x.com", "deltaLink": "L", "messages": [
+        {"id": "u1", "from": {"address": "nobody@dev.com"}, "dmarc": "pass"},  # admitted, route None
+        {"id": "p1", "from": {"address": "e@dev.com"}, "dmarc": "pass"},       # admitted, ops rejects
+    ]}
+    client, pub = _patch_env(
+        {1: _cfg(mailbox="shared@x.com", allowed="*@dev.com"),
+         2: _cfg(mailbox="shared@x.com", allowed="*@ops.com")},
+        lambda top, *, agent_view_id, cursors: shared,
+    )
+    pub.admit_mail.side_effect = _admit_union
+    pub.sender_allowed.side_effect = _real_sender_allowed
+    pub.publish_admitted_mail.return_value = True
+    return client, pub
+
+
+def _drop_route(conn, ctx, **kw):
+    return None if ctx.identity_value == "nobody@dev.com" else _decision(2)  # p1 -> ops (rejected)
+
+
+@patch(f"{P}.get_event_manager")
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.get_active_identities_for_type", return_value=[object()])
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
+@patch(f"{P}.resolve_agent_view", side_effect=_drop_route)
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_routed_drops_dispatch_summary_event_once_per_poll(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save, mock_em,
+):
+    mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    client, pub = _drop_scenario_env()
+    MockClient.return_value = client
+    MockPub.return_value = pub
+
+    publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    drop = [c.args[1] for c in mock_em.return_value.dispatch.call_args_list
+            if c.args and c.args[0] == "inbound_route_drop_after"]
+    assert len(drop) == 1
+    assert drop[0].channel == "outlook"
+    assert drop[0].mailbox == "shared@x.com"
+    assert drop[0].unroutable == 1
+    assert drop[0].per_view_allowlist == 1
+    assert drop[0].ambiguous == 0
+
+
+@patch(f"{P}.get_event_manager")
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.get_active_identities_for_type", return_value=[object()])
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
+@patch(f"{P}.resolve_agent_view")
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_no_drop_event_when_all_routed_cleanly(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save, mock_em,
+):
+    mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    shared = {"mailbox": "shared@x.com", "deltaLink": "L", "messages": [
+        {"id": "s1", "from": {"address": "a@dev.com"}, "dmarc": "pass"}]}
+    client, pub = _patch_env(
+        {1: _cfg(mailbox="shared@x.com", allowed="*@dev.com"),
+         2: _cfg(mailbox="shared@x.com", allowed="*@ops.com")},
+        lambda top, *, agent_view_id, cursors: shared,
+    )
+    pub.admit_mail.side_effect = _admit_union
+    pub.sender_allowed.side_effect = _real_sender_allowed
+    pub.publish_admitted_mail.return_value = True
+    mock_resolve.side_effect = lambda conn, ctx, **kw: _decision(1)
+    MockClient.return_value = client
+    MockPub.return_value = pub
+
+    publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    assert not any(c.args and c.args[0] == "inbound_route_drop_after"
+                   for c in mock_em.return_value.dispatch.call_args_list)
+
+
+@patch(f"{P}.get_event_manager")
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.get_active_identities_for_type", return_value=[object()])
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
+@patch(f"{P}.resolve_agent_view", side_effect=_drop_route)
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_routed_poll_emits_drop_summary_log(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save, mock_em,
+):
+    mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    client, pub = _drop_scenario_env()
+    MockClient.return_value = client
+    MockPub.return_value = pub
+    logger = MagicMock()
+
+    publish_all_views(object(), MagicMock(), "http://tb:3001", logger)
+
+    assert any("routed-poll drop summary" in str(c).lower() for c in logger.info.call_args_list)
+
+
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_publisher_logs_effective_policy_per_view_at_start(
+    MockClient, MockPub, mock_gaav, mock_prio, mock_load, mock_save,
+):
+    # One effective-policy info line per enabled view (count only — never the raw patterns).
+    mock_gaav.return_value = _views((1, "dev"))
+    resp = {"mailbox": "dev@x.com", "deltaLink": "L", "messages": []}
+    client, pub = _patch_env({1: _cfg(mailbox="dev@x.com", allowed="*@dev.com")},
+                             lambda top, *, agent_view_id, cursors: resp)
+    MockClient.return_value = client
+    MockPub.return_value = pub
+    logger = MagicMock()
+
+    publish_all_views(object(), MagicMock(), "http://tb:3001", logger)
+
+    recs = [c for c in logger.info.call_args_list if "effective outlook policy" in str(c).lower()]
+    assert recs
+    # count only — a raw allow-list pattern (e.g. "*@dev.com") must never appear in the log call
+    assert not any("*@dev.com" in str(c) for c in recs)

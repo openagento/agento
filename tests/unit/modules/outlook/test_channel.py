@@ -478,3 +478,44 @@ def test_publish_mail_returns_false_when_admission_rejected():
                                 dmarc="pass", allowed_senders=WHITELIST, logger=MagicMock())
     assert result is False
     mock_publish.assert_not_called()
+
+
+# ---- sender_allowed: public fail-closed matcher for the post-route per-view refinement ----
+
+
+def test_sender_allowed_is_public_fail_closed_glob_matcher():
+    pub = OutlookPublisher()
+    # match (normalized, case-insensitive, glob)
+    assert pub.sender_allowed("  Alice@Partner.com ", ["*@partner.com"]) is True
+    assert pub.sender_allowed("bob@partner.com", ["bob@partner.com"]) is True
+    # glob never crosses the @
+    assert pub.sender_allowed("evil@sub.partner.com", ["*@partner.com"]) is False
+    # fail-closed: empty / None / no-match
+    assert pub.sender_allowed("bob@partner.com", []) is False
+    assert pub.sender_allowed("bob@partner.com", None) is False
+    assert pub.sender_allowed("stranger@example.com", ["*@partner.com"]) is False
+
+
+# ---- DMARC breach alert scoped to union-trusted senders (routed shared-mailbox admission) ----
+
+
+def test_breach_alert_scoped_to_union_trusted_senders():
+    # A DMARC-fail sender IN the (union) allow-list is a probable spoof: SECURITY_BREACH log + event.
+    # The SAME sender with a union that does NOT contain it is dropped at the allow-list stage first:
+    # no breach log, no event (this is what keeps the alert scoped to union-trusted senders).
+    p = OutlookPublisher()
+
+    log_in = MagicMock()
+    with patch("agento.modules.outlook.src.channel.get_event_manager") as em_in:
+        assert p.admit_mail("m1", sender_email="a@dev.com", dmarc="fail",
+                            allowed_senders=["*@dev.com"], logger=log_in) is None
+    log_in.error.assert_called_once()
+    assert "SECURITY_BREACH" in log_in.error.call_args.args[0]
+    assert em_in.return_value.dispatch.call_args.args[0] == "security_breach_after"
+
+    log_out = MagicMock()
+    with patch("agento.modules.outlook.src.channel.get_event_manager") as em_out:
+        assert p.admit_mail("m2", sender_email="a@dev.com", dmarc="fail",
+                            allowed_senders=["*@ops.com"], logger=log_out) is None
+    log_out.error.assert_not_called()
+    em_out.return_value.dispatch.assert_not_called()

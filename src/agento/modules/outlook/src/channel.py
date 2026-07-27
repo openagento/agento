@@ -152,6 +152,11 @@ class OutlookPublisher:
     def build_idempotency_key(self, message_id: str) -> str:
         return f"outlook:mail:{message_id}"
 
+    def sender_allowed(self, sender: str, allowed_senders: list[str] | None) -> bool:
+        """Public fail-closed allow-list check (admit_mail's allow-list semantics) for the post-route
+        per-view refinement. Empty/None ⇒ False."""
+        return _matches_allowed((sender or "").strip().lower(), allowed_senders)
+
     def admit_mail(
         self, message_id: str, *, sender_email: str | None = None,
         dmarc: str | None = None, allowed_senders: list[str] | None = None,

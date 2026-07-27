@@ -13,8 +13,13 @@ manifests.
 > inbox is polled **once** (by the lowest-id member) and each message is routed to a view by matching
 > the normalized `From` against `outlook_sender` ingress bindings — **regex, case-insensitive
 > `fullmatch`, highest `priority` wins**; a tie between **different** views is ambiguous → no job.
-> `outlook/allowed_senders` + DMARC remain the inbound **security** gate in both modes (routing runs
-> only after a message is admitted). The legacy `ingress:bind email` type is inert for Outlook.
+> `outlook/allowed_senders` + DMARC remain the inbound **security** gate in both modes. In **direct**
+> mode a message is gated by the view's own `allowed_senders` + DMARC. In **routed** mode the gate is
+> split around routing (actual execution order): **union-of-per-view-`allowed_senders` pre-filter →
+> DMARC (global) → mailbox-level activation** (all pre-route) **→ route by `outlook_sender` binding →
+> per-view `allowed_senders` refinement against the routed-to view → publish**. So members may hold
+> **different** `allowed_senders` (each persona's own safety-net); the SECURITY_BREACH alert stays
+> scoped to union-trusted senders. The legacy `ingress:bind email` type is inert for Outlook.
 >
 > Worked example — shared mailbox `agents@company.com` used by views `sales`, `support`, `vip`:
 >
@@ -69,9 +74,14 @@ All per-view keys resolve with the standard 3-tier fallback **agent_view → wor
 view normally inherits the global Azure app credentials and overrides only its `outlook_mailbox_user_id`
 (and, if it differs, `enabled`). Two or more views resolving to the **same** mailbox UPN form a
 **routed-mode group**: the inbox is polled once (by the lowest-id member) and messages are routed to a
-view by sender (see the routing model above). Members of a shared mailbox **must** share identical
-`allowed_senders`/activation policy (a single poll admits with one config); a divergence is logged and
-the group is skipped until reconciled.
+view by sender (see the routing model above). Members of a shared mailbox may hold **different**
+`allowed_senders` — each persona's own per-view safety-net, evaluated after routing (the auto-derived
+**union** admits any member-trusted sender pre-route; the routed-to view's own list refines
+post-route). The **activation** fields (`activation_modes`, `summon_token`,
+`direct_requires_sole_recipient`, `mailbox_aliases`, `allow_bot_collaboration`) **must** still be
+identical across members — activation runs once with the poll-owner's config, so a divergence there is
+logged (`policy_divergence`) and the group is skipped until reconciled. See
+[Shared mailbox — per-view inbound policy](#shared-mailbox--per-view-inbound-policy-route-first-authorization).
 
 The **per-agent_view publisher** reads only **non-secret** fields — `enabled`, `poll_top`, `allowed_senders`,
 `outlook_mailbox_user_id` (the mailbox UPN, resolved before polling to group views into direct/routed mode),
@@ -145,11 +155,66 @@ with admin consent.
    **first** `Authentication-Results` header (the one Exchange Online Protection prepends — lower
    headers are untrusted, anti-spoof).
 4. **Publish to the agent_view** — in **direct mode** (solo mailbox) the publisher publishes the
-   job to that mailbox's view. In **routed mode** (shared mailbox) the admitted sender is matched
-   against `outlook_sender` bindings and the job goes to the resolved target view (job scheduling
-   priority always comes from the **target** view, never the ingress binding priority). One job per
-   message either way (idempotency `outlook:mail:<id>`), with the `From` stored in
-   `job.requester_email` and `requester_trust = domain`.
+   job to that mailbox's view. In **routed mode** (shared mailbox) the sender is matched against
+   `outlook_sender` bindings and, after a **per-view allow-list refinement** against the routed-to
+   view, the job goes to the resolved target view (job scheduling priority always comes from the
+   **target** view, never the ingress binding priority). One job per message either way (idempotency
+   `outlook:mail:<id>`), with the `From` stored in `job.requester_email` and `requester_trust = domain`.
+
+The order above is the **direct-mode** gate. In **routed mode** step 2's allow-list is the auto-derived
+**union** of the group's per-view lists (a cheap pre-route pre-filter) and a second per-view refinement
+runs *after* routing — see the next section.
+
+## Shared mailbox — per-view inbound policy (route-first authorization)
+
+On a mailbox shared by ≥2 views (routed mode), the allow-list half of the gate is **per-view**, decided
+around routing. The full routed-mode order (activation runs *inside* admission, i.e. pre-route):
+
+1. **Union pre-filter (pre-route, in-memory).** Reject senders not in the auto-derived **union** of the
+   group's per-view `allowed_senders` — cheapest-first, before any routing DB/regex work, and it scopes
+   the SECURITY_BREACH alert to union-trusted senders. Computed per poll; no manual union to maintain.
+2. **DMARC (global, pre-route).** Unchanged and never per-view — a hard `pass` is always required.
+3. **Mailbox-level activation (pre-route).** `activation.decide(...)` runs once with the poll-owner's
+   config. Because it is mailbox-level, the five activation fields (`activation_modes`, `summon_token`,
+   `direct_requires_sole_recipient`, `mailbox_aliases`, `allow_bot_collaboration`) **must be identical**
+   across the group's members — a divergence stalls the group (`policy_divergence`
+   `MailboxStalledEvent`) until reconciled. `allowed_senders` is **exempt** from that stall (it is
+   per-view).
+4. **Route** by `outlook_sender` binding (regex, priority; equal-top to different views ⇒ ambiguous ⇒
+   drop). Convention: give the **more specific** binding the **higher** priority (least-privilege).
+5. **Per-view `allowed_senders` refinement (post-route, fail-closed).** Re-check the sender against the
+   **routed-to** view's own `allowed_senders`, resolved through the standard agent_view → workspace →
+   default chain — so a view with no explicit row **inherits the default** (it does *not* silently
+   black-hole). A sender admitted via the union but not in the routed-to view's list is dropped
+   (cursor advances, no job).
+6. **Publish** to the target view.
+
+**Observability.** Post-route drops (unroutable / ambiguous / per-view-allow-list) are surfaced once per
+poll as an `inbound_route_drop_after` event **and** an "Outlook routed-poll drop summary" log line
+(per-reason counts); the publisher also logs one "Effective outlook policy" line per view at start
+(agent_view, mailbox, mode, allowed-senders **count** — never the raw patterns; use
+`agento config:resolve outlook --scope agent_view --scope-id <id>` for the resolved values). These drops
+are normal traffic, so no alerting observer is wired (unlike the `policy_divergence`/`no_bindings`
+misconfiguration alerts).
+
+**Weakest-reachable-persona.** An attacker picks the persona by choosing the `From` sender. Activation is
+uniform by construction (the five activation fields are kept identical by the divergence guard), so there
+is no weakest *activation* persona; the residual is only that a co-tenant with an over-broad
+`allowed_senders` widens who can reach *that* persona — keep each persona's list least-privilege.
+
+**Operator migration (config before code).** (1) Inventory every multi-view UPN and each view's
+effective scope-resolved policy; confirm the five activation fields already agree (they were required
+identical before, so no change). (2) Ensure unambiguous `outlook_sender` bindings cover each group's
+historical sender set; resolve equal-top-priority/different-view ties (they become drops). (3) Seed
+per-view `allowed_senders` — start by copying the current default union to every view scope
+(`agento config:set outlook/allowed_senders '<union>' --scope agent_view --scope-id <id>`) = no behavior
+change, then narrow per persona. (4) Deploy in a low-mail window and watch the first poll — a group
+previously stalled on divergent `allowed_senders` un-stalls and runs its never-exercised per-view config
+on a backlog burst. (5) Keep the default union as the rollback path until soak proves per-view.
+
+The toolbox read gate `restrict_read_to_allowed_senders` already re-checks the *target* view's
+`allowed_senders` at read time, so the publish-time refinement and the read-time gate are consistent by
+construction (same view, same matcher).
 
 ## Stateless activation & loop safety
 

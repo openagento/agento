@@ -6,7 +6,14 @@
   "outlook_cert_pem": {"type": "obscure", "label": "Azure app certificate PEM contents (cert + private key; alternative to client secret)"},
   "outlook_cert_password": {"type": "obscure", "label": "Passphrase for the certificate PEM (leave empty if unencrypted)"},
   "outlook_mailbox_user_id": {"type": "string", "label": "Mailbox UPN to monitor (e.g. agent@example.com)"},
-  "allowed_senders": {"type": "string", "label": "Allowed senders (comma-separated; supports glob wildcards e.g. *@mycompany.com; empty blocks all)"},
+  "allowed_senders": {
+    "type": "string",
+    "label": "Allowed senders (comma-separated; supports glob wildcards e.g. *@mycompany.com; empty blocks all)",
+    "description": "On a shared mailbox each persona's list participates BOTH in the pre-route union pre-filter AND in the post-route per-view refinement against the routed-to view. Members of a shared mailbox may hold different allowed_senders (they no longer stall the group).",
+    "showInDefault": true,
+    "showInWorkspace": true,
+    "showInAgentView": true
+  },
   "poll_top": {"type": "integer", "label": "Delta page size per poll (<=50; the poll pages to the end, so this caps per-page size, not the total)"},
   "restrict_read_to_allowed_senders": {"type": "boolean", "label": "Prevent MCP tool from reading messages from untrusted senders", "description": "When enabled (recommended), the read tools (outlook_get_message / outlook_get_attachment) only surface mail that passes the same gate as the publisher: sender on allowed_senders AND a DMARC pass (fail-closed). Warning: disabling may lead to security risk! (the agent could read any message in the mailbox, including spoofed / non-allow-listed / DMARC-failed mail)"},
   "activation_modes": {

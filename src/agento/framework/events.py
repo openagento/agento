@@ -356,14 +356,33 @@ class MailboxStalledEvent:
     MISCONFIGURATION (not a transient fault), so no mail from that mailbox is delivered until an
     operator reconciles it. Observers (e.g. app_monitor's ``MailboxStalledAlertObserver``) may
     alert ops; dispatch is fail-closed regardless. ``reason`` is one of ``policy_divergence``
-    (shared members disagree on admit policy — group not polled), ``no_bindings`` (routed mode with
-    zero active bindings — mail dropped), or ``upn_mismatch`` (configured UPN != resolved mailbox —
-    poll held)."""
+    (shared members disagree on mailbox-level activation policy — ``activation_modes`` /
+    ``summon_token`` / ``direct_requires_sole_recipient`` / ``mailbox_aliases`` /
+    ``allow_bot_collaboration``; ``allowed_senders`` is per-view and does NOT stall — group not
+    polled), ``no_bindings`` (routed mode with zero active bindings — mail dropped), or
+    ``upn_mismatch`` (configured UPN != resolved mailbox — poll held)."""
 
     channel: str
     mailbox: str
     reason: str
     detail: str | None = None
+
+
+@dataclass
+class InboundRouteDropEvent:
+    """Per-poll summary of shared-mailbox messages dropped AFTER admission (admitted through the union
+    allow-list, DMARC, AND mailbox-level activation, then dropped downstream by routing/per-view
+    refinement). ``channel`` parameterizes it (like MailboxStalledEvent) so it stays
+    framework-generic. Counts are per unique sender per poll. Purely observational — NOT a
+    misconfiguration alert; no alerting observer is wired by default (drops are normal traffic).
+    Dispatched under ``inbound_route_drop_after`` only when a drop occurred, so it never floods on
+    clean polls."""
+
+    channel: str
+    mailbox: str
+    unroutable: int = 0
+    ambiguous: int = 0
+    per_view_allowlist: int = 0
 
 
 # --- Workspace build events ---

@@ -359,7 +359,8 @@ class SecurityBreachAlertObserver:
 # Human-readable expansion of MailboxStalledEvent.reason codes, so the ops email is actionable
 # without opening the source. An unknown code still sends (generic line) — never a silent drop.
 _STALL_REASONS = {
-    "policy_divergence": "Shared-mailbox members disagree on admit-policy config; the group is NOT "
+    "policy_divergence": "Shared-mailbox members disagree on activation-policy config "
+                         "(allowed_senders is per-view and does not stall); the group is NOT "
                          "polled until the config is reconciled.",
     "no_bindings": "Routed mode but no active outlook_sender bindings; ALL mail to this mailbox is "
                    "being dropped (configure `agento ingress:bind outlook_sender ...`).",

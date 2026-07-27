@@ -242,12 +242,19 @@ def test_four_views_routed_and_direct_coexist(int_db_config, routing_registered)
                     (ws_id, code, code),
                 )
                 av[code] = cur.lastrowid
-        # The three shared-mailbox members MUST carry identical admit_mail policy (else the group
-        # is skipped as divergent) — same allowed_senders, same activation defaults via fallback.
-        shared_allowed = "*@partner.com, *@client.com, *@vendor.com, *@stranger.com"
+        # The three shared-mailbox members MUST carry identical *activation* policy (default via
+        # fallback here), but may now hold DIFFERENT allowed_senders — each persona's own per-view
+        # safety-net, evaluated after routing. The auto-derived UNION admits any member-trusted
+        # sender; the routed-to view's own list refines. av4-a also trusts *@stranger.com so the
+        # allow-listed-but-unbound m-x is admitted then dropped at routing (unroutable).
+        per_view_allowed = {
+            "av4-a": "*@partner.com, *@stranger.com",
+            "av4-b": "*@client.com",
+            "av4-c": "bob@vendor.com",
+        }
         for code in ("av4-a", "av4-b", "av4-c"):
             scoped_config_set(conn, "outlook/enabled", "1", scope=Scope.AGENT_VIEW, scope_id=av[code])
-            scoped_config_set(conn, "outlook/allowed_senders", shared_allowed, scope=Scope.AGENT_VIEW, scope_id=av[code])
+            scoped_config_set(conn, "outlook/allowed_senders", per_view_allowed[code], scope=Scope.AGENT_VIEW, scope_id=av[code])
             scoped_config_set(conn, "outlook/outlook_mailbox_user_id", "agents@company.com", scope=Scope.AGENT_VIEW, scope_id=av[code])
         # Solo view: its OWN mailbox → direct mode.
         scoped_config_set(conn, "outlook/enabled", "1", scope=Scope.AGENT_VIEW, scope_id=av["av4-solo"])
@@ -529,3 +536,186 @@ def test_allow_bot_collaboration_lets_agent_authored_through(int_db_config, two_
 
     assert _run_dev(int_db_config) == 1
     assert [j["reference_id"] for j in fetch_all_jobs()] == ["bot-collab-1"]
+
+
+# --- Route-first per-view authorization (real MySQL + real router/config) ----------------------
+
+
+@respx.mock
+def test_two_views_share_upn_with_different_allowlists_no_stall(int_db_config, two_views, routing_registered):
+    """Acceptance #1 + #2: two views share one UPN with DIFFERENT allowed_senders (previously a
+    divergence STALL). Each sender routes to its own view, gated by THAT view's list; both publish."""
+    dev_id, ops_id = two_views
+    conn = _test_connection(autocommit=True)
+    try:
+        for av_id in (dev_id, ops_id):
+            scoped_config_set(conn, "outlook/outlook_mailbox_user_id", "shared@example.com",
+                              scope=Scope.AGENT_VIEW, scope_id=av_id)
+        scoped_config_set(conn, "outlook/allowed_senders", "*@dev.com", scope=Scope.AGENT_VIEW, scope_id=dev_id)
+        scoped_config_set(conn, "outlook/allowed_senders", "*@ops.com", scope=Scope.AGENT_VIEW, scope_id=ops_id)
+        bind_identity(conn, "outlook_sender", r"[^@]+@dev\.com", dev_id, priority=10)
+        bind_identity(conn, "outlook_sender", r"[^@]+@ops\.com", ops_id, priority=10)
+    finally:
+        conn.close()
+
+    shared = {"mailbox": "shared@example.com", "deltaLink": "L-shared", "messages": [
+        {"id": "m-dev", "from": {"address": "a@dev.com"}, "dmarc": "pass"},
+        {"id": "m-ops", "from": {"address": "b@ops.com"}, "dmarc": "pass"},
+    ]}
+    respx.post(DELTA_URL).mock(side_effect=_delta_stub({dev_id: shared, ops_id: shared}))
+
+    conn = _test_connection(autocommit=False)
+    try:
+        count = publish_all_views(int_db_config, conn, TOOLBOX_URL, logging.getLogger("it-outlook"))
+    finally:
+        conn.close()
+
+    assert count == 2
+    jobs = {j["reference_id"]: j for j in fetch_all_jobs()}
+    assert jobs["m-dev"]["agent_view_id"] == dev_id
+    assert jobs["m-ops"]["agent_view_id"] == ops_id
+    rconn = _test_connection(autocommit=False)
+    try:
+        assert load_cursors(rconn) == {"shared@example.com": "L-shared"}
+    finally:
+        rconn.close()
+
+
+@respx.mock
+def test_routed_but_target_view_allowlist_rejects_drops_fail_closed(int_db_config, two_views, routing_registered):
+    """A sender passes the UNION (dev trusts it) but its binding routes it to OPS, whose own list
+    rejects it -> no job, cursor still advances (deterministic drop, not a hold)."""
+    dev_id, ops_id = two_views
+    conn = _test_connection(autocommit=True)
+    try:
+        for av_id in (dev_id, ops_id):
+            scoped_config_set(conn, "outlook/outlook_mailbox_user_id", "shared@example.com",
+                              scope=Scope.AGENT_VIEW, scope_id=av_id)
+        scoped_config_set(conn, "outlook/allowed_senders", "*@dev.com", scope=Scope.AGENT_VIEW, scope_id=dev_id)
+        scoped_config_set(conn, "outlook/allowed_senders", "*@ops.com", scope=Scope.AGENT_VIEW, scope_id=ops_id)
+        # route a dev-domain sender to OPS on purpose (OPS's own list does NOT include *@dev.com)
+        bind_identity(conn, "outlook_sender", r"[^@]+@dev\.com", ops_id, priority=10)
+    finally:
+        conn.close()
+
+    shared = {"mailbox": "shared@example.com", "deltaLink": "L-shared", "messages": [
+        {"id": "m1", "from": {"address": "a@dev.com"}, "dmarc": "pass"}]}
+    respx.post(DELTA_URL).mock(side_effect=_delta_stub({dev_id: shared, ops_id: shared}))
+
+    conn = _test_connection(autocommit=False)
+    try:
+        count = publish_all_views(int_db_config, conn, TOOLBOX_URL, logging.getLogger("it-outlook"))
+    finally:
+        conn.close()
+
+    assert count == 0
+    assert not fetch_all_jobs()
+    rconn = _test_connection(autocommit=False)
+    try:
+        assert load_cursors(rconn) == {"shared@example.com": "L-shared"}  # advanced (no hold)
+    finally:
+        rconn.close()
+
+
+@respx.mock
+def test_unset_routed_view_allowlist_inherits_default_not_deny_all(int_db_config, two_views, routing_registered):
+    """ROUTED mode: a routed-to view with NO agent_view-scoped allowed_senders row inherits the
+    DEFAULT-scope value through the post-route per-view refinement's agent_view→workspace→default
+    chain (it does NOT silently black-hole). Both views stay on one shared UPN so routing runs."""
+    dev_id, ops_id = two_views
+    conn = _test_connection(autocommit=True)
+    try:
+        for av_id in (dev_id, ops_id):
+            scoped_config_set(conn, "outlook/outlook_mailbox_user_id", "shared@example.com",
+                              scope=Scope.AGENT_VIEW, scope_id=av_id)
+        # dev has NO per-view allow-list row -> must inherit the DEFAULT below; ops keeps its own list
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM core_config_data WHERE scope='agent_view' AND scope_id=%s "
+                        "AND path='outlook/allowed_senders'", (dev_id,))
+        scoped_config_set(conn, "outlook/allowed_senders", "*@ops.com", scope=Scope.AGENT_VIEW, scope_id=ops_id)
+        scoped_config_set(conn, "outlook/allowed_senders", "*@dev.com", scope=Scope.DEFAULT, scope_id=0)
+        bind_identity(conn, "outlook_sender", r"[^@]+@dev\.com", dev_id, priority=10)
+    finally:
+        conn.close()
+
+    shared = {"mailbox": "shared@example.com", "deltaLink": "L-shared", "messages": [
+        {"id": "m-inherit", "from": {"address": "a@dev.com"}, "dmarc": "pass"}]}
+    respx.post(DELTA_URL).mock(side_effect=_delta_stub({dev_id: shared, ops_id: shared}))
+
+    try:
+        conn = _test_connection(autocommit=False)
+        try:
+            count = publish_all_views(int_db_config, conn, TOOLBOX_URL, logging.getLogger("it-outlook"))
+        finally:
+            conn.close()
+        # a@dev.com: union (dev's inherited *@dev.com plus ops's *@ops.com) admits -> routes to dev ->
+        # dev's per-view refinement resolves the DEFAULT *@dev.com -> matches -> routed publication.
+        assert count == 1
+        jobs = {j["reference_id"]: j for j in fetch_all_jobs()}
+        assert jobs["m-inherit"]["agent_view_id"] == dev_id
+    finally:
+        cconn = _test_connection(autocommit=True)
+        try:
+            with cconn.cursor() as cur:
+                cur.execute("DELETE FROM core_config_data WHERE scope='default' AND scope_id=0 "
+                            "AND path='outlook/allowed_senders'")
+        finally:
+            cconn.close()
+
+
+@respx.mock
+def test_single_view_direct_mode_zero_bindings_still_publishes(int_db_config, two_views):
+    """Acceptance #4 regression: a single view on a UPN with ZERO ingress bindings publishes in
+    DIRECT mode (no routing required)."""
+    dev_id, ops_id = two_views  # each has its own mailbox -> both direct; assert dev publishes
+    by_view = {
+        dev_id: {"mailbox": "dev@example.com", "deltaLink": "L-dev", "messages": [
+            {"id": "m-direct", "from": {"address": "sklep@mycompanystudio.com"}, "dmarc": "pass"}]},
+        ops_id: {"mailbox": "ops@example.com", "deltaLink": "L-ops", "messages": []},
+    }
+    respx.post(DELTA_URL).mock(side_effect=_delta_stub(by_view))
+
+    conn = _test_connection(autocommit=False)
+    try:
+        count = publish_all_views(int_db_config, conn, TOOLBOX_URL, logging.getLogger("it-outlook"))
+    finally:
+        conn.close()
+
+    assert count == 1
+    jobs = {j["reference_id"]: j for j in fetch_all_jobs()}
+    assert jobs["m-direct"]["agent_view_id"] == dev_id
+
+
+@respx.mock
+def test_dmarc_still_enforced_and_breach_scoped_to_union(int_db_config, two_views, routing_registered, caplog):
+    """Acceptance #3: DMARC is still enforced for all admitted mail; the SECURITY_BREACH alert is
+    scoped to UNION-trusted senders (a spoof from a sender no view trusts is silently dropped)."""
+    dev_id, ops_id = two_views
+    conn = _test_connection(autocommit=True)
+    try:
+        for av_id in (dev_id, ops_id):
+            scoped_config_set(conn, "outlook/outlook_mailbox_user_id", "shared@example.com",
+                              scope=Scope.AGENT_VIEW, scope_id=av_id)
+        scoped_config_set(conn, "outlook/allowed_senders", "*@dev.com", scope=Scope.AGENT_VIEW, scope_id=dev_id)
+        scoped_config_set(conn, "outlook/allowed_senders", "*@ops.com", scope=Scope.AGENT_VIEW, scope_id=ops_id)
+        bind_identity(conn, "outlook_sender", r"[^@]+@dev\.com", dev_id, priority=10)
+    finally:
+        conn.close()
+
+    shared = {"mailbox": "shared@example.com", "deltaLink": "L-shared", "messages": [
+        {"id": "m-spoof-in", "from": {"address": "a@dev.com"}, "dmarc": "fail"},   # union-trusted -> breach
+        {"id": "m-spoof-out", "from": {"address": "c@evil.com"}, "dmarc": "fail"},  # not trusted -> silent
+    ]}
+    respx.post(DELTA_URL).mock(side_effect=_delta_stub({dev_id: shared, ops_id: shared}))
+
+    conn = _test_connection(autocommit=False)
+    try:
+        with caplog.at_level(logging.ERROR):
+            count = publish_all_views(int_db_config, conn, TOOLBOX_URL, logging.getLogger("it-outlook"))
+    finally:
+        conn.close()
+
+    assert count == 0
+    assert not fetch_all_jobs()
+    breach_logs = [r for r in caplog.records if "SECURITY_BREACH" in r.getMessage()]
+    assert len(breach_logs) == 1  # only the union-trusted spoof alerts

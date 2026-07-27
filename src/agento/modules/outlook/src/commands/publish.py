@@ -7,7 +7,7 @@ import logging
 from agento.framework.agent_view_runtime import resolve_publish_priority
 from agento.framework.config_resolver import ScopedConfigService
 from agento.framework.event_manager import get_event_manager
-from agento.framework.events import MailboxStalledEvent
+from agento.framework.events import InboundRouteDropEvent, MailboxStalledEvent
 from agento.framework.ingress_identity import get_active_identities_for_type
 from agento.framework.log import get_logger
 from agento.framework.router import RoutingContext, resolve_agent_view
@@ -32,13 +32,14 @@ _CONFIG_PATHS = (
 # group views BEFORE polling. It is deliberately NOT an OutlookConfig field (toolbox-adjacent).
 _MAILBOX_PATH = "outlook/outlook_mailbox_user_id"
 
-# The admit_mail policy inputs that MUST be identical across members of a shared (routed) mailbox —
-# a divergence would mean a message is admitted/dropped differently depending on which member's
-# config the single shared poll used. restrict_read_to_allowed_senders is deliberately EXCLUDED:
-# it is a toolbox read-tool gate resolved per TARGET view at read time (not an admit_mail input,
-# not on OutlookConfig), and reads are already bound to the triggering job's message.
-_POLICY_FIELDS = (
-    "allowed_senders", "activation_modes", "summon_token",
+# The MAILBOX-LEVEL activation policy inputs that MUST be identical across members of a shared
+# (routed) mailbox: activation runs ONCE with the poll-owner's cfg, so a divergence would let the
+# lowest-id member silently define activation for the whole mailbox. allowed_senders is deliberately
+# EXCLUDED — it is now a PER-VIEW gate (union pre-filter pre-route + per-view refinement post-route),
+# so members may legitimately differ on it. restrict_read_to_allowed_senders is likewise excluded
+# (a toolbox read-tool gate resolved per TARGET view at read time, not an admit_mail input).
+_MAILBOX_POLICY_FIELDS = (
+    "activation_modes", "summon_token",
     "direct_requires_sole_recipient", "mailbox_aliases", "allow_bot_collaboration",
 )
 
@@ -54,8 +55,9 @@ def _resolve_mailbox_upn(conn, agent_view_id: int) -> str:
 
 
 def _shared_policy_divergence(group_views, view_cfgs) -> list[tuple[str, str]]:
-    """Return ``[(view_code, field)]`` where a member's admit_mail policy field differs from the
-    poll owner's. Empty list = consistent policy across the whole group."""
+    """Return ``[(view_code, field)]`` where a member's mailbox-level activation policy field differs
+    from the poll owner's. ``allowed_senders`` is NOT checked here (it is per-view). Empty list =
+    consistent activation policy across the whole group."""
     owner = min(group_views, key=lambda v: v.id)
     base = view_cfgs[owner.id]
     divergent: list[tuple[str, str]] = []
@@ -63,7 +65,7 @@ def _shared_policy_divergence(group_views, view_cfgs) -> list[tuple[str, str]]:
         if v.id == owner.id:
             continue
         cfg = view_cfgs[v.id]
-        for field in _POLICY_FIELDS:
+        for field in _MAILBOX_POLICY_FIELDS:
             if getattr(cfg, field) != getattr(base, field):
                 divergent.append((v.code, field))
     return divergent
@@ -105,9 +107,11 @@ def _publish_view_messages(publisher, db_config, av, cfg, messages, priority, lo
     return published, hold
 
 
-def _publish_group_routed(publisher, db_config, conn, group_views, cfg, messages, logger, mailbox, aliases):
-    """Routed (shared-mailbox) mode: admit each message, route by NORMALIZED sender to a member
-    agent_view, and publish to the resolved target. Returns (published, hold).
+def _publish_group_routed(publisher, db_config, conn, group_views, cfg, view_cfgs, messages, logger, mailbox, aliases):
+    """Routed (shared-mailbox) mode: admit each message against the group's UNION allow-list (+ DMARC
+    + mailbox-level activation, all pre-route), route by NORMALIZED sender to a member agent_view,
+    refine against the routed-to view's own allow-list, and publish to the resolved target. Returns
+    (published, hold).
 
     Cursor discipline: deterministic verdicts (rejected by the gate, no route, ambiguous tie, or a
     target outside this group) ADVANCE — they will not change on re-fetch. Only genuine transients
@@ -117,6 +121,13 @@ def _publish_group_routed(publisher, db_config, conn, group_views, cfg, messages
     once per unique sender per poll — work scales with DISTINCT senders, not message count (a
     backlog/resync re-emits the same senders many times over)."""
     group_ids = {v.id for v in group_views}
+    # Auto-derived UNION of every member's per-view allow-list — the cheap in-memory pre-filter that
+    # rejects senders no persona trusts BEFORE any routing DB/regex work (and scopes the DMARC breach
+    # alert to union-trusted senders). Recomputed per poll; no manual union upkeep, no DB.
+    union_allowed = sorted({p for v in group_views for p in view_cfgs[v.id].allowed_senders_list})
+    # Post-admission (post-DMARC/-activation) drops, per unique sender per poll — surfaced once per
+    # poll as an InboundRouteDropEvent + summary log (below).
+    dropped = {"unroutable": 0, "ambiguous": 0, "per_view_allowlist": 0}
     # sender -> (target_view_id, priority) for a publishable route, or None for a deterministic drop.
     memo: dict[str, tuple[int, int] | None] = {}
     published = 0
@@ -129,7 +140,7 @@ def _publish_group_routed(publisher, db_config, conn, group_views, cfg, messages
             message_id,
             sender_email=(msg.get("from") or {}).get("address"),
             dmarc=msg.get("dmarc"),
-            allowed_senders=cfg.allowed_senders_list,
+            allowed_senders=union_allowed,
             subject=msg.get("subject"),
             to=msg.get("to"), cc=msg.get("cc"),
             body_preview=msg.get("bodyPreview"),
@@ -137,7 +148,7 @@ def _publish_group_routed(publisher, db_config, conn, group_views, cfg, messages
             mailbox=mailbox, aliases=aliases, cfg=cfg, logger=logger,
         )
         if admission is None:
-            continue  # rejected by the gate — advance
+            continue  # rejected by the gate (union allow-list / DMARC / activation) — advance
         sender = admission.sender
         if sender not in memo:
             try:
@@ -154,10 +165,23 @@ def _publish_group_routed(publisher, db_config, conn, group_views, cfg, messages
                 continue
             if decision is None or decision.ambiguous or decision.agent_view_id not in group_ids:
                 memo[sender] = None
+                reason = "ambiguous" if (decision is not None and decision.ambiguous) else "unroutable"
+                dropped[reason] += 1
                 logger.info(
                     "Outlook routed-mode message not deliverable (no match / ambiguous / target "
                     "outside group); advancing",
-                    extra={"message_id": message_id[:40], "mailbox": mailbox},
+                    extra={"message_id": message_id[:40], "mailbox": mailbox, "drop_reason": reason},
+                )
+            elif not publisher.sender_allowed(sender, view_cfgs[decision.agent_view_id].allowed_senders_list):
+                # Post-route per-view refinement (fail-closed): the sender passed the UNION but is not
+                # in the ROUTED-TO view's own allow-list -> deterministic drop (advance, no job).
+                memo[sender] = None
+                dropped["per_view_allowlist"] += 1
+                sender_domain = sender.split("@")[-1] if "@" in sender else "?"
+                logger.info(
+                    "Outlook routed message rejected by routed-to view's allowed_senders; advancing",
+                    extra={"message_id": message_id[:40], "mailbox": mailbox,
+                           "agent_view_id": decision.agent_view_id, "sender_domain": sender_domain},
                 )
             else:
                 memo[sender] = (
@@ -180,6 +204,21 @@ def _publish_group_routed(publisher, db_config, conn, group_views, cfg, messages
                 f"Error publishing outlook message {message_id[:20]}... (routed → view {target_view_id})"
             )
             hold = True
+    if any(dropped.values()):
+        logger.info(
+            "Outlook routed-poll drop summary",
+            extra={"mailbox": mailbox, "unroutable": dropped["unroutable"],
+                   "ambiguous": dropped["ambiguous"],
+                   "per_view_allowlist": dropped["per_view_allowlist"]},
+        )
+        get_event_manager().dispatch(
+            "inbound_route_drop_after",
+            InboundRouteDropEvent(
+                channel="outlook", mailbox=mailbox,
+                unroutable=dropped["unroutable"], ambiguous=dropped["ambiguous"],
+                per_view_allowlist=dropped["per_view_allowlist"],
+            ),
+        )
     return published, hold
 
 
@@ -190,10 +229,12 @@ def publish_all_views(
     """Group active outlook-enabled agent_views by their resolved mailbox UPN, poll each group once
     via the Graph delta cursor, and publish new mail.
 
-    A UPN owned by exactly ONE view is DIRECT mode (no routing, no binding required — byte-for-byte
-    today's behavior). A UPN shared by >=2 views is ROUTED mode: the group is polled once by the
-    lowest-id member and each message is routed to a member view by matching the normalized sender
-    against ``outlook_sender`` ingress bindings (regex, priority). Persist-then-advance: the cursor
+    A UPN owned by exactly ONE view is DIRECT mode (no routing, no binding required — admission /
+    routing / publishing semantics unchanged). A UPN shared by >=2 views is ROUTED mode: the group is
+    polled once by the lowest-id member; each message is admitted against the group's UNION
+    allow-list (+ DMARC + mailbox-level activation), routed to a member view by matching the
+    normalized sender against ``outlook_sender`` ingress bindings (regex, priority), then refined
+    against the routed-to view's own ``allowed_senders``. Persist-then-advance: the cursor
     is written only AFTER a clean pass (never on a transient hold). The mailbox is never mutated.
     No active/eligible views -> clean no-op. Per-group errors log + continue. The toolbox client is
     always closed."""
@@ -227,6 +268,20 @@ def publish_all_views(
                 if any(v.code == agent_view_code for v in gv)
             }
 
+        # Publisher-start effective-policy log: one line per enabled view (code, mailbox, mode, and
+        # the effective allowed_senders COUNT — never the raw patterns, which may be external
+        # addresses/domains; use `config:resolve` for the resolved values). Standalone loop so a
+        # per-group error below never skips a policy log.
+        for upn, group_views in groups.items():
+            mode = "routed" if len(group_views) >= 2 else "direct"
+            for av in group_views:
+                vc = view_cfgs[av.id]
+                logger.info(
+                    "Effective outlook policy",
+                    extra={"agent_view": av.code, "mailbox": upn, "mode": mode,
+                           "allowed_senders_count": len(vc.allowed_senders_list)},
+                )
+
         zero_bindings: bool | None = None  # batch-independent, computed once when first needed
         for upn, group_views in groups.items():
             try:
@@ -238,8 +293,8 @@ def publish_all_views(
                     if divergent:
                         where = ", ".join(f"{code}:{field}" for code, field in divergent)
                         logger.error(
-                            "Outlook shared mailbox %s: members have divergent policy config (%s); "
-                            "skipping group (not polled) until reconciled", upn, where,
+                            "Outlook shared mailbox %s: members have divergent activation policy "
+                            "config (%s); skipping group (not polled) until reconciled", upn, where,
                         )
                         get_event_manager().dispatch(
                             "mailbox_stall_after",
@@ -292,7 +347,7 @@ def publish_all_views(
                             ),
                         )
                     pub_count, hold = _publish_group_routed(
-                        publisher, db_config, conn, group_views, cfg, messages, logger,
+                        publisher, db_config, conn, group_views, cfg, view_cfgs, messages, logger,
                         mailbox_key, cfg.mailbox_aliases_list,
                     )
                 else:
