@@ -68,7 +68,6 @@ class TestTokenResolver:
                 return_value=(3, 3),
             ),
             patch("agento.framework.agent_manager.token_resolver.time.sleep") as mock_sleep,
-            patch("agento.framework.agent_manager.token_resolver._POOL_CONTENTION_RETRIES", 2),
         ):
             token = TokenResolver().resolve(MagicMock(), AgentProvider.CLAUDE)
 
@@ -87,10 +86,93 @@ class TestTokenResolver:
                 return_value=(3, 3),
             ),
             patch("agento.framework.agent_manager.token_resolver.time.sleep"),
-            patch("agento.framework.agent_manager.token_resolver._POOL_CONTENTION_RETRIES", 1),
+            patch(
+                "agento.framework.agent_manager.token_resolver."
+                "_POOL_CONTENTION_BUDGET_SECONDS",
+                0.0,
+            ),
             pytest.raises(RuntimeError, match="currently locked"),
         ):
             TokenResolver().resolve(MagicMock(), AgentProvider.CLAUDE)
+
+    def test_resolve_outlasts_contention_longer_than_a_fixed_attempt_cap(self):
+        """Regression: the retry budget must be wall-clock, not a fixed count.
+
+        A 20-attempt cap gave up after ~200ms, which a herd of ~10 workers
+        contending over a few rows exceeds on a loaded machine — the pool was
+        healthy, every row was merely locked in passing, and the job died.
+        """
+        expected = make_token(id=2)
+        attempts_under_contention = 40
+
+        with (
+            patch(
+                "agento.framework.agent_manager.token_resolver.select_token",
+                side_effect=[None] * attempts_under_contention + [expected],
+            ) as mock_select,
+            patch(
+                "agento.framework.agent_manager.token_resolver.count_tokens_for_provider",
+                return_value=(3, 3),
+            ),
+            patch("agento.framework.agent_manager.token_resolver.time.sleep"),
+        ):
+            token = TokenResolver().resolve(MagicMock(), AgentProvider.CLAUDE)
+
+        assert token is expected
+        assert mock_select.call_count == attempts_under_contention + 1
+
+    def test_resolve_gives_up_at_the_wall_clock_deadline(self):
+        """Unbounded contention must still terminate — via the deadline."""
+        clock = iter([0.0] + [float(i) * 0.5 for i in range(1, 200)])
+
+        with (
+            patch(
+                "agento.framework.agent_manager.token_resolver.select_token",
+                return_value=None,
+            ) as mock_select,
+            patch(
+                "agento.framework.agent_manager.token_resolver.count_tokens_for_provider",
+                return_value=(3, 3),
+            ),
+            patch("agento.framework.agent_manager.token_resolver.time.sleep"),
+            patch(
+                "agento.framework.agent_manager.token_resolver.time.monotonic",
+                side_effect=lambda: next(clock),
+            ),
+            pytest.raises(RuntimeError, match="currently locked"),
+        ):
+            TokenResolver().resolve(MagicMock(), AgentProvider.CLAUDE)
+
+        # 3s budget consumed by a clock advancing 0.5s per read.
+        assert mock_select.call_count <= 8
+
+    def test_contention_backoff_is_jittered_and_capped(self):
+        """Lockstep retries re-collide; jitter is what breaks the herd up."""
+        expected = make_token(id=2)
+        sleeps: list[float] = []
+
+        with (
+            patch(
+                "agento.framework.agent_manager.token_resolver.select_token",
+                side_effect=[None] * 30 + [expected],
+            ),
+            patch(
+                "agento.framework.agent_manager.token_resolver.count_tokens_for_provider",
+                return_value=(3, 3),
+            ),
+            patch(
+                "agento.framework.agent_manager.token_resolver.time.sleep",
+                side_effect=sleeps.append,
+            ),
+        ):
+            TokenResolver().resolve(MagicMock(), AgentProvider.CLAUDE)
+
+        assert len(sleeps) == 30
+        # Jitter: identical delays every round would keep the herd in lockstep.
+        assert len(set(sleeps)) > 1
+        # Backoff grows but stays capped (x1.5 = the jitter ceiling).
+        assert max(sleeps) <= 0.1 * 1.5
+        assert sum(sleeps[-5:]) > sum(sleeps[:5])
 
     def test_resolve_error_mentions_recovery_commands(self):
         with (
