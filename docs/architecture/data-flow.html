@@ -341,11 +341,13 @@
           <span class="evt before"><a href="../../src/agento/framework/consumer.py#L436">agent_view_run_start_before</a></span>
           <span class="evt after"><a href="../../src/agento/framework/consumer.py#L523">agent_view_run_finish_after</a></span>
           <span class="evt after"><a href="../../src/agento/framework/consumer.py#L555">token_auth_failed_after</a></span>
+          <span class="evt after"><a href="../../src/agento/framework/consumer.py#L555">token_auth_throttled_after</a></span>
         </div>
       </div>
 
       <div class="card callout">
-        <code>token_auth_failed_after</code> only fires on runtime auth failure — flips the row in <code>oauth_token</code> to <code>status='error'</code> so the LRU pool skips it.
+        <code>token_auth_failed_after</code> fires only on a <strong>permanent</strong> runtime auth failure — flips the row in <code>oauth_token</code> to <code>status='error'</code> so the LRU pool skips it until an operator clears it.
+        A <strong>transient</strong> credential rejection (revoked/stale access token, or unrecognised <code>401</code> wording) instead fires <code>token_auth_throttled_after</code> and sets a 15-minute <code>throttled_until</code> cooldown — <code>status</code> stays <code>'ok'</code> and the token self-recovers, because the same credential is usually still serving other jobs.
       </div>
     </div>
 

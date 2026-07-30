@@ -32,7 +32,7 @@ Health state lives on each row:
 | `used_at`    | Last time a worker claimed the row — drives LRU ordering within a priority tier. |
 | `priority`   | Pool selection weight. Lower value wins; 0 = default.                   |
 
-**Three ways a token leaves the pool (in increasing permanence):**
+**Four ways a token leaves the pool (in increasing permanence):**
 - **Throttled** (`throttled_until` in the future, `status='ok'`): hit a session/usage/rate limit. Temporary — the token auto-recovers at the reset time and the job **fails over** to another healthy token meanwhile. No operator action needed.
 - **Transient-auth throttled** (`throttled_until` in the future, `status='ok'`): the CLI rejected the stored credential with a revoked/stale-token 401. Temporary — the same token label is often still serving other jobs, so it is **not** poisoned; the job fails over to another healthy token and this one returns to the pool after 15 minutes. No operator action needed.
 - **Expired** (`expires_at` in the past): credential lapsed. Cleared by `token:refresh`.
@@ -52,7 +52,9 @@ Health state lives on each row:
 ## Token Lifecycle
 
 ```
-register → [use via LRU+priority] → (auto-flagged error on 401) → refresh | reset → deregister
+register → [use via LRU+priority] → (transient 401 → 15-min throttle, self-recovers)
+                                  → (permanent auth failure → auto-flagged status='error')
+                                  → refresh | reset → deregister
 ```
 
 ## Register a Token
