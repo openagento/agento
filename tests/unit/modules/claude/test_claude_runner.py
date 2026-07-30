@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from agento.framework.agent_manager.errors import UsageLimitError
+from agento.framework.agent_manager.errors import TransientAuthError, UsageLimitError
 from agento.framework.runner import McpInitReport, McpServerStatus
 from agento.modules.claude.src.output_parser import (
     AuthenticationError,
@@ -289,3 +289,116 @@ def test_parse_claude_output_mcp_init_survives_missing_result_event():
     assert result.mcp_init == McpInitReport(
         servers=(McpServerStatus("toolbox", "connected"),)
     )
+
+
+# ---- Transient credential rejection (revoked / unrecognised 401) ----
+# The exact message reported from production (seen on two separate jobs).
+_REVOKED_MSG = "Failed to authenticate. API Error: 401 OAuth access token has been revoked."
+
+
+def test_revoked_oauth_token_raises_transient_auth_error_stream_json():
+    raw = json.dumps({"type": "result", "is_error": True, "result": _REVOKED_MSG})
+    with pytest.raises(TransientAuthError, match="has been revoked"):
+        parse_claude_output(raw + "\n")
+
+
+def test_revoked_oauth_token_raises_transient_auth_error_single_json():
+    raw = json.dumps({"is_error": True, "result": _REVOKED_MSG})
+    with pytest.raises(TransientAuthError):
+        parse_claude_output(raw)
+
+
+def test_revoked_is_not_a_permanent_auth_error():
+    # Must NOT poison the token: TransientAuthError is a sibling of
+    # AuthenticationError, never a subclass.
+    raw = json.dumps({"is_error": True, "result": _REVOKED_MSG})
+    with pytest.raises(TransientAuthError) as exc:
+        parse_claude_output(raw)
+    assert not isinstance(exc.value, AuthenticationError)
+
+
+def test_revoked_without_401_code_is_still_transient():
+    raw = json.dumps({"is_error": True, "result": "OAuth access token has been revoked"})
+    with pytest.raises(TransientAuthError):
+        parse_claude_output(raw)
+
+
+@pytest.mark.parametrize("msg", [
+    # Auth verb BEFORE the code (the observed shape) ...
+    "Failed to authenticate. API Error: 401 some brand new wording",
+    # ... and credential words only AFTER it. The matcher must be order-independent.
+    "API Error: 401 OAuth access token rejected",
+    "API Error: 401 invalid bearer token",
+    "API Error: 401 credential rejected",
+    "API Error: 401 Unauthorized",
+])
+def test_unrecognised_401_credential_wording_defaults_to_transient(msg):
+    # Any FUTURE 401 wording must fail over, not degrade to a generic in-place retry.
+    raw = json.dumps({"is_error": True, "result": msg})
+    with pytest.raises(TransientAuthError):
+        parse_claude_output(raw)
+
+
+@pytest.mark.parametrize("msg", [
+    # "401" only as a substring of a token count -> \b401\b must not match.
+    "Prompt is too long: 401234 tokens > 200000 maximum",
+    # A 401 with no credential word at all -> not enough signal to reclassify.
+    "API Error: 401",
+    # A credential word with no rejection signal -> a local file problem, not a bad
+    # pool credential; throttling the token would fix nothing.
+    "the access token could not be read from disk",
+    # Revocation wording with no credential context -> an authorization failure INSIDE
+    # the run (a repo/workspace/permission grant), not a rejected pool credential.
+    # These must not cost the token a 15-minute cooldown.
+    "workspace access has been revoked",
+    "permission has been revoked",
+    "your access to the repository has been revoked",
+])
+def test_matcher_does_not_over_reach(msg):
+    # False positives cost a 15-min throttle + failover, so BOTH signals are required:
+    # a credential-context word AND a rejection signal (\b401\b or revoked).
+    raw = json.dumps({"is_error": True, "result": msg})
+    with pytest.raises(RuntimeError) as exc:
+        parse_claude_output(raw)
+    assert type(exc.value) is RuntimeError
+
+
+def test_revoked_with_credential_context_is_transient_without_a_401():
+    # The rejection signal may be revocation wording rather than a 401 code, as long as
+    # credential context is present.
+    raw = json.dumps({"is_error": True, "result": "the api key credential was revoked"})
+    with pytest.raises(TransientAuthError):
+        parse_claude_output(raw)
+
+
+def test_known_permanent_auth_phrases_still_poison():
+    # Regression guard for the four pre-existing AUTH_ERROR_PHRASES: these are
+    # checked FIRST, so they stay permanent even though they also mention 401/auth.
+    for msg in (
+        "authentication_error: invalid token",
+        "OAuth token has expired",
+        "Not logged in",
+        "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    ):
+        raw = json.dumps({"is_error": True, "result": msg})
+        with pytest.raises(AuthenticationError):
+            parse_claude_output(raw)
+
+
+def test_limit_phrase_wins_over_generic_401_matcher():
+    # A limit message that happens to carry a 401 must stay a UsageLimitError so its
+    # reset_at (and the 1h throttle default) still apply.
+    raw = json.dumps({
+        "is_error": True,
+        "result": "401 authentication: you've hit your session limit · resets 1pm (Europe/Warsaw)",
+    })
+    with pytest.raises(UsageLimitError) as exc:
+        parse_claude_output(raw)
+    assert exc.value.reset_at is not None
+
+
+def test_plain_runtime_error_is_unchanged():
+    raw = json.dumps({"is_error": True, "result": "something went wrong"})
+    with pytest.raises(RuntimeError) as exc:
+        parse_claude_output(raw)
+    assert type(exc.value) is RuntimeError
