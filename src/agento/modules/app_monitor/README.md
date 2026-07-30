@@ -10,19 +10,37 @@ Application health monitoring. Currently two responsibilities:
    | Column | Meaning |
    |---|---|
    | `job.toolbox_mcp_calls` (`INT NULL`) | Count of `mcp__toolbox__*` tool-uses observed in the on-disk session transcript (parsed via the provider's registered `TranscriptReader`). `0` = parsed cleanly, none found. `NULL` = unknown: no reader for the provider, missing/unreadable transcript, or parser drift. |
-   | `job.toolbox_mcp_connected` (`BOOLEAN NULL`) | Whether the CLI self-reported the `toolbox` MCP server as connected at session start (from `RunResult.mcp_init`). See semantics below. |
+   | `job.toolbox_mcp_connected` (`BOOLEAN NULL`) | What the CLI self-reported for the `toolbox` MCP server in its session-init line (from `RunResult.mcp_init`), mapped tri-state. See semantics below. |
 
-   `toolbox_mcp_connected` semantics — `FALSE` and `NULL` mean different things:
-   - **`NULL`** = "we don't know": the provider exposed **no init report at all**
-     (e.g. Codex today — see below — or a Claude stream with no `system/init`
-     line). This is the explicit unknown state.
-   - **`TRUE`** = an init report exists **and** `toolbox` is listed with
+   `toolbox_mcp_connected` semantics — the status is the CLI's **own vocabulary**
+   and an open string on the wire, so it is mapped **tri-state**. `FALSE` and
+   `NULL` mean different things:
+   - **`TRUE`** = an init report exists **and** `toolbox` is listed
      `status="connected"`.
-   - **`FALSE`** = an init report exists **and** `toolbox` is present but not
-     connected, **or** `toolbox` is absent from the reported servers entirely
-     (including the empty-list case — a valid report saying "I started, no MCP
-     servers visible"). "Init present, toolbox not visible" is `FALSE`, **not**
-     `NULL`.
+   - **`FALSE`** = the CLI reported something terminal for this session —
+     `failed` / `needs-auth` / `needs-approval` / `disabled`
+     (`MCP_STATUS_NOT_CONNECTED`) — **or** `toolbox` is absent from the reported
+     servers entirely (including the empty-list case — a valid report saying "I
+     started, no MCP servers visible"). "Init present, toolbox not visible" is
+     `FALSE`, **not** `NULL`.
+   - **`NULL`** = "we don't know", for either of two reasons: the provider exposed
+     **no init report at all** (e.g. Codex today — see below — or a Claude stream
+     with no `system/init` line), **or** the reported status is merely
+     indeterminate.
+
+   **`pending` is normal, not a failure.** Claude connects MCP servers
+   non-blocking by default: it seeds every server `pending`, prints `system/init`,
+   and connects afterwards — and in `-p`/stream-json mode it never re-reports. So
+   `pending` is a snapshot from *before* the handshake, it resolves to `NULL`
+   (silently — it would otherwise warn on every job), and a run can legitimately
+   show `pending` alongside dozens of successful `mcp__toolbox__*` calls. What
+   makes `TRUE` reachable at all is `"alwaysLoad": true` on the toolbox entry in
+   the generated `.mcp.json` (see [docs/architecture/containers.md](../../../../docs/architecture/containers.md)),
+   which makes the CLI await that one handshake before emitting init.
+
+   A status word in **none** of the three sets is treated as `NULL` too — a
+   renamed status must never read as an outage — but logs a `WARNING` naming it,
+   so extending `MCP_STATUS_*` in `src/constants.py` is an obvious follow-up.
 
    Both signals are written on **every** attempt in a single `UPDATE` — including
    to `NULL` — because `job` rows are reused across retries; rewriting both
@@ -31,8 +49,12 @@ Application health monitoring. Currently two responsibilities:
    **Optional alert** — when `send_alert_on_mcp_issues` is on **and** SMTP is
    configured, one email is sent per attempt if **at least one explicit-bad
    signal** is present: `toolbox_mcp_calls == 0` **OR** `toolbox_mcp_connected IS
-   FALSE`. `NULL` ("unknown") never triggers an alert. A combined hit sends a
-   single email naming both conditions.
+   FALSE`. `NULL` ("unknown") never triggers an alert — which is why the tri-state
+   mapping above matters: a `pending` init on a healthy job is `NULL`, so it stays
+   silent, while `calls == 0` still catches a job that never reached the toolbox.
+   A combined hit sends a single email naming both conditions, and the subject/body
+   carry the raw status word (`toolbox not connected (failed)`,
+   `Toolbox status: absent`) so ops can tell *why* without opening a transcript.
 
    The transcript parser lives in the agent's module (claude/codex/…); this
    observer resolves one via `get_transcript_reader(provider)`, so the

@@ -22,6 +22,22 @@ CFG_ALERT_SMTP_TLS       = "alerts/smtp_tls"
 
 MCP_TOOLBOX_TOOL_PREFIX = "mcp__toolbox__"
 
+# --- MCP init status vocabulary (the CLI's own words, an open string on the wire) ---
+
+MCP_STATUS_CONNECTED = "connected"
+
+# Statuses meaning the CLI decided this server will not serve tools this session.
+MCP_STATUS_NOT_CONNECTED = frozenset({
+    "failed", "needs-auth", "needs-approval", "disabled",
+})
+
+# Recognized indeterminate statuses: the connect simply had not finished when the
+# CLI printed its init line. Expected on every job whenever the connect is
+# non-blocking, so this resolves to UNKNOWN (NULL) *silently* — never to "not
+# connected", never with a warning. Three sets, not two, so that "expected
+# indeterminate" stays distinguishable from "a word we have never seen".
+MCP_STATUS_TRANSIENT = frozenset({"pending"})
+
 # Minimum number of JSON-parseable lines in a transcript before we treat
 # ``recognized_records == 0`` as parser drift (rather than "agent did almost
 # nothing"). Production transcripts run dozens of lines; this filter keeps

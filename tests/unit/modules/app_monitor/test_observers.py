@@ -378,6 +378,103 @@ class TestMcpHealthTelemetry:
         # NULL is distinct from FALSE.
         assert saver.call_args.args == (26, None, None)
 
+    def test_pending_status_is_unknown_and_does_not_warn(
+        self, fake_reader, monkeypatch, caplog,
+    ):
+        """`pending` = the CLI printed init before the handshake finished.
+
+        It is the expected report on every job, so it must resolve to NULL
+        ("we don't know") and must NOT emit a per-job warning.
+        """
+        _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
+        saver = _patch_saver(monkeypatch)
+        sender = _patch_sender(monkeypatch)
+        event = _FinalizeEvent(
+            job=_Job(id=30, session_id="calls_5"),
+            job_result=_JobResult(_mcp_init(("toolbox", "pending"))),
+        )
+        with caplog.at_level("WARNING"):
+            obs.McpHealthTelemetryObserver().execute(event)
+        saver.assert_called_once_with(30, 5, None)
+        sender.assert_not_called()
+        assert caplog.text == ""
+
+    def test_pending_status_with_zero_calls_alerts_on_calls_only(
+        self, fake_reader, monkeypatch,
+    ):
+        _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
+        saver = _patch_saver(monkeypatch)
+        sender = _patch_sender(monkeypatch)
+        event = _FinalizeEvent(
+            job=_Job(id=31, session_id="zero_calls"),
+            job_result=_JobResult(_mcp_init(("toolbox", "pending"))),
+        )
+        obs.McpHealthTelemetryObserver().execute(event)
+        saver.assert_called_once_with(31, 0, None)
+        sender.assert_called_once()
+        _, _, subject, _ = sender.call_args.args
+        assert "0 toolbox calls" in subject
+        assert "toolbox not connected" not in subject
+
+    def test_unrecognized_status_is_unknown_and_warns(
+        self, fake_reader, monkeypatch, caplog,
+    ):
+        """A status word we have never seen is UNKNOWN, not "broken" — but loud."""
+        _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
+        saver = _patch_saver(monkeypatch)
+        sender = _patch_sender(monkeypatch)
+        event = _FinalizeEvent(
+            job=_Job(id=32, session_id="calls_5"),
+            job_result=_JobResult(_mcp_init(("toolbox", "connecting"))),
+        )
+        with caplog.at_level("WARNING"):
+            obs.McpHealthTelemetryObserver().execute(event)
+        saver.assert_called_once_with(32, 5, None)
+        sender.assert_not_called()
+        assert "connecting" in caplog.text
+
+    @pytest.mark.parametrize("status", ["failed", "needs-auth", "needs-approval", "disabled"])
+    def test_terminal_statuses_are_not_connected(self, status, fake_reader, monkeypatch):
+        """The CLI decided this server will not serve tools -> FALSE, and alert
+        regardless of the call count."""
+        _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
+        saver = _patch_saver(monkeypatch)
+        sender = _patch_sender(monkeypatch)
+        event = _FinalizeEvent(
+            job=_Job(id=33, session_id="calls_5"),
+            job_result=_JobResult(_mcp_init(("toolbox", status))),
+        )
+        obs.McpHealthTelemetryObserver().execute(event)
+        saver.assert_called_once_with(33, 5, False)
+        sender.assert_called_once()
+        _, _, subject, _ = sender.call_args.args
+        assert f"toolbox not connected ({status})" in subject
+
+    @pytest.mark.parametrize(
+        ("init", "expected"),
+        [
+            (_mcp_init(("toolbox", "failed")), "failed"),
+            (_mcp_init(("context7", "connected")), "absent"),
+            (_mcp_init(), "no-servers"),
+        ],
+    )
+    def test_alert_names_the_raw_toolbox_status(
+        self, init, expected, fake_reader, monkeypatch,
+    ):
+        """Ops must be able to see WHY from the email alone."""
+        _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
+        _patch_saver(monkeypatch)
+        sender = _patch_sender(monkeypatch)
+        event = _FinalizeEvent(
+            job=_Job(id=34, session_id="calls_5"),
+            job_result=_JobResult(init),
+        )
+        obs.McpHealthTelemetryObserver().execute(event)
+        sender.assert_called_once()
+        _, _, subject, body = sender.call_args.args
+        assert f"toolbox not connected ({expected})" in subject
+        assert f"Toolbox status: {expected}" in body
+
     def test_observer_never_raises(self, monkeypatch):
         observer = obs.McpHealthTelemetryObserver()
 

@@ -7,9 +7,13 @@
     * ``toolbox_mcp_calls``  — count of ``mcp__toolbox__*`` tool-uses seen in the
       on-disk transcript. ``0`` = parsed, none found. ``NULL`` = unknown
       (no reader, missing/unreadable transcript, or parser drift).
-    * ``toolbox_mcp_connected`` — whether the CLI self-reported ``toolbox`` as
-      connected at session start. ``TRUE``/``FALSE`` only when an init report
-      exists; ``NULL`` when the provider exposed no init report at all.
+    * ``toolbox_mcp_connected`` — what the CLI self-reported for ``toolbox`` in
+      its session-init line, mapped tri-state: ``TRUE`` only for
+      ``connected``; ``FALSE`` for a status the CLI treats as terminal
+      (``failed``/``needs-auth``/…) or when ``toolbox`` is missing from the
+      report; ``NULL`` ("we don't know") when there is no init report at all
+      **or** the status is merely indeterminate — notably ``pending``, which
+      only means the handshake had not finished when init was printed.
   The transcript parser lives in the agent's module (claude/codex/…); this
   observer resolves one via ``get_transcript_reader(provider)`` so the
   framework — and this module — stay agent-agnostic.
@@ -41,6 +45,9 @@ from .constants import (
     CFG_ALERT_SMTP_TLS,
     CFG_ALERT_SMTP_USER,
     CFG_SEND_ALERT_ON_MCP_ISSUES,
+    MCP_STATUS_CONNECTED,
+    MCP_STATUS_NOT_CONNECTED,
+    MCP_STATUS_TRANSIENT,
     MCP_TOOLBOX_TOOL_PREFIX,
     PARSE_DRIFT_MIN_LINES,
 )
@@ -119,12 +126,29 @@ class McpHealthTelemetryObserver:
             session_id = getattr(job, "session_id", None) if job is not None else None
 
             toolbox_calls = self._count_toolbox_calls(provider, session_id, job_id)
-            toolbox_connected = self._resolve_connected(event)
+            toolbox_connected, toolbox_status = self._resolve_toolbox_status(event)
 
             if isinstance(job_id, int) and job_id > 0:
                 _save_mcp_telemetry(job_id, toolbox_calls, toolbox_connected)
 
-            self._maybe_alert(job, provider, session_id, toolbox_calls, toolbox_connected)
+            # Separate from the parse log in _count_toolbox_calls (which runs
+            # before the status is resolved): the raw status word is otherwise
+            # only visible at DEBUG, inside the provider's output parser.
+            logger.info(
+                "McpHealthTelemetryObserver: mcp health",
+                extra={
+                    "job_id": job_id,
+                    "provider": provider,
+                    "session_id": session_id,
+                    "toolbox_mcp_calls": toolbox_calls,
+                    "toolbox_mcp_connected": toolbox_connected,
+                    "toolbox_status": toolbox_status,
+                },
+            )
+
+            self._maybe_alert(
+                job, provider, session_id, toolbox_calls, toolbox_connected, toolbox_status,
+            )
         except Exception:
             logger.warning(
                 "McpHealthTelemetryObserver: unexpected error (best-effort, "
@@ -193,31 +217,52 @@ class McpHealthTelemetryObserver:
         )
         return toolbox_calls
 
-    def _resolve_connected(self, event) -> bool | None:
-        """Resolve the ``toolbox_mcp_connected`` signal from the CLI init report.
+    def _resolve_toolbox_status(self, event) -> tuple[bool | None, str]:
+        """Resolve ``toolbox_mcp_connected`` + the raw status word behind it.
 
-        * ``None``  — no init report at all (provider lacks the capability, or the
-          stream had no init event). This is the "we don't know" state, distinct
-          from ``False``.
-        * ``True``  — init report exists AND ``toolbox`` is listed connected.
-        * ``False`` — init report exists AND ``toolbox`` is present but not
-          connected, OR ``toolbox`` is absent from ``servers`` entirely
-          (including the empty-list case — a valid report saying "no MCP servers
-          visible"). "init present, toolbox not visible" is FALSE, not None.
+        The status is the CLI's own vocabulary and an open string on the wire, so
+        an unrecognized word resolves to "unknown", never to "not connected" — a
+        renamed status must not read as an outage.
+
+        * ``(None, "no-init-report")`` — no init report at all (provider lacks the
+          capability, or the stream had no init event). Distinct from ``False``.
+        * ``(True, status)``  — ``toolbox`` is listed ``connected``.
+        * ``(False, status)`` — ``toolbox`` is listed with a status the CLI treats
+          as terminal for this session (``MCP_STATUS_NOT_CONNECTED``).
+        * ``(None, status)``  — ``toolbox`` is listed but the status is merely
+          indeterminate: ``MCP_STATUS_TRANSIENT`` (``pending`` — the handshake had
+          not finished when init was printed) resolves silently; anything
+          unrecognized resolves the same way but logs a warning.
+        * ``(False, "absent")`` / ``(False, "no-servers")`` — an init report exists
+          but ``toolbox`` is not in it (the empty list is a valid report saying "no
+          MCP servers visible"). "init present, toolbox not visible" is FALSE.
         """
         job_result = getattr(event, "job_result", None)
         mcp_init = getattr(job_result, "mcp_init", None) if job_result is not None else None
         if mcp_init is None:
-            return None
+            return None, "no-init-report"
         for server in mcp_init.servers:
             if server.name == _TOOLBOX_SERVER_NAME:
-                return server.status == "connected"
-        return False
+                if server.status == MCP_STATUS_CONNECTED:
+                    return True, server.status
+                if server.status in MCP_STATUS_NOT_CONNECTED:
+                    return False, server.status
+                if server.status not in MCP_STATUS_TRANSIENT:
+                    logger.warning(
+                        "McpHealthTelemetryObserver: unrecognized MCP status %r for "
+                        "server %r — recording UNKNOWN; extend MCP_STATUS_* if this "
+                        "is a real state", server.status, _TOOLBOX_SERVER_NAME,
+                    )
+                return None, server.status
+        return False, ("absent" if mcp_init.servers else "no-servers")
 
-    def _maybe_alert(self, job, provider, session_id, calls, connected) -> None:
+    def _maybe_alert(self, job, provider, session_id, calls, connected, status) -> None:
         """Send one combined alert per attempt when the flag is on, SMTP is
         configured, and at least one explicit-bad signal is present. NULL signals
         ("unknown") never trigger — only ``calls == 0`` or ``connected is False``.
+
+        ``status`` is the raw init status word; it goes into the subject and body
+        so an alert says *why* rather than a bare ``Connected: False``.
         """
         if not _flag(CFG_SEND_ALERT_ON_MCP_ISSUES):
             return
@@ -235,7 +280,7 @@ class McpHealthTelemetryObserver:
         if zero_calls:
             conditions.append("0 toolbox calls")
         if not_connected:
-            conditions.append("toolbox not connected")
+            conditions.append(f"toolbox not connected ({status})")
         matched = " + ".join(conditions)
 
         job_id = getattr(job, "id", "?")
@@ -249,6 +294,7 @@ class McpHealthTelemetryObserver:
             f"Attempt:       {getattr(job, 'attempt', '?')}/{getattr(job, 'max_attempts', '?')}",
             f"Toolbox calls: {calls}",
             f"Connected:     {connected}",
+            f"Toolbox status: {status}",
             f"Matched:       {matched}",
         ])
         try:

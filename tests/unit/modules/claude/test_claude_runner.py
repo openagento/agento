@@ -230,6 +230,24 @@ def test_parse_claude_output_extracts_mcp_init():
     )
 
 
+def test_parse_claude_output_keeps_pending_status_verbatim():
+    """The parser transcribes the CLI's status word; it never interprets it.
+
+    `pending` means the handshake had not finished when init was printed —
+    deciding what that implies belongs to the consumer (app_monitor), not here.
+    """
+    raw = (
+        '{"type": "system", "subtype": "init", "session_id": "sess-mcp", '
+        '"mcp_servers": [{"name": "toolbox", "status": "pending"}]}\n'
+        + _result_line()
+    )
+    result = parse_claude_output(raw)
+
+    assert result.mcp_init == McpInitReport(
+        servers=(McpServerStatus("toolbox", "pending"),)
+    )
+
+
 def test_parse_claude_output_empty_servers_list():
     raw = (
         '{"type": "system", "subtype": "init", "mcp_servers": []}\n'
