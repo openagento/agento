@@ -13,6 +13,7 @@ NON_RETRYABLE_ERRORS = frozenset({
     "KeyError",
     "AuthenticationError",  # token expired — retrying won't help
     "UsageLimitError",  # session/usage limit — terminal unless a healthy token remains
+    "TransientAuthError",  # stale/revoked credential — terminal unless a healthy token remains
 })
 
 
@@ -68,9 +69,11 @@ def evaluate(
     # healthy alternatives. The consumer sets ``retry_with_other_token`` on the
     # exception when another healthy token exists, so the job retries onto the next
     # token instead of dead-lettering on the first bad/limited credential.
-    if error_class in ("AuthenticationError", "UsageLimitError") and getattr(
-        error_obj, "retry_with_other_token", False
-    ):
+    if error_class in (
+        "AuthenticationError",
+        "UsageLimitError",
+        "TransientAuthError",
+    ) and getattr(error_obj, "retry_with_other_token", False):
         if attempt >= max_attempts:
             return RetryDecision(
                 should_retry=False,

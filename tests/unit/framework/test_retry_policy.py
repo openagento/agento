@@ -202,3 +202,40 @@ def test_usage_limit_with_alternative_respects_max_attempts():
     decision = evaluate("UsageLimitError", attempt=3, max_attempts=3, error_obj=exc)
     assert decision.should_retry is False
     assert "Max attempts" in decision.reason
+
+
+# --- TransientAuthError ------------------------------------------------------
+# A credential rejection that does NOT prove the token is dead (revoked/stale
+# access token). Handled like a usage limit: cooldown + failover, never a poison.
+
+def test_transient_auth_with_healthy_alternative_retries_onto_next_token():
+    from agento.framework.agent_manager.errors import TransientAuthError
+
+    exc = TransientAuthError("401 OAuth access token has been revoked")
+    exc.retry_with_other_token = True
+    decision = evaluate("TransientAuthError", attempt=1, max_attempts=3, error_obj=exc)
+
+    assert decision.should_retry is True
+    assert decision.delay_seconds == BACKOFF_DELAYS[0]
+    assert "next healthy token" in decision.reason
+
+
+def test_transient_auth_without_healthy_alternative_is_terminal():
+    from agento.framework.agent_manager.errors import TransientAuthError
+
+    exc = TransientAuthError("401 OAuth access token has been revoked")
+    decision = evaluate("TransientAuthError", attempt=1, max_attempts=3, error_obj=exc)
+
+    assert decision.should_retry is False
+    assert "Non-retryable" in decision.reason
+
+
+def test_transient_auth_max_attempts_reached_does_not_retry():
+    from agento.framework.agent_manager.errors import TransientAuthError
+
+    exc = TransientAuthError("401 OAuth access token has been revoked")
+    exc.retry_with_other_token = True
+    decision = evaluate("TransientAuthError", attempt=3, max_attempts=3, error_obj=exc)
+
+    assert decision.should_retry is False
+    assert "Max attempts" in decision.reason
