@@ -489,3 +489,18 @@ class TokenUsageLimitedEvent:
     error_msg: str
     reset_at: datetime | None = None
     job_id: int | None = None
+
+
+@dataclass
+class TokenAuthThrottledEvent:
+    """Dispatched when a TRANSIENT auth failure (e.g. a revoked/stale access token)
+    throttles a token instead of poisoning it — ``throttled_until`` is set, ``status``
+    stays ``'ok'``, and the token auto-recovers. Distinct from
+    ``TokenAuthFailedEvent`` (permanent poison) and from ``TokenUsageLimitedEvent``
+    (a quota limit, not a credential problem). ``throttled_until`` is naive UTC."""
+
+    agent_type: str
+    token_id: int
+    error_msg: str
+    throttled_until: datetime | None = None
+    job_id: int | None = None
