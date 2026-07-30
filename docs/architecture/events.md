@@ -179,8 +179,11 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 |-------|-----------|--------|------|
 | `token_auth_failed_after` | `TokenAuthFailedEvent` | `agent_type, token_id, error_msg, job_id` | A runtime auth failure flips a token to `status='error'` (permanent poison) |
 | `token_usage_limited_after` | `TokenUsageLimitedEvent` | `agent_type, token_id, error_msg, reset_at, job_id` | A session/usage/rate limit throttles a token via `throttled_until` (temporary cooldown; `status` stays `'ok'`) |
+| `token_auth_throttled_after` | `TokenAuthThrottledEvent` | `agent_type, token_id, error_msg, throttled_until, job_id` | A **transient** auth failure (revoked/stale access token) throttles a token via `throttled_until` (`status` stays `'ok'`; no poison) |
 
 `token_usage_limited_after` is distinct from `token_auth_failed_after`: a usage limit is **temporary**, so the consumer sets `oauth_token.throttled_until = reset_at` (a cooldown the pool skips until it passes — the token auto-recovers) and the job fails over to another healthy token, whereas an auth failure **poisons** the token (`status='error'`) until an operator or credential-refresh clears it. Both are internal events (defined in `framework/events.py`, not re-exported from `framework/contracts/`).
+
+`token_auth_throttled_after` is the third member of this family: unlike `token_auth_failed_after` it does **not** poison the token (the credential is usually still live — a revoked/stale *access token* typically means this run got an out-of-date copy), and unlike `token_usage_limited_after` the cause is a credential rejection rather than a quota. It is deliberately left unbound — in particular it must NOT trigger `workspace_build`'s `ReplaceErroredTokenCredentialsObserver`, which exists to evict a *poisoned* token's dead credentials.
 
 ### Config & Setup Lifecycle
 
