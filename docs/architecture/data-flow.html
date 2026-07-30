@@ -326,7 +326,7 @@
         <div class="card-body">
           Per-provider <code>ConfigWriter</code> writes credentials
           (<code>~/.claude/.credentials.json</code> / <code>~/.codex/config.toml</code>) and injects the toolbox MCP server entry:
-          <code>{ "toolbox": { "url": "http://toolbox:3001/sse" } }</code>.
+          <code>{ "toolbox": { "type": "http", "url": "http://toolbox:3001/mcp" } }</code>.
         </div>
       </div>
 

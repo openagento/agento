@@ -97,7 +97,102 @@ class TestPrepareWorkspace:
         assert not (work_dir / ".claude.json").exists()
         assert not (work_dir / ".claude" / "settings.json").exists()
         data = json.loads((work_dir / ".mcp.json").read_text())
-        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/sse"
+        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/mcp"
+
+    def test_toolbox_entry_has_explicit_type(self, writer, work_dir):
+        writer.prepare_workspace(work_dir, {}, toolbox_url=self.TOOLBOX)
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert data["mcpServers"]["toolbox"] == {
+            "type": "http",
+            "url": "http://toolbox:3001/mcp",
+        }
+
+    def test_every_generated_server_entry_has_a_type(self, writer, work_dir):
+        servers = '{"other": {"url": "http://other:4000/sse"}}'
+        writer.prepare_workspace(
+            work_dir, {"mcp/servers": servers}, toolbox_url=self.TOOLBOX,
+        )
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert data["mcpServers"]
+        for name, cfg in data["mcpServers"].items():
+            assert "type" in cfg, f"{name} has no type"
+
+    def test_derives_sse_for_sse_extra(self, writer, work_dir):
+        servers = '{"other": {"url": "http://other:4000/sse"}}'
+        writer.prepare_workspace(
+            work_dir, {"mcp/servers": servers}, toolbox_url=self.TOOLBOX,
+        )
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert data["mcpServers"]["other"]["type"] == "sse"
+
+    def test_derives_stdio_for_command_extra(self, writer, work_dir):
+        servers = '{"local": {"command": "npx", "args": ["-y", "server"]}}'
+        writer.prepare_workspace(
+            work_dir, {"mcp/servers": servers}, toolbox_url=self.TOOLBOX,
+        )
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert data["mcpServers"]["local"]["type"] == "stdio"
+        assert "url" not in data["mcpServers"]["local"]
+
+    def test_defaults_to_http_for_ambiguous_url(self, writer, work_dir):
+        servers = '{"other": {"url": "https://example.com/api"}}'
+        writer.prepare_workspace(
+            work_dir, {"mcp/servers": servers}, toolbox_url=self.TOOLBOX,
+        )
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert data["mcpServers"]["other"]["type"] == "http"
+
+    def test_malformed_url_falls_back_to_http(self, writer, work_dir):
+        servers = '{"other": {"url": "http://[::1"}}'
+        writer.prepare_workspace(
+            work_dir, {"mcp/servers": servers}, toolbox_url=self.TOOLBOX,
+        )
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert data["mcpServers"]["other"]["type"] == "http"
+
+    def test_does_not_log_mcp_url_secrets(self, writer, work_dir, caplog):
+        servers = '{"other": {"url": "https://user:sup3rsecret@example.com/api?key=t0ken"}}'
+        with caplog.at_level("WARNING"):
+            writer.prepare_workspace(
+                work_dir, {"mcp/servers": servers}, toolbox_url=self.TOOLBOX,
+            )
+        assert "sup3rsecret" not in caplog.text
+        assert "t0ken" not in caplog.text
+        assert "example.com" not in caplog.text
+        assert "other" in caplog.text
+
+    def test_explicit_operator_type_is_preserved(self, writer, work_dir):
+        servers = '{"toolbox": {"type": "sse", "url": "http://toolbox:3001/sse"}}'
+        writer.prepare_workspace(
+            work_dir, {"mcp/servers": servers}, toolbox_url=self.TOOLBOX,
+        )
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert data["mcpServers"]["toolbox"] == {
+            "type": "sse",
+            "url": "http://toolbox:3001/sse",
+        }
+
+    def test_drops_untypeable_extra(self, writer, work_dir):
+        servers = '{"weird": {"foo": 1}}'
+        writer.prepare_workspace(
+            work_dir, {"mcp/servers": servers}, toolbox_url=self.TOOLBOX,
+        )
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert list(data["mcpServers"].keys()) == ["toolbox"]
+
+    def test_non_dict_extra_is_dropped_and_toolbox_survives(self, writer, work_dir):
+        servers = '{"toolbox": "nope", "weird": 1}'
+        writer.prepare_workspace(
+            work_dir, {"mcp/servers": servers},
+            agent_view_id=3, toolbox_url=self.TOOLBOX,
+        )
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert data["mcpServers"] == {
+            "toolbox": {
+                "type": "http",
+                "url": "http://toolbox:3001/mcp?agent_view_id=3",
+            },
+        }
 
     def test_extras_merge_with_toolbox_mcp(self, writer, work_dir):
         extras = '{"other": {"command": "npx", "args": ["-y", "server"]}}'
@@ -110,7 +205,7 @@ class TestPrepareWorkspace:
     def test_always_writes_toolbox_when_no_extras(self, writer, work_dir):
         writer.prepare_workspace(work_dir, {"model": "opus"}, toolbox_url=self.TOOLBOX)
         data = json.loads((work_dir / ".mcp.json").read_text())
-        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/sse"
+        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/mcp"
 
     def test_ignores_invalid_extras_json(self, writer, work_dir):
         writer.prepare_workspace(
@@ -119,17 +214,17 @@ class TestPrepareWorkspace:
         data = json.loads((work_dir / ".mcp.json").read_text())
         assert list(data["mcpServers"].keys()) == ["toolbox"]
 
-    def test_appends_agent_view_id_to_toolbox_sse_url(self, writer, work_dir):
+    def test_appends_agent_view_id_to_toolbox_url(self, writer, work_dir):
         writer.prepare_workspace(
             work_dir, {}, agent_view_id=2, toolbox_url=self.TOOLBOX,
         )
         data = json.loads((work_dir / ".mcp.json").read_text())
-        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/sse?agent_view_id=2"
+        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/mcp?agent_view_id=2"
 
     def test_no_agent_view_id_leaves_url_unchanged(self, writer, work_dir):
         writer.prepare_workspace(work_dir, {}, toolbox_url=self.TOOLBOX)
         data = json.loads((work_dir / ".mcp.json").read_text())
-        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/sse"
+        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/mcp"
 
     def test_does_not_modify_non_mcp_urls(self, writer, work_dir):
         servers = '{"other": {"type": "stdio", "command": "node"}}'
@@ -174,6 +269,40 @@ class TestInjectRuntimeParams:
 
         data = json.loads((work_dir / ".mcp.json").read_text())
         assert "job_id=5" in data["mcpServers"]["toolbox"]["url"]
+
+    def test_preserves_type(self, writer, work_dir):
+        mcp = {
+            "mcpServers": {
+                "toolbox": {
+                    "type": "http",
+                    "url": "http://toolbox:3001/mcp?agent_view_id=1",
+                },
+            },
+        }
+        (work_dir / ".mcp.json").write_text(json.dumps(mcp))
+
+        writer.inject_runtime_params(work_dir, job_id=7)
+
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert data["mcpServers"]["toolbox"]["type"] == "http"
+        assert "job_id=7" in data["mcpServers"]["toolbox"]["url"]
+
+    def test_tolerates_malformed_entries(self, writer, work_dir):
+        mcp = {
+            "mcpServers": {
+                "broken": "nope",
+                "numeric": {"type": "http", "url": 123},
+                "toolbox": {"type": "http", "url": "http://toolbox:3001/mcp"},
+            },
+        }
+        (work_dir / ".mcp.json").write_text(json.dumps(mcp))
+
+        writer.inject_runtime_params(work_dir, job_id=8)
+
+        data = json.loads((work_dir / ".mcp.json").read_text())
+        assert data["mcpServers"]["broken"] == "nope"
+        assert data["mcpServers"]["numeric"]["url"] == 123
+        assert "job_id=8" in data["mcpServers"]["toolbox"]["url"]
 
 
 class TestWriteCredentials:

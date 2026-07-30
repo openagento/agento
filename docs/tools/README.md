@@ -1,12 +1,12 @@
 # MCP Tools
 
-Tools are exposed to the AI agent via MCP (Model Context Protocol). The Toolbox serves two transports: SSE at `/sse` (used by Claude) and streamable HTTP at `/mcp` (used by Codex). The Toolbox discovers and registers tools from modules at startup.
+Tools are exposed to the AI agent via MCP (Model Context Protocol). The Toolbox serves two transports: streamable HTTP at `/mcp` (used by both Claude and Codex) and SSE at `/sse` (deprecated, still served for compatibility and operator-pinned `type: sse` entries). The Toolbox discovers and registers tools from modules at startup.
 
 ## Architecture
 
 ```
 Agent (cron/sandbox)                    Toolbox
-┌─────────────┐    MCP/SSE    ┌─────────────────────────┐
+┌─────────────┐    MCP/HTTP   ┌─────────────────────────┐
 │ Claude CLI   │◄────────────►│ MCP Server (:3001)      │
 │ reads .mcp.json             │                         │
 │                             │ ┌─────────────────────┐ │
