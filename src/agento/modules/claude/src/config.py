@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from agento.framework.agent_manager.token_store import update_refreshed_credentials
 
@@ -30,6 +31,31 @@ _AUTH_IDENTITY_KEYS = frozenset({
     "firstStartTime",
     "hasCompletedOnboarding",
 })
+
+
+def _derive_mcp_type(name: str, server_cfg: dict) -> str | None:
+    """Infer the ``.mcp.json`` type discriminator for an entry that omits it.
+
+    Claude Code validates each entry on ``type``; a typeless URL entry defaults
+    to ``stdio``, then fails for lacking ``command``, and the server is dropped.
+    Warnings identify the entry by name only — operator URLs may carry
+    credentials (userinfo or a query token).
+    """
+    if "command" in server_cfg:
+        return "stdio"
+    url = server_cfg.get("url")
+    if not isinstance(url, str) or not url:
+        return None
+    try:
+        path = urlsplit(url).path.rstrip("/")
+    except ValueError:
+        path = ""
+    if path.endswith("/sse"):
+        return "sse"
+    if path.endswith("/mcp"):
+        return "http"
+    logger.warning("MCP server %r: cannot derive type from URL, defaulting to http", name)
+    return "http"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -244,8 +270,10 @@ class ClaudeConfigWriter:
             return
         servers = data.get("mcpServers", {})
         for server_cfg in servers.values():
-            url = server_cfg.get("url", "")
-            if "/sse" in url or "/mcp" in url:
+            if not isinstance(server_cfg, dict):
+                continue
+            url = server_cfg.get("url")
+            if isinstance(url, str) and ("/sse" in url or "/mcp" in url):
                 sep = "&" if "?" in url else "?"
                 server_cfg["url"] = f"{url}{sep}job_id={job_id}"
         mcp_path.write_text(json.dumps(data, indent=2))
@@ -374,21 +402,36 @@ class ClaudeConfigWriter:
         # Auto-inject the toolbox MCP entry; operators can add more (or shadow
         # "toolbox") via agent_view/mcp/servers.
         servers: dict[str, dict] = {
-            "toolbox": {"url": f"{toolbox_url.rstrip('/')}/sse"},
+            "toolbox": {"type": "http", "url": f"{toolbox_url.rstrip('/')}/mcp"},
         }
         extra_raw = agent_config.get("mcp/servers")
         if extra_raw:
+            extra: Any = {}
             try:
                 extra = json.loads(extra_raw)
-                if isinstance(extra, dict):
-                    servers.update(extra)
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Invalid JSON in agent_view/mcp/servers, ignoring extras")
+            if isinstance(extra, dict):
+                for name, server_cfg in extra.items():
+                    if not isinstance(server_cfg, dict):
+                        logger.warning("MCP server %r is not an object, ignoring", name)
+                        continue
+                    server_cfg = dict(server_cfg)
+                    if "type" not in server_cfg:
+                        derived = _derive_mcp_type(name, server_cfg)
+                        if derived is None:
+                            logger.warning(
+                                "MCP server %r has no type and none can be derived, ignoring",
+                                name,
+                            )
+                            continue
+                        server_cfg["type"] = derived
+                    servers[name] = server_cfg
 
         if agent_view_id is not None:
             for server_cfg in servers.values():
-                url = server_cfg.get("url", "")
-                if "/sse" in url or "/mcp" in url:
+                url = server_cfg.get("url")
+                if isinstance(url, str) and ("/sse" in url or "/mcp" in url):
                     sep = "&" if "?" in url else "?"
                     server_cfg["url"] = f"{url}{sep}agent_view_id={agent_view_id}"
 

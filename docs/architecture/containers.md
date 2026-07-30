@@ -54,6 +54,6 @@ Four containers on the `agento-net` bridge network.
 
 All containers communicate on `agento-net` (bridge). DNS names match service names: `toolbox`, `mysql`.
 
-Agent connects to Toolbox via MCP. Claude uses SSE at `http://toolbox:3001/sse` (written to `.mcp.json`); Codex uses streamable HTTP at `http://toolbox:3001/mcp` (written to `.codex/config.toml`). Each agent's `ConfigWriter` constructs the URL from the shared `core/toolbox/url` base value.
+Agent connects to Toolbox via MCP. Both agents use streamable HTTP at `http://toolbox:3001/mcp` — Claude via `.mcp.json` (`{"type": "http", "url": …}`; the `type` discriminator is mandatory, a typeless entry is dropped at validation), Codex via `.codex/config.toml`. Each agent's `ConfigWriter` constructs the URL from the shared `core/toolbox/url` base value. The deprecated SSE transport at `/sse` is still served for operator-pinned `type: sse` entries.
 
 Source: [docker/docker-compose.yml](../../docker/docker-compose.yml)
