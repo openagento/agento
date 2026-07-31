@@ -28,6 +28,14 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - run: uv sync --group dev
       - run: uv run ruff check src/ tests/
+      # Service containers accept no command override, so raise the limit at
+      # runtime. Default is 151; the token-pool contention test drives 200
+      # concurrent claimants that each hold a connection (no pooling), and
+      # skips itself below 230.
+      - name: Raise MySQL max_connections
+        run: >-
+          mysql -h 127.0.0.1 -P 3306 -u root -pcronagent_root
+          -e "SET GLOBAL max_connections=300;"
       - run: uv run pytest -q
         env:
           TEST_MYSQL_HOST: 127.0.0.1

@@ -122,8 +122,14 @@ class TestTokenResolver:
         assert mock_select.call_count == attempts_under_contention + 1
 
     def test_resolve_gives_up_at_the_wall_clock_deadline(self):
-        """Unbounded contention must still terminate — via the deadline."""
-        clock = iter([0.0] + [float(i) * 0.5 for i in range(1, 200)])
+        """Unbounded contention must still terminate — via the deadline.
+
+        Pinned to an explicit budget so the bound is derived from the deadline
+        under test, not from whatever the shipped constant happens to be.
+        """
+        budget = 3.0
+        tick = 0.5
+        clock = iter([float(i) * tick for i in range(1000)])
 
         with (
             patch(
@@ -136,6 +142,11 @@ class TestTokenResolver:
             ),
             patch("agento.framework.agent_manager.token_resolver.time.sleep"),
             patch(
+                "agento.framework.agent_manager.token_resolver."
+                "_POOL_CONTENTION_BUDGET_SECONDS",
+                budget,
+            ),
+            patch(
                 "agento.framework.agent_manager.token_resolver.time.monotonic",
                 side_effect=lambda: next(clock),
             ),
@@ -143,8 +154,9 @@ class TestTokenResolver:
         ):
             TokenResolver().resolve(MagicMock(), AgentProvider.CLAUDE)
 
-        # 3s budget consumed by a clock advancing 0.5s per read.
-        assert mock_select.call_count <= 8
+        # Two clock reads per loop (deadline check), so the budget is spent
+        # after ~budget/tick reads — bounded regardless of the shipped default.
+        assert mock_select.call_count <= int(budget / tick) + 1
 
     def test_contention_backoff_is_jittered_and_capped(self):
         """Lockstep retries re-collide; jitter is what breaks the herd up."""

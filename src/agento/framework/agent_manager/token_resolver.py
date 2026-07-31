@@ -11,10 +11,17 @@ from .token_store import count_tokens_for_provider, select_token
 
 # Contention retry budget, expressed as a wall-clock deadline rather than a
 # fixed attempt count: what matters is how long the herd takes to drain, and
-# that scales with DB latency (a loaded CI runner is far slower than a laptop).
-# A fixed 20 x 10ms = 200ms cap failed spuriously once ~10 workers contended
-# over a handful of rows.
-_POOL_CONTENTION_BUDGET_SECONDS = 3.0
+# that scales with both DB latency and worker count (a loaded CI runner is far
+# slower than a laptop). A fixed 20 x 10ms = 200ms cap failed spuriously once
+# ~10 workers contended over a handful of rows.
+#
+# Sized for the documented ceiling of ~150 concurrent claimants (see
+# tests/integration/test_token_selection_concurrency.py, which exercises 200):
+# draining 200 workers over 3 tokens measures ~1s locally, and CI runs several
+# times slower. The budget is a ceiling, not a cost — an uncontended claim
+# returns on the first attempt and never sleeps. Raise it if you raise
+# AGENTO_CONSUMER_MAX_WORKERS beyond that.
+_POOL_CONTENTION_BUDGET_SECONDS = 15.0
 _POOL_CONTENTION_INITIAL_SLEEP_SECONDS = 0.01
 _POOL_CONTENTION_MAX_SLEEP_SECONDS = 0.1
 
