@@ -1,7 +1,9 @@
 import { z } from 'zod';
-import { logToolboxMcp as log } from '../log.js';
+import { logToolboxMcp as processLog } from '../log.js';
 
-function createOpensearchTool(server, toolName, description, config) {
+function createOpensearchTool(server, toolName, description, config, options = {}) {
+  // See the mssql adapter: prefer the injected agent_view-scoped session logger.
+  const log = options.log || processLog;
   server.tool(
     toolName,
     description,
@@ -80,12 +82,12 @@ function createOpensearchTool(server, toolName, description, config) {
  * Register OpenSearch tools from pre-resolved tool configs.
  * @returns {{ names: string[], healthcheck: () => Promise<Array> }}
  */
-export function registerOpensearchTools(server, tools, _options = {}) {
+export function registerOpensearchTools(server, tools, options = {}) {
   const registered = [];
   const configRefs = [];
 
   for (const tool of tools) {
-    createOpensearchTool(server, tool.name, tool.description, tool.config);
+    createOpensearchTool(server, tool.name, tool.description, tool.config, { log: options.log });
     registered.push(tool.name);
     configRefs.push({ name: tool.name, config: tool.config });
   }

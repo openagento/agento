@@ -17,8 +17,8 @@ Agent (cron/sandbox)                    Toolbox
 │                             │           │             │
 │                             │ ┌─────────▼───────────┐ │
 │                             │ │ Adapter Tools       │ │
-│                             │ │ (mysql, mssql,      │ │
-│                             │ │  opensearch)        │ │
+│                             │ │ (mysql, mysql_root, │ │
+│                             │ │  mssql, opensearch) │ │
 │                             │ ├─────────────────────┤ │
 │                             │ │ Module Tools        │ │
 │                             │ │ (jira, email,       │ │
@@ -63,6 +63,7 @@ Registered dynamically from `module.json` tool declarations:
 - Each module declares tools with type + field schemas
 - Config resolved via 3-level fallback (ENV → DB → config.json)
 - Tools missing required config (host, pass) are skipped with a warning
+- The declared `type` fixes the tool's capability at review time — `mysql` is read-only, `mysql_root` is full read/write. No runtime config can promote a `mysql` tool. See [built-in-adapters.md](built-in-adapters.md#mysql-root-full-readwrite).
 
 ## Tool Registration Flow
 
@@ -76,5 +77,5 @@ Source: [src/agento/toolbox/config-loader.js](../../src/agento/toolbox/config-lo
 ## Further Reading
 
 - [Adding a Tool](adding-a-tool.md) — end-to-end tutorial (MySQL example)
-- [Built-in Adapters](built-in-adapters.md) — mysql, mssql, opensearch
+- [Built-in Adapters](built-in-adapters.md) — mysql, mysql_root, mssql, opensearch
 - [Creating an Adapter](creating-an-adapter.md) — add a new adapter type

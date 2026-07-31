@@ -105,6 +105,7 @@ import { registerPostgresTools } from './postgres.js';
 
 const ADAPTERS = {
   mysql: registerMysqlTools,
+  mysql_root: registerMysqlRootTools,
   mssql: registerMssqlTools,
   opensearch: registerOpensearchTools,
   postgres: registerPostgresTools,  // NEW
@@ -158,6 +159,20 @@ function registerXxxTools(
 The `config` object contains resolved values from the 3-level fallback. Fields match the `fields` schema in module.json.
 
 SQL adapters must use the process-owned `sqlPoolRegistry` supplied in `options`. Do not keep a module-level pool or registry: adapter registrations happen per MCP session, while safe pool reuse and the per-server concurrency budget are process-wide concerns managed by the injected registry. They must also enforce read-only SQL before calling the driver, using the matching dialect; a read-only database principal remains mandatory defense in depth.
+
+## Write Access Is a Separate Type, Never a Config Flag
+
+The only sanctioned way to grant write access is a **separate adapter type with its own registrar** — `mysql_root` next to `mysql`, never a `read_only: false` config field. Capability then lives in git-tracked `module.json`, granted at review time, and no `core_config_data` row or ENV var can promote a read-only tool.
+
+`mysql.js` shows the shape to copy for an `mssql_root` / `postgres_root` follow-up: one `TIERS` table holding the per-tier guard, query-parameter description, tool-description decoration, required tool-name suffix, and pool `adapter` label; one shared `createXxxTool` / `registerTierTools` pair so pool wiring, timeouts, logging, and healthchecks are literally the same code; and two thin exports that differ only in the tier they pass. The read-only path keeps its exact guard and block message, so adding a tier cannot change existing tools' decisions.
+
+A full-access tier must also:
+
+- Say so in both the tool description and the `query` parameter description, including that a timed-out statement may still have been applied.
+- Require a capability marker in the tool NAME, registered in `module_validator.FULL_ACCESS_TOOL_NAME_SUFFIXES` so `module:add` and `module:validate` enforce it too. Tool enablement is keyed by name and records nothing about capability, so without a marker an in-place `type` edit would inherit an existing read-only grant. The suffix must be enforced in BOTH directions — required on the full-access type, and reserved from every other type — or a tool can simply squat the name before being escalated. Reuse the existing `_root` suffix rather than inventing a per-adapter one.
+- Document that the database user's `GRANT`s are the real boundary.
+
+Every adapter should log through `options.log` when present (the session's agent_view-scoped logger), falling back to the process-wide MCP logger — otherwise destructive invocations are attributed only to the LLM-supplied `user` argument.
 
 The shared validator deliberately rejects backslashes inside PostgreSQL string literals. PostgreSQL `E'...'` strings always interpret backslash escapes, while plain strings depend on server settings; rejecting the ambiguous form prevents the validator and server from disagreeing about where a statement ends.
 

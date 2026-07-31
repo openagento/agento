@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import sql from 'mssql';
-import { logToolboxMcp as log } from '../log.js';
+import { logToolboxMcp as processLog } from '../log.js';
 import { runCancellable } from '../cancellable-operation.js';
 import { isReadOnlySql } from './sql-read-only.js';
 import { getSqlTimeoutMs } from './sql-timeout.js';
@@ -8,6 +8,10 @@ import { getSqlTimeoutMs } from './sql-timeout.js';
 const ALLOWED_KEYWORDS = ['SELECT', 'WITH'];
 
 function createMssqlTool(server, toolName, description, config, options) {
+  // The session logger carries the agent_view label/id, so tool invocations are attributable to
+  // a scope — not only to the LLM-supplied `user`. Falls back to the process-wide MCP logger for
+  // interactive runs and tool-list sessions with no agent_view.
+  const log = options.log || processLog;
   const port = parseInt(config.port || '1433');
   const configuredPoolMax = Number.parseInt(config.client_connection_pool_max_per_tool, 10);
   const poolMax = Number.isInteger(configuredPoolMax) && configuredPoolMax > 0
@@ -108,6 +112,7 @@ export function registerMssqlTools(server, tools, options = {}) {
     serverConcurrencyBudget: options.serverConcurrencyBudget || 10,
     sqlPoolRegistry: options.sqlPoolRegistry,
     sqlTimeoutMs: getSqlTimeoutMs(options.sqlTimeoutSeconds),
+    log: options.log,
   };
   const registered = [];
   const poolRefs = [];

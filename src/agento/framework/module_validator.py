@@ -6,6 +6,19 @@ import re
 from pathlib import Path
 
 REQUIRED_MANIFEST_FIELDS = {"name", "version", "description"}
+# Full-access adapter types must carry their capability in the tool NAME. Tool enablement is
+# keyed by name (`tools/<name>/is_enabled`) and records nothing about capability, so promoting
+# an already-enabled read-only tool by editing its type in place would inherit the old grant.
+#
+# The mapping is enforced in BOTH directions, and only the pair makes promotion a rename:
+#   1. a full-access type MUST use its suffix, and
+#   2. the suffix is RESERVED — no other type may use it, so a read-only tool cannot squat the
+#      name first and be escalated later by an edit to its `type` alone.
+# Mirrored at runtime by the toolbox mysql adapter. Note this binds a NAME to a capability, not
+# a grant to a capability: an is_enabled row left behind by a deleted full-access tool of the
+# same name would still apply if that name is reused.
+FULL_ACCESS_TOOL_NAME_SUFFIXES = {"mysql_root": "_root"}
+RESERVED_TOOL_NAME_SUFFIXES = frozenset(FULL_ACCESS_TOOL_NAME_SUFFIXES.values())
 VALID_FIELD_TYPES = {"string", "integer", "boolean", "obscure", "select", "multiselect", "json", "textarea"}
 # Canonical identity-type form (fits ingress_identity.identity_type VARCHAR(32)); rejects
 # whitespace / control chars / wrong shape that a bare "non-empty ≤32" check would let through.
@@ -88,6 +101,24 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
             for tf in ("type", "name", "description", "toolset"):
                 if tf not in tool:
                     errors.append(f"module.json: tools[{i}] missing '{tf}'")
+
+            tool_name = str(tool.get("name", ""))
+            suffix = FULL_ACCESS_TOOL_NAME_SUFFIXES.get(tool.get("type"))
+            if suffix and not tool_name.endswith(suffix):
+                errors.append(
+                    f"module.json: tools[{i}] type '{tool['type']}' grants full read/write, so its "
+                    f"name '{tool_name}' must end in '{suffix}' — capability must be visible "
+                    "in the tool name (enablement is keyed by name, so renaming forces fresh consent)"
+                )
+            elif not suffix:
+                squatted = next((s for s in RESERVED_TOOL_NAME_SUFFIXES if tool_name.endswith(s)), None)
+                if squatted:
+                    errors.append(
+                        f"module.json: tools[{i}] name '{tool_name}' ends in '{squatted}', which is "
+                        f"reserved for full-access tool types ({', '.join(sorted(FULL_ACCESS_TOOL_NAME_SUFFIXES))}) "
+                        f"— type '{tool.get('type')}' must not use it, otherwise the tool could later be "
+                        "escalated in place by editing only its type, keeping its is_enabled grant"
+                    )
 
     # di.json
     di_path = module_dir / "di.json"

@@ -523,7 +523,7 @@ export async function registerTools(server, context, agentViewId = null, preload
     enabledTools,
     moduleToolTypes,
     moduleConfigs,
-    { sqlPoolRegistry: context.sqlPoolRegistry }
+    { sqlPoolRegistry: context.sqlPoolRegistry, log: context.log }
   );
 
   const healthchecks = [...adapterHealthchecks];

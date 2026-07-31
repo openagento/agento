@@ -1,13 +1,66 @@
 import { z } from 'zod';
 import mysql from 'mysql2/promise';
-import { logToolboxMcp as log } from '../log.js';
+import { logToolboxMcp as processLog } from '../log.js';
 import { runCancellable } from '../cancellable-operation.js';
 import { isReadOnlySql } from './sql-read-only.js';
 import { getSqlTimeoutMs } from './sql-timeout.js';
 
 const ALLOWED_KEYWORDS = ['SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN', 'WITH'];
 
+// Capability is bound to the declared module.json tool `type`, not to runtime config: a
+// `type: "mysql"` tool can never become writable through core_config_data, ENV, or
+// config.json. Granting write access requires a reviewed change to the declared type.
+// Tiers differ ONLY in the guard, the advertised contract, and the pool label; an
+// unrecognized tier falls back to 'read-only' so a wiring mistake fails closed.
+const TIERS = {
+  'read-only': {
+    type: 'mysql',
+    queryDescription: 'SQL query to execute (SELECT only)',
+    guard: query => isReadOnlySql(query, ALLOWED_KEYWORDS, { dialect: 'mysql' }),
+    blockMessage: 'Error: Only SELECT, SHOW, DESCRIBE, and EXPLAIN queries are allowed.',
+    describeTool: description => description,
+  },
+  root: {
+    type: 'mysql_root',
+    // Capability must be visible in the tool NAME, not only in the manifest type: enablement is
+    // keyed by name (`tools/<name>/is_enabled`) and records nothing about capability, so flipping
+    // an already-enabled `mysql` tool to `mysql_root` in place would inherit its read-only grant.
+    // Requiring the suffix makes every promotion a rename, and a rename needs a fresh tool:enable.
+    // module_validator enforces the same rule before deploy (FULL_ACCESS_TOOL_NAME_SUFFIXES).
+    nameSuffix: '_root',
+    queryDescription: 'SQL query to execute — ANY SQL is allowed (full read/write: INSERT, UPDATE, DELETE, TRUNCATE, DDL)',
+    guard: null,
+    blockMessage: null,
+    describeTool: description => `${description} FULL ACCESS (read/write): any single SQL statement executes as-is, including INSERT, UPDATE, DELETE, TRUNCATE and DDL. On timeout the statement may still have been applied — verify state before retrying, and prefer idempotent statements.`,
+  },
+};
+
+// Reserved both ways: a full-access tier must use its suffix, and no other tier may. Only the
+// pair makes promotion a rename — otherwise a read-only tool could take the name first, be
+// enabled, and later be escalated by an edit to its `type` alone. module_validator enforces the
+// same rule before deploy (FULL_ACCESS_TOOL_NAME_SUFFIXES / RESERVED_TOOL_NAME_SUFFIXES); this is
+// the runtime backstop.
+const RESERVED_NAME_SUFFIXES = Object.values(TIERS).map(t => t.nameSuffix).filter(Boolean);
+
+function nameViolation(toolName, tier) {
+  const required = TIERS[tier].nameSuffix;
+  if (required) {
+    return toolName.endsWith(required)
+      ? null
+      : `a "${TIERS[tier].type}" tool grants full read/write, so its name must end in "${required}"`;
+  }
+  const squatted = RESERVED_NAME_SUFFIXES.find(suffix => toolName.endsWith(suffix));
+  return squatted
+    ? `"${squatted}" is reserved for full-access tool types, so a "${TIERS[tier].type}" tool must not use it`
+    : null;
+}
+
 function createMysqlTool(server, toolName, description, config, options) {
+  const tier = TIERS[options.tier] || TIERS['read-only'];
+  // The session logger carries the agent_view label/id, so every decision this tool logs is
+  // attributable to a scope — not only to the LLM-supplied `user`. Falls back to the
+  // process-wide MCP logger for interactive runs and tool-list sessions with no agent_view.
+  const log = options.log || processLog;
   const port = parseInt(config.port || '3306');
   const configuredPoolMax = Number.parseInt(config.client_connection_pool_max_per_tool, 10);
   const poolMax = Number.isInteger(configuredPoolMax) && configuredPoolMax > 0
@@ -23,7 +76,7 @@ function createMysqlTool(server, toolName, description, config, options) {
     connectionLimit: poolMax,
   };
   const poolHandle = options.sqlPoolRegistry.createPoolHandle({
-    adapter: 'mysql',
+    adapter: tier.type,
     toolName,
     config: mysqlConfig,
     server: { host: String(config.host).trim().toLowerCase(), port },
@@ -35,29 +88,29 @@ function createMysqlTool(server, toolName, description, config, options) {
 
   server.tool(
     toolName,
-    description,
+    tier.describeTool(description),
     {
       user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
-      query: z.string().describe('SQL query to execute (SELECT only)'),
+      query: z.string().describe(tier.queryDescription),
     },
     async ({ user, query }) => {
       if (!config.host || !config.pass) {
-        log(toolName, 'ERROR', `user=${user} - not configured (missing host or pass)`);
+        log(toolName, 'ERROR', `user=${user} type=${tier.type} - not configured (missing host or pass)`);
         return {
           content: [{ type: 'text', text: `Error: ${toolName} not configured. Set host and pass via bin/agento config:set or ENV vars.` }],
           isError: true,
         };
       }
 
-      if (!isReadOnlySql(query, ALLOWED_KEYWORDS, { dialect: 'mysql' })) {
-        log(toolName, 'BLOCKED', `user=${user} non-readonly query: ${query.substring(0, 80)}`);
+      if (tier.guard && !tier.guard(query)) {
+        log(toolName, 'BLOCKED', `user=${user} type=${tier.type} non-readonly query: ${query.substring(0, 80)}`);
         return {
-          content: [{ type: 'text', text: 'Error: Only SELECT, SHOW, DESCRIBE, and EXPLAIN queries are allowed.' }],
+          content: [{ type: 'text', text: tier.blockMessage }],
           isError: true,
         };
       }
 
-      log(toolName, 'QUERY', `user=${user} | ${query}`);
+      log(toolName, 'QUERY', `user=${user} type=${tier.type} | ${query}`);
       const start = Date.now();
 
       try {
@@ -65,12 +118,12 @@ function createMysqlTool(server, toolName, description, config, options) {
         const elapsed = Date.now() - start;
         const rowCount = Array.isArray(rows) ? rows.length : '?';
 
-        log(toolName, 'OK', `user=${user} time=${elapsed}ms rows=${rowCount}`);
+        log(toolName, 'OK', `user=${user} type=${tier.type} time=${elapsed}ms rows=${rowCount}`);
 
         const text = JSON.stringify(rows, null, 2);
         return { content: [{ type: 'text', text }] };
       } catch (err) {
-        log(toolName, 'ERROR', `user=${user} ${err.message}`);
+        log(toolName, 'ERROR', `user=${user} type=${tier.type} ${err.message}`);
         return {
           content: [{ type: 'text', text: `Query error: ${err.message}` }],
           isError: true,
@@ -83,13 +136,7 @@ function createMysqlTool(server, toolName, description, config, options) {
   return poolHandle;
 }
 
-/**
- * Register MySQL tools from pre-resolved tool configs.
- * @param {object} server - MCP server
- * @param {Array<{name, description, config}>} tools - Resolved tool configs from config-loader
- * @returns {{ names: string[], healthcheck: () => Promise<Array> }} Registered tool names and healthcheck function
- */
-export function registerMysqlTools(server, tools, options = {}) {
+function registerTierTools(server, tools, options, tier) {
   if (tools.length > 0 && !options.sqlPoolRegistry) {
     throw new Error('MySQL adapter requires sqlPoolRegistry');
   }
@@ -98,11 +145,18 @@ export function registerMysqlTools(server, tools, options = {}) {
     serverConcurrencyBudget: options.serverConcurrencyBudget || 10,
     sqlPoolRegistry: options.sqlPoolRegistry,
     sqlTimeoutMs: getSqlTimeoutMs(options.sqlTimeoutSeconds),
+    log: options.log,
+    tier,
   };
   const registered = [];
   const poolRefs = [];
 
   for (const tool of tools) {
+    const violation = nameViolation(tool.name, tier);
+    if (violation) {
+      (options.log || processLog)(tool.name, 'ERROR', `refused: ${violation} — not registered`);
+      continue;
+    }
     const poolHandle = createMysqlTool(server, tool.name, tool.description, tool.config, resolvedOptions);
     registered.push(tool.name);
     poolRefs.push({ name: tool.name, poolHandle, config: tool.config });
@@ -145,4 +199,28 @@ export function registerMysqlTools(server, tools, options = {}) {
   }
 
   return { names: registered, healthcheck };
+}
+
+/**
+ * Register read-only MySQL tools (module.json `type: "mysql"`) from pre-resolved tool configs.
+ * Every query passes the isReadOnlySql guard — SELECT/SHOW/DESCRIBE/EXPLAIN/WITH only.
+ * @param {object} server - MCP server
+ * @param {Array<{name, description, config}>} tools - Resolved tool configs from config-loader
+ * @returns {{ names: string[], healthcheck: () => Promise<Array> }} Registered tool names and healthcheck function
+ */
+export function registerMysqlTools(server, tools, options = {}) {
+  return registerTierTools(server, tools, options, 'read-only');
+}
+
+/**
+ * Register FULL-ACCESS MySQL tools (module.json `type: "mysql_root"`). No read-only guard:
+ * any single statement runs as-is. The database user's GRANTs are the actual boundary, so back
+ * these tools with a least-privilege login scoped to their own database. Multi-statement
+ * stacking stays blocked by the mysql2 default `multipleStatements: false`.
+ * @param {object} server - MCP server
+ * @param {Array<{name, description, config}>} tools - Resolved tool configs from config-loader
+ * @returns {{ names: string[], healthcheck: () => Promise<Array> }} Registered tool names and healthcheck function
+ */
+export function registerMysqlRootTools(server, tools, options = {}) {
+  return registerTierTools(server, tools, options, 'root');
 }

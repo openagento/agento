@@ -261,6 +261,7 @@ describe('adapter healthchecks', () => {
       const mockHealthcheck = vi.fn().mockResolvedValue([{ tool: 'mock', status: 'ok' }]);
       vi.doMock('../adapters/mysql.js', () => ({
         registerMysqlTools: vi.fn().mockReturnValue({ names: ['mysql_a'], healthcheck: mockHealthcheck }),
+        registerMysqlRootTools: vi.fn().mockReturnValue({ names: ['mysql_root_a'], healthcheck: mockHealthcheck }),
       }));
       vi.doMock('../adapters/mssql.js', () => ({
         registerMssqlTools: vi.fn().mockReturnValue({ names: ['mssql_a'], healthcheck: mockHealthcheck }),
@@ -272,8 +273,8 @@ describe('adapter healthchecks', () => {
       const { registerAdapterTools } = await import('../adapters/index.js');
       const server = {};
       const { names, healthchecks } = registerAdapterTools(server, [], new Set());
-      expect(names).toEqual(['mysql_a', 'mssql_a', 'os_a']);
-      expect(healthchecks).toHaveLength(3);
+      expect(names).toEqual(['mysql_a', 'mysql_root_a', 'mssql_a', 'os_a']);
+      expect(healthchecks).toHaveLength(4);
     });
   });
 });

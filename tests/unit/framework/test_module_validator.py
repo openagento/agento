@@ -55,6 +55,78 @@ class TestValidateModule:
         errors = validate_module(mod)
         assert any("tools[0] missing 'toolset'" in e for e in errors)
 
+    def test_mysql_root_tool_name_must_end_in_root(self, tmp_path: Path):
+        """Full-access capability must be visible in the tool NAME: enablement is keyed by
+        name, so promoting a tool in place would silently inherit its read-only grant."""
+        mod = tmp_path / "unmarked-root"
+        mod.mkdir()
+        (mod / "module.json").write_text(json.dumps({
+            "name": "unmarked-root",
+            "version": "1.0.0",
+            "description": "Full-access tool without the name marker",
+            "tools": [{"type": "mysql_root", "name": "mysql_sandbox", "description": "X", "toolset": "G"}],
+        }))
+
+        errors = validate_module(mod)
+        assert any("mysql_sandbox" in e and "_root" in e for e in errors), errors
+
+    def test_reserved_root_suffix_rejected_on_a_read_only_type(self, tmp_path: Path):
+        """The suffix is RESERVED, not merely required: a read-only tool may not squat a
+        '_root' name, because flipping only its type would then escalate it in place while
+        keeping the name-keyed is_enabled grant."""
+        mod = tmp_path / "squatter"
+        mod.mkdir()
+        (mod / "module.json").write_text(json.dumps({
+            "name": "squatter",
+            "version": "1.0.0",
+            "description": "Read-only tool squatting a reserved name",
+            "tools": [{"type": "mysql", "name": "customer_db_root", "description": "X", "toolset": "G"}],
+        }))
+
+        errors = validate_module(mod)
+        assert any("customer_db_root" in e and "reserved" in e for e in errors), errors
+
+    def test_reserved_root_suffix_rejected_on_any_non_full_access_type(self, tmp_path: Path):
+        mod = tmp_path / "squatter2"
+        mod.mkdir()
+        (mod / "module.json").write_text(json.dumps({
+            "name": "squatter2",
+            "version": "1.0.0",
+            "description": "Non-SQL tool squatting a reserved name",
+            "tools": [{"type": "opensearch", "name": "os_products_root", "description": "X", "toolset": "G"}],
+        }))
+
+        errors = validate_module(mod)
+        assert any("os_products_root" in e and "reserved" in e for e in errors), errors
+
+    def test_mysql_root_tool_with_marker_passes(self, tmp_path: Path):
+        mod = tmp_path / "marked-root"
+        mod.mkdir()
+        (mod / "module.json").write_text(json.dumps({
+            "name": "marked-root",
+            "version": "1.0.0",
+            "description": "Full-access tool with the name marker",
+            "tools": [{"type": "mysql_root", "name": "mysql_sandbox_root", "description": "X", "toolset": "G"}],
+            "log_servers": [],
+        }))
+        (mod / "config.json").write_text("{}")
+
+        assert validate_module(mod) == []
+
+    def test_read_only_mysql_tool_needs_no_marker(self, tmp_path: Path):
+        mod = tmp_path / "plain-mysql"
+        mod.mkdir()
+        (mod / "module.json").write_text(json.dumps({
+            "name": "plain-mysql",
+            "version": "1.0.0",
+            "description": "Read-only tool",
+            "tools": [{"type": "mysql", "name": "mysql_reporting", "description": "X", "toolset": "G"}],
+            "log_servers": [],
+        }))
+        (mod / "config.json").write_text("{}")
+
+        assert validate_module(mod) == []
+
     def test_tool_with_toolset_passes(self, tmp_path: Path):
         mod = tmp_path / "tool-ok"
         mod.mkdir()

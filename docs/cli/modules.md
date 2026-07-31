@@ -17,11 +17,15 @@ bin/agento module:add my-ecommerce \
 
 `--tool TYPE:NAME:DESCRIPTION`
 
-Types: `mysql`, `mssql`, `opensearch`
+Types: `mysql`, `mysql_root`, `mssql`, `opensearch`
 
 The command auto-generates field schemas based on tool type:
-- **mysql/mssql**: host, port, user, pass (obscure), database
-- **opensearch**: host, user, pass (obscure)
+- **mysql/mysql_root/mssql**: host, port, user, pass (obscure), database, client_connection_pool_max_per_tool
+- **opensearch**: host, port, user, pass (obscure), index
+
+Each scaffolded tool also gets `toolset` set to the module name — it is required by `module:validate` and groups the tool in the admin TUI. Edit it if you want a different grouping.
+
+> ⚠️ **`mysql_root` grants FULL read/write** (INSERT, UPDATE, DELETE, TRUNCATE, DDL) on its database — there is no app-layer SQL guard, unlike `mysql`, which is read-only. The declared type IS the capability, so it is granted at review time and cannot be changed at runtime. `_root` is a reserved suffix: a `mysql_root` tool's name must end in it (`--tool mysql_root:mysql_sandbox_root:"…"`) and no other type may use it. `module:add` rejects either violation, so promoting a tool means renaming it — and a new name has no `is_enabled` grant to inherit. Back it with a least-privilege DB login scoped to that one database, and enable it only on agent_views that do not ingest untrusted content. See [Built-in Adapters → MySQL root](../tools/built-in-adapters.md#mysql-root-full-readwrite).
 
 ### What It Creates
 

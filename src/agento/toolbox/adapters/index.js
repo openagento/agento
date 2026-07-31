@@ -1,9 +1,13 @@
-import { registerMysqlTools } from './mysql.js';
+import { registerMysqlTools, registerMysqlRootTools } from './mysql.js';
 import { registerMssqlTools } from './mssql.js';
 import { registerOpensearchTools } from './opensearch.js';
 
+// Adapter type == capability. "mysql" is read-only; "mysql_root" is full read/write. The type is
+// declared in git-tracked module.json, so write access is granted at review time and no runtime
+// config can promote a "mysql" tool. See docs/tools/built-in-adapters.md.
 const ADAPTERS = {
   mysql: registerMysqlTools,
+  mysql_root: registerMysqlRootTools,
   mssql: registerMssqlTools,
   opensearch: registerOpensearchTools,
 };
@@ -28,7 +32,7 @@ export function registerAdapterTools(
   allTools,
   moduleToolTypes,
   moduleConfigs = {},
-  { sqlPoolRegistry } = {}
+  { sqlPoolRegistry, log } = {}
 ) {
   const dynamicNames = [];
   const healthchecks = [];
@@ -49,6 +53,7 @@ export function registerAdapterTools(
       clientConnectionPoolMaxPerTool,
       serverConcurrencyBudget,
       sqlPoolRegistry,
+      log,
     });
     dynamicNames.push(...names);
     healthchecks.push(healthcheck);

@@ -5,16 +5,23 @@ import json
 import re
 from pathlib import Path
 
+from .module_validator import FULL_ACCESS_TOOL_NAME_SUFFIXES, RESERVED_TOOL_NAME_SUFFIXES
+
+# 'mysql' (read-only) and 'mysql_root' (full read/write) declare identical connection fields —
+# the declared tool TYPE is the capability, not a config field.
+_MYSQL_FIELDS = {
+    "host": {"type": "string", "label": "Host"},
+    "port": {"type": "integer", "label": "Port"},
+    "user": {"type": "string", "label": "User"},
+    "pass": {"type": "obscure", "label": "Password"},
+    "database": {"type": "string", "label": "Database"},
+    "client_connection_pool_max_per_tool": {"type": "integer", "label": "Maximum client connections"},
+}
+
 # Standard tool field templates by type
 TOOL_FIELD_TEMPLATES = {
-    "mysql": {
-        "host": {"type": "string", "label": "Host"},
-        "port": {"type": "integer", "label": "Port"},
-        "user": {"type": "string", "label": "User"},
-        "pass": {"type": "obscure", "label": "Password"},
-        "database": {"type": "string", "label": "Database"},
-        "client_connection_pool_max_per_tool": {"type": "integer", "label": "Maximum client connections"},
-    },
+    "mysql": _MYSQL_FIELDS,
+    "mysql_root": _MYSQL_FIELDS,
     "mssql": {
         "host": {"type": "string", "label": "Host"},
         "port": {"type": "integer", "label": "Port"},
@@ -35,17 +42,40 @@ TOOL_FIELD_TEMPLATES = {
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
-def _parse_tool(spec: str) -> dict:
-    """Parse tool spec 'type:name:description' into a tool dict."""
+def _parse_tool(spec: str, module_name: str) -> dict:
+    """Parse tool spec 'type:name:description' into a tool dict.
+
+    'toolset' defaults to the module name — it is required by module:validate (which
+    setup:upgrade runs before applying anything) and groups the tool in the admin TUI.
+    """
     parts = spec.split(":", 2)
     if len(parts) < 3:
         raise ValueError(f"Invalid tool spec '{spec}'. Expected format: type:name:description")
     tool_type, tool_name, tool_desc = parts
+
+    suffix = FULL_ACCESS_TOOL_NAME_SUFFIXES.get(tool_type)
+    if suffix and not tool_name.endswith(suffix):
+        raise ValueError(
+            f"Tool '{tool_name}' has type '{tool_type}', which grants full read/write, so its "
+            f"name must end in '{suffix}' (e.g. '{tool_name}{suffix}'). Capability belongs in the "
+            "tool name: enablement is keyed by name, so a rename forces fresh operator consent."
+        )
+    if not suffix:
+        squatted = next((s for s in RESERVED_TOOL_NAME_SUFFIXES if tool_name.endswith(s)), None)
+        if squatted:
+            raise ValueError(
+                f"Tool name '{tool_name}' ends in '{squatted}', which is reserved for full-access "
+                f"tool types ({', '.join(sorted(FULL_ACCESS_TOOL_NAME_SUFFIXES))}). Type '{tool_type}' "
+                "must not use it — otherwise the tool could later be escalated in place by editing "
+                "only its type, keeping its is_enabled grant."
+            )
+
     fields = TOOL_FIELD_TEMPLATES.get(tool_type, {})
     return {
         "type": tool_type,
         "name": tool_name,
         "description": tool_desc,
+        "toolset": module_name,
         "fields": fields,
     }
 
@@ -77,7 +107,7 @@ def scaffold_module(
     if module_dir.exists():
         raise ValueError(f"Directory already exists: {module_dir}")
 
-    parsed_tools = [_parse_tool(t) for t in (tools or [])]
+    parsed_tools = [_parse_tool(t, name) for t in (tools or [])]
 
     # Build config.json with tool field placeholders
     config: dict = {}
