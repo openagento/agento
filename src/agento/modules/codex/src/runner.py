@@ -6,7 +6,11 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from agento.framework.agent_manager.errors import AuthenticationError, UsageLimitError
+from agento.framework.agent_manager.errors import (
+    AuthenticationError,
+    TransientAuthError,
+    UsageLimitError,
+)
 from agento.framework.agent_manager.models import AgentProvider
 from agento.framework.agent_manager.runner import TokenRunner
 from agento.framework.runner import RunResult
@@ -21,6 +25,19 @@ _AUTH_PHRASE_RE = re.compile(
     r"\b(401\s+Unauthorized|invalid[_ ]api[_ ]key|"
     r"please\s+(sign|log)\s+in|not\s+authenticated|"
     r"authentication\s+failed|missing\s+bearer)\b",
+    re.IGNORECASE,
+)
+
+# Auth rejections that do NOT prove the credential is dead (revoked/stale access
+# token, typically a concurrent-refresh race). Same structured-event-only discipline
+# as _AUTH_PHRASE_RE, and the same two-signal discipline as the Claude parser:
+# revocation wording must co-occur with credential context, otherwise
+# "workspace access has been revoked" would throttle a perfectly good token.
+# These THROTTLE + fail over (TransientAuthError) rather than poison, and are
+# checked AFTER _AUTH_PHRASE_RE so codex's known-permanent phrases are unaffected.
+_REVOKED_RE = re.compile(r"revok", re.IGNORECASE)
+_CREDENTIAL_WORD_RE = re.compile(
+    r"oauth|access token|credential|bearer|api key|token[_ ]revoked",
     re.IGNORECASE,
 )
 
@@ -109,6 +126,9 @@ class TokenCodexRunner(TokenRunner):
         if (msg := _detect_auth_error(events)) is not None:
             raise AuthenticationError(f"Codex CLI auth error: {msg[:500]}")
 
+        if (msg := _detect_transient_auth_error(events)) is not None:
+            raise TransientAuthError(f"Codex CLI transient auth error: {msg[:500]}")
+
         if (err := _detect_limit_error(events)) is not None:
             msg = str(err.get("message") or err.get("type") or err.get("code") or "usage limit")
             raise UsageLimitError(
@@ -144,6 +164,17 @@ def _detect_auth_error(events: list[dict]) -> str | None:
         err = ev.get("error") or {}
         msg = err.get("message", "") if isinstance(err, dict) else ""
         if msg and _AUTH_PHRASE_RE.search(msg):
+            return msg
+    return None
+
+
+def _detect_transient_auth_error(events: list[dict]) -> str | None:
+    for ev in events:
+        if ev.get("type") != "turn.failed":
+            continue
+        err = ev.get("error") or {}
+        msg = err.get("message", "") if isinstance(err, dict) else ""
+        if msg and _REVOKED_RE.search(msg) and _CREDENTIAL_WORD_RE.search(msg):
             return msg
     return None
 

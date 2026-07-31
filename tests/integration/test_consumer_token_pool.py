@@ -4,6 +4,7 @@ is exhausted (real MySQL)."""
 from __future__ import annotations
 
 import logging
+import subprocess
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -207,3 +208,137 @@ def test_codex_usage_limit_throttles_and_fails_over(int_db_config, int_consumer_
         int_db_config, int_consumer_config, TokenCodexRunner, "codex", success,
         cheap_model="gpt-5.4-mini",
     )
+
+
+# --- Transient auth (revoked / stale access token) ---------------------------
+# NOTE: unlike the two tests above (which patch ``run`` and raise directly, so they
+# never reach the parser), these patch the SUBPROCESS seam. Everything above it runs
+# for real: _extract_raw -> _parse_output -> parse_claude_output -> _classify_error ->
+# the consumer's except clause -> _handle_transient_auth -> retry_policy -> MySQL.
+
+# The raw stream-json a real `claude -p --output-format stream-json` run emits when the
+# stored OAuth credential is rejected.
+_REVOKED_RAW = (
+    '{"type":"system","subtype":"init","session_id":"sess-revoked","mcp_servers":[]}\n'
+    '{"type":"result","is_error":true,'
+    '"result":"Failed to authenticate. API Error: 401 OAuth access token has been revoked."}\n'
+)
+
+
+def _revoked_process(self, cmd, env):
+    """Stand in for the claude subprocess: rc=1 plus the raw revoked-401 stream-json.
+    Patched at ``_execute_process`` so ``_extract_raw``/``_parse_output`` still run."""
+    return subprocess.CompletedProcess(cmd, 1, _REVOKED_RAW, "")
+
+
+def test_revoked_token_throttles_and_fails_over_instead_of_dead_lettering(
+    int_db_config, int_consumer_config,
+):
+    """Repro of the reported production failure.
+
+    Pool mirrors the reported state: priority-0 token already throttled by a
+    session limit from another job, priority-1 token whose stored access token is
+    revoked, priority-2 token healthy and never tried. Before the fix the revoked
+    401 degraded to a generic RuntimeError, so the token stayed ``status='ok'``,
+    ``retry_with_other_token`` was never set, and the deterministic
+    ``ORDER BY priority ASC`` re-picked the SAME revoked token on every attempt
+    until the job dead-lettered. Expected now: the revoked token is THROTTLED (not
+    poisoned), the job requeues, and attempt 2 lands on the priority-2 token and
+    succeeds.
+    """
+    logger = logging.getLogger("test")
+    _bind_provider("claude")
+    token_limited = _seed_token("prio0-session-limited", priority=0)
+    token_revoked = _seed_token("prio1-revoked", priority=1)
+    token_healthy = _seed_token("prio2-healthy", priority=2)
+
+    # Priority-0 is already in a session-limit cooldown from another job.
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE oauth_token SET throttled_until = UTC_TIMESTAMP() + INTERVAL 1 HOUR "
+                "WHERE id = %s",
+                (token_limited,),
+            )
+    finally:
+        conn.close()
+
+    job_id = insert_queued_job(
+        reference_id="AI-REVOKED", idempotency_key="revoked-pool:1", max_attempts=3,
+    )
+
+    # Attempt 1: prio-0 skipped (throttled) -> prio-1 selected -> the real parser
+    # classifies the raw 401 as transient -> throttle + requeue. No token_id on the
+    # exception, so the consumer attributes it to the token IT resolved from the pool.
+    with patch.object(TokenClaudeRunner, "_execute_process", new=_revoked_process):
+        consumer = Consumer(int_db_config, int_consumer_config, logger)
+        job = consumer._try_dequeue()
+        assert job is not None
+        consumer._execute_job(job)
+
+    row = fetch_job(job_id)
+    assert row["status"] == "TODO", "must requeue, not dead-letter"
+    assert row["attempt"] == 1
+    assert row["error_class"] == "TransientAuthError"
+    # THE bug: the revoked token must be throttled, never poisoned.
+    assert _token_status(token_revoked) == "ok"
+    assert _token_throttle(token_revoked) is not None
+    assert _token_throttle(token_revoked) > datetime.now(UTC).replace(tzinfo=None)
+    # The untried healthy token is untouched and still selectable.
+    assert _token_status(token_healthy) == "ok"
+    assert _token_throttle(token_healthy) is None
+
+    update_job(job_id, scheduled_after="2000-01-01 00:00:00")
+
+    # Attempt 2: prio-0 and prio-1 both throttled -> prio-2 selected -> SUCCESS.
+    # Patched at `run` here, not at the subprocess seam: the success path exercises no
+    # classification, so there is nothing for the real parser to prove. Only the failing
+    # attempt above needs to go through `parse_claude_output`.
+    success = RunResult(
+        raw_output="ok", input_tokens=1500, output_tokens=800, cost_usd=0.01,
+        num_turns=1, duration_ms=1000, subtype="success", agent_type="claude",
+    )
+    with patch.object(TokenClaudeRunner, "run", return_value=success):
+        consumer2 = Consumer(int_db_config, int_consumer_config, logger)
+        job2 = consumer2._try_dequeue()
+        assert job2 is not None
+        assert job2.id == job_id
+        consumer2._execute_job(job2)
+
+    row = fetch_job(job_id)
+    assert row["status"] == "SUCCESS", "the healthy prio-2 token must have been used"
+    assert row["attempt"] == 2
+    # No token was permanently poisoned — all three recover on their own.
+    assert _token_status(token_limited) == "ok"
+    assert _token_status(token_revoked) == "ok"
+    assert _token_status(token_healthy) == "ok"
+
+
+def test_revoked_token_dead_letters_only_once_the_pool_is_exhausted(
+    int_db_config, int_consumer_config,
+):
+    """Failover is not infinite: with a single token in the pool a revoked 401 leaves
+    no healthy alternative, so ``retry_with_other_token`` stays False and the job
+    dead-letters immediately (the ``NON_RETRYABLE_ERRORS`` path) rather than burning
+    all three attempts on the same credential."""
+    logger = logging.getLogger("test")
+    _bind_provider("claude")
+    only_token = _seed_token("only-revoked", priority=0)
+    job_id = insert_queued_job(
+        reference_id="AI-REVOKED-SOLO", idempotency_key="revoked-pool:solo", max_attempts=3,
+    )
+
+    with patch.object(TokenClaudeRunner, "_execute_process", new=_revoked_process):
+        consumer = Consumer(int_db_config, int_consumer_config, logger)
+        job = consumer._try_dequeue()
+        assert job is not None
+        consumer._execute_job(job)
+
+    row = fetch_job(job_id)
+    assert row["status"] == "DEAD"
+    assert row["attempt"] == 1
+    assert row["error_class"] == "TransientAuthError"
+    # Still a cooldown, not a poison — an operator does not need `token:reset`.
+    assert _token_status(only_token) == "ok"
+    assert _token_throttle(only_token) is not None

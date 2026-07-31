@@ -6,7 +6,11 @@ import re
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from agento.framework.agent_manager.errors import AuthenticationError, UsageLimitError
+from agento.framework.agent_manager.errors import (
+    AuthenticationError,
+    TransientAuthError,
+    UsageLimitError,
+)
 from agento.framework.runner import McpInitReport, McpServerStatus, RunResult
 
 AUTH_ERROR_PHRASES = (
@@ -25,6 +29,27 @@ LIMIT_ERROR_PHRASES = (
     "rate_limit_error",
 )
 
+# A transient credential rejection needs BOTH a credential-context word AND a rejection
+# signal. Either signal alone is too weak to act on:
+#   * credential word alone  -> "the access token could not be read from disk" (a local
+#                               file problem; throttling the pool token fixes nothing)
+#   * rejection signal alone -> "workspace access has been revoked" / "permission has
+#                               been revoked" (an authorization failure inside the run,
+#                               not a bad pool credential), or "401234 tokens".
+# Both regexes scan the WHOLE message, so the rule is order-independent: the observed
+# wording puts the auth verb BEFORE the code ("Failed to authenticate. API Error:
+# 401 ..."), future wording may not.
+# \b401\b, not "401" as a substring — a substring test matches "401234 tokens".
+# Bare "token" is deliberately absent from the credential words — Claude says "tokens"
+# about usage accounting constantly ("max tokens", "input tokens").
+_CREDENTIAL_WORD_RE = re.compile(
+    r"authenticat|unauthorized|oauth|access token|credential|bearer|api key|"
+    r"sign in|signed in|log in|logged in",
+    re.IGNORECASE,
+)
+_401_CODE_RE = re.compile(r"\b401\b")
+_REVOKED_RE = re.compile(r"revok", re.IGNORECASE)  # revoked / revoke / revocation
+
 # "resets 1pm (Europe/Warsaw)" / "resets 1:30am (America/New_York)" — capture clock + tz.
 _RESET_RE = re.compile(
     r"resets?\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)?\s*\(([^)]+)\)",
@@ -40,6 +65,7 @@ __all__ = [
     "LIMIT_ERROR_PHRASES",
     "AuthenticationError",
     "ClaudeResult",
+    "TransientAuthError",
     "UsageLimitError",
     "parse_claude_output",
 ]
@@ -79,14 +105,32 @@ def _parse_reset_at(msg: str, now: datetime | None = None) -> datetime | None:
     return candidate.astimezone(UTC).replace(tzinfo=None)
 
 
+def _is_transient_credential_rejection(msg: str) -> bool:
+    if not _CREDENTIAL_WORD_RE.search(msg):
+        return False
+    return bool(_401_CODE_RE.search(msg) or _REVOKED_RE.search(msg))
+
+
 def _classify_error(msg: str):
     """Return the exception to raise for a Claude ``is_error`` result message.
-    Auth phrases (permanent) win over limit phrases (temporary)."""
+
+    Order matters:
+    1. Known-permanent auth phrases -> AuthenticationError (poison the token).
+    2. Limit phrases -> UsageLimitError (throttle to reset_at + fail over); checked
+       before the transient rule so a limit message carrying a 401 keeps its parsed
+       ``reset_at``.
+    3. Credential word + (401 | revoked) -> TransientAuthError (short throttle + fail
+       over, no poison). Covers the reported revoked-token message AND future 401
+       wording.
+    4. Anything else -> RuntimeError (generic retry).
+    """
     if any(p in msg for p in AUTH_ERROR_PHRASES):
         return AuthenticationError(f"Claude CLI error: {msg}")
     low = msg.lower()
     if any(p in low for p in LIMIT_ERROR_PHRASES):
         return UsageLimitError(f"Claude CLI error: {msg}", reset_at=_parse_reset_at(msg))
+    if _is_transient_credential_rejection(msg):
+        return TransientAuthError(f"Claude CLI error: {msg}")
     return RuntimeError(f"Claude CLI error: {msg}")
 
 

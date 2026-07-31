@@ -25,15 +25,16 @@ Health state lives on each row:
 
 | Column       | Meaning                                                                 |
 |--------------|-------------------------------------------------------------------------|
-| `status`     | `ok` or `error`. Flipped to `error` when the runner classifies an authentication failure (e.g. invalid credentials or expired OAuth) — not every transient `401`. |
+| `status`     | `ok` or `error`. Flipped to `error` only on a **known-permanent** auth failure (invalid credentials, expired OAuth, not logged in). A revoked/stale access token — or any further wording the **provider module** classifies as a transient credential rejection — is treated as **transient** instead: a short `throttled_until` cooldown, `status` stays `ok`. (Claude additionally classifies unrecognised `401` credential-rejection wording this way; Codex covers revoked/stale-token wording only.) |
 | `error_msg`  | Operator-visible reason for the latest failure.                         |
 | `expires_at` | Credential expiry (from the stored payload). A row is skipped once `expires_at` is in the **past** (a *future* value means still-valid). **Claude OAuth leaves this NULL on purpose** — see the note below. |
-| `throttled_until` | Temporary usage/session-limit **cooldown**. Set to the limit's reset time when the provider account is rate/usage-limited. The pool skips the token while `throttled_until` is in the **future** and auto-includes it once it passes. Distinct from `expires_at` (credential expiry) and from `status='error'` (poison): `status` stays `'ok'` and the token self-recovers. |
+| `throttled_until` | Temporary **cooldown**. Set either to a usage/session limit's reset time (default 1h when unparseable), or to `now + 15 min` on a **transient auth failure** (revoked/stale access token — usually a concurrent-refresh race, not a dead credential). The pool skips the token while `throttled_until` is in the **future** and auto-includes it once it passes. Distinct from `expires_at` (credential expiry) and from `status='error'` (poison): `status` stays `'ok'` and the token self-recovers. |
 | `used_at`    | Last time a worker claimed the row — drives LRU ordering within a priority tier. |
 | `priority`   | Pool selection weight. Lower value wins; 0 = default.                   |
 
-**Three ways a token leaves the pool (in increasing permanence):**
+**Four ways a token leaves the pool (in increasing permanence):**
 - **Throttled** (`throttled_until` in the future, `status='ok'`): hit a session/usage/rate limit. Temporary — the token auto-recovers at the reset time and the job **fails over** to another healthy token meanwhile. No operator action needed.
+- **Transient-auth throttled** (`throttled_until` in the future, `status='ok'`): the CLI rejected the stored credential with a revoked/stale-token 401. Temporary — the same token label is often still serving other jobs, so it is **not** poisoned; the job fails over to another healthy token and this one returns to the pool after 15 minutes. No operator action needed.
 - **Expired** (`expires_at` in the past): credential lapsed. Cleared by `token:refresh`.
 - **Errored** (`status='error'`): auth failure poisoned it. Cleared by `token:reset` or `token:refresh`.
 
@@ -51,7 +52,9 @@ Health state lives on each row:
 ## Token Lifecycle
 
 ```
-register → [use via LRU+priority] → (auto-flagged error on 401) → refresh | reset → deregister
+register → [use via LRU+priority] → (transient 401 → 15-min throttle, self-recovers)
+                                  → (permanent auth failure → auto-flagged status='error')
+                                  → refresh | reset → deregister
 ```
 
 ## Register a Token

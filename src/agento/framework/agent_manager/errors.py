@@ -50,3 +50,25 @@ class UsageLimitError(RuntimeError):
         # healthy alternative remains in the pool, so the job retries onto it.
         # ``retry_policy.evaluate`` reads this flag (mirrors AuthenticationError).
         self.retry_with_other_token = False
+
+
+class TransientAuthError(RuntimeError):
+    """Raised when an agent CLI rejects a stored credential in a way that does NOT
+    prove the credential is dead — e.g. ``401 OAuth access token has been revoked``,
+    usually a stale access-token copy from a concurrent refresh rather than a revoked
+    account (the same token label keeps serving other jobs).
+
+    Handled like ``UsageLimitError``, not ``AuthenticationError``: the consumer
+    THROTTLES the token briefly (``oauth_token.throttled_until``; ``status`` stays
+    ``'ok'``) so the pool skips it, the job fails over, and the token auto-recovers
+    with no operator action. ``retry_with_other_token`` is set by the consumer when a
+    healthy alternative remains; ``retry_policy.evaluate`` reads it.
+
+    Deliberately NOT a subclass of ``AuthenticationError``, whose ``except`` clause
+    would otherwise poison it.
+    """
+
+    def __init__(self, message: str, *, token_id: int | None = None) -> None:
+        super().__init__(message)
+        self.token_id = token_id
+        self.retry_with_other_token = False

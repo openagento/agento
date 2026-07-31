@@ -38,6 +38,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (direct mode). If you previously hand-created inert `outlook_sender` ingress bindings, re-create
   them as regexes (`ingress:list` shows existing rows) — this is a note, not a migration.
 
+### Fixed
+- **Jobs no longer dead-letter on `401 OAuth access token has been revoked` while healthy tokens sit
+  unused in the pool.** The message previously matched no known phrase, degraded to a generic
+  `RuntimeError`, and so never poisoned or throttled the token nor set `retry_with_other_token` —
+  leaving the deterministic `ORDER BY priority ASC` token selection to hand back the *same* broken
+  credential on every retry (observed in production on two separate jobs: 3 identical attempts →
+  `DEAD`). Revoked/stale-token rejections are now classified as a new **transient auth** category:
+  the token gets a 15-minute `throttled_until` cooldown (**not** `status='error'` — it is usually
+  still serving other jobs) and the job fails over to the next healthy token, dead-lettering only
+  once the pool is genuinely exhausted. Both the Claude and Codex providers classify revoked/stale-token
+  wording; Claude additionally classifies **unrecognised** `401` credential-rejection wording as
+  transient, so a future change to the CLI's error text fails over instead of silently retrying the
+  same credential.
+- New `token_auth_throttled_after` event (`TokenAuthThrottledEvent`) — dispatched when a transient
+  auth failure throttles a token rather than poisoning it.
+
+### Known issues
+- The underlying credential-refresh race at `AGENTO_CONSUMER_MAX_WORKERS > 1` (a concurrent job
+  rotates a token while another attempt is holding an older copy) is unchanged. The transient-auth
+  category makes it survivable rather than fatal; closing the race itself is tracked separately.
+
 ## [0.1.0] - 2024-01-01
 
 ### Added

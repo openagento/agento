@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from .agent_manager.errors import AuthenticationError, UsageLimitError
+from .agent_manager.errors import AuthenticationError, TransientAuthError, UsageLimitError
 from .agent_manager.models import AgentProvider
 from .agent_manager.token_resolver import TokenResolver
 from .agent_manager.token_store import (
@@ -38,6 +38,7 @@ from .events import (
     JobSucceededEvent,
     JobVerificationFailed,
     TokenAuthFailedEvent,
+    TokenAuthThrottledEvent,
     TokenUsageLimitedEvent,
     WorkerStartedEvent,
     WorkerStoppedEvent,
@@ -55,6 +56,12 @@ from .workflows.base import JobContext
 # boundary; 1h keeps the token out of the pool long enough to fail over while still
 # recovering on its own.
 _DEFAULT_LIMIT_THROTTLE = timedelta(hours=1)
+
+# Transient auth failures (revoked/stale access token) get a SHORT cooldown, not the
+# 1h usage-limit window: the credential itself is usually fine and heals on the next
+# refresh capture. 15 min outlasts the 60s/300s retry backoffs, so attempts 2 and 3
+# are guaranteed to land on a different token, while still auto-recovering fast.
+_DEFAULT_TRANSIENT_AUTH_THROTTLE = timedelta(minutes=15)
 
 
 @dataclass
@@ -565,6 +572,10 @@ class Consumer:
                 else f"subtype={result.subtype or '?'} {result.stats_line}"
             )
             return _JobResult.from_run_result(result, summary)
+        except TransientAuthError as exc:
+            success = False
+            self._handle_transient_auth(job, token, agent_type, exc)
+            raise
         except UsageLimitError as exc:
             success = False
             self._handle_usage_limit(job, token, agent_type, exc)
@@ -903,3 +914,48 @@ class Consumer:
                 conn.close()
                 if finalize_after_pending:
                     em.dispatch("job_finalize_after", finalize_event)
+
+    def _handle_transient_auth(
+        self,
+        job: Job,
+        token,
+        agent_type: AgentProvider,
+        exc: TransientAuthError,
+    ) -> None:
+        """Throttle a token whose credential was rejected in a way that does NOT prove
+        it is dead (revoked/stale access token) — a short cooldown via
+        ``throttled_until``, NOT ``status='error'``: poisoning would take a token that
+        is still serving other jobs out of rotation. Best-effort — DB issues here must
+        not mask the original failure about to be re-raised."""
+        token_id = exc.token_id if exc.token_id is not None else token.id
+        until = datetime.now(UTC).replace(tzinfo=None) + _DEFAULT_TRANSIENT_AUTH_THROTTLE
+        try:
+            conn = get_connection(self._db_config)
+            try:
+                throttle_token(conn, token_id, until, str(exc), logger=self.logger)
+                conn.commit()
+                _total, healthy = count_tokens_for_provider(conn, agent_type)
+                exc.retry_with_other_token = healthy > 0
+            finally:
+                conn.close()
+        except Exception:
+            self.logger.exception(
+                "Failed to throttle token after transient auth failure",
+                extra={"job_id": job.id, "token_id": token_id},
+            )
+        try:
+            get_event_manager().dispatch(
+                "token_auth_throttled_after",
+                TokenAuthThrottledEvent(
+                    agent_type=agent_type.value,
+                    token_id=token_id,
+                    error_msg=str(exc),
+                    throttled_until=until,
+                    job_id=job.id,
+                ),
+            )
+        except Exception:
+            self.logger.exception(
+                "token_auth_throttled_after observer failed",
+                extra={"job_id": job.id, "token_id": token_id},
+            )
