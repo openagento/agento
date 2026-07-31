@@ -8,6 +8,7 @@
   "jira_user": {"type": "string", "label": "Jira API user email"},
   "jira_token": {"type": "obscure", "label": "Jira API token"},
   "jira_admin_token": {"type": "obscure", "label": "Jira admin API token (optional, enables auto-configuration of statuses, fields, and screens)"},
+  "jira_admin_user": {"type": "string", "label": "Jira admin user email (owner of jira_admin_token; falls back to jira_user when unset)"},
   "todo_statuses": {"type": "json", "label": "Jira statuses treated as To Do (JSON array)"},
   "create_issue_limit_per_hour": {"type": "integer", "label": "Max issues created per hour"},
   "attachment_download_limit": {"type": "integer", "label": "Max newest attachments auto-downloaded by jira_get_issue (0 = all)"}

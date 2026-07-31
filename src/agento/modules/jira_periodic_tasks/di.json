@@ -5,6 +5,7 @@
     {"type": "cron", "class": "src.workflows.cron.CronWorkflow"}
   ],
   "commands": [
-    {"name": "jira:periodic:sync", "class": "src.commands.sync.SyncCommand"}
+    {"name": "jira:periodic:sync", "class": "src.commands.sync.SyncCommand"},
+    {"name": "jira:periodic:configure", "class": "src.commands.configure.ConfigureCommand"}
   ]
 }

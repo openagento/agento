@@ -66,6 +66,7 @@
 | **Operations** | |
 | `consumer` | Start job consumer loop |
 | `jira:periodic:sync` | Sync Jira recurring tasks to crontab |
+| `jira:periodic:configure [--check] [--project K]... [K ...]` | Create/verify the periodic status + Frequency field and sync its options from `frequency_map` across projects (setup command; uses the Jira admin token — `jira/jira_admin_token` paired with `jira/jira_admin_user`, falling back to `jira/jira_user`). Project keys may be given positionally or via `--project`. `--check` = read-only report, exit 1 on any inconsistency or if it could not be verified |
 | `publish <kind>` | Publish a job (jira-cron, jira-todo, jira-mention) |
 | `bitbucket:publish-comments [--agent-view C] [--top N]` | Sweep open PRs for unanswered reviewer feedback ([details](../modules/bitbucket.md)) |
 | `bitbucket:publish-changes [--agent-view C] [--top N]` | Detect reviewer "changes requested" on open PRs (fast lane) ([details](../modules/bitbucket.md)) |

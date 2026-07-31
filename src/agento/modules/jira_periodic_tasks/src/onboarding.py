@@ -111,11 +111,19 @@ class PeriodicTasksOnboarding:
 
 
 def _resolve_admin_auth(db_overrides: dict) -> dict | None:
-    """Read admin token from DB, paired with jira_user. Returns {auth_user, auth_token} or None."""
+    """Read admin token from DB, paired with its owner. Returns {auth_user, auth_token} or None.
+
+    The admin token often belongs to a different account than the runtime ``jira_user`` (a site
+    admin vs the bot), so pair it with ``jira_admin_user`` when set, falling back to ``jira_user``.
+    """
     admin_token_entry = db_overrides.get("jira/jira_admin_token")
     if not admin_token_entry or not admin_token_entry[0]:
         return None
-    user_entry = db_overrides.get("jira/jira_user")
+    admin_user_entry = db_overrides.get("jira/jira_admin_user")
+    user_entry = (
+        admin_user_entry if (admin_user_entry and admin_user_entry[0])
+        else db_overrides.get("jira/jira_user")
+    )
     if not user_entry or not user_entry[0]:
         return None
     admin_token = admin_token_entry[0]
@@ -280,7 +288,9 @@ def _try_screen_mapping(
     try:
         # Get project screen schemes
         project = toolbox.jira_request("GET", f"/rest/api/3/project/{project_key}", **auth_kw)
-        # Team-managed projects handle field mapping automatically
+        # Team-managed (next-gen) projects manage their field layout separately, so this
+        # company-managed screen-mapping path doesn't apply — the operator adds the field via the
+        # project's own Fields settings in the UI.
         if project.get("style") == "next-gen":
             return
 

@@ -5,7 +5,10 @@ import logging
 from unittest.mock import MagicMock, patch
 
 from agento.modules.jira.src.toolbox_client import ToolboxAPIError
-from agento.modules.jira_periodic_tasks.src.onboarding import PeriodicTasksOnboarding
+from agento.modules.jira_periodic_tasks.src.onboarding import (
+    PeriodicTasksOnboarding,
+    _resolve_admin_auth,
+)
 
 
 def _mock_conn(db_overrides=None):
@@ -78,6 +81,29 @@ class TestDescribe:
         ob = PeriodicTasksOnboarding()
         assert "Jira status" in ob.describe()
         assert "Frequency" in ob.describe()
+
+
+class TestResolveAdminAuth:
+    def test_pairs_admin_token_with_jira_admin_user_when_set(self):
+        auth = _resolve_admin_auth({
+            "jira/jira_admin_token": ("admin-secret", False),
+            "jira/jira_user": ("bot@example.com", False),
+            "jira/jira_admin_user": ("siteadmin@example.com", False),
+        })
+        assert auth == {"auth_user": "siteadmin@example.com", "auth_token": "admin-secret"}
+
+    def test_falls_back_to_jira_user_when_admin_user_unset(self):
+        auth = _resolve_admin_auth({
+            "jira/jira_admin_token": ("admin-secret", False),
+            "jira/jira_user": ("bot@example.com", False),
+        })
+        assert auth == {"auth_user": "bot@example.com", "auth_token": "admin-secret"}
+
+    def test_none_when_no_admin_token(self):
+        assert _resolve_admin_auth({"jira/jira_user": ("bot@example.com", False)}) is None
+
+    def test_none_when_no_user_at_all(self):
+        assert _resolve_admin_auth({"jira/jira_admin_token": ("admin-secret", False)}) is None
 
 
 def _make_toolbox_mock(responses=None):
