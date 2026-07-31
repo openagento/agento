@@ -1,7 +1,7 @@
 {
   "send_alert_on_mcp_issues": {
     "type": "boolean",
-    "label": "Send SMTP alert when an rc=0 job had zero toolbox calls OR toolbox MCP wasn't connected at session start"
+    "label": "Send SMTP alert when an rc=0 job had zero toolbox calls OR the CLI reported the toolbox MCP server as not connected / absent (an indeterminate 'pending' init never alerts)"
   },
   "alerts/email_to": {"type": "string", "label": "Alert email recipient (empty = alerts disabled)"},
   "alerts/smtp_host": {"type": "string", "label": "SMTP host (empty = alerts disabled)"},

@@ -66,6 +66,7 @@ CODEX_FIXTURES = FIXTURES / "codex"
 
 _MCP_CONNECTED = McpInitReport(servers=(McpServerStatus("toolbox", "connected"),))
 _MCP_FAILED = McpInitReport(servers=(McpServerStatus("toolbox", "failed"),))
+_MCP_PENDING = McpInitReport(servers=(McpServerStatus("toolbox", "pending"),))
 
 
 # --- DB helpers ---------------------------------------------------------------
@@ -317,6 +318,31 @@ class TestAppMonitorE2E:
         assert row["session_id"] == captured[0]
         assert row["toolbox_mcp_calls"] == 1
         assert row["toolbox_mcp_connected"] == 1  # TRUE
+        sender.assert_not_called()
+
+    # -- 1b. pending init + toolbox calls → NULL column, no alert ------------
+
+    def test_claude_pending_with_calls_null_column_no_alert(
+        self, int_db_config, int_consumer_config, tmp_path, monkeypatch,
+    ):
+        """The production false positive: claude prints init before the MCP
+        handshake finishes, so `pending` is the normal report. It must persist as
+        NULL (unknown) and never alert when the toolbox was demonstrably used."""
+        sender = _patch_app_monitor(monkeypatch, alert_flag=True)
+        insert_primary_token("claude")
+        av_id = _insert_agent_view(_insert_workspace("acme"), "developer")
+        job_id = _insert_job_with_agent_view(av_id, reference_id="AI-207")
+
+        payload = (FIXTURES / "good_with_mcp.jsonl").read_text()
+        self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
+            "agento.modules.claude.src.runner.TokenClaudeRunner.run",
+            _claude_callback(payload, mcp_init=_MCP_PENDING),
+        ))
+
+        row = fetch_job(job_id)
+        assert row["status"] == "SUCCESS", row
+        assert row["toolbox_mcp_calls"] == 1
+        assert row["toolbox_mcp_connected"] is None  # NULL, not FALSE
         sender.assert_not_called()
 
     # -- 2. not connected + 0 calls + flag on → one combined alert, no DEAD --

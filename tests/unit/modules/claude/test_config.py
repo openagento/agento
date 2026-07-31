@@ -105,6 +105,7 @@ class TestPrepareWorkspace:
         assert data["mcpServers"]["toolbox"] == {
             "type": "http",
             "url": "http://toolbox:3001/mcp",
+            "alwaysLoad": True,
         }
 
     def test_every_generated_server_entry_has_a_type(self, writer, work_dir):
@@ -167,10 +168,12 @@ class TestPrepareWorkspace:
             work_dir, {"mcp/servers": servers}, toolbox_url=self.TOOLBOX,
         )
         data = json.loads((work_dir / ".mcp.json").read_text())
+        # An operator entry replaces ours wholesale, so it opts out of alwaysLoad too.
         assert data["mcpServers"]["toolbox"] == {
             "type": "sse",
             "url": "http://toolbox:3001/sse",
         }
+        assert "alwaysLoad" not in data["mcpServers"]["toolbox"]
 
     def test_drops_untypeable_extra(self, writer, work_dir):
         servers = '{"weird": {"foo": 1}}'
@@ -191,6 +194,7 @@ class TestPrepareWorkspace:
             "toolbox": {
                 "type": "http",
                 "url": "http://toolbox:3001/mcp?agent_view_id=3",
+                "alwaysLoad": True,
             },
         }
 
@@ -201,6 +205,10 @@ class TestPrepareWorkspace:
         )
         data = json.loads((work_dir / ".mcp.json").read_text())
         assert set(data["mcpServers"].keys()) == {"toolbox", "other"}
+        # alwaysLoad blocks session start until that server connects — only ever
+        # applied to our own local toolbox, never to an operator's MCP server.
+        assert data["mcpServers"]["toolbox"]["alwaysLoad"] is True
+        assert "alwaysLoad" not in data["mcpServers"]["other"]
 
     def test_always_writes_toolbox_when_no_extras(self, writer, work_dir):
         writer.prepare_workspace(work_dir, {"model": "opus"}, toolbox_url=self.TOOLBOX)

@@ -401,8 +401,17 @@ class ClaudeConfigWriter:
     ) -> None:
         # Auto-inject the toolbox MCP entry; operators can add more (or shadow
         # "toolbox") via agent_view/mcp/servers.
+        # alwaysLoad: connect this server *before* the CLI emits system/init.
+        # Claude connects MCP servers non-blocking by default, so without it the
+        # init self-report always reads "pending" and job.toolbox_mcp_connected
+        # can never be TRUE. Only our own local toolbox gets this — blocking on
+        # an operator's third-party MCP server would delay every job start.
         servers: dict[str, dict] = {
-            "toolbox": {"type": "http", "url": f"{toolbox_url.rstrip('/')}/mcp"},
+            "toolbox": {
+                "type": "http",
+                "url": f"{toolbox_url.rstrip('/')}/mcp",
+                "alwaysLoad": True,
+            },
         }
         extra_raw = agent_config.get("mcp/servers")
         if extra_raw:
