@@ -22,6 +22,10 @@ FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 TEST_DB = "cron_agent_test"
 
+# Concurrent-claimant fan-out shared by the token-pool / selection / materialization
+# stress tests. One knob so every burst test agrees on how many workers race at once.
+CONCURRENT_WORKERS_STRESS_TEST = 100
+
 # Ensure encryption key is available for tests (used for oauth_token.credentials and obscure configs)
 os.environ.setdefault("AGENTO_ENCRYPTION_KEY", "test-encryption-key-for-integration")
 

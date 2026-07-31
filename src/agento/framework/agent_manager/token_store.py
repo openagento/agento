@@ -177,9 +177,18 @@ def select_token(
     the past (not currently rate/usage-limited). Ordering: ``used_at`` ascending,
     NULLs first (never-used tokens win).
 
-    The ``FOR UPDATE SKIP LOCKED`` + in-line commit prevents two concurrent
-    workers from picking the same row. Returns ``None`` when no healthy token
-    exists; the caller raises with a diagnostic message.
+    Concurrency: the row is claimed with a plain ``FOR UPDATE`` (NOT
+    ``SKIP LOCKED``) so a concurrent claimant *blocks* on the held row lock
+    rather than skipping past it. When the holder commits its ``used_at`` bump,
+    the waiter's scan resumes with a fresh current-read and picks a *different*
+    (now higher-``used_at``) row — serializing claims so two workers never
+    receive the same token. ``SKIP LOCKED`` cannot provide that guarantee here:
+    the ``expires_at``/``throttled_until`` OR-predicates defeat the pool index,
+    forcing a filesorted full scan over which ``SKIP LOCKED`` releases/skips
+    locks and hands the same row to two concurrent claimants. Because the claim
+    transaction commits immediately, the block is only microseconds long. Returns
+    ``None`` when no healthy token exists; the caller raises with a diagnostic
+    message.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -193,7 +202,7 @@ def select_token(
              ORDER BY priority ASC,
                       used_at IS NULL DESC, used_at ASC, id ASC
              LIMIT 1
-             FOR UPDATE SKIP LOCKED
+             FOR UPDATE
             """,
             (agent_type.value,),
         )

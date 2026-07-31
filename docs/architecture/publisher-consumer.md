@@ -73,7 +73,7 @@ Configured via environment variables (set in `docker/.cron.env` or `docker-compo
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `AGENTO_CONSUMER_MAX_WORKERS` | 1 | Worker pool size (max concurrent jobs). Safe to increase with per-run isolation. |
+| `AGENTO_CONSUMER_MAX_WORKERS` | 10 | Worker pool size (max concurrent jobs). Safe under per-run isolation. |
 | `AGENTO_CONSUMER_POLL_INTERVAL` | 5.0 | Seconds between poll cycles |
 | `AGENTO_JOB_TIMEOUT_SECONDS` | 1200 | Max job runtime (20 min) |
 | `DISABLE_LLM` | 0 | Dry-run mode (skip actual LLM calls) |

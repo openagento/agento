@@ -234,7 +234,12 @@ class TestSelectToken:
         assert token.id == 1
         assert cursor.execute.call_count == 3
         select_sql = cursor.execute.call_args_list[0][0][0]
-        assert "FOR UPDATE SKIP LOCKED" in select_sql
+        # Blocking FOR UPDATE (NOT SKIP LOCKED): concurrent claimants must serialize
+        # on the row lock so two workers never receive the same token. SKIP LOCKED
+        # over the filesorted pool scan hands the same row to two claimants — see
+        # tests/integration/test_token_pool_concurrency.py.
+        assert "FOR UPDATE" in select_sql
+        assert "SKIP LOCKED" not in select_sql
         assert "status = 'ok'" in select_sql
         assert "expires_at IS NULL OR expires_at > UTC_TIMESTAMP()" in select_sql
         update_sql = cursor.execute.call_args_list[1][0][0]

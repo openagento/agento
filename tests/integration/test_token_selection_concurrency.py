@@ -12,6 +12,8 @@ from agento.framework.agent_manager.token_resolver import TokenResolver
 from agento.framework.agent_manager.token_store import register_token
 from agento.framework.db import get_connection
 
+from .conftest import CONCURRENT_WORKERS_STRESS_TEST
+
 
 def _seed_tokens(int_db_config, provider: AgentProvider, token_specs: list[tuple[str, str, dict]]) -> None:
     conn = get_connection(int_db_config)
@@ -84,16 +86,18 @@ def test_concurrent_selection_rotates_across_mixed_token_methods(
     """Ten concurrent claims over three same-priority mixed-method tokens all
     succeed and keep the pool fair enough to use every healthy token.
 
-    This exercises the real MySQL ``FOR UPDATE SKIP LOCKED`` path, including
-    transient contention where all healthy token rows may be locked briefly.
+    This exercises the real MySQL blocking ``FOR UPDATE`` claim path, including
+    transient contention where a claimant briefly blocks on a locked token row.
+    Distinctness under a *full* pool is covered by
+    tests/integration/test_token_pool_concurrency.py.
     """
     _seed_tokens(int_db_config, provider, token_specs)
 
-    barrier = Barrier(10)
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    barrier = Barrier(CONCURRENT_WORKERS_STRESS_TEST)
+    with ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS_STRESS_TEST) as executor:
         futures = [
             executor.submit(_claim_token, int_db_config, provider, barrier)
-            for _ in range(10)
+            for _ in range(CONCURRENT_WORKERS_STRESS_TEST)
         ]
         claims = [future.result(timeout=10) for future in as_completed(futures)]
 
@@ -106,7 +110,7 @@ def test_concurrent_selection_rotates_across_mixed_token_methods(
 
     assert set(labels) == expected_labels
     assert set(types) == expected_types
-    assert sum(counts.values()) == 10
+    assert sum(counts.values()) == CONCURRENT_WORKERS_STRESS_TEST
     assert len(counts) == 3
     assert min(counts.values()) >= 2
 

@@ -20,11 +20,11 @@ from agento.framework.consumer import Consumer
 from agento.framework.consumer_config import ConsumerConfig
 from agento.modules.claude.src.output_parser import ClaudeResult
 
-from .conftest import _test_connection, fetch_job
+from .conftest import CONCURRENT_WORKERS_STRESS_TEST, _test_connection, fetch_job
 
 WS_CODE = "acme"
 AV_CODE = "developer"
-N_JOBS = 10
+N_JOBS = CONCURRENT_WORKERS_STRESS_TEST
 
 
 def _insert_workspace(code: str = WS_CODE) -> int:

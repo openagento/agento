@@ -7,8 +7,8 @@ from agento.framework.consumer_config import ConsumerConfig
 class TestConsumerConfigDefaults:
     def test_defaults(self):
         cfg = ConsumerConfig()
-        assert cfg.max_workers == 1
-        assert cfg.concurrency == 1  # backward-compat alias
+        assert cfg.max_workers == 10
+        assert cfg.concurrency == 10  # backward-compat alias
         assert cfg.poll_interval == 5.0
         assert cfg.job_timeout_seconds == 1200
         assert cfg.disable_llm is False
@@ -52,6 +52,6 @@ class TestConsumerConfigFromEnv:
 
     def test_defaults(self):
         cfg = ConsumerConfig.from_env()
-        assert cfg.concurrency == 1
+        assert cfg.concurrency == 10
         assert cfg.poll_interval == 5.0
         assert cfg.job_timeout_seconds == 1200
