@@ -23,7 +23,10 @@ FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 TEST_DB = "cron_agent_test"
 
 # Concurrent-claimant fan-out shared by the token-pool / selection / materialization
-# stress tests. One knob so every burst test agrees on how many workers race at once.
+# stress tests — the general "does the system stay correct under a normal burst" load.
+# The high-contention token test deliberately runs hotter (see _HIGH_CONTENTION_WORKERS
+# in test_token_selection_concurrency.py, sized to the MySQL connection ceiling to force
+# saturation); it does not share this knob on purpose.
 CONCURRENT_WORKERS_STRESS_TEST = 100
 
 # Ensure encryption key is available for tests (used for oauth_token.credentials and obscure configs)

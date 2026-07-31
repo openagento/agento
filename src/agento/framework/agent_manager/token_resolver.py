@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import time
 
 import pymysql
@@ -8,8 +9,21 @@ from .config import AgentManagerConfig
 from .models import AgentProvider, Token
 from .token_store import count_tokens_for_provider, select_token
 
-_POOL_CONTENTION_RETRIES = 20
-_POOL_CONTENTION_SLEEP_SECONDS = 0.01
+# Contention retry budget, expressed as a wall-clock deadline rather than a
+# fixed attempt count: what matters is how long the herd takes to drain, and
+# that scales with both DB latency and worker count (a loaded CI runner is far
+# slower than a laptop). A fixed 20 x 10ms = 200ms cap failed spuriously once
+# ~10 workers contended over a handful of rows.
+#
+# Sized for the documented ceiling of ~150 concurrent claimants (see
+# tests/integration/test_token_selection_concurrency.py, which exercises 200):
+# draining 200 workers over 3 tokens measures ~1s locally, and CI runs several
+# times slower. The budget is a ceiling, not a cost — an uncontended claim
+# returns on the first attempt and never sleeps. Raise it if you raise
+# AGENTO_CONSUMER_MAX_WORKERS beyond that.
+_POOL_CONTENTION_BUDGET_SECONDS = 15.0
+_POOL_CONTENTION_INITIAL_SLEEP_SECONDS = 0.01
+_POOL_CONTENTION_MAX_SLEEP_SECONDS = 0.1
 
 
 class TokenResolver:
@@ -33,7 +47,9 @@ class TokenResolver:
         """
         total = 0
         healthy = 0
-        for attempt in range(_POOL_CONTENTION_RETRIES + 1):
+        deadline = time.monotonic() + _POOL_CONTENTION_BUDGET_SECONDS
+        sleep_for = _POOL_CONTENTION_INITIAL_SLEEP_SECONDS
+        while True:
             token = select_token(conn, agent_type)
             if token is not None:
                 return token
@@ -41,8 +57,15 @@ class TokenResolver:
             total, healthy = count_tokens_for_provider(conn, agent_type)
             if total == 0 or healthy == 0:
                 break
-            if attempt < _POOL_CONTENTION_RETRIES:
-                time.sleep(_POOL_CONTENTION_SLEEP_SECONDS)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            # Jittered exponential backoff. Workers released at the same instant
+            # (a consumer batch claiming jobs together) would otherwise retry in
+            # lockstep and keep colliding on the same rows every round.
+            time.sleep(min(sleep_for * (0.5 + random.random()), remaining))
+            sleep_for = min(sleep_for * 2, _POOL_CONTENTION_MAX_SLEEP_SECONDS)
 
         if total == 0:
             raise RuntimeError(

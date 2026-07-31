@@ -41,6 +41,24 @@ def _claim_token(int_db_config, provider: AgentProvider, barrier: Barrier) -> tu
         conn.close()
 
 
+# Peak concurrent claimants exercised by the high-contention test. Every worker
+# holds its own MySQL connection for the whole claim (there is no pooling — see
+# framework/db.get_connection), so the server must allow this many plus headroom
+# for fixtures and any other client.
+_HIGH_CONTENTION_WORKERS = 200
+_CONNECTION_HEADROOM = 30
+
+
+def _server_max_connections(int_db_config) -> int:
+    conn = get_connection(int_db_config)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SHOW VARIABLES LIKE 'max_connections'")
+            return int(cur.fetchone()["Value"])
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize(
     ("provider", "token_specs"),
     [
@@ -133,3 +151,50 @@ def test_concurrent_selection_rotates_across_mixed_token_methods(
     }
     assert all(row["used_at"] is not None for row in rows)
     assert used_at_column["Type"].lower() == "datetime(6)"
+
+
+def test_high_contention_every_claimant_gets_a_token(int_db_config):
+    """200 simultaneous claimants over 3 tokens: all succeed, none is refused.
+
+    Saturation is the point — with far more workers than tokens, every healthy
+    row is locked in passing for most of the run, so this exercises the
+    contention path (``FOR UPDATE SKIP LOCKED`` returning nothing, then backing
+    off) rather than the happy path. A claimant must queue, never be told the
+    pool is exhausted while it is in fact healthy.
+
+    Sized to the connection ceiling, not to a guess: each worker holds its own
+    connection for the whole claim, and there is no pooling.
+    """
+    required = _HIGH_CONTENTION_WORKERS + _CONNECTION_HEADROOM
+    available = _server_max_connections(int_db_config)
+    if available < required:
+        pytest.skip(
+            f"MySQL max_connections={available} < {required} required for "
+            f"{_HIGH_CONTENTION_WORKERS} concurrent claimants "
+            f"(no connection pooling). Start the server with "
+            f"--max-connections={required} to run this test."
+        )
+
+    _seed_tokens(int_db_config, AgentProvider.CLAUDE, [
+        ("pool-a", "anthropic_api_key", {"api_key": "sk-a"}),
+        ("pool-b", "anthropic_api_key", {"api_key": "sk-b"}),
+        ("pool-c", "anthropic_api_key", {"api_key": "sk-c"}),
+    ])
+
+    barrier = Barrier(_HIGH_CONTENTION_WORKERS, timeout=120)
+    with ThreadPoolExecutor(max_workers=_HIGH_CONTENTION_WORKERS) as executor:
+        futures = [
+            executor.submit(_claim_token, int_db_config, AgentProvider.CLAUDE, barrier)
+            for _ in range(_HIGH_CONTENTION_WORKERS)
+        ]
+        claims = [future.result(timeout=300) for future in as_completed(futures)]
+
+    counts = Counter(label for _id, _type, label in claims)
+
+    # Every claimant got a token — the pool was healthy throughout, so nobody
+    # may be refused with "all healthy tokens are currently locked".
+    assert len(claims) == _HIGH_CONTENTION_WORKERS
+    # Saturation still fans out across the whole pool rather than hot-spotting
+    # one row; LRU ordering makes every token carry a real share of the load.
+    assert set(counts) == {"pool-a", "pool-b", "pool-c"}
+    assert min(counts.values()) >= _HIGH_CONTENTION_WORKERS // 10
