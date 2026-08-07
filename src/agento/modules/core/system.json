@@ -9,7 +9,6 @@
   "smtp_user": {"type": "string", "label": "SMTP user"},
   "smtp_pass": {"type": "obscure", "label": "SMTP password"},
   "smtp_from": {"type": "string", "label": "SMTP from address"},
-  "playwright_tool_whitelist": {"type": "string", "label": "Allowed Playwright tools (comma-separated)"},
   "allowed_domains": {"type": "string", "label": "Allowed browser domains (comma-separated)"},
   "allow_subdomains": {"type": "boolean", "label": "Allow subdomains for browser"},
   "allow_http": {"type": "boolean", "label": "Allow HTTP (not just HTTPS) for browser"},

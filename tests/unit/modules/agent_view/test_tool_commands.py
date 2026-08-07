@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agento.modules.agent_view.src.commands.tool_disable import ToolDisableCommand
@@ -21,6 +22,10 @@ def _make_manifest(name, tools):
     m = MagicMock()
     m.name = name
     m.tools = tools
+    # A real ModuleManifest always carries a Path; ScopedConfigService reads each
+    # manifest's config.json when resolving a module-agnostic tools/<name>/is_enabled
+    # key. Point it somewhere absent so the defaults read yields {}.
+    m.path = Path("/nonexistent/module")
     return m
 
 

@@ -32,7 +32,7 @@ from .events import CrontabInstalledEvent, SetupBeforeEvent, SetupCompleteEvent
 from .migrate import get_pending, migrate
 from .module_loader import scan_modules
 from .module_status import filter_enabled
-from .module_validator import validate_module
+from .module_validator import validate_module, validate_tool_namespace
 
 FRAMEWORK_SQL_DIR = Path(__file__).parent / "sql"
 FRAMEWORK_CRON_JSON = Path(__file__).parent / "cron.json"
@@ -69,9 +69,15 @@ def _validate_manifests(enabled, logger: logging.Logger) -> None:
     """Validate every enabled module's manifest. Raise (fail-fast) on any error.
 
     Runs before any migration so a broken manifest aborts setup:upgrade before
-    the database is mutated.
+    the database is mutated. Per-module checks plus the cross-manifest
+    tool-namespace check — the latter cannot be found module-by-module, and a
+    duplicate tool name would silently reuse another module's name-keyed grant.
     """
     errors = {m.name: errs for m in enabled if (errs := validate_module(m.path))}
+    for name, errs in validate_tool_namespace(
+        (m.name, getattr(m, "tools", []) or []) for m in enabled
+    ).items():
+        errors.setdefault(name, []).extend(errs)
     if not errors:
         return
     for name, errs in sorted(errors.items()):

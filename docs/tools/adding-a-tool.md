@@ -261,3 +261,89 @@ agento workspace:build --all
 - [Config System](../config/README.md) — full 3-level fallback details
 - [Creating an Adapter](creating-an-adapter.md) — add support for a new database type
 - [Creating a Module](../modules/creating-a-module.md) — full module guide (events, channels, CLI commands)
+
+---
+
+## Every tool must be declared in `module.json`
+
+The admin **Tools** screen and `agento tool:list` enumerate tools from each
+module's `module.json` `tools[]` array — they never inspect the toolbox JS. A
+tool registered with `server.tool('x', …)` but absent from `tools[]` is **live
+yet invisible**: nobody can see it or flip its `tools/x/is_enabled` key in
+admin. Three things enforce it, each covering what the others cannot:
+`agento module:validate` (and therefore `bin/test` and `setup:upgrade`) reports an undeclared
+**literal** `server.tool('x', …)`, including in `app/code` modules — best-effort, since it skips
+any line containing a bare `/` rather than risk a false error that would abort your upgrade;
+`src/agento/toolbox/tests/tool-declaration.test.js` *executes* `register()` for the shipped
+modules, which is exact and also catches names computed at runtime; and `registerTools` logs a
+`drift WARN` for anything a module registers **or asks the gate about** without declaring — the
+last line of defence for a computed name in a deployment's own module.
+
+Two further rules keep name-keyed enablement unambiguous, both enforced by
+`module:validate`: tool names must be **globally unique** across modules, and a
+`config.json` `tools/<name>/is_enabled` default must belong to a tool that same
+module declares (defaults from every module are merged by literal path, so an
+unowned default would silently apply to somebody else's tool). A duplicate
+*inside* one manifest is caught by `agento module:validate <name>`; only a
+collision **between** modules needs the unscoped `agento module:validate` (or
+`setup:upgrade`), since a single-module run cannot see the other manifests.
+
+Declaration is what the validator enforces. Per-tool gating in the handler is a
+convention it cannot check, so it is on you and on review:
+
+```js
+export function register(server, { isToolEnabled }) {
+  // At startup (registerModuleRestApis) isToolEnabled is undefined and the server is a stub.
+  const enabled = (name) => !isToolEnabled || isToolEnabled(name);
+  if (enabled('my_tool')) server.tool('my_tool', …);
+}
+```
+
+**Never** gate on an `is_enabled` key at module level — no
+`if (!isToolEnabled('<module>')) return;`. It makes every per-tool key dead, and it
+is invisible to the admin screen, which would then show a tool as enabled while the
+runtime denies it. There is no exception: a shared switch is declared with
+`requires` and the framework applies it per tool. (A non-enablement early-return is
+still fine — returning early because a credential is missing, say.)
+
+### Toolset master switches (`requires`)
+
+If a group of tools should share one kill switch, declare it — do not hand-write it:
+
+```json
+{"type": "mcp", "name": "jira",        "description": "Jira toolset master switch", "toolset": "jira"},
+{"type": "mcp", "name": "jira_search", "description": "…", "toolset": "jira", "requires": "jira"}
+```
+
+`requires` must name a tool declared in the **same** module, may not be
+self-referential, and may not form a cycle — `module:validate` rejects all three.
+`registerTools`' gate walks the chain (every link must resolve `1`; a cycle fails
+closed), and the Tools screen / `tool:list` resolve the same chain: `tool:list`
+prints the **effective** status, so a child with its own key on under a master that
+is off reads `disabled (blocked by jira)`, and the screen annotates it
+`(blocked by jira)`. The checkbox itself still reflects the tool's *own* key,
+because that is what toggling writes.
+
+### Tools registered under a computed name
+
+Some tools are not written as a literal `server.tool('x', …)` — `core`'s browser
+toolset proxies whatever `@playwright/mcp` exposes, registering each under
+`tool.name`. Declare those **explicitly anyway**, one `tools[]` entry per tool:
+
+```json
+{"type": "mcp", "name": "browser",          "description": "…", "toolset": "browser"},
+{"type": "mcp", "name": "browser_navigate", "description": "…", "toolset": "browser", "requires": "browser"}
+```
+
+There is no pattern-based membership and no separate allow-list. A proxied tool is
+registered only when its own key resolves `1` **and** the name is declared — the gate
+requires both, so a tool nobody declared can never be registered even if someone runs
+`agento tool:enable` on it (that command validates the name's shape, not its
+existence). `registerTools` logs a `drift WARN` if a module registers a name it has
+not declared, which is how you find out that an upstream bump added one.
+
+Historical note: browser tools used to be selected by
+`core/playwright_tool_whitelist`, a comma-separated string. It was a second gating
+mechanism that never appeared on the Tools screen, so its tools were invisible
+and could not be toggled individually. It is retired; a data patch converted its
+values into per-tool `is_enabled` rows.

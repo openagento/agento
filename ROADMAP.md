@@ -334,7 +334,7 @@ Phases 1–3 built powerful framework features (module registries, scoped config
 
 8. **cron.json eliminated** — `_load_framework_config()` reads env vars only. Jira deployment config moved to `.cron.env` using `CONFIG__JIRA__*` format. `docker/cron/cron.json` deleted.
 
-9. **Toolbox env vars unified** — All `.toolbox.env` entries (`SQL_TIMEOUT_SECONDS`, `PLAYWRIGHT_TOOL_WHITELIST`, `JIRA_CREATE_ISSUE_LIMIT_PER_HOUR`, etc.) migrated to `CONFIG__` format. Toolbox JS tools read from `moduleConfigs` (resolved via 3-level fallback) instead of raw `process.env`. New `resolveModuleField()` in config-loader.js mirrors Python's `config_resolver.resolve_field()`.
+9. **Toolbox env vars unified** — All `.toolbox.env` entries (`SQL_TIMEOUT_SECONDS`, `PLAYWRIGHT_TOOL_WHITELIST` (since retired in favour of per-tool `is_enabled` keys), `JIRA_CREATE_ISSUE_LIMIT_PER_HOUR`, etc.) migrated to `CONFIG__` format. Toolbox JS tools read from `moduleConfigs` (resolved via 3-level fallback) instead of raw `process.env`. New `resolveModuleField()` in config-loader.js mirrors Python's `config_resolver.resolve_field()`.
 
 #### Future Refactoring Areas (Identify as Framework Features Grow)
 

@@ -485,7 +485,56 @@ export async function registerTools(server, context, agentViewId = null, preload
   // Resolve module-level config (system.json fields) — passed to JS tools via context
   const moduleConfigs = await loadModuleConfigs(dbOverrides);
   const configDefaults = loadConfigDefaults();
-  const enabledCheck = (toolName) => isToolEnabled(toolName, dbOverrides, configDefaults);
+  // `requires` on a module.json tools[] entry declares a toolset-master relationship: the tool
+  // is available only if it AND every tool up its requires chain resolve '1'. Declaring it beats
+  // a hand-written module-level early-return, which was invisible to Python (the admin Tools
+  // screen would show a child enabled while the runtime denied it) and made per-tool keys dead.
+  const requiresByTool = new Map();
+  const declaredToolNames = new Set();          // union: used by the unscoped adapter/startup gate
+  const declaredByModule = new Map();           // per module: used while a module's register() runs
+  for (const mod of modules) {
+    const owned = new Set();
+    for (const t of mod.tools || []) {
+      if (t.name) { declaredToolNames.add(t.name); owned.add(t.name); }
+      if (t.requires) requiresByTool.set(t.name, t.requires);
+    }
+    declaredByModule.set(mod.name, owned);
+  }
+  // Set while a module's register() runs, so both the gate and the server.tool wrapper can
+  // attribute what they see to the module responsible.
+  let currentModule = null;
+  // Names a module ASKED about but nobody declares. A well-behaved module consults the gate and
+  // skips registration, so it never reaches the server.tool wrapper below — without recording the
+  // lookup, drift in a computed-name group (the browser passthrough) would be invisible: exactly
+  // the case the runtime WARN exists for.
+  const undeclaredLookups = [];
+
+  // Declaration is REQUIRED, not just a display concern: `tool:enable` accepts any snake_case
+  // name, so without this an operator could enable `browser_something_new` and a passthrough
+  // loop would register a tool no manifest declares — invisible in admin.
+  //
+  // The declaration must belong to the module ASKING. Against the union, a module could compute
+  // a name another module declares and enables, pass the gate, and register its own handler under
+  // that module's grant — the per-module drift WARN only reports it afterwards, too late. Outside
+  // a module's register() (`currentModule === null`: adapter tools, the startup REST pass) the
+  // union is correct, since those names come from manifests by construction.
+  const enabledCheck = (toolName) => {
+    const owned = currentModule ? declaredByModule.get(currentModule) : declaredToolNames;
+    const declared = owned || new Set();
+    const seen = new Set();
+    let current = toolName;
+    while (current) {
+      if (seen.has(current)) return false;   // cycle: fail closed
+      seen.add(current);
+      if (!declared.has(current)) {
+        if (currentModule) undeclaredLookups.push({ name: toolName, module: currentModule });
+        return false;
+      }
+      if (!isToolEnabled(current, dbOverrides, configDefaults)) return false;
+      current = requiresByTool.get(current) || null;
+    }
+    return true;
+  };
   const fileManager = createFileManager(moduleConfigs, context.log);
   const enrichedContext = {
     ...context,
@@ -504,11 +553,15 @@ export async function registerTools(server, context, agentViewId = null, preload
     textPreviewChars: parseInt(moduleConfigs?.core?.['toolbox/result_offload/text_preview_chars'] || '200', 10),
   };
 
-  // Track all tool names registered on the server (adapter + JS module tools)
+  // Track all tool names registered on the server (adapter + JS module tools). currentModule is
+  // set only while a module's register() runs, so a name is attributed to the module that
+  // actually registered it — a name declared by a DIFFERENT module must not excuse it.
   const allToolNames = [];
+  const registeredBy = [];
   const originalTool = server.tool.bind(server);
   server.tool = (name, desc, schema, handler, options = {}) => {
     allToolNames.push(name);
+    if (currentModule) registeredBy.push({ name, module: currentModule });
     const strategy = options.resultStrategy !== undefined ? options.resultStrategy : 'text';
     const wrapped = wrapHandler(handler, name, strategy, offloadConfig);
     return originalTool(name, desc, schema, wrapped);
@@ -544,7 +597,12 @@ export async function registerTools(server, context, agentViewId = null, preload
           logToolboxRest('discovery', 'OK', `Registered ${toolModule.converters.length} converter(s) from ${mod.name}/toolbox/${path.basename(file)}`);
         }
         if (typeof toolModule.register === 'function') {
-          await toolModule.register(server, enrichedContext);
+          currentModule = mod.name;
+          try {
+            await toolModule.register(server, enrichedContext);
+          } finally {
+            currentModule = null;
+          }
           logToolboxRest('discovery', 'OK', `Registered toolbox/${path.basename(file)} from ${mod.name}`);
         } else if (!Array.isArray(toolModule.converters)) {
           logToolboxRest('discovery', 'SKIP', `${file} has no register() export`);
@@ -558,5 +616,33 @@ export async function registerTools(server, context, agentViewId = null, preload
     }
   }
 
-  return { toolNames: allToolNames, healthchecks, agentViewMeta };
+  // Manifests are the admin Tools screen / tool:list source of truth (both read module.json
+  // tools[] only), so a name registered here but absent there is live yet invisible and its
+  // tools/<name>/is_enabled key cannot be flipped in admin. module:validate catches the
+  // string-literal cases statically; this catches names computed at runtime too (upstream MCP
+  // passthrough). Compared PER MODULE: a name declared by a DIFFERENT module must not excuse it.
+  const reported = new Map();   // module -> Set(name), so a repeat is reported once
+  const undeclaredToolNames = [];
+  // Both paths matter: a module that registers without consulting the gate (caught by
+  // registeredBy) and one that consults it and is denied (caught by undeclaredLookups).
+  for (const { name, module } of [...registeredBy, ...undeclaredLookups]) {
+    let seenForModule = reported.get(module);
+    if (!seenForModule) {
+      seenForModule = new Set();
+      reported.set(module, seenForModule);
+    }
+    if (seenForModule.has(name)) continue;
+    seenForModule.add(name);
+    if ((declaredByModule.get(module) || new Set()).has(name)) continue;
+    undeclaredToolNames.push({ name, module });
+  }
+  undeclaredToolNames.sort((a, b) => a.name.localeCompare(b.name));
+  for (const { name, module } of undeclaredToolNames) {
+    logToolboxRest('drift', 'WARN',
+      `Module '${module}' exposed or queried tool '${name}', which it does not declare in its ` +
+      `module.json tools[] — the gate denies undeclared names, and an undeclared tool would be ` +
+      `invisible in the admin Tools screen and in tool:list. Add it to that module's tools[].`);
+  }
+
+  return { toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames };
 }

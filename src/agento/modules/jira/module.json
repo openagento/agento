@@ -5,6 +5,15 @@
   "sequence": [],
   "order": 100,
   "tools": [
-    {"type": "mcp", "name": "jira_get_attachment", "description": "Download a single Jira attachment by ID on demand (bypasses the jira_get_issue download limit)", "toolset": "jira"}
+    {"type": "mcp", "name": "jira", "description": "Jira toolset master switch — every jira_* tool additionally requires its own key", "toolset": "jira"},
+    {"type": "mcp", "name": "jira_search", "description": "Search Jira issues by text in summary", "toolset": "jira", "requires": "jira"},
+    {"type": "mcp", "name": "jira_get_issue", "description": "Read one Jira issue with comments and attachments", "toolset": "jira", "requires": "jira"},
+    {"type": "mcp", "name": "jira_add_comment", "description": "Add a comment to a Jira issue (PUBLIC on Jira Service Management portals)", "toolset": "jira", "requires": "jira"},
+    {"type": "mcp", "name": "jira_transition_issue", "description": "Move a Jira issue to another workflow status", "toolset": "jira", "requires": "jira"},
+    {"type": "mcp", "name": "jira_assign_issue", "description": "Assign a Jira issue to a user", "toolset": "jira", "requires": "jira"},
+    {"type": "mcp", "name": "jira_attach_file", "description": "Upload a file attachment to a Jira issue", "toolset": "jira", "requires": "jira"},
+    {"type": "mcp", "name": "jira_create_issue", "description": "Create a new Jira issue", "toolset": "jira", "requires": "jira"},
+    {"type": "mcp", "name": "jira_update_issue", "description": "Update fields on an existing Jira issue", "toolset": "jira", "requires": "jira"},
+    {"type": "mcp", "name": "jira_get_attachment", "description": "Download a single Jira attachment by ID on demand (bypasses the jira_get_issue download limit)", "toolset": "jira", "requires": "jira"}
   ]
 }

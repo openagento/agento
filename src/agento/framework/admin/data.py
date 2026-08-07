@@ -534,8 +534,12 @@ def delete_config_override(conn, path: str, scope: str = Scope.DEFAULT, scope_id
 class EnablementItem:
     name: str
     path: str  # core_config_data path, e.g. tools/<name>/is_enabled
-    enabled: bool  # resolved value at the selected scope == '1'
+    enabled: bool  # the tool's OWN resolved value at the selected scope == '1'
     explicit_here: bool  # a row exists at this exact (scope, scope_id)
+    # Nearest ancestor in the manifest `requires` chain that is not enabled, else None. The
+    # tool is therefore unavailable at runtime even when `enabled` is True. Optional so
+    # get_skill_states (skills have no masters) is unaffected.
+    blocked_by: str | None = None
 
 
 def get_all_skill_names(conn) -> list[str]:
@@ -586,19 +590,32 @@ def get_tool_states(conn, scope: str = Scope.DEFAULT, scope_id: int = 0) -> list
 
     Resolution routes through the single config service (ScopedConfigService).
     Tool names are snake_case, so ``.get()`` is dash-safe and honors a config.json
-    first-class default and ENV.
+    first-class default and ENV (module-agnostic ``tools/<name>/is_enabled``
+    defaults included, via the literal-path fallback in ``ScopedConfigService``).
+
+    ``enabled`` is the tool's OWN resolved value — that is what a checkbox toggle
+    writes. ``blocked_by`` carries effectiveness: a tool whose declared ``requires``
+    master is off is denied at runtime even when its own value is ``1``.
     """
     if conn is None:
         return []
 
     from ..config_resolver import ScopedConfigService
+    from ..tool_enablement import blocked_by, scan_tool_requires
 
     _ensure_conn(conn)
     svc = ScopedConfigService(conn, scope, scope_id)
+    requires = scan_tool_requires()
+
+    def _resolve(tool_name: str) -> bool:
+        return svc.get(f"tools/{tool_name}/is_enabled") == "1"
 
     def _item(name: str) -> EnablementItem:
         path = f"tools/{name}/is_enabled"
-        return EnablementItem(name, path, svc.get(path) == "1", svc.is_set_at_scope(path))
+        return EnablementItem(
+            name, path, _resolve(name), svc.is_set_at_scope(path),
+            blocked_by=blocked_by(name, requires, _resolve),
+        )
 
     return [(toolset, [_item(n) for n in names]) for toolset, names in _scan_tools_by_toolset()]
 

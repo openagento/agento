@@ -16,6 +16,16 @@ from agento.framework.admin.screens.skills import SkillsScreen
 from agento.framework.admin.screens.tools import ToolsScreen
 
 
+def _real_core_manifests():
+    """Real scanned+enabled core manifests — needed wherever a test exercises the
+    module-agnostic config.json fallback, since conftest does not bootstrap()."""
+    from agento.framework.bootstrap import CORE_MODULES_DIR
+    from agento.framework.module_loader import scan_modules
+    from agento.framework.module_status import filter_enabled
+
+    return filter_enabled(scan_modules(CORE_MODULES_DIR))
+
+
 def _mock_conn(rows=None, raises=False):
     conn = MagicMock()
     cursor = MagicMock()
@@ -132,10 +142,12 @@ class TestGetToolStates:
         assert captured == {"agent_view_id": 5, "workspace_id": 7}
 
     def test_missing_row_is_disabled(self):
+        # A tool with no config.json default: opt-in means no row -> disabled.
+        # (`browser` is NOT such a tool — core/config.json ships it enabled, see below.)
         conn, _ = _mock_conn()
         with patch(
             "agento.framework.admin.data._scan_tools_by_toolset",
-            return_value=[("core", ["browser"])],
+            return_value=[("demo", ["demo_no_default"])],
         ), patch(
             "agento.framework.scoped_config.build_scoped_overrides", return_value={}
         ), patch(
@@ -143,8 +155,33 @@ class TestGetToolStates:
         ):
             groups = get_tool_states(conn, scope="default", scope_id=0)
         item = groups[0][1][0]
-        assert item.name == "browser"
+        assert item.name == "demo_no_default"
         assert item.enabled is False  # opt-in: no row -> disabled
+        assert item.explicit_here is False
+
+    def test_first_class_config_json_default_resolves_enabled(self):
+        """A module may ship a tool enabled by default; Python must see that.
+
+        `core/config.json` enables `browser`. Before the literal-path fallback in
+        ScopedConfigService, Python could not resolve module-agnostic
+        `tools/<name>/is_enabled` keys and reported such a tool as disabled while the
+        toolbox gate ran it — the screen contradicting the runtime.
+        """
+        conn, _ = _mock_conn()
+        with patch(
+            "agento.framework.admin.data._scan_tools_by_toolset",
+            return_value=[("browser", ["browser"])],
+        ), patch(
+            "agento.framework.scoped_config.build_scoped_overrides", return_value={}
+        ), patch(
+            "agento.framework.scoped_config.load_scoped_db_overrides", return_value={}
+        ), patch(
+            "agento.framework.bootstrap.get_manifests", return_value=_real_core_manifests()
+        ):
+            groups = get_tool_states(conn, scope="default", scope_id=0)
+        item = groups[0][1][0]
+        assert item.name == "browser"
+        assert item.enabled is True
         assert item.explicit_here is False
 
 

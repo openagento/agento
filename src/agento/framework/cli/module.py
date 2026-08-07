@@ -227,6 +227,8 @@ class ModuleValidateCommand:
                 sys.exit(1)
             else:
                 print(f"\u2714 {args.name}")
+                print("  note: tool-name collisions with OTHER modules are checked only by "
+                      "'module:validate' without a module name, and by setup:upgrade")
         else:
             # Validate all
             results = validate_all(core_dir, user_dir)

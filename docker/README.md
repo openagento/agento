@@ -219,15 +219,28 @@ docker compose exec cron /opt/cron-agent/run.sh rotate
 
 ## Playwright Browser Tools (MCP Proxy)
 
-Toolbox proxies requests to a Playwright MCP child process, providing controlled browser access with domain and tool whitelisting.
+Toolbox proxies requests to a Playwright MCP child process, providing controlled browser access: each browser tool is enabled individually via its own `tools/<name>/is_enabled` key, and navigation is restricted by `ALLOWED_DOMAINS`.
 
-**Available tools:** `browser_navigate`, `browser_take_screenshot`, `browser_snapshot`
+**Available tools:** all 26 `browser_*` tools the Playwright MCP actually exposes under this
+deployment's flags are declared in `core/module.json`, and each has its
+own `tools/<name>/is_enabled` key — enable them individually with
+`agento tool:enable browser_navigate --agent-view <code>` or in the admin Tools screen's
+`browser` group. All are **off by default**, and each additionally requires the `browser`
+toolset master switch (`tools/browser/is_enabled`, on by default).
+
+> **Retired:** `PLAYWRIGHT_TOOL_WHITELIST` / `CONFIG__CORE__PLAYWRIGHT_TOOL_WHITELIST` no longer
+> exists. A whitelist stored in the **DB** is translated into per-tool keys automatically on
+> `setup:upgrade` (each scope that had one gets an explicit on/off for every browser tool, so a
+> narrower per-agent_view list cannot start inheriting the global list's extras). An **ENV**-set
+> value is **not** migrated — it is a toolbox-container variable that `setup:upgrade` (cron
+> container) cannot read reliably, and it stays a value you can unset rather than becoming
+> permanent DB rows. Those tools are therefore **disabled** after upgrading: remove the
+> variable and run `agento tool:enable browser_<name>` for the ones you actually want.
 
 ### Configuration (ENV)
 
 | Variable | Default | Description |
 |---|---|---|
-| `PLAYWRIGHT_TOOL_WHITELIST` | `""` (deny all) | Comma-separated tool names to expose |
 | `ALLOWED_DOMAINS` | `""` (deny all) | Comma-separated domains to allow |
 | `ALLOW_SUBDOMAINS` | `true` | `foo.example.com` matches `example.com` |
 | `ALLOW_HTTP` | `false` | Allow HTTP URLs (HTTPS only by default) |

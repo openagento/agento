@@ -86,6 +86,31 @@ Validate module structure and manifests. Checks:
 - Class paths in `di.json` and `events.json` resolve to `.py` files
 - `sequence` entries reference modules that exist on disk
 - Field types in `system.json` are valid
+- Literal `server.tool('x', …)` calls in `toolbox/*.js` are declared in `tools[]` — a **best-effort**
+  textual scan that covers the common case, including in your own `app/code` modules. It is not
+  exact: a bare `/` cannot be classified as division or a regex without a real JS parser, so
+  unusual code can slip past. The exact checks are
+  `src/agento/toolbox/tests/tool-declaration.test.js` (it executes `register()`, so it also sees
+  names computed at runtime) and the runtime `drift WARN`
+- `requires` names a tool declared in the same module, is not self-referential, and forms no cycle
+- Tool names are unique — within the manifest, and across modules
+- A `config.json` `tools/<name>/is_enabled` default belongs to a tool this module declares
+
+### `setup:upgrade` aborts on these too
+
+`setup:upgrade` validates every **enabled** manifest before any DB change, so a module that
+breaks one of the tool rules above blocks the upgrade (safely — nothing is migrated). Remediation
+is mechanical: each error message states exactly what to add. This most often bites `app/code/`
+modules that register tools without declaring them — on a deployment carrying `jira_servicedesk`,
+`mobile_qa` or `qa_automation`, each needs its `tools[]` entries added before the next upgrade. So
+pre-flight before upgrading:
+
+```bash
+agento module:validate          # no argument — only this form checks CROSS-module collisions
+```
+
+`agento module:validate <name>` inspects a single manifest and therefore cannot see a tool-name
+collision with a *different* module (a duplicate inside the same manifest it does catch).
 
 ## module:remove
 

@@ -47,7 +47,7 @@ function ctx(overrides = {}) {
   return {
     log: vi.fn(),
     moduleConfigs: { jira: { ...JIRA_CFG } },
-    isToolEnabled: (n) => n === 'jira',
+    isToolEnabled: (n) => n !== 'jira_get_attachment',
     artifactsDir: '/tmp/art',
     fileManager: successFileManager(),
     ...overrides,
@@ -192,12 +192,12 @@ function realFileManager() {
 describe('jira_get_attachment tool', () => {
   it('D3: opt-in — not registered unless isToolEnabled returns true', () => {
     const sOff = makeServer();
-    register(sOff, ctx({ isToolEnabled: (n) => n === 'jira' }));      // attachment flag false
+    register(sOff, ctx({ isToolEnabled: (n) => n !== 'jira_get_attachment' }));      // attachment flag false
     expect(sOff.tools.jira_get_attachment).toBeUndefined();
     expect(sOff.tools.jira_get_issue).toBeDefined();
 
     const sOn = makeServer();
-    register(sOn, ctx({ isToolEnabled: (n) => n === 'jira' || n === 'jira_get_attachment' }));
+    register(sOn, ctx({ isToolEnabled: () => true }));
     expect(sOn.tools.jira_get_attachment).toBeDefined();
   });
 

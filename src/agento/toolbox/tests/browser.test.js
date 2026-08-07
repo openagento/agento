@@ -41,11 +41,11 @@ describe('browser tools', () => {
       },
       moduleConfigs: {
         core: {
-          playwright_tool_whitelist: whitelistTools.join(','),
           allowed_domains: 'example.com',
         },
       },
-      isToolEnabled: () => true,
+      // Membership is per-tool enablement now — there is no whitelist.
+      isToolEnabled: (name) => whitelistTools.includes(name),
       artifactsDir: '/workspace/tmp',
     };
   }
@@ -63,6 +63,64 @@ describe('browser tools', () => {
     register(server, context);
     return { handlers, server, context };
   }
+
+  describe('per-tool enablement (no module-level gate, no whitelist)', () => {
+    it('gates each browser tool on its own key and never queries the "browser" master', async () => {
+      // The framework applies the master via each tool's requires:, so browser.js must ask
+      // per tool. Asserting only "nothing registered" would also pass with the old
+      // module-level early-return, which is exactly what this change removes.
+      setupMocks();
+      const { register } = await import('../../modules/core/toolbox/browser.js');
+      const asked = [];
+      const server = { tool: vi.fn() };
+      const context = buildContext([]);
+      register(server, { ...context, isToolEnabled: (n) => { asked.push(n); return false; } });
+
+      expect(asked).not.toContain('browser');
+      expect(asked).toContain('browser_navigate');
+      expect(asked.every(n => n.startsWith('browser_'))).toBe(true);
+      expect(server.tool).not.toHaveBeenCalled();
+    });
+
+    it('keeps cookie-injection state per session, not per process', async () => {
+      // register() runs once per MCP session but the module is imported once per process, so a
+      // module-level Set would leak one agent_view's injected domains into another's session.
+      // The cookie branch only runs when session.json HAS a matching cookie — with the default
+      // rejecting readFile this test would pass even with the old module-level Set.
+      mockReadFile = vi.fn().mockResolvedValue(JSON.stringify({
+        cookies: [{ name: 'sid', value: 'abc', domain: 'example.com', path: '/' }],
+      }));
+      setupMocks();
+      const { register } = await import('../../modules/core/toolbox/browser.js');
+
+      const runSession = async () => {
+        const handlers = {};
+        const server = { tool: vi.fn((name, _d, _s, handler) => { handlers[name] = handler; }) };
+        register(server, buildContext(['browser_navigate']));
+        await handlers.browser_navigate({ user: 'a@b.com', url: 'https://example.com/page' });
+        return mockClient.callTool.mock.calls.map(c => c[0]);
+      };
+
+      const first = await runSession();
+      // The cookie hop: navigate to robots.txt, then set document.cookie via evaluate.
+      expect(first.filter(c => c.name === 'browser_navigate')
+        .some(c => c.arguments.url.endsWith('/robots.txt'))).toBe(true);
+      expect(first.some(c => c.name === 'browser_evaluate')).toBe(true);
+
+      mockClient.callTool.mockClear();
+      const second = await runSession();
+
+      // A fresh session must redo the hop rather than inherit the first session's bookkeeping.
+      expect(second.map(c => c.name)).toEqual(first.map(c => c.name));
+      expect(second.filter(c => c.name === 'browser_navigate')
+        .some(c => c.arguments.url.endsWith('/robots.txt'))).toBe(true);
+    });
+
+    it('registers only the tools the gate allows', async () => {
+      const { server } = await importAndRegister(['browser_snapshot']);
+      expect(server.tool.mock.calls.map(c => c[0])).toEqual(['browser_snapshot']);
+    });
+  });
 
   describe('browser_start_video', () => {
     it('forwards size params restructured into size object', async () => {
@@ -199,11 +257,10 @@ describe('browser tools', () => {
         },
         moduleConfigs: {
           core: {
-            playwright_tool_whitelist: 'browser_snapshot',
             allowed_domains: 'example.com',
           },
         },
-        isToolEnabled: () => true,
+        isToolEnabled: (name) => name === 'browser_snapshot',
         artifactsDir: '/workspace/tmp',
       };
       register(server, context);
@@ -244,7 +301,7 @@ describe('browser tools', () => {
         { name: 'browser_fake_one', description: 'a', inputSchema: { type: 'object', properties: {} } },
         { name: 'browser_fake_two', description: 'b', inputSchema: { type: 'object', properties: {} } },
       ];
-      const whitelist = fakeUpstream.map(t => t.name).join(',');
+      const whitelist = fakeUpstream.map(t => t.name);
 
       const logs = [];
       function buildContext() {
@@ -256,11 +313,10 @@ describe('browser tools', () => {
           },
           moduleConfigs: {
             core: {
-              playwright_tool_whitelist: whitelist,
               allowed_domains: 'example.com',
             },
           },
-          isToolEnabled: () => true,
+          isToolEnabled: (name) => whitelist.includes(name),
           artifactsDir: '/workspace/tmp',
         };
       }
@@ -289,7 +345,7 @@ describe('browser tools', () => {
       const fakeUpstream = [
         { name: 'browser_fake_one', description: 'a', inputSchema: { type: 'object', properties: {} } },
       ];
-      const whitelist = fakeUpstream.map(t => t.name).join(',');
+      const whitelist = fakeUpstream.map(t => t.name);
 
       function buildContext() {
         return {
@@ -300,11 +356,10 @@ describe('browser tools', () => {
           },
           moduleConfigs: {
             core: {
-              playwright_tool_whitelist: whitelist,
               allowed_domains: 'example.com',
             },
           },
-          isToolEnabled: () => true,
+          isToolEnabled: (name) => whitelist.includes(name),
           artifactsDir: '/workspace/tmp',
         };
       }

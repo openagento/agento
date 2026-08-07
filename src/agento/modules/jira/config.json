@@ -3,5 +3,13 @@
   "todo_statuses": ["To Do", "TODO", "Selected for Development"],
   "create_issue_limit_per_hour": 50,
   "attachment_download_limit": 10,
-  "tools/jira/is_enabled": "1"
+  "tools/jira/is_enabled": "1",
+  "tools/jira_search/is_enabled": "1",
+  "tools/jira_get_issue/is_enabled": "1",
+  "tools/jira_add_comment/is_enabled": "1",
+  "tools/jira_transition_issue/is_enabled": "1",
+  "tools/jira_assign_issue/is_enabled": "1",
+  "tools/jira_attach_file/is_enabled": "1",
+  "tools/jira_create_issue/is_enabled": "1",
+  "tools/jira_update_issue/is_enabled": "1"
 }

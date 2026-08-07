@@ -87,6 +87,28 @@ def read_config_defaults(module_path: Path) -> dict:
     return data
 
 
+def _resolve_literal_config_json(path: str) -> str | None:
+    """Resolve a module-agnostic ``config.json`` key by its LITERAL path.
+
+    Mirrors the toolbox's ``loadConfigDefaults()``, which merges every module's
+    ``config.json`` with ``Object.assign`` and looks a path up verbatim — so the
+    LAST declaring module wins, and this must too. Needed for keys whose first
+    segment is not a module name, notably ``tools/<name>/is_enabled``, which
+    ``_parse_config_path`` reads as module ``tools`` and can never resolve.
+    Without this, ``tool:list`` and the admin Tools screen report a live
+    first-class tool as disabled.
+    """
+    from .bootstrap import get_manifests
+
+    found: str | None = None
+    for manifest in get_manifests():
+        defaults = read_config_defaults(manifest.path)
+        if defaults and path in defaults:
+            val = defaults[path]
+            found = str(val) if val is not None else None
+    return found
+
+
 def _coerce_type(value: str, field_type: str) -> Any:
     """Coerce a string value to the declared field type."""
     if field_type == "integer":
@@ -453,6 +475,10 @@ class ScopedConfigService:
         )
 
     def _resolve_config_json(self, path: str) -> str | None:
+        val = self._resolve_module_config_json(path)
+        return val if val is not None else _resolve_literal_config_json(path)
+
+    def _resolve_module_config_json(self, path: str) -> str | None:
         from .bootstrap import get_manifests
         from .core_config import _parse_config_path
 

@@ -1,5 +1,6 @@
 {
     "patches": [
-        {"name": "SeedWorkspace", "class": "src.patches.seed_workspace.SeedWorkspace"}
+        {"name": "SeedWorkspace", "class": "src.patches.seed_workspace.SeedWorkspace"},
+        {"name": "MigratePlaywrightWhitelistToTools", "class": "src.patches.migrate_playwright_whitelist_to_tools.MigratePlaywrightWhitelistToTools"}
     ]
 }

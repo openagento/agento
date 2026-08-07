@@ -11,8 +11,6 @@ try {
   // No session.json or no cookies — that's fine
 }
 
-const injectedDomains = new Set();
-
 function sessionCookiesForUrl(urlString) {
   let hostname;
   try { hostname = new URL(urlString).hostname.toLowerCase(); } catch { return []; }
@@ -198,9 +196,15 @@ export async function healthcheck({ playwright }) {
 }
 
 export function register(server, { log, playwright, moduleConfigs, isToolEnabled, artifactsDir }) {
-  if (isToolEnabled && !isToolEnabled('browser')) return;
   const cfg = moduleConfigs?.core || {};
-  const toolWhitelist = [...new Set(parseList(cfg.playwright_tool_whitelist))];
+  // Per-SESSION, not module-level: register() runs once per MCP session, so a module-level Set
+  // would accumulate for the process lifetime and let one agent_view's cookie injection affect
+  // another's. (`sessionCookies` above stays module-level — it is read-only, loaded once at import.)
+  const injectedDomains = new Set();
+  // At startup (registerModuleRestApis) isToolEnabled is undefined and the server is a stub.
+  // Every browser tool is declared in core/module.json with requires: "browser", so this one
+  // helper is the whole enablement gate — no module-level early-return, no separate allow-list.
+  const enabled = (name) => !isToolEnabled || isToolEnabled(name);
   const allowedDomains = parseList(cfg.allowed_domains);
   const allowSubdomains = parseBool(cfg.allow_subdomains, true);
   const allowHttp = parseBool(cfg.allow_http, false);
@@ -244,15 +248,10 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
     log('browser', 'SESSION', `Loaded ${sessionCookies.length} session cookies for injection`);
   }
 
-  if (toolWhitelist.length === 0) {
-    log('browser', 'INIT', 'No tools in PLAYWRIGHT_TOOL_WHITELIST — all browser tools disabled');
-    return;
-  }
-
-  log('browser', 'INIT', `whitelist=[${toolWhitelist.join(',')}] domains=[${allowedDomains.join(',')}] subdomains=${allowSubdomains} http=${allowHttp}`);
+  log('browser', 'INIT', `domains=[${allowedDomains.join(',')}] subdomains=${allowSubdomains} http=${allowHttp}`);
 
   for (const [name, def] of Object.entries(BROWSER_TOOLS)) {
-    if (!toolWhitelist.includes(name)) continue;
+    if (!enabled(name)) continue;
 
     server.tool(
       name,
@@ -428,8 +427,10 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
   // --- Passthrough registration for upstream Playwright tools ---
   const upstreamTools = playwright.getTools();
   for (const tool of upstreamTools) {
-    if (!toolWhitelist.includes(tool.name)) continue;
     if (BROWSER_TOOLS[tool.name]) continue; // custom wrapper takes priority
+    // An upstream tool that core/module.json does not declare has no is_enabled key, so the
+    // gate denies it and it is never registered — new upstream tools are fail-closed.
+    if (!enabled(tool.name)) continue;
 
     let zodShape;
     try {

@@ -49,20 +49,35 @@ class ToolListCommand:
             # config.json first-class default.
             svc = ScopedConfigService(conn, scope, scope_id, workspace_id=workspace_id)
 
+            # The status shown is the EFFECTIVE one: a tool whose declared `requires`
+            # master is off is unavailable at runtime even when its own key is '1', so
+            # printing "enabled (blocked by jira)" would be self-contradictory.
+            from agento.framework.tool_enablement import blocked_by, is_effective, scan_tool_requires
+
+            requires = scan_tool_requires()
+
+            def resolve(tool_name: str) -> bool:
+                return svc.get(f"tools/{tool_name}/is_enabled") == "1"
+
             manifests = get_manifests()
             tools = []
             for manifest in manifests:
                 for tool in manifest.tools:
                     tool_name = tool["name"]
-                    enabled = svc.get(f"tools/{tool_name}/is_enabled") == "1"
-                    tools.append((tool_name, manifest.name, enabled))
+                    tools.append((
+                        tool_name, manifest.name,
+                        is_effective(tool_name, requires, resolve),
+                        blocked_by(tool_name, requires, resolve),
+                    ))
 
             if not tools:
                 print("No tools registered.")
                 return
 
-            for tool_name, module_name, enabled in tools:
-                status = "enabled" if enabled else "disabled"
+            for tool_name, module_name, effective, blocker in tools:
+                status = "enabled" if effective else "disabled"
+                if blocker:
+                    status += f" (blocked by {blocker})"
                 print(f"  {tool_name:<30} {module_name:<20} {status}")
         finally:
             conn.close()

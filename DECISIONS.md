@@ -137,15 +137,93 @@ A new core, disableable channel that watches an agent's open Bitbucket Cloud PRs
 
 ---
 
+## 2026-08-04 — Every tool is declared, visible and individually switchable
+
+- **The defects.** The admin Tools screen and `tool:list` enumerate `module.json` `tools[]` only, but
+  most toolbox tools are registered imperatively with `server.tool(...)` and were never declared —
+  **37 live tools were invisible** (D1). Worse, `jira` and `core/browser` gated on a single
+  module-level `isToolEnabled('<module>')` early-return, so their per-tool `tools/<name>/is_enabled`
+  keys were **dead** (D2). The trigger: a Service Desk agent posted a public customer-facing comment
+  because `jira_internal_comment` was invisible-and-off while `jira_add_comment` could not be
+  disabled without also killing `jira_get_issue`.
+- **Declaration is now total.** Every tool a module can register is named in its `tools[]` — including
+  all **26** `browser_*` tools — the set `@playwright/mcp` actually exposes under the flags
+  `playwright-client.js` starts it with (`--caps devtools`), most of them proxied under a computed
+  name. That set is NOT the package README's: scraping the README declared 12 tools production
+  never exposes and missed 2 it does, leaving those 2 invisible and gate-denied.
+  `jira` declares its master plus 9 tools. `core` declares 29 entries (2 core tools, the `browser` master, and 26 browser tools).
+- **`tools/jira/is_enabled` was KEPT, not split.** `resolveConfigValue` checks ENV first, so an
+  operator's `CONFIG__TOOLS__JIRA__IS_ENABLED=0` cannot be migrated by any data patch — retiring the
+  key would have silently *granted* eight tools. Faithful DB migration was also not expressible:
+  `default master=0` + `agent_view master=1` means enabled today, and under `master=1` a same-scope
+  per-tool `0` was dead, so neither dropping nor copying rows preserves behaviour;
+  `jira_get_attachment`'s effective value was `master AND own_key`, which no single-row copy
+  reproduces. Accepted delta: a previously-dead per-tool jira key now takes effect.
+- **The master became declarative (`requires`), not hand-written.** A `tools[]` entry may declare
+  `requires: "<tool>"`. `registerTools`' gate walks the chain and fails closed on a cycle; Python's
+  new `framework/tool_enablement.py` resolves the same declaration so the Tools screen annotates a
+  blocked child `(blocked by jira)` and `tool:list` prints the **effective** status. One declaration,
+  two languages, so the display cannot contradict the runtime. `jira.js` and `browser.js` both lost
+  their module-level early-return — the rule now has **zero** exceptions.
+- **`core/playwright_tool_whitelist` was retired.** A comma-separated Config string was a second
+  gating mechanism the Tools screen could not render, which is precisely what left its browser tools
+  invisible and un-togglable. It is deleted; a data patch converts DB values into per-tool `is_enabled`
+  rows. Safe because the whitelist shipped empty ("deny all"), so the new keys default off and nothing
+  is granted. A **DB**-set whitelist is translated per scope with an explicit on/off for every name —
+  the whitelist was one scope-resolved value, so writing only the enabled ones would let a narrower
+  child list inherit the parent's extras. Stale `tools/browser_*/is_enabled` rows (which `tool:enable`
+  could always create, dead under the old gate) are cleared at every scope first. An **ENV**-set
+  whitelist is deliberately not migrated: `setup:upgrade` runs in the cron container and cannot read a
+  toolbox-container variable reliably, and converting it to permanent DB grants would widen durable
+  state — so it fails toward *disabled* and the operator re-enables explicitly.
+- **Alternative rejected: a `dynamic_prefix` pattern.** Declaring one `browser` switch plus a
+  `browser_` prefix marker would have kept the whitelist, left those tools off the screen, and made a
+  *pattern* a runtime authorization rule — which authorized any module for `browser_*` and needed a
+  per-module gate factory to contain. Enumerating the names deleted more code than it added.
+- **Anti-drift is two-sided.** `module:validate` (so `bin/test` and `setup:upgrade`, which aborts
+  before any DB change) errors on a literal `server.tool('x')` missing from `tools[]`, a `requires`
+  cycle or dangling reference, a duplicate tool name (same-module or cross-module), and a `config.json`
+  `tools/<name>/is_enabled` default the module does not own. The cross-module check lives in a shared
+  `validate_tool_namespace` helper because `setup._validate_manifests` validates module-by-module and
+  would otherwise never run it. At runtime `registerTools` WARNs per-module on a registered-but-
+  undeclared name — the backstop for a computed name, e.g. one a future Playwright version adds.
+- **Two checks, because each catches what the other cannot.**
+  - **`toolbox/tests/tool-declaration.test.js` is the exact one.** It *executes* every shipped
+    module's `register()` with a recording server and asserts nothing registers that the manifest
+    does not declare, feeding the real `@playwright/mcp` tool list through the passthrough loop so a
+    version bump that adds a tool fails there. Its coverage guard is exhaustive and keyed by FULL
+    path — every `toolbox/*.js` must be a listed registrar, a listed route-only file (*proven* to
+    make no `server.tool` call and no `export *`), or a listed support file (*proven* to export no
+    `register`, over-matching `export *` and destructured exports since production invokes any
+    function-valued `register`). Path keying matters: a bare `api.js` would auto-exempt every
+    future module's, including one that re-exports a registrar.
+  - **`module:validate` (so `bin/test` and `setup:upgrade`) is a BEST-EFFORT pre-flight that can
+    only MISS.** It scans toolbox JS textually — skipping comments and string/template literals,
+    requiring an identifier boundary before `server`, accepting the quoted argument only when `,`
+    or `)` follows — and catches the common case, including in a deployment's own `app/code`
+    modules, which is why it is worth running before any DB change. On any other `/` it abandons
+    the line. That is the whole design: deciding whether a bare `/` is division or a regex is a
+    full lexical-goal problem (ASI, brace grammar, postfix operators and the enclosing construct
+    all feed it), three successive token heuristics were each defeated by valid JavaScript, and
+    since this raises a FATAL error the only acceptable failure direction is a miss — a false
+    positive would abort a customer's upgrade over correct code. Making it exact would mean adding
+    a standards-compliant JS parser to the Python dependencies; deliberately not done (simplicity
+    over completeness), with exactness provided by the executing test above.
+- **Why the admin list is not derived from the running toolbox.** Python cannot import the toolbox JS
+  or enumerate an upstream MCP server's tools without starting it, so manifests stay the source of
+  truth and drift is prevented on both sides instead.
+
+---
+
 ## 2026-06-04 — Tools and skills are opt-in (disabled by default), resolved through the one config service
 
 - **The problem.** Registered tools and synced skills were available to every agent_view by default: the gate (`isToolEnabled`, `get_enabled_skills`) treated "no `is_enabled` row" as enabled. Enabling was therefore opt-out — you could only ever *remove* access. For a fleet whose tools carry credentials (BI warehouse, Magento prod, NAV ERP, WMS), dropping in a module silently granted the whole fleet access.
 - **Inverted the default to opt-in.** A tool/skill is available only when its resolved `is_enabled` value is `1`. Missing → disabled; `1` → enabled; `0` → disabled (explicit; an agent_view/workspace `0` overrides an inherited `1`, since the scope chain is merged into one value before the check).
 - **Resolution goes through the single config service in each language — no bespoke gate logic.** `isToolEnabled` (JS) previously hand-indexed the merged DB map, ignoring ENV and `config.json`. It now resolves `tools/<name>/is_enabled` through `config-loader.js`'s standard **ENV → DB → config.json** fallback (`resolveConfigValue`), the mirror of Python's `ScopedConfigService`. Python gating likewise routes through `ScopedConfigService` (the source of truth for the merged scope chain): tool reads use `.get()` (snake_case names → dash-safe, full fallback); skill reads use the service's merged `.overrides` because skill names may contain dashes (e.g. `git-workflow`) and `.get()` path-normalizes dashes.
 - **Two-tier defaults via `config.json`.** Because the gate now consults `config.json`, a module can ship a first-class tool **enabled by default**: `core/config.json` enables `email_send`, `browser`, `schedule_followup`; `jira/config.json` enables the `jira` group. Credentialed/customer adapter tools (BI/Magento/NAV/WMS) ship no default → stay **opt-in** (off until an explicit DB `1`). A DB `0` at any scope still disables a first-class tool. This keeps least privilege exactly where the issue wanted it (credentialed datastores) while the agent's built-in toolkit works out of the box. Skills carry no per-skill `config.json` default, so they remain fully opt-in.
-- **Known asymmetry.** The JS runtime gate merges every module's `config.json` by literal path, so it honors `tools/<name>/is_enabled` defaults; Python's `ScopedConfigService` resolves `config.json` by parsing the path's module, so it does **not** resolve these module-agnostic defaults. This is invisible in practice: the first-class tools are JS-implemented and not declared in any `module.json`, so they never appear in Python's `tool:list`/Access (which list manifest-declared adapter tools). The JS gate is authoritative for runtime tool availability.
+- **~~Known asymmetry~~ — FIXED (see the 2026-08-04 entry).** The JS runtime gate merges every module's `config.json` by literal path, so it honors `tools/<name>/is_enabled` defaults; Python's `ScopedConfigService` resolved `config.json` by parsing the path's module, so it did **not** resolve these module-agnostic defaults. The original note called this invisible in practice *because* the first-class tools were not declared in any `module.json` — a premise that stopped holding the moment they were declared, at which point Python would have rendered every live tool as **disabled**. `ScopedConfigService._resolve_config_json` now falls back to `_resolve_literal_config_json`, mirroring `loadConfigDefaults()` including its last-module-wins order; global tool-name uniqueness plus owned `config.json` defaults (both `module:validate`-enforced) make that order unobservable.
 - **No DB migration, no backfill.** Stored `0`/`1` values keep their meaning — only the interpretation of "missing" flips. A backfill would also be awkward: skills aren't in `skill_registry` until `skill:sync`, which runs *after* data patches in `setup:upgrade`.
-- **Enablement UX.** `tool:enable`/`skill:enable` already write `1`/`0` at a scope (unchanged). Added two admin TUI screens (Textual `SelectionList`): a **Skills** screen (single alphabetical checkbox list) and a **Tools** screen (manifest-declared tools grouped into sections per **toolset**, each with a "toggle all"). A tool's toolset is a required `toolset` field on its `module.json` declaration — enforced by `agento module:validate`, `bin/test`, and `setup:upgrade` (which validates enabled manifests up front and aborts before any DB change); the Tools screen falls back to the module name only as a defensive runtime default. It's purely a grouping label with no resolution effect — `module_loader` carries it through as a raw key. Checkboxes reflect the resolved value at the selected scope; inherited enables are annotated. Convention-registered JS tools (email/browser/jira/schedule) are not yet listed there — a known follow-up.
+- **Enablement UX.** `tool:enable`/`skill:enable` already write `1`/`0` at a scope (unchanged). Added two admin TUI screens (Textual `SelectionList`): a **Skills** screen (single alphabetical checkbox list) and a **Tools** screen (manifest-declared tools grouped into sections per **toolset**, each with a "toggle all"). A tool's toolset is a required `toolset` field on its `module.json` declaration — enforced by `agento module:validate`, `bin/test`, and `setup:upgrade` (which validates enabled manifests up front and aborts before any DB change); the Tools screen falls back to the module name only as a defensive runtime default. It's purely a grouping label with no resolution effect — `module_loader` carries it through as a raw key. Checkboxes reflect the resolved value at the selected scope; inherited enables are annotated. Convention-registered JS tools (email/browser/jira/schedule) are now declared and listed too — see the 2026-08-04 entry.
 
 ---
 

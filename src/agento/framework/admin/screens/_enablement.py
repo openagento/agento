@@ -17,8 +17,12 @@ from ..widgets.sidebar import Sidebar
 
 
 def prompt_label(item: EnablementItem) -> str:
-    """Checkbox label. Mark enables resolved from a parent scope as inherited so
-    the operator can tell a local grant from one inherited up the scope chain."""
+    """Checkbox label. Mark a tool its toolset master blocks, so the operator can
+    tell "off here" from "on here but denied upstream"; otherwise mark enables
+    resolved from a parent scope as inherited, so a local grant is distinguishable
+    from one inherited up the scope chain."""
+    if item.blocked_by:
+        return f"{item.name}  (blocked by {item.blocked_by})"
     if item.enabled and not item.explicit_here:
         return f"{item.name}  (inherited)"
     return item.name
