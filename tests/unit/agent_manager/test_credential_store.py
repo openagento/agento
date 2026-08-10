@@ -6,6 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from agento.framework.agent_manager.credential_store import (
+    RefreshLease,
+    clear_auto_credential_error,
     clear_credential_error,
     count_credentials_for_scope,
     deregister_credential,
@@ -13,11 +15,14 @@ from agento.framework.agent_manager.credential_store import (
     list_credentials,
     mark_credential_error,
     register_credential,
+    release_credential_lease,
+    renew_credential_leases,
     select_credential,
     set_credential_priority,
     throttle_credential,
     update_refreshed_credentials,
 )
+from agento.framework.agent_manager.errors import CredentialLeasedError
 from agento.framework.agent_manager.models import CredentialRecord, CredentialStatus
 
 
@@ -52,6 +57,7 @@ _PLAINTEXT_CREDS = {"subscription_key": "sk-test"}
 _SAMPLE_ROW = {
     "id": 1,
     "agent_type": "claude",
+    "scope": "claude",
     "type": "oauth",
     "label": "prod-1",
     "credentials": _ENCRYPTED_BLOB,
@@ -61,6 +67,11 @@ _SAMPLE_ROW = {
     "status": "ok",
     "error_msg": None,
     "expires_at": None,
+    "error_source": None,
+    "lease_owner": None,
+    "leased_until": None,
+    # register_credential's pre-flight lock computes this in SQL; a free row reports 0.
+    "lease_active": 0,
     "used_at": None,
     "created_at": "2025-01-01 00:00:00",
     "updated_at": "2025-01-01 00:00:00",
@@ -102,14 +113,15 @@ class TestRegisterToken:
         assert token.scope == "claude"
         assert token.label == "prod-1"
         assert token.credentials == _PLAINTEXT_CREDS
-        assert cursor.execute.call_count == 2  # INSERT + SELECT
+        assert cursor.execute.call_count == 3  # lease pre-flight + INSERT + SELECT
 
     def test_passes_encrypted_credentials(self):
         conn, cursor = _mock_conn(fetchone_return=_SAMPLE_ROW)
 
         register_credential(conn, "codex", "codex-1", _PLAINTEXT_CREDS, 50000)
 
-        insert_call = cursor.execute.call_args_list[0]
+        # [0] is the lease pre-flight SELECT ... FOR UPDATE; the INSERT is [1].
+        insert_call = cursor.execute.call_args_list[1]
         assert "INSERT INTO credential" in insert_call[0][0]
         assert "credentials" in insert_call[0][0]
         params = insert_call[0][1]
@@ -127,9 +139,11 @@ class TestRegisterToken:
 
         register_credential(conn, "claude", "prod-1", _PLAINTEXT_CREDS)
 
-        insert_sql = cursor.execute.call_args_list[0][0][0]
+        insert_sql = cursor.execute.call_args_list[1][0][0]
         assert "status" in insert_sql and "'ok'" in insert_sql
         assert "error_msg" in insert_sql and "NULL" in insert_sql
+        # Provenance is void once an operator re-states that the credential is good.
+        assert "error_source = NULL" in insert_sql
 
     def test_pulls_expires_at_from_credentials_epoch(self):
         conn, cursor = _mock_conn(fetchone_return=_SAMPLE_ROW)
@@ -137,7 +151,7 @@ class TestRegisterToken:
         creds = {"subscription_key": "sk-test", "expires_at": 1893456000}
         register_credential(conn, "claude", "prod-1", creds)
 
-        params = cursor.execute.call_args_list[0][0][1]
+        params = cursor.execute.call_args_list[1][0][1]
         assert params[-1] == datetime(2030, 1, 1, 0, 0, 0)
 
     def test_pulls_expires_at_from_credentials_iso(self):
@@ -146,7 +160,7 @@ class TestRegisterToken:
         creds = {"subscription_key": "sk-test", "expires_at": "2030-06-01T12:34:56Z"}
         register_credential(conn, "claude", "prod-1", creds)
 
-        params = cursor.execute.call_args_list[0][0][1]
+        params = cursor.execute.call_args_list[1][0][1]
         assert params[-1] == datetime(2030, 6, 1, 12, 34, 56)
 
     def test_malformed_expires_at_becomes_null(self):
@@ -155,7 +169,7 @@ class TestRegisterToken:
         creds = {"subscription_key": "sk-test", "expires_at": "not-a-date"}
         register_credential(conn, "claude", "prod-1", creds)
 
-        params = cursor.execute.call_args_list[0][0][1]
+        params = cursor.execute.call_args_list[1][0][1]
         assert params[-1] is None
 
 
@@ -245,8 +259,13 @@ class TestSelectToken:
         assert "SKIP LOCKED" not in select_sql
         assert "status = 'ok'" in select_sql
         assert "expires_at IS NULL OR expires_at > UTC_TIMESTAMP()" in select_sql
+        # Rows held by a live refresh lease are excluded for EVERY caller, leased or not.
+        assert "leased_until IS NULL OR leased_until <= UTC_TIMESTAMP()" in select_sql
         update_sql = cursor.execute.call_args_list[1][0][0]
         assert "SET used_at = UTC_TIMESTAMP(6)" in update_sql
+        # No lease requested -> the update binds no owner and clears stale lease metadata.
+        assert "lease_owner = NULL" in update_sql
+        assert cursor.execute.call_args_list[1][0][1] == (1,)
         conn.commit.assert_called()
 
     def test_returns_none_when_no_healthy_token(self):
@@ -270,6 +289,7 @@ class TestSelectToken:
 
         select_credential(conn, "codex")
 
+        # The locking SELECT still binds exactly the provider (statement 0 of 3).
         params = cursor.execute.call_args_list[0][0][1]
         assert params == ("codex",)
 
@@ -284,7 +304,23 @@ class TestMarkAndClearTokenError:
         sql = cursor.execute.call_args[0][0]
         assert "status = 'error'" in sql
         params = cursor.execute.call_args[0][1]
-        assert params == ("OAuth expired", 7)
+        # Provenance defaults to 'operator' — fail-closed, so a caller that forgets to
+        # say source="auto" gets the stickier state rather than the self-clearing one.
+        assert params == ("OAuth expired", "operator", 7)
+
+    def test_mark_token_error_records_auto_provenance_when_asked(self):
+        conn, cursor = _mock_conn(rowcount=1)
+
+        mark_credential_error(conn, 7, "401", source="auto")
+
+        assert cursor.execute.call_args[0][1] == ("401", "auto", 7)
+
+    def test_mark_token_error_rejects_an_unknown_source(self):
+        conn, cursor = _mock_conn(rowcount=1)
+
+        with pytest.raises(ValueError):
+            mark_credential_error(conn, 7, "401", source="whatever")
+        cursor.execute.assert_not_called()
 
     def test_mark_credential_error_truncates_long_message(self):
         conn, cursor = _mock_conn(rowcount=1)
@@ -310,11 +346,145 @@ class TestMarkAndClearTokenError:
         assert "error_msg = NULL" in sql
         # Operator recovery also lifts any usage-limit throttle.
         assert "throttled_until = NULL" in sql
+        assert "error_source = NULL" in sql
+        # Must NOT free a live refresh lease — that hands the row to a second worker
+        # mid-refresh and reproduces the incident on demand.
+        assert "lease_owner" not in sql
 
     def test_clear_credential_error_returns_false_when_not_found(self):
         conn, _cursor = _mock_conn(rowcount=0)
 
         assert clear_credential_error(conn, 999) is False
+
+
+class TestClearAutoTokenError:
+    def test_only_clears_the_frameworks_own_quarantine(self):
+        conn, cursor = _mock_conn(rowcount=1)
+
+        assert clear_auto_credential_error(conn, 7) is True
+        sql = cursor.execute.call_args[0][0]
+        assert "status = 'ok'" in sql
+        # The predicate is what keeps an operator decision — and a pre-030 row whose
+        # provenance is unknown (NULL) — untouchable.
+        assert "error_source = 'auto'" in sql
+        assert cursor.execute.call_args[0][1] == (7,)
+
+    def test_returns_false_when_nothing_matched(self):
+        conn, _cursor = _mock_conn(rowcount=0)
+
+        assert clear_auto_credential_error(conn, 7) is False
+
+
+class TestRefreshLease:
+    def test_select_token_folds_the_lease_into_the_used_at_update(self):
+        leased_row = {**_SAMPLE_ROW, "lease_owner": "job-7-attempt-1", "leased_until": None}
+        conn, cursor = _mock_conn_with_fetches([_SAMPLE_ROW, leased_row])
+
+        token = select_credential(
+            conn,
+            "claude",
+            RefreshLease(owner="job-7-attempt-1", ttl_seconds=300, should_lease=lambda _t: True),
+        )
+
+        # Still exactly 3 statements, with the lease written by the middle one — so the
+        # row materialized by the final SELECT already carries it and the returned Token
+        # is truthful enough for the owner-checked release to fire.
+        assert cursor.execute.call_count == 3
+        update_sql, update_params = cursor.execute.call_args_list[1][0]
+        assert "lease_owner = %s" in update_sql
+        assert "leased_until = UTC_TIMESTAMP() + INTERVAL %s SECOND" in update_sql
+        assert update_params == ("job-7-attempt-1", 300, 1)
+        assert token.lease_owner == "job-7-attempt-1"
+
+    def test_a_declining_policy_clears_stale_lease_metadata(self):
+        conn, cursor = _mock_conn_with_fetches([_SAMPLE_ROW, _SAMPLE_ROW])
+
+        select_credential(
+            conn,
+            "claude",
+            RefreshLease(owner="job-7-attempt-1", ttl_seconds=300, should_lease=lambda _t: False),
+        )
+
+        update_sql, update_params = cursor.execute.call_args_list[1][0]
+        assert "lease_owner = NULL" in update_sql and "leased_until = NULL" in update_sql
+        assert update_params == (1,)
+
+    def test_the_policy_sees_a_decrypted_token(self):
+        seen = []
+        conn, _cursor = _mock_conn_with_fetches([_SAMPLE_ROW, _SAMPLE_ROW])
+
+        def _policy(candidate):
+            seen.append(candidate)
+            return False
+
+        select_credential(
+            conn,
+            "claude",
+            RefreshLease(owner="o", ttl_seconds=300, should_lease=_policy),
+        )
+
+        # credentials is AES ciphertext in the row; a policy fed the raw row would
+        # inspect a base64 string and .get("refresh_token") would raise.
+        assert isinstance(seen[0], CredentialRecord)
+        assert seen[0].credentials == _PLAINTEXT_CREDS
+
+    def test_release_is_owner_checked(self):
+        conn, cursor = _mock_conn(rowcount=1)
+
+        assert release_credential_lease(conn, 7, "job-7-attempt-2") is True
+        sql, params = cursor.execute.call_args[0]
+        assert "lease_owner = NULL" in sql and "WHERE id = %s AND lease_owner = %s" in sql
+        assert params == (7, "job-7-attempt-2")
+
+    def test_release_by_a_stale_owner_touches_nothing(self):
+        conn, _cursor = _mock_conn(rowcount=0)
+
+        assert release_credential_lease(conn, 7, "job-7-attempt-1") is False
+
+    def test_renew_binds_every_owner(self):
+        conn, cursor = _mock_conn(rowcount=2)
+
+        assert renew_credential_leases(conn, ["a", "b"], 300) == 2
+        sql, params = cursor.execute.call_args[0]
+        assert "lease_owner IN (%s, %s)" in sql
+        assert params == (300, "a", "b")
+
+    def test_renew_with_no_owners_emits_no_sql(self):
+        conn, cursor = _mock_conn(rowcount=0)
+
+        # `IN ()` is a MySQL syntax error, so an empty set must short-circuit.
+        assert renew_credential_leases(conn, [], 300) == 0
+        cursor.execute.assert_not_called()
+
+    def test_register_token_refuses_to_write_through_a_live_lease(self):
+        conn, cursor = _mock_conn(
+            fetchone_return={
+                "lease_owner": "job-7-attempt-1",
+                "leased_until": datetime(2026, 7, 15, 16, 31, 7),
+                "lease_active": 1,
+            },
+        )
+
+        with pytest.raises(CredentialLeasedError) as excinfo:
+            register_credential(conn, "claude", "prod-1", _PLAINTEXT_CREDS)
+
+        # Nothing written: the refusal happens before the upsert, in the same transaction
+        # as the lock, so a lease taken concurrently is either seen or loses the row lock.
+        assert cursor.execute.call_count == 1
+        assert "FOR UPDATE" in cursor.execute.call_args[0][0]
+        assert excinfo.value.lease_owner == "job-7-attempt-1"
+
+    def test_register_token_writes_through_an_expired_lease(self):
+        conn, cursor = _mock_conn(
+            fetchone_return={**_SAMPLE_ROW, "lease_owner": "job-7-attempt-1", "lease_active": 0},
+        )
+
+        register_credential(conn, "claude", "prod-1", _PLAINTEXT_CREDS)
+
+        insert_sql = cursor.execute.call_args_list[1][0][0]
+        # Reachable only when no lease is ACTIVE, so clearing an expired holder here is
+        # safe — and keeps credential:list from showing a long-dead one.
+        assert "lease_owner  = NULL" in insert_sql
 
 
 class TestThrottleToken:
@@ -391,7 +561,7 @@ class TestRegisterTokenType:
 
         register_credential(conn, "codex", "lbl", {"subscription_key": "x"})
 
-        insert_call = cursor.execute.call_args_list[0]
+        insert_call = cursor.execute.call_args_list[1]
         insert_sql = insert_call[0][0]
         params = insert_call[0][1]
         assert "type" in insert_sql
@@ -403,7 +573,7 @@ class TestRegisterTokenType:
 
         register_credential(conn, "codex", "lbl", {"subscription_key": "x"}, type="codex_access_token")
 
-        insert_call = cursor.execute.call_args_list[0]
+        insert_call = cursor.execute.call_args_list[1]
         params = insert_call[0][1]
         # Param tuple: (agent_type, type, label, encrypted, token_limit, expires_at)
         assert params[2] == "codex_access_token"
@@ -490,11 +660,13 @@ class _RotatingTokenCursor:
         return False
 
     def execute(self, sql, params=None):
-        if "SELECT id FROM credential" in sql:
-            agent_type = params[0]
+        # The locking SELECT projects the whole row now (the lease policy needs a
+        # decrypted CredentialRecord, not an id).
+        if "SELECT * FROM credential\n             WHERE scope = %s" in sql:
+            scope = params[0]
             candidates = [
                 row for row in self.conn.rows.values()
-                if row["agent_type"] == agent_type
+                if row["scope"] == scope
                 and row["enabled"] is True
                 and row["status"] == "ok"
             ]
@@ -505,9 +677,14 @@ class _RotatingTokenCursor:
                 row["id"],
             ))
             self._selected_id = candidates[0]["id"] if candidates else None
-            self._result = {"id": self._selected_id} if self._selected_id else None
+            self._result = self.conn.rows[self._selected_id] if self._selected_id else None
             return
         if "UPDATE credential SET used_at = UTC_TIMESTAMP(6)" in sql:
+            # These rows carry credentials=None, so no lease policy can fire — the update
+            # must be the lease-CLEARING form. A lease-taking update (one that binds an
+            # owner) here would mean select_credential leased a row it had no business
+            # leasing.
+            assert "lease_owner = %s" not in sql, f"unexpected lease-taking update: {sql}"
             token_id = params[0]
             self.conn._tick += 1
             self.conn.rows[token_id]["used_at"] = datetime(

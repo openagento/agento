@@ -96,7 +96,8 @@ agento config:resolve <module> [--scope=S] [--scope-id=N] [--json]  # Resolve ef
 
 # Credentials (LRU pool per scope — no sticky primary). `token:*` still works as a
 # deprecated hidden alias for one release; see docs/cli/credentials.md.
-agento credential:list                                 # status, last_used, expires_at per row
+agento credential:list                                 # status (+ auto/operator provenance), last_used, expires_at, refresh-lease holder per row
+# A row marked 🔒 is mid-refresh in a live run — do NOT credential:reset/credential:refresh it.
 # Register credentials. --with-api-key / --with-access-token are boolean switches; the
 # secret is read from stdin (piped) or via interactive getpass prompt (TTY).
 # Inline values like `--with-api-key sk-XXX` are REJECTED — they leak through

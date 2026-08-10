@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -17,6 +18,33 @@ if TYPE_CHECKING:
     from agento.framework.agent_manager.models import CredentialRecord
 
 logger = logging.getLogger(__name__)
+
+
+# Claude writes expiresAt as epoch MILLISECONDS; older/hand-made payloads use seconds.
+# 1e11 seconds is the year 5138, so anything above it is unambiguously milliseconds.
+_EPOCH_MS_THRESHOLD = 1e11
+# A credential claiming to expire before 2024 predates the OAuth flow entirely — treat it
+# as garbage rather than as "expired 30 years ago", which would be indistinguishable.
+_MIN_PLAUSIBLE_EPOCH_SECONDS = 1_704_067_200  # 2024-01-01T00:00:00Z
+
+
+def _ttl_from_epoch(raw: object) -> int | None:
+    """Seconds from now until ``raw`` (epoch s or ms). ``None`` if unusable. Never raises.
+
+    May legitimately be negative — an already-expired credential is "very imminent", not
+    unknown, and the caller's comparison handles it.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value > _EPOCH_MS_THRESHOLD:
+        value /= 1000.0
+    if value < _MIN_PLAUSIBLE_EPOCH_SECONDS:
+        return None
+    return int(value - datetime.now(UTC).timestamp())
 
 # Keys copied from the captured developer ``~/.claude.json`` into the agent's
 # build ``.claude.json``. Strictly auth/identity restoration — without
@@ -288,6 +316,23 @@ class ClaudeWorkspaceAdapter:
                 server_cfg["url"] = f"{url}{sep}job_id={job_id}"
         mcp_path.write_text(json.dumps(data, indent=2))
 
+    def credential_ttl_seconds(self, credential: CredentialRecord) -> int | None:
+        """Seconds until this credential's access token expires, or ``None`` if unknown.
+
+        Part of the ``WorkspaceAdapter`` protocol. The truth already lives in the
+        encrypted payload at ``raw_auth.credentials.claudeAiOauth.expiresAt``, so there
+        is nothing to migrate or backfill. ``None`` on anything unrecognised: the
+        framework treats unknown as refresh-imminent, which is the safe direction.
+        """
+        if credential.type != "oauth":
+            return None
+        raw_auth = (credential.credentials or {}).get("raw_auth")
+        creds = raw_auth.get("credentials") if isinstance(raw_auth, dict) else None
+        oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
+        if not isinstance(oauth, dict):
+            return None
+        return _ttl_from_epoch(oauth.get("expiresAt"))
+
     def capture_refreshed_credentials(
         self,
         home_dir: Path,
@@ -303,7 +348,9 @@ class ClaudeWorkspaceAdapter:
         (incl. why ``expires_at`` is forced NULL) in DECISIONS.md.
 
         Returns ``True`` when something was persisted, per the ``WorkspaceAdapter``
-        protocol — every early exit below is a "nothing to capture" case.
+        protocol — every early exit below is a "nothing to capture" case. The framework
+        also uses it to detect a rotation that happened WITHOUT a refresh lease, which is
+        how the freshness horizon's heuristic gets measured instead of assumed.
         """
         # Only OAuth subscription tokens carry a refresh_token the CLI rotates.
         # anthropic_api_key rows never produce a credentials diff worth persisting.

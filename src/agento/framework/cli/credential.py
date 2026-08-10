@@ -64,7 +64,7 @@ class CredentialRegisterCommand:
         )
 
     def execute(self, args: argparse.Namespace) -> None:
-        from ..agent_manager import register_credential
+        from ..agent_manager import CredentialLeasedError, register_credential
         from ..events import CredentialRegisteredEvent, dispatch_credential_event
 
         db_config, _, _ = _load_framework_config()
@@ -75,15 +75,24 @@ class CredentialRegisterCommand:
 
         conn = get_connection_or_exit(db_config)
         try:
-            credential = register_credential(
-                conn,
-                scope=scope,
-                label=args.label,
-                credentials=credentials,
-                token_limit=args.token_limit,
-                type=token_type,
-                logger=logger,
-            )
+            try:
+                credential = register_credential(
+                    conn,
+                    scope=scope,
+                    label=args.label,
+                    credentials=credentials,
+                    token_limit=args.token_limit,
+                    type=token_type,
+                    logger=logger,
+                )
+            except CredentialLeasedError as exc:
+                # A duplicate label is an upsert, so this can refuse here too. Roll back so
+                # no partial transaction survives, and refuse rather than wait: an
+                # interactive OAuth round-trip is already spent by now, and blocking a TTY
+                # for minutes is worse than telling the operator to retry.
+                conn.rollback()
+                print(f"Refusing to overwrite a credential in use: {exc}", file=sys.stderr)
+                sys.exit(1)
             conn.commit()
             print(f"Registered credential: id={credential.id} label={credential.label} type={credential.type}")
         finally:
@@ -228,7 +237,7 @@ class CredentialRefreshCommand:
         parser.add_argument("credential_id", type=int, help="Credential ID to refresh")
 
     def execute(self, args: argparse.Namespace) -> None:
-        from ..agent_manager import register_credential
+        from ..agent_manager import CredentialLeasedError, register_credential
         from ..agent_manager.auth import AuthenticationError, authenticate_interactive
         from ..agent_manager.credential_store import get_credential
         from ..harness import CredentialRegistrationMode
@@ -280,14 +289,22 @@ class CredentialRefreshCommand:
 
         conn = get_connection_or_exit(db_config)
         try:
-            refreshed = register_credential(
-                conn,
-                scope=credential.scope,
-                label=credential.label,
-                credentials=credentials,
-                token_limit=credential.token_limit,
-                logger=logger,
-            )
+            try:
+                refreshed = register_credential(
+                    conn,
+                    scope=credential.scope,
+                    label=credential.label,
+                    credentials=credentials,
+                    token_limit=credential.token_limit,
+                    logger=logger,
+                )
+            except CredentialLeasedError as exc:
+                # The lease stops RESELECTION, not credential WRITES: overwriting the blob
+                # now would be undone by the leased job's own capture, which rotates from
+                # the chain it materialized before this refresh.
+                conn.rollback()
+                print(f"Refusing to refresh a credential in use: {exc}", file=sys.stderr)
+                sys.exit(1)
             conn.commit()
         finally:
             conn.close()
@@ -406,9 +423,12 @@ class CredentialListCommand:
                     "label": t.label,
                     "status": t.status.value,
                     "error_msg": t.error_msg,
+                    "error_source": t.error_source,
                     "used_at": t.used_at.isoformat() if t.used_at else None,
                     "expires_at": t.expires_at.isoformat() if t.expires_at else None,
                     "throttled_until": t.throttled_until.isoformat() if t.throttled_until else None,
+                    "lease_owner": t.lease_owner,
+                    "leased_until": t.leased_until.isoformat() if t.leased_until else None,
                     "token_limit": t.token_limit,
                     "tokens_used": used,
                     "call_count": calls,
@@ -434,6 +454,11 @@ class CredentialListCommand:
             # hit a usage/session limit — surface that so operators aren't confused.
             throttled = t.throttled_until is not None and t.throttled_until > now.replace(tzinfo=None)
             status_str = f"status={t.status.value}" + (" (throttled)" if throttled else "")
+            if t.status.value == "error":
+                # Provenance decides whether it clears itself: 'auto' is lifted by the next
+                # successful run, 'operator' (and pre-034 rows, provenance unknown) never is.
+                status_str += f" ({t.error_source or 'operator?'})"
+            leased = t.leased_until is not None and t.leased_until > now.replace(tzinfo=None)
             used_at_str = f"last_used={_humanize_delta(t.used_at, now)}"
             expires_str = f"expires={_format_expiry(t.expires_at, now)}"
             type_str = f"type={t.type}"
@@ -446,6 +471,13 @@ class CredentialListCommand:
             print(line)
             if throttled:
                 print(f"      ⏳ throttled until {t.throttled_until} (usage/session limit)")
+            if leased:
+                # A live run is rotating this credential. Do NOT token:reset/refresh it —
+                # freeing the lease hands the row to a second worker mid-refresh.
+                print(
+                    f"      🔒 refresh lease held by {t.lease_owner} until {t.leased_until} "
+                    "(a run is rotating this credential — leave it alone)"
+                )
             if t.status.value == "error" and t.error_msg:
                 snippet = t.error_msg[:180]
                 if len(t.error_msg) > 180:

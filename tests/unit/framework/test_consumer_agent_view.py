@@ -397,9 +397,26 @@ class TestPostRunCredentialCapture:
         with patch("agento.framework.consumer.CredentialResolver") as MockCls:
             mock_resolver = MagicMock()
             token = MagicMock()
+            token.id = 7
             token.credentials = {"raw_auth": {"tokens": {"refresh_token": "old"}}}
+            # No lease taken (a MagicMock attribute would otherwise compare equal to
+            # nothing and read as truthy), so these runs exercise the unleased path.
+            token.lease_owner = None
+            token.leased_until = None
             mock_resolver.resolve.return_value = token
             MockCls.return_value = mock_resolver
+            yield
+
+    @pytest.fixture(autouse=True)
+    def _stub_lifecycle_store_calls(self):
+        """The lifecycle also self-heals and releases on the same connection; stub those so
+        these tests keep asserting exactly one capture, one commit and one close."""
+        with (
+            patch("agento.framework.consumer.clear_auto_credential_error") as clear,
+            patch("agento.framework.consumer.release_credential_lease") as release,
+        ):
+            self.clear_auto_credential_error = clear
+            self.release_credential_lease = release
             yield
 
     @patch("agento.framework.run_preparation.copy_build_to_artifacts_dir")

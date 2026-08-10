@@ -86,8 +86,10 @@ class TestCredentialLabelsAreScopedNotGlobal:
 
         cursor = MagicMock()
         cursor.lastrowid = 0  # simulate the UPDATE branch of the upsert
-        # First fetchone answers the id lookup; the second returns the full row.
+        # First fetchone answers the refresh-lease pre-flight (nothing leased), the second
+        # the id lookup, the third returns the full row.
         cursor.fetchone.side_effect = [
+            {"lease_owner": None, "leased_until": None, "lease_active": 0},
             {"id": 7},
             {
                 "id": 7, "scope": "codex", "agent_type": "codex", "type": "oauth",

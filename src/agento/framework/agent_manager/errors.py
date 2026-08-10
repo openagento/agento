@@ -72,3 +72,28 @@ class TransientAuthError(RuntimeError):
         super().__init__(message)
         self.credential_id = credential_id
         self.retry_with_other_token = False
+
+
+class CredentialLeasedError(RuntimeError):
+    """Raised when a write would replace the payload of a credential that a running
+    job currently holds a refresh lease on.
+
+    A lease keeps the pool from *reselecting* the row; it does not by itself
+    serialize credential *writes*. Without this guard an operator
+    ``credential:refresh`` could replace the blob mid-job, and the leaseholder's own
+    ``capture_refreshed_credentials`` — rotating from the chain it materialized
+    before the refresh — would then overwrite the operator's brand-new credential
+    with a descendant of the old one. So ``register_credential`` refuses instead, and
+    the CLI tells the operator who holds the lease and until when. Refusing (not
+    waiting) is deliberate: an interactive OAuth flow has already spent a browser
+    round-trip by the time we get here.
+    """
+
+    def __init__(self, label: str, lease_owner: str | None, leased_until=None) -> None:
+        super().__init__(
+            f"Credential {label!r} is leased by {lease_owner or '?'} until {leased_until} "
+            f"(UTC) — retry after that, or stop the job holding it."
+        )
+        self.label = label
+        self.lease_owner = lease_owner
+        self.leased_until = leased_until

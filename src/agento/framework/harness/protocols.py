@@ -184,6 +184,23 @@ class WorkspaceAdapter(Protocol):
         """
         ...
 
+    def credential_ttl_seconds(self, credential: object) -> float | None:
+        """Seconds until this credential's ACCESS token expires, or ``None`` if unknown.
+
+        Read from the payload the harness itself wrote (each CLI stores expiry in its
+        own shape and unit), which is why the framework cannot compute it. Feeds the
+        refresh-lease policy: a rotating credential whose remaining lifetime is inside
+        the horizon is claimed exclusively, so two concurrent runs cannot replay the
+        same single-use refresh token.
+
+        ``None`` means "cannot tell" and is treated conservatively (exclusive), so a
+        harness with an opaque credential format is safe rather than fast. Declared here
+        rather than probed with ``getattr`` for the same reason as
+        :meth:`capture_refreshed_credentials`; an adapter predating it still degrades to
+        the conservative branch instead of breaking the pool.
+        """
+        ...
+
     def serialize_toolbox_connection(
         self, spec: ToolboxConnectionSpec, target_dir: Path
     ) -> None:

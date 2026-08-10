@@ -371,6 +371,75 @@ class TestCredentialListShowsTypeAndPriority:
         assert "priority=5" in out
 
 
+class TestCredentialListSurfacesProvenanceAndLease:
+    """These three fields are what the rollout/verification steps grep for, so they are
+    operator-facing output, not internals."""
+
+    def _token(self, **overrides):
+        from datetime import UTC, datetime, timedelta
+
+        fields = dict(
+            id=1, scope="claude", type="oauth", label="prod-1",
+            credentials=None, token_limit=0, enabled=True, status=CredentialStatus.OK,
+            priority=0, error_msg=None, expires_at=None, used_at=None,
+            created_at=datetime(2026, 1, 1), updated_at=datetime(2026, 1, 1),
+        )
+        fields.update(overrides)
+        if fields.get("leased_until") == "future":
+            fields["leased_until"] = (
+                datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=5)
+            )
+        return CredentialRecord(**fields)
+
+    def _run(self, credentials, *, as_json: bool, capsys):
+        from agento.framework.cli.credential import CredentialListCommand
+
+        args = argparse.Namespace(scope=None, all=True, json=as_json)
+        with patch("agento.framework.cli.credential._load_framework_config",
+                   return_value=(MagicMock(), MagicMock(), MagicMock(usage_window_hours=24))), \
+             patch("agento.framework.cli.credential.get_connection_or_exit"), \
+             patch("agento.framework.agent_manager.list_credentials", return_value=credentials), \
+             patch("agento.framework.agent_manager.get_usage_summaries", return_value=[]):
+            CredentialListCommand().execute(args)
+        return capsys.readouterr().out
+
+    def test_json_exposes_error_source_and_lease_fields(self, capsys):
+        import json
+
+        credential = self._token(
+            status=CredentialStatus.ERROR, error_msg="401", error_source="auto",
+            lease_owner="job-118-attempt-1", leased_until="future",
+        )
+        row = json.loads(self._run([credential], as_json=True, capsys=capsys))[0]
+        assert row["error_source"] == "auto"
+        assert row["lease_owner"] == "job-118-attempt-1"
+        assert row["leased_until"] is not None
+
+    def test_text_annotates_provenance_and_a_live_lease(self, capsys):
+        credential = self._token(
+            status=CredentialStatus.ERROR, error_msg="401", error_source="auto",
+            lease_owner="job-118-attempt-1", leased_until="future",
+        )
+        out = self._run([credential], as_json=False, capsys=capsys)
+        assert "status=error (auto)" in out
+        assert "refresh lease held by job-118-attempt-1" in out
+
+    def test_a_pre_migration_quarantine_is_shown_as_unknown_provenance(self, capsys):
+        # error_source IS NULL (production id=1 after 034): unknown, therefore operator —
+        # it will NOT self-clear, and the operator needs to see that.
+        credential = self._token(status=CredentialStatus.ERROR, error_msg="401", error_source=None)
+        assert "status=error (operator?)" in self._run([credential], as_json=False, capsys=capsys)
+
+    def test_an_expired_lease_is_not_announced_as_held(self, capsys):
+        from datetime import UTC, datetime, timedelta
+
+        token = self._token(
+            lease_owner="job-1-attempt-1",
+            leased_until=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=5),
+        )
+        assert "refresh lease held by" not in self._run([token], as_json=False, capsys=capsys)
+
+
 class TestCredentialRegisterEventCarriesType:
     """credential:register dispatches CredentialRegisteredEvent with the right type."""
 
@@ -469,3 +538,83 @@ class TestCredentialRegisterEventCarriesType:
         dispatched = {name: payload for name, payload in
                       (c.args for c in events.dispatch.call_args_list)}
         assert dispatched["credential_register_after"].type == "oauth"
+
+
+class TestRefusesToWriteThroughALease:
+    """Both CLI paths that reach ``register_credential``'s upsert must refuse, roll back and
+    exit non-zero — never commit and never dispatch a success event. The store's guard is
+    tested against real MySQL; what is tested here is that the CLI honours it instead of
+    leaving a half-open transaction behind (and, for refresh, that the operator's brand-new
+    credential is not written where the leaseholder's own capture would silently undo it)."""
+
+    def _leased(self):
+        from agento.framework.agent_manager.errors import CredentialLeasedError
+        return CredentialLeasedError("prod-1", "job-118-attempt-1", "2026-08-05T12:31:07")
+
+    @patch("agento.framework.event_manager.get_event_manager")
+    @patch("agento.framework.agent_manager.register_credential")
+    @patch("agento.framework.cli.credential._resolve_credentials")
+    @patch("agento.framework.cli.credential.get_connection_or_exit")
+    @patch("agento.framework.cli.credential._load_framework_config")
+    def test_credential_register_rolls_back_and_exits(
+        self, mock_config, mock_conn_fn, mock_creds, mock_register, mock_events
+    ):
+        from agento.framework.cli.credential import CredentialRegisterCommand
+
+        mock_config.return_value = ({}, None, None)
+        conn = MagicMock()
+        mock_conn_fn.return_value = conn
+        mock_creds.return_value = ({"subscription_key": "sk"}, "oauth")
+        mock_register.side_effect = self._leased()
+        events = MagicMock()
+        mock_events.return_value = events
+
+        args = argparse.Namespace(
+            scope="claude", label="prod-1", token_limit=0,
+            with_api_key=False, with_access_token=False,
+        )
+        with pytest.raises(SystemExit) as exit_info:
+            CredentialRegisterCommand().execute(args)
+
+        assert exit_info.value.code == 1
+        conn.rollback.assert_called_once()
+        conn.commit.assert_not_called()
+        conn.close.assert_called_once()
+        events.dispatch.assert_not_called()
+
+    @patch("agento.framework.event_manager.get_event_manager")
+    @patch("agento.framework.agent_manager.register_credential")
+    @patch("agento.framework.agent_manager.auth.authenticate_interactive")
+    @patch("agento.framework.agent_manager.credential_store.get_credential")
+    @patch("agento.framework.cli.credential.get_connection_or_exit")
+    @patch("agento.framework.cli.credential._load_framework_config")
+    def test_credential_refresh_rolls_back_and_exits(
+        self, mock_config, mock_conn_fn, mock_get_credential, mock_auth, mock_register, mock_events
+    ):
+        from agento.framework.cli.credential import CredentialRefreshCommand
+
+        mock_config.return_value = ({}, None, None)
+        # Two connections: the lookup, then the write. Only the second must roll back.
+        lookup_conn, write_conn = MagicMock(), MagicMock()
+        mock_conn_fn.side_effect = [lookup_conn, write_conn]
+        mock_get_credential.return_value = _make_token("claude", 1)
+        mock_auth.return_value = MagicMock(
+            subscription_key="sk", refresh_token="R1", expires_at=None,
+            subscription_type=None, id_token=None, raw_auth={},
+        )
+        mock_register.side_effect = self._leased()
+        events = MagicMock()
+        mock_events.return_value = events
+
+        with (
+            patch("sys.stdin.isatty", return_value=True),
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            CredentialRefreshCommand().execute(argparse.Namespace(credential_id=1))
+
+        assert exit_info.value.code == 1
+        write_conn.rollback.assert_called_once()
+        write_conn.commit.assert_not_called()
+        write_conn.close.assert_called_once()
+        lookup_conn.rollback.assert_not_called()
+        events.dispatch.assert_not_called()

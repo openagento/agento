@@ -1,12 +1,14 @@
 """Codex CLI config writer — .codex/config.toml with MCP servers."""
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
 import re
 import subprocess
 import tomllib
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,6 +22,54 @@ if TYPE_CHECKING:
     from agento.framework.agent_manager.models import CredentialRecord
 
 logger = logging.getLogger(__name__)
+
+
+# A credential claiming to expire before 2024 predates the OAuth flow entirely — garbage,
+# not "expired long ago" (the two are otherwise indistinguishable).
+_MIN_PLAUSIBLE_EPOCH_SECONDS = 1_704_067_200  # 2024-01-01T00:00:00Z
+
+
+def _ttl_from_jwt_exp(access_token: object) -> int | None:
+    """Seconds until the ``exp`` claim of our own access-token JWT. ``None`` if unusable.
+
+    The signature is deliberately NOT verified: this is our own token, read only to decide
+    whether to serialize its refresh — never to authorize anything. An opaque (non-JWT)
+    access token simply yields ``None``, which the framework treats as refresh-imminent.
+    Never raises.
+    """
+    if not isinstance(access_token, str):
+        return None
+    parts = access_token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload = parts[1]
+        payload += "=" * (-len(payload) % 4)  # base64url needs its padding restored
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+    except Exception:
+        return None
+    exp = claims.get("exp") if isinstance(claims, dict) else None
+    if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+        return None
+    if exp < _MIN_PLAUSIBLE_EPOCH_SECONDS:
+        return None
+    return int(exp - datetime.now(UTC).timestamp())
+
+
+def _ttl_from_iso(raw: object) -> int | None:
+    """Seconds until an ISO-8601 ``tokens.expiry`` (the shape workspace_build reads).
+
+    A naive timestamp is read as UTC, matching the rest of the framework. Never raises.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() - datetime.now(UTC).timestamp())
 
 
 def _derive_mcp_type(url: str) -> str:
@@ -382,6 +432,24 @@ class CodexWorkspaceAdapter:
         auth_path.unlink(missing_ok=True)
         logger.debug("Removed Codex credential state from %s", target_dir)
 
+    def credential_ttl_seconds(self, credential: CredentialRecord) -> int | None:
+        """Seconds until this credential's access token expires, or ``None`` if unknown.
+
+        Part of the ``WorkspaceAdapter`` protocol. Codex stores no expiry field of its
+        own, so the primary source is the ``exp`` claim of its own access-token JWT; the
+        fallback is the ISO ``tokens.expiry`` shape the workspace builder already reads.
+        Giving codex an exact expiry keeps the conservative "unknown ⇒ exclusive" path
+        rare instead of permanent.
+        """
+        if credential.type != "oauth":
+            return None
+        tokens = (credential.credentials or {}).get("raw_auth")
+        tokens = tokens.get("tokens") if isinstance(tokens, dict) else None
+        if not isinstance(tokens, dict):
+            return None
+        ttl = _ttl_from_jwt_exp(tokens.get("access_token"))
+        return ttl if ttl is not None else _ttl_from_iso(tokens.get("expiry"))
+
     def capture_refreshed_credentials(
         self,
         home_dir: Path,
@@ -391,7 +459,8 @@ class CodexWorkspaceAdapter:
         """Persist the Codex CLI's on-disk credential rotation back to ``credential``.
 
         Returns ``True`` when something was persisted, per the ``WorkspaceAdapter``
-        protocol — every early exit below is a "nothing to capture" case.
+        protocol — every early exit below is a "nothing to capture" case. The framework
+        also uses it to detect a rotation that happened WITHOUT a refresh lease.
         """
         # Only OAuth tokens have a refresh_token Codex CLI might rotate.
         # API-key and access-credential rows never produce a meaningful auth.json

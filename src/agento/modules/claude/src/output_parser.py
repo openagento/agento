@@ -13,11 +13,19 @@ from agento.framework.agent_manager.errors import (
 )
 from agento.framework.harness import McpInitReport, McpServerStatus, RunResult
 
+# PERMANENT auth failures only — these poison the token (status='error').
+#
+# `401 Invalid authentication credentials` is deliberately ABSENT: rule 1 below wins
+# over rule 3, so listing it here shadowed `_is_transient_credential_rejection`
+# (credential word + \b401\b), which already classifies it — and that phrase is what a
+# concurrent-refresh race produces when a worker replays a spent single-use refresh
+# token. Poisoning it quarantined a healthy subscription for weeks. Do NOT re-add it:
+# the consumer decides poison-vs-throttle from the token itself (a credential with no
+# refresh_token still gets poisoned — see Consumer._handle_transient_auth).
 AUTH_ERROR_PHRASES = (
     "authentication_error",
     "OAuth token has expired",
     "Not logged in",
-    "401 Invalid authentication credentials",
 )
 
 # Session/usage/rate-limit phrases. These are TEMPORARY throttles (fail over + auto-recover),

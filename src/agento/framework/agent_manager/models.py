@@ -37,6 +37,14 @@ class CredentialRecord:
     updated_at: datetime = datetime(2000, 1, 1)
     # Temporary usage-limit cooldown (credential.throttled_until). None when not throttled.
     throttled_until: datetime | None = None
+    # Provenance of a status='error' quarantine: 'auto' (framework, self-clearing on
+    # the next successful run) or 'operator' (never auto-cleared). None = unknown,
+    # treated as operator state.
+    error_source: str | None = None
+    # Refresh lease: exclusive hold on a rotating credential that is close to expiry.
+    # leased_until is a liveness deadline the owning consumer renews, NOT a duration.
+    lease_owner: str | None = None
+    leased_until: datetime | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> CredentialRecord:
@@ -55,6 +63,9 @@ class CredentialRecord:
             error_msg=row.get("error_msg"),
             expires_at=row.get("expires_at"),
             throttled_until=row.get("throttled_until"),
+            error_source=row.get("error_source"),
+            lease_owner=row.get("lease_owner"),
+            leased_until=row.get("leased_until"),
             used_at=row.get("used_at"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],

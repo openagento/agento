@@ -9,10 +9,17 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from .agent_manager.credential_resolver import CredentialResolver
+from .agent_manager.credential_resolver import (
+    _DEFAULT_LEASE_TTL_SECONDS,
+    CredentialResolver,
+)
 from .agent_manager.credential_store import (
+    clear_auto_credential_error,
     count_credentials_for_scope,
+    lease_owner_for_job,
     mark_credential_error,
+    release_credential_lease,
+    renew_credential_leases,
     throttle_credential,
 )
 from .agent_manager.errors import AuthenticationError, TransientAuthError, UsageLimitError
@@ -135,9 +142,21 @@ class Consumer:
         self._shutdown = threading.Event()
         self._db_config = db_config
         self._consumer_config = consumer_config
-        self._credential_resolver = CredentialResolver()
+        # The freshness horizon is derived from job_timeout_seconds rather than a new env
+        # var: the entrypoint whitelist only forwards AGENTO_*-prefixed knobs and an AST
+        # test guards every from_env() literal against it, so a knob we can derive is pure
+        # maintenance cost. The slack is why it is a heuristic — see _refresh_imminent.
+        self._credential_resolver = CredentialResolver(
+            refresh_horizon_seconds=consumer_config.job_timeout_seconds + 900,
+            lease_ttl_seconds=_DEFAULT_LEASE_TTL_SECONDS,
+        )
         self._active_jobs = 0
         self._active_jobs_lock = threading.Lock()
+        # Refresh leases this process holds: lease_owner -> credential_id. Guarded by
+        # _active_jobs_lock. Renewing an entry whose worker has ended would keep a DB
+        # lease alive forever, so entries are dropped unconditionally at job end and the
+        # row is left to expire — the correct failure direction.
+        self._held_leases: dict[str, int] = {}
 
     def run(self) -> None:
         """Main loop. Blocks until SIGTERM/SIGINT."""
@@ -172,6 +191,9 @@ class Consumer:
         try:
             while not self._shutdown.is_set():
                 self._maybe_reload_bootstrap()
+                # NOT gated on _active_jobs == 0 like the reload above: renewal matters
+                # precisely while workers are busy holding leases.
+                self._renew_leases()
 
                 if not semaphore.acquire(timeout=self._consumer_config.poll_interval):
                     continue  # timed out waiting for a free slot
@@ -189,6 +211,16 @@ class Consumer:
         finally:
             get_event_manager().dispatch("consumer_stop_before", ConsumerStoppingEvent())
             self.logger.info("Consumer shutting down, waiting for running jobs...")
+            # Keep renewing while draining. executor.shutdown(wait=True) below is itself
+            # unbounded, so a cap here would only re-break the lease for exactly the jobs
+            # that outlive it — expiring a lease mid-capture is the failure the lease
+            # exists to prevent. The wait doubles as the pacing so this is not a busy loop.
+            while True:
+                with self._active_jobs_lock:
+                    if self._active_jobs <= 0:
+                        break
+                self._renew_leases()
+                time.sleep(self._consumer_config.poll_interval)
             executor.shutdown(wait=True, cancel_futures=False)
             dispatch_shutdown()
             self.logger.info("Consumer stopped.")
@@ -438,206 +470,342 @@ class Consumer:
         channel = get_channel(job.source)
         em = get_event_manager()
         artifacts_dir = None
-
-        # Resolve agent_view runtime profile (provider, model, scoped config)
-        conn = get_connection(self._db_config)
+        # Pre-initialised for the outer `finally`: argument evaluation would raise
+        # UnboundLocalError before the call if anything above raised, so "the callee
+        # tolerates None" is not enough.
+        home_dir = credential = harness = lease_owner = None
+        # Whether the lease was actually ACQUIRED, which is not the same as having issued an
+        # owner: only a refresh-imminent credential is leased. The detector below depends on
+        # the difference, so the two must not be conflated.
+        leased = False
+        success = False
+        # Lifecycle try: credential capture, self-heal and lease release must happen on
+        # EVERY exit path — including a raise in the post-selection config reads or in
+        # materialize_run_workspace, both of which sit outside the inner try below.
         try:
-            runtime = resolve_agent_view_runtime(conn, job.agent_view_id)
+            # Resolve agent_view runtime profile (provider, model, scoped config)
+            conn = get_connection(self._db_config)
+            try:
+                runtime = resolve_agent_view_runtime(conn, job.agent_view_id)
 
-            # agent_view/harness must resolve — the sticky primary-credential
-            # fallback is gone (credentials are an LRU pool per scope, not a single
-            # globally-preferred license).
-            if runtime.harness is None:
-                raise RuntimeError(
-                    "No agent_view/harness configured. Set it via: "
-                    "bin/agento config:set agent_view/harness <harness> "
-                    "--scope=agent_view --scope-id=<id>"
-                )
-            harness = runtime.harness
-            provider_desc = resolve_provider(harness, runtime.provider)
-            # Explicit --model flag (e2e/replay) wins over config (ENV/DB) model.
-            model_override = self.model_override or runtime.model
-
-            # The CALLER claims the credential — exactly once per run. The runner
-            # consumes ctx.credential and never touches the pool, so the command and
-            # the process can never end up on two different credentials.
-            scope = provider_desc.credential_scope
-            credential = (
-                self._credential_resolver.resolve(conn, scope)
-                if provider_desc.credential_required else None
-            )
-
-            # Resolve shared toolbox base URL (needed below for writer injection).
-            from .config_resolver import ScopedConfigService
-            from .scoped_config import Scope
-            core_cfg = ScopedConfigService(conn).get_module("core") or {}
-            toolbox_url = core_cfg.get("toolbox/url") or "http://toolbox:3001"
-
-            # Agent_view-scoped service for writing workspace config. Built while
-            # conn is open; its .get() works off the materialized overrides
-            # afterwards (ENV -> DB -> config.json, decrypting as needed).
-            agent_config_svc = (
-                ScopedConfigService(conn, Scope.AGENT_VIEW, job.agent_view_id)
-                if job.agent_view_id is not None else None
-            )
-        finally:
-            conn.close()
-
-        # Per-job artifacts directory (only when agent_view is set) — extracted
-        # so `agento run` exercises the same pipeline (see run_preparation.py).
-        home_dir, artifacts_dir = materialize_run_workspace(
-            runtime,
-            run_id=job.id,
-            agent_config_svc=agent_config_svc,
-            toolbox_url=toolbox_url,
-            em=em,
-            credential=credential,
-        )
-
-        em.dispatch("agent_view_run_start_before", AgentViewRunStartedEvent(
-            job=job,
-            agent_view_id=job.agent_view_id,
-            harness=harness,
-            provider=provider_desc.id,
-            model=model_override,
-            priority=job.priority,
-            artifacts_dir=str(artifacts_dir) if artifacts_dir else "",
-        ))
-
-        # Git commit author identity → GIT_AUTHOR_*/GIT_COMMITTER_* env. These override every
-        # gitconfig level (incl. a repo-local .git/config), so the agent's commits are authored
-        # correctly even in a clone carrying its own stale [user]. Empty config ⇒ no override.
-        from .git_identity import (
-            GIT_AUTHOR_EMAIL_PATH,
-            GIT_AUTHOR_NAME_PATH,
-            git_identity_env,
-        )
-        git_env = (
-            git_identity_env(
-                agent_config_svc.get(GIT_AUTHOR_NAME_PATH) or "",
-                agent_config_svc.get(GIT_AUTHOR_EMAIL_PATH) or "",
-            )
-            if agent_config_svc is not None else {}
-        )
-
-        success = True
-        try:
-            ctx = HarnessRunContext(
-                harness=harness,
-                provider=provider_desc.id,
-                model=model_override,
-                working_dir=str(artifacts_dir) if artifacts_dir else "/workspace",
-                home_dir=str(home_dir) if home_dir else None,
-                timeout_seconds=self._consumer_config.job_timeout_seconds,
-                credential_required=provider_desc.credential_required,
-                credential=credential,
-                extra_env=git_env or {},
-            )
-            runner = create_runner(
-                harness,
-                ctx,
-                logger=self.logger,
-                dry_run=self._consumer_config.disable_llm,
-            )
-            # Persist session_id to both the DB and the in-memory job — the
-            # verification observer reads ``event.job.session_id`` to locate
-            # the agent's transcript, and would otherwise see ``None`` on the
-            # first attempt (the DB write doesn't refresh the local dataclass).
-            def _on_session_id(sid: str) -> None:
-                self._save_session_id(job.id, sid)
-                job.session_id = sid
-
-            # Through the protocol method, not by assigning attributes: a third-party
-            # runner using __slots__ would raise AttributeError on assignment.
-            runner.observe(
-                on_pid=lambda pid: self._save_pid(job.id, pid),
-                on_session_id=_on_session_id,
-            )
-
-            # Resume instead of fresh run if previous attempt left a session_id
-            should_resume = (
-                job.attempt > 1
-                and job.session_id is not None
-                and not self._is_pid_alive(job.pid)
-            )
-            if should_resume:
-                self.logger.info(
-                    f"Resuming session {job.session_id} for job {job.id} "
-                    f"(attempt={job.attempt}, prev_pid={job.pid})"
-                )
-                result = runner.execute(
-                    RunRequest(prompt="", session_id=job.session_id, model=model_override)
-                )
-                result.prompt = f"[RESUME] session_id={job.session_id}"
-                summary = f"resumed session_id={job.session_id} {result.stats_line}"
-                return _JobResult.from_run_result(result, summary)
-
-            workflow = get_workflow_class(job.type)(runner, self.logger)
-
-            module_config = get_module_config(job.source) if job.source != "blank" else {}
-            context = JobContext(
-                config=module_config,
-                logger=self.logger,
-                update_reference_id=self._update_job_reference_id,
-            )
-            result = workflow.execute_job(channel, job, context)
-
-            if home_dir is not None:
-                try:
-                    # capture_refreshed_credentials is part of the WorkspaceAdapter
-                    # protocol now — no getattr probing.
-                    if credential is not None:
-                        _conn = get_connection(self._db_config)
-                        try:
-                            workspace_adapter_for(harness).capture_refreshed_credentials(
-                                home_dir, credential, _conn
-                            )
-                            _conn.commit()
-                        finally:
-                            _conn.close()
-                except Exception:
-                    self.logger.warning(
-                        "post-run credential capture failed for job_id=%s harness=%s",
-                        job.id, harness, exc_info=True,
+                # agent_view/harness must resolve — the sticky primary-credential
+                # fallback is gone (credentials are an LRU pool per scope, not a single
+                # globally-preferred license).
+                if runtime.harness is None:
+                    raise RuntimeError(
+                        "No agent_view/harness configured. Set it via: "
+                        "bin/agento config:set agent_view/harness <harness> "
+                        "--scope=agent_view --scope-id=<id>"
                     )
+                harness = runtime.harness
+                provider_desc = resolve_provider(harness, runtime.provider)
+                # Explicit --model flag (e2e/replay) wins over config (ENV/DB) model.
+                model_override = self.model_override or runtime.model
 
-            summary = (
-                result.raw_output
-                if result.input_tokens is None and result.raw_output
-                else f"session_id={result.session_id or '?'} {result.stats_line}"
+                # The CALLER claims the credential — exactly once per run. The runner
+                # consumes ctx.credential and never touches the pool, so the command and
+                # the process can never end up on two different credentials.
+                #
+                # The lease owner identifies THIS execution (job + attempt), so a late
+                # cleanup belonging to attempt 1 can never free the lease attempt 2 holds.
+                # resolve() takes an exclusive lease only when the credential is close
+                # enough to expiry that this run would likely rotate its single-use
+                # refresh token.
+                scope = provider_desc.credential_scope
+                lease_owner = lease_owner_for_job(job.id, job.attempt)
+                credential = (
+                    self._credential_resolver.resolve(conn, scope, lease_owner=lease_owner)
+                    if provider_desc.credential_required else None
+                )
+                if credential is not None and credential.lease_owner == lease_owner:
+                    leased = True
+                    # Register BEFORE anything that can block or raise: a lease that exists
+                    # in the DB but not here is a lease nobody renews.
+                    with self._active_jobs_lock:
+                        self._held_leases[lease_owner] = credential.id
+
+                # Resolve shared toolbox base URL (needed below for writer injection).
+                from .config_resolver import ScopedConfigService
+                from .scoped_config import Scope
+                core_cfg = ScopedConfigService(conn).get_module("core") or {}
+                toolbox_url = core_cfg.get("toolbox/url") or "http://toolbox:3001"
+
+                # Agent_view-scoped service for writing workspace config. Built while
+                # conn is open; its .get() works off the materialized overrides
+                # afterwards (ENV -> DB -> config.json, decrypting as needed).
+                agent_config_svc = (
+                    ScopedConfigService(conn, Scope.AGENT_VIEW, job.agent_view_id)
+                    if job.agent_view_id is not None else None
+                )
+            finally:
+                conn.close()
+
+            # Per-job artifacts directory (only when agent_view is set) — extracted
+            # so `agento run` exercises the same pipeline (see run_preparation.py).
+            home_dir, artifacts_dir = materialize_run_workspace(
+                runtime,
+                run_id=job.id,
+                agent_config_svc=agent_config_svc,
+                toolbox_url=toolbox_url,
+                em=em,
+                credential=credential,
             )
-            return _JobResult.from_run_result(result, summary)
-        except TransientAuthError as exc:
-            success = False
-            self._handle_transient_auth(job, credential, scope, exc)
-            raise
-        except UsageLimitError as exc:
-            success = False
-            self._handle_usage_limit(job, credential, scope, exc)
-            raise
-        except AuthenticationError as exc:
-            success = False
-            self._handle_auth_failure(job, credential, scope, exc)
-            raise
-        except Exception:
-            success = False
-            raise
-        finally:
-            em.dispatch("agent_view_run_finish_after", AgentViewRunFinishedEvent(
+
+            em.dispatch("agent_view_run_start_before", AgentViewRunStartedEvent(
                 job=job,
                 agent_view_id=job.agent_view_id,
                 harness=harness,
                 provider=provider_desc.id,
                 model=model_override,
-                success=success,
+                priority=job.priority,
+                artifacts_dir=str(artifacts_dir) if artifacts_dir else "",
             ))
+
+            # Git commit author identity → GIT_AUTHOR_*/GIT_COMMITTER_* env. These override every
+            # gitconfig level (incl. a repo-local .git/config), so the agent's commits are authored
+            # correctly even in a clone carrying its own stale [user]. Empty config ⇒ no override.
+            from .git_identity import (
+                GIT_AUTHOR_EMAIL_PATH,
+                GIT_AUTHOR_NAME_PATH,
+                git_identity_env,
+            )
+            git_env = (
+                git_identity_env(
+                    agent_config_svc.get(GIT_AUTHOR_NAME_PATH) or "",
+                    agent_config_svc.get(GIT_AUTHOR_EMAIL_PATH) or "",
+                )
+                if agent_config_svc is not None else {}
+            )
+
+            success = True
+            try:
+                ctx = HarnessRunContext(
+                    harness=harness,
+                    provider=provider_desc.id,
+                    model=model_override,
+                    working_dir=str(artifacts_dir) if artifacts_dir else "/workspace",
+                    home_dir=str(home_dir) if home_dir else None,
+                    timeout_seconds=self._consumer_config.job_timeout_seconds,
+                    credential_required=provider_desc.credential_required,
+                    credential=credential,
+                    extra_env=git_env or {},
+                )
+                runner = create_runner(
+                    harness,
+                    ctx,
+                    logger=self.logger,
+                    dry_run=self._consumer_config.disable_llm,
+                )
+                # Persist session_id to both the DB and the in-memory job — the
+                # verification observer reads ``event.job.session_id`` to locate
+                # the agent's transcript, and would otherwise see ``None`` on the
+                # first attempt (the DB write doesn't refresh the local dataclass).
+                def _on_session_id(sid: str) -> None:
+                    self._save_session_id(job.id, sid)
+                    job.session_id = sid
+
+                # Through the protocol method, not by assigning attributes: a third-party
+                # runner using __slots__ would raise AttributeError on assignment.
+                runner.observe(
+                    on_pid=lambda pid: self._save_pid(job.id, pid),
+                    on_session_id=_on_session_id,
+                )
+
+                # Resume instead of fresh run if previous attempt left a session_id
+                should_resume = (
+                    job.attempt > 1
+                    and job.session_id is not None
+                    and not self._is_pid_alive(job.pid)
+                )
+                if should_resume:
+                    self.logger.info(
+                        f"Resuming session {job.session_id} for job {job.id} "
+                        f"(attempt={job.attempt}, prev_pid={job.pid})"
+                    )
+                    result = runner.execute(
+                        RunRequest(prompt="", session_id=job.session_id, model=model_override)
+                    )
+                    result.prompt = f"[RESUME] session_id={job.session_id}"
+                    summary = f"resumed session_id={job.session_id} {result.stats_line}"
+                    return _JobResult.from_run_result(result, summary)
+
+                workflow = get_workflow_class(job.type)(runner, self.logger)
+
+                module_config = get_module_config(job.source) if job.source != "blank" else {}
+                context = JobContext(
+                    config=module_config,
+                    logger=self.logger,
+                    update_reference_id=self._update_job_reference_id,
+                )
+                result = workflow.execute_job(channel, job, context)
+
+                summary = (
+                    result.raw_output
+                    if result.input_tokens is None and result.raw_output
+                    else f"session_id={result.session_id or '?'} {result.stats_line}"
+                )
+                return _JobResult.from_run_result(result, summary)
+            except TransientAuthError as exc:
+                success = False
+                self._handle_transient_auth(job, credential, scope, exc)
+                raise
+            except UsageLimitError as exc:
+                success = False
+                self._handle_usage_limit(job, credential, scope, exc)
+                raise
+            except AuthenticationError as exc:
+                success = False
+                self._handle_auth_failure(job, credential, scope, exc)
+                raise
+            except Exception:
+                success = False
+                raise
+            finally:
+                em.dispatch("agent_view_run_finish_after", AgentViewRunFinishedEvent(
+                    job=job,
+                    agent_view_id=job.agent_view_id,
+                    harness=harness,
+                    provider=provider_desc.id,
+                    model=model_override,
+                    success=success,
+                ))
+        finally:
+            self._finish_credential_lifecycle(
+                job, harness, credential, home_dir,
+                success=success, lease_owner=lease_owner, leased=leased,
+            )
+
+    def _renew_leases(self) -> None:
+        """Push the deadline forward on every refresh lease this process still holds.
+
+        ``leased_until`` is a liveness deadline, not a duration estimate: a lease lives
+        exactly as long as this consumer has a worker for that job (covering the pre-pid
+        setup window and the post-exit capture window alike), and a dead consumer's leases
+        free themselves within one TTL with no reaper. Deliberately NOT driven from
+        ``_recover_stale_jobs``: that runs once at startup and is pid-based, and
+        ``os.kill(pid, 0)`` is false between subprocess exit and credential capture — a
+        pid-driven reaper could free a lease mid-rotation.
+
+        Best-effort, exactly like ``_maybe_reload_bootstrap``: a DB blip must not kill the
+        main loop. The dict is snapshotted under the lock and the lock released before any
+        DB I/O, so a slow UPDATE cannot block workers starting or finishing.
+        """
+        with self._active_jobs_lock:
+            owners = list(self._held_leases)
+        if not owners:
+            return
+        try:
+            conn = get_connection(self._db_config)
+            try:
+                renew_credential_leases(
+                    conn, owners, _DEFAULT_LEASE_TTL_SECONDS, logger=self.logger
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            self.logger.warning(
+                "Refresh lease renewal skipped: %s (%s)", type(exc).__name__, exc
+            )
+
+    def _finish_credential_lifecycle(
+        self,
+        job: Job,
+        harness: str | None,
+        credential,
+        home_dir,
+        *,
+        success: bool,
+        lease_owner: str | None = None,
+        leased: bool = False,
+    ) -> None:
+        """Close out the credential side of one job execution on EVERY exit path.
+
+        Three steps on ONE connection with ONE commit: persist any credential the CLI
+        rotated, lift the framework's own quarantine if the run succeeded (a completed run
+        proves the credential works — a rotation does not), and release the refresh lease.
+
+        ``lease_owner`` is the owner that was ISSUED for this execution; ``leased`` says
+        whether it was actually acquired (only a refresh-imminent credential is leased).
+        Conflating the two silently disables the residual-race detector below, because an
+        owner is issued for every job.
+
+        The capture's ``except`` is nested so a broken adapter hook can never skip the
+        release. Release is attempted whenever a ``lease_owner`` was issued and never gated
+        on the in-memory ``credential.lease_owner``: the UPDATE's own
+        ``WHERE lease_owner = %s`` is the authority, a no-op costs one statement, and a
+        skipped release costs a whole TTL. The ``_held_leases`` entry is dropped in a local
+        ``finally`` so a failed connection, release or commit still stops renewal and lets
+        the row expire.
+        """
+        try:
+            if credential is None or harness is None:
+                return  # nothing claimed -> nothing to capture, clear or release
+            try:
+                conn = get_connection(self._db_config)
+            except Exception:
+                self.logger.warning(
+                    "credential lifecycle skipped for job_id=%s: DB connection failed",
+                    job.id, exc_info=True,
+                )
+                return
+            try:
+                rotated = False
+                if home_dir is not None:
+                    try:
+                        # capture_refreshed_credentials is part of the WorkspaceAdapter
+                        # protocol now — no getattr probing.
+                        rotated = bool(
+                            workspace_adapter_for(harness).capture_refreshed_credentials(
+                                home_dir, credential, conn
+                            )
+                        )
+                    except Exception:
+                        self.logger.warning(
+                            "post-run credential capture failed for job_id=%s harness=%s",
+                            job.id, harness, exc_info=True,
+                        )
+                if rotated and not leased:
+                    # The falsifiable-assumption detector for the freshness horizon: a
+                    # rotation with no lease means a second worker could have been handed
+                    # the spent refresh token. Must stay empty in production.
+                    self.logger.error(
+                        "Credential id=%s rotated its payload WITHOUT holding a refresh "
+                        "lease (job_id=%s) — raise the freshness horizon",
+                        credential.id, job.id,
+                    )
+                if success:
+                    try:
+                        clear_auto_credential_error(conn, credential.id, logger=self.logger)
+                    except Exception:
+                        # Nested for the same reason as the capture: a failed self-heal must
+                        # never cost the release, which would strand the row for a full TTL.
+                        self.logger.warning(
+                            "self-heal of an automatic quarantine failed for credential id=%s",
+                            credential.id, exc_info=True,
+                        )
+                if lease_owner:
+                    release_credential_lease(
+                        conn, credential.id, lease_owner, logger=self.logger
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception:
+            self.logger.warning(
+                "credential lifecycle failed for job_id=%s", job.id, exc_info=True
+            )
+        finally:
+            if lease_owner:
+                with self._active_jobs_lock:
+                    self._held_leases.pop(lease_owner, None)
 
     def _handle_auth_failure(
         self,
         job: Job,
         credential,
         scope: str | None,
-        exc: AuthenticationError,
+        exc: AuthenticationError | TransientAuthError,
     ) -> None:
         """Mark the offending token as errored so the pool stops handing it out,
         and dispatch ``token_auth_failed_after`` for observers. Best-effort —
@@ -649,7 +817,9 @@ class Consumer:
         try:
             conn = get_connection(self._db_config)
             try:
-                mark_credential_error(conn, credential_id, str(exc), logger=self.logger)
+                mark_credential_error(
+                    conn, credential_id, str(exc), logger=self.logger, source="auto"
+                )
                 conn.commit()
                 # Pool-aware retry: now that the offending token is poisoned,
                 # let the job retry onto the next token if a healthy one remains
@@ -980,7 +1150,18 @@ class Consumer:
         it is dead (revoked/stale access token) — a short cooldown via
         ``throttled_until``, NOT ``status='error'``: poisoning would take a token that
         is still serving other jobs out of rotation. Best-effort — DB issues here must
-        not mask the original failure about to be re-raised."""
+        not mask the original failure about to be re-raised.
+
+        The harness's error classifier cannot make this call — it sees only a message — so
+        the credential-aware half lives here. A credential with nothing to rotate has no
+        stale copy to blame: its rejection is real, and throttling it forever would trade
+        this incident for a silent one, so it is delegated to the poison path instead.
+        "Rotatable" is the framework-owned flat ``refresh_token`` field, never a
+        harness-specific ``type == 'oauth'`` literal.
+        """
+        if not (getattr(credential, "credentials", None) or {}).get("refresh_token"):
+            self._handle_auth_failure(job, credential, scope, exc)
+            return
         credential_id = (
             exc.credential_id if exc.credential_id is not None
             else getattr(credential, "id", None)

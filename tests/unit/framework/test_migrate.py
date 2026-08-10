@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -201,6 +202,29 @@ class TestApplyMigration:
         assert "KEY idx_job_requester_key (requester_key)" in sql
         assert "KEY idx_job_requester_email (requester_email)" in sql
         assert "('026_job_requester')" in sql
+
+    def test_fresh_init_includes_error_source_and_refresh_lease_columns(self):
+        # Column alignment in the init DDL is cosmetic, so collapse runs of spaces.
+        sql = re.sub(
+            r"[ \t]+", " ", Path("src/agento/framework/sql/init/000_init.sql").read_text()
+        )
+        assert "error_source ENUM('auto','operator') NULL DEFAULT NULL" in sql
+        assert "lease_owner VARCHAR(64) NULL DEFAULT NULL" in sql
+        assert "leased_until DATETIME NULL DEFAULT NULL" in sql
+        assert "('034_credential_error_source_and_refresh_lease')" in sql
+
+    def test_migration_034_adds_error_source_and_refresh_lease_columns(self):
+        sql = Path(
+            "src/agento/framework/sql/034_credential_error_source_and_refresh_lease.sql"
+        ).read_text()
+        assert "ADD COLUMN error_source ENUM('auto','operator') NULL DEFAULT NULL" in sql
+        assert "ADD COLUMN lease_owner VARCHAR(64) NULL DEFAULT NULL" in sql
+        assert "ADD COLUMN leased_until DATETIME NULL DEFAULT NULL" in sql
+        # Separate statements so each converges independently on a drifted DB — the
+        # migrator splits on ';' and skips per-statement error 1060.
+        assert sql.count("ALTER TABLE credential") == 3
+        # NULL defaults are the "migration resurrects nothing" invariant.
+        assert "NOT NULL" not in sql
 
     def test_migration_026_adds_requester_columns(self):
         sql = Path("src/agento/framework/sql/026_job_requester.sql").read_text()

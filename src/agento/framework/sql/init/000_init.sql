@@ -122,8 +122,11 @@ CREATE TABLE IF NOT EXISTS credential (
     status           ENUM('ok','error') NOT NULL DEFAULT 'ok',
     priority         INT          NOT NULL DEFAULT 0,
     error_msg        TEXT         NULL,
+    error_source     ENUM('auto','operator') NULL DEFAULT NULL,
     expires_at       DATETIME     NULL,
     throttled_until  DATETIME     NULL,
+    lease_owner      VARCHAR(64)  NULL DEFAULT NULL,
+    leased_until     DATETIME     NULL DEFAULT NULL,
     used_at          DATETIME(6)  NULL,
     created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -224,4 +227,5 @@ INSERT INTO schema_migration (version) VALUES
     ('030_credential_scope_and_rename'),
     ('031_job_provider'),
     ('032_credential_label_unique_per_scope'),
-    ('033_drop_historical_credential_indexes');
+    ('033_drop_historical_credential_indexes'),
+    ('034_credential_error_source_and_refresh_lease');

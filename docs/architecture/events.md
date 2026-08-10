@@ -193,6 +193,16 @@ third-party observers therefore keep working; removal is tracked in
 
 `credential_usage_limited_after` is distinct from `credential_auth_failed_after`: a usage limit is **temporary**, so the consumer sets `credential.throttled_until = reset_at` (a cooldown the pool skips until it passes — the credential auto-recovers) and the job fails over to another healthy credential, whereas an auth failure **poisons** it (`status='error'`) until an operator or credential-refresh clears it. Both are internal events (defined in `framework/events.py`, not re-exported from `framework/contracts/`).
 
+**Which auth outcome dispatches which.** A credential rejection is routed by the harness's parser
+and then by the credential itself: a rotating credential (one with a `refresh_token`) rejected with a
+credential-word + `401` / revoked message is **transient** → `credential_auth_throttled_after`; the
+same message on a credential with nothing to rotate (an API key) means the credential really is dead
+→ `credential_auth_failed_after`; and the known-permanent phrases (`authentication_error`, `OAuth
+token has expired`, `Not logged in`) always → `credential_auth_failed_after`. Note that
+`401 Invalid authentication credentials` changed sides in 2026-08: it used to poison, and now
+throttles when the credential is rotatable, because that is what a concurrent-refresh race produces.
+No event contract changed — that is the point of the reclassification.
+
 `credential_auth_throttled_after` is the third member of this family: unlike `credential_auth_failed_after` it does **not** poison the credential (it is usually still live — a revoked/stale *access token* typically means this run got an out-of-date copy), and unlike `credential_usage_limited_after` the cause is a credential rejection rather than a quota. It is deliberately left unbound — in particular it must NOT trigger `workspace_build`'s `ReplaceErroredTokenCredentialsObserver`, which exists to evict a *poisoned* credential's dead payload.
 
 ### Config & Setup Lifecycle

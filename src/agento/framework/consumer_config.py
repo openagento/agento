@@ -8,8 +8,12 @@ from dataclasses import dataclass
 class ConsumerConfig:
     """Framework-level consumer tuning config."""
 
-    # Per-run isolation (Phase 9.5) eliminates shared .claude.json corruption.
-    # Each job gets its own run directory, so the default fans out to 10 workers.
+    # Per-run isolation (Phase 9.5) gives each job its own run directory, so the default
+    # fans out to 10 workers. Note what that isolates: FILES. It never isolated the shared
+    # ROTATING CREDENTIAL — ten workers handed the same near-expiry oauth row each
+    # materialize the same single-use refresh token, and the first to rotate invalidates
+    # the copy the other nine are about to replay. That is what the refresh lease in
+    # select_credential/CredentialResolver exists for.
     max_workers: int = 10
     poll_interval: float = 5.0
     job_timeout_seconds: int = 1200  # 20 minutes

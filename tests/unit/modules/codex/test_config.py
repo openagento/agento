@@ -372,7 +372,7 @@ class TestCaptureRefreshedCredentials:
 
         token = self._make_token(refresh_token="tok-A")
         with patch("agento.modules.codex.src.config.update_refreshed_credentials") as mock_reg:
-            writer.capture_refreshed_credentials(work_dir, token, MagicMock())
+            assert not writer.capture_refreshed_credentials(work_dir, token, MagicMock())
         mock_reg.assert_not_called()
 
     def test_upserts_db_when_refresh_token_changed(self, writer, work_dir):
@@ -388,8 +388,11 @@ class TestCaptureRefreshedCredentials:
         mock_conn = MagicMock()
 
         with patch("agento.modules.codex.src.config.update_refreshed_credentials") as mock_reg:
-            writer.capture_refreshed_credentials(work_dir, token, mock_conn)
+            rotated = writer.capture_refreshed_credentials(work_dir, token, mock_conn)
 
+        # True ONLY on a real rotation — the framework uses it to detect a rotation that
+        # happened without a refresh lease.
+        assert rotated is True
         mock_reg.assert_called_once()
         call_args = mock_reg.call_args
         # Signature: update_refreshed_credentials(conn, token_id, new_creds, logger=...)

@@ -33,7 +33,7 @@
 | `credential:register <scope> <label> --with-api-key` | Register API-key credential; secret read from stdin/getpass ([details](credentials.md)) |
 | `credential:register <scope> <label> --with-access-token` | Register access-token; JWT read from stdin/getpass ([details](credentials.md)) |
 | `credential:set-priority <id> <priority>` | Set pool selection priority (lower wins) |
-| `credential:list [--all]` | List credentials with type, priority, status, last_used, expires_at |
+| `credential:list [--all]` | List credentials with type, priority, status (+ `auto`/`operator` provenance), last_used, expires_at, refresh-lease holder |
 | `credential:refresh <id>` | Re-authenticate credential (clears status=error) |
 | `credential:mark-error <id> "<msg>"` | Quarantine a credential (status=error) |
 | `credential:reset <id>` | Clear error status without re-auth |

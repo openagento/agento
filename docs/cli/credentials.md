@@ -36,10 +36,12 @@ Health state lives on each row:
 
 | Column       | Meaning                                                                 |
 |--------------|-------------------------------------------------------------------------|
-| `status`     | `ok` or `error`. Flipped to `error` only on a **known-permanent** auth failure (invalid credentials, expired OAuth, not logged in). A revoked/stale access token — or any further wording the **harness module** classifies as a transient credential rejection — is treated as **transient** instead: a short `throttled_until` cooldown, `status` stays `ok`. (Claude additionally classifies unrecognised `401` credential-rejection wording this way; Codex covers revoked/stale-token wording only.) |
+| `status`     | `ok` or `error`. Flipped to `error` only on a **known-permanent** auth failure (invalid credentials, expired OAuth, not logged in). A revoked/stale access token — or any further wording the **harness module** classifies as a transient credential rejection — is treated as **transient** instead: a short `throttled_until` cooldown, `status` stays `ok`. (Claude classifies any `401` credential-rejection wording this way, including `401 Invalid authentication credentials`; Codex covers revoked/stale-token wording only.) The consumer then has the final say from the credential itself: one with **nothing to rotate** (an API key) rejected this way really is dead, so it is poisoned rather than throttled forever. |
 | `error_msg`  | Operator-visible reason for the latest failure.                         |
+| `error_source` | Who quarantined the row: `auto` (the framework) or `operator` (an explicit human decision). `auto` is lifted automatically by the next **successful** run; `operator` never is. `NULL` means unknown provenance — every row quarantined before this column existed — and is treated as `operator`. |
 | `expires_at` | Credential expiry (from the stored payload). A row is skipped once `expires_at` is in the **past** (a *future* value means still-valid). **Claude OAuth leaves this NULL on purpose** — see the note below. |
 | `throttled_until` | Temporary **cooldown**. Set either to a usage/session limit's reset time (default 1h when unparseable), or to `now + 15 min` on a **transient auth failure** (revoked/stale access token — usually a concurrent-refresh race, not a dead credential). The pool skips the token while `throttled_until` is in the **future** and auto-includes it once it passes. Distinct from `expires_at` (credential expiry) and from `status='error'` (poison): `status` stays `'ok'` and the token self-recovers. |
+| `lease_owner` / `leased_until` | **Refresh lease.** While `leased_until` is in the future, exactly one run (`job-<id>-attempt-<n>`) may use this row, because its credential is close enough to expiry that the run will probably rotate it — and a rotating refresh token is single-use, so a second worker replaying it would 401. `leased_until` is a *liveness* deadline the owning consumer keeps pushing forward for as long as that job runs, not a guess at the job's duration; if the consumer dies, the lease expires on its own (no reaper). Only near-expiry rotating credentials are leased — a fresh one is still shared by every worker. |
 | `used_at`    | Last time a worker claimed the row — drives LRU ordering within a priority tier. |
 | `priority`   | Pool selection weight. Lower value wins; 0 = default.                   |
 
@@ -47,9 +49,26 @@ Health state lives on each row:
 - **Throttled** (`throttled_until` in the future, `status='ok'`): hit a session/usage/rate limit. Temporary — the token auto-recovers at the reset time and the job **fails over** to another healthy token meanwhile. No operator action needed.
 - **Transient-auth throttled** (`throttled_until` in the future, `status='ok'`): the CLI rejected the stored credential with a revoked/stale-token 401. Temporary — the same token label is often still serving other jobs, so it is **not** poisoned; the job fails over to another healthy token and this one returns to the pool after 15 minutes. No operator action needed.
 - **Expired** (`expires_at` in the past): credential lapsed. Cleared by `credential:refresh`.
-- **Errored** (`status='error'`): auth failure poisoned it. Cleared by `credential:reset` or `credential:refresh`.
+- **Leased** (`leased_until` in the future, `status='ok'`): a live run holds it exclusively while
+  rotating a near-expiry credential. Temporary and automatic — other jobs use another credential (or
+  requeue) and it returns to the pool seconds after that run ends. **Do not intervene**: see the
+  warning below.
+- **Errored** (`status='error'`): auth failure poisoned it. An `error_source='auto'` quarantine
+  clears itself on the next successful run; an `operator` one (and any pre-existing quarantine,
+  whose provenance is unknown) needs `credential:reset` or `credential:refresh`.
 
-`credential:reset` clears **both** `status='error'` and any `throttled_until` cooldown.
+`credential:reset` clears **both** `status='error'` and any `throttled_until` cooldown. It
+deliberately does **not** free a refresh lease.
+
+> **Never `credential:refresh` a leased row** (`credential:list` marks it 🔒). Freeing the
+> lease hands the credential to a second worker mid-refresh, which is exactly the race the lease
+> exists to prevent; and `credential:refresh` would be undone minutes later when the leased job's own
+> post-run capture rotates from the credential chain it materialized *before* your refresh.
+> `credential:refresh` therefore **refuses** while the lease is live (it goes through the same upsert
+> as `credential:register`), telling you the holder and when it expires — wait for it, or stop the
+> job holding it. `credential:reset` is *not* refused: it only lifts `status`/`throttled_until` and
+> deliberately leaves the lease alone, so it cannot free the credential mid-refresh. Resetting a
+> leased row is still pointless — nothing about the row's health is what the lease is about.
 
 > **Claude OAuth tokens** intentionally leave the row `expires_at` **NULL**.
 > Claude's `expiresAt` is the short-lived (~8h) *access*-token expiry in epoch
@@ -63,8 +82,11 @@ Health state lives on each row:
 ## Credential Lifecycle
 
 ```
-register → [use via LRU+priority] → (transient 401 → 15-min throttle, self-recovers)
-                                  → (permanent auth failure → auto-flagged status='error')
+register → [use via LRU+priority] → (near-expiry rotating credential → exclusive refresh lease
+                                     for one run, released at run end)
+                                  → (transient 401 → 15-min throttle, self-recovers)
+                                  → (permanent auth failure → auto-flagged status='error',
+                                     error_source='auto' → cleared by the next successful run)
                                   → refresh | reset → deregister
 ```
 
@@ -143,7 +165,7 @@ agento credential:list --json
 agento credential:list --all    # include disabled tokens
 ```
 
-Each row shows `type`, `priority`, `status`, `last_used`, and `expires`. A token that is temporarily rate/usage-limited shows `status=ok (throttled)` plus a `⏳ throttled until <time>` line; an errored token shows its truncated `error_msg`. `--json` includes a `throttled_until` field (ISO-8601, or `null`) alongside `expires_at`. The `credentials` blob is never surfaced.
+Each row shows `type`, `priority`, `status`, `last_used`, and `expires`. A token that is temporarily rate/usage-limited shows `status=ok (throttled)` plus a `⏳ throttled until <time>` line; an errored token shows its truncated `error_msg` and its provenance — `status=error (auto)` (self-clears on the next successful run), `status=error (operator)` (never does), or `status=error (operator?)` for a quarantine predating the `error_source` column. A row under a live refresh lease adds a `🔒 refresh lease held by job-<id>-attempt-<n> until <time>` line — leave it alone. `--json` includes `error_source`, `lease_owner` and `leased_until` alongside `throttled_until` and `expires_at`. The `credentials` blob is never surfaced.
 
 ## Set Pool Priority
 
@@ -166,7 +188,7 @@ agento credential:set-priority 5 10
 agento credential:refresh 1    # Re-authenticate token ID 1 (interactive OAuth)
 ```
 
-Refresh overwrites the stored `credentials`, re-parses `expires_at` from the new payload, and resets `status='ok'` / `error_msg=NULL`. The `id`, `label`, and `type` are preserved so downstream references stay valid.
+Refresh overwrites the stored `credentials`, re-parses `expires_at` from the new payload, and resets `status='ok'` / `error_msg=NULL` / `error_source=NULL`. It **refuses** (leaving everything untouched) while a refresh lease on that label is still live. The `id`, `label`, and `type` are preserved so downstream references stay valid.
 
 Note: `credential:refresh` only supports the interactive OAuth flow. To update an API key or access token, re-register with the appropriate flag (same label will upsert the existing row).
 
@@ -181,7 +203,7 @@ agento credential:mark-error 1 "Revoked by admin 2026-04-23"
 agento credential:reset 1    # clear status=error AND any throttle, status back to 'ok'
 ```
 
-`mark-error` stops the pool from handing out that token; `reset` puts it back in rotation without a full re-auth round-trip (it also lifts a usage-limit `throttled_until` cooldown, should you want to force a throttled token back early).
+`mark-error` records `error_source='operator'`, so the framework's own self-heal will never lift it — an operator's decision outlives any number of successful runs. `reset` puts it back in rotation without a full re-auth round-trip (it also lifts a usage-limit `throttled_until` cooldown, should you want to force a throttled token back early).
 
 ## Usage Stats
 
@@ -223,6 +245,6 @@ once via the `SplitProviderIntoHarness` data patch.
 ## Requirements
 
 - `AGENTO_ENCRYPTION_KEY` must be set (same key used for `core_config_data` obscure fields). See [encryption.md](../config/encryption.md).
-- The `credential` schema is maintained by framework migrations beginning with `019_oauth_token_inline_credentials.sql`; the rename plus the `scope` column land in `030_credential_scope_and_rename.sql`. `agento setup:upgrade` applies pending migrations.
+- The `credential` schema is maintained by framework migrations beginning with `019_oauth_token_inline_credentials.sql`; the rename plus the `scope` column land in `030_credential_scope_and_rename.sql`, and `error_source` / `lease_owner` / `leased_until` in `034_credential_error_source_and_refresh_lease.sql`. `agento setup:upgrade` applies pending migrations.
 
 Source: [src/agento/framework/cli/credential.py](../../src/agento/framework/cli/credential.py) (deprecated aliases: [credential_aliases.py](../../src/agento/framework/cli/credential_aliases.py))

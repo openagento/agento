@@ -73,9 +73,9 @@ Configured via environment variables (set in `docker/.cron.env` or `docker-compo
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `AGENTO_CONSUMER_MAX_WORKERS` | 10 | Worker pool size (max concurrent jobs). Safe under per-run isolation. |
+| `AGENTO_CONSUMER_MAX_WORKERS` | 10 | Worker pool size (max concurrent jobs). Safe under per-run isolation — which isolates *files*; the shared rotating OAuth credential is protected separately by the refresh lease (see [credentials](../cli/credentials.md)). |
 | `AGENTO_CONSUMER_POLL_INTERVAL` | 5.0 | Seconds between poll cycles |
-| `AGENTO_JOB_TIMEOUT_SECONDS` | 1200 | Max job runtime (20 min) |
+| `AGENTO_JOB_TIMEOUT_SECONDS` | 1200 | Per-**CLI-subprocess** timeout (20 min), **not** total job wall time: the runner applies it to each `proc.wait()`, and stale-job recovery skips any row with a live pid. A job that resumes or spawns more than one subprocess legitimately runs longer. |
 | `DISABLE_LLM` | 0 | Dry-run mode (skip actual LLM calls) |
 | `AGENTO_WORKSPACE_DIR` | /workspace | Base directory for per-run directories |
 

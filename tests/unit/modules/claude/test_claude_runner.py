@@ -115,13 +115,21 @@ def test_parse_stream_json_auth_error():
         parse_claude_output(raw)
 
 
-def test_credential_401_raises_authentication_error():
+def test_credential_401_raises_transient_auth_error():
+    """The k3-agento incident's message. It is what a worker sees after replaying a spent
+    single-use refresh token, so it must NOT poison the token: rule 3 (credential word +
+    \\b401\\b) classifies it, which only works because the phrase was removed from
+    AUTH_ERROR_PHRASES (rule 1 is checked first and shadowed it). The consumer decides
+    poison-vs-throttle from the token itself."""
     raw = (
         '{"type": "result", "is_error": true, '
         '"result": "Failed to authenticate. API Error: 401 Invalid authentication credentials"}\n'
     )
-    with pytest.raises(AuthenticationError, match="401 Invalid authentication credentials"):
+    with pytest.raises(TransientAuthError, match="401 Invalid authentication credentials"):
         parse_claude_output(raw)
+    assert not isinstance(
+        TransientAuthError("x"), AuthenticationError
+    ), "TransientAuthError must not be catchable as a poison"
 
 
 def test_session_limit_raises_usage_limit_error_stream_json():
@@ -393,13 +401,13 @@ def test_revoked_with_credential_context_is_transient_without_a_401():
 
 
 def test_known_permanent_auth_phrases_still_poison():
-    # Regression guard for the four pre-existing AUTH_ERROR_PHRASES: these are
-    # checked FIRST, so they stay permanent even though they also mention 401/auth.
+    # Regression guard for the three remaining AUTH_ERROR_PHRASES: these are checked
+    # FIRST and really do mean "this credential does not work", so a genuinely dead
+    # licence still reaches the visible fail-closed state.
     for msg in (
         "authentication_error: invalid token",
         "OAuth token has expired",
         "Not logged in",
-        "Failed to authenticate. API Error: 401 Invalid authentication credentials",
     ):
         raw = json.dumps({"is_error": True, "result": msg})
         with pytest.raises(AuthenticationError):

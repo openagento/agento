@@ -755,7 +755,7 @@ class TestCaptureRefreshedCredentials:
     def test_noop_when_no_credentials_file(self, writer, work_dir):
         token = self._oauth_token()
         with patch("agento.modules.claude.src.config.update_refreshed_credentials") as mock_reg:
-            writer.capture_refreshed_credentials(work_dir, token, MagicMock())
+            assert not writer.capture_refreshed_credentials(work_dir, token, MagicMock())
         mock_reg.assert_not_called()
 
     def test_noop_when_refresh_token_unchanged(self, writer, work_dir):
@@ -764,7 +764,7 @@ class TestCaptureRefreshedCredentials:
         })
         token = self._oauth_token(refresh="rt-OLD")
         with patch("agento.modules.claude.src.config.update_refreshed_credentials") as mock_reg:
-            writer.capture_refreshed_credentials(work_dir, token, MagicMock())
+            assert not writer.capture_refreshed_credentials(work_dir, token, MagicMock())
         mock_reg.assert_not_called()
 
     def test_noop_for_anthropic_api_key_type(self, writer, work_dir):
@@ -782,14 +782,14 @@ class TestCaptureRefreshedCredentials:
         (claude_dir / ".credentials.json").write_text("{ not json")
         token = self._oauth_token()
         with patch("agento.modules.claude.src.config.update_refreshed_credentials") as mock_reg:
-            writer.capture_refreshed_credentials(work_dir, token, MagicMock())
+            assert not writer.capture_refreshed_credentials(work_dir, token, MagicMock())
         mock_reg.assert_not_called()
 
     def test_noop_when_claude_oauth_block_missing(self, writer, work_dir):
         self._write_creds_file(work_dir, {"somethingElse": {}})
         token = self._oauth_token()
         with patch("agento.modules.claude.src.config.update_refreshed_credentials") as mock_reg:
-            writer.capture_refreshed_credentials(work_dir, token, MagicMock())
+            assert not writer.capture_refreshed_credentials(work_dir, token, MagicMock())
         mock_reg.assert_not_called()
 
     def test_noop_when_refresh_token_missing_in_file(self, writer, work_dir):
@@ -798,7 +798,7 @@ class TestCaptureRefreshedCredentials:
         self._write_creds_file(work_dir, {"claudeAiOauth": {"accessToken": "acc-NEW"}})
         token = self._oauth_token()
         with patch("agento.modules.claude.src.config.update_refreshed_credentials") as mock_reg:
-            writer.capture_refreshed_credentials(work_dir, token, MagicMock())
+            assert not writer.capture_refreshed_credentials(work_dir, token, MagicMock())
         mock_reg.assert_not_called()
 
     def test_persists_rotated_credentials(self, writer, work_dir):
@@ -815,8 +815,11 @@ class TestCaptureRefreshedCredentials:
         token = self._oauth_token(refresh="rt-OLD", access="acc-OLD")
         mock_conn = MagicMock()
         with patch("agento.modules.claude.src.config.update_refreshed_credentials") as mock_reg:
-            writer.capture_refreshed_credentials(work_dir, token, mock_conn)
+            rotated = writer.capture_refreshed_credentials(work_dir, token, mock_conn)
 
+        # True ONLY on a real rotation — the framework uses it to detect a rotation that
+        # happened without a refresh lease (the freshness horizon's only instrument).
+        assert rotated is True
         mock_reg.assert_called_once()
         args, _kwargs = mock_reg.call_args
         # Signature: update_refreshed_credentials(conn, token_id, new_creds, logger=...)

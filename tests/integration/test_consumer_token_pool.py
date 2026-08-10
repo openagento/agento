@@ -18,10 +18,21 @@ from agento.modules.codex.src.runner import CodexSubprocessRunner
 from .conftest import _test_connection, fetch_job, insert_queued_job, update_job
 
 
-def _seed_token(label: str, *, priority: int, scope: str = "claude") -> int:
+def _seed_token(
+    label: str, *, priority: int, scope: str = "claude", rotatable: bool = True
+) -> int:
     """Insert an enabled, healthy token with an explicit priority. Lower
-    priority wins selection (``ORDER BY priority ASC``)."""
-    encrypted = encrypt_credentials({"subscription_key": f"sk-invalid-{label}"})
+    priority wins selection (``ORDER BY priority ASC``).
+
+    ``rotatable`` mirrors what a real oauth subscription row holds: a flat
+    ``refresh_token``. It is what the consumer reads to decide throttle-vs-poison on a
+    transient auth rejection, so an oauth row must carry one (an ``anthropic_api_key`` row
+    would not).
+    """
+    creds = {"subscription_key": f"sk-invalid-{label}"}
+    if rotatable:
+        creds["refresh_token"] = f"R0-{label}"
+    encrypted = encrypt_credentials(creds)
     conn = _test_connection(autocommit=True)
     try:
         with conn.cursor() as cur:

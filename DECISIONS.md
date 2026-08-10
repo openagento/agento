@@ -4,6 +4,90 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-08-04 — Refresh lease + quarantine provenance: one job at a time may rotate a single-use credential
+
+- **The bug.** On a 10-worker deployment (`AGENTO_CONSUMER_MAX_WORKERS=10`) the Claude OAuth
+  row `id=1` was auto-quarantined with `401 Invalid authentication credentials` four times
+  inside log retention, until both OAuth rows were `status='error'` and **all** production
+  traffic silently ran on the paid `anthropic_api_key` — a spend-cap risk, not a cosmetic
+  one. `select_credential` commits inside itself, so its `FOR UPDATE` row lock dies the moment
+  selection returns: ten workers were handed the same row, each materialized the same
+  single-use refresh token, and the first job to rotate it invalidated the copy the other
+  nine were about to replay. Per-run HOME isolation (2026-05) isolates *files*; it never
+  isolated the shared rotating *credential*.
+- **The 401 moved from `AUTH_ERROR_PHRASES` to the existing `TransientAuthError` rule — a
+  one-line deletion, not a new mechanism.** `_classify_error` is ordered: rule 1 (known
+  permanent phrases) is checked before rule 3 (`_is_transient_credential_rejection` =
+  credential word + `\b401\b`). Rule 3 already matched the incident's message; listing the
+  phrase in rule 1 **shadowed** it and poisoned a healthy subscription instead. Removing the
+  phrase routes it onto the throttle path that already existed — `throttled_until`,
+  `status='ok'`, `retry_with_other_token`, `credential_auth_throttled_after` — whose docstring
+  already named this cause ("usually a stale access-token copy from a concurrent refresh").
+  A replayed single-use secret is transient by construction.
+- **The credential-aware half of that decision lives in the consumer, because the parser cannot
+  make it.** A parser sees only a message, so a genuinely dead **non-rotating** credential (a
+  revoked API key) emitting the same phrase would now be throttled forever — trading one
+  silent failure for another. `_handle_transient_auth` therefore branches on the
+  framework-owned flat `refresh_token` field (never a provider-specific `type == 'oauth'`
+  literal, principle #6): rotatable ⇒ throttle; nothing to rotate ⇒ delegate to
+  `_handle_auth_failure` so it still reaches the visible fail-closed state. The three
+  remaining phrases keep their one-strike poison semantics: a dead licence must surface.
+- **A refresh lease makes a near-expiry rotating credential exclusive for the duration of one
+  run.** `select_credential` excludes rows under a live lease for **every** caller, and takes
+  the lease in the SAME statement that stamps `used_at` (so the returned `CredentialRecord`
+  truthfully carries it, and the statement count stays 3). Only a credential judged
+  *refresh-imminent* is made exclusive — a fresh credential is still shared by all ten workers,
+  so the fix does not serialize the pool. Freshness comes from `credential_ttl_seconds(credential)`
+  on the harness's `WorkspaceAdapter` (claude: `expiresAt` from the encrypted payload; codex:
+  the `exp` claim of its own access-token JWT). It is **declared on the protocol**, not
+  `getattr`-probed, for the same reason `capture_refreshed_credentials` was (D13 below): a
+  silently-missing hook is a silently-skipped freshness check. That is safe because `bootstrap`
+  isinstance-gates the `AgentHarnessAdapter` only, and `runtime_checkable` `isinstance` is a
+  presence check over that class's own attributes — it never recurses into `workspace_adapter`,
+  so adding a member here cannot unregister a harness.
+- **`leased_until` is a renewed LIVENESS deadline, not a duration estimate.** Nothing bounds a
+  job's wall clock — `job_timeout_seconds` bounds each CLI *subprocess*, and stale-job
+  recovery skips any live pid (a real 27-minute run succeeded) — so a clock-derived TTL would
+  break exactly the long runs it was meant to protect. Instead the consumer renews the leases
+  it holds from its own main-loop tick **and** from an uncapped shutdown drain (today's
+  `executor.shutdown(wait=True)` is itself uncapped; a cap would re-break the lease for the
+  jobs that outlive it). A lease therefore lives exactly as long as this process has a worker
+  for that job — covering the pre-pid setup window and the post-exit capture window — and a
+  dead consumer's leases expire within one TTL with **no reaper**. Renewal is deliberately not
+  driven from `_recover_stale_jobs`: that runs once at startup and is pid-based, and
+  `os.kill(pid, 0)` is false between subprocess exit and credential capture, so a pid-driven
+  reaper could free a lease mid-rotation.
+- **The lease stops reselection, not credential writes — so `register_credential` refuses to
+  write through a live one** (`CredentialLeasedError`, surfaced by `credential:register` /
+  `credential:refresh` after a rollback). Otherwise an operator's fresh credential would be
+  overwritten minutes later by the leased job's own capture, which rotates from the chain it
+  materialized *before* the refresh. The expiry comparison is done in SQL
+  (`leased_until > UTC_TIMESTAMP()`), like every other lease comparison, so a skewed host clock
+  can neither refuse a dead lease nor write through a live one. No CAS on the credential write:
+  the two colliding writers are excluded structurally instead, and a CAS miss would *discard*
+  the only live refresh token.
+- **`error_source ENUM('auto','operator')` lets the framework clear only its own
+  quarantines.** The 2026-06-15 rule — a rotation must not resurrect an operator's decision —
+  still holds; an *automatic* quarantine simply is not operator state. So a successful run
+  (not a rotation: a run can rotate and still 401) clears `error_source='auto'` and nothing
+  else. `mark_credential_error`'s default is `'operator'`, fail-closed, so a caller that forgets
+  to say `source="auto"` gets the stickier state. NULL provenance — every row quarantined before
+  migration `034`, including production `id=1` — is treated as operator/unknown and never
+  auto-cleared: the migration resurrects nothing, at the cost of one explicit `credential:reset`.
+- **No new env var.** The freshness horizon derives from `job_timeout_seconds` (+900s slack);
+  the entrypoint whitelist only forwards `AGENTO_*` knobs and an AST test guards every
+  `from_env()` literal against it, so a derivable knob is pure maintenance cost.
+- **Honest scope.** Replay is not made *impossible*: the horizon is a heuristic, so a run
+  handed a credential judged fresh can still cross expiry mid-run. That residual path is why
+  the reclassification matters — the consequence is a self-expiring throttle plus fail-over
+  rather than a quarantine — and it is measured by the `rotated WITHOUT holding a refresh
+  lease` ERROR log, which must stay empty in production. Closing it outright needs mid-run
+  capture, or withholding the refresh token from non-holders; both are follow-ups. A proactive
+  warm-up refresh (which would make the exclusive window nearly invisible) is gated behind a
+  live-CLI experiment and is not part of this change.
+
+---
+
 ## 2026-08-04 — One closed `AgentProvider` enum split into harness / provider / model
 
 The refactor that made the "framework is agent-agnostic" rule (AGENTS.md #6) actually
@@ -229,11 +313,15 @@ A new core, disableable channel that watches an agent's open Bitbucket Cloud PRs
 ## 2026-06-15 — Claude OAuth credential write-back + non-clobbering capture persistence
 
 - **The bug.** Claude OAuth subscription tokens silently rotted. The CLI rotates `.claude/.credentials.json` in place during a run, but each job uses an ephemeral HOME re-seeded from the DB; without a write-back the rotated (single-use) refresh token was discarded and the next run replayed an invalidated token → daily `401 Invalid authentication credentials`. `ClaudeConfigWriter` had no `capture_refreshed_credentials`, so the consumer's provider-agnostic post-run hook resolved to `None` for Claude.
+- **Clarification (2026-08-04).** The phrase-tightening described below was correct — the
+  match really was narrowed from a bare `401` to the specific string. The defect this entry
+  did not catch is that the specific string was left in the **poison** list, where rule 1
+  shadowed the transient rule that already classified it; see the 2026-08-04 entry.
 - **Parity fix.** Added `ClaudeConfigWriter.capture_refreshed_credentials` (mirrors the Codex writer): on a real `refreshToken` rotation it persists the refreshed credentials. The writer is registered via `di.json`, so no framework wiring was needed to dispatch it.
 - **The hook never committed.** `get_connection` sets `autocommit=False`, and the shared capture hook closed its connection without committing — so the write-back (Claude's *and* Codex's, which was thus a silent no-op too) was rolled back. Fixed with one agent-agnostic `_conn.commit()` after a successful capture, matching the in-file `_handle_auth_failure` convention.
 - **Capture must not resurrect operator state.** `register_token`'s upsert forces `enabled=TRUE`, `status='ok'`, `error_msg=NULL` — right for interactive (re)registration, wrong for *automatic* capture: once the hook commits, it would silently re-enable a token an operator disabled/quarantined mid-run. Added `update_refreshed_credentials(conn, token_id, credentials)` — a targeted `UPDATE` of only `credentials`/`expires_at` by id that preserves operator/health columns. **Both** the Claude and Codex writers use it (making the hook durable turned Codex's pre-existing `register_token` call into an *active* clobber, so Codex switched in the same change).
 - **Why `expires_at` is left NULL for Claude.** `claudeAiOauth.expiresAt` is the ~8h *access*-token expiry in epoch **ms**. `select_token` treats `expires_at` as a hard "unusable after" filter and nothing proactively refreshes outside a job run, so populating it would retire a still-refreshable token after an idle gap — re-breaking the self-heal. Capture **explicitly** sets `expires_at = None` rather than relying on `_coerce_expires_at` dropping the ms value (that accident wouldn't protect a legacy/manual seconds- or ISO-valued `expires_at`). Proactive refresh is a separate daemon, out of scope.
-- **Auth-error phrase tightened.** `AUTH_ERROR_PHRASES` now matches the specific `401 Invalid authentication credentials` rather than a bare `401`, so transient non-credential 401s no longer poison the token (a bare `401` flipped `status='error'` and quarantined an otherwise-healthy token).
+- **Auth-error phrase tightened.** `AUTH_ERROR_PHRASES` now matches the specific `401 Invalid authentication credentials` rather than a bare `401`, so transient non-credential 401s no longer poison the token (a bare `401` flipped `status='error'` and quarantined an otherwise-healthy token). *(Superseded 2026-08-04: the specific phrase was removed from `AUTH_ERROR_PHRASES` entirely — it belongs on the transient path.)*
 
 ---
 
