@@ -117,10 +117,10 @@ agento doctor                         # Verify prerequisites
 
 ![Admin TUI](docs/images/admin_config.jpg)
 
-- **Dashboard** -- system health, recent jobs, tokens, agent views at a glance
+- **Dashboard** -- system health, recent jobs, credentials, agent views at a glance
 - **Jobs** -- browse, filter, search, view details, replay jobs
 - **Agents** -- manage agent views, trigger workspace builds
-- **Tokens** -- usage stats, set primary, deregister
+- **Credentials** -- usage stats, clear error state, deregister
 - **Config** -- schema-driven editor with scope selector and live search
 
 Keyboard-first with full mouse support. See [Admin TUI docs](docs/cli/admin.md) for details.

@@ -98,4 +98,4 @@ class TestCronSync:
         row = fetch_job(job.id)
         assert row["status"] == "SUCCESS"
         assert row["reference_id"] == "AI-3"
-        assert "subtype=" in row["result_summary"]
+        assert "session_id=" in row["result_summary"]

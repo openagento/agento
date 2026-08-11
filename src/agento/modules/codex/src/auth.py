@@ -12,6 +12,10 @@ from agento.framework.agent_manager.auth import (
     AuthResult,
     _run_cli,
 )
+from agento.framework.harness import (
+    CredentialRegistrationMode,
+    UnsupportedRegistrationMode,
+)
 
 _OPENAI_ISSUER = "https://auth.openai.com"
 
@@ -26,10 +30,10 @@ def _b64url_decode(segment: str) -> bytes:
         raise AuthenticationError(f"Invalid JWT segment: {exc}") from exc
 
 
-class CodexAuthStrategy:
+class CodexCredentialAuthenticator:
     """Run ``codex auth login --device-auth`` in isolated HOME, extract credentials."""
 
-    def authenticate(self, tmp_home: str, logger: logging.Logger) -> AuthResult:
+    def authenticate_interactive(self, tmp_home: str, logger: logging.Logger) -> AuthResult:
         logger.info("Starting Codex device-auth login (follow the URL in your browser)...")
         _run_cli(["codex", "auth", "login", "--device-auth"], tmp_home, "Codex")
 
@@ -102,3 +106,16 @@ class CodexAuthStrategy:
                 "Refusing to register an Anthropic key (sk-ant-...) as an OpenAI key."
             )
         return {"api_key": stripped}, "openai_api_key"
+
+    def register_from_secret(
+        self, mode: CredentialRegistrationMode, secret: str
+    ) -> tuple[dict, str]:
+        """Total dispatch — the registry validates ``mode`` against the declared
+        ``registration_modes`` first, so the raise is a defensive contract only."""
+        if mode is CredentialRegistrationMode.API_KEY:
+            return self.register_from_api_key(secret)
+        if mode is CredentialRegistrationMode.ACCESS_TOKEN:
+            return self.register_from_access_token(secret)
+        raise UnsupportedRegistrationMode(
+            f"Codex does not support registration mode {mode.value!r}"
+        )

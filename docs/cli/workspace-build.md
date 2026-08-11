@@ -37,7 +37,7 @@ The `--agent-view` and `--all` flags are mutually exclusive; `--force` can be co
 4. **Skip check** — if a `ready` build with the same agent_view + checksum exists **and its `build_dir` is intact on disk**, skips the rebuild and updates the `current` symlink if needed. `--force` bypasses this check; a missing on-disk directory also forces a rebuild (the stale DB row is retired first).
 5. Creates a build directory and materializes each source using its configured strategy (copy or symlink):
    - **Theme** — merges `workspace/theme/`, `workspace/theme/_{ws_code}/`, `workspace/theme/_{ws_code}/_{av_code}/` via the manifest algorithm
-   - **Agent CLI configs** — `.claude.json`, `.mcp.json`, `.codex/config.toml` (via provider-specific ConfigWriter)
+   - **Agent CLI configs** — `.claude.json`, `.mcp.json`, `.codex/config.toml` (via the harness's `WorkspaceAdapter`)
    - **Instruction files** — `AGENTS.md`, `SOUL.md` from DB if set (otherwise keeps theme files), `CLAUDE.md` always written
    - **Module workspaces** — each enabled module's `workspace/` with the same `_` prefix scoping convention
    - **Skills** — `.claude/skills/<name>/` directories (SKILL.md + companion files like `references/`, `scripts/`); a `.agents/skills` symlink pointing to `.claude/skills` is also created for Codex compatibility

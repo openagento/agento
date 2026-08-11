@@ -30,11 +30,11 @@ RUN apt-get update && \
 
 ENV EDITOR=nano
 
-# Install both CLI tools globally — exact-pinned so a stray upstream patch
-# (e.g. Anthropic's claude-code 2.1.69 silently changing .mcp.json trust
-# behavior) can't slip in unannounced. Customers bump via docker/.env without
-# an agento release. Defaults kept in sync with default_range in each agent
-# module's di.json (claude/codex) — see cli/_provisioning.py.
+# Agent CLIs are RENDERED from the enabled harness modules' `agent_harnesses[].sandbox_package`
+# declarations (see cli/_provisioning.render_sandbox_dockerfile) — exact-pinned so a stray
+# upstream patch (e.g. Anthropic's claude-code 2.1.69 silently changing .mcp.json trust
+# behavior) can't slip in unannounced. Customers bump via docker/.env without an agento
+# release. Adding a harness needs NO edit here.
 ARG CLAUDE_CODE_VERSION=2.1.165
 ARG CODEX_VERSION=0.137.0
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}"
@@ -65,9 +65,12 @@ RUN groupadd -g ${HOST_GID} agent 2>/dev/null || true && \
 # Allow agent to write workspace files owned by node:node (GID 1000)
 RUN usermod -aG node agent 2>/dev/null || true
 
-# Allow agent to self-update Claude Code
+# Let each installed agent CLI self-update: hand its package dir and binary to `agent`.
+# Rendered from the harness declarations, so a new harness needs no edit here.
 RUN chown -R agent /usr/local/lib/node_modules/@anthropic-ai/claude-code 2>/dev/null || true && \
     chown agent /usr/local/bin/claude 2>/dev/null || true
+RUN chown -R agent /usr/local/lib/node_modules/@openai/codex 2>/dev/null || true && \
+    chown agent /usr/local/bin/codex 2>/dev/null || true
 
 # Entrypoint: ensures config files exist and symlinks them to home
 COPY entrypoint.sh /entrypoint.sh

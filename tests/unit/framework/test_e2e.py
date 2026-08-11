@@ -35,7 +35,7 @@ class TestRunChecks:
             "output_tokens": 10,
             "prompt": "test prompt",
             "output": "OK",
-            "result_summary": "subtype=success turns=1 in=150 out=10",
+            "result_summary": "session_id=success turns=1 in=150 out=10",
         }
         checks = _run_checks(row)
         assert all(ok for _, ok, _ in checks)
@@ -65,7 +65,7 @@ class TestRunChecks:
             "output_tokens": None,
             "prompt": "test",
             "output": "OK",
-            "result_summary": "subtype=ok in=100",
+            "result_summary": "session_id=ok in=100",
         }
         checks = _run_checks(row)
         failed = {label for label, ok, _ in checks if not ok}

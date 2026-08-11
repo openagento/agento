@@ -8,12 +8,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from agento.framework.agent_manager.token_store import update_refreshed_credentials
+from agento.framework.agent_manager.credential_store import update_refreshed_credentials
+from agento.framework.harness import ToolboxConnectionSpec
 
 if TYPE_CHECKING:
     import pymysql
 
-    from agento.framework.agent_manager.models import Token
+    from agento.framework.agent_manager.models import CredentialRecord
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ def _derive_mcp_type(name: str, server_cfg: dict) -> str | None:
     Claude Code validates each entry on ``type``; a typeless URL entry defaults
     to ``stdio``, then fails for lacking ``command``, and the server is dropped.
     Warnings identify the entry by name only — operator URLs may carry
-    credentials (userinfo or a query token).
+    credentials (userinfo or a query credential).
     """
     if "command" in server_cfg:
         return "stdio"
@@ -83,7 +84,7 @@ def _merge_json(legacy: dict[str, Any], current: dict[str, Any]) -> dict[str, An
     return merged
 
 
-class ClaudeConfigWriter:
+class ClaudeWorkspaceAdapter:
     """Writes Claude Code CLI config files: .claude.json, .claude/settings.json, .mcp.json."""
 
     def owned_paths(self) -> tuple[set[str], set[str]]:
@@ -93,19 +94,19 @@ class ClaudeConfigWriter:
         """Claude Code session + todo state that must survive workspace rebuilds."""
         return [".claude/projects", ".claude/todos"]
 
-    def credential_env(self, token: Token) -> dict[str, str]:
-        if token.type == "anthropic_api_key":
-            credentials = token.credentials or {}
+    def credential_env(self, credential: CredentialRecord) -> dict[str, str]:
+        if credential.type == "anthropic_api_key":
+            credentials = credential.credentials or {}
             api_key = credentials.get("api_key")
             if not api_key:
                 raise ValueError(
-                    f"Token id={token.id} label={token.label!r} is typed "
+                    f"Credential id={credential.id} label={credential.label!r} is typed "
                     "'anthropic_api_key' but credentials['api_key'] is missing or empty."
                 )
             return {"ANTHROPIC_API_KEY": api_key}
         return {}
 
-    def write_credentials(self, build_dir: Path, token: Token) -> None:
+    def write_credentials(self, build_dir: Path, credential: CredentialRecord) -> None:
         """Materialize Claude Code's full login state into ``build_dir``.
 
         Writes ``.claude/.credentials.json`` (oauth tokens) and merges Claude's
@@ -114,11 +115,11 @@ class ClaudeConfigWriter:
         Preserves any agent_view-level keys already in ``.claude.json`` such as
         ``model``/``systemPrompt``/``permissions`` written by ``prepare_workspace``.
         """
-        credentials = token.credentials or {}
-        if token.type == "anthropic_api_key":
+        credentials = credential.credentials or {}
+        if credential.type == "anthropic_api_key":
             if not credentials.get("api_key"):
                 raise ValueError(
-                    f"Token id={token.id} label={token.label!r} is typed "
+                    f"Credential id={credential.id} label={credential.label!r} is typed "
                     "'anthropic_api_key' but credentials['api_key'] is missing or empty."
                 )
             self._clear_oauth_state(build_dir)
@@ -137,7 +138,7 @@ class ClaudeConfigWriter:
             creds_payload = raw_creds
         else:
             # Backwards compat for tokens stored before raw_auth capture, and for
-            # file-based ``token:register`` using the legacy 4-field schema.
+            # file-based ``credential:register`` using the legacy 4-field schema.
             access_token = credentials.get("subscription_key")
             if not access_token:
                 self._clear_oauth_state(build_dir)
@@ -181,6 +182,15 @@ class ClaudeConfigWriter:
         merged = {**existing, **sanitized}
         claude_json_path.write_text(json.dumps(merged, indent=2) + "\n")
         logger.debug("Wrote Claude user state to %s", claude_json_path)
+
+    def remove_credentials(self, target_dir: Path) -> None:
+        """Drop Claude's login state, keeping `.claude.json` config intact.
+
+        Reuses the same clearing path `write_credentials` uses for a credential with no
+        usable payload, so the two cannot drift.
+        """
+        self._clear_oauth_state(target_dir)
+        logger.debug("Removed Claude credential state from %s", target_dir)
 
     def _clear_oauth_state(self, build_dir: Path) -> None:
         creds_path = build_dir / ".claude" / ".credentials.json"
@@ -281,44 +291,47 @@ class ClaudeConfigWriter:
     def capture_refreshed_credentials(
         self,
         home_dir: Path,
-        token: Token,
+        credential: CredentialRecord,
         conn: pymysql.Connection,
-    ) -> None:
-        """Persist the Claude CLI's on-disk token rotation back to ``oauth_token``.
+    ) -> bool:
+        """Persist the Claude CLI's on-disk credential rotation back to ``credential``.
 
         On a real ``refreshToken`` rotation, write the refreshed
-        ``.claude/.credentials.json`` back so the token self-heals instead of
-        replaying a now-invalidated single-use token → ``401``. Parity with
-        ``CodexConfigWriter.capture_refreshed_credentials``; full rationale
+        ``.claude/.credentials.json`` back so the credential self-heals instead of
+        replaying a now-invalidated single-use credential → ``401``. Parity with
+        ``CodexWorkspaceAdapter.capture_refreshed_credentials``; full rationale
         (incl. why ``expires_at`` is forced NULL) in DECISIONS.md.
+
+        Returns ``True`` when something was persisted, per the ``WorkspaceAdapter``
+        protocol — every early exit below is a "nothing to capture" case.
         """
         # Only OAuth subscription tokens carry a refresh_token the CLI rotates.
         # anthropic_api_key rows never produce a credentials diff worth persisting.
-        if token.type != "oauth":
-            return
+        if credential.type != "oauth":
+            return False
 
         creds_path = home_dir / ".claude" / ".credentials.json"
         if not creds_path.is_file():
-            return
+            return False
         try:
             refreshed = json.loads(creds_path.read_text())
         except Exception:
             logger.warning(
                 "Failed to read refreshed .credentials.json at %s", creds_path, exc_info=True
             )
-            return
+            return False
 
         new_oauth = refreshed.get("claudeAiOauth") if isinstance(refreshed, dict) else None
         if not isinstance(new_oauth, dict):
-            return
+            return False
         new_refresh = new_oauth.get("refreshToken")
         if not new_refresh:
-            return
+            return False
 
-        # Old refresh token: prefer the captured raw_auth shape; fall back to the
+        # Old refresh credential: prefer the captured raw_auth shape; fall back to the
         # legacy top-level field for tokens registered before raw_auth capture,
-        # so an un-rotated legacy token does not trigger a spurious write.
-        credentials = token.credentials or {}
+        # so an un-rotated legacy credential does not trigger a spurious write.
+        credentials = credential.credentials or {}
         old_raw_auth = credentials.get("raw_auth")
         old_raw_auth = old_raw_auth if isinstance(old_raw_auth, dict) else {}
         old_creds = old_raw_auth.get("credentials")
@@ -331,7 +344,7 @@ class ClaudeConfigWriter:
             old_refresh = credentials.get("refresh_token")
 
         if new_refresh == old_refresh:
-            return
+            return False
 
         new_creds = dict(credentials)
         raw_auth = dict(old_raw_auth)
@@ -340,17 +353,18 @@ class ClaudeConfigWriter:
         new_creds["refresh_token"] = new_refresh
         if new_oauth.get("accessToken"):
             new_creds["subscription_key"] = new_oauth["accessToken"]
-        # Force the DB row's expires_at NULL: select_token treats it as a hard
+        # Force the DB row's expires_at NULL: select_credential treats it as a hard
         # "unusable after" filter and nothing refreshes outside a job run, so a
-        # stored expiry would retire a still-refreshable token after an idle gap
+        # stored expiry would retire a still-refreshable credential after an idle gap
         # and re-break this self-heal. Explicit (not relying on ms→None coercion);
         # the CLI still reads the real expiresAt from the file in raw_auth.
         new_creds["expires_at"] = None
 
         # Capture-specific persistence: updates credentials by id and preserves
-        # operator/health state — NOT register_token (which would re-enable a
-        # token an operator disabled mid-run). See DECISIONS.md.
-        update_refreshed_credentials(conn, token.id, new_creds, logger=logger)
+        # operator/health state — NOT register_credential (which would re-enable a
+        # credential an operator disabled mid-run). See DECISIONS.md.
+        update_refreshed_credentials(conn, credential.id, new_creds, logger=logger)
+        return True
 
     @staticmethod
     def _write_claude_json(working_dir: Path, agent_config: dict[str, str]) -> None:
@@ -448,3 +462,21 @@ class ClaudeConfigWriter:
         config_path = working_dir / ".mcp.json"
         config_path.write_text(json.dumps(mcp_config, indent=2) + "\n")
         logger.debug("Generated %s", config_path)
+
+    def serialize_toolbox_connection(
+        self, spec: ToolboxConnectionSpec, target_dir: Path
+    ) -> None:
+        """Write the Toolbox entry into Claude's ``.mcp.json``.
+
+        How a connection is materialized is entirely the harness's business — the
+        framework hands over a plain :class:`ToolboxConnectionSpec` and makes no
+        assumption that a harness even has an MCP config file.
+        """
+        mcp_path = target_dir / ".mcp.json"
+        data: dict[str, Any] = _load_json(mcp_path)
+        servers = data.setdefault("mcpServers", {})
+        entry: dict[str, Any] = {"type": spec.transport, "url": spec.url, "alwaysLoad": True}
+        if spec.headers:
+            entry["headers"] = dict(spec.headers)
+        servers[spec.name] = entry
+        mcp_path.write_text(json.dumps(data, indent=2))

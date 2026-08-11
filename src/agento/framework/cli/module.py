@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import subprocess
 import sys
 from pathlib import Path
@@ -59,21 +60,99 @@ def _set_module_state(name: str, enabled: bool) -> None:
     state = "enabled" if enabled else "disabled"
     print(f"Module '{name}' {state}")
 
-    # PyPI extension toggle changes container mounts — regenerate compose
-    # and bounce the running stack. Local modules already mount via app/code/.
-    if source == "pypi" and project_root is not None:
+    if project_root is None:
+        return
+
+    # A harness module declares the CLI binary it needs installed in the sandbox image
+    # (`agent_harnesses[].sandbox_package`), so toggling it changes the IMAGE, not just the
+    # Python registry. Without reprovisioning, enabling a third harness registers its
+    # adapter while its binary is absent, and disabling codex leaves codex installed.
+    pins = _declared_sandbox_pins(project_root, name)
+
+    # A PyPI extension toggle also changes container mounts; local modules already mount
+    # via app/code/ and so only need work when the image contents change.
+    needs_compose = source == "pypi" or bool(pins)
+
+    if needs_compose:
         from ._provisioning import regenerate_compose
 
         regenerate_compose(project_root)
         print("Regenerated docker-compose.yml")
 
+    if pins:
+        from ._provisioning import materialize_docker_context
+
+        verb = "installs" if enabled else "removes"
+        print(f"Sandbox image {verb}: {', '.join(sorted(pins))} — rebuilding")
+        # The MANAGED compose file builds `<project>/.agento/docker/sandbox`, so that is the
+        # context to re-render — not the in-package Dockerfile, which only the dev compose
+        # file builds. `force=True` because the agento-core version stamp has not changed,
+        # and without it the copy is skipped and the stale image (missing or still carrying
+        # the toggled harness's CLI) is what gets built.
+        materialize_docker_context(project_root, force=True)
         flags = compose_file_flags(project_root)
         if flags:
-            result = subprocess.run(
-                ["docker", "compose", *flags, "up", "-d"],
-            )
+            build = subprocess.run(["docker", "compose", *flags, "build", "sandbox"])
+            if build.returncode != 0:
+                print(
+                    "Warning: sandbox rebuild failed — run 'docker compose build sandbox' "
+                    "before the next job, or the declared agent CLI will be missing."
+                )
+
+    if needs_compose:
+        flags = compose_file_flags(project_root)
+        if flags:
+            result = subprocess.run(["docker", "compose", *flags, "up", "-d"])
             if result.returncode != 0:
-                print("Warning: 'docker compose up -d' failed — restart manually for the mount change to take effect.")
+                print(
+                    "Warning: 'docker compose up -d' failed — restart manually for the "
+                    "change to take effect."
+                )
+
+
+def _declared_sandbox_pins(project_root, name: str) -> set[str]:
+    """``version_env_key``s this module declares for the sandbox image.
+
+    Read from the module's own ``di.json`` rather than by diffing the global enabled set,
+    so nothing has to be temporarily mutated to answer "did the image contents change?".
+    Empty set ⇒ toggling this module cannot affect the image.
+    """
+    from ..module_discovery import iter_module_dirs
+
+    try:
+        module_dir = next(
+            (d for d in iter_module_dirs(project_root) if d.name == name), None,
+        )
+    except Exception:
+        return set()
+    if module_dir is None:
+        return set()
+
+    from ..harness.manifest import (
+        _parse_legacy_sandbox_packages,
+        parse_harness_declarations,
+    )
+
+    pins: set[str] = set()
+    try:
+        decls = parse_harness_declarations(module_dir / "di.json", name)
+    except ValueError:
+        decls = []
+    pins |= {
+        d.descriptor.sandbox_package.version_env_key
+        for d in decls
+        if d.descriptor.sandbox_package is not None
+    }
+    # The deprecated top-level `sandbox_packages` array is still honoured for one release
+    # (see harness/manifest.py), so a module that has not migrated must still trigger the
+    # rebuild — otherwise its CLI is missing after enable, or left installed after disable.
+    # A malformed legacy entry is reported by module:validate, not here.
+    with contextlib.suppress(RuntimeError):
+        pins |= {
+            p.version_env_key
+            for p in _parse_legacy_sandbox_packages(module_dir / "di.json", name)
+        }
+    return pins
 
 
 class MakeModuleCommand:

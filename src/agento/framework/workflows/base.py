@@ -6,8 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..channels.base import Channel
+from ..harness import Runner, RunRequest, RunResult
 from ..job_models import Job
-from ..runner import Runner, RunResult
 
 
 @dataclass
@@ -46,10 +46,10 @@ class Workflow(ABC):
         self, channel: Channel, reference_id: str, **kwargs: object
     ) -> RunResult:
         prompt = self.build_prompt(channel, reference_id, **kwargs)
-        result = self.runner.run(prompt)
+        result = self.runner.execute(RunRequest(prompt=prompt))
         result.prompt = prompt
         self.logger.info(
             f"channel={channel.name} ref={reference_id} "
-            f"status={result.subtype or '?'} {result.stats_line}"
+            f"session_id={result.session_id or '?'} {result.stats_line}"
         )
         return result

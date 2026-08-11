@@ -10,26 +10,22 @@ from agento.framework.agent_manager.auth import (
     AuthenticationError,
     AuthResult,
     authenticate_interactive,
-    clear_auth_strategies,
-    register_auth_strategy,
     save_credentials,
 )
-from agento.framework.agent_manager.models import AgentProvider
-from agento.modules.claude.src.auth import ClaudeAuthStrategy
-from agento.modules.codex.src.auth import CodexAuthStrategy
+from agento.framework.harness import clear
+from tests.harness_fixtures import register_builtin_harnesses
 
 
 @pytest.fixture(autouse=True)
-def _register_strategies():
-    """Register auth strategies for tests, clear after."""
-    register_auth_strategy(AgentProvider.CLAUDE, ClaudeAuthStrategy())
-    register_auth_strategy(AgentProvider.CODEX, CodexAuthStrategy())
+def _register_harnesses():
+    """Populate the harness registry — authenticators are keyed by credential scope."""
+    register_builtin_harnesses()
     yield
-    clear_auth_strategies()
+    clear()
 
 
 class TestAuthenticateInteractiveClaude:
-    """Tests for authenticate_interactive with AgentProvider.CLAUDE."""
+    """Tests for authenticate_interactive with "claude"."""
 
     @patch("agento.modules.claude.src.auth.Path.home")
     @patch("agento.modules.claude.src.auth._run_cli")
@@ -53,7 +49,7 @@ class TestAuthenticateInteractiveClaude:
         mock_run_cli.side_effect = setup_credentials
 
         with patch("agento.framework.agent_manager.auth.tempfile.mkdtemp", return_value=str(tmp_path)):
-            result = authenticate_interactive(AgentProvider.CLAUDE)
+            result = authenticate_interactive("claude")
 
         assert result.subscription_key == "sk-ant-oat01-test-access"
         assert result.refresh_token == "sk-ant-ort01-test-refresh"
@@ -69,7 +65,7 @@ class TestAuthenticateInteractiveClaude:
 
         with patch("agento.framework.agent_manager.auth.tempfile.mkdtemp", return_value=str(tmp_path)), \
              pytest.raises(AuthenticationError, match="credentials file not found"):
-            authenticate_interactive(AgentProvider.CLAUDE)
+            authenticate_interactive("claude")
 
     @patch("agento.modules.claude.src.auth.Path.home")
     @patch("agento.modules.claude.src.auth._run_cli")
@@ -86,7 +82,7 @@ class TestAuthenticateInteractiveClaude:
 
         with patch("agento.framework.agent_manager.auth.tempfile.mkdtemp", return_value=str(tmp_path)), \
              pytest.raises(AuthenticationError, match="no accessToken"):
-            authenticate_interactive(AgentProvider.CLAUDE)
+            authenticate_interactive("claude")
 
     @patch("agento.modules.claude.src.auth.Path.home")
     @patch("agento.framework.agent_manager.auth.shutil.rmtree")
@@ -104,7 +100,7 @@ class TestAuthenticateInteractiveClaude:
         mock_run_cli.side_effect = setup_credentials
 
         with patch("agento.framework.agent_manager.auth.tempfile.mkdtemp", return_value=str(tmp_path)):
-            authenticate_interactive(AgentProvider.CLAUDE)
+            authenticate_interactive("claude")
 
         mock_rmtree.assert_called_once_with(str(tmp_path), ignore_errors=True)
 
@@ -116,13 +112,13 @@ class TestAuthenticateInteractiveClaude:
 
         with patch("agento.framework.agent_manager.auth.tempfile.mkdtemp", return_value=str(tmp_path)), \
              pytest.raises(AuthenticationError):
-            authenticate_interactive(AgentProvider.CLAUDE)
+            authenticate_interactive("claude")
 
         mock_rmtree.assert_called_once_with(str(tmp_path), ignore_errors=True)
 
 
 class TestAuthenticateInteractiveCodex:
-    """Tests for authenticate_interactive with AgentProvider.CODEX."""
+    """Tests for authenticate_interactive with "codex"."""
 
     @patch("agento.modules.codex.src.auth._run_cli")
     def test_extracts_credentials_from_codex(self, mock_run_cli, tmp_path):
@@ -141,7 +137,7 @@ class TestAuthenticateInteractiveCodex:
         mock_run_cli.side_effect = setup_credentials
 
         with patch("agento.framework.agent_manager.auth.tempfile.mkdtemp", return_value=str(tmp_path)):
-            result = authenticate_interactive(AgentProvider.CODEX)
+            result = authenticate_interactive("codex")
 
         assert result.subscription_key == "sk-openai-test-access"
         assert result.refresh_token == "sk-openai-test-refresh"
@@ -155,7 +151,7 @@ class TestAuthenticateInteractiveCodex:
 
         with patch("agento.framework.agent_manager.auth.tempfile.mkdtemp", return_value=str(tmp_path)), \
              pytest.raises(AuthenticationError, match=r"auth\.json not found"):
-            authenticate_interactive(AgentProvider.CODEX)
+            authenticate_interactive("codex")
 
     @patch("agento.modules.codex.src.auth._run_cli")
     def test_raises_when_no_access_token(self, mock_run_cli, tmp_path):
@@ -169,17 +165,16 @@ class TestAuthenticateInteractiveCodex:
 
         with patch("agento.framework.agent_manager.auth.tempfile.mkdtemp", return_value=str(tmp_path)), \
              pytest.raises(AuthenticationError, match="no access_token"):
-            authenticate_interactive(AgentProvider.CODEX)
+            authenticate_interactive("codex")
 
 
-class TestAuthStrategyRegistry:
-    """Tests for auth strategy registry."""
+class TestAuthenticatorLookup:
+    """Authenticators come from the harness registry, keyed by credential scope."""
 
-    def test_no_strategy_raises(self):
-        """authenticate_interactive raises when no strategy registered."""
-        clear_auth_strategies()
-        with pytest.raises(ValueError, match="No auth strategy registered"):
-            authenticate_interactive(AgentProvider.CLAUDE)
+    def test_unknown_scope_raises(self):
+        clear()
+        with pytest.raises(ValueError, match="No authenticator registered"):
+            authenticate_interactive("claude")
 
 
 class TestRunCli:

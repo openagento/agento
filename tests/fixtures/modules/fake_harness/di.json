@@ -1,0 +1,41 @@
+{
+  "agent_harnesses": [
+    {
+      "id": "fake",
+      "label": "Fake Harness",
+      "class": "src.adapter.FakeHarnessAdapter",
+      "default_provider": "fake_local",
+      "providers": [
+        {
+          "id": "fake_local",
+          "label": "Local (no credential)",
+          "credential_required": false
+        },
+        {
+          "id": "fake_cloud",
+          "label": "Fake Cloud",
+          "credential_required": true,
+          "registration_modes": ["api_key", "access_token"],
+          "credential_scope": "fake_cloud"
+        }
+      ],
+      "capabilities": {
+        "interactive": true,
+        "resume": false,
+        "transcripts": false,
+        "structured_events": false,
+        "toolbox": true,
+        "mcp_init_report": false,
+        "usage_reporting": true,
+        "cost_reporting": false
+      },
+      "sandbox_package": {
+        "manager": "npm",
+        "package": "@example/fake-cli",
+        "binary": "fake",
+        "version_env_key": "FAKE_CLI_VERSION",
+        "default_range": "1.2.3"
+      }
+    }
+  ]
+}

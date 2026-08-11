@@ -15,6 +15,8 @@ from ..events import (
     ConsumerReloadedEvent,
     ConsumerStartedEvent,
     ConsumerStoppingEvent,
+    CredentialRefreshedEvent,
+    CredentialRegisteredEvent,
     CrontabInstalledEvent,
     DataPatchAppliedEvent,
     JobClaimedEvent,
@@ -37,10 +39,10 @@ from ..events import (
     TokenRefreshedEvent,
     TokenRegisteredEvent,
 )
+from ..harness import Runner, RunResult, SubprocessRunner
 from ..ingress_identity import IngressIdentity
 from ..job_models import AgentType, Job, JobRequester, JobStatus, RequesterTrust
 from ..router import Router, RoutingCandidate, RoutingContext, RoutingDecision, RoutingResult
-from ..runner import Runner, RunResult
 from ..workflows.base import JobContext, Workflow
 
 __all__ = [
@@ -51,6 +53,8 @@ __all__ = [
     "ConsumerReloadedEvent",
     "ConsumerStartedEvent",
     "ConsumerStoppingEvent",
+    "CredentialRefreshedEvent",
+    "CredentialRegisteredEvent",
     "CrontabInstalledEvent",
     "DataPatch",
     "DataPatchAppliedEvent",
@@ -91,6 +95,7 @@ __all__ = [
     "Runner",
     "SetupBeforeEvent",
     "SetupCompleteEvent",
+    "SubprocessRunner",
     "TokenRefreshedEvent",
     "TokenRegisteredEvent",
     "WorkItem",

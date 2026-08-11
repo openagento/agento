@@ -34,7 +34,7 @@ Overview of system health and recent activity:
 - **System Health** -- database connection status, running jobs count
 - **System Info** -- agento version, Python version, loaded module count
 - **Recent Jobs** -- last 3 jobs with status, agent view, and timing
-- **Tokens** -- registered tokens with type and primary status
+- **Credentials** -- registered credentials with scope, type and health status
 - **Agent Views** -- active agent views with workspace assignment
 
 ### Jobs
@@ -69,20 +69,25 @@ Agent view list with workspace assignment, ingress count, and build status.
 
 **Detail panel** shows code, label, workspace, ingress binding count, and last build status.
 
-### Tokens
+### Credentials
 
-![Admin Tokens Screen](../images/admin-tokens.png)
+![Admin Credentials Screen](../images/admin-tokens.png)
 
-Token list with 24-hour usage statistics.
+Credential list with 24-hour usage statistics, grouped by credential scope.
 
 | Key | Action |
 |-----|--------|
-| `/` | Focus search (filters by ID, type, label, status) |
-| `Enter` or double-click | Open token detail popup |
-| `s` | Set selected token as primary (with confirmation) |
-| `x` | Deregister token (with confirmation) |
+| `/` | Focus search (filters by ID, scope, label, status) |
+| `Enter` or double-click | Open credential detail popup |
+| `r` | Clear the error status on the selected credential (with confirmation) |
+| `x` | Deregister credential (with confirmation) |
 
-**Detail panel** shows type, status, enabled status, token limit, usage, and free percentage.
+There is no "set primary" action: selection is LRU over the healthy pool for a scope, so
+there is nothing to promote. `r` is the recovery lever — it clears `status='error'` (and any
+throttle) so the pool starts handing the credential out again.
+
+**Detail panel** shows scope, type, status, enabled status, token limit, usage, and free
+percentage.
 
 ### Skills
 

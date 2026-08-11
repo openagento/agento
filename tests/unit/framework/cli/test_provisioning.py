@@ -548,7 +548,7 @@ class TestBuildBaseImagesCliPins:
     """build_base_images must propagate sandbox_packages pins from docker/.env
     to the sandbox image, falling back to each module's default_range when the
     .env doesn't set them. Pin propagation is driven by the di.json registry,
-    not by hardcoded provider names."""
+    not by hardcoded harness names."""
 
     def _seed_with_env(self, tmp_path: Path, env_text: str) -> Path:
         (tmp_path / "docker").mkdir()
@@ -611,53 +611,57 @@ class TestBuildBaseImagesCliPins:
                 assert not any(a.startswith(f"{key}=") for a in inv)
 
 
-class TestSandboxDockerfilePinDriftGuard:
-    """Catches drift between agent modules' di.json default_range and the
-    sandbox Dockerfile's ARG defaults.
+class TestSandboxDockerfileIsRendered:
+    """The dev sandbox Dockerfile must be a RENDERED artifact of the one template.
 
-    di.json is the source of truth — the Dockerfile stays static today (a
-    Jinja2 follow-up is planned) so its ARG defaults must match what the
-    framework would propagate via --build-arg. Without this guard, a plain
-    ``docker build .agento/docker/sandbox`` would silently install a different
-    version than ``agento install`` does."""
+    Deployment renders ``cli/templates/sandbox.Dockerfile`` into ``.agento/docker/sandbox/``,
+    but ``docker/docker-compose.dev.yml`` builds the in-package
+    ``framework/docker/sandbox/Dockerfile`` directly. While that file hardcoded
+    ``ARG CLAUDE_CODE_VERSION`` / ``ARG CODEX_VERSION`` and the ``npm install -g`` line, the
+    two paths were separate sources of truth and adding a harness still meant editing
+    framework Docker sources — the exact thing AGENTS.md rule #6 forbids. The previous
+    guard here only compared ARG defaults, which could not catch a MISSING harness.
+    """
 
-    def test_dockerfile_arg_defaults_match_di_json_defaults(self):
-        import importlib.resources as ires
-        import re
-
+    def test_dev_dockerfile_equals_a_fresh_render(self):
+        from agento.framework.cli._provisioning import (
+            dev_sandbox_dockerfile_path,
+            render_sandbox_dockerfile,
+        )
         from agento.framework.cli._templates import get_template
 
-        ctx = ires.files("agento.framework.docker") / "sandbox" / "Dockerfile"
-        text = ctx.read_text()
-        compose_tmpl = get_template("docker-compose.yml")
+        expected = render_sandbox_dockerfile(
+            get_template("sandbox.Dockerfile"), enumerate_sandbox_packages(),
+        )
+        actual = dev_sandbox_dockerfile_path().read_text()
 
+        assert actual == expected, (
+            "framework/docker/sandbox/Dockerfile has drifted from the template. "
+            "Regenerate it: python -c 'from agento.framework.cli._provisioning import "
+            "render_dev_sandbox_dockerfile as r; r()'"
+        )
+
+    def test_no_agent_cli_is_hardcoded_in_the_template(self):
+        """The template must carry markers, never a package name."""
+        from agento.framework.cli._templates import get_template
+
+        template = get_template("sandbox.Dockerfile")
+        assert "{{ sandbox_package_args }}" in template
+        assert "{{ sandbox_package_install }}" in template
+        for name in ("@anthropic-ai/claude-code", "@openai/codex"):
+            assert name not in template, f"template hardcodes {name}"
+
+    def test_every_declared_package_reaches_the_dev_image(self):
+        from agento.framework.cli._provisioning import dev_sandbox_dockerfile_path
+
+        text = dev_sandbox_dockerfile_path().read_text()
         for pkg in enumerate_sandbox_packages():
-            m = re.search(
-                rf"^ARG\s+{re.escape(pkg.version_env_key)}=(\S+)",
-                text, re.MULTILINE,
-            )
-            assert m is not None, (
-                f"sandbox Dockerfile missing ARG {pkg.version_env_key} "
-                f"(declared by an agent module's sandbox_packages)"
-            )
-            assert m.group(1) == pkg.default_range, (
-                f"Dockerfile pin {pkg.version_env_key}={m.group(1)} != "
-                f"di.json default_range {pkg.default_range}"
-            )
-
-            # Compose template renders the same default via render_compose,
-            # but a `docker compose build` without going through render_compose
-            # would still need the rendered output to match. The render is
-            # exercised by TestBuildBaseImagesTemplateDriftGuard; here we just
-            # confirm the marker hasn't been pre-substituted in the template.
-            assert "{{ sandbox_package_args }}" in compose_tmpl
+            assert f"ARG {pkg.version_env_key}={pkg.default_range}" in text
+            assert f'"{pkg.package}@${{{pkg.version_env_key}}}"' in text
 
     def test_dev_compose_defaults_match_di_json_defaults(self):
-        """Dev compose (docker/docker-compose.dev.yml) is a repo-local
-        convenience used by agento devs to iterate. It's NOT rendered from the
-        template — it hardcodes build args — so it must be kept in sync with
-        di.json defaults manually. Skip cleanly when run outside the repo
-        (e.g. against an installed wheel)."""
+        """Dev compose passes the pins as build args; they must match the declarations.
+        Skips cleanly outside the repo (e.g. against an installed wheel)."""
         from pathlib import Path
 
         dev_compose = (
@@ -788,7 +792,7 @@ class TestEnumerateSandboxPackages:
 
         # Should not raise; only core packages come back.
         pkgs = enumerate_sandbox_packages(tmp_path)
-        assert all(p.provider != "no_sandbox" for p in pkgs)
+        assert all(p.harness != "no_sandbox" for p in pkgs)
 
 
 class TestRenderComposeWithSandboxPackages:
@@ -817,7 +821,7 @@ class TestRenderComposeWithSandboxPackages:
 
     def test_single_package_renders_one_line(self):
         pkg = SandboxPackage(
-            provider="claude", manager="npm", package="@anthropic-ai/claude-code",
+            harness="claude", manager="npm", package="@anthropic-ai/claude-code",
             binary="claude", version_env_key="CLAUDE_CODE_VERSION", default_range="~2.1.142",
         )
         out = render_compose(
@@ -829,17 +833,17 @@ class TestRenderComposeWithSandboxPackages:
     def test_multiple_packages_render_in_order(self):
         pkgs = [
             SandboxPackage(
-                provider="claude", manager="npm", package="@anthropic-ai/claude-code",
+                harness="claude", manager="npm", package="@anthropic-ai/claude-code",
                 binary="claude", version_env_key="CLAUDE_CODE_VERSION",
                 default_range="~2.1.142",
             ),
             SandboxPackage(
-                provider="codex", manager="npm", package="@openai/codex",
+                harness="codex", manager="npm", package="@openai/codex",
                 binary="codex", version_env_key="CODEX_VERSION",
                 default_range="~0.128.0",
             ),
             SandboxPackage(
-                provider="hermes", manager="npm", package="@example/hermes",
+                harness="hermes", manager="npm", package="@example/hermes",
                 binary="hermes", version_env_key="HERMES_VERSION",
                 default_range="~1.0.0",
             ),

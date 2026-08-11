@@ -5,18 +5,18 @@ class AuthenticationError(RuntimeError):
     """Raised when agent authentication fails.
 
     Covers two related failure modes:
-    * Interactive OAuth login (``token:register`` / ``token:refresh``) — raised
-      before any token record exists, so ``token_id`` is ``None``.
+    * Interactive OAuth login (``credential:register`` / ``credential:refresh``) — raised
+      before any credential record exists, so ``credential_id`` is ``None``.
     * Runtime auth rejection — the agent CLI rejected a stored credential while
       executing a job (401, expired token, "Not logged in"). The consumer sets
-      ``token_id`` to the id of the token it handed to the runner so the pool
-      can be updated (``status='error'``) and a different token selected on retry.
+      ``credential_id`` to the id of the credential it handed to the runner so the
+      pool can be updated (``status='error'``) and a different one selected on retry.
     """
 
-    def __init__(self, message: str, *, token_id: int | None = None) -> None:
+    def __init__(self, message: str, *, credential_id: int | None = None) -> None:
         super().__init__(message)
-        self.token_id = token_id
-        # Set by the consumer after poisoning the offending token: True when a
+        self.credential_id = credential_id
+        # Set by the consumer after poisoning the offending credential: True when a
         # healthy alternative remains in the pool, so the job retries onto it
         # instead of dead-lettering. ``retry_policy.evaluate`` reads this flag.
         self.retry_with_other_token = False
@@ -28,9 +28,9 @@ class UsageLimitError(RuntimeError):
 
     Unlike ``AuthenticationError`` this is TEMPORARY, not a poisoned credential:
     the consumer throttles the offending token until ``reset_at`` (a cooldown via
-    ``oauth_token.throttled_until`` — NOT ``status='error'`` and NOT ``expires_at``)
+    ``credential.throttled_until`` — NOT ``status='error'`` and NOT ``expires_at``)
     so the pool skips it while limited and auto-recovers afterwards, and the job
-    fails over to another healthy token. ``token_id`` is set by the consumer to the
+    fails over to another healthy credential. ``credential_id`` is set by the consumer to the
     token it handed to the runner. ``reset_at`` is a naive-UTC datetime supplied by
     the agent module's parser, or ``None`` when the CLI gave no parseable reset time
     (the consumer then applies a default throttle window).
@@ -40,13 +40,13 @@ class UsageLimitError(RuntimeError):
         self,
         message: str,
         *,
-        token_id: int | None = None,
+        credential_id: int | None = None,
         reset_at=None,
     ) -> None:
         super().__init__(message)
-        self.token_id = token_id
+        self.credential_id = credential_id
         self.reset_at = reset_at
-        # Set by the consumer after throttling the offending token: True when a
+        # Set by the consumer after throttling the offending credential: True when a
         # healthy alternative remains in the pool, so the job retries onto it.
         # ``retry_policy.evaluate`` reads this flag (mirrors AuthenticationError).
         self.retry_with_other_token = False
@@ -59,7 +59,7 @@ class TransientAuthError(RuntimeError):
     account (the same token label keeps serving other jobs).
 
     Handled like ``UsageLimitError``, not ``AuthenticationError``: the consumer
-    THROTTLES the token briefly (``oauth_token.throttled_until``; ``status`` stays
+    THROTTLES the token briefly (``credential.throttled_until``; ``status`` stays
     ``'ok'``) so the pool skips it, the job fails over, and the token auto-recovers
     with no operator action. ``retry_with_other_token`` is set by the consumer when a
     healthy alternative remains; ``retry_policy.evaluate`` reads it.
@@ -68,7 +68,7 @@ class TransientAuthError(RuntimeError):
     would otherwise poison it.
     """
 
-    def __init__(self, message: str, *, token_id: int | None = None) -> None:
+    def __init__(self, message: str, *, credential_id: int | None = None) -> None:
         super().__init__(message)
-        self.token_id = token_id
+        self.credential_id = credential_id
         self.retry_with_other_token = False

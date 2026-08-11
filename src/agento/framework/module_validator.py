@@ -392,6 +392,8 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
             di = None
 
         if di is not None and isinstance(di, dict):
+            if "agent_harnesses" in di:
+                errors.extend(_validate_agent_harnesses(module_dir, di["agent_harnesses"]))
             for section in ("channels", "workflows", "commands"):
                 for entry in di.get(section, []):
                     if isinstance(entry, dict) and "class" in entry and not _resolve_class_path(module_dir, entry["class"]):
@@ -469,13 +471,47 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                     errors.append(
                         f"system.json: field '{field_name}' has invalid type '{field_type}'"
                     )
-                # Validate options for select/multiselect fields
+                # Validate options for select/multiselect fields. A select supplies
+                # EXACTLY ONE of literal `options` or a dynamic `options_source`
+                # (harness lists are only known from di.json, not from system.json).
                 is_select = field_type in ("select", "multiselect")
                 has_options = "options" in field_def
-                if is_select and not has_options:
+                has_source = "options_source" in field_def
+                if is_select and not has_options and not has_source:
                     errors.append(
-                        f"system.json: field '{field_name}' (type '{field_type}') requires 'options'"
+                        f"system.json: field '{field_name}' (type '{field_type}') requires "
+                        f"'options' or 'options_source'"
                     )
+                if is_select and has_options and has_source:
+                    errors.append(
+                        f"system.json: field '{field_name}' declares both 'options' and "
+                        f"'options_source' — exactly one is allowed"
+                    )
+                if has_source:
+                    from .harness import SUPPORTED_SOURCES
+
+                    if not is_select:
+                        errors.append(
+                            f"system.json: field '{field_name}' has 'options_source' but type "
+                            f"is '{field_type}' (only select/multiselect support options)"
+                        )
+                    elif field_def["options_source"] not in SUPPORTED_SOURCES:
+                        errors.append(
+                            f"system.json: field '{field_name}' options_source "
+                            f"'{field_def['options_source']}' is not supported "
+                            f"(known: {', '.join(SUPPORTED_SOURCES)})"
+                        )
+                # `depends_on` is validated for EVERY field, not only those with an
+                # options_source: a literal-options select can declare it too, and a
+                # dangling dependency there silently narrows to nothing at runtime.
+                depends_on = field_def.get("depends_on")
+                if depends_on is not None:
+                    dep_field = str(depends_on).split("/")[-1]
+                    if dep_field not in system:
+                        errors.append(
+                            f"system.json: field '{field_name}' depends_on "
+                            f"'{depends_on}' which is not a field in this system.json"
+                        )
                 if has_options and not is_select:
                     errors.append(
                         f"system.json: field '{field_name}' has 'options' but type is '{field_type}' (only select/multiselect support options)"
@@ -501,25 +537,28 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
 
 
 def validate_all(core_dir: Path, user_dir: Path) -> dict[str, list[str]]:
-    """Validate all modules in core and user directories.
+    """Validate every module the framework would actually load.
 
-    Returns dict of {module_name: [errors]} for modules with errors.
-    Includes cross-module sequence validation (unresolvable dependencies).
+    Returns dict of {module_name: [errors]} for modules with errors. Includes cross-module
+    sequence validation (unresolvable dependencies) and cross-module harness collisions.
+
+    Uses the SAME discovery path as ``bootstrap`` and ``setup:upgrade`` — including PyPI
+    extensions bind-mounted at ``/opt/agento-src/<ext>``. Scanning only core + ``app/code``
+    here (as this did) let a container extension load and run while ``agento module:validate``
+    and ``bin/test`` silently skipped its manifest.
     """
+    from .module_discovery import module_dirs_for_validation
+
     results: dict[str, list[str]] = {}
     all_modules: dict[str, dict] = {}  # name -> manifest
 
-    for scan_dir in (core_dir, user_dir):
-        if not scan_dir.is_dir():
-            continue
-        for entry in sorted(scan_dir.iterdir()):
-            if not entry.is_dir() or entry.name.startswith("_") or entry.name.startswith("."):
-                continue
-            errors, manifest = _validate_module(entry)
-            if errors:
-                results[entry.name] = errors
-            if manifest is not None:
-                all_modules[manifest.get("name", entry.name)] = manifest
+    candidates = module_dirs_for_validation(core_dir, user_dir)
+    for name, entry in candidates:
+        errors, manifest = _validate_module(entry)
+        if errors:
+            results[name] = errors
+        if manifest is not None:
+            all_modules[manifest.get("name", name)] = manifest
 
     for module_name, errs in validate_tool_namespace(
         (name, manifest.get("tools", [])) for name, manifest in all_modules.items()
@@ -535,4 +574,114 @@ def validate_all(core_dir: Path, user_dir: Path) -> dict[str, list[str]]:
                     f"module.json: sequence dependency '{dep}' not found on disk"
                 )
 
+    # Cross-module harness uniqueness. Per-module validation cannot see a harness id,
+    # credential scope or Docker ARG key claimed by a DIFFERENT module, and a duplicate
+    # scope would silently make one harness serve another's credential pool.
+    for module_name, error in _collision_errors(candidates):
+        results.setdefault(module_name, []).append(error)
+
     return results
+
+
+def cross_module_errors(manifests) -> list[tuple[str, str]]:
+    """Cross-module harness collisions for an already-scanned module set.
+
+    Takes manifests rather than directories so ``setup:upgrade`` and ``bootstrap`` check the
+    EXACT set they are about to act on — including PyPI extensions mounted outside both the
+    core and user directories.
+    """
+    return _collision_errors([(m.name, Path(m.path)) for m in manifests])
+
+
+def _collision_errors(candidates: list[tuple[str, Path]]) -> list[tuple[str, str]]:
+    """Shared collision detection over ``[(module_name, module_dir)]``."""
+    from .harness.manifest import parse_harness_declarations
+
+    owners: dict[str, dict[str, str]] = {"harness id": {}, "credential_scope": {},
+                                         "sandbox_package.version_env_key": {}}
+    errors: list[tuple[str, str]] = []
+
+    for name, module_dir in candidates:
+        try:
+            decls = parse_harness_declarations(module_dir / "di.json", name)
+        except ValueError:
+            continue  # per-module validation already reported this
+        for decl in decls:
+            claims = [("harness id", str(decl.descriptor.id))]
+            claims += [
+                ("credential_scope", str(sc))
+                for sc in decl.descriptor.credential_scopes()
+            ]
+            pkg = decl.descriptor.sandbox_package
+            if pkg is not None:
+                claims.append(("sandbox_package.version_env_key", pkg.version_env_key))
+            for kind, value in claims:
+                prior = owners[kind].get(value)
+                if prior is not None and prior != name:
+                    errors.append((
+                        name,
+                        f"di.json: {kind} {value!r} is already declared by module "
+                        f"{prior!r} — it must be unique across all modules",
+                    ))
+                else:
+                    owners[kind][value] = name
+
+    return errors
+
+
+def _validate_agent_harnesses(module_dir: Path, decls) -> list[str]:
+    """Statically validate ``agent_harnesses`` — before any DB change in setup:upgrade.
+
+    Catches what would otherwise only surface at bootstrap (or worse, at INSERT time):
+    an unresolvable adapter class, a default_provider that is not among the providers,
+    duplicate ids/scopes/ARG keys, credential_required disagreeing with
+    credential_scope/registration_modes, and a sandbox_package that would be unsafe or
+    broken to render into a Dockerfile.
+    """
+    from .harness.descriptor import HarnessDescriptor
+
+    errors: list[str] = []
+    if not isinstance(decls, list):
+        return ["di.json: 'agent_harnesses' must be an array"]
+
+    seen_ids: set[str] = set()
+    seen_scopes: set[str] = set()
+    seen_env_keys: set[str] = set()
+    for i, decl in enumerate(decls):
+        if not isinstance(decl, dict):
+            errors.append(f"di.json: agent_harnesses[{i}] must be an object")
+            continue
+        class_path = decl.get("class")
+        if not isinstance(class_path, str) or not class_path:
+            errors.append(f"di.json: agent_harnesses[{i}] is missing a 'class' path")
+        elif not _resolve_class_path(module_dir, class_path):
+            errors.append(
+                f"di.json: agent_harnesses class '{class_path}' does not resolve to a .py file"
+            )
+        try:
+            descriptor = HarnessDescriptor.from_declaration(decl)
+        except ValueError as e:
+            errors.append(f"di.json: agent_harnesses[{i}] — {e}")
+            continue
+
+        if descriptor.id in seen_ids:
+            errors.append(f"di.json: duplicate harness id '{descriptor.id}'")
+        seen_ids.add(str(descriptor.id))
+
+        for scope in descriptor.credential_scopes():
+            if scope in seen_scopes:
+                errors.append(
+                    f"di.json: duplicate credential_scope '{scope}' — one scope has "
+                    f"exactly one owning declaration"
+                )
+            seen_scopes.add(str(scope))
+
+        pkg = descriptor.sandbox_package
+        if pkg is not None:
+            if pkg.version_env_key in seen_env_keys:
+                errors.append(
+                    f"di.json: duplicate sandbox_package.version_env_key "
+                    f"'{pkg.version_env_key}'"
+                )
+            seen_env_keys.add(pkg.version_env_key)
+    return errors

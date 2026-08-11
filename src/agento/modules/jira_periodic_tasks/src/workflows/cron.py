@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from agento.framework.channels.base import Channel
+from agento.framework.harness import RunResult
 from agento.framework.job_models import Job
-from agento.framework.runner import RunResult
 from agento.framework.workflows.base import JobContext, Workflow
 
 

@@ -6,32 +6,22 @@ import pytest
 
 from agento.framework.agent_manager.config import AgentManagerConfig
 from agento.framework.agent_manager.models import (
-    AgentProvider,
-    Token,
-    TokenStatus,
+    CredentialRecord,
+    CredentialStatus,
     UsageSummary,
 )
-from agento.framework.config_writer import (
-    clear as _clear_config_writers,
-)
-from agento.framework.config_writer import (
-    register_config_writer,
-)
-from agento.modules.claude.src.config import ClaudeConfigWriter
-from agento.modules.codex.src.config import CodexConfigWriter
+from agento.framework.harness import clear as _clear_harnesses
+from tests.harness_fixtures import register_builtin_harnesses
 
 
 @pytest.fixture(autouse=True)
-def _register_config_writers():
-    """Register provider ConfigWriters so ``TokenRunner._build_env`` (which now
-    delegates to ``ConfigWriter.credential_env``) can resolve them in unit
+def _register_harnesses():
+    """Populate the harness registry so credential-env lookups resolve in unit
     tests that don't run the full ``bootstrap()`` module loader.
     """
-    _clear_config_writers()
-    register_config_writer(AgentProvider.CLAUDE, ClaudeConfigWriter())
-    register_config_writer(AgentProvider.CODEX, CodexConfigWriter())
+    register_builtin_harnesses()
     yield
-    _clear_config_writers()
+    _clear_harnesses()
 
 
 @pytest.fixture
@@ -43,25 +33,25 @@ def agent_config(tmp_path):
 def make_token(
     *,
     id: int = 1,
-    agent_type: AgentProvider = AgentProvider.CLAUDE,
+    agent_type: str = "claude",
     type: str = "oauth",
     label: str = "test-token",
     credentials: dict | None = None,
     token_limit: int = 100_000,
     enabled: bool = True,
-    status: TokenStatus = TokenStatus.OK,
+    status: CredentialStatus = CredentialStatus.OK,
     priority: int = 0,
     error_msg: str | None = None,
     expires_at: datetime | None = None,
     used_at: datetime | None = None,
-) -> Token:
-    """Helper to create Token instances for testing."""
+) -> CredentialRecord:
+    """Helper to create CredentialRecord instances for testing."""
     now = datetime.now(UTC)
     if credentials is None:
         credentials = {"subscription_key": "sk-test"}
-    return Token(
+    return CredentialRecord(
         id=id,
-        agent_type=agent_type,
+        scope=agent_type,
         type=type,
         label=label,
         credentials=credentials,
@@ -84,7 +74,7 @@ def make_usage(
 ) -> UsageSummary:
     """Helper to create UsageSummary instances for testing."""
     return UsageSummary(
-        token_id=token_id,
+        credential_id=token_id,
         total_tokens=total_tokens,
         call_count=call_count,
     )

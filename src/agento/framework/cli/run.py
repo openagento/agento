@@ -11,9 +11,9 @@ Host-side LOCAL command. Two-step docker exec:
    **name-only** ``-e KEY`` so the secret never appears in argv/``ps``;
    docker reads the value from the parent's environment.
 
-No provider literal appears in this file — the command string and env both
-come from the registered ``CliInvoker``/``ConfigWriter`` for the resolved
-provider, cron-side.
+No harness literal appears in this file — the command string and env both
+come from the registered harness's ``CommandBuilder``/``WorkspaceAdapter`` for the
+resolved provider, cron-side.
 """
 from __future__ import annotations
 
@@ -86,12 +86,12 @@ class RunCommand:
         runtime = _fetch_runtime(
             compose_flags, args.agent_view_code, prompt=prompt, yolo=yolo,
         )
-        provider = runtime.get("provider")
-        if provider is None:
+        harness = runtime.get("harness")
+        if harness is None:
             print(
-                f"Error: agent_view '{args.agent_view_code}' has no provider configured.\n"
+                f"Error: agent_view '{args.agent_view_code}' has no harness configured.\n"
                 f"  Set it with:\n"
-                f"    agento config:set agent_view/provider <provider> "
+                f"    agento config:set agent_view/harness <harness> "
                 f"--agent-view {args.agent_view_code}",
                 file=sys.stderr,
             )
@@ -100,8 +100,8 @@ class RunCommand:
         command = runtime.get("command")
         if not command:
             print(
-                f"Error: provider {provider!r} has no CliInvoker registered. "
-                f"The agent module must declare one under 'cli_invokers' in di.json.",
+                f"Error: harness {harness!r} is not registered. "
+                f"The agent module must declare it under 'agent_harnesses' in di.json.",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -123,7 +123,7 @@ class RunCommand:
 
         # Runtime secret env (e.g. ANTHROPIC_API_KEY) delivery — name-only -e
         # so the value never lands in argv. Values come from the cron-side
-        # ConfigWriter.credential_env hook, identical to the consumer's path.
+        # WorkspaceAdapter.credential_env hook, identical to the consumer's path.
         secret_env: dict[str, str] = runtime.get("env") or {}
         env_args: list[str] = []
         for key in secret_env:

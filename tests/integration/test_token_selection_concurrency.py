@@ -7,21 +7,20 @@ from threading import Barrier
 
 import pytest
 
-from agento.framework.agent_manager.models import AgentProvider
-from agento.framework.agent_manager.token_resolver import TokenResolver
-from agento.framework.agent_manager.token_store import register_token
+from agento.framework.agent_manager.credential_resolver import CredentialResolver
+from agento.framework.agent_manager.credential_store import register_credential
 from agento.framework.db import get_connection
 
 from .conftest import CONCURRENT_WORKERS_STRESS_TEST
 
 
-def _seed_tokens(int_db_config, provider: AgentProvider, token_specs: list[tuple[str, str, dict]]) -> None:
+def _seed_tokens(int_db_config, scope: str, token_specs: list[tuple[str, str, dict]]) -> None:
     conn = get_connection(int_db_config)
     try:
         for label, token_type, credentials in token_specs:
-            register_token(
+            register_credential(
                 conn,
-                provider,
+                scope,
                 label,
                 credentials,
                 type=token_type,
@@ -31,11 +30,11 @@ def _seed_tokens(int_db_config, provider: AgentProvider, token_specs: list[tuple
         conn.close()
 
 
-def _claim_token(int_db_config, provider: AgentProvider, barrier: Barrier) -> tuple[int, str, str]:
+def _claim_token(int_db_config, scope: str, barrier: Barrier) -> tuple[int, str, str]:
     conn = get_connection(int_db_config)
     try:
         barrier.wait(timeout=5)
-        token = TokenResolver().resolve(conn, provider)
+        token = CredentialResolver().resolve(conn, scope)
         return token.id, token.type, token.label
     finally:
         conn.close()
@@ -60,10 +59,10 @@ def _server_max_connections(int_db_config) -> int:
 
 
 @pytest.mark.parametrize(
-    ("provider", "token_specs"),
+    ("scope", "token_specs"),
     [
         (
-            AgentProvider.CLAUDE,
+            "claude",
             [
                 ("claude-oauth-a", "oauth", {
                     "subscription_key": "sk-claude-oauth-a",
@@ -79,7 +78,7 @@ def _server_max_connections(int_db_config) -> int:
             ],
         ),
         (
-            AgentProvider.CODEX,
+            "codex",
             [
                 ("codex-oauth", "oauth", {
                     "subscription_key": "codex-access",
@@ -98,8 +97,7 @@ def _server_max_connections(int_db_config) -> int:
 )
 def test_concurrent_selection_rotates_across_mixed_token_methods(
     int_db_config,
-    provider: AgentProvider,
-    token_specs: list[tuple[str, str, dict]],
+    scope: str, token_specs: list[tuple[str, str, dict]],
 ):
     """Ten concurrent claims over three same-priority mixed-method tokens all
     succeed and keep the pool fair enough to use every healthy token.
@@ -109,12 +107,12 @@ def test_concurrent_selection_rotates_across_mixed_token_methods(
     Distinctness under a *full* pool is covered by
     tests/integration/test_token_pool_concurrency.py.
     """
-    _seed_tokens(int_db_config, provider, token_specs)
+    _seed_tokens(int_db_config, scope, token_specs)
 
     barrier = Barrier(CONCURRENT_WORKERS_STRESS_TEST)
     with ThreadPoolExecutor(max_workers=CONCURRENT_WORKERS_STRESS_TEST) as executor:
         futures = [
-            executor.submit(_claim_token, int_db_config, provider, barrier)
+            executor.submit(_claim_token, int_db_config, scope, barrier)
             for _ in range(CONCURRENT_WORKERS_STRESS_TEST)
         ]
         claims = [future.result(timeout=10) for future in as_completed(futures)]
@@ -136,12 +134,12 @@ def test_concurrent_selection_rotates_across_mixed_token_methods(
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT label, type, used_at FROM oauth_token "
-                "WHERE agent_type = %s ORDER BY id",
-                (provider.value,),
+                "SELECT label, type, used_at FROM credential "
+                "WHERE scope = %s ORDER BY id",
+                (scope,),
             )
             rows = cur.fetchall()
-            cur.execute("SHOW COLUMNS FROM oauth_token LIKE 'used_at'")
+            cur.execute("SHOW COLUMNS FROM credential LIKE 'used_at'")
             used_at_column = cur.fetchone()
     finally:
         conn.close()
@@ -175,7 +173,7 @@ def test_high_contention_every_claimant_gets_a_token(int_db_config):
             f"--max-connections={required} to run this test."
         )
 
-    _seed_tokens(int_db_config, AgentProvider.CLAUDE, [
+    _seed_tokens(int_db_config, "claude", [
         ("pool-a", "anthropic_api_key", {"api_key": "sk-a"}),
         ("pool-b", "anthropic_api_key", {"api_key": "sk-b"}),
         ("pool-c", "anthropic_api_key", {"api_key": "sk-c"}),
@@ -184,7 +182,7 @@ def test_high_contention_every_claimant_gets_a_token(int_db_config):
     barrier = Barrier(_HIGH_CONTENTION_WORKERS, timeout=120)
     with ThreadPoolExecutor(max_workers=_HIGH_CONTENTION_WORKERS) as executor:
         futures = [
-            executor.submit(_claim_token, int_db_config, AgentProvider.CLAUDE, barrier)
+            executor.submit(_claim_token, int_db_config, "claude", barrier)
             for _ in range(_HIGH_CONTENTION_WORKERS)
         ]
         claims = [future.result(timeout=300) for future in as_completed(futures)]

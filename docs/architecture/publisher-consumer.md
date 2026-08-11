@@ -110,5 +110,5 @@ job_published  → job_claimed → job_succeeded
 | Consumer loop | [src/agento/framework/consumer.py](../../src/agento/framework/consumer.py) |
 | Publisher | [src/agento/framework/publisher.py](../../src/agento/framework/publisher.py) |
 | Job models | [src/agento/framework/job_models.py](../../src/agento/framework/job_models.py) |
-| Runner protocol | [src/agento/framework/runner.py](../../src/agento/framework/runner.py) |
+| Harness contract (runner, command builder, workspace adapter) | [src/agento/framework/harness/](../../src/agento/framework/harness/) |
 | Event data classes | [src/agento/framework/events.py](../../src/agento/framework/events.py) |

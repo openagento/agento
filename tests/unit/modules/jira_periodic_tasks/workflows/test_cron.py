@@ -55,20 +55,20 @@ class TestCronWorkflow:
 
     def test_execute_calls_runner(self):
         result = MagicMock()
-        result.subtype = "success"
+        result.session_id = "success"
         result.stats_line = "turns=3"
-        self.runner.run.return_value = result
+        self.runner.execute.return_value = result
 
         channel = _mock_channel()
         ret = self.workflow.execute(channel, "AI-1")
 
-        self.runner.run.assert_called_once()
+        self.runner.execute.assert_called_once()
         assert ret is result
 
     def test_execute_stamps_prompt_on_result(self):
-        from agento.framework.runner import RunResult
-        result = RunResult(raw_output="ok", subtype="success")
-        self.runner.run.return_value = result
+        from agento.framework.harness import RunResult
+        result = RunResult(raw_output="ok", session_id="success")
+        self.runner.execute.return_value = result
 
         channel = _mock_channel(
             read_context="Wczytaj zadanie AI-1.",

@@ -1,22 +1,38 @@
 {
+  "harness": {
+    "type": "select",
+    "label": "Agent harness",
+    "description": "Which agent program drives this view. Options come from the agent_harnesses declarations of enabled modules.",
+    "options_source": "agent_harness_registry"
+  },
   "provider": {
     "type": "select",
-    "label": "Agent provider",
-    "description": "Which agent CLI this view runs. Must match a registered provider module.",
-    "options": [
-      {"value": "claude", "label": "Claude Code"},
-      {"value": "codex", "label": "OpenAI Codex"}
-    ]
+    "label": "Model provider",
+    "description": "Which model/API vendor the harness talks to. Options depend on the selected harness.",
+    "options_source": "agent_harness_providers",
+    "depends_on": "agent_view/harness"
   },
   "model": {
     "type": "string",
     "label": "Agent model",
     "description": "Model ID passed to the provider CLI via --model. Claude: claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 (aliases: opus, sonnet, haiku). Codex: gpt-5.4 | gpt-5.4-mini."
   },
-  "scheduling/priority":          {"type": "integer",  "label": "Job priority (0-100)"},
-  "mcp/servers":                  {"type": "textarea", "label": "Additional MCP servers (JSON dict; merged on top of auto-injected toolbox entry)"},
-  "instructions/agents_md":       {"type": "textarea", "label": "AGENTS.md content (overrides theme)"},
-  "instructions/soul_md":         {"type": "textarea", "label": "SOUL.md content (overrides theme)"},
+  "scheduling/priority": {
+    "type": "integer",
+    "label": "Job priority (0-100)"
+  },
+  "mcp/servers": {
+    "type": "textarea",
+    "label": "Additional MCP servers (JSON dict; merged on top of auto-injected toolbox entry)"
+  },
+  "instructions/agents_md": {
+    "type": "textarea",
+    "label": "AGENTS.md content (overrides theme)"
+  },
+  "instructions/soul_md": {
+    "type": "textarea",
+    "label": "SOUL.md content (overrides theme)"
+  },
   "identity/ssh_private_key": {
     "type": "obscure",
     "label": "SSH private key (id_rsa, encrypted at rest)",
@@ -54,7 +70,7 @@
   },
   "identity/git_author_email": {
     "type": "string",
-    "label": "Git commit author email (user.email) — MUST be a verified email on the target Bitbucket account, or commits will not link to it",
+    "label": "Git commit author email (user.email) \u2014 MUST be a verified email on the target Bitbucket account, or commits will not link to it",
     "showInDefault": true,
     "showInWorkspace": true,
     "showInAgentView": true

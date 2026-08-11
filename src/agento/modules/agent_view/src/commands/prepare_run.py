@@ -1,13 +1,13 @@
 """CLI command: ``agent_view:prepare-run`` — cron-side prep for ``agento run``.
 
-Composes the same pre-spawn pipeline the consumer uses (``TokenResolver`` +
+Composes the same pre-spawn pipeline the consumer uses (``CredentialResolver`` +
 ``materialize_run_workspace``) and returns the result as JSON so the host
 can ``docker exec`` into the sandbox with HOME/cwd/env already resolved.
 
-The ``env`` field carries credentials only for providers whose ConfigWriter
+The ``env`` field carries credentials only for providers whose WorkspaceAdapter
 chooses runtime env delivery. The host must inject these via name-only
 ``-e KEY`` (no ``=value``) so the secret never appears in ``ps``/``argv`` —
-same stance as the recent stdin-only-secrets token:register hardening.
+same stance as the recent stdin-only-secrets credential:register hardening.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class AgentViewPrepareRunCommand:
     @property
     def help(self) -> str:
         return (
-            "Prepare a run environment for an agent_view (token + artifacts + env) "
+            "Prepare a run environment for an agent_view (credential + artifacts + env) "
             "and dump JSON; used by `agento run` to exec into the sandbox."
         )
 
@@ -51,18 +51,22 @@ class AgentViewPrepareRunCommand:
         parser.add_argument(
             "--yolo", action="store_true",
             help="Interactive bypass mode — build the interactive command with the "
-                 "provider's skip-approvals flag (headless is always bypass).",
+                 "harness's skip-approvals flag (headless is always bypass).",
         )
 
     def execute(self, args: argparse.Namespace) -> None:
-        from agento.framework.agent_manager.models import AgentProvider
-        from agento.framework.agent_manager.token_resolver import TokenResolver
+        from agento.framework.agent_manager.credential_resolver import CredentialResolver
         from agento.framework.agent_view_runtime import resolve_agent_view_runtime
         from agento.framework.cli.runtime import _load_framework_config
-        from agento.framework.cli_invoker import get_cli_invoker
         from agento.framework.config_resolver import ScopedConfigService
-        from agento.framework.config_writer import get_config_writer
         from agento.framework.db import get_connection_or_exit
+        from agento.framework.harness import (
+            HarnessRunContext,
+            RunRequest,
+            get_harness,
+            resolve_provider,
+            workspace_adapter_for,
+        )
         from agento.framework.run_preparation import materialize_run_workspace
         from agento.framework.scoped_config import Scope
         from agento.framework.workspace import get_agent_view_by_code
@@ -82,19 +86,45 @@ class AgentViewPrepareRunCommand:
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            if runtime.provider is None:
+            if runtime.harness is None:
                 print(
-                    "Error: agent_view/provider not configured. Set it via "
-                    "`agento config:set agent_view/provider <claude|codex> "
+                    "Error: agent_view/harness not configured. Set it via "
+                    "`agento config:set agent_view/harness <harness> "
                     f"--scope=agent_view --scope-id={av.id}`",
                     file=sys.stderr,
                 )
                 sys.exit(1)
 
-            provider = AgentProvider(runtime.provider)
+            provider_desc = resolve_provider(runtime.harness, runtime.provider)
 
-            # Resolve token from pool — stamps used_at, fails fast with actionable message.
-            token = TokenResolver().resolve(conn, provider)
+            # The CALLER claims the credential — once — and stamps used_at.
+            # ``credential is None`` is legal in TWO cases: the provider requires none,
+            # or this is the explicitly interactive path, where starting the CLI with no
+            # credential is how an operator reaches `/login` to repair an empty pool.
+            # Headless keeps failing fast — a prompt run with no credential would only
+            # fail deeper in, after burning a session.
+            credential = None
+            # Set when the provider needs a credential but we could not claim one: the
+            # interactive path continues so the operator can `/login`, and the copied
+            # build's stale credential state must be removed rather than inherited.
+            purge_credentials = False
+            if provider_desc.credential_required:
+                try:
+                    credential = CredentialResolver().resolve(
+                        conn, provider_desc.credential_scope
+                    )
+                except Exception as exc:
+                    if args.prompt:
+                        print(f"Error: {exc}", file=sys.stderr)
+                        sys.exit(1)
+                    purge_credentials = True
+                    print(
+                        f"Warning: no usable {provider_desc.credential_scope} credential "
+                        f"({exc}). Starting the agent without one — use its own /login, "
+                        f"or run `agento credential:register "
+                        f"{provider_desc.credential_scope} <label>`.",
+                        file=sys.stderr,
+                    )
 
             # Shared toolbox URL + agent_view-scoped config for the materialize fallback
             # (mirrors consumer._run_job to keep the pipeline identical).
@@ -109,11 +139,12 @@ class AgentViewPrepareRunCommand:
             run_id=_new_run_id(),
             agent_config_svc=agent_config_svc,
             toolbox_url=toolbox_url,
-            token=token,
+            credential=credential,
+            purge_credentials=purge_credentials,
         )
 
-        writer = get_config_writer(provider)
-        env = writer.credential_env(token)
+        writer = workspace_adapter_for(runtime.harness)
+        env = writer.credential_env(credential) if credential is not None else {}
         # Add GIT_AUTHOR_*/GIT_COMMITTER_* from the agent_view identity so the agent's commits are
         # authored correctly even in a clone with its own repo-local .git/config (env beats all
         # gitconfig levels). Non-secret, but delivered the same name-only -e way by `agento run`.
@@ -131,31 +162,46 @@ class AgentViewPrepareRunCommand:
         }
 
         effective_model = args.model or runtime.model
-        # Mirror ``agent_view:runtime``: a missing CliInvoker yields a JSON
+        # Mirror ``agent_view:runtime``: an unregistered harness yields a JSON
         # ``command: null`` so the host ``RunCommand`` can show its actionable
-        # "no CliInvoker registered" hint instead of cron raising a traceback.
+        # "no harness registered" hint instead of cron raising a traceback.
         command: list[str] | None
         try:
-            invoker = get_cli_invoker(provider)
+            builder = get_harness(runtime.harness).adapter.command_builder
         except (ValueError, KeyError):
             command = None
         else:
+            ctx = HarnessRunContext(
+                harness=runtime.harness,
+                provider=provider_desc.id,
+                model=effective_model,
+                working_dir=str(working_dir) if working_dir is not None else "/workspace",
+                home_dir=str(home) if home is not None else None,
+                credential_required=provider_desc.credential_required,
+                credential=credential,
+            )
             if args.prompt:
-                command = invoker.headless_command(args.prompt, model=effective_model)
+                command = builder.headless(
+                    ctx, RunRequest(prompt=args.prompt, model=effective_model)
+                )
             else:
-                command = invoker.interactive_command(yolo=getattr(args, "yolo", False))
+                command = builder.interactive(ctx, yolo=getattr(args, "yolo", False))
 
         payload = {
             "agent_view_id": av.id,
             "agent_view_code": av.code,
             "workspace_id": runtime.workspace.id,
             "workspace_code": runtime.workspace.code,
+            "harness": runtime.harness,
             "provider": runtime.provider,
             "model": effective_model,
             "home": str(home) if home is not None else None,
             "working_dir": str(working_dir) if working_dir is not None else None,
             "command": command,
             "env": env,
-            "token_id": token.id,
+            "credential_id": credential.id if credential is not None else None,
+            # Deprecated duplicate of credential_id, kept for one release so an older
+            # host-side `agento run` reading token_id keeps working.
+            "token_id": credential.id if credential is not None else None,
         }
         print(json.dumps(payload))

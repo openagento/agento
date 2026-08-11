@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agento.framework.harness import clear
 from agento.framework.job_models import AgentType, Job, JobStatus
-from agento.framework.replay import (
-    build_replay_command,
-)
+from agento.framework.replay import build_replay_command
+from tests.harness_fixtures import register_builtin_harnesses
 
 
 def _make_job(**overrides) -> Job:
@@ -22,6 +21,7 @@ def _make_job(**overrides) -> Job:
         priority=50,
         reference_id="AI-1",
         agent_type="claude",
+        provider=None,
         model="claude-sonnet-4-20250514",
         input_tokens=1500,
         output_tokens=800,
@@ -35,7 +35,7 @@ def _make_job(**overrides) -> Job:
         scheduled_after=datetime(2026, 2, 20, 8, 0),
         started_at=datetime(2026, 2, 20, 8, 0, 5),
         finished_at=datetime(2026, 2, 20, 8, 1, 0),
-        result_summary="subtype=success turns=3",
+        result_summary="session_id=success turns=3",
         error_message=None,
         error_class=None,
         pid=None,
@@ -47,35 +47,13 @@ def _make_job(**overrides) -> Job:
     return Job(**defaults)
 
 
-def _mock_runner_for(agent_type: str):
-    """Create a mock runner that builds commands like the real runner."""
-    runner = MagicMock()
-    if agent_type == "claude":
-        def build_cmd(prompt, *, model=None):
-            cmd = ["claude", "-p", prompt, "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
-            if model:
-                cmd.extend(["--model", model])
-            return cmd
-    elif agent_type == "codex":
-        def build_cmd(prompt, *, model=None):
-            cmd = ["codex", "exec", prompt, "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]
-            if model:
-                cmd.extend(["--model", model])
-            return cmd
-    else:
-        raise ValueError(f"Unknown agent type in test: {agent_type}")
-    runner.build_command = build_cmd
-    return runner
-
-
 @pytest.fixture(autouse=True)
-def _mock_create_runner():
-    """Mock create_runner so replay tests don't need bootstrap."""
-    def factory(provider, **kwargs):
-        return _mock_runner_for(provider.value)
-
-    with patch("agento.framework.replay.create_runner", side_effect=factory):
-        yield
+def _harnesses():
+    """Register the real shipped harnesses — replay builds its command from the
+    harness's own CommandBuilder, so mocking it would assert nothing about parity."""
+    register_builtin_harnesses()
+    yield
+    clear()
 
 
 class TestBuildReplayCommand:
@@ -128,7 +106,7 @@ class TestBuildReplayCommand:
 
     def test_unknown_agent_type_raises(self):
         job = _make_job(agent_type="unknown_agent")
-        with pytest.raises(ValueError, match="Unknown agent type"):
+        with pytest.raises(ValueError, match="Unknown harness"):
             build_replay_command(job)
 
     def test_model_override(self):
@@ -141,30 +119,30 @@ class TestBuildReplayCommand:
 
     def test_agent_type_override_to_codex(self):
         job = _make_job(agent_type="claude", model="claude-sonnet-4-20250514")
-        rc = build_replay_command(job, agent_type_override="codex", model_override="o3")
+        rc = build_replay_command(job, harness_override="codex", model_override="o3")
 
         assert rc.args[0] == "codex"
-        assert rc.agent_type == "codex"
+        assert rc.harness == "codex"
         assert "o3" in rc.args
 
     def test_agent_type_override_to_claude(self):
         job = _make_job(agent_type="codex", model="o3")
-        rc = build_replay_command(job, agent_type_override="claude", model_override="claude-sonnet-4-20250514")
+        rc = build_replay_command(job, harness_override="claude", model_override="claude-sonnet-4-20250514")
 
         assert rc.args[0] == "claude"
-        assert rc.agent_type == "claude"
+        assert rc.harness == "claude"
         assert "claude-sonnet-4-20250514" in rc.args
 
     def test_unknown_agent_type_override_raises(self):
         job = _make_job(agent_type="claude")
-        with pytest.raises(ValueError, match="Unknown agent type"):
-            build_replay_command(job, agent_type_override="unknown_provider")
+        with pytest.raises(ValueError, match="Unknown harness"):
+            build_replay_command(job, harness_override="unknown_provider")
 
     def test_replay_command_metadata(self):
         job = _make_job(agent_type="claude", model="claude-sonnet-4-20250514")
         rc = build_replay_command(job)
 
-        assert rc.agent_type == "claude"
+        assert rc.harness == "claude"
         assert rc.model == "claude-sonnet-4-20250514"
         assert rc.prompt == job.prompt
         assert rc.job is job

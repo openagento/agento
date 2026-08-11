@@ -1,14 +1,19 @@
-"""Tests for ReplaceErroredTokenCredentialsObserver — replaces stale credentials
-in every existing build dir with the next LRU healthy token after a token is
-flipped to status='error'."""
+"""Tests for ReplaceErroredTokenCredentialsObserver — replaces stale credentials in the
+builds that use the errored credential's scope with the next LRU healthy credential.
+
+Only builds whose own agent_view resolves to that scope are touched, so a Codex failure
+never rewrites a Claude build (``_builds_for_scope`` is stubbed here; its own matching
+logic is covered in ``test_refresh_credentials_observer.py``).
+"""
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from agento.framework.agent_manager.models import AgentProvider, Token, TokenStatus
+from agento.framework.agent_manager.models import CredentialRecord, CredentialStatus
 from agento.modules.workspace_build.src.observers import (
     ReplaceErroredTokenCredentialsObserver,
 )
@@ -32,26 +37,45 @@ def _make_build(base, ws: str, av: str, build_id: int = 1):
     return build_dir
 
 
-def _make_event(agent_type: str | None = "codex"):
+OBS = "agento.modules.workspace_build.src.observers"
+
+
+def _stub_harness(monkeypatch, adapter, *, owner_of=None):
+    """Point ``get_harness_for_scope`` at a RegisteredHarness-shaped stub."""
+    registered = SimpleNamespace(adapter=SimpleNamespace(workspace_adapter=adapter))
+
+    def _lookup(scope):
+        if owner_of is not None and scope != owner_of:
+            return None
+        return registered
+
+    monkeypatch.setattr(f"{OBS}.get_harness_for_scope", _lookup)
+
+
+def _stub_builds(monkeypatch, builds):
+    monkeypatch.setattr(f"{OBS}._builds_for_scope", lambda _scope: list(builds))
+
+
+def _make_event(scope: str | None = "codex"):
     event = MagicMock()
-    event.agent_type = agent_type
-    event.token_id = 6
+    event.scope = scope
+    event.credential_id = 6
     event.error_msg = "refresh token already used"
     event.job_id = None
     return event
 
 
-def _make_token(token_id: int = 2, creds: dict | None = None) -> Token:
+def _make_token(token_id: int = 2, creds: dict | None = None) -> CredentialRecord:
     now = datetime.now(UTC).replace(tzinfo=None)
-    return Token(
+    return CredentialRecord(
         id=token_id,
-        agent_type=AgentProvider.CODEX,
+        scope="codex",
         type="oauth",
         label="mklauza-codex",
         credentials=creds or {"subscription_key": "sk-healthy"},
         token_limit=0,
         enabled=True,
-        status=TokenStatus.OK,
+        status=CredentialStatus.OK,
         priority=0,
         error_msg=None,
         expires_at=None,
@@ -64,10 +88,8 @@ def _make_token(token_id: int = 2, creds: dict | None = None) -> Token:
 def _patch_db(monkeypatch):
     """Wire DB connection + DatabaseConfig to MagicMocks so the observer can
     exit the ``conn.close()`` finally block without touching a real DB."""
-    monkeypatch.setattr(
-        "agento.framework.db.get_connection",
-        lambda _cfg: MagicMock(),
-    )
+    # The observer holds its own module-level reference, so patch it there.
+    monkeypatch.setattr(f"{OBS}.get_connection", lambda _cfg: MagicMock())
     monkeypatch.setattr(
         "agento.framework.database_config.DatabaseConfig.from_env",
         classmethod(lambda cls: MagicMock()),
@@ -82,17 +104,15 @@ class TestReplaceErroredTokenObserver:
         mieszko = _make_build(build_root, "default", "mieszko")
 
         writer = MagicMock()
-        monkeypatch.setattr(
-            "agento.modules.workspace_build.src.observers.get_config_writer",
-            lambda _provider: writer,
-        )
+        _stub_harness(monkeypatch, writer)
+        _stub_builds(monkeypatch, [zyga, mieszko])
         _patch_db(monkeypatch)
 
         healthy = _make_token(token_id=2, creds={"subscription_key": "sk-good"})
         resolver = MagicMock()
         resolver.resolve.return_value = healthy
         monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
+            "agento.framework.agent_manager.credential_resolver.CredentialResolver",
             lambda: resolver,
         )
 
@@ -102,25 +122,23 @@ class TestReplaceErroredTokenObserver:
         assert called_dirs == {zyga, mieszko}
         for call in writer.write_credentials.call_args_list:
             assert call.args[1] is healthy
-        # Resolver got the provider derived from the event's agent_type.
-        assert resolver.resolve.call_args.args[1] == AgentProvider.CODEX
+        # Resolver was asked for the event's own credential scope.
+        assert resolver.resolve.call_args.args[1] == "codex"
 
     def test_noop_when_no_healthy_token(self, build_root, monkeypatch):
-        _make_build(build_root, "default", "zyga")
+        build = _make_build(build_root, "default", "zyga")
 
         writer = MagicMock()
-        monkeypatch.setattr(
-            "agento.modules.workspace_build.src.observers.get_config_writer",
-            lambda _provider: writer,
-        )
+        _stub_harness(monkeypatch, writer)
+        _stub_builds(monkeypatch, [build])
         _patch_db(monkeypatch)
 
         resolver = MagicMock()
         resolver.resolve.side_effect = RuntimeError(
-            "All 1 enabled tokens for provider=codex are unhealthy",
+            "All 1 enabled credentials for scope=codex are unhealthy",
         )
         monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
+            "agento.framework.agent_manager.credential_resolver.CredentialResolver",
             lambda: resolver,
         )
 
@@ -128,44 +146,36 @@ class TestReplaceErroredTokenObserver:
 
         writer.write_credentials.assert_not_called()
 
-    def test_skips_when_no_agent_type(self, build_root, monkeypatch):
-        _make_build(build_root, "default", "zyga")
+    def test_skips_when_event_has_no_scope(self, build_root, monkeypatch):
+        build = _make_build(build_root, "default", "zyga")
 
         writer = MagicMock()
-        monkeypatch.setattr(
-            "agento.modules.workspace_build.src.observers.get_config_writer",
-            lambda _provider: writer,
-        )
+        _stub_harness(monkeypatch, writer)
+        _stub_builds(monkeypatch, [build])
 
-        ReplaceErroredTokenCredentialsObserver().execute(_make_event(agent_type=None))
+        ReplaceErroredTokenCredentialsObserver().execute(_make_event(scope=None))
 
         writer.write_credentials.assert_not_called()
 
-    def test_skips_when_writer_not_registered(self, build_root, monkeypatch):
-        _make_build(build_root, "default", "zyga")
-
-        def _raise(_provider):
-            raise KeyError("no writer")
-
-        monkeypatch.setattr(
-            "agento.modules.workspace_build.src.observers.get_config_writer",
-            _raise,
-        )
-
-        # Must not raise even though no ConfigWriter is registered.
-        ReplaceErroredTokenCredentialsObserver().execute(_make_event())
-
-    def test_skips_when_agent_type_unknown_to_enum(self, build_root, monkeypatch):
+    def test_skips_when_no_harness_owns_the_scope(self, build_root, monkeypatch):
         _make_build(build_root, "default", "zyga")
 
         writer = MagicMock()
-        monkeypatch.setattr(
-            "agento.modules.workspace_build.src.observers.get_config_writer",
-            lambda _provider: writer,
-        )
+        _stub_harness(monkeypatch, writer, owner_of="claude")
+
+        # No harness owns scope 'codex' here — must not raise, must not write.
+        ReplaceErroredTokenCredentialsObserver().execute(_make_event())
+
+        writer.write_credentials.assert_not_called()
+
+    def test_skips_unregistered_scope(self, build_root, monkeypatch):
+        _make_build(build_root, "default", "zyga")
+
+        writer = MagicMock()
+        _stub_harness(monkeypatch, writer, owner_of="codex")
 
         ReplaceErroredTokenCredentialsObserver().execute(
-            _make_event(agent_type="bogus_provider"),
+            _make_event(scope="bogus_scope"),
         )
 
         writer.write_credentials.assert_not_called()
@@ -176,16 +186,14 @@ class TestReplaceErroredTokenObserver:
 
         writer = MagicMock()
         writer.write_credentials.side_effect = [OSError("boom"), None]
-        monkeypatch.setattr(
-            "agento.modules.workspace_build.src.observers.get_config_writer",
-            lambda _provider: writer,
-        )
+        _stub_harness(monkeypatch, writer)
+        _stub_builds(monkeypatch, [zyga, mieszko])
         _patch_db(monkeypatch)
 
         resolver = MagicMock()
         resolver.resolve.return_value = _make_token()
         monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
+            "agento.framework.agent_manager.credential_resolver.CredentialResolver",
             lambda: resolver,
         )
 
@@ -200,16 +208,13 @@ class TestReplaceErroredTokenObserver:
             "agento.modules.workspace_build.src.observers.BUILD_DIR", str(missing),
         )
         writer = MagicMock()
-        monkeypatch.setattr(
-            "agento.modules.workspace_build.src.observers.get_config_writer",
-            lambda _provider: writer,
-        )
+        _stub_harness(monkeypatch, writer)
         _patch_db(monkeypatch)
 
         resolver = MagicMock()
         resolver.resolve.return_value = _make_token()
         monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
+            "agento.framework.agent_manager.credential_resolver.CredentialResolver",
             lambda: resolver,
         )
 
@@ -218,13 +223,11 @@ class TestReplaceErroredTokenObserver:
         writer.write_credentials.assert_not_called()
 
     def test_skips_when_replacement_has_no_credentials(self, build_root, monkeypatch):
-        _make_build(build_root, "default", "zyga")
+        build = _make_build(build_root, "default", "zyga")
 
         writer = MagicMock()
-        monkeypatch.setattr(
-            "agento.modules.workspace_build.src.observers.get_config_writer",
-            lambda _provider: writer,
-        )
+        _stub_harness(monkeypatch, writer)
+        _stub_builds(monkeypatch, [build])
         _patch_db(monkeypatch)
 
         bad = _make_token(creds=None)
@@ -232,7 +235,7 @@ class TestReplaceErroredTokenObserver:
         resolver = MagicMock()
         resolver.resolve.return_value = bad
         monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
+            "agento.framework.agent_manager.credential_resolver.CredentialResolver",
             lambda: resolver,
         )
 

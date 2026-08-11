@@ -66,17 +66,28 @@ echo "# My E-commerce\n\nArchitecture overview..." > app/code/my-ecommerce/knowl
 agento workspace:build --all
 ```
 
-## Register Agent Token
+## Register an Agent Credential
+
+Credentials are registered per **credential scope** (the pool a `(harness, provider)` pair
+draws from) and stored encrypted in the database — never as a file path. Selection is LRU
+over the healthy pool, so there is nothing to "activate".
 
 ```bash
-# On a machine with a browser
-claude auth login
-cp ~/.claude/.credentials.json tokens/claude_oauth_1.json
+# Interactive OAuth (needs a TTY):
+agento credential:register claude my-token
 
-# Register and activate
-agento token register claude my-token /etc/tokens/claude_oauth_1.json
-agento token set claude 1
+# Or an API key, read from stdin so it never reaches argv/shell history:
+echo "$ANTHROPIC_API_KEY" | agento credential:register claude my-token --with-api-key
 ```
+
+Then point the agent_view at the harness and provider:
+
+```bash
+agento config:set agent_view/harness  claude    --agent-view dev_01
+agento config:set agent_view/provider anthropic --agent-view dev_01
+```
+
+See [cli/credentials.md](cli/credentials.md) for the pool model and recovery commands.
 
 ## Next Steps
 

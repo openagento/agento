@@ -1,0 +1,125 @@
+"""Harness contract — the plugin boundary for agent-driving programs.
+
+Three independent axes: **harness** (the program driving the agent), **provider**
+(the model/API vendor) and **model**. A new harness registers itself through
+``agent_harnesses`` in its own ``di.json``; nothing in ``src/agento/framework/``
+needs to change.
+"""
+from __future__ import annotations
+
+from .descriptor import (
+    CredentialRegistrationMode,
+    CredentialScope,
+    HarnessCapabilities,
+    HarnessDescriptor,
+    HarnessId,
+    ModelProviderDescriptor,
+    ProviderId,
+    SandboxPackage,
+)
+from .manifest import (
+    HarnessDeclaration,
+    enumerate_harness_declarations,
+    enumerate_sandbox_packages,
+    parse_harness_declarations,
+)
+from .options_source import SUPPORTED_SOURCES, resolve_options
+from .protocols import (
+    AGENT_CONFIG_PREFIX,
+    AgentHarnessAdapter,
+    AuthResult,
+    CommandBuilder,
+    CredentialAuthenticator,
+    ParseSummary,
+    Runner,
+    ToolUse,
+    TranscriptReader,
+    UnsupportedRegistrationMode,
+    WorkspaceAdapter,
+    get_agent_config,
+)
+from .registry import (
+    DuplicateCredentialScopeError,
+    DuplicateHarnessError,
+    RegisteredHarness,
+    UnknownHarnessError,
+    clear,
+    create_runner,
+    find_harness,
+    get_authenticator,
+    get_harness,
+    get_harness_for_scope,
+    list_credential_scopes,
+    list_descriptors,
+    list_harnesses,
+    owned_paths_for,
+    persistent_home_paths_for,
+    register_harness,
+    resolve_credential_scope,
+    resolve_provider,
+    workspace_adapter_for,
+)
+from .runtime import (
+    HarnessRunContext,
+    McpInitReport,
+    McpServerStatus,
+    RunRequest,
+    RunResult,
+    ToolboxConnectionSpec,
+)
+from .subprocess_runner import SubprocessRunner
+
+__all__ = [
+    "AGENT_CONFIG_PREFIX",
+    "SUPPORTED_SOURCES",
+    "AgentHarnessAdapter",
+    "AuthResult",
+    "CommandBuilder",
+    "CredentialAuthenticator",
+    "CredentialRegistrationMode",
+    "CredentialScope",
+    "DuplicateCredentialScopeError",
+    "DuplicateHarnessError",
+    "HarnessCapabilities",
+    "HarnessDeclaration",
+    "HarnessDescriptor",
+    "HarnessId",
+    "HarnessRunContext",
+    "McpInitReport",
+    "McpServerStatus",
+    "ModelProviderDescriptor",
+    "ParseSummary",
+    "ProviderId",
+    "RegisteredHarness",
+    "RunRequest",
+    "RunResult",
+    "Runner",
+    "SandboxPackage",
+    "SubprocessRunner",
+    "ToolUse",
+    "ToolboxConnectionSpec",
+    "TranscriptReader",
+    "UnknownHarnessError",
+    "UnsupportedRegistrationMode",
+    "WorkspaceAdapter",
+    "clear",
+    "create_runner",
+    "enumerate_harness_declarations",
+    "enumerate_sandbox_packages",
+    "find_harness",
+    "get_agent_config",
+    "get_authenticator",
+    "get_harness",
+    "get_harness_for_scope",
+    "list_credential_scopes",
+    "list_descriptors",
+    "list_harnesses",
+    "owned_paths_for",
+    "parse_harness_declarations",
+    "persistent_home_paths_for",
+    "register_harness",
+    "resolve_credential_scope",
+    "resolve_options",
+    "resolve_provider",
+    "workspace_adapter_for",
+]

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agento.framework.transcript_reader import ParseSummary, ToolUse
+from agento.framework.harness import ParseSummary, ToolUse
 from agento.modules.claude.src import transcript_reader as cl_tr
 from agento.modules.claude.src.transcript_reader import (
     ClaudeTranscriptReader,
@@ -136,5 +136,5 @@ def test_parse_drift_unrecognized_format_yields_no_recognized_records(tmp_path: 
 
 
 def test_satisfies_protocol():
-    from agento.framework.transcript_reader import TranscriptReader
+    from agento.framework.harness import TranscriptReader
     assert isinstance(ClaudeTranscriptReader(), TranscriptReader)

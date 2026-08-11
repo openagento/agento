@@ -6,19 +6,19 @@ from unittest.mock import patch
 
 import pytest
 
-from agento.framework.agent_manager.models import AgentProvider
 from agento.framework.artifacts_dir import copy_build_to_artifacts_dir, get_current_build_dir
-from agento.framework.config_writer import clear, register_config_writer
-from agento.modules.claude.src.config import ClaudeConfigWriter
-from agento.modules.codex.src.config import CodexConfigWriter
+from agento.framework.harness import clear
+from agento.modules.claude.src.config import ClaudeWorkspaceAdapter
+from tests.harness_fixtures import register_builtin_harnesses
+
+pytestmark = pytest.mark.usefixtures("builtin_harnesses")
 
 
 @pytest.fixture
 def with_writers():
     """Register Claude + Codex writers so framework knows which paths to copy."""
     clear()
-    register_config_writer(AgentProvider.CLAUDE, ClaudeConfigWriter())
-    register_config_writer(AgentProvider.CODEX, CodexConfigWriter())
+    register_builtin_harnesses()
     yield
     clear()
 
@@ -57,7 +57,7 @@ class TestCopyBuildToArtifactsDir:
         artifacts_dir = tmp_path / "run"
         artifacts_dir.mkdir()
 
-        copy_build_to_artifacts_dir(build_dir, artifacts_dir)
+        copy_build_to_artifacts_dir(build_dir, artifacts_dir, harness="claude")
 
         assert (artifacts_dir / "CLAUDE.md").read_text() == "# Test"
         assert (artifacts_dir / "AGENTS.md").read_text() == "# Agents"
@@ -75,7 +75,7 @@ class TestCopyBuildToArtifactsDir:
         artifacts_dir = tmp_path / "run"
         artifacts_dir.mkdir()
 
-        copy_build_to_artifacts_dir(build_dir, artifacts_dir)
+        copy_build_to_artifacts_dir(build_dir, artifacts_dir, harness="claude")
 
         assert (artifacts_dir / ".claude" / "skills" / "test_skill" / "SKILL.md").read_text() == "# Skill"
         assert (artifacts_dir / ".claude" / "skills" / "test_skill" / "references" / "schema.md").read_text() == "# schema"
@@ -86,7 +86,7 @@ class TestCopyBuildToArtifactsDir:
         artifacts_dir = tmp_path / "run"
         artifacts_dir.mkdir()
 
-        copy_build_to_artifacts_dir(build_dir, artifacts_dir)
+        copy_build_to_artifacts_dir(build_dir, artifacts_dir, harness="claude")
         assert list(artifacts_dir.iterdir()) == []
 
     def test_symlinks_large_directories(self, tmp_path):
@@ -101,7 +101,7 @@ class TestCopyBuildToArtifactsDir:
         artifacts_dir = tmp_path / "run"
         artifacts_dir.mkdir()
 
-        copy_build_to_artifacts_dir(build_dir, artifacts_dir)
+        copy_build_to_artifacts_dir(build_dir, artifacts_dir, harness="claude")
 
         # Symlinked, not copied
         assert (artifacts_dir / "modules").is_symlink()
@@ -120,7 +120,7 @@ class TestCopyBuildToArtifactsDir:
         artifacts_dir = tmp_path / "run"
         artifacts_dir.mkdir()
 
-        copy_build_to_artifacts_dir(build_dir, artifacts_dir)
+        copy_build_to_artifacts_dir(build_dir, artifacts_dir, harness="claude")
 
         assert not (artifacts_dir / ".claude.json").is_symlink()
         assert not (artifacts_dir / "AGENTS.md").is_symlink()
@@ -128,7 +128,6 @@ class TestCopyBuildToArtifactsDir:
 
     def test_injects_runtime_params_into_mcp_json(self, tmp_path):
         """job_id is injected into .mcp.json toolbox URLs via ConfigWriter."""
-        from agento.modules.claude.src.config import ClaudeConfigWriter
 
         build_dir = tmp_path / "build"
         build_dir.mkdir()
@@ -138,12 +137,12 @@ class TestCopyBuildToArtifactsDir:
         artifacts_dir = tmp_path / "run"
         artifacts_dir.mkdir()
 
-        writer = ClaudeConfigWriter()
-        with patch("agento.framework.config_writer.get_config_writer", return_value=writer):
+        writer = ClaudeWorkspaceAdapter()
+        with patch("agento.framework.harness.workspace_adapter_for", return_value=writer):
             copy_build_to_artifacts_dir(
                 build_dir, artifacts_dir,
                 job_id=42,
-                provider="claude",
+                harness="claude",
             )
 
         result = json.loads((artifacts_dir / ".mcp.json").read_text())
@@ -162,7 +161,7 @@ class TestCopyBuildToArtifactsDir:
         artifacts_dir = tmp_path / "run"
         artifacts_dir.mkdir()
 
-        copy_build_to_artifacts_dir(build_dir, artifacts_dir)
+        copy_build_to_artifacts_dir(build_dir, artifacts_dir, harness="claude")
 
         result = json.loads((artifacts_dir / ".mcp.json").read_text())
         assert "job_id" not in result["mcpServers"]["toolbox"]["url"]

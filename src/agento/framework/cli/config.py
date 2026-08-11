@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 
+from ..config_schema_options import field_options
 from ..db import get_connection_or_exit
 from ..scoped_config import Scope
 from .runtime import _load_framework_config
@@ -81,7 +82,37 @@ def _load_tool_field_schema(module_dir, tool_name: str, field_name: str) -> dict
     return None
 
 
-def _validate_config_value(path: str, value: str) -> bool:
+def _effective_depends_on_value(
+    conn, depends_on: str, *, scope: str, scope_id: int,
+) -> str | None:
+    """The value a dependent select is narrowed by, resolved AT THE TARGET SCOPE.
+
+    Must honour the full precedence chain (ENV > agent_view > workspace > default >
+    config.json), not just a raw DB row at this scope: a view inheriting its harness from
+    the default scope, or one set only via ``CONFIG__AGENT_VIEW__HARNESS``, still has an
+    effective harness that must narrow the provider list.
+    """
+    from ..config_resolver import read_config_defaults
+    from ..core_config import _find_module_dir
+    from ..scoped_config import ORIGIN_ABSENT, Scope, resolve_with_origin
+
+    module, _, field = depends_on.partition("/")
+    module_dir = _find_module_dir(module)
+    defaults = read_config_defaults(module_dir) if module_dir is not None else {}
+    json_value = (defaults or {}).get(field) if field else None
+
+    value, origin = resolve_with_origin(
+        conn, depends_on,
+        agent_view_id=scope_id if scope == Scope.AGENT_VIEW else None,
+        workspace_id=scope_id if scope == Scope.WORKSPACE else None,
+        config_json_value=str(json_value) if json_value is not None else None,
+    )
+    return None if origin == ORIGIN_ABSENT else value
+
+
+def _validate_config_value(
+    path: str, value: str, *, conn=None, scope: str | None = None, scope_id: int = 0,
+) -> bool:
     """Validate config value against system.json options for select fields. Returns False if invalid."""
     from ..core_config import _find_module_dir, _parse_config_path
 
@@ -115,7 +146,18 @@ def _validate_config_value(path: str, value: str) -> bool:
     if field_type not in ("select", "multiselect"):
         return True
 
-    options = field_def.get("options", [])
+    # For a dynamic select (harness / provider) the allowed values come from the
+    # agent_harnesses declarations on disk — config:set has no bootstrap() available.
+    # A DEPENDENT select (provider depends on harness) must be narrowed to the harness
+    # actually in effect at this scope; validating against the union of every harness's
+    # providers would accept `(claude, openai)` and only fail at runtime.
+    depends_on = field_def.get("depends_on")
+    depends_value = None
+    if depends_on and conn is not None and scope is not None:
+        depends_value = _effective_depends_on_value(
+            conn, depends_on, scope=scope, scope_id=scope_id,
+        )
+    options = field_options(field_def, depends_on_value=depends_value)
     allowed = [opt["value"] for opt in options if isinstance(opt, dict) and "value" in opt]
     if value not in allowed:
         print(f"Error: Invalid value '{value}' for {field_type} field '{field_name}'")
@@ -334,13 +376,14 @@ class ConfigSetCommand:
         )
 
     def execute(self, args: argparse.Namespace) -> None:
-        from ..core_config import config_set_auto_encrypt
         from ..event_manager import get_event_manager
         from ..events import ConfigSavedEvent
 
+        # Every rejection below exits non-zero: `config:set` is scripted (CI, the e2e
+        # suite, onboarding), and a printed error with rc=0 reads as a successful write.
         if "/" not in args.path:
             print(f"Error: Invalid config path '{args.path}' — expected module/field format (e.g. jira/jira_token)")
-            return
+            sys.exit(1)
 
         value = args.value
         if value is None:
@@ -351,12 +394,19 @@ class ConfigSetCommand:
         try:
             scope, scope_id = _resolve_scope_from_args(conn, args)
             if not _validate_config_path(args.path, scope):
-                return
-            if not _validate_config_value(args.path, value):
-                return
+                sys.exit(1)
+            if not _validate_config_value(
+                args.path, value, conn=conn, scope=scope, scope_id=scope_id,
+            ):
+                sys.exit(1)
 
             scope_label = f" [scope={scope}, scope_id={scope_id}]" if scope != Scope.DEFAULT else ""
-            encrypted = config_set_auto_encrypt(
+            # One shared operation for the write + any dependent repair, so `config:set`
+            # and the admin TUI cannot drift apart on it. Same transaction, so a broken
+            # (harness, provider) pair is never observable.
+            from ..config_dependents import set_config_with_dependents
+
+            encrypted, reset = set_config_with_dependents(
                 conn, args.path, value, scope=scope, scope_id=scope_id
             )
             conn.commit()
@@ -366,6 +416,8 @@ class ConfigSetCommand:
             )
             label = " (encrypted)" if encrypted else ""
             print(f"Set: {args.path}{label}{scope_label}")
+            for dep_path, dep_value in reset:
+                print(f"  also set: {dep_path} = {dep_value} (was invalid for {value})")
         finally:
             conn.close()
 
@@ -538,7 +590,7 @@ class ConfigSchemaCommand:
                 label = field_schema.get("label", "")
                 description = field_schema.get("description", "")
                 print(f"  {field_name:<20s}{ftype:<10s}{label}")
-                options = field_schema.get("options")
+                options = field_options(field_schema)
                 if options and isinstance(options, list):
                     vals = ", ".join(o["value"] for o in options if isinstance(o, dict) and "value" in o)
                     print(f"  {'':20s}{'':10s}options: {vals}")
@@ -718,3 +770,5 @@ class ConfigRemoveCommand:
                 print(f"Not found: {args.path}{scope_label}")
         finally:
             conn.close()
+
+

@@ -1,4 +1,4 @@
-"""Tests for ClaudeConfigWriter — .claude.json, .claude/settings.json, .mcp.json."""
+"""Tests for ClaudeWorkspaceAdapter — .claude.json, .claude/settings.json, .mcp.json."""
 from __future__ import annotations
 
 import json
@@ -7,22 +7,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agento.framework.agent_manager.models import AgentProvider, Token, TokenStatus
-from agento.modules.claude.src.config import ClaudeConfigWriter
+from agento.framework.agent_manager.models import CredentialRecord, CredentialStatus
+from agento.modules.claude.src.config import ClaudeWorkspaceAdapter
 
 _EPOCH = datetime(2000, 1, 1)
 
 
-def _make_token(credentials: dict, type_: str = "oauth") -> Token:
-    return Token(
+def _make_token(credentials: dict, type_: str = "oauth") -> CredentialRecord:
+    return CredentialRecord(
         id=1,
-        agent_type=AgentProvider.CLAUDE,
+        scope="claude",
         type=type_,
         label="test",
         credentials=credentials,
         token_limit=0,
         enabled=True,
-        status=TokenStatus.OK,
+        status=CredentialStatus.OK,
         priority=0,
         error_msg=None,
         expires_at=None,
@@ -34,7 +34,7 @@ def _make_token(credentials: dict, type_: str = "oauth") -> Token:
 
 @pytest.fixture
 def writer():
-    return ClaudeConfigWriter()
+    return ClaudeWorkspaceAdapter()
 
 
 @pytest.fixture
@@ -703,11 +703,11 @@ class TestCredentialEnv:
     and by the host-side `agento run` env injection path).
     """
 
-    def _typed_token(self, type_: str, credentials: dict) -> Token:
-        return Token(
-            id=1, agent_type=AgentProvider.CLAUDE, type=type_, label="test",
+    def _typed_token(self, type_: str, credentials: dict) -> CredentialRecord:
+        return CredentialRecord(
+            id=1, scope="claude", type=type_, label="test",
             credentials=credentials, token_limit=0, enabled=True,
-            status=TokenStatus.OK, priority=0, error_msg=None,
+            status=CredentialStatus.OK, priority=0, error_msg=None,
             expires_at=None, used_at=None,
             created_at=_EPOCH, updated_at=_EPOCH,
         )
@@ -727,7 +727,7 @@ class TestCredentialEnv:
 
 
 class TestCaptureRefreshedCredentials:
-    """ClaudeConfigWriter persists CLI-rotated .claude/.credentials.json back to the DB."""
+    """ClaudeWorkspaceAdapter persists CLI-rotated .claude/.credentials.json back to the DB."""
 
     def _oauth_token(self, refresh="rt-OLD", access="acc-OLD"):
         raw_creds = {
@@ -835,7 +835,7 @@ class TestCaptureRefreshedCredentials:
     def test_forces_db_expires_at_null_even_for_seconds_expiry(self, writer, work_dir):
         # A legacy/manual token whose top-level expires_at is in *seconds* (or ISO)
         # would otherwise coerce to a real DB expiry and be filtered out by
-        # select_token after an idle gap. Capture must force it None regardless.
+        # select_credential after an idle gap. Capture must force it None regardless.
         self._write_creds_file(work_dir, {
             "claudeAiOauth": {"accessToken": "acc-NEW", "refreshToken": "rt-NEW"}
         })
@@ -851,7 +851,7 @@ class TestCaptureRefreshedCredentials:
         assert saved["expires_at"] is None
 
     def test_persists_when_legacy_token_has_no_raw_auth(self, writer, work_dir):
-        # Token registered before raw_auth capture: only top-level refresh_token.
+        # CredentialRecord registered before raw_auth capture: only top-level refresh_token.
         # A genuine rotation must still be detected against that fallback.
         self._write_creds_file(work_dir, {
             "claudeAiOauth": {"accessToken": "acc-NEW", "refreshToken": "rt-NEW"}

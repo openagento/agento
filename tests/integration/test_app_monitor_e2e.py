@@ -3,7 +3,7 @@
 These tests drive the real ``Consumer`` against the integration MySQL DB with
 a patched runner that:
 
-- Reports rc=0 success (``RunResult`` with ``subtype=<uuid>`` as the
+- Reports rc=0 success (``RunResult`` with ``session_id=<uuid>`` as the
   session_id, ``agent_type`` set to the provider name, and an optional
   ``mcp_init`` self-report).
 - Writes a deterministic transcript JSONL at the per-provider production
@@ -43,7 +43,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agento.framework.consumer import Consumer
-from agento.framework.runner import McpInitReport, McpServerStatus
+from agento.framework.harness import McpInitReport, McpServerStatus
 from agento.modules.app_monitor.src import observers as obs
 from agento.modules.app_monitor.src.constants import (
     CFG_ALERT_EMAIL_TO,
@@ -148,14 +148,14 @@ def _claude_callback(
     captured: list[str] | None = None,
     mcp_init: McpInitReport | None = None,
 ):
-    """Build a ``TokenClaudeRunner.run`` replacement that writes the given
+    """Build a ``ClaudeSubprocessRunner.execute`` replacement that writes the given
     transcript content to the production layout under
     ``<home_dir>/.claude/projects/<X>/<session_id>.jsonl``, fires the
     session_id callback, and returns a successful ``ClaudeResult`` carrying the
     given ``mcp_init`` self-report.
     """
-    def _run(self_runner, prompt, *, model=None):
-        home = Path(self_runner.home_dir)
+    def _run(self_runner, request):
+        home = Path(self_runner.context.home_dir)
         sid = str(uuid.uuid4())
         if captured is not None:
             captured.append(sid)
@@ -168,8 +168,8 @@ def _claude_callback(
             raw_output="ok",
             input_tokens=100, output_tokens=50,
             duration_ms=1000,
-            subtype=sid,
-            agent_type="claude",
+            session_id=sid,
+            harness="claude",
             mcp_init=mcp_init,
         )
     return _run
@@ -181,12 +181,12 @@ def _codex_callback(
     captured: list[str] | None = None,
     mcp_init: McpInitReport | None = None,
 ):
-    """Build a ``TokenCodexRunner.run`` replacement that writes the given
+    """Build a ``CodexSubprocessRunner.execute`` replacement that writes the given
     transcript content to ``<home_dir>/.codex/sessions/2026/05/14/rollout-...-<sid>.jsonl``.
     Codex emits no ``mcp_init`` in practice, so it defaults to ``None``.
     """
-    def _run(self_runner, prompt, *, model=None):
-        home = Path(self_runner.home_dir)
+    def _run(self_runner, request):
+        home = Path(self_runner.context.home_dir)
         sid = str(uuid.uuid4())
         if captured is not None:
             captured.append(sid)
@@ -199,16 +199,16 @@ def _codex_callback(
             raw_output="ok",
             input_tokens=100, output_tokens=50,
             duration_ms=1000,
-            subtype=sid,
-            agent_type="codex",
+            session_id=sid,
+            harness="codex",
             model="o3",
             mcp_init=mcp_init,
         )
     return _run
 
 
-def _hermes_callback(self_runner, prompt, *, model=None):
-    """Claude runner patched to report ``agent_type="hermes"`` — a provider
+def _hermes_callback(self_runner, request):
+    """Claude runner patched to report ``harness="hermes"`` — a harness
     with no registered ``TranscriptReader`` and no ``mcp_init``. Writes no
     transcript, so both telemetry signals resolve to NULL."""
     sid = str(uuid.uuid4())
@@ -218,8 +218,8 @@ def _hermes_callback(self_runner, prompt, *, model=None):
         raw_output="ok",
         input_tokens=10, output_tokens=5,
         duration_ms=100,
-        subtype=sid,
-        agent_type="hermes",
+        session_id=sid,
+        harness="hermes",
     )
 
 
@@ -309,7 +309,7 @@ class TestAppMonitorE2E:
         captured: list[str] = []
         payload = (FIXTURES / "good_with_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.TokenClaudeRunner.run",
+            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
             _claude_callback(payload, captured=captured, mcp_init=_MCP_CONNECTED),
         ))
 
@@ -335,7 +335,7 @@ class TestAppMonitorE2E:
 
         payload = (FIXTURES / "good_with_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.TokenClaudeRunner.run",
+            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
             _claude_callback(payload, mcp_init=_MCP_PENDING),
         ))
 
@@ -357,7 +357,7 @@ class TestAppMonitorE2E:
 
         payload = (FIXTURES / "bad_no_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.TokenClaudeRunner.run",
+            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
             _claude_callback(payload, mcp_init=_MCP_FAILED),
         ))
 
@@ -387,7 +387,7 @@ class TestAppMonitorE2E:
 
         payload = (FIXTURES / "bad_no_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.TokenClaudeRunner.run",
+            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
             _claude_callback(payload, mcp_init=_MCP_CONNECTED),
         ))
 
@@ -412,7 +412,7 @@ class TestAppMonitorE2E:
 
         payload = (FIXTURES / "bad_no_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.TokenClaudeRunner.run",
+            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
             _claude_callback(payload, mcp_init=_MCP_CONNECTED),
         ))
 
@@ -434,7 +434,7 @@ class TestAppMonitorE2E:
 
         payload = (CODEX_FIXTURES / "codex_bad_no_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.codex.src.runner.TokenCodexRunner.run",
+            "agento.modules.codex.src.runner.CodexSubprocessRunner.execute",
             _codex_callback(payload),  # mcp_init defaults to None
         ))
 
@@ -455,13 +455,13 @@ class TestAppMonitorE2E:
         self, int_db_config, int_consumer_config, tmp_path, monkeypatch,
     ):
         sender = _patch_app_monitor(monkeypatch, alert_flag=True)
-        # claude pool/auth but agent_type="hermes" — no reader, no init.
+        # claude pool/auth but harness="hermes" — no reader, no init.
         insert_primary_token("claude")
         av_id = _insert_agent_view(_insert_workspace("acme"), "developer")
         job_id = _insert_job_with_agent_view(av_id, reference_id="AI-206")
 
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.TokenClaudeRunner.run",
+            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
             _hermes_callback,
         ))
 
@@ -489,7 +489,7 @@ class TestAppMonitorE2E:
 
         with ExitStack() as stack:
             stack.enter_context(patch(
-                "agento.modules.claude.src.runner.TokenClaudeRunner.run",
+                "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
                 _claude_callback(drift_payload, mcp_init=_MCP_CONNECTED),
             ))
             _enter_build_dir_patches(stack, tmp_path / "build")

@@ -1,4 +1,4 @@
-"""Tests for CodexConfigWriter — .codex/config.toml with MCP servers."""
+"""Tests for CodexWorkspaceAdapter — .codex/config.toml with MCP servers."""
 from __future__ import annotations
 
 import tomllib
@@ -6,22 +6,22 @@ from datetime import datetime
 
 import pytest
 
-from agento.framework.agent_manager.models import AgentProvider, Token, TokenStatus
-from agento.modules.codex.src.config import CodexConfigWriter
+from agento.framework.agent_manager.models import CredentialRecord, CredentialStatus
+from agento.modules.codex.src.config import CodexWorkspaceAdapter
 
 _EPOCH = datetime(2000, 1, 1)
 
 
-def _make_token(credentials: dict) -> Token:
-    return Token(
+def _make_token(credentials: dict) -> CredentialRecord:
+    return CredentialRecord(
         id=1,
-        agent_type=AgentProvider.CODEX,
+        scope="codex",
         type="oauth",
         label="test",
         credentials=credentials,
         token_limit=0,
         enabled=True,
-        status=TokenStatus.OK,
+        status=CredentialStatus.OK,
         priority=0,
         error_msg=None,
         expires_at=None,
@@ -33,7 +33,7 @@ def _make_token(credentials: dict) -> Token:
 
 @pytest.fixture
 def writer():
-    return CodexConfigWriter()
+    return CodexWorkspaceAdapter()
 
 
 @pytest.fixture
@@ -155,15 +155,15 @@ class TestInjectRuntimeParams:
 
 class TestWriteCredentials:
     def _make_token(self, type_: str, credentials: dict, **kwargs):
-        return Token(
+        return CredentialRecord(
             id=kwargs.get("id", 1),
-            agent_type=AgentProvider.CODEX,
+            scope="codex",
             type=type_,
             label=kwargs.get("label", "test"),
             credentials=credentials,
             token_limit=0,
             enabled=True,
-            status=TokenStatus.OK,
+            status=CredentialStatus.OK,
             priority=0,
             error_msg=None,
             expires_at=None,
@@ -324,7 +324,6 @@ class TestCaptureRefreshedCredentials:
     def _make_token(self, refresh_token="tok-A", access_token="acc-A"):
         from unittest.mock import MagicMock
 
-        from agento.framework.agent_manager.models import AgentProvider
         token = MagicMock()
         token.credentials = {
             "raw_auth": {"tokens": {"refresh_token": refresh_token, "access_token": access_token}},
@@ -332,21 +331,21 @@ class TestCaptureRefreshedCredentials:
             "subscription_key": access_token,
         }
         token.type = "oauth"
-        token.agent_type = AgentProvider.CODEX
+        token.scope = "codex"
         token.label = "my-codex"
         token.token_limit = 0
         return token
 
     def _make_typed_token(self, type_: str, credentials: dict):
-        return Token(
+        return CredentialRecord(
             id=1,
-            agent_type=AgentProvider.CODEX,
+            scope="codex",
             type=type_,
             label="test",
             credentials=credentials,
             token_limit=0,
             enabled=True,
-            status=TokenStatus.OK,
+            status=CredentialStatus.OK,
             priority=0,
             error_msg=None,
             expires_at=None,
@@ -430,11 +429,11 @@ class TestCredentialEnv:
     and by the host-side `agento run` env injection path).
     """
 
-    def _typed_token(self, type_: str, credentials: dict) -> Token:
-        return Token(
-            id=1, agent_type=AgentProvider.CODEX, type=type_, label="test",
+    def _typed_token(self, type_: str, credentials: dict) -> CredentialRecord:
+        return CredentialRecord(
+            id=1, scope="codex", type=type_, label="test",
             credentials=credentials, token_limit=0, enabled=True,
-            status=TokenStatus.OK, priority=0, error_msg=None,
+            status=CredentialStatus.OK, priority=0, error_msg=None,
             expires_at=None, used_at=None,
             created_at=_EPOCH, updated_at=_EPOCH,
         )

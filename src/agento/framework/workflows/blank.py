@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from ..channels.base import Channel
+from ..harness import RunResult
 from ..job_models import Job
-from ..runner import RunResult
 from .base import JobContext, Workflow
 
 

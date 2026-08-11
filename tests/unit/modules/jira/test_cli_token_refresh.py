@@ -9,20 +9,24 @@ import pytest
 
 from agento.framework.agent_manager.auth import AuthenticationError, AuthResult
 from agento.framework.agent_manager.config import AgentManagerConfig
-from agento.framework.agent_manager.models import AgentProvider, Token
+from agento.framework.agent_manager.models import CredentialRecord
 from agento.framework.consumer_config import ConsumerConfig
 from agento.framework.database_config import DatabaseConfig
 
+# refresh is gated on the scope's declared registration_modes, so the registry must
+# be populated exactly as it is in production (the CLI bootstraps before dispatch).
+pytestmark = pytest.mark.usefixtures("builtin_harnesses")
+
 # Patch targets (lazy imports inside cmd_token_refresh)
-_P_GET_TOKEN = "agento.framework.agent_manager.token_store.get_token"
+_P_GET_TOKEN = "agento.framework.agent_manager.credential_store.get_credential"
 _P_AUTH = "agento.framework.agent_manager.auth.authenticate_interactive"
-_P_REGISTER = "agento.framework.agent_manager.register_token"
-_P_GET_CONN = "agento.framework.cli.token.get_connection_or_exit"
+_P_REGISTER = "agento.framework.agent_manager.register_credential"
+_P_GET_CONN = "agento.framework.cli.credential.get_connection_or_exit"
 _FRAMEWORK_CFG = (DatabaseConfig(), ConsumerConfig(), AgentManagerConfig())
 
 
-def _make_args(token_id: int) -> argparse.Namespace:
-    return argparse.Namespace(token_id=token_id)
+def _make_args(credential_id: int) -> argparse.Namespace:
+    return argparse.Namespace(credential_id=credential_id)
 
 
 _NOW = datetime(2026, 1, 1)
@@ -33,17 +37,17 @@ def _make_token(
     agent_type: str = "codex",
     label: str = "codex-team",
     enabled: bool = True,
-) -> Token:
-    from agento.framework.agent_manager.models import TokenStatus
-    return Token(
+) -> CredentialRecord:
+    from agento.framework.agent_manager.models import CredentialStatus
+    return CredentialRecord(
         id=id,
-        agent_type=AgentProvider(agent_type),
+        scope=(agent_type),
         type="oauth",
         label=label,
         credentials={"subscription_key": "sk-existing"},
         token_limit=0,
         enabled=enabled,
-        status=TokenStatus.OK,
+        status=CredentialStatus.OK,
         priority=0,
         error_msg=None,
         expires_at=None,
@@ -63,8 +67,8 @@ _AUTH_RESULT = AuthResult(
 )
 
 
-@patch("agento.framework.cli.token.get_logger", return_value=MagicMock())
-@patch("agento.framework.cli.token._load_framework_config", return_value=_FRAMEWORK_CFG)
+@patch("agento.framework.cli.credential.get_logger", return_value=MagicMock())
+@patch("agento.framework.cli.credential._load_framework_config", return_value=_FRAMEWORK_CFG)
 @patch(_P_GET_CONN)
 class TestTokenRefresh:
     """cmd_token_refresh tests."""
@@ -80,15 +84,15 @@ class TestTokenRefresh:
             patch(_P_REGISTER, return_value=token) as mock_register,
         ):
             mock_stdin.isatty.return_value = True
-            from agento.framework.cli.token import TokenRefreshCommand
-            TokenRefreshCommand().execute(_make_args(2))
+            from agento.framework.cli.credential import CredentialRefreshCommand
+            CredentialRefreshCommand().execute(_make_args(2))
 
-        mock_auth.assert_called_once_with(AgentProvider.CODEX, mock_logger.return_value)
-        # register_token called with new credentials derived from auth result
+        mock_auth.assert_called_once_with("codex", mock_logger.return_value)
+        # register_credential called with new credentials derived from auth result
         mock_register.assert_called_once()
         kwargs = mock_register.call_args.kwargs
         assert kwargs["label"] == token.label
-        assert kwargs["agent_type"] == token.agent_type
+        assert kwargs["scope"] == token.scope
         assert kwargs["credentials"]["subscription_key"] == "new-access-token"
 
     def test_refresh_not_found(self, mock_conn_fn, mock_config, mock_logger):
@@ -98,8 +102,8 @@ class TestTokenRefresh:
             patch(_P_GET_TOKEN, return_value=None),
             pytest.raises(SystemExit, match="1"),
         ):
-            from agento.framework.cli.token import TokenRefreshCommand
-            TokenRefreshCommand().execute(_make_args(99))
+            from agento.framework.cli.credential import CredentialRefreshCommand
+            CredentialRefreshCommand().execute(_make_args(99))
 
     def test_refresh_disabled_token(self, mock_conn_fn, mock_config, mock_logger):
         token = _make_token(enabled=False)
@@ -109,8 +113,8 @@ class TestTokenRefresh:
             patch(_P_GET_TOKEN, return_value=token),
             pytest.raises(SystemExit, match="1"),
         ):
-            from agento.framework.cli.token import TokenRefreshCommand
-            TokenRefreshCommand().execute(_make_args(2))
+            from agento.framework.cli.credential import CredentialRefreshCommand
+            CredentialRefreshCommand().execute(_make_args(2))
 
     def test_refresh_no_tty(self, mock_conn_fn, mock_config, mock_logger):
         token = _make_token()
@@ -122,8 +126,8 @@ class TestTokenRefresh:
             pytest.raises(SystemExit, match="1"),
         ):
             mock_stdin.isatty.return_value = False
-            from agento.framework.cli.token import TokenRefreshCommand
-            TokenRefreshCommand().execute(_make_args(2))
+            from agento.framework.cli.credential import CredentialRefreshCommand
+            CredentialRefreshCommand().execute(_make_args(2))
 
     def test_refresh_auth_failure(self, mock_conn_fn, mock_config, mock_logger):
         token = _make_token()
@@ -136,5 +140,5 @@ class TestTokenRefresh:
             pytest.raises(SystemExit, match="1"),
         ):
             mock_stdin.isatty.return_value = True
-            from agento.framework.cli.token import TokenRefreshCommand
-            TokenRefreshCommand().execute(_make_args(2))
+            from agento.framework.cli.credential import CredentialRefreshCommand
+            CredentialRefreshCommand().execute(_make_args(2))

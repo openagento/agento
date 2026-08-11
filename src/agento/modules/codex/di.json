@@ -1,27 +1,36 @@
 {
-  "runtimes": [
-    {"provider": "codex", "class": "src.runner.TokenCodexRunner"}
-  ],
-  "auth_strategies": [
-    {"provider": "codex", "class": "src.auth.CodexAuthStrategy"}
-  ],
-  "config_writers": [
-    {"provider": "codex", "class": "src.config.CodexConfigWriter"}
-  ],
-  "cli_invokers": [
-    {"provider": "codex", "class": "src.cli.CodexCliInvoker"}
-  ],
-  "transcript_readers": [
-    {"provider": "codex", "class": "src.transcript_reader.CodexTranscriptReader"}
-  ],
-  "sandbox_packages": [
+  "agent_harnesses": [
     {
-      "provider": "codex",
-      "manager": "npm",
-      "package": "@openai/codex",
-      "binary": "codex",
-      "version_env_key": "CODEX_VERSION",
-      "default_range": "0.137.0"
+      "id": "codex",
+      "label": "OpenAI Codex",
+      "class": "src.adapter.CodexHarnessAdapter",
+      "default_provider": "openai",
+      "providers": [
+        {
+          "id": "openai",
+          "label": "OpenAI",
+          "credential_required": true,
+          "registration_modes": ["interactive_oauth", "api_key", "access_token"],
+          "credential_scope": "codex"
+        }
+      ],
+      "capabilities": {
+        "interactive": true,
+        "resume": true,
+        "transcripts": true,
+        "structured_events": true,
+        "toolbox": true,
+        "mcp_init_report": true,
+        "usage_reporting": true,
+        "cost_reporting": false
+      },
+      "sandbox_package": {
+        "manager": "npm",
+        "package": "@openai/codex",
+        "binary": "codex",
+        "version_env_key": "CODEX_VERSION",
+        "default_range": "0.137.0"
+      }
     }
   ]
 }

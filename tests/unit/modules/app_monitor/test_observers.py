@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from agento.framework.events import JobVerificationFailed, Verdict, VerifyReason
-from agento.framework.runner import McpInitReport, McpServerStatus
-from agento.framework.transcript_reader import ParseSummary, ToolUse
+from agento.framework.harness import McpInitReport, McpServerStatus, ParseSummary, ToolUse
 from agento.modules.app_monitor.src import observers as obs
 from agento.modules.app_monitor.src.constants import (
     CFG_ALERT_EMAIL_TO,
@@ -43,7 +43,7 @@ class _FinalizeEvent:
     verdict: object | None = None
     elapsed_ms: int = 0
     job_result: object | None = None
-    provider: str | None = "claude"
+    harness: str | None = "claude"
 
 
 @dataclass
@@ -51,6 +51,12 @@ class _DeadEvent:
     job: _Job
     error: Exception
     elapsed_ms: int = 0
+
+
+def _harness_with(reader):
+    """A RegisteredHarness-shaped stub — the observer reads the transcript reader off
+    the registered harness's adapter, not off ``find_harness`` directly."""
+    return SimpleNamespace(adapter=SimpleNamespace(transcript_reader=reader))
 
 
 class _FakeReader:
@@ -111,7 +117,7 @@ def fake_reader(monkeypatch):
         "zero_calls": _summary(["Read", "Bash"]),
         "drifted": ParseSummary(total_json_lines=10, recognized_records=0, tool_uses=()),
     })
-    monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: reader)
+    monkeypatch.setattr(obs, "find_harness", lambda harness: _harness_with(reader))
     return reader
 
 
@@ -222,12 +228,12 @@ class TestMcpHealthTelemetry:
 
     def test_null_calls_does_not_alert(self, monkeypatch):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
-        monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: None)
+        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
         event = _FinalizeEvent(
             job=_Job(id=16, session_id="any"),
-            provider="unknown",
+            harness="unknown",
             job_result=_JobResult(_mcp_init(("toolbox", "connected"))),
         )
         obs.McpHealthTelemetryObserver().execute(event)
@@ -250,12 +256,12 @@ class TestMcpHealthTelemetry:
 
     def test_both_null_still_updates_row(self, monkeypatch):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
-        monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: None)
+        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
         event = _FinalizeEvent(
             job=_Job(id=18, session_id="any"),
-            provider="unknown",
+            harness="unknown",
             job_result=_JobResult(mcp_init=None),
         )
         obs.McpHealthTelemetryObserver().execute(event)
@@ -274,17 +280,17 @@ class TestMcpHealthTelemetry:
 
         # Attempt 1: readable transcript w/ 3 toolbox calls + connected init.
         reader = _FakeReader({"s1": _summary(_toolbox(3))})
-        monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: reader)
+        monkeypatch.setattr(obs, "find_harness", lambda harness: _harness_with(reader))
         observer.execute(_FinalizeEvent(
             job=_Job(id=20, session_id="s1"),
             job_result=_JobResult(_mcp_init(("toolbox", "connected"))),
         ))
 
         # Attempt 2 (same row): no reader, no init report.
-        monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: None)
+        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         observer.execute(_FinalizeEvent(
             job=_Job(id=20, session_id="s2"),
-            provider="unknown",
+            harness="unknown",
             job_result=_JobResult(mcp_init=None),
         ))
 
@@ -342,11 +348,11 @@ class TestMcpHealthTelemetry:
 
     def test_toolbox_absent_from_init_list_is_false(self, monkeypatch):
         _patch_config(monkeypatch)
-        monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: None)
+        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         saver = _patch_saver(monkeypatch)
         event = _FinalizeEvent(
             job=_Job(id=24, session_id="any"),
-            provider="unknown",
+            harness="unknown",
             job_result=_JobResult(_mcp_init(("context7", "connected"))),
         )
         obs.McpHealthTelemetryObserver().execute(event)
@@ -355,11 +361,11 @@ class TestMcpHealthTelemetry:
 
     def test_empty_servers_list_is_false(self, monkeypatch):
         _patch_config(monkeypatch)
-        monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: None)
+        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         saver = _patch_saver(monkeypatch)
         event = _FinalizeEvent(
             job=_Job(id=25, session_id="any"),
-            provider="unknown",
+            harness="unknown",
             job_result=_JobResult(_mcp_init()),  # servers=()
         )
         obs.McpHealthTelemetryObserver().execute(event)
@@ -367,11 +373,11 @@ class TestMcpHealthTelemetry:
 
     def test_toolbox_provider_lacks_init_is_null(self, monkeypatch):
         _patch_config(monkeypatch)
-        monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: None)
+        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         saver = _patch_saver(monkeypatch)
         event = _FinalizeEvent(
             job=_Job(id=26, session_id="any"),
-            provider="unknown",
+            harness="unknown",
             job_result=_JobResult(mcp_init=None),  # provider exposed no init report
         )
         obs.McpHealthTelemetryObserver().execute(event)
@@ -482,7 +488,7 @@ class TestMcpHealthTelemetry:
         def _bad_config():
             raise RuntimeError("config backend down")
         monkeypatch.setattr(obs, "_config", _bad_config)
-        monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: None)
+        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         observer.execute(_FinalizeEvent(job=_Job(session_id="x")))
 
         # 2. reader.parse throws unexpectedly.
@@ -495,11 +501,11 @@ class TestMcpHealthTelemetry:
             def iter_tool_uses(self, session_id):
                 return self.parse(session_id)
 
-        monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: _Broken())
+        monkeypatch.setattr(obs, "find_harness", lambda harness: _harness_with(_Broken()))
         observer.execute(_FinalizeEvent(job=_Job(session_id="x")))
 
         # 3. persist throws.
-        monkeypatch.setattr(obs, "get_transcript_reader", lambda provider: None)
+        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
 
         def _bad_save(*_a, **_kw):
             raise RuntimeError("db down")

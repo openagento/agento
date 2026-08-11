@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS job (
     agent_view_id   INT UNSIGNED NULL,
     priority        TINYINT UNSIGNED NOT NULL DEFAULT 50,
     reference_id    VARCHAR(512) NULL,
-    agent_type      VARCHAR(20) NULL,
+    agent_type      VARCHAR(64) NULL,          -- harness id (pre-0.15 name kept)
+    provider        VARCHAR(64) NULL,          -- model/API vendor for this run
     model           VARCHAR(50) NULL,
     input_tokens    BIGINT UNSIGNED NULL,
     output_tokens   BIGINT UNSIGNED NULL,
@@ -103,11 +104,16 @@ CREATE TABLE IF NOT EXISTS job (
         FOREIGN KEY (agent_view_id) REFERENCES agent_view(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- OAuth token registry (credentials stored encrypted inline; see framework/crypto.py).
--- Tokens form a per-provider pool; selection is LRU over healthy (status='ok') rows.
-CREATE TABLE IF NOT EXISTS oauth_token (
+-- Credential registry (credentials stored encrypted inline; see framework/crypto.py).
+-- Credentials form a per-scope pool; selection is LRU over healthy (status='ok') rows.
+-- `scope` is the open credential scope a harness declares in di.json (e.g. "claude");
+-- `agent_type` is the pre-0.15 column, kept NOT NULL and dual-written for one cycle
+-- (dropped next release — see ROADMAP.md). Must stay byte-identical to the state
+-- produced by 030_credential_scope_and_rename.sql on an upgraded database.
+CREATE TABLE IF NOT EXISTS credential (
     id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    agent_type       VARCHAR(20)  NOT NULL,
+    agent_type       VARCHAR(64)  NOT NULL,
+    scope            VARCHAR(64)  NOT NULL,
     type             VARCHAR(32)  NOT NULL DEFAULT 'oauth',
     label            VARCHAR(100) NOT NULL,
     credentials      MEDIUMTEXT   NULL,
@@ -121,15 +127,20 @@ CREATE TABLE IF NOT EXISTS oauth_token (
     used_at          DATETIME(6)  NULL,
     created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_oauth_token_label (label),
-    KEY idx_oauth_token_agent_enabled (agent_type, enabled),
-    KEY idx_oauth_token_pool_select (agent_type, enabled, status, priority, used_at)
+    -- Per SCOPE, not global: a label only means anything inside its scope, and the
+    -- same label in two scopes is two distinct credentials (see migration 032).
+    UNIQUE KEY uq_credential_scope_label (scope, label),
+    KEY idx_credential_scope_enabled (scope, enabled),
+    KEY idx_credential_pool_select (scope, enabled, status, priority, used_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Usage tracking
+-- Usage tracking. credential_id is NULLABLE: a provider that requires no credential
+-- still produces usage, attributed by (harness, provider) instead.
 CREATE TABLE IF NOT EXISTS usage_log (
     id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    token_id         BIGINT UNSIGNED NOT NULL,
+    credential_id    BIGINT UNSIGNED NULL,
+    harness          VARCHAR(64)  NULL,
+    provider         VARCHAR(64)  NULL,
     tokens_used      BIGINT UNSIGNED NOT NULL DEFAULT 0,
     input_tokens     BIGINT UNSIGNED NOT NULL DEFAULT 0,
     output_tokens    BIGINT UNSIGNED NOT NULL DEFAULT 0,
@@ -137,8 +148,8 @@ CREATE TABLE IF NOT EXISTS usage_log (
     reference_id     VARCHAR(255) NULL,
     duration_ms      INT UNSIGNED NOT NULL DEFAULT 0,
     created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY idx_usage_token_time (token_id, created_at),
-    CONSTRAINT fk_usage_token FOREIGN KEY (token_id) REFERENCES oauth_token(id) ON DELETE CASCADE
+    KEY idx_usage_credential_time (credential_id, created_at),
+    CONSTRAINT fk_usage_credential FOREIGN KEY (credential_id) REFERENCES credential(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Scoped configuration (Magento-style)
@@ -207,4 +218,10 @@ INSERT INTO schema_migration (version) VALUES
     ('026_job_requester'),
     ('027_widen_job_reference_keys'),
     ('028_oauth_token_throttled_until'),
-    ('029_ingress_identity_priority');
+    ('029_ingress_identity_priority'),
+    -- 030 must be seeded too: this file already creates the post-030 schema, so without
+    -- the marker the first setup:upgrade would try to RENAME a nonexistent oauth_token.
+    ('030_credential_scope_and_rename'),
+    ('031_job_provider'),
+    ('032_credential_label_unique_per_scope'),
+    ('033_drop_historical_credential_indexes');

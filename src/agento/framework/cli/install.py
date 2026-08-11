@@ -349,44 +349,112 @@ def _run_post_install(project_dir: Path) -> None:
         log_warn("setup:upgrade failed. Run 'agento setup:upgrade' manually.")
         return
 
-    _setup_agent_provider(compose_cmd)
+    _setup_agent_harness(compose_cmd, project_dir)
 
 
-def _setup_agent_provider(compose_cmd: list[str]) -> None:
-    """Ask the user to pick an AI agent provider and register a token."""
-    from ..agent_manager.auth import get_available_providers
+# How each declared registration mode is requested on the command line. Interactive OAuth
+# takes no flag; the secret-based modes read the secret from stdin/getpass.
+_MODE_FLAGS = {
+    "interactive_oauth": "",
+    "api_key": "--with-api-key",
+    "access_token": "--with-access-token",
+}
 
-    providers = get_available_providers()
-    if not providers:
+
+def _registration_flag(provider) -> str | None:
+    """The ``credential:register`` flag for this provider's preferred declared mode.
+
+    Returns ``""`` for interactive OAuth (no flag), a flag string for a secret-based mode,
+    or ``None`` when the provider declares nothing this wizard knows how to drive. Driving
+    OAuth unconditionally would fail onboarding for a provider that only accepts a pasted
+    secret — which is exactly what ``registration_modes`` exists to express.
+    """
+    from ..harness import CredentialRegistrationMode
+
+    preference = (
+        CredentialRegistrationMode.INTERACTIVE_OAUTH,
+        CredentialRegistrationMode.API_KEY,
+        CredentialRegistrationMode.ACCESS_TOKEN,
+    )
+    declared = set(provider.registration_modes)
+    for mode in preference:
+        if mode in declared:
+            return _MODE_FLAGS[mode.value]
+    return None
+
+
+def _setup_agent_harness(compose_cmd: list[str], project_dir: Path | None = None) -> None:
+    """Pick a harness + provider from the declarations and bind both config paths.
+
+    Descriptor-driven: the options come from the enabled modules' ``agent_harnesses``
+    entries (read off disk — no bootstrap here), so a harness shipped by an ``app/code``
+    or PyPI module appears without editing this wizard. A provider that declares
+    ``credential_required: false`` skips registration entirely.
+    """
+    from ..harness import enumerate_harness_declarations
+
+    try:
+        declarations = enumerate_harness_declarations(project_dir)
+    except Exception as exc:
+        log_warn(f"Could not enumerate agent harnesses ({exc}). Configure manually.")
+        return
+    if not declarations:
         return
 
     from .terminal import select
 
-    options = [p.value.capitalize() for p in providers] + ["Skip (configure later)"]
-    choice = select("Choose AI agent provider:", options)
-
-    if choice >= len(providers):
-        return  # Skip
-
-    provider = providers[choice]
-    log_info(f"Registering {provider.value} token...")
-
-    result = subprocess.run(
-        [*compose_cmd, "exec", "-u", "agent", "-it", "cron",
-         "/opt/cron-agent/run.sh", "token:register", provider.value, "default"],
-    )
-    if result.returncode != 0:
-        log_warn("Token registration failed. Run 'agento token:register' manually.")
+    # One entry per (harness, provider) pair — the pair is what a run needs.
+    pairs = [
+        (d.descriptor, provider)
+        for d in declarations
+        for provider in d.descriptor.providers
+    ]
+    labels = [
+        f"{desc.label} / {provider.label}"
+        + ("" if provider.credential_required else " (no credential needed)")
+        for desc, provider in pairs
+    ]
+    choice = select("Choose agent harness and provider:", [*labels, "Skip (configure later)"])
+    if choice >= len(pairs):
         return
 
-    # Token selection is LRU over the healthy pool — no primary flag. We only
-    # need to bind agent_view/provider at the global scope so jobs know which
-    # pool to select from.
-    subprocess.run(
-        [*compose_cmd, "exec", "-u", "agent", "-T", "cron",
-         "/opt/cron-agent/run.sh", "config:set", "agent_view/provider", provider.value],
-    )
-    log_info(f"Agent provider set to: {provider.value}")
+    descriptor, provider = pairs[choice]
+    harness_id, provider_id = str(descriptor.id), str(provider.id)
+
+    if provider.credential_required:
+        scope = str(provider.credential_scope)
+        mode_flag = _registration_flag(provider)
+        if mode_flag is None:
+            log_warn(
+                f"Provider {provider_id!r} declares no usable registration mode; "
+                f"register manually: agento credential:register {scope} <label>"
+            )
+            return
+        log_info(f"Registering {scope} credential ({mode_flag or 'interactive OAuth'})...")
+        result = subprocess.run(
+            [*compose_cmd, "exec", "-u", "agent", "-it", "cron",
+             "/opt/cron-agent/run.sh", "credential:register", scope, "default",
+             *([mode_flag] if mode_flag else [])],
+        )
+        if result.returncode != 0:
+            log_warn(
+                f"Credential registration failed. Run "
+                f"'agento credential:register {scope} <label>"
+                f"{' ' + mode_flag if mode_flag else ''}' manually."
+            )
+            return
+
+    # Both paths: the harness alone does not identify the model vendor. Credential
+    # selection is LRU over the healthy pool, so nothing else needs binding.
+    for path, value in (
+        ("agent_view/harness", harness_id),
+        ("agent_view/provider", provider_id),
+    ):
+        subprocess.run(
+            [*compose_cmd, "exec", "-u", "agent", "-T", "cron",
+             "/opt/cron-agent/run.sh", "config:set", path, value],
+        )
+    log_info(f"Agent harness set to: {harness_id} / {provider_id}")
 
 
 class InstallCommand:
@@ -485,7 +553,7 @@ class InstallCommand:
         print()
         print(f"{cyan('Next steps:')}")
         print("  agento module:add <name>      Add your first module")
-        print("  agento token:register claude   Register an agent token")
+        print("  agento credential:register <scope> <label>   Register an agent credential")
         print("  agento logs                    View container logs")
         print()
 

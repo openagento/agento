@@ -15,8 +15,8 @@ import pytest
 from agento.framework.consumer import Consumer, _JobResult
 from agento.framework.database_config import DatabaseConfig
 from agento.framework.db import get_connection
+from agento.framework.harness import RunResult
 from agento.framework.job_store import pause_job, resume_job
-from agento.framework.runner import RunResult
 
 from .conftest import fetch_job, insert_primary_token, insert_queued_job, update_job
 
@@ -57,7 +57,7 @@ class TestPauseResumeMidRun:
             assert allow_run_to_return.wait(timeout=10), "test timeout"
             return _JobResult.from_run_result(
                 RunResult(raw_output="ok", input_tokens=100, output_tokens=50,
-                          duration_ms=3000, subtype="success"),
+                          duration_ms=3000, session_id="success"),
                 summary="ok",
             )
 
@@ -108,7 +108,7 @@ class TestPauseResumeMidRun:
         def fake_resume_run(job):
             return _JobResult.from_run_result(
                 RunResult(raw_output="resumed ok", input_tokens=100, output_tokens=50,
-                          duration_ms=3000, subtype="sess-pause-abc"),
+                          duration_ms=3000, session_id="sess-pause-abc"),
                 summary="resumed session_id=sess-pause-abc",
             )
 

@@ -1,12 +1,12 @@
 {
-  "token_refresh_after": [
+  "credential_refresh_after": [
     {"name": "workspace_build_refresh_credentials", "class": "src.observers.RefreshBuildCredentialsObserver", "order": 100}
   ],
-  "token_register_after": [
+  "credential_register_after": [
     {"name": "workspace_build_refresh_credentials", "class": "src.observers.RefreshBuildCredentialsObserver", "order": 100}
   ],
-  "token_auth_failed_after": [
-    {"name": "workspace_build_replace_errored_token", "class": "src.observers.ReplaceErroredTokenCredentialsObserver", "order": 100}
+  "credential_auth_failed_after": [
+    {"name": "workspace_build_replace_errored_credential", "class": "src.observers.ReplaceErroredTokenCredentialsObserver", "order": 100}
   ],
   "workspace_build_check_before": [
     {"name": "workspace_build_freshness_check", "class": "src.observers.BuildFreshnessCheckObserver", "order": 100}

@@ -73,3 +73,19 @@ def jira_empty() -> dict:
 @pytest.fixture
 def claude_success() -> dict:
     return load_fixture("claude_output_success.json")
+
+
+@pytest.fixture
+def builtin_harnesses():
+    """Populate the harness registry with the shipped claude + codex harnesses.
+
+    Unit tests don't run ``bootstrap()``, but anything touching a runner, a command
+    builder or a workspace adapter now goes through the registry. Use it with
+    ``pytestmark = pytest.mark.usefixtures("builtin_harnesses")``.
+    """
+    from agento.framework.harness import clear
+    from tests.harness_fixtures import register_builtin_harnesses
+
+    register_builtin_harnesses()
+    yield
+    clear()

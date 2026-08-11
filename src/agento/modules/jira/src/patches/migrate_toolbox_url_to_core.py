@@ -3,7 +3,7 @@ class MigrateToolboxUrlToCore:
 
     Prior to this change, the jira module owned ``toolbox_url`` as its own
     config field. It is now a cross-cutting setting owned by ``core`` so
-    claude/codex ConfigWriters can construct default MCP server URLs from it.
+    claude/codex WorkspaceAdapters can construct default MCP server URLs from it.
     """
 
     def apply(self, conn):

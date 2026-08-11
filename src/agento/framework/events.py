@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -115,15 +116,16 @@ class JobFinalizeEvent:
     observers can read the final verdict (``None`` if the job committed as
     SUCCESS, otherwise the populated ``Verdict``).
 
-    ``provider`` is the agent provider string (e.g. ``"claude"``, ``"codex"``)
-    that ran this job, taken from the run result. Verification observers use
-    it to resolve the right ``TranscriptReader`` from the framework registry.
+    ``harness`` is the id of the program that drove this job (e.g. ``"claude"``,
+    ``"codex"``), taken from the run result. Verification observers use it to resolve
+    the right ``TranscriptReader`` from the harness registry — the transcript format
+    is a property of the harness, not of the model vendor.
     """
 
     job: Job
     job_result: Any = None  # _JobResult — Any avoids circular import with consumer
     elapsed_ms: int = 0
-    provider: str | None = None
+    harness: str | None = None
     verdict: Verdict | None = None
 
 
@@ -190,6 +192,7 @@ class AgentViewRunStartedEvent:
 
     job: Job
     agent_view_id: int | None = None
+    harness: str | None = None
     provider: str | None = None
     model: str | None = None
     priority: int = 50
@@ -202,6 +205,7 @@ class AgentViewRunFinishedEvent:
 
     job: Job
     agent_view_id: int | None = None
+    harness: str | None = None
     provider: str | None = None
     model: str | None = None
     elapsed_ms: int = 0
@@ -443,34 +447,111 @@ class SkillSyncCompletedEvent:
     unchanged: int = 0
 
 
-# --- Token events ---
+# --- Credential events ---
+#
+# Names have NO vendor prefix: these are core events, and the convention
+# (AGENTS.md / docs/architecture/events.md) reserves `{vendor}_{module}_...` for
+# third-party modules. Same shape as job_claim_after, module_register_before.
+#
+# Dual dispatch: each of these is dispatched under BOTH the new
+# `credential_*_after` name (carrying the new payload below) and the legacy
+# `token_*_after` name (carrying the legacy `Token*Event` payload further down).
+# Renaming the event alone would NOT be backwards compatible — observers bound via
+# events.json read `event.agent_type` / `event.token_id`, and because observer
+# errors are swallowed by design the AttributeError would be SILENT.
+
+
+@dataclass
+class CredentialRegisteredEvent:
+    """Dispatched after ``credential:register`` upserts a credential row."""
+
+    scope: str
+    credential_id: int
+    label: str
+    credentials: dict[str, Any] = field(repr=False, default_factory=dict)
+    type: str = "oauth"
+
+
+@dataclass
+class CredentialRefreshedEvent:
+    """Dispatched after ``credential:refresh`` re-authenticates and updates the row."""
+
+    scope: str
+    credential_id: int
+    label: str
+    credentials: dict[str, Any] = field(repr=False, default_factory=dict)
+    type: str = "oauth"
+
+
+@dataclass
+class CredentialAuthFailedEvent:
+    """Dispatched when a runtime auth failure flips a credential to ``status='error'``."""
+
+    scope: str
+    credential_id: int
+    error_msg: str
+    job_id: int | None = None
+
+
+@dataclass
+class CredentialUsageLimitedEvent:
+    """Dispatched when a session/usage/rate limit throttles a credential (a temporary
+    cooldown via ``throttled_until`` — the row stays ``status='ok'`` and recovers
+    automatically). ``reset_at`` is the naive-UTC time the throttle lifts."""
+
+    scope: str
+    credential_id: int
+    error_msg: str
+    reset_at: datetime | None = None
+    job_id: int | None = None
+
+
+@dataclass
+class CredentialAuthThrottledEvent:
+    """Dispatched when a TRANSIENT auth failure (e.g. a revoked/stale access token)
+    throttles a credential instead of poisoning it — ``throttled_until`` is set,
+    ``status`` stays ``'ok'``, and it auto-recovers. Distinct from
+    ``CredentialAuthFailedEvent`` (permanent poison) and from
+    ``CredentialUsageLimitedEvent`` (a quota limit, not a credential problem)."""
+
+    scope: str
+    credential_id: int
+    error_msg: str
+    throttled_until: datetime | None = None
+    job_id: int | None = None
+
+
+# --- Legacy token events (deprecated, removed next release — see ROADMAP.md) ---
+#
+# Kept so observers bound to the old `token_*_after` names keep receiving a payload
+# with the fields they actually read (`agent_type`, `token_id`).
 
 
 @dataclass
 class TokenRegisteredEvent:
-    """Dispatched after ``token:register`` upserts an oauth_token row."""
+    """Deprecated alias payload for ``token_register_after``."""
 
     agent_type: str
     token_id: int
     label: str
-    credentials: dict[str, Any]
+    credentials: dict[str, Any] = field(repr=False, default_factory=dict)
     type: str = "oauth"
 
 
 @dataclass
 class TokenRefreshedEvent:
-    """Dispatched after ``token:refresh`` re-authenticates and updates oauth_token."""
+    """Deprecated alias payload for ``token_refresh_after``."""
 
     agent_type: str
     token_id: int
     label: str
-    credentials: dict[str, Any]
+    credentials: dict[str, Any] = field(repr=False, default_factory=dict)
     type: str = "oauth"
 
 
 @dataclass
 class TokenAuthFailedEvent:
-    """Dispatched when a runtime auth failure flips a token to ``status='error'``."""
+    """Deprecated alias payload for ``token_auth_failed_after``."""
 
     agent_type: str
     token_id: int
@@ -480,9 +561,7 @@ class TokenAuthFailedEvent:
 
 @dataclass
 class TokenUsageLimitedEvent:
-    """Dispatched when a session/usage/rate limit throttles a token (a temporary
-    cooldown via ``throttled_until`` — the token stays ``status='ok'`` and recovers
-    automatically). ``reset_at`` is the naive-UTC time the throttle lifts."""
+    """Deprecated alias payload for ``token_usage_limited_after``."""
 
     agent_type: str
     token_id: int
@@ -493,14 +572,51 @@ class TokenUsageLimitedEvent:
 
 @dataclass
 class TokenAuthThrottledEvent:
-    """Dispatched when a TRANSIENT auth failure (e.g. a revoked/stale access token)
-    throttles a token instead of poisoning it — ``throttled_until`` is set, ``status``
-    stays ``'ok'``, and the token auto-recovers. Distinct from
-    ``TokenAuthFailedEvent`` (permanent poison) and from ``TokenUsageLimitedEvent``
-    (a quota limit, not a credential problem). ``throttled_until`` is naive UTC."""
+    """Deprecated alias payload for ``token_auth_throttled_after``."""
 
     agent_type: str
     token_id: int
     error_msg: str
     throttled_until: datetime | None = None
     job_id: int | None = None
+
+
+# Maps each new credential event name to its legacy name + legacy payload class.
+# ``dispatch_credential_event`` below is the ONE place both are emitted, so the two
+# payloads can never drift apart.
+_CREDENTIAL_EVENT_ALIASES: dict[str, tuple[str, type]] = {
+    "credential_register_after": ("token_register_after", TokenRegisteredEvent),
+    "credential_refresh_after": ("token_refresh_after", TokenRefreshedEvent),
+    "credential_auth_failed_after": ("token_auth_failed_after", TokenAuthFailedEvent),
+    "credential_usage_limited_after": ("token_usage_limited_after", TokenUsageLimitedEvent),
+    "credential_auth_throttled_after": (
+        "token_auth_throttled_after",
+        TokenAuthThrottledEvent,
+    ),
+}
+
+
+def dispatch_credential_event(event_name: str, event: object) -> None:
+    """Dispatch a credential event under its new name AND its legacy name.
+
+    Both payloads are built from the same data here, so an observer on either name
+    sees consistent values. Remove together with the legacy names (ROADMAP.md).
+    """
+    from .event_manager import get_event_manager
+
+    manager = get_event_manager()
+    manager.dispatch(event_name, event)
+
+    alias = _CREDENTIAL_EVENT_ALIASES.get(event_name)
+    if alias is None:
+        return
+    legacy_name, legacy_cls = alias
+    fields = {
+        f.name: getattr(event, f.name)
+        for f in dataclass_fields(event)
+        if f.name not in ("scope", "credential_id")
+    }
+    manager.dispatch(
+        legacy_name,
+        legacy_cls(agent_type=event.scope, token_id=event.credential_id, **fields),
+    )

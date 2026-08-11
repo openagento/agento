@@ -204,7 +204,7 @@ class JobDetailScreen(ModalScreen):
             f"ID:             {detail.get('id', '')}",
             f"Type:           {detail.get('type', '')}",
             f"Status:         {detail.get('status', '')}",
-            f"Agent Type:     {detail.get('agent_type', '') or ''}",
+            f"Harness:        {detail.get('agent_type', '') or ''}",
             f"Model:          {detail.get('model', '') or ''}",
             f"Agent View:     {detail.get('agent_view_code', '') or ''}",
             f"Reference:      {detail.get('reference_id', '') or ''}",

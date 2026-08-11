@@ -27,38 +27,41 @@ class TestRecordUsage:
 
         row_id = record_usage(
             conn,
-            token_id=1,
+            credential_id=1,
             tokens_used=5000,
             input_tokens=3000,
             output_tokens=2000,
             reference_id="AI-123",
             duration_ms=1500,
             model="claude-sonnet-4-20250514",
+            harness="claude",
+            provider="anthropic",
         )
 
         assert row_id == 42
         sql = cursor.execute.call_args[0][0]
         assert "INSERT INTO usage_log" in sql
         params = cursor.execute.call_args[0][1]
-        assert params == (1, 5000, 3000, 2000, "AI-123", 1500, "claude-sonnet-4-20250514")
+        assert params == (1, "claude", "anthropic", 5000, 3000, 2000, "AI-123", 1500,
+                          "claude-sonnet-4-20250514")
 
     def test_defaults_reference_and_duration(self):
         conn, cursor = _mock_conn(lastrowid=1)
 
-        record_usage(conn, token_id=1, tokens_used=100, input_tokens=60, output_tokens=40)
+        record_usage(conn, credential_id=1, tokens_used=100, input_tokens=60, output_tokens=40)
 
         params = cursor.execute.call_args[0][1]
-        assert params == (1, 100, 60, 40, None, 0, None)
+        assert params == (1, None, None, 100, 60, 40, None, 0, None)
 
 
 class TestGetUsageSummary:
     def test_returns_summary(self):
         conn, cursor = _mock_conn(fetchone_return={"total_tokens": 50000, "call_count": 10})
 
-        summary = get_usage_summary(conn, token_id=3, window_hours=12)
+        summary = get_usage_summary(conn, credential_id=3, window_hours=12)
 
         assert isinstance(summary, UsageSummary)
-        assert summary.token_id == 3
+        assert summary.credential_id == 3
         assert summary.total_tokens == 50000
         assert summary.call_count == 10
         params = cursor.execute.call_args[0][1]
@@ -67,7 +70,7 @@ class TestGetUsageSummary:
     def test_zero_usage(self):
         conn, _cursor = _mock_conn(fetchone_return={"total_tokens": 0, "call_count": 0})
 
-        summary = get_usage_summary(conn, token_id=1)
+        summary = get_usage_summary(conn, credential_id=1)
 
         assert summary.total_tokens == 0
         assert summary.call_count == 0
@@ -76,15 +79,15 @@ class TestGetUsageSummary:
 class TestGetUsageSummaries:
     def test_returns_list_of_summaries(self):
         rows = [
-            {"token_id": 1, "total_tokens": 10000, "call_count": 5},
-            {"token_id": 2, "total_tokens": 0, "call_count": 0},
+            {"credential_id": 1, "total_tokens": 10000, "call_count": 5},
+            {"credential_id": 2, "total_tokens": 0, "call_count": 0},
         ]
         conn, cursor = _mock_conn(fetchall_return=rows)
 
-        summaries = get_usage_summaries(conn, agent_type="claude", window_hours=24)
+        summaries = get_usage_summaries(conn, scope="claude", window_hours=24)
 
         assert len(summaries) == 2
-        assert summaries[0].token_id == 1
+        assert summaries[0].credential_id == 1
         assert summaries[0].total_tokens == 10000
         assert summaries[1].total_tokens == 0
         params = cursor.execute.call_args[0][1]
@@ -93,6 +96,6 @@ class TestGetUsageSummaries:
     def test_empty_result(self):
         conn, _cursor = _mock_conn(fetchall_return=[])
 
-        summaries = get_usage_summaries(conn, agent_type="codex")
+        summaries = get_usage_summaries(conn, scope="codex")
 
         assert summaries == []

@@ -1,0 +1,19 @@
+{
+  "agent_harnesses": [
+    {
+      "id": "impostor",
+      "label": "Impostor",
+      "class": "src.adapter.FakeHarnessAdapter",
+      "default_provider": "stolen",
+      "providers": [
+        {
+          "id": "stolen",
+          "label": "Claims someone else's credential pool",
+          "credential_required": true,
+          "registration_modes": ["api_key"],
+          "credential_scope": "claude"
+        }
+      ]
+    }
+  ]
+}

@@ -1,27 +1,36 @@
 {
-  "runtimes": [
-    {"provider": "claude", "class": "src.runner.TokenClaudeRunner"}
-  ],
-  "auth_strategies": [
-    {"provider": "claude", "class": "src.auth.ClaudeAuthStrategy"}
-  ],
-  "config_writers": [
-    {"provider": "claude", "class": "src.config.ClaudeConfigWriter"}
-  ],
-  "cli_invokers": [
-    {"provider": "claude", "class": "src.cli.ClaudeCliInvoker"}
-  ],
-  "transcript_readers": [
-    {"provider": "claude", "class": "src.transcript_reader.ClaudeTranscriptReader"}
-  ],
-  "sandbox_packages": [
+  "agent_harnesses": [
     {
-      "provider": "claude",
-      "manager": "npm",
-      "package": "@anthropic-ai/claude-code",
-      "binary": "claude",
-      "version_env_key": "CLAUDE_CODE_VERSION",
-      "default_range": "2.1.165"
+      "id": "claude",
+      "label": "Claude Code",
+      "class": "src.adapter.ClaudeHarnessAdapter",
+      "default_provider": "anthropic",
+      "providers": [
+        {
+          "id": "anthropic",
+          "label": "Anthropic",
+          "credential_required": true,
+          "registration_modes": ["interactive_oauth", "api_key"],
+          "credential_scope": "claude"
+        }
+      ],
+      "capabilities": {
+        "interactive": true,
+        "resume": true,
+        "transcripts": true,
+        "structured_events": true,
+        "toolbox": true,
+        "mcp_init_report": true,
+        "usage_reporting": true,
+        "cost_reporting": true
+      },
+      "sandbox_package": {
+        "manager": "npm",
+        "package": "@anthropic-ai/claude-code",
+        "binary": "claude",
+        "version_env_key": "CLAUDE_CODE_VERSION",
+        "default_range": "2.1.165"
+      }
     }
   ]
 }

@@ -5,7 +5,7 @@ Relies on the session-level ``_bootstrap_registries`` fixture in
 registrations, and the TranscriptReader registry via the real ``import_class``
 machinery. Dispatching a real event here exercises:
 
-  events.json → observer class import → JobFinalizeEvent → get_transcript_reader →
+  events.json → observer class import → JobFinalizeEvent → find_harness →
   ClaudeTranscriptReader → JSONL parse → toolbox-call count → _save_mcp_telemetry
 
 — as a single chain. Broken wiring (events.json, di.json, registry, protocol
@@ -73,7 +73,7 @@ def test_telemetry_observer_records_good_transcript(workspace_root, monkeypatch)
     saver = MagicMock()
     monkeypatch.setattr(obs, "_save_mcp_telemetry", saver)
     event = JobFinalizeEvent(
-        job=_Job(session_id="good_with_mcp"), job_result=None, provider="claude",
+        job=_Job(session_id="good_with_mcp"), job_result=None, harness="claude",
     )
     get_event_manager().dispatch("job_finalize_before", event)
     # Telemetry only — never vetoes.
@@ -86,18 +86,18 @@ def test_telemetry_observer_records_zero_calls_bad_transcript(workspace_root, mo
     saver = MagicMock()
     monkeypatch.setattr(obs, "_save_mcp_telemetry", saver)
     event = JobFinalizeEvent(
-        job=_Job(session_id="bad_no_mcp"), job_result=None, provider="claude",
+        job=_Job(session_id="bad_no_mcp"), job_result=None, harness="claude",
     )
     get_event_manager().dispatch("job_finalize_before", event)
     assert event.verdict is None  # zero calls is recorded, NOT vetoed
     saver.assert_called_once_with(1, 0, None)
 
 
-def test_telemetry_observer_null_calls_when_no_reader_for_provider(workspace_root, monkeypatch):
+def test_telemetry_observer_null_calls_when_no_reader_for_harness(workspace_root, monkeypatch):
     saver = MagicMock()
     monkeypatch.setattr(obs, "_save_mcp_telemetry", saver)
     event = JobFinalizeEvent(
-        job=_Job(session_id="any"), job_result=None, provider="unregistered",
+        job=_Job(session_id="any"), job_result=None, harness="unregistered",
     )
     get_event_manager().dispatch("job_finalize_before", event)
     assert event.verdict is None  # no reader → calls unknown → NULL, no veto
@@ -129,20 +129,20 @@ def codex_workspace_root(tmp_path: Path, monkeypatch) -> Path:
 
 
 def test_codex_reader_registered_via_bootstrap():
-    """Bootstrap loads codex/di.json → CodexTranscriptReader is in the registry."""
-    from agento.framework.agent_manager.models import AgentProvider
-    from agento.framework.transcript_reader import get_transcript_reader
+    """Bootstrap loads codex/di.json → CodexTranscriptReader hangs off the harness."""
+    from agento.framework.harness import find_harness
     from agento.modules.codex.src.transcript_reader import CodexTranscriptReader
 
-    reader = get_transcript_reader(AgentProvider.CODEX)
-    assert isinstance(reader, CodexTranscriptReader)
+    registered = find_harness("codex")
+    assert registered is not None
+    assert isinstance(registered.adapter.transcript_reader, CodexTranscriptReader)
 
 
 def test_telemetry_observer_records_good_codex_transcript(codex_workspace_root, monkeypatch):
     saver = MagicMock()
     monkeypatch.setattr(obs, "_save_mcp_telemetry", saver)
     event = JobFinalizeEvent(
-        job=_Job(session_id=CODEX_GOOD_ID), job_result=None, provider="codex",
+        job=_Job(session_id=CODEX_GOOD_ID), job_result=None, harness="codex",
     )
     get_event_manager().dispatch("job_finalize_before", event)
     assert event.verdict is None
@@ -154,7 +154,7 @@ def test_telemetry_observer_records_zero_calls_bad_codex_transcript(codex_worksp
     saver = MagicMock()
     monkeypatch.setattr(obs, "_save_mcp_telemetry", saver)
     event = JobFinalizeEvent(
-        job=_Job(session_id=CODEX_BAD_ID), job_result=None, provider="codex",
+        job=_Job(session_id=CODEX_BAD_ID), job_result=None, harness="codex",
     )
     get_event_manager().dispatch("job_finalize_before", event)
     assert event.verdict is None

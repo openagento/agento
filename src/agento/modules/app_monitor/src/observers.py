@@ -15,7 +15,7 @@
       **or** the status is merely indeterminate — notably ``pending``, which
       only means the handshake had not finished when init was printed.
   The transcript parser lives in the agent's module (claude/codex/…); this
-  observer resolves one via ``get_transcript_reader(provider)`` so the
+  observer resolves one via the harness registry so the
   framework — and this module — stay agent-agnostic.
 - ``AlertEmailObserver`` (``job_dead_after``) — send a plain-text SMTP alert
   on DEAD transitions when both ``alerts/email_to`` and ``alerts/smtp_host``
@@ -34,7 +34,7 @@ from agento.framework.bootstrap import get_module_config
 from agento.framework.database_config import DatabaseConfig
 from agento.framework.db import get_connection
 from agento.framework.events import JobVerificationFailed
-from agento.framework.transcript_reader import get_transcript_reader
+from agento.framework.harness import find_harness
 
 from .constants import (
     CFG_ALERT_EMAIL_TO,
@@ -109,8 +109,8 @@ def _save_mcp_telemetry(job_id: int, calls: int | None, connected: bool | None) 
 class McpHealthTelemetryObserver:
     """Record MCP-health telemetry for a finalizing job — no verdict, ever.
 
-    Resolves the provider-specific transcript reader via the framework
-    registry — never imports a provider-specific module directly. Both signals
+    Resolves the harness's transcript reader via the framework registry —
+    never imports a harness-specific module directly. Both signals
     are independently nullable; missing data is ``NULL``, never coerced to
     ``0`` / ``False``.
     """
@@ -122,10 +122,10 @@ class McpHealthTelemetryObserver:
         try:
             job = getattr(event, "job", None)
             job_id = getattr(job, "id", None)
-            provider = getattr(event, "provider", None)
+            harness = getattr(event, "harness", None)
             session_id = getattr(job, "session_id", None) if job is not None else None
 
-            toolbox_calls = self._count_toolbox_calls(provider, session_id, job_id)
+            toolbox_calls = self._count_toolbox_calls(harness, session_id, job_id)
             toolbox_connected, toolbox_status = self._resolve_toolbox_status(event)
 
             if isinstance(job_id, int) and job_id > 0:
@@ -133,12 +133,12 @@ class McpHealthTelemetryObserver:
 
             # Separate from the parse log in _count_toolbox_calls (which runs
             # before the status is resolved): the raw status word is otherwise
-            # only visible at DEBUG, inside the provider's output parser.
+            # only visible at DEBUG, inside the harness's output parser.
             logger.info(
                 "McpHealthTelemetryObserver: mcp health",
                 extra={
                     "job_id": job_id,
-                    "provider": provider,
+                    "harness": harness,
                     "session_id": session_id,
                     "toolbox_mcp_calls": toolbox_calls,
                     "toolbox_mcp_connected": toolbox_connected,
@@ -147,7 +147,7 @@ class McpHealthTelemetryObserver:
             )
 
             self._maybe_alert(
-                job, provider, session_id, toolbox_calls, toolbox_connected, toolbox_status,
+                job, harness, session_id, toolbox_calls, toolbox_connected, toolbox_status,
             )
         except Exception:
             logger.warning(
@@ -157,20 +157,21 @@ class McpHealthTelemetryObserver:
             )
         # event.verdict is intentionally never touched — telemetry only.
 
-    def _count_toolbox_calls(self, provider, session_id, job_id) -> int | None:
+    def _count_toolbox_calls(self, harness, session_id, job_id) -> int | None:
         """Count ``mcp__toolbox__*`` tool-uses in the on-disk transcript.
 
         Returns ``None`` whenever the count is unknown (no session id, no reader
-        for the provider, missing/unreadable transcript, or parser drift); ``0``
+        for the harness, missing/unreadable transcript, or parser drift); ``0``
         only when the transcript parsed cleanly and held zero toolbox calls.
         """
         if not session_id:
             return None
-        reader = get_transcript_reader(provider) if provider else None
+        registered = find_harness(harness) if harness else None
+        reader = registered.adapter.transcript_reader if registered is not None else None
         if reader is None:
             logger.info(
-                "McpHealthTelemetryObserver: no TranscriptReader for provider=%r "
-                "— toolbox call count unknown (job_id=%s)", provider, job_id,
+                "McpHealthTelemetryObserver: no TranscriptReader for harness=%r "
+                "— toolbox call count unknown (job_id=%s)", harness, job_id,
             )
             return None
         try:
@@ -180,13 +181,13 @@ class McpHealthTelemetryObserver:
         except Exception:
             logger.exception(
                 "McpHealthTelemetryObserver: error reading transcript for "
-                "provider=%s session_id=%s — toolbox count unknown",
-                provider, session_id,
+                "harness=%s session_id=%s — toolbox count unknown",
+                harness, session_id,
             )
             return None
 
         # Drift detection (log-only): a non-trivial transcript whose records the
-        # reader didn't recognize at all is almost certainly a silent provider
+        # reader didn't recognize at all is almost certainly a silent harness
         # format change. Log at ERROR so ops can spot it, but leave the count
         # NULL (the measurement is unreliable) and set no verdict.
         if (
@@ -194,9 +195,9 @@ class McpHealthTelemetryObserver:
             and summary.recognized_records == 0
         ):
             logger.error(
-                "parser drift detected: provider=%s session_id=%s — %d JSON "
+                "parser drift detected: harness=%s session_id=%s — %d JSON "
                 "lines, 0 recognized records",
-                provider, session_id, summary.total_json_lines,
+                harness, session_id, summary.total_json_lines,
             )
             return None
 
@@ -207,7 +208,7 @@ class McpHealthTelemetryObserver:
             "McpHealthTelemetryObserver: parsed transcript",
             extra={
                 "job_id": job_id,
-                "provider": provider,
+                "harness": harness,
                 "session_id": session_id,
                 "toolbox_mcp_calls": toolbox_calls,
                 "tool_uses_total": len(summary.tool_uses),
@@ -224,7 +225,7 @@ class McpHealthTelemetryObserver:
         an unrecognized word resolves to "unknown", never to "not connected" — a
         renamed status must not read as an outage.
 
-        * ``(None, "no-init-report")`` — no init report at all (provider lacks the
+        * ``(None, "no-init-report")`` — no init report at all (harness lacks the
           capability, or the stream had no init event). Distinct from ``False``.
         * ``(True, status)``  — ``toolbox`` is listed ``connected``.
         * ``(False, status)`` — ``toolbox`` is listed with a status the CLI treats
@@ -256,7 +257,7 @@ class McpHealthTelemetryObserver:
                 return None, server.status
         return False, ("absent" if mcp_init.servers else "no-servers")
 
-    def _maybe_alert(self, job, provider, session_id, calls, connected, status) -> None:
+    def _maybe_alert(self, job, harness, session_id, calls, connected, status) -> None:
         """Send one combined alert per attempt when the flag is on, SMTP is
         configured, and at least one explicit-bad signal is present. NULL signals
         ("unknown") never trigger — only ``calls == 0`` or ``connected is False``.
@@ -289,7 +290,7 @@ class McpHealthTelemetryObserver:
             f"Job id:        {job_id}",
             f"Source:        {getattr(job, 'source', '?')}",
             f"Reference id:  {getattr(job, 'reference_id', '?')}",
-            f"Provider:      {provider}",
+            f"Harness:       {harness}",
             f"Session id:    {session_id}",
             f"Attempt:       {getattr(job, 'attempt', '?')}/{getattr(job, 'max_attempts', '?')}",
             f"Toolbox calls: {calls}",

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agento.framework.transcript_reader import ParseSummary, ToolUse
+from agento.framework.harness import ParseSummary, ToolUse
 from agento.modules.codex.src import transcript_reader as cx_tr
 from agento.modules.codex.src.transcript_reader import (
     CodexTranscriptReader,
@@ -167,5 +167,5 @@ def test_parse_drift_unrecognized_format(tmp_path: Path, monkeypatch):
 
 
 def test_satisfies_protocol():
-    from agento.framework.transcript_reader import TranscriptReader
+    from agento.framework.harness import TranscriptReader
     assert isinstance(CodexTranscriptReader(), TranscriptReader)

@@ -118,13 +118,13 @@ def get_dashboard_data(conn) -> DashboardData:
 
     # Tokens
     with contextlib.suppress(Exception):
-        from ..agent_manager.token_store import list_tokens
+        from ..agent_manager.credential_store import list_credentials
 
-        tokens = list_tokens(conn, enabled_only=False)
+        tokens = list_credentials(conn, enabled_only=False)
         data.tokens = [
             {
                 "id": t.id,
-                "agent_type": t.agent_type.value,
+                "scope": t.scope,
                 "label": t.label,
                 "status": t.status.value,
                 "error_msg": t.error_msg,
@@ -216,15 +216,15 @@ def get_job_detail(conn, job_id: int) -> dict | None:
         return None
 
 
-def get_tokens_with_usage(conn, *, window_hours: int = 24) -> list[dict]:
+def get_credentials_with_usage(conn, *, window_hours: int = 24) -> list[dict]:
     if conn is None:
         return []
     try:
         _ensure_conn(conn)
-        from ..agent_manager.token_store import list_tokens
+        from ..agent_manager.credential_store import list_credentials
         from ..agent_manager.usage_store import get_usage_summary
 
-        tokens = list_tokens(conn, enabled_only=False)
+        tokens = list_credentials(conn, enabled_only=False)
         results = []
         for t in tokens:
             usage = get_usage_summary(conn, t.id, window_hours)
@@ -233,7 +233,7 @@ def get_tokens_with_usage(conn, *, window_hours: int = 24) -> list[dict]:
                 pct_free = max(0.0, (1 - usage.total_tokens / t.token_limit) * 100)
             results.append({
                 "id": t.id,
-                "agent_type": t.agent_type.value,
+                "scope": t.scope,
                 "label": t.label,
                 "status": t.status.value,
                 "error_msg": t.error_msg,
@@ -410,7 +410,12 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
         scopes_list = get_allowed_scopes(field_schema)
         if not editable:
             display_value = f"{display_value} [readonly]" if display_value else "[readonly]"
-        options = field_schema.get("options") if field_type in ("select", "multiselect") else None
+        options = (
+            _field_options(
+                field_schema, overrides=svc.overrides, resolved=_resolved_all(svc),
+            )
+            if field_type in ("select", "multiselect") else None
+        )
         results.append(ResolvedField(
             path=f"{module}/{field_name}",
             field_name=field_name,
@@ -456,7 +461,12 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
             scopes_list = get_allowed_scopes(field_schema)
             if not editable:
                 display_value = f"{display_value} [readonly]" if display_value else "[readonly]"
-            options = field_schema.get("options") if field_type in ("select", "multiselect") else None
+            options = (
+                _field_options(
+                    field_schema, overrides=svc.overrides, resolved=_resolved_all(svc),
+                )
+                if field_type in ("select", "multiselect") else None
+            )
             results.append(ResolvedField(
                 path=f"{module}/tools/{tool_name}/{field_name}",
                 field_name=field_name,
@@ -505,12 +515,23 @@ def get_agent_views(conn, workspace_id: int | None = None) -> list[dict]:
         return []
 
 
-def set_config_value(conn, path: str, value: str, scope: str = Scope.DEFAULT, scope_id: int = 0) -> None:
-    from ..core_config import config_set_auto_encrypt
+def set_config_value(
+    conn, path: str, value: str, scope: str = Scope.DEFAULT, scope_id: int = 0,
+) -> list[tuple[str, str]]:
+    """Save a config value, repairing any dependent the new value invalidates.
+
+    Shares one operation with ``config:set`` — saving a harness here without the repair
+    would leave the very broken (harness, provider) pair the CLI prevents. Returns the
+    dependents that were rewritten so the TUI can tell the operator.
+    """
+    from ..config_dependents import set_config_with_dependents
 
     _ensure_conn(conn)
-    config_set_auto_encrypt(conn, path, value, scope=scope, scope_id=scope_id)
+    _encrypted, changed = set_config_with_dependents(
+        conn, path, value, scope=scope, scope_id=scope_id
+    )
     conn.commit()
+    return changed
 
 
 def delete_config_override(conn, path: str, scope: str = Scope.DEFAULT, scope_id: int = 0) -> bool:
@@ -642,28 +663,65 @@ def get_skill_states(conn, scope: str = Scope.DEFAULT, scope_id: int = 0) -> lis
     return [_item(s) for s in get_all_skill_names(conn)]
 
 
-def do_reset_token_error(conn, token_id: int) -> bool:
-    from ..agent_manager.token_store import clear_token_error
+def do_reset_credential_error(conn, credential_id: int) -> bool:
+    from ..agent_manager.credential_store import clear_credential_error
 
     _ensure_conn(conn)
-    result = clear_token_error(conn, token_id)
+    result = clear_credential_error(conn, credential_id)
     conn.commit()
     return result
 
 
-def do_mark_token_error(conn, token_id: int, message: str) -> bool:
-    from ..agent_manager.token_store import mark_token_error
+def do_mark_credential_error(conn, credential_id: int, message: str) -> bool:
+    from ..agent_manager.credential_store import mark_credential_error
 
     _ensure_conn(conn)
-    result = mark_token_error(conn, token_id, message)
+    result = mark_credential_error(conn, credential_id, message)
     conn.commit()
     return result
 
 
-def do_deregister_token(conn, token_id: int) -> bool:
-    from ..agent_manager.token_store import deregister_token
+def do_deregister_credential(conn, credential_id: int) -> bool:
+    from ..agent_manager.credential_store import deregister_credential
 
     _ensure_conn(conn)
-    result = deregister_token(conn, token_id)
+    result = deregister_credential(conn, credential_id)
     conn.commit()
     return result
+
+
+def _resolved_all(svc) -> dict:
+    """Fully-resolved effective config for this scope, cached per service instance."""
+    cached = getattr(svc, "_admin_resolved_cache", None)
+    if cached is None:
+        try:
+            cached = svc.resolve_all() or {}
+        except Exception:
+            cached = {}
+        svc._admin_resolved_cache = cached
+    return cached
+
+
+def _field_options(
+    field_schema: dict, *, overrides: dict | None = None, resolved: dict | None = None,
+) -> list[dict] | None:
+    """Select options for the TUI: literal, or resolved from ``options_source``.
+
+    A dependent select (provider depends on harness) is narrowed by the **effective**
+    value of the field it depends on. ``resolved`` (from ``ScopedConfigService.resolve_all``)
+    is preferred over ``overrides`` because the latter holds only raw DB rows at this
+    scope: a view inheriting its harness from the default scope, or one set purely via
+    ``CONFIG__AGENT_VIEW__HARNESS``, would otherwise appear to have no harness and get the
+    unnarrowed union of every harness's providers.
+    """
+    from ..config_schema_options import field_options
+
+    depends_on = field_schema.get("depends_on")
+    depends_value = None
+    if depends_on:
+        if resolved and depends_on in resolved:
+            depends_value = resolved[depends_on]
+        elif overrides:
+            entry = overrides.get(depends_on)
+            depends_value = entry[0] if isinstance(entry, tuple) else entry
+    return field_options(field_schema, depends_on_value=depends_value) or None

@@ -1,5 +1,5 @@
 """Tests for ``agent_view:prepare-run`` — the cron-side command `agento run`
-calls to do the same token-pool + materialization the consumer does, then
+calls to do the same credential claim + materialization the consumer does, then
 returns home/working_dir/env/command so the host can ``docker exec sandbox``.
 
 The critical security guarantee: any API-key value the command resolves
@@ -23,10 +23,14 @@ def _make_args(agent_view_code="dev", prompt=None, model=None, yolo=False):
     )
 
 
+pytestmark = pytest.mark.usefixtures("builtin_harnesses")
+
+
 @pytest.fixture
 def runtime_stub():
     rt = MagicMock()
-    rt.provider = "claude"
+    rt.harness = "claude"
+    rt.provider = "anthropic"
     rt.model = None
     rt.workspace = MagicMock(id=3, code="acme")
     rt.agent_view = MagicMock(id=7, code="dev")
@@ -42,15 +46,22 @@ def token_stub():
 
 
 @pytest.fixture
-def invoker_stub():
-    inv = MagicMock()
-    inv.interactive_command.return_value = ["claude"]
-    inv.headless_command.return_value = [
+def builder_stub():
+    """Stands in for the harness's CommandBuilder (the ex-CliInvoker)."""
+    builder = MagicMock()
+    builder.interactive.return_value = ["claude"]
+    builder.headless.return_value = [
         "claude", "-p", "hello",
         "--dangerously-skip-permissions",
         "--output-format", "stream-json", "--verbose",
     ]
-    return inv
+    return builder
+
+
+def _harness_with(builder):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(adapter=SimpleNamespace(command_builder=builder))
 
 
 @pytest.fixture
@@ -60,7 +71,7 @@ def writer_stub():
     return w
 
 
-def _run_command(args, runtime, token, invoker, writer, home, working_dir, *, return_mocks=False):
+def _run_command(args, runtime, token, builder, writer, home, working_dir, *, return_mocks=False):
     """Drive the command's ``execute`` with all heavy deps mocked."""
     from agento.modules.agent_view.src.commands.prepare_run import (
         AgentViewPrepareRunCommand,
@@ -79,14 +90,14 @@ def _run_command(args, runtime, token, invoker, writer, home, working_dir, *, re
         "agento.framework.agent_view_runtime.resolve_agent_view_runtime",
         return_value=runtime,
     ), patch(
-        "agento.framework.agent_manager.token_resolver.TokenResolver",
+        "agento.framework.agent_manager.credential_resolver.CredentialResolver",
     ) as MockResolver, patch(
         "agento.framework.run_preparation.materialize_run_workspace",
         return_value=(home, working_dir),
     ) as mock_materialize, patch(
-        "agento.framework.config_writer.get_config_writer", return_value=writer,
+        "agento.framework.harness.workspace_adapter_for", return_value=writer,
     ), patch(
-        "agento.framework.cli_invoker.get_cli_invoker", return_value=invoker,
+        "agento.framework.harness.get_harness", return_value=_harness_with(builder),
     ):
         MockResolver.return_value.resolve.return_value = token
         buf = io.StringIO()
@@ -107,48 +118,49 @@ class TestAgentViewPrepareRunCommand:
         assert cmd.name == "agent_view:prepare-run"
 
     def test_interactive_payload_shape(
-        self, tmp_path, runtime_stub, token_stub, invoker_stub, writer_stub,
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
     ):
         payload = _run_command(
-            _make_args(), runtime_stub, token_stub, invoker_stub, writer_stub,
+            _make_args(), runtime_stub, token_stub, builder_stub, writer_stub,
             home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
         )
-        assert payload["provider"] == "claude"
+        assert payload["harness"] == "claude"
         assert payload["agent_view_code"] == "dev"
         assert payload["workspace_code"] == "acme"
         assert payload["home"] == str(tmp_path / "artifacts")
         assert payload["working_dir"] == str(tmp_path / "artifacts")
         assert payload["command"] == ["claude"]
         assert payload["env"] == {"ANTHROPIC_API_KEY": "sk-ant-SECRET"}
-        assert payload["token_id"] == 42
-        invoker_stub.interactive_command.assert_called_once_with(yolo=False)
+        assert payload["credential_id"] == 42
+        assert builder_stub.interactive.call_args.kwargs == {"yolo": False}
 
     def test_yolo_flag_forwarded_to_interactive_command(
-        self, tmp_path, runtime_stub, token_stub, invoker_stub, writer_stub,
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
     ):
         _run_command(
-            _make_args(yolo=True), runtime_stub, token_stub, invoker_stub, writer_stub,
+            _make_args(yolo=True), runtime_stub, token_stub, builder_stub, writer_stub,
             home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
         )
-        invoker_stub.interactive_command.assert_called_once_with(yolo=True)
+        assert builder_stub.interactive.call_args.kwargs == {"yolo": True}
 
     def test_headless_payload_includes_prompt_command(
-        self, tmp_path, runtime_stub, token_stub, invoker_stub, writer_stub,
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
     ):
         payload = _run_command(
-            _make_args(prompt="hello"), runtime_stub, token_stub, invoker_stub, writer_stub,
+            _make_args(prompt="hello"), runtime_stub, token_stub, builder_stub, writer_stub,
             home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
         )
         assert payload["command"][0] == "claude"
         assert "hello" in payload["command"]
-        invoker_stub.headless_command.assert_called_once_with("hello", model=None)
+        request = builder_stub.headless.call_args.args[1]
+        assert (request.prompt, request.model) == ("hello", None)
 
     def test_secret_never_in_command(
-        self, tmp_path, runtime_stub, token_stub, invoker_stub, writer_stub,
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
     ):
         """The exact contract the host depends on: secret in ``env``, not in ``command``."""
         payload = _run_command(
-            _make_args(prompt="hello"), runtime_stub, token_stub, invoker_stub, writer_stub,
+            _make_args(prompt="hello"), runtime_stub, token_stub, builder_stub, writer_stub,
             home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
         )
         flat_command = " ".join(payload["command"])
@@ -156,29 +168,28 @@ class TestAgentViewPrepareRunCommand:
         assert payload["env"]["ANTHROPIC_API_KEY"] == "sk-ant-SECRET"
 
     def test_materializes_with_resolved_token(
-        self, tmp_path, runtime_stub, token_stub, invoker_stub, writer_stub,
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
     ):
         payload, mock_materialize = _run_command(
-            _make_args(), runtime_stub, token_stub, invoker_stub, writer_stub,
+            _make_args(), runtime_stub, token_stub, builder_stub, writer_stub,
             home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
             return_mocks=True,
         )
 
         assert payload["home"] == str(tmp_path / "artifacts")
         mock_materialize.assert_called_once()
-        assert mock_materialize.call_args.kwargs["token"] is token_stub
+        assert mock_materialize.call_args.kwargs["credential"] is token_stub
         run_id = mock_materialize.call_args.kwargs["run_id"]
         assert isinstance(run_id, str)
         assert run_id.startswith("run-")
         assert run_id != "run"
 
-    def test_missing_cli_invoker_returns_null_command(
+    def test_unregistered_harness_returns_null_command(
         self, tmp_path, runtime_stub, token_stub, writer_stub,
     ):
-        """When no CliInvoker is registered, ``command`` MUST be ``None`` in
-        the JSON payload (mirrors ``agent_view:runtime``) so the host
-        ``RunCommand`` shows its actionable "no CliInvoker registered" error
-        instead of cron raising a traceback.
+        """When the harness isn't registered, ``command`` MUST be ``None`` in the JSON
+        payload (mirrors ``agent_view:runtime``) so the host ``RunCommand`` shows its
+        actionable "not registered" error instead of cron raising a traceback.
         """
         from agento.modules.agent_view.src.commands.prepare_run import (
             AgentViewPrepareRunCommand,
@@ -197,15 +208,15 @@ class TestAgentViewPrepareRunCommand:
             "agento.framework.agent_view_runtime.resolve_agent_view_runtime",
             return_value=runtime_stub,
         ), patch(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
+            "agento.framework.agent_manager.credential_resolver.CredentialResolver",
         ) as MockResolver, patch(
             "agento.framework.run_preparation.materialize_run_workspace",
             return_value=(tmp_path / "artifacts", tmp_path / "artifacts"),
         ), patch(
-            "agento.framework.config_writer.get_config_writer", return_value=writer_stub,
+            "agento.framework.harness.workspace_adapter_for", return_value=writer_stub,
         ), patch(
-            "agento.framework.cli_invoker.get_cli_invoker",
-            side_effect=ValueError("No CliInvoker registered for provider 'exotic'"),
+            "agento.framework.harness.get_harness",
+            side_effect=ValueError("No harness registered under 'exotic'"),
         ):
             MockResolver.return_value.resolve.return_value = token_stub
             buf = io.StringIO()
@@ -214,7 +225,7 @@ class TestAgentViewPrepareRunCommand:
             payload = json.loads(buf.getvalue())
 
         assert payload["command"] is None
-        # provider + env still resolved — the host can show its actionable
+        # harness + env still resolved — the host can show its actionable
         # error message because the cron-side path didn't crash.
-        assert payload["provider"] == "claude"
+        assert payload["harness"] == "claude"
         assert payload["env"] == {"ANTHROPIC_API_KEY": "sk-ant-SECRET"}

@@ -53,7 +53,7 @@ Toolbox is the **only** container with access to secrets. The AI agent has no cr
 
 The Python/Node.js split is **intentional** — the language boundary IS the security boundary:
 
-- **Python (cron):** Runs the LLM, executes Claude/Codex CLI, manages job queue. Has OAuth tokens for AI providers but no database/API credentials.
+- **Python (cron):** Runs the LLM, executes the configured harness's CLI, manages the job queue. Holds agent credentials (the `credential` pool, one scope per credential-requiring provider) but no database/API credentials.
 - **Node.js (toolbox):** Holds all credentials, executes database queries, manages Jira API. Never runs LLM code.
 
 You cannot accidentally `import secrets` in agent code because it's a different language, different container, different filesystem.

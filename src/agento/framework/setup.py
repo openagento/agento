@@ -30,9 +30,13 @@ from .dependency_resolver import resolve_order, validate_dependencies
 from .event_manager import get_event_manager
 from .events import CrontabInstalledEvent, SetupBeforeEvent, SetupCompleteEvent
 from .migrate import get_pending, migrate
-from .module_loader import scan_modules
+from .module_discovery import scan_all_modules
 from .module_status import filter_enabled
-from .module_validator import validate_module, validate_tool_namespace
+from .module_validator import (
+    cross_module_errors,
+    validate_module,
+    validate_tool_namespace,
+)
 
 FRAMEWORK_SQL_DIR = Path(__file__).parent / "sql"
 FRAMEWORK_CRON_JSON = Path(__file__).parent / "cron.json"
@@ -68,16 +72,20 @@ class ModuleValidationError(Exception):
 def _validate_manifests(enabled, logger: logging.Logger) -> None:
     """Validate every enabled module's manifest. Raise (fail-fast) on any error.
 
-    Runs before any migration so a broken manifest aborts setup:upgrade before
-    the database is mutated. Per-module checks plus the cross-manifest
-    tool-namespace check — the latter cannot be found module-by-module, and a
-    duplicate tool name would silently reuse another module's name-keyed grant.
+    Runs before any migration so a broken manifest aborts setup:upgrade before the database
+    is mutated. Per-module checks plus the CROSS-module ones, which cannot be found
+    module-by-module: a duplicate tool name would silently reuse another module's name-keyed
+    grant, and a duplicate harness id, credential scope or Docker ARG key would let one
+    harness serve another's credential pool — so both must abort setup, not merely warn at
+    bootstrap.
     """
     errors = {m.name: errs for m in enabled if (errs := validate_module(m.path))}
     for name, errs in validate_tool_namespace(
         (m.name, getattr(m, "tools", []) or []) for m in enabled
     ).items():
         errors.setdefault(name, []).extend(errs)
+    for name, err in cross_module_errors(enabled):
+        errors.setdefault(name, []).append(err)
     if not errors:
         return
     for name, errs in sorted(errors.items()):
@@ -107,7 +115,11 @@ def setup_upgrade(
 
     # 0. Scan modules and validate enabled manifests up front — fail before
     #    mutating the database if any manifest is invalid.
-    all_scanned = scan_modules(core_dir) + scan_modules(user_dir)
+    # ONE discovery path shared with bootstrap and module:validate — including PyPI
+    # extensions mounted at /opt/agento-src/<ext>. Without them here a mounted harness
+    # would register at runtime while its SQL, data patches, cron and onboarding were
+    # silently skipped.
+    all_scanned = scan_all_modules(core_dir, user_dir)
     enabled = filter_enabled(all_scanned)
     _validate_manifests(enabled, logger)
     validate_dependencies(enabled, all_scanned)

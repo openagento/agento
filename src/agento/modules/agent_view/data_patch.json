@@ -1,6 +1,16 @@
 {
     "patches": [
-        {"name": "RenameAgentConfigPrefix", "class": "src.patches.rename_agent_config_prefix.RenameAgentConfigPrefix"},
-        {"name": "EncryptObscureRowsAtRest", "class": "src.patches.encrypt_obscure_rows_at_rest.EncryptObscureRowsAtRest"}
+        {
+            "name": "RenameAgentConfigPrefix",
+            "class": "src.patches.rename_agent_config_prefix.RenameAgentConfigPrefix"
+        },
+        {
+            "name": "EncryptObscureRowsAtRest",
+            "class": "src.patches.encrypt_obscure_rows_at_rest.EncryptObscureRowsAtRest"
+        },
+        {
+            "name": "SplitProviderIntoHarness",
+            "class": "src.patches.split_provider_into_harness.SplitProviderIntoHarness"
+        }
     ]
 }

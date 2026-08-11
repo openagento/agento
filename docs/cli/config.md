@@ -63,6 +63,20 @@ bin/agento config:set core/timezone UTC
 
 See [config/README.md — Scope Restrictions](../config/README.md#scope-restrictions-showin) for details.
 
+### Exit Codes
+
+`config:set` exits **1** on every rejection — malformed path, unknown field, scope
+restriction, and an invalid `select` value — and **0** only when the value was written.
+Scripts and CI can therefore trust the exit code alone:
+
+```bash
+# provider options depend on the agent_view's harness (claude → anthropic)
+bin/agento config:set agent_view/provider codex --agent-view qa_01
+# Error: Invalid value 'codex' for select field 'provider'
+#   Allowed values: anthropic
+echo $?   # 1 — nothing was written
+```
+
 ## config:remove
 
 ```bash

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agento.framework.agent_manager.models import AgentProvider, Token
+from agento.framework.agent_manager.models import CredentialRecord
 from agento.modules.workspace_build.src.builder import (
     ensure_state_dir,
     gc_old_builds,
@@ -202,64 +202,89 @@ class TestGcOldBuilds:
 
 
 def _token(agent_type, credentials):
-    from agento.framework.agent_manager.models import TokenStatus
+    from agento.framework.agent_manager.models import CredentialStatus
     now = datetime.now(UTC)
-    return Token(
-        id=1, agent_type=agent_type, type="oauth", label="t", credentials=credentials,
+    return CredentialRecord(
+        id=1, scope=agent_type, type="oauth", label="t", credentials=credentials,
         token_limit=0, enabled=True,
-        status=TokenStatus.OK, priority=0, error_msg=None, expires_at=None, used_at=None,
+        status=CredentialStatus.OK, priority=0, error_msg=None, expires_at=None, used_at=None,
         created_at=now, updated_at=now,
     )
 
 
+@pytest.mark.usefixtures("builtin_harnesses")
 class TestMaterializeAgentCredentials:
-    def test_delegates_per_provider_to_config_writer(self, tmp_path, monkeypatch):
+    """One build ⇒ exactly one credential scope (least privilege).
+
+    Iterating every registered harness handed a Claude view the Codex credential
+    merely because the ``codex`` module was enabled; the build now resolves only the
+    scope of its own effective ``(harness, provider)``.
+    """
+
+    @staticmethod
+    def _resolver(monkeypatch, resolver):
+        monkeypatch.setattr(
+            "agento.framework.agent_manager.credential_resolver.CredentialResolver",
+            lambda *a, **kw: resolver,
+        )
+
+    @staticmethod
+    def _adapters(monkeypatch, **adapters):
+        for target in (
+            "agento.framework.harness.workspace_adapter_for",
+            "agento.framework.harness.registry.workspace_adapter_for",
+        ):
+            monkeypatch.setattr(target, adapters.__getitem__)
+
+    def test_writes_only_the_views_own_scope(self, tmp_path, monkeypatch):
         build_dir = tmp_path / "build"
         build_dir.mkdir()
         claude_writer = MagicMock()
         codex_writer = MagicMock()
-
-        monkeypatch.setattr(
-            "agento.framework.config_writer._CONFIG_WRITERS",
-            {AgentProvider.CLAUDE: claude_writer, AgentProvider.CODEX: codex_writer},
-        )
+        self._adapters(monkeypatch, claude=claude_writer, codex=codex_writer)
 
         resolver = MagicMock()
-        def fake_resolve(conn, provider):
-            if provider == AgentProvider.CLAUDE:
-                return _token(AgentProvider.CLAUDE, {"subscription_key": "claude-tok"})
-            return _token(AgentProvider.CODEX, {"raw_auth": {"x": 1}})
-        resolver.resolve.side_effect = fake_resolve
-        monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
-            lambda *a, **kw: resolver,
+        resolver.resolve.return_value = _token("claude", {"subscription_key": "claude-tok"})
+        self._resolver(monkeypatch, resolver)
+
+        materialize_agent_credentials(
+            conn=MagicMock(), build_dir=build_dir, harness="claude", provider="anthropic",
         )
 
-        materialize_agent_credentials(conn=MagicMock(), build_dir=build_dir)
+        assert resolver.resolve.call_args.args[1] == "claude"
+        assert claude_writer.write_credentials.call_args.args[1].credentials == {
+            "subscription_key": "claude-tok",
+        }
+        codex_writer.write_credentials.assert_not_called()
 
-        claude_token = claude_writer.write_credentials.call_args.args[1]
-        assert claude_token.credentials == {"subscription_key": "claude-tok"}
-        codex_token = codex_writer.write_credentials.call_args.args[1]
-        assert codex_token.credentials == {"raw_auth": {"x": 1}}
-
-    def test_skips_provider_without_enabled_token(self, tmp_path, monkeypatch):
+    def test_no_harness_or_provider_writes_nothing(self, tmp_path, monkeypatch):
         build_dir = tmp_path / "build"
         build_dir.mkdir()
         claude_writer = MagicMock()
+        self._adapters(monkeypatch, claude=claude_writer)
+        resolver = MagicMock()
+        self._resolver(monkeypatch, resolver)
 
-        monkeypatch.setattr(
-            "agento.framework.config_writer._CONFIG_WRITERS",
-            {AgentProvider.CLAUDE: claude_writer},
+        materialize_agent_credentials(
+            conn=MagicMock(), build_dir=build_dir, harness=None, provider=None,
         )
+
+        resolver.resolve.assert_not_called()
+        claude_writer.write_credentials.assert_not_called()
+
+    def test_skips_provider_without_enabled_credential(self, tmp_path, monkeypatch):
+        build_dir = tmp_path / "build"
+        build_dir.mkdir()
+        claude_writer = MagicMock()
+        self._adapters(monkeypatch, claude=claude_writer)
 
         resolver = MagicMock()
-        resolver.resolve.side_effect = RuntimeError("no enabled tokens")
-        monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
-            lambda *a, **kw: resolver,
-        )
+        resolver.resolve.side_effect = RuntimeError("no enabled credentials")
+        self._resolver(monkeypatch, resolver)
 
-        materialize_agent_credentials(conn=MagicMock(), build_dir=build_dir)
+        materialize_agent_credentials(
+            conn=MagicMock(), build_dir=build_dir, harness="claude", provider="anthropic",
+        )
 
         claude_writer.write_credentials.assert_not_called()
 
@@ -270,81 +295,56 @@ class TestMaterializeAgentCredentials:
         build_dir.mkdir()
         claude_writer = MagicMock()
         claude_writer.write_credentials.side_effect = RuntimeError("boom")
+        self._adapters(monkeypatch, claude=claude_writer)
 
-        monkeypatch.setattr(
-            "agento.framework.config_writer._CONFIG_WRITERS",
-            {AgentProvider.CLAUDE: claude_writer},
-        )
         resolver = MagicMock()
-        resolver.resolve.return_value = _token(AgentProvider.CLAUDE, {"subscription_key": "x"})
-        monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
-            lambda *a, **kw: resolver,
-        )
+        resolver.resolve.return_value = _token("claude", {"subscription_key": "x"})
+        self._resolver(monkeypatch, resolver)
 
         with caplog.at_level(logging.WARNING, logger="agento.modules.workspace_build.src.builder"):
-            materialize_agent_credentials(conn=MagicMock(), build_dir=build_dir)
+            materialize_agent_credentials(
+                conn=MagicMock(), build_dir=build_dir, harness="claude", provider="anthropic",
+            )
 
         assert "failed to write credentials" in caplog.text
 
-    def test_logs_warning_when_token_is_expired(self, tmp_path, monkeypatch, caplog):
-        import logging
-        from datetime import UTC, datetime, timedelta
+    def _materialize_codex(self, monkeypatch, build_dir, expiry):
+        codex_writer = MagicMock()
+        self._adapters(monkeypatch, codex=codex_writer)
+        resolver = MagicMock()
+        resolver.resolve.return_value = _token("codex", {
+            "raw_auth": {"tokens": {"refresh_token": "r", "expiry": expiry}},
+        })
+        self._resolver(monkeypatch, resolver)
+        materialize_agent_credentials(
+            conn=MagicMock(), build_dir=build_dir, harness="codex", provider="openai",
+        )
+        return codex_writer
 
-        from agento.framework.agent_manager.models import AgentProvider
+    def test_logs_warning_when_credential_is_expired(self, tmp_path, monkeypatch, caplog):
+        import logging
+        from datetime import timedelta
 
         build_dir = tmp_path / "build"
         build_dir.mkdir()
-        codex_writer = MagicMock()
-
-        monkeypatch.setattr(
-            "agento.framework.config_writer._CONFIG_WRITERS",
-            {AgentProvider.CODEX: codex_writer},
-        )
-
         past = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-        resolver = MagicMock()
-        resolver.resolve.return_value = _token(AgentProvider.CODEX, {
-            "raw_auth": {"tokens": {"refresh_token": "r", "expiry": past}},
-        })
-        monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
-            lambda *a, **kw: resolver,
-        )
 
         with caplog.at_level(logging.WARNING, logger="agento.modules.workspace_build.src.builder"):
-            materialize_agent_credentials(conn=MagicMock(), build_dir=build_dir)
+            codex_writer = self._materialize_codex(monkeypatch, build_dir, past)
 
         assert "expired" in caplog.text.lower()
         codex_writer.write_credentials.assert_called_once()  # Still writes despite warning
 
-    def test_no_warning_when_token_is_not_expired(self, tmp_path, monkeypatch, caplog):
+    def test_no_warning_when_credential_is_not_expired(self, tmp_path, monkeypatch, caplog):
         import logging
-        from datetime import UTC, datetime, timedelta
-
-        from agento.framework.agent_manager.models import AgentProvider
+        from datetime import timedelta
 
         build_dir = tmp_path / "build"
         build_dir.mkdir()
-        codex_writer = MagicMock()
-
-        monkeypatch.setattr(
-            "agento.framework.config_writer._CONFIG_WRITERS",
-            {AgentProvider.CODEX: codex_writer},
-        )
-
         future = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
-        resolver = MagicMock()
-        resolver.resolve.return_value = _token(AgentProvider.CODEX, {
-            "raw_auth": {"tokens": {"refresh_token": "r", "expiry": future}},
-        })
-        monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
-            lambda *a, **kw: resolver,
-        )
 
         with caplog.at_level(logging.WARNING, logger="agento.modules.workspace_build.src.builder"):
-            materialize_agent_credentials(conn=MagicMock(), build_dir=build_dir)
+            self._materialize_codex(monkeypatch, build_dir, future)
 
         assert "expired" not in caplog.text.lower()
 
@@ -352,28 +352,11 @@ class TestMaterializeAgentCredentials:
     def test_silently_ignores_unparseable_expiry(self, bad_expiry, tmp_path, monkeypatch, caplog):
         import logging
 
-        from agento.framework.agent_manager.models import AgentProvider
-
         build_dir = tmp_path / "build"
         build_dir.mkdir()
-        codex_writer = MagicMock()
-
-        monkeypatch.setattr(
-            "agento.framework.config_writer._CONFIG_WRITERS",
-            {AgentProvider.CODEX: codex_writer},
-        )
-
-        resolver = MagicMock()
-        resolver.resolve.return_value = _token(AgentProvider.CODEX, {
-            "raw_auth": {"tokens": {"refresh_token": "r", "expiry": bad_expiry}},
-        })
-        monkeypatch.setattr(
-            "agento.framework.agent_manager.token_resolver.TokenResolver",
-            lambda *a, **kw: resolver,
-        )
 
         with caplog.at_level(logging.WARNING, logger="agento.modules.workspace_build.src.builder"):
-            materialize_agent_credentials(conn=MagicMock(), build_dir=build_dir)
+            codex_writer = self._materialize_codex(monkeypatch, build_dir, bad_expiry)
 
         # Unparseable/naive expiry must: not warn, not raise, still call write_credentials
         assert "expired" not in caplog.text.lower()

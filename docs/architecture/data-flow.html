@@ -310,12 +310,12 @@
       <span class="lane-label">cron</span>
 
       <div class="card">
-        <div class="card-title">Resolve provider runner via DI</div>
+        <div class="card-title">Resolve the harness's runner via DI</div>
         <div class="card-body">
           Framework stays agent-agnostic — implementations live in
           <a href="../../src/agento/modules/claude/src/runner.py"><code>modules/claude/src/runner.py</code></a> and
           <a href="../../src/agento/modules/codex/src/runner.py"><code>modules/codex/src/runner.py</code></a>;
-          base at <a href="../../src/agento/framework/agent_manager/runner.py#L242"><code>agent_manager/runner.py:242</code></a>.
+          base at <a href="../../src/agento/framework/harness/subprocess_runner.py"><code>harness/subprocess_runner.py</code></a>.
         </div>
       </div>
 
@@ -324,7 +324,7 @@
       <div class="card">
         <div class="card-title">Materialize artifacts dir + <code>.mcp.json</code></div>
         <div class="card-body">
-          Per-provider <code>ConfigWriter</code> writes credentials
+          The harness's <code>WorkspaceAdapter</code> writes credentials
           (<code>~/.claude/.credentials.json</code> / <code>~/.codex/config.toml</code>) and injects the toolbox MCP server entry:
           <code>{ "toolbox": { "type": "http", "url": "http://toolbox:3001/mcp" } }</code>.
         </div>
@@ -340,14 +340,15 @@
         <div class="events">
           <span class="evt before"><a href="../../src/agento/framework/consumer.py#L436">agent_view_run_start_before</a></span>
           <span class="evt after"><a href="../../src/agento/framework/consumer.py#L523">agent_view_run_finish_after</a></span>
-          <span class="evt after"><a href="../../src/agento/framework/consumer.py#L555">token_auth_failed_after</a></span>
-          <span class="evt after"><a href="../../src/agento/framework/consumer.py#L555">token_auth_throttled_after</a></span>
+          <span class="evt after"><a href="../../src/agento/framework/consumer.py#L555">credential_auth_failed_after</a></span>
+          <span class="evt after"><a href="../../src/agento/framework/consumer.py#L555">credential_auth_throttled_after</a></span>
+          <span class="evt after" title="deprecated aliases, dispatched alongside the credential_* names">+ legacy <code>token_*</code> aliases</span>
         </div>
       </div>
 
       <div class="card callout">
-        <code>token_auth_failed_after</code> fires only on a <strong>permanent</strong> runtime auth failure — flips the row in <code>oauth_token</code> to <code>status='error'</code> so the LRU pool skips it until an operator clears it.
-        A <strong>transient</strong> credential rejection (revoked/stale access token, or unrecognised <code>401</code> wording) instead fires <code>token_auth_throttled_after</code> and sets a 15-minute <code>throttled_until</code> cooldown — <code>status</code> stays <code>'ok'</code> and the token self-recovers, because the same credential is usually still serving other jobs.
+        <code>credential_auth_failed_after</code> (legacy alias: <code>token_auth_failed_after</code>) fires only on a <strong>permanent</strong> runtime auth failure — flips the row in <code>credential</code> to <code>status='error'</code> so the LRU pool skips it until an operator clears it.
+        A <strong>transient</strong> credential rejection (revoked/stale access token, or unrecognised <code>401</code> wording) instead fires <code>credential_auth_throttled_after</code> and sets a 15-minute <code>throttled_until</code> cooldown — <code>status</code> stays <code>'ok'</code> and the credential self-recovers, because the same credential is usually still serving other jobs.
       </div>
     </div>
 
@@ -449,10 +450,10 @@
         <div class="card-title">MCP-health telemetry (rc=0 path)</div>
         <div class="card-body">
           <a href="../../src/agento/framework/consumer.py#L637"><code>consumer.py:637</code></a> dispatches with
-          <code>JobFinalizeEvent(job, job_result, elapsed_ms, provider, verdict=None)</code>.
+          <code>JobFinalizeEvent(job, job_result, elapsed_ms, harness, verdict=None)</code>.
           Observer <code>McpHealthTelemetryObserver</code>
           (<a href="../../src/agento/modules/app_monitor/events.json"><code>app_monitor/events.json</code></a>, order=100) parses the
-          transcript via <a href="../../src/agento/framework/transcript_reader.py#L85"><code>get_transcript_reader(provider)</code></a>
+          transcript via <a href="../../src/agento/framework/harness/registry.py"><code>find_harness(harness).adapter.transcript_reader</code></a>
           and records two nullable signals on the <code>job</code> row —
           <code>toolbox_mcp_calls</code> (count of <code>mcp__toolbox__*</code> tool-uses) and
           <code>toolbox_mcp_connected</code> (from <code>job_result.mcp_init</code>) — then optionally emails ops.

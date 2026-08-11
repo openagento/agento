@@ -11,14 +11,14 @@ from unittest.mock import patch
 from agento.framework.agent_manager.errors import AuthenticationError, UsageLimitError
 from agento.framework.agent_manager.models import encrypt_credentials
 from agento.framework.consumer import Consumer
-from agento.framework.runner import RunResult
-from agento.modules.claude.src.runner import TokenClaudeRunner
-from agento.modules.codex.src.runner import TokenCodexRunner
+from agento.framework.harness import RunResult
+from agento.modules.claude.src.runner import ClaudeSubprocessRunner
+from agento.modules.codex.src.runner import CodexSubprocessRunner
 
 from .conftest import _test_connection, fetch_job, insert_queued_job, update_job
 
 
-def _seed_token(label: str, *, priority: int, agent_type: str = "claude") -> int:
+def _seed_token(label: str, *, priority: int, scope: str = "claude") -> int:
     """Insert an enabled, healthy token with an explicit priority. Lower
     priority wins selection (``ORDER BY priority ASC``)."""
     encrypted = encrypt_credentials({"subscription_key": f"sk-invalid-{label}"})
@@ -27,49 +27,62 @@ def _seed_token(label: str, *, priority: int, agent_type: str = "claude") -> int
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO oauth_token
-                    (agent_type, type, label, credentials, enabled, status, priority)
-                VALUES (%s, 'oauth', %s, %s, TRUE, 'ok', %s)
+                INSERT INTO credential
+                    (scope, agent_type, type, label, credentials, enabled, status, priority)
+                VALUES (%s, %s, 'oauth', %s, %s, TRUE, 'ok', %s)
                 """,
-                (agent_type, label, encrypted, priority),
+                (scope, scope, label, encrypted, priority),
             )
             return cur.lastrowid
     finally:
         conn.close()
 
 
-def _bind_provider(agent_type: str = "claude") -> None:
+# Historical harness → model-vendor pairs, frozen here like the data patch.
+_HARNESS_PROVIDERS = {"claude": "anthropic", "codex": "openai"}
+
+
+def _bind_harness(harness: str = "claude") -> None:
+    """Bind agent_view/harness + agent_view/provider at the default scope.
+
+    The consumer resolves the credential pool from the (harness, provider) pair, so both
+    must be set — the harness alone no longer identifies the vendor.
+    """
     conn = _test_connection(autocommit=True)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO core_config_data (scope, scope_id, path, value, encrypted)
-                VALUES ('default', 0, 'agent_view/provider', %s, 0)
-                ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = NOW()
-                """,
-                (agent_type,),
-            )
+            for path, value in (
+                ("agent_view/harness", harness),
+                ("agent_view/provider", _HARNESS_PROVIDERS[harness]),
+            ):
+                cur.execute(
+                    """
+                    INSERT INTO core_config_data (scope, scope_id, path, value, encrypted)
+                    VALUES ('default', 0, %s, %s, 0)
+                    ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = NOW()
+                    """,
+                    (path, value),
+                )
     finally:
         conn.close()
 
 
-def _token_status(token_id: int) -> str:
+def _token_status(credential_id: int) -> str:
     conn = _test_connection(autocommit=True)
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT status FROM oauth_token WHERE id = %s", (token_id,))
+            cur.execute("SELECT status FROM credential WHERE id = %s", (credential_id,))
             return cur.fetchone()["status"]
     finally:
         conn.close()
 
 
-def _token_throttle(token_id: int):
-    """Return the token's throttled_until (naive datetime or None)."""
+def _token_throttle(credential_id: int):
+    """Return the credential's throttled_until (naive datetime or None)."""
     conn = _test_connection(autocommit=True)
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT throttled_until FROM oauth_token WHERE id = %s", (token_id,))
+            cur.execute("SELECT throttled_until FROM credential WHERE id = %s", (credential_id,))
             return cur.fetchone()["throttled_until"]
     finally:
         conn.close()
@@ -84,7 +97,7 @@ def test_auth_failure_retries_onto_next_healthy_token_then_dead_when_exhausted(
     healthy alternative still exists — requeues the job. Once both are poisoned
     the pool is exhausted and the job dead-letters."""
     logger = logging.getLogger("test")
-    _bind_provider("claude")
+    _bind_harness("claude")
     token_a = _seed_token("a", priority=0)
     token_b = _seed_token("b", priority=1)
     job_id = insert_queued_job(
@@ -98,7 +111,7 @@ def test_auth_failure_retries_onto_next_healthy_token_then_dead_when_exhausted(
         raise AuthenticationError("401 Unauthorized")
 
     # Attempt 1: token A selected (priority 0) -> poisoned -> requeue (B healthy).
-    with patch.object(TokenClaudeRunner, "run", new=_reject):
+    with patch.object(ClaudeSubprocessRunner, "execute", new=_reject):
         consumer = Consumer(int_db_config, int_consumer_config, logger)
         job = consumer._try_dequeue()
         assert job is not None
@@ -115,7 +128,7 @@ def test_auth_failure_retries_onto_next_healthy_token_then_dead_when_exhausted(
     update_job(job_id, scheduled_after="2000-01-01 00:00:00")
 
     # Attempt 2: token B selected (A poisoned) -> poisoned -> pool exhausted -> DEAD.
-    with patch.object(TokenClaudeRunner, "run", new=_reject):
+    with patch.object(ClaudeSubprocessRunner, "execute", new=_reject):
         consumer2 = Consumer(int_db_config, int_consumer_config, logger)
         job2 = consumer2._try_dequeue()
         assert job2 is not None
@@ -130,7 +143,7 @@ def test_auth_failure_retries_onto_next_healthy_token_then_dead_when_exhausted(
 
 
 def _usage_limit_failover(
-    db_config, consumer_config, runner_cls, agent_type, success_result, cheap_model,
+    db_config, consumer_config, runner_cls, harness, success_result, cheap_model,
 ):
     """Shared body: a usage/session limit on the priority-0 token must THROTTLE it
     (cooldown, not poison) and fail the job over to the healthy priority-1 token,
@@ -139,12 +152,12 @@ def _usage_limit_failover(
     ``cheap_model`` is threaded through as ``model_override`` (a cheap model per the
     task's cost intent); the runner is mocked so no real API call is made."""
     logger = logging.getLogger("test")
-    _bind_provider(agent_type)
-    token_a = _seed_token("a", priority=0, agent_type=agent_type)
-    token_b = _seed_token("b", priority=1, agent_type=agent_type)
+    _bind_harness(harness)
+    token_a = _seed_token("a", priority=0, scope=harness)
+    token_b = _seed_token("b", priority=1, scope=harness)
     job_id = insert_queued_job(
-        reference_id=f"AI-LIMIT-{agent_type}",
-        idempotency_key=f"limit-pool:{agent_type}:1",
+        reference_id=f"AI-LIMIT-{harness}",
+        idempotency_key=f"limit-pool:{harness}:1",
         max_attempts=3,
     )
 
@@ -153,7 +166,7 @@ def _usage_limit_failover(
         raise UsageLimitError("You've hit your session limit")
 
     # Attempt 1: token A selected (priority 0) -> usage limit -> throttled -> requeue (B healthy).
-    with patch.object(runner_cls, "run", new=_limited):
+    with patch.object(runner_cls, "execute", new=_limited):
         consumer = Consumer(db_config, consumer_config, logger, model_override=cheap_model)
         job = consumer._try_dequeue()
         assert job is not None
@@ -174,7 +187,7 @@ def _usage_limit_failover(
     update_job(job_id, scheduled_after="2000-01-01 00:00:00")
 
     # Attempt 2: token A still throttled -> token B selected -> run succeeds -> SUCCESS.
-    with patch.object(runner_cls, "run", return_value=success_result):
+    with patch.object(runner_cls, "execute", return_value=success_result):
         consumer2 = Consumer(db_config, consumer_config, logger, model_override=cheap_model)
         job2 = consumer2._try_dequeue()
         assert job2 is not None
@@ -191,10 +204,10 @@ def _usage_limit_failover(
 def test_claude_usage_limit_throttles_and_fails_over(int_db_config, int_consumer_config):
     success = RunResult(
         raw_output="ok", input_tokens=1500, output_tokens=800, cost_usd=0.01,
-        num_turns=1, duration_ms=1000, subtype="success", agent_type="claude",
+        num_turns=1, duration_ms=1000, session_id="success", harness="claude",
     )
     _usage_limit_failover(
-        int_db_config, int_consumer_config, TokenClaudeRunner, "claude", success,
+        int_db_config, int_consumer_config, ClaudeSubprocessRunner, "claude", success,
         cheap_model="claude-haiku-4-5-20251001",
     )
 
@@ -202,10 +215,10 @@ def test_claude_usage_limit_throttles_and_fails_over(int_db_config, int_consumer
 def test_codex_usage_limit_throttles_and_fails_over(int_db_config, int_consumer_config):
     success = RunResult(
         raw_output="ok", input_tokens=1000, output_tokens=None, num_turns=1,
-        duration_ms=1000, subtype="success", agent_type="codex",
+        duration_ms=1000, session_id="success", harness="codex",
     )
     _usage_limit_failover(
-        int_db_config, int_consumer_config, TokenCodexRunner, "codex", success,
+        int_db_config, int_consumer_config, CodexSubprocessRunner, "codex", success,
         cheap_model="gpt-5.4-mini",
     )
 
@@ -247,7 +260,7 @@ def test_revoked_token_throttles_and_fails_over_instead_of_dead_lettering(
     succeeds.
     """
     logger = logging.getLogger("test")
-    _bind_provider("claude")
+    _bind_harness("claude")
     token_limited = _seed_token("prio0-session-limited", priority=0)
     token_revoked = _seed_token("prio1-revoked", priority=1)
     token_healthy = _seed_token("prio2-healthy", priority=2)
@@ -257,7 +270,7 @@ def test_revoked_token_throttles_and_fails_over_instead_of_dead_lettering(
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE oauth_token SET throttled_until = UTC_TIMESTAMP() + INTERVAL 1 HOUR "
+                "UPDATE credential SET throttled_until = UTC_TIMESTAMP() + INTERVAL 1 HOUR "
                 "WHERE id = %s",
                 (token_limited,),
             )
@@ -271,7 +284,7 @@ def test_revoked_token_throttles_and_fails_over_instead_of_dead_lettering(
     # Attempt 1: prio-0 skipped (throttled) -> prio-1 selected -> the real parser
     # classifies the raw 401 as transient -> throttle + requeue. No token_id on the
     # exception, so the consumer attributes it to the token IT resolved from the pool.
-    with patch.object(TokenClaudeRunner, "_execute_process", new=_revoked_process):
+    with patch.object(ClaudeSubprocessRunner, "_execute_process", new=_revoked_process):
         consumer = Consumer(int_db_config, int_consumer_config, logger)
         job = consumer._try_dequeue()
         assert job is not None
@@ -297,9 +310,9 @@ def test_revoked_token_throttles_and_fails_over_instead_of_dead_lettering(
     # attempt above needs to go through `parse_claude_output`.
     success = RunResult(
         raw_output="ok", input_tokens=1500, output_tokens=800, cost_usd=0.01,
-        num_turns=1, duration_ms=1000, subtype="success", agent_type="claude",
+        num_turns=1, duration_ms=1000, session_id="success", harness="claude",
     )
-    with patch.object(TokenClaudeRunner, "run", return_value=success):
+    with patch.object(ClaudeSubprocessRunner, "execute", return_value=success):
         consumer2 = Consumer(int_db_config, int_consumer_config, logger)
         job2 = consumer2._try_dequeue()
         assert job2 is not None
@@ -323,13 +336,13 @@ def test_revoked_token_dead_letters_only_once_the_pool_is_exhausted(
     dead-letters immediately (the ``NON_RETRYABLE_ERRORS`` path) rather than burning
     all three attempts on the same credential."""
     logger = logging.getLogger("test")
-    _bind_provider("claude")
+    _bind_harness("claude")
     only_token = _seed_token("only-revoked", priority=0)
     job_id = insert_queued_job(
         reference_id="AI-REVOKED-SOLO", idempotency_key="revoked-pool:solo", max_attempts=3,
     )
 
-    with patch.object(TokenClaudeRunner, "_execute_process", new=_revoked_process):
+    with patch.object(ClaudeSubprocessRunner, "_execute_process", new=_revoked_process):
         consumer = Consumer(int_db_config, int_consumer_config, logger)
         job = consumer._try_dequeue()
         assert job is not None

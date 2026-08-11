@@ -10,13 +10,14 @@ import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from agento.framework.agent_manager.credential_store import update_refreshed_credentials
 from agento.framework.agent_manager.errors import AuthenticationError
-from agento.framework.agent_manager.token_store import update_refreshed_credentials
+from agento.framework.harness import ToolboxConnectionSpec
 
 if TYPE_CHECKING:
     import pymysql
 
-    from agento.framework.agent_manager.models import Token
+    from agento.framework.agent_manager.models import CredentialRecord
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,25 @@ def _dump_toml(data: dict) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
-class CodexConfigWriter:
+def _strip_toml_table(text: str, table: str) -> str:
+    """Remove ``table`` and its key/value lines from ``text``, keeping everything else.
+
+    Deliberately line-based rather than a full TOML round-trip: rewriting the file through a
+    parser would reformat and reorder an operator's hand-edited config.toml, and this only
+    needs to replace one table it owns.
+    """
+    out: list[str] = []
+    skipping = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            skipping = stripped == table
+        if not skipping:
+            out.append(line)
+    return "\n".join(out)
+
+
+class CodexWorkspaceAdapter:
     """Writes Codex CLI config: .codex/config.toml with MCP servers block."""
 
     def owned_paths(self) -> tuple[set[str], set[str]]:
@@ -98,23 +117,23 @@ class CodexConfigWriter:
         """Codex session + history state that must survive workspace rebuilds."""
         return [".codex/history.jsonl", ".codex/sessions"]
 
-    def credential_env(self, token: Token) -> dict[str, str]:
-        if token.type == "openai_api_key":
-            credentials = token.credentials or {}
+    def credential_env(self, credential: CredentialRecord) -> dict[str, str]:
+        if credential.type == "openai_api_key":
+            credentials = credential.credentials or {}
             if not credentials.get("api_key"):
                 raise ValueError(
-                    f"Token id={token.id} label={token.label!r} is typed "
+                    f"Credential id={credential.id} label={credential.label!r} is typed "
                     "'openai_api_key' but credentials['api_key'] is missing or empty."
                 )
             # Codex CLI does not treat OPENAI_API_KEY as runtime auth in a
             # clean HOME. API-key tokens are materialized into auth.json by
-            # write_credentials(), same as access-token/OAuth credentials.
+            # write_credentials(), same as access-credential/OAuth credentials.
             return {}
         # oauth + codex_access_token both rely on .codex/auth.json on disk.
         return {}
 
-    def write_credentials(self, build_dir: Path, token: Token) -> None:
-        """Materialize Codex auth based on token.type.
+    def write_credentials(self, build_dir: Path, credential: CredentialRecord) -> None:
+        """Materialize Codex auth based on credential.type.
 
         - codex_access_token: shell out to ``codex login --with-access-token``
           with ``HOME=<target_dir>`` and the JWT on stdin so Codex itself
@@ -125,28 +144,28 @@ class CodexConfigWriter:
         - oauth (default): write the captured raw_auth verbatim to
           ``.codex/auth.json``.
         """
-        if token.type == "codex_access_token":
-            access_token = (token.credentials or {}).get("access_token")
+        if credential.type == "codex_access_token":
+            access_token = (credential.credentials or {}).get("access_token")
             if not access_token:
                 raise AuthenticationError(
-                    f"Token id={token.id} label={token.label!r} is typed "
+                    f"Credential id={credential.id} label={credential.label!r} is typed "
                     "'codex_access_token' but credentials['access_token'] is missing or empty."
                 )
             self._login_with_access_token(build_dir, access_token)
             return
 
-        if token.type == "openai_api_key":
-            api_key = (token.credentials or {}).get("api_key")
+        if credential.type == "openai_api_key":
+            api_key = (credential.credentials or {}).get("api_key")
             if not api_key:
                 raise AuthenticationError(
-                    f"Token id={token.id} label={token.label!r} is typed "
+                    f"Credential id={credential.id} label={credential.label!r} is typed "
                     "'openai_api_key' but credentials['api_key'] is missing or empty."
                 )
             self._login_with_api_key(build_dir, api_key)
             return
 
         # oauth (default)
-        credentials = token.credentials or {}
+        credentials = credential.credentials or {}
         raw_auth = credentials.get("raw_auth")
         if not raw_auth:
             logger.warning(
@@ -162,7 +181,7 @@ class CodexConfigWriter:
         logger.debug("Wrote Codex OAuth credentials to %s", path)
 
     def _login_with_access_token(self, build_dir: Path, token_str: str) -> None:
-        """Run `codex login --with-access-token` with HOME=<target_dir>; token
+        """Run `codex login --with-access-token` with HOME=<target_dir>; the token
         is piped via stdin so it never appears in argv or env."""
         build_dir.mkdir(parents=True, exist_ok=True)
         env = {**os.environ, "HOME": str(build_dir)}
@@ -175,7 +194,7 @@ class CodexConfigWriter:
             )
         except FileNotFoundError as exc:
             raise AuthenticationError(
-                "Codex CLI not found on PATH; cannot materialize access-token auth.json."
+                "Codex CLI not found on PATH; cannot materialize access-credential auth.json."
             ) from exc
         except subprocess.TimeoutExpired as exc:
             raise AuthenticationError(
@@ -193,7 +212,7 @@ class CodexConfigWriter:
                 f"{stderr_snippet}"
             )
         logger.debug(
-            "Materialized Codex access-token auth.json via codex login (HOME=%s)",
+            "Materialized Codex access-credential auth.json via codex login (HOME=%s)",
             build_dir,
         )
 
@@ -353,34 +372,49 @@ class CodexConfigWriter:
 
         config_path.write_text("\n".join(lines) + "\n")
 
+    def remove_credentials(self, target_dir: Path) -> None:
+        """Drop Codex's login state, keeping `.codex/config.toml` intact.
+
+        Only `auth.json` holds credentials; config.toml carries model/MCP settings the
+        login flow still needs.
+        """
+        auth_path = target_dir / ".codex" / "auth.json"
+        auth_path.unlink(missing_ok=True)
+        logger.debug("Removed Codex credential state from %s", target_dir)
+
     def capture_refreshed_credentials(
         self,
         home_dir: Path,
-        token: Token,
+        credential: CredentialRecord,
         conn: pymysql.Connection,
-    ) -> None:
+    ) -> bool:
+        """Persist the Codex CLI's on-disk credential rotation back to ``credential``.
+
+        Returns ``True`` when something was persisted, per the ``WorkspaceAdapter``
+        protocol — every early exit below is a "nothing to capture" case.
+        """
         # Only OAuth tokens have a refresh_token Codex CLI might rotate.
-        # API-key and access-token rows never produce a meaningful auth.json
+        # API-key and access-credential rows never produce a meaningful auth.json
         # diff we should persist back.
-        if token.type != "oauth":
-            return
+        if credential.type != "oauth":
+            return False
         auth_path = home_dir / ".codex" / "auth.json"
         if not auth_path.is_file():
-            return
+            return False
 
         try:
             refreshed = json.loads(auth_path.read_text())
         except Exception:
             logger.warning("Failed to read refreshed auth.json at %s", auth_path, exc_info=True)
-            return
+            return False
 
-        old_refresh = (token.credentials or {}).get("raw_auth", {}).get("tokens", {}).get("refresh_token")
+        old_refresh = (credential.credentials or {}).get("raw_auth", {}).get("tokens", {}).get("refresh_token")
         new_refresh = refreshed.get("tokens", {}).get("refresh_token")
 
         if not new_refresh or new_refresh == old_refresh:
-            return
+            return False
 
-        new_creds = dict(token.credentials or {})
+        new_creds = dict(credential.credentials or {})
         new_creds["raw_auth"] = refreshed
         tokens = refreshed.get("tokens", {})
         if "refresh_token" in tokens:
@@ -389,6 +423,45 @@ class CodexConfigWriter:
             new_creds["subscription_key"] = tokens["access_token"]
 
         # Capture-specific persistence: preserves operator/health state (does NOT
-        # re-enable a token an operator disabled mid-run). Now that the consumer
-        # hook commits the capture, register_token would silently resurrect it.
-        update_refreshed_credentials(conn, token.id, new_creds, logger=logger)
+        # re-enable a credential an operator disabled mid-run). Now that the consumer
+        # hook commits the capture, register_credential would silently resurrect it.
+        update_refreshed_credentials(conn, credential.id, new_creds, logger=logger)
+        return True
+
+    def serialize_toolbox_connection(
+        self, spec: ToolboxConnectionSpec, target_dir: Path
+    ) -> None:
+        """Write the Toolbox entry into Codex's ``.codex/config.toml``.
+
+        How a connection is materialized is entirely the harness's business — the framework
+        hands over a plain :class:`ToolboxConnectionSpec` and makes no assumption that a
+        harness even has an MCP config file.
+
+        **Idempotent**: an existing ``[mcp_servers.<name>]`` table for this spec is REPLACED,
+        not appended to. Appending produced duplicate tables on a second call, and Codex takes
+        whichever it parses last — so a stale URL could win.
+
+        ``spec.headers`` is serialized too (``http_headers``); dropping it would silently lose
+        the Toolbox's auth on any deployment that sets one.
+        """
+        config_path = target_dir / ".codex" / "config.toml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        table = f"[mcp_servers.{_toml_quote_key(spec.name)}]"
+        body = [
+            table,
+            f"type = {_toml_literal(spec.transport)}",
+            f"url = {_toml_literal(spec.url)}",
+        ]
+        if spec.headers:
+            inline = ", ".join(
+                f"{_toml_quote_key(k)} = {_toml_literal(v)}"
+                for k, v in sorted(spec.headers.items())
+            )
+            body.append(f"http_headers = {{ {inline} }}")
+
+        existing = config_path.read_text() if config_path.is_file() else ""
+        kept = _strip_toml_table(existing, table)
+        parts = [kept.rstrip("\n")] if kept.strip() else []
+        parts.append("\n".join(body))
+        config_path.write_text("\n\n".join(parts).lstrip("\n") + "\n")

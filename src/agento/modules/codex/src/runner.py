@@ -4,19 +4,13 @@ import json
 import re
 import subprocess
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
 
 from agento.framework.agent_manager.errors import (
     AuthenticationError,
     TransientAuthError,
     UsageLimitError,
 )
-from agento.framework.agent_manager.models import AgentProvider
-from agento.framework.agent_manager.runner import TokenRunner
-from agento.framework.runner import RunResult
-
-if TYPE_CHECKING:
-    from agento.framework.agent_manager.models import Token
+from agento.framework.harness import RunResult, SubprocessRunner
 
 # Anchored auth phrases checked ONLY against turn.failed.error.message in the
 # NDJSON stream. Never matched against raw stdout/stderr — that's the bug we're
@@ -59,40 +53,14 @@ _RETRY_AFTER_RE = re.compile(
 )
 
 
-class TokenCodexRunner(TokenRunner):
-    """Token-managed Codex runner using a subscription key."""
+class CodexSubprocessRunner(SubprocessRunner):
+    """Runs the Codex CLI. Commands come from CodexCommandBuilder."""
 
-    @property
-    def agent_type(self) -> AgentProvider:
-        return AgentProvider.CODEX
-
-    def _build_env(self, token: Token) -> dict[str, str]:
-        from agento.framework.config_writer import get_config_writer
-        return get_config_writer(self.agent_type).credential_env(token)
-
-    def _build_command(self, prompt: str, model: str | None = None) -> list[str]:
-        cmd = [
-            "codex", "exec", prompt,
-            "--json",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--skip-git-repo-check",
-        ]
-        if model:
-            cmd.extend(["--model", model])
-        return cmd
-
-    def _build_resume_command(self, session_id: str, model: str | None = None) -> list[str]:
-        # Non-interactive resume: `codex exec resume <id> <prompt>` (not `codex resume`, which needs a TTY).
-        cmd = [
-            "codex", "exec", "resume", session_id,
-            "Continue working from where you left off.",
-            "--json",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--skip-git-repo-check",
-        ]
-        if model:
-            cmd.extend(["--model", model])
-        return cmd
+    def _credential_env(self, credential: object | None) -> dict[str, str]:
+        if credential is None:
+            return {}
+        from agento.modules.codex.src.config import CodexWorkspaceAdapter
+        return CodexWorkspaceAdapter().credential_env(credential)
 
     def _try_parse_session_id(self, line: str) -> str | None:
         """Streaming hook: extract thread_id from the first ``thread.started``
@@ -263,7 +231,7 @@ def _populate_session(events: list[dict], result: RunResult) -> None:
         if ev.get("type") == "thread.started":
             thread_id = ev.get("thread_id")
             if isinstance(thread_id, str) and thread_id:
-                result.subtype = thread_id
+                result.session_id = thread_id
             return
 
 

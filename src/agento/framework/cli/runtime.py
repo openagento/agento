@@ -3,14 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 
 from ..agent_manager.config import AgentManagerConfig
-from ..agent_manager.token_store import get_token, select_token
+from ..agent_manager.credential_store import get_credential, select_credential
 from ..consumer_config import ConsumerConfig
 from ..database_config import DatabaseConfig
 from ..db import get_connection_or_exit
 from ..log import get_logger
-from ..runner_factory import create_runner
 
 
 def _load_framework_config() -> tuple[DatabaseConfig, ConsumerConfig, AgentManagerConfig]:
@@ -26,43 +26,99 @@ def _load_framework_config() -> tuple[DatabaseConfig, ConsumerConfig, AgentManag
     )
 
 
-def _resolve_token(token_id: int | None = None, agent_type=None):
-    """Resolve a Token by explicit id, or pick the LRU healthy one from the pool.
+def _resolve_credential(credential_id: int | None = None, *, scope: str | None = None):
+    """Resolve a credential by explicit id, or claim the LRU healthy one from its pool.
 
-    When ``token_id`` is None, ``agent_type`` must be supplied; replay paths
-    derive it from the job record.
+    When ``credential_id`` is None a ``scope`` must be supplied; replay derives it from the
+    job record's harness.
     """
 
     db_config, _, _ = _load_framework_config()
     conn = get_connection_or_exit(db_config)
     try:
-        if token_id is not None:
-            token = get_token(conn, token_id)
-            if token is None:
-                raise ValueError(f"Token not found: id={token_id}")
-            if not token.enabled:
-                raise ValueError(f"Token disabled: id={token_id}")
-            return token
-        if agent_type is None:
+        if credential_id is not None:
+            credential = get_credential(conn, credential_id)
+            if credential is None:
+                raise ValueError(f"Credential not found: id={credential_id}")
+            if not credential.enabled:
+                raise ValueError(f"Credential disabled: id={credential_id}")
+            return credential
+        if scope is None:
             raise RuntimeError(
-                "Cannot resolve a token without --oauth_token or an agent_type. "
-                "Pass --oauth_token or configure agent_view/provider."
+                "Cannot resolve a credential without --credential or a scope. "
+                "Pass --credential or configure agent_view/harness."
             )
-        selected = select_token(conn, agent_type)
+        selected = select_credential(conn, scope)
         if selected is None:
             raise RuntimeError(
-                f"No healthy tokens for agent_type={agent_type.value}. "
-                f"Check: bin/agento token:list --all"
+                f"No healthy credentials for scope={scope}. "
+                f"Check: bin/agento credential:list --all"
             )
         return selected
     finally:
         conn.close()
 
 
-def _make_runner(logger: logging.Logger | None = None) -> object:
-    token = _resolve_token()
+def _harness_and_provider_for_scope(scope: str) -> tuple[str, str]:
+    """Map a credential scope to the ``(harness, provider)`` that owns it.
+
+    A scope is NOT a harness id — the axes are independent, and a harness may name its
+    scope anything. Resolve the owner through the registry instead of assuming they
+    coincide (they happen to for the two shipped harnesses, which is what made the
+    assumption look harmless).
+    """
+    from ..harness import get_harness_for_scope
+
+    registered = get_harness_for_scope(scope)
+    if registered is None:
+        print(
+            f"Error: no registered harness owns credential scope {scope!r}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    descriptor = registered.descriptor
+    provider = next(
+        (p for p in descriptor.providers if p.credential_scope == scope), None,
+    )
+    if provider is None:  # pragma: no cover - registry guarantees the inverse mapping
+        print(
+            f"Error: harness {descriptor.id!r} owns scope {scope!r} but offers no "
+            f"provider using it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return str(descriptor.id), str(provider.id)
+
+
+def _make_runner(
+    harness: str,
+    provider: str,
+    logger: logging.Logger | None = None,
+    *,
+    credential=None,
+    model: str | None = None,
+) -> object:
+    """Build a runner for an explicit (harness, provider), claiming the credential ONCE.
+
+    The caller owns credential selection (the runner has no pool access), so the command
+    and the process can never end up on two different credentials. Pass ``credential``
+    when it has already been claimed (e.g. ``replay --credential-id``) so this does not
+    claim a second, different one.
+    """
+    from ..harness import HarnessRunContext, create_runner, resolve_provider
+
+    provider_desc = resolve_provider(harness, provider)
+    if credential is None and provider_desc.credential_required:
+        credential = _resolve_credential(scope=provider_desc.credential_scope)
     _, consumer_config, _ = _load_framework_config()
-    return create_runner(token.agent_type, logger=logger, dry_run=consumer_config.disable_llm)
+    ctx = HarnessRunContext(
+        harness=harness,
+        provider=provider_desc.id,
+        model=model,
+        credential_required=provider_desc.credential_required,
+        credential=credential,
+    )
+    return create_runner(harness, ctx, logger=logger, dry_run=consumer_config.disable_llm)
 
 
 class ConsumerCommand:
@@ -188,8 +244,9 @@ class ReplayCommand:
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("job_id", type=int, help="Job ID to replay")
-        parser.add_argument("--oauth_token", type=int, default=None,
-                          help="Override token id (default: least-recently-used healthy token)")
+        parser.add_argument("--credential", "--credential-id", "--oauth_token",
+                          type=int, dest="credential_id", default=None,
+                          help="Override credential id (default: least-recently-used healthy credential)")
         parser.add_argument("--model", type=str, default=None,
                           help="Override the model (e.g. claude-opus-4-20250514)")
         parser.add_argument("--exec", action="store_true",
@@ -201,7 +258,7 @@ class ReplayCommand:
         from ..bootstrap import bootstrap
         from ..replay import build_replay_command, fetch_job_for_replay
 
-        db_config, consumer_config, _ = _load_framework_config()
+        db_config, _consumer_config, _ = _load_framework_config()
         conn = get_connection_or_exit(db_config)
         try:
             bootstrap(db_conn=conn)
@@ -210,38 +267,48 @@ class ReplayCommand:
 
         job = fetch_job_for_replay(args.job_id, db_config)
 
-        # Resolve agent_type from --oauth_token or primary token or job record
-        token = _resolve_token(args.oauth_token) if args.oauth_token else None
-        agent_type_override = token.agent_type.value if token else None
+        # An explicit --credential-id also pins the harness: resolve the scope's OWNER
+        # rather than treating the scope string as a harness id.
+        # An explicit --credential-id also pins the harness AND the provider: resolve the
+        # scope's OWNER rather than treating the scope string as a harness id.
+        credential = _resolve_credential(args.credential_id) if args.credential_id else None
+        harness_override = provider_override = None
+        if credential is not None:
+            harness_override, provider_override = _harness_and_provider_for_scope(
+                credential.scope
+            )
 
         replay = build_replay_command(
             job,
-            agent_type_override=agent_type_override,
+            harness_override=harness_override,
+            provider_override=provider_override,
             model_override=args.model,
         )
 
         if args.exec:
             logger = get_logger("replay", "/app/logs/replay.log", stderr=False)
-            # Use explicit token or pick from the pool for the job's agent_type
-            if token is None:
-                from ..agent_manager.models import AgentProvider as _AgentProvider
-                replay_agent_type = _AgentProvider(replay.agent_type)
-                run_token = _resolve_token(None, agent_type=replay_agent_type)
-            else:
-                run_token = token
-            runner = create_runner(
-                run_token.agent_type, logger=logger, dry_run=consumer_config.disable_llm
+            from ..harness import RunRequest
+
+            # `replay.provider`/`replay.model` already resolved override → job value →
+            # default. Passing `args.model` here instead meant a replay without --model
+            # DISPLAYED the job's model but EXECUTED on the provider default.
+            runner = _make_runner(
+                replay.harness, replay.provider, logger=logger, credential=credential,
+                model=replay.model,
             )
-            result = runner.run(replay.prompt, model=args.model)
+            result = runner.execute(
+                RunRequest(prompt=replay.prompt, model=replay.model)
+            )
             print(json.dumps({
                 "job_id": job.id,
-                "agent_type": result.agent_type or replay.agent_type,
+                "agent_type": result.harness or replay.harness,
+                "provider": result.provider or replay.provider,
                 "model": result.model or replay.model,
                 "input_tokens": result.input_tokens,
                 "output_tokens": result.output_tokens,
                 "cost_usd": result.cost_usd,
                 "duration_ms": result.duration_ms,
-                "subtype": result.subtype,
+                "session_id": result.session_id,
                 "output_preview": result.raw_output[:500],
             }, indent=2))
         elif args.json:
@@ -250,7 +317,8 @@ class ReplayCommand:
                 "type": job.type.value,
                 "source": job.source,
                 "reference_id": job.reference_id,
-                "agent_type": replay.agent_type,
+                "agent_type": replay.harness,
+                "provider": replay.provider,
                 "model": replay.model,
                 "command": replay.args,
                 "shell_command": replay.shell_command,
@@ -259,7 +327,7 @@ class ReplayCommand:
             }, indent=2, ensure_ascii=False))
         else:
             print(f"Job #{job.id} ({job.type.value}) ref={job.reference_id}")
-            print(f"Agent: {replay.agent_type}  Model: {replay.model or 'default'}")
+            print(f"Agent: {replay.harness}  Model: {replay.model or 'default'}")
             print(f"Prompt ({len(replay.prompt)} chars):")
             print("---")
             print(replay.prompt)
@@ -443,8 +511,9 @@ class E2eCommand:
         return "Run end-to-end tests with real LLM calls"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--oauth_token", type=int, default=None,
-                          help="Override token id (default: least-recently-used healthy token)")
+        parser.add_argument("--credential", "--credential-id", "--oauth_token",
+                          type=int, dest="credential_id", default=None,
+                          help="Override credential id (default: least-recently-used healthy credential)")
         parser.add_argument("--keep", action="store_true",
                           help="Keep test jobs in DB (don't clean up)")
         parser.add_argument("--model", type=str, default=None,

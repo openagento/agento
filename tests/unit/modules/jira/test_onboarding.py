@@ -192,7 +192,7 @@ class TestRun:
         conn = _mock_conn({})
         JiraOnboarding().run(conn, {}, logging.getLogger("test"))
 
-        # Token saved via auto_encrypt
+        # CredentialRecord saved via auto_encrypt
         mock_auto_encrypt.assert_called_once_with(conn, "jira/jira_token", "my-api-token")
 
         # Other config saved via config_set

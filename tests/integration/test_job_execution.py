@@ -32,7 +32,7 @@ class TestCronJobClaude:
         assert row["prompt"] is not None
         assert len(row["prompt"]) > 0
         assert row["output"] is not None
-        assert "subtype=success" in row["result_summary"]
+        assert "session_id=success" in row["result_summary"]
         assert "in=1500" in row["result_summary"]
         assert "out=800" in row["result_summary"]
         assert "duration_ms=45000" in row["result_summary"]

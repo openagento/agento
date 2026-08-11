@@ -1,53 +1,56 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
 
-class AgentProvider(Enum):
-    CLAUDE = "claude"
-    CODEX = "codex"
-
-
-class TokenStatus(Enum):
+class CredentialStatus(Enum):
     OK = "ok"
     ERROR = "error"
 
 
 @dataclass
-class Token:
+class CredentialRecord:
+    """One row of the ``credential`` table.
+
+    ``scope`` is the open credential scope a harness declares in its ``di.json``
+    (e.g. ``"claude"``) — it replaced the closed ``claude|codex`` enum. ``credentials``
+    is the decrypted payload and is ``repr=False``: hiding it only inside the run
+    context would not protect it when this object is logged directly.
+    """
+
     id: int
-    agent_type: AgentProvider
+    scope: str
     type: str
     label: str
-    credentials: dict | None
-    token_limit: int
-    enabled: bool
-    status: TokenStatus
-    priority: int
-    error_msg: str | None
-    expires_at: datetime | None
-    used_at: datetime | None
-    created_at: datetime
-    updated_at: datetime
-    # Temporary usage-limit cooldown (oauth_token.throttled_until). NULL/None when
-    # not throttled. Default keeps existing keyword constructions working; placed
-    # last because it is the only field with a default.
+    credentials: dict | None = field(repr=False, default=None)
+    token_limit: int = 0
+    enabled: bool = True
+    status: CredentialStatus = CredentialStatus.OK
+    priority: int = 0
+    error_msg: str | None = None
+    expires_at: datetime | None = None
+    used_at: datetime | None = None
+    created_at: datetime = datetime(2000, 1, 1)
+    updated_at: datetime = datetime(2000, 1, 1)
+    # Temporary usage-limit cooldown (credential.throttled_until). None when not throttled.
     throttled_until: datetime | None = None
 
     @classmethod
-    def from_row(cls, row: dict) -> Token:
+    def from_row(cls, row: dict) -> CredentialRecord:
         return cls(
             id=row["id"],
-            agent_type=AgentProvider(row["agent_type"]),
+            # `scope` is the column going forward; `agent_type` is the dual-written
+            # legacy column, read only as a fallback for a pre-migration row.
+            scope=row.get("scope") or row["agent_type"],
             type=row.get("type") or "oauth",
             label=row["label"],
             credentials=_decrypt_credentials(row.get("credentials")),
             token_limit=row["token_limit"],
             enabled=bool(row["enabled"]),
-            status=TokenStatus(row.get("status", "ok") or "ok"),
+            status=CredentialStatus(row.get("status", "ok") or "ok"),
             priority=int(row.get("priority") or 0),
             error_msg=row.get("error_msg"),
             expires_at=row.get("expires_at"),
@@ -67,13 +70,34 @@ def _decrypt_credentials(raw: str | None) -> dict | None:
 
 
 def encrypt_credentials(credentials: dict) -> str:
-    """Encrypt a plaintext credentials dict for storage in oauth_token.credentials."""
+    """Encrypt a plaintext credentials dict for storage in credential.credentials."""
     from ..encryptor import get_encryptor
     return get_encryptor().encrypt(json.dumps(credentials))
 
 
 @dataclass
+class CredentiallessUsage:
+    """Usage of runs made by a provider that requires no credential.
+
+    Attributed by ``(harness, provider)`` since there is no credential row to hang it
+    off. Reported separately from :class:`UsageSummary` so it can never be counted
+    against a credential's limit.
+    """
+
+    harness: str | None
+    provider: str | None
+    total_tokens: int
+    call_count: int
+
+
+@dataclass
 class UsageSummary:
-    token_id: int
+    """Usage aggregated for one credential, or for credential-less runs.
+
+    ``credential_id`` is ``None`` for the bucket of runs made by a provider that
+    requires no credential — those rows carry ``(harness, provider)`` instead.
+    """
+
+    credential_id: int | None
     total_tokens: int
     call_count: int

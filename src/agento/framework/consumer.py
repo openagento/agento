@@ -9,14 +9,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from .agent_manager.errors import AuthenticationError, TransientAuthError, UsageLimitError
-from .agent_manager.models import AgentProvider
-from .agent_manager.token_resolver import TokenResolver
-from .agent_manager.token_store import (
-    count_tokens_for_provider,
-    mark_token_error,
-    throttle_token,
+from .agent_manager.credential_resolver import CredentialResolver
+from .agent_manager.credential_store import (
+    count_credentials_for_scope,
+    mark_credential_error,
+    throttle_credential,
 )
+from .agent_manager.errors import AuthenticationError, TransientAuthError, UsageLimitError
 from .agent_view_runtime import resolve_agent_view_runtime
 from .bootstrap import bootstrap, dispatch_reload, dispatch_shutdown, get_module_config
 from .channels.registry import get_channel
@@ -30,6 +29,9 @@ from .events import (
     ConsumerReloadedEvent,
     ConsumerStartedEvent,
     ConsumerStoppingEvent,
+    CredentialAuthFailedEvent,
+    CredentialAuthThrottledEvent,
+    CredentialUsageLimitedEvent,
     JobClaimedEvent,
     JobDeadEvent,
     JobFailedEvent,
@@ -37,17 +39,22 @@ from .events import (
     JobRetryingEvent,
     JobSucceededEvent,
     JobVerificationFailed,
-    TokenAuthFailedEvent,
-    TokenAuthThrottledEvent,
-    TokenUsageLimitedEvent,
     WorkerStartedEvent,
     WorkerStoppedEvent,
+    dispatch_credential_event,
+)
+from .harness import (
+    HarnessRunContext,
+    McpInitReport,
+    RunRequest,
+    RunResult,
+    create_runner,
+    resolve_provider,
+    workspace_adapter_for,
 )
 from .job_models import Job, JobStatus
 from .retry_policy import evaluate as evaluate_retry
 from .run_preparation import materialize_run_workspace
-from .runner import McpInitReport, RunResult
-from .runner_factory import create_runner
 from .workflows import get_workflow_class
 from .workflows.base import JobContext
 
@@ -68,7 +75,11 @@ _DEFAULT_TRANSIENT_AUTH_THROTTLE = timedelta(minutes=15)
 class _JobResult:
     """Carries execution metadata from _run_job to _finalize_job."""
     summary: str
+    # `job.agent_type` already stores what is now called the harness id ("claude",
+    # "codex"), so the harness lands in the existing column and no rename is needed.
+    # The provider is recorded per run on `usage_log.provider`.
     agent_type: str | None = None
+    provider: str | None = None
     model: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
@@ -81,13 +92,14 @@ class _JobResult:
     def from_run_result(cls, result: RunResult, summary: str) -> _JobResult:
         return cls(
             summary=summary,
-            agent_type=result.agent_type,
+            agent_type=result.harness,
+            provider=result.provider,
             model=result.model,
             input_tokens=result.input_tokens,
             output_tokens=result.output_tokens,
             prompt=result.prompt,
             output=result.raw_output,
-            session_id=result.subtype,
+            session_id=result.session_id,
             mcp_init=result.mcp_init,
         )
 
@@ -123,7 +135,7 @@ class Consumer:
         self._shutdown = threading.Event()
         self._db_config = db_config
         self._consumer_config = consumer_config
-        self._token_resolver = TokenResolver()
+        self._credential_resolver = CredentialResolver()
         self._active_jobs = 0
         self._active_jobs_lock = threading.Lock()
 
@@ -432,21 +444,28 @@ class Consumer:
         try:
             runtime = resolve_agent_view_runtime(conn, job.agent_view_id)
 
-            # agent_view/provider must be explicitly set — the sticky primary-token
-            # fallback is gone (tokens are now an LRU pool per provider, not a single
+            # agent_view/harness must resolve — the sticky primary-credential
+            # fallback is gone (credentials are an LRU pool per scope, not a single
             # globally-preferred license).
-            if runtime.provider is None:
+            if runtime.harness is None:
                 raise RuntimeError(
-                    "No agent_view/provider configured. Set it via: "
-                    "bin/agento config:set agent_view/provider <claude|codex> "
+                    "No agent_view/harness configured. Set it via: "
+                    "bin/agento config:set agent_view/harness <harness> "
                     "--scope=agent_view --scope-id=<id>"
                 )
-            agent_type = AgentProvider(runtime.provider)
+            harness = runtime.harness
+            provider_desc = resolve_provider(harness, runtime.provider)
             # Explicit --model flag (e2e/replay) wins over config (ENV/DB) model.
             model_override = self.model_override or runtime.model
 
-            # Resolve token via TokenResolver (LRU over healthy pool)
-            token = self._token_resolver.resolve(conn, agent_type)
+            # The CALLER claims the credential — exactly once per run. The runner
+            # consumes ctx.credential and never touches the pool, so the command and
+            # the process can never end up on two different credentials.
+            scope = provider_desc.credential_scope
+            credential = (
+                self._credential_resolver.resolve(conn, scope)
+                if provider_desc.credential_required else None
+            )
 
             # Resolve shared toolbox base URL (needed below for writer injection).
             from .config_resolver import ScopedConfigService
@@ -472,13 +491,14 @@ class Consumer:
             agent_config_svc=agent_config_svc,
             toolbox_url=toolbox_url,
             em=em,
-            token=token,
+            credential=credential,
         )
 
         em.dispatch("agent_view_run_start_before", AgentViewRunStartedEvent(
             job=job,
             agent_view_id=job.agent_view_id,
-            provider=agent_type.value,
+            harness=harness,
+            provider=provider_desc.id,
             model=model_override,
             priority=job.priority,
             artifacts_dir=str(artifacts_dir) if artifacts_dir else "",
@@ -502,18 +522,23 @@ class Consumer:
 
         success = True
         try:
+            ctx = HarnessRunContext(
+                harness=harness,
+                provider=provider_desc.id,
+                model=model_override,
+                working_dir=str(artifacts_dir) if artifacts_dir else "/workspace",
+                home_dir=str(home_dir) if home_dir else None,
+                timeout_seconds=self._consumer_config.job_timeout_seconds,
+                credential_required=provider_desc.credential_required,
+                credential=credential,
+                extra_env=git_env or {},
+            )
             runner = create_runner(
-                agent_type,
+                harness,
+                ctx,
                 logger=self.logger,
                 dry_run=self._consumer_config.disable_llm,
-                timeout_seconds=self._consumer_config.job_timeout_seconds,
-                model_override=model_override,
-                working_dir=str(artifacts_dir) if artifacts_dir else None,
-                home_dir=str(home_dir) if home_dir else None,
-                token_override=token,
-                extra_env=git_env or None,
             )
-            runner.pid_callback = lambda pid: self._save_pid(job.id, pid)
             # Persist session_id to both the DB and the in-memory job — the
             # verification observer reads ``event.job.session_id`` to locate
             # the agent's transcript, and would otherwise see ``None`` on the
@@ -521,7 +546,13 @@ class Consumer:
             def _on_session_id(sid: str) -> None:
                 self._save_session_id(job.id, sid)
                 job.session_id = sid
-            runner.session_id_callback = _on_session_id
+
+            # Through the protocol method, not by assigning attributes: a third-party
+            # runner using __slots__ would raise AttributeError on assignment.
+            runner.observe(
+                on_pid=lambda pid: self._save_pid(job.id, pid),
+                on_session_id=_on_session_id,
+            )
 
             # Resume instead of fresh run if previous attempt left a session_id
             should_resume = (
@@ -534,7 +565,9 @@ class Consumer:
                     f"Resuming session {job.session_id} for job {job.id} "
                     f"(attempt={job.attempt}, prev_pid={job.pid})"
                 )
-                result = runner.resume(job.session_id, model=model_override)
+                result = runner.execute(
+                    RunRequest(prompt="", session_id=job.session_id, model=model_override)
+                )
                 result.prompt = f"[RESUME] session_id={job.session_id}"
                 summary = f"resumed session_id={job.session_id} {result.stats_line}"
                 return _JobResult.from_run_result(result, summary)
@@ -551,38 +584,40 @@ class Consumer:
 
             if home_dir is not None:
                 try:
-                    from .config_writer import get_config_writer
-                    capture = getattr(get_config_writer(agent_type), "capture_refreshed_credentials", None)
-                    if capture is not None:
+                    # capture_refreshed_credentials is part of the WorkspaceAdapter
+                    # protocol now — no getattr probing.
+                    if credential is not None:
                         _conn = get_connection(self._db_config)
                         try:
-                            capture(home_dir, token, _conn)
+                            workspace_adapter_for(harness).capture_refreshed_credentials(
+                                home_dir, credential, _conn
+                            )
                             _conn.commit()
                         finally:
                             _conn.close()
                 except Exception:
                     self.logger.warning(
-                        "post-run credential capture failed for job_id=%s provider=%s",
-                        job.id, agent_type.value, exc_info=True,
+                        "post-run credential capture failed for job_id=%s harness=%s",
+                        job.id, harness, exc_info=True,
                     )
 
             summary = (
                 result.raw_output
                 if result.input_tokens is None and result.raw_output
-                else f"subtype={result.subtype or '?'} {result.stats_line}"
+                else f"session_id={result.session_id or '?'} {result.stats_line}"
             )
             return _JobResult.from_run_result(result, summary)
         except TransientAuthError as exc:
             success = False
-            self._handle_transient_auth(job, token, agent_type, exc)
+            self._handle_transient_auth(job, credential, scope, exc)
             raise
         except UsageLimitError as exc:
             success = False
-            self._handle_usage_limit(job, token, agent_type, exc)
+            self._handle_usage_limit(job, credential, scope, exc)
             raise
         except AuthenticationError as exc:
             success = False
-            self._handle_auth_failure(job, token, agent_type, exc)
+            self._handle_auth_failure(job, credential, scope, exc)
             raise
         except Exception:
             success = False
@@ -591,7 +626,8 @@ class Consumer:
             em.dispatch("agent_view_run_finish_after", AgentViewRunFinishedEvent(
                 job=job,
                 agent_view_id=job.agent_view_id,
-                provider=agent_type.value,
+                harness=harness,
+                provider=provider_desc.id,
                 model=model_override,
                 success=success,
             ))
@@ -599,84 +635,90 @@ class Consumer:
     def _handle_auth_failure(
         self,
         job: Job,
-        token,
-        agent_type: AgentProvider,
+        credential,
+        scope: str | None,
         exc: AuthenticationError,
     ) -> None:
         """Mark the offending token as errored so the pool stops handing it out,
         and dispatch ``token_auth_failed_after`` for observers. Best-effort —
         DB issues here must not mask the original failure about to be re-raised."""
-        token_id = exc.token_id if exc.token_id is not None else token.id
+        credential_id = (
+            exc.credential_id if exc.credential_id is not None
+            else getattr(credential, "id", None)
+        )
         try:
             conn = get_connection(self._db_config)
             try:
-                mark_token_error(conn, token_id, str(exc), logger=self.logger)
+                mark_credential_error(conn, credential_id, str(exc), logger=self.logger)
                 conn.commit()
                 # Pool-aware retry: now that the offending token is poisoned,
                 # let the job retry onto the next token if a healthy one remains
                 # for this provider. ``retry_policy.evaluate`` reads this flag to
                 # override AuthenticationError's default terminal disposition.
-                _total, healthy = count_tokens_for_provider(conn, agent_type)
+                _total, healthy = count_credentials_for_scope(conn, scope)
                 exc.retry_with_other_token = healthy > 0
             finally:
                 conn.close()
         except Exception:
             self.logger.exception(
                 "Failed to mark token as errored after auth failure",
-                extra={"job_id": job.id, "token_id": token_id},
+                extra={"job_id": job.id, "credential_id": credential_id},
             )
         try:
-            get_event_manager().dispatch(
-                "token_auth_failed_after",
-                TokenAuthFailedEvent(
-                    agent_type=agent_type.value,
-                    token_id=token_id,
+            dispatch_credential_event(
+                "credential_auth_failed_after",
+                CredentialAuthFailedEvent(
+                    scope=scope or "",
+                    credential_id=credential_id,
                     error_msg=str(exc),
                     job_id=job.id,
                 ),
             )
         except Exception:
             self.logger.exception(
-                "token_auth_failed_after observer failed",
-                extra={"job_id": job.id, "token_id": token_id},
+                "credential_auth_failed_after observer failed",
+                extra={"job_id": job.id, "credential_id": credential_id},
             )
 
     def _handle_usage_limit(
         self,
         job: Job,
-        token,
-        agent_type: AgentProvider,
+        credential,
+        scope: str | None,
         exc: UsageLimitError,
     ) -> None:
         """Throttle the usage/session-limited token until its reset time (a temporary
         cooldown — NOT a poison) so the pool skips it and the job fails over to a
         healthy token, then dispatch ``token_usage_limited_after``. Best-effort — DB
         issues here must not mask the original failure about to be re-raised."""
-        token_id = exc.token_id if exc.token_id is not None else token.id
+        credential_id = (
+            exc.credential_id if exc.credential_id is not None
+            else getattr(credential, "id", None)
+        )
         until = exc.reset_at or (datetime.now(UTC).replace(tzinfo=None) + _DEFAULT_LIMIT_THROTTLE)
         try:
             conn = get_connection(self._db_config)
             try:
-                throttle_token(conn, token_id, until, str(exc), logger=self.logger)
+                throttle_credential(conn, credential_id, until, str(exc), logger=self.logger)
                 conn.commit()
                 # Pool-aware retry: with the offending token now throttled (and thus
                 # excluded from the healthy count), let the job retry onto the next
                 # token if a healthy one remains for this provider.
-                _total, healthy = count_tokens_for_provider(conn, agent_type)
+                _total, healthy = count_credentials_for_scope(conn, scope)
                 exc.retry_with_other_token = healthy > 0
             finally:
                 conn.close()
         except Exception:
             self.logger.exception(
                 "Failed to throttle token after usage limit",
-                extra={"job_id": job.id, "token_id": token_id},
+                extra={"job_id": job.id, "credential_id": credential_id},
             )
         try:
-            get_event_manager().dispatch(
-                "token_usage_limited_after",
-                TokenUsageLimitedEvent(
-                    agent_type=agent_type.value,
-                    token_id=token_id,
+            dispatch_credential_event(
+                "credential_usage_limited_after",
+                CredentialUsageLimitedEvent(
+                    scope=scope or "",
+                    credential_id=credential_id,
                     error_msg=str(exc),
                     reset_at=until,
                     job_id=job.id,
@@ -684,8 +726,8 @@ class Consumer:
             )
         except Exception:
             self.logger.exception(
-                "token_usage_limited_after observer failed",
-                extra={"job_id": job.id, "token_id": token_id},
+                "credential_usage_limited_after observer failed",
+                extra={"job_id": job.id, "credential_id": credential_id},
             )
 
     def _update_job_reference_id(self, job_id: int, reference_id: str) -> None:
@@ -725,7 +767,7 @@ class Consumer:
             job=job,
             job_result=job_result,
             elapsed_ms=elapsed_ms,
-            provider=job_result.agent_type if job_result else None,
+            harness=job_result.agent_type if job_result else None,
             verdict=None,
         )
         verify_dispatched = False
@@ -766,7 +808,8 @@ class Consumer:
                             """
                             UPDATE job
                             SET status = 'SUCCESS', finished_at = NOW(),
-                                result_summary = %s, agent_type = %s, model = %s,
+                                result_summary = %s, agent_type = %s, provider = %s,
+                                model = %s,
                                 input_tokens = %s, output_tokens = %s,
                                 prompt = %s, output = %s,
                                 updated_at = NOW()
@@ -775,6 +818,7 @@ class Consumer:
                             (
                                 job_result.summary if job_result else None,
                                 job_result.agent_type if job_result else None,
+                                job_result.provider if job_result else None,
                                 job_result.model if job_result else None,
                                 job_result.input_tokens if job_result else None,
                                 job_result.output_tokens if job_result else None,
@@ -807,6 +851,11 @@ class Consumer:
                 else:
                     error_class = error.__class__.__name__
                     error_msg = str(error)[:2000]
+                    # The agent's own output travels on the exception rather than inside
+                    # error_message, so it lands in the column meant for it. Operators lose
+                    # nothing — they gain the full output instead of a 500-char excerpt —
+                    # and error_message stays free of prompt/customer content.
+                    agent_output = getattr(error, "agent_output", None)
                     decision = evaluate_retry(
                         error_class, job.attempt, job.max_attempts, error_obj=error,
                     )
@@ -843,11 +892,15 @@ class Consumer:
                                 UPDATE job
                                 SET status = 'TODO', finished_at = NOW(),
                                     error_message = %s, error_class = %s,
+                                    output = COALESCE(%s, output),
                                     session_id = COALESCE(%s, session_id),
                                     scheduled_after = %s, updated_at = NOW()
                                 WHERE id = %s AND status = 'RUNNING'
                                 """,
-                                (error_msg, error_class, session_id, scheduled_after, job.id),
+                                (
+                                    error_msg, error_class, agent_output,
+                                    session_id, scheduled_after, job.id,
+                                ),
                             )
                         conn.commit()
                         self.logger.info(
@@ -875,11 +928,12 @@ class Consumer:
                                 UPDATE job
                                 SET status = 'DEAD', finished_at = NOW(),
                                     error_message = %s, error_class = %s,
+                                    output = COALESCE(%s, output),
                                     session_id = COALESCE(%s, session_id),
                                     updated_at = NOW()
                                 WHERE id = %s AND status = 'RUNNING'
                                 """,
-                                (error_msg, error_class, session_id, job.id),
+                                (error_msg, error_class, agent_output, session_id, job.id),
                             )
                         conn.commit()
                         self.logger.warning(
@@ -918,37 +972,40 @@ class Consumer:
     def _handle_transient_auth(
         self,
         job: Job,
-        token,
-        agent_type: AgentProvider,
+        credential,
+        scope: str | None,
         exc: TransientAuthError,
     ) -> None:
-        """Throttle a token whose credential was rejected in a way that does NOT prove
+        """Throttle a credential whose token was rejected in a way that does NOT prove
         it is dead (revoked/stale access token) — a short cooldown via
         ``throttled_until``, NOT ``status='error'``: poisoning would take a token that
         is still serving other jobs out of rotation. Best-effort — DB issues here must
         not mask the original failure about to be re-raised."""
-        token_id = exc.token_id if exc.token_id is not None else token.id
+        credential_id = (
+            exc.credential_id if exc.credential_id is not None
+            else getattr(credential, "id", None)
+        )
         until = datetime.now(UTC).replace(tzinfo=None) + _DEFAULT_TRANSIENT_AUTH_THROTTLE
         try:
             conn = get_connection(self._db_config)
             try:
-                throttle_token(conn, token_id, until, str(exc), logger=self.logger)
+                throttle_credential(conn, credential_id, until, str(exc), logger=self.logger)
                 conn.commit()
-                _total, healthy = count_tokens_for_provider(conn, agent_type)
+                _total, healthy = count_credentials_for_scope(conn, scope)
                 exc.retry_with_other_token = healthy > 0
             finally:
                 conn.close()
         except Exception:
             self.logger.exception(
                 "Failed to throttle token after transient auth failure",
-                extra={"job_id": job.id, "token_id": token_id},
+                extra={"job_id": job.id, "credential_id": credential_id},
             )
         try:
-            get_event_manager().dispatch(
-                "token_auth_throttled_after",
-                TokenAuthThrottledEvent(
-                    agent_type=agent_type.value,
-                    token_id=token_id,
+            dispatch_credential_event(
+                "credential_auth_throttled_after",
+                CredentialAuthThrottledEvent(
+                    scope=scope or "",
+                    credential_id=credential_id,
                     error_msg=str(exc),
                     throttled_until=until,
                     job_id=job.id,
@@ -956,6 +1013,6 @@ class Consumer:
             )
         except Exception:
             self.logger.exception(
-                "token_auth_throttled_after observer failed",
-                extra={"job_id": job.id, "token_id": token_id},
+                "credential_auth_throttled_after observer failed",
+                extra={"job_id": job.id, "credential_id": credential_id},
             )

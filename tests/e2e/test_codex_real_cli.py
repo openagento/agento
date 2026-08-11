@@ -23,7 +23,8 @@ import pytest
 
 from agento.framework.agent_manager.errors import AuthenticationError
 from agento.framework.cli._env import parse_env_file
-from agento.modules.codex.src.runner import TokenCodexRunner
+from agento.framework.harness import RunRequest
+from tests.harness_fixtures import make_runner
 
 _CODEX_PRESENT = shutil.which("codex") is not None
 _PROJECT_ROOT = Path(__file__).parents[2]
@@ -31,6 +32,7 @@ _SECRETS = parse_env_file(_PROJECT_ROOT / "secrets.env")
 
 pytestmark = [
     pytest.mark.e2e,
+    pytest.mark.usefixtures("builtin_harnesses"),
     pytest.mark.skipif(not _CODEX_PRESENT, reason="codex CLI not installed on PATH"),
 ]
 
@@ -85,8 +87,10 @@ def test_codex_real_unauth_raises_auth_error(tmp_path, auth_mode):
     # codex still tries to use it on `exec` and gets a 401 from the server,
     # which is the canonical unauth path we want to test.
 
-    runner = TokenCodexRunner(dry_run=True)
-    cmd = runner._build_command("test", model="gpt-5.4-mini")
+    runner = make_runner("codex", dry_run=True, credential_required=False)
+    cmd = runner.command_builder.headless(
+        runner.context, RunRequest(prompt="test", model="gpt-5.4-mini")
+    )
 
     proc = _run_codex(cmd, env_extra={"CODEX_HOME": str(codex_home)})
 
@@ -125,17 +129,20 @@ def test_codex_real_simple_prompt_parses(tmp_path):
     login = _codex_login(str(codex_home), "api-key", api_key)
     assert login.returncode == 0, f"codex login failed: {login.stderr[:300]}"
 
-    runner = TokenCodexRunner(dry_run=True)
-    cmd = runner._build_command(
-        "Reply with exactly the word 'pong' and nothing else.",
-        model="gpt-5.4-mini",
+    runner = make_runner("codex", dry_run=True, credential_required=False)
+    cmd = runner.command_builder.headless(
+        runner.context,
+        RunRequest(
+            prompt="Reply with exactly the word 'pong' and nothing else.",
+            model="gpt-5.4-mini",
+        ),
     )
 
     proc = _run_codex(cmd, env_extra={"CODEX_HOME": str(codex_home)})
 
     assert proc.returncode == 0, f"codex exited {proc.returncode}: {proc.stderr[:500]}"
     result = runner._parse_output(proc.stdout)
-    assert result.subtype, "thread_id missing from thread.started"
+    assert result.session_id, "thread_id missing from thread.started"
     assert result.input_tokens and result.input_tokens > 0
     assert result.output_tokens and result.output_tokens > 0
     assert result.raw_output, "no agent_message text extracted"

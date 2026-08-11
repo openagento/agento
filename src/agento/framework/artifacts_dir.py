@@ -81,16 +81,21 @@ def copy_build_to_artifacts_dir(
     artifacts_dir: Path,
     *,
     job_id: int | None = None,
-    provider: str | None = None,
+    harness: str | None = None,
 ) -> None:
     """Thin bootstrap: copy small config files, symlink large readonly content.
 
-    Files/dirs owned by registered ConfigWriters are copied (so per-job
+    Files/dirs owned by registered WorkspaceAdapters are copied (so per-job
     runtime params can be injected). Everything else is symlinked.
-    Dispatches runtime param injection to the provider's ConfigWriter.
+    Dispatches runtime param injection to the harness's WorkspaceAdapter.
     """
-    from agento.framework.config_writer import all_owned_paths
-    owned_files, owned_dirs = all_owned_paths(provider)
+    # No harness (a blank job / a view with none configured) owns no build files, so
+    # everything but the universal copies is symlinked.
+    if harness is None:
+        owned_files, owned_dirs = set(), set()
+    else:
+        from agento.framework.harness import owned_paths_for
+        owned_files, owned_dirs = owned_paths_for(harness)
     copy_files = owned_files | _UNIVERSAL_COPY_FILES
 
     for item in build_dir.iterdir():
@@ -104,11 +109,11 @@ def copy_build_to_artifacts_dir(
         else:
             dest.symlink_to(item.resolve())
 
-    # Inject runtime params via provider-specific ConfigWriter
-    if job_id is not None and provider is not None:
+    # Inject runtime params via provider-specific WorkspaceAdapter
+    if job_id is not None and harness is not None:
         try:
-            from agento.framework.config_writer import get_config_writer
-            writer = get_config_writer(provider)
+            from agento.framework.harness import workspace_adapter_for
+            writer = workspace_adapter_for(harness)
             writer.inject_runtime_params(artifacts_dir, job_id=job_id)
         except KeyError:
-            logger.warning("No ConfigWriter for provider %r, skipping runtime param injection", provider)
+            logger.warning("No WorkspaceAdapter for harness %r, skipping runtime param injection", harness)

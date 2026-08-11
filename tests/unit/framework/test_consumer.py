@@ -8,19 +8,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agento.framework.agent_manager.models import AgentProvider
 from agento.framework.consumer import Consumer, _JobResult
+from agento.framework.harness import RunResult
 from agento.framework.job_models import AgentType, Job, JobStatus
-from agento.framework.runner import RunResult
 from agento.modules.claude.src.output_parser import ClaudeResult
+
+pytestmark = pytest.mark.usefixtures("builtin_harnesses")
 
 
 def _mock_resolved_token():
-    """Create a mock token returned by TokenResolver.resolve."""
+    """Create a mock token returned by CredentialResolver.resolve."""
     token = MagicMock()
     token.id = 1
     token.credentials = {"subscription_key": "sk-test"}
-    token.agent_type = AgentProvider.CLAUDE
+    token.scope = "claude"
     return token
 
 
@@ -34,6 +35,7 @@ def _make_job(**overrides) -> Job:
         priority=50,
         reference_id="AI-1",
         agent_type=None,
+        provider=None,
         model=None,
         input_tokens=None,
         output_tokens=None,
@@ -112,8 +114,8 @@ def _make_claude_result(**overrides) -> ClaudeResult:
         cost_usd=0.01,
         num_turns=3,
         duration_ms=5000,
-        subtype="success",
-        agent_type="claude",
+        session_id="success",
+        harness="claude",
         prompt=None,
     )
     defaults.update(overrides)
@@ -318,14 +320,15 @@ class TestRunJob:
     def _mock_runtime(self):
         from agento.framework.agent_view_runtime import AgentViewRuntime
         runtime = AgentViewRuntime()
-        runtime.provider = "claude"
+        runtime.harness = "claude"
+        runtime.provider = "anthropic"
         with patch("agento.framework.consumer.resolve_agent_view_runtime",
                    return_value=runtime):
             yield
 
     @pytest.fixture(autouse=True)
     def _mock_token_resolver(self):
-        with patch("agento.framework.consumer.TokenResolver") as MockCls:
+        with patch("agento.framework.consumer.CredentialResolver") as MockCls:
             mock_resolver = MagicMock()
             mock_resolver.resolve.return_value = _mock_resolved_token()
             MockCls.return_value = mock_resolver
@@ -356,17 +359,23 @@ class TestRunJob:
         mock_get_wf.assert_called_once_with(AgentType.CRON)
         mock_workflow.execute_job.assert_called_once()
         assert mock_workflow.execute_job.call_args[0][:2] == (mock_channel, job)
-        MockRunner.assert_called_once_with(
-            AgentProvider.CLAUDE, logger=consumer.logger, dry_run=False,
-            timeout_seconds=sample_consumer_config.job_timeout_seconds,
-            model_override=None,
-            working_dir=None,
-            home_dir=None,
-            token_override=self._token_resolver_mock.resolve.return_value,
-            extra_env=None,  # no agent_view ⇒ no git identity env
-        )
+        # create_runner(harness, ctx, ...) — everything per-run now travels in the
+        # context, and the CALLER has already claimed the credential.
+        MockRunner.assert_called_once()
+        harness, ctx = MockRunner.call_args.args
+        assert harness == "claude"
+        assert MockRunner.call_args.kwargs == {
+            "logger": consumer.logger, "dry_run": False,
+        }
+        assert ctx.harness == "claude"
+        assert ctx.provider == "anthropic"
+        assert ctx.timeout_seconds == sample_consumer_config.job_timeout_seconds
+        assert ctx.model is None
+        assert ctx.home_dir is None
+        assert ctx.credential is self._token_resolver_mock.resolve.return_value
+        assert ctx.extra_env == {}  # no agent_view ⇒ no git identity env
         assert isinstance(result, _JobResult)
-        assert "subtype=" in result.summary
+        assert "session_id=" in result.summary
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
@@ -408,7 +417,7 @@ class TestRunJob:
         mock_workflow.execute_job.assert_called_once()
         assert mock_workflow.execute_job.call_args[0][:2] == (mock_channel, job)
         assert isinstance(result, _JobResult)
-        assert "subtype=" in result.summary
+        assert "session_id=" in result.summary
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
@@ -420,7 +429,7 @@ class TestRunJob:
     ):
         """Consumer passes through to workflow -- no TODO-specific branching."""
         mock_conn.return_value = MagicMock()
-        no_work_result = RunResult(raw_output="No TODO tasks found", subtype="no_work")
+        no_work_result = RunResult(raw_output="No TODO tasks found", session_id="no_work")
         mock_workflow = MagicMock()
         mock_workflow.execute_job.return_value = no_work_result
         mock_get_wf.return_value.return_value = mock_workflow
@@ -466,7 +475,7 @@ class TestRunJob:
         mock_workflow.execute_job.assert_called_once()
         assert mock_workflow.execute_job.call_args[0][:2] == (mock_channel, job)
         assert isinstance(result, _JobResult)
-        assert "subtype=" in result.summary
+        assert "session_id=" in result.summary
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
@@ -514,7 +523,7 @@ class TestRunJob:
     @patch("agento.framework.consumer.get_channel")
     @patch("agento.framework.consumer.create_runner")
     @patch("agento.framework.consumer.get_connection")
-    def test_run_job_raises_when_provider_unset(self, mock_conn, MockRunner, mock_get_ch, mock_get_wf, sample_config, sample_db_config, sample_consumer_config):
+    def test_run_job_raises_when_harness_unset(self, mock_conn, MockRunner, mock_get_ch, mock_get_wf, sample_config, sample_db_config, sample_consumer_config):
         """When no agent_view/provider is configured, the consumer raises with an actionable message."""
         from agento.framework.agent_view_runtime import AgentViewRuntime
 
@@ -529,7 +538,7 @@ class TestRunJob:
             consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
             job = _make_job(type=AgentType.CRON, reference_id="AI-1")
 
-            with pytest.raises(RuntimeError, match="No agent_view/provider configured"):
+            with pytest.raises(RuntimeError, match="No agent_view/harness configured"):
                 consumer._run_job(job)
 
         self._token_resolver_mock.resolve.assert_not_called()
@@ -542,12 +551,17 @@ class TestRunJob:
         self, mock_conn, MockRunner, mock_get_ch, mock_get_wf,
         sample_config, sample_db_config, sample_consumer_config,
     ):
-        """When attempt > 1 and session_id is set, consumer calls runner.resume()."""
+        """attempt > 1 with a session_id ⇒ one execute() carrying that session_id.
+
+        There is no separate ``resume()`` entry point any more — resuming is just a
+        RunRequest with ``session_id`` set, which is what the CommandBuilder turns into
+        the harness's own resume flags.
+        """
         mock_conn.return_value = MagicMock()
 
-        resume_result = _make_claude_result(subtype="sess-resume")
+        resume_result = _make_claude_result(session_id="sess-resume")
         mock_runner = MagicMock()
-        mock_runner.resume.return_value = resume_result
+        mock_runner.execute.return_value = resume_result
         MockRunner.return_value = mock_runner
 
         consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
@@ -563,7 +577,10 @@ class TestRunJob:
         with patch.object(Consumer, "_is_pid_alive", return_value=False):
             result = consumer._run_job(job)
 
-        mock_runner.resume.assert_called_once_with("sess-abc", model=None)
+        mock_runner.execute.assert_called_once()
+        request = mock_runner.execute.call_args.args[0]
+        assert request.session_id == "sess-abc"
+        assert request.model is None
         assert "resumed" in result.summary
         assert result.session_id == "sess-resume"
 
@@ -593,9 +610,9 @@ class TestRunJob:
 
         consumer._run_job(job)
 
-        # Should NOT have called resume
+        # No resume request: the workflow drives the run instead.
         mock_runner = MockRunner.return_value
-        mock_runner.resume.assert_not_called()
+        mock_runner.execute.assert_not_called()
         mock_workflow.execute_job.assert_called_once()
 
 
@@ -613,6 +630,7 @@ class TestFinalize:
         job_result = _JobResult(
             summary="done",
             agent_type="claude",
+            provider="anthropic",
             model="claude-sonnet-4",
             input_tokens=100,
             output_tokens=50,
@@ -625,17 +643,19 @@ class TestFinalize:
         sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
         assert "SUCCESS" in sql_arg
         assert "agent_type" in sql_arg
+        assert "provider" in sql_arg
         assert "model" in sql_arg
         assert "prompt" in sql_arg
         assert "output" in sql_arg
         params = mock_cursor.execute.call_args_list[-1][0][1]
         assert params[0] == "done"               # result_summary
-        assert params[1] == "claude"             # agent_type
-        assert params[2] == "claude-sonnet-4"    # model
-        assert params[3] == 100                  # input_tokens
-        assert params[4] == 50                   # output_tokens
-        assert params[5] == "the prompt"         # prompt
-        assert params[6] == '{"result": "ok"}'   # output
+        assert params[1] == "claude"             # agent_type (= harness id)
+        assert params[2] == "anthropic"          # provider (model vendor)
+        assert params[3] == "claude-sonnet-4"    # model
+        assert params[4] == 100                  # input_tokens
+        assert params[5] == 50                   # output_tokens
+        assert params[6] == "the prompt"         # prompt
+        assert params[7] == '{"result": "ok"}'   # output
         mock_conn.commit.assert_called_once()
 
     @patch("agento.framework.consumer.get_connection")
@@ -912,7 +932,7 @@ class TestSaveSessionId:
 
 class TestJobResultSessionId:
     def test_from_run_result_captures_session_id(self):
-        result = RunResult(raw_output="ok", subtype="sess-xyz")
+        result = RunResult(raw_output="ok", session_id="sess-xyz")
         jr = _JobResult.from_run_result(result, "summary")
         assert jr.session_id == "sess-xyz"
 

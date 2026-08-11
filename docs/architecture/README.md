@@ -27,6 +27,7 @@ Agento runs as Docker containers with strict security separation between the AI 
 ## Further Reading
 
 - [Containers](containers.md) — what runs where, volume mounts, networking
+- [Harness Contract](harness-contract.md) — the harness / provider / model split and the agent plugin boundary
 - [Workspace](workspace.md) — theme / build / runtime layers, what lives where, agent's view
 - [Zero-Trust Security](zero-trust.md) — credential isolation model
 - [Publisher-Consumer](publisher-consumer.md) — job queue architecture

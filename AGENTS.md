@@ -12,7 +12,7 @@ Automates Jira tasks using AI agents (Claude Code, OpenAI Codex) in Docker conta
     - Event-observers
     - 3-level system config fallback
     - (more in docs/)
-6. **Framework is agent-agnostic.** A new agent (OpenCode, Hermes, etc.) must be added without editing framework code — framework defines protocols (Runner, ConfigWriter, AuthStrategy, CliInvoker), agent modules provide implementations and register them via `di.json`. No `if provider == "claude"` branches, no hardcoded `.claude.json` / `.codex/config.toml` logic in `src/agento/framework/`, and no hardcoded CLI flag lists for `claude`/`codex` in `agento run`.
+6. **Framework is agent-agnostic.** A new agent (OpenCode, Hermes, etc.) must be added without editing framework code — framework defines the **harness contract** (`CommandBuilder`, `WorkspaceAdapter`, `TranscriptReader`, `CredentialAuthenticator`, `AgentHarnessAdapter`), agent modules provide implementations and register them through a single `agent_harnesses` entry in `di.json`. Three independent axes: **harness** (the program driving the agent) / **provider** (the model-API vendor) / **model**. No `if provider == "claude"` branches, no hardcoded `.claude.json` / `.codex/config.toml` logic in `src/agento/framework/`, and no hardcoded CLI flag lists or sandbox CLI pins for `claude`/`codex`. See [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
 
 ## Key Conventions
 
@@ -27,9 +27,9 @@ Automates Jira tasks using AI agents (Claude Code, OpenAI Codex) in Docker conta
 - **Consumer hot-reload:** every `AGENTO_CONSUMER_POLL_INTERVAL` (5s default) the consumer re-runs `bootstrap()` when idle — `mo:en/mo:di`, `config:set`, and `app/code/` edits apply live without restart. Caveat: edits to core module Python code (`src/agento/modules/`) still require a process restart due to `sys.modules` caching.
 - **Cron container env contract:** Any env var the cron/consumer needs from `docker-compose` must use the `AGENTO_*` prefix (e.g. `AGENTO_CONSUMER_MAX_WORKERS`). The entrypoint whitelist only persists `AGENTO_*`, `MYSQL_*`, `CONFIG__*`, `TZ`, `PYTHONPATH`, `PROVIDER`, `DISABLE_LLM`, and `DISABLE_AUTOUPDATER` across the `su - agent` env wipe — non-prefixed framework knobs are silently dropped. See [docs/architecture/cron-env-contract.md](docs/architecture/cron-env-contract.md).
 - **Routing:** Ingress identities map inbound requests to agent_views. Channels auto-resolve via `resolve_agent_view()` before publishing. The **Outlook** channel routes by mailbox→agent_view: a mailbox UPN owned by exactly one view is **direct mode** (the mailbox identifies the view); a UPN **shared by ≥2 views** is **routed mode** — polled once and each message routed to a view by matching the normalized sender against `outlook_sender` ingress bindings (regex `fullmatch`, highest `--priority` wins; a tie between different views is ambiguous → no job). See [docs/modules/outlook.md](docs/modules/outlook.md). Outlook reads are additionally bound to the triggering job's own message (privacy by construction), and the mailbox-enumeration tools (`outlook_search_messages`/`outlook_get_new_messages`) were removed.
-- **Agent view config:** Scoped DB paths `agent_view/provider`, `agent_view/model`, `agent_view/scheduling/priority`, `agent_view/instructions/agents_md`, `agent_view/instructions/soul_md` — resolved with agent_view → workspace → global fallback.
+- **Agent view config:** Scoped DB paths `agent_view/harness`, `agent_view/provider`, `agent_view/model`, `agent_view/scheduling/priority`, `agent_view/instructions/agents_md`, `agent_view/instructions/soul_md` — resolved with agent_view → workspace → global fallback. `harness`/`provider` are `select` fields whose options come from the enabled modules' `agent_harnesses` declarations (`options_source`), not from a hardcoded list. Pre-0.15 configs that set only `agent_view/provider` (which then held the harness id) still work — see [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
 - **Security:** Toolbox = only container with secrets. Agent has NO credentials. Tools and skills are **opt-in** (disabled by default) — least privilege: a tool/skill is available only when `is_enabled` resolves to `1` for the scope (agent_view > workspace > default). Adding a module or syncing a skill grants no access until explicitly enabled. Every tool a module can register — including one proxied from an upstream MCP server under a computed name — must be declared in that module's `module.json` `tools[]`; `module:validate` reports an undeclared *literal* `server.tool('x', …)` on a best-effort basis (it skips a source line containing a bare `/`, since division and a regex are indistinguishable without a JS parser — it can miss, never raise a false error), and it strictly enforces globally unique tool names and that a `config.json` `tools/<name>/is_enabled` default belongs to a tool the module declares. The exhaustive check is `src/agento/toolbox/tests/tool-declaration.test.js`, which executes `register()`. A name the gate does not find declared is denied at runtime, and `registerTools` logs a `drift WARN` for anything a module registers without declaring (the backstop for names computed at runtime, e.g. upstream MCP passthrough). By convention (not checkable by the validator) gate each registration on its **own** `tools/<name>/is_enabled` key, and **never** gate on an `is_enabled` key at module level — declare a shared switch and point each member at it with `requires`, so the framework applies it per tool and admin can show a blocked child. Never add a second allow-list mechanism beside `is_enabled`. See [docs/tools/adding-a-tool.md](docs/tools/adding-a-tool.md).
-- **DB tables:** singular names (e.g., `job`, `schedule`, `oauth_token`). Exception: `core_config_data` (Magento convention).
+- **DB tables:** singular names (e.g., `job`, `schedule`, `credential`). Exception: `core_config_data` (Magento convention). `credential` (ex-`oauth_token`) is keyed by `scope` — one credential pool per `(harness, provider)` pair that needs one.
 - **Setup:** `setup:upgrade` on deploy — **validates enabled module manifests first** (aborts before any DB change if a manifest is invalid, e.g. a tool missing `toolset`), then applies schema migrations, data patches, installs crontab, runs module onboarding (strict: complete, disable+dependents, or quit). Use `--skip-onboarding` for CI/CD. `bin/test` runs the same `module:validate` check. Manual alternative: pre-set config values via `config:set`. See [docs/cli/onboarding.md](docs/cli/onboarding.md).
 - **Module setup files:** `sql/*.sql` (schema migrations), `data_patch.json` (data patches), `cron.json` (cron jobs), `di.json` onboarding (interactive external system setup)
 - **Migration tracking:** `schema_migration` table (with `module` column), `data_patch` table
@@ -59,7 +59,7 @@ agento up                                              # Start Docker Compose
 agento down                                            # Stop containers
 agento logs [service]                                  # View container logs
 agento admin                                           # Launch admin TUI (runs inside Docker)
-agento run <agent_view_code>                           # Interactive agent CLI in sandbox (TTY) — CLI command is supplied by the provider's registered CliInvoker (framework stays agent-agnostic)
+agento run <agent_view_code>                           # Interactive agent CLI in sandbox (TTY) — the command comes from the harness's registered CommandBuilder (framework stays agent-agnostic)
 agento run <agent_view_code> "<prompt>"                 # Headless one-shot with the given prompt; propagates agent exit code
 
 # Restart after code changes (dev compose)
@@ -94,22 +94,23 @@ agento config:remove <path> [--scope=<scope>] [--scope-id=<id>]
 agento config:schema [module] [--json]                 # Show config field definitions from system.json
 agento config:resolve <module> [--scope=S] [--scope-id=N] [--json]  # Resolve effective config values with source info
 
-# Tokens (LRU pool per provider — no sticky primary)
-agento token:list                                      # status, last_used, expires_at per row
-# Register tokens. --with-api-key / --with-access-token are boolean switches; the
+# Credentials (LRU pool per scope — no sticky primary). `token:*` still works as a
+# deprecated hidden alias for one release; see docs/cli/credentials.md.
+agento credential:list                                 # status, last_used, expires_at per row
+# Register credentials. --with-api-key / --with-access-token are boolean switches; the
 # secret is read from stdin (piped) or via interactive getpass prompt (TTY).
 # Inline values like `--with-api-key sk-XXX` are REJECTED — they leak through
-# shell history, ps, and CI logs. See docs/cli/tokens.md for details.
-agento token:register <agent_type> <label>                                  # interactive OAuth
-agento token:register codex  <label> --with-api-key                         # TTY: prompts (hidden)
-echo "$OPENAI_API_KEY"      | agento token:register codex  <label> --with-api-key
-echo "$CODEX_ACCESS_TOKEN"  | agento token:register codex  <label> --with-access-token
-echo "$ANTHROPIC_API_KEY"   | agento token:register claude <label> --with-api-key
-agento token:register codex  <label> --with-api-key < /path/to/key.txt      # file redirect
-agento token:set-priority <token_id> <priority>                             # lower priority wins
-agento token:refresh <id>                              # re-auth an existing token
-agento token:mark-error <id> "<msg>"                   # quarantine a token (status=error)
-agento token:reset <id>                                # clear error status without re-auth
+# shell history, ps, and CI logs. See docs/cli/credentials.md for details.
+agento credential:register <scope> <label>                                  # interactive OAuth
+agento credential:register codex  <label> --with-api-key                    # TTY: prompts (hidden)
+echo "$OPENAI_API_KEY"      | agento credential:register codex  <label> --with-api-key
+echo "$CODEX_ACCESS_TOKEN"  | agento credential:register codex  <label> --with-access-token
+echo "$ANTHROPIC_API_KEY"   | agento credential:register claude <label> --with-api-key
+agento credential:register codex  <label> --with-api-key < /path/to/key.txt # file redirect
+agento credential:set-priority <credential_id> <priority>                   # lower priority wins
+agento credential:refresh <id>                         # re-auth an existing credential
+agento credential:mark-error <id> "<msg>"              # quarantine a credential (status=error)
+agento credential:reset <id>                           # clear error status without re-auth
 
 # Ingress identity binding (route inbound requests to agent_views)
 agento ingress:bind <type> <value> <agent_view_code> [--priority N]   # e.g. ingress:bind jira jira developer

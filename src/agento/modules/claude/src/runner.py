@@ -1,59 +1,22 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
 
-from agento.framework.agent_manager.models import AgentProvider
-from agento.framework.agent_manager.runner import TokenRunner
-from agento.framework.runner import RunResult
+from agento.framework.harness import RunResult, SubprocessRunner
 from agento.modules.claude.src.output_parser import parse_claude_output
 
-if TYPE_CHECKING:
-    from agento.framework.agent_manager.models import Token
 
-
-class TokenClaudeRunner(TokenRunner):
-    """Unified Claude runner — handles both OAuth and subscription credentials."""
-
-    @property
-    def agent_type(self) -> AgentProvider:
-        return AgentProvider.CLAUDE
-
-    def _build_env(self, token: Token) -> dict[str, str]:
-        from agento.framework.config_writer import get_config_writer
-        return get_config_writer(self.agent_type).credential_env(token)
-
-    def _build_command(self, prompt: str, model: str | None = None) -> list[str]:
-        # .mcp.json is resolved relative to subprocess cwd (per-job artifacts dir)
-        cmd = [
-            "claude", "-p", prompt,
-            "--dangerously-skip-permissions",
-            "--mcp-config", ".mcp.json",
-            "--strict-mcp-config",
-            "--output-format", "stream-json",
-            "--verbose",
-        ]
-        if model:
-            cmd.extend(["--model", model])
-        return cmd
-
-    def _build_resume_command(self, session_id: str, model: str | None = None) -> list[str]:
-        # .mcp.json is resolved relative to subprocess cwd (per-job artifacts dir)
-        cmd = [
-            "claude", "--resume", session_id,
-            "-p", "Continue working from where you left off.",
-            "--dangerously-skip-permissions",
-            "--mcp-config", ".mcp.json",
-            "--strict-mcp-config",
-            "--output-format", "stream-json",
-            "--verbose",
-        ]
-        if model:
-            cmd.extend(["--model", model])
-        return cmd
+class ClaudeSubprocessRunner(SubprocessRunner):
+    """Runs the Claude Code CLI. Commands come from ClaudeCommandBuilder."""
 
     def _parse_output(self, raw: str) -> RunResult:
         return parse_claude_output(raw, self.logger)
+
+    def _credential_env(self, credential: object | None) -> dict[str, str]:
+        if credential is None:
+            return {}
+        from agento.modules.claude.src.config import ClaudeWorkspaceAdapter
+        return ClaudeWorkspaceAdapter().credential_env(credential)
 
     def _try_parse_session_id(self, line: str) -> str | None:
         try:

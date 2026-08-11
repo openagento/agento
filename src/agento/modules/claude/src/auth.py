@@ -1,4 +1,4 @@
-"""Claude OAuth authentication strategy."""
+"""Claude credential authenticator (interactive OAuth + API key)."""
 from __future__ import annotations
 
 import json
@@ -10,9 +10,13 @@ from agento.framework.agent_manager.auth import (
     AuthResult,
     _run_cli,
 )
+from agento.framework.harness import (
+    CredentialRegistrationMode,
+    UnsupportedRegistrationMode,
+)
 
 
-class ClaudeAuthStrategy:
+class ClaudeCredentialAuthenticator:
     """Run ``claude auth login`` with the user's real HOME.
 
     Claude CLI's OAuth polling depends on state in ``$HOME/.claude/``.
@@ -20,7 +24,7 @@ class ClaudeAuthStrategy:
     and use the real HOME for the CLI process.
     """
 
-    def authenticate(self, tmp_home: str, logger: logging.Logger) -> AuthResult:
+    def authenticate_interactive(self, tmp_home: str, logger: logging.Logger) -> AuthResult:
         logger.info("Starting Claude OAuth login (follow the URL in your browser)...")
         # Run full `claude` TUI (not `claude auth login`) — only the TUI
         # has the "Paste code here" prompt needed for headless/Docker auth.
@@ -82,3 +86,14 @@ class ClaudeAuthStrategy:
                 "Refusing to register an OpenAI key (sk-proj-... / sk-svcacct-...) as an Anthropic key."
             )
         return {"api_key": stripped}, "anthropic_api_key"
+
+    def register_from_secret(
+        self, mode: CredentialRegistrationMode, secret: str
+    ) -> tuple[dict, str]:
+        """Total dispatch — the registry validates ``mode`` against the declared
+        ``registration_modes`` first, so the raise is a defensive contract only."""
+        if mode is CredentialRegistrationMode.API_KEY:
+            return self.register_from_api_key(secret)
+        raise UnsupportedRegistrationMode(
+            f"Claude does not support registration mode {mode.value!r}"
+        )

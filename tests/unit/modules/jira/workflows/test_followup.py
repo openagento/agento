@@ -80,14 +80,14 @@ class TestFollowupWorkflow:
 
     def test_execute_passes_instructions(self):
         result = MagicMock()
-        result.subtype = "success"
+        result.session_id = "success"
         result.stats_line = "turns=2"
-        self.runner.run.return_value = result
+        self.runner.execute.return_value = result
 
         jira = JiraChannel()
         ret = self.workflow.execute(jira, "AI-1", instructions="Check reindex")
 
-        self.runner.run.assert_called_once()
-        prompt = self.runner.run.call_args[0][0]
+        self.runner.execute.assert_called_once()
+        prompt = self.runner.execute.call_args.args[0].prompt
         assert "Check reindex" in prompt
         assert ret is result

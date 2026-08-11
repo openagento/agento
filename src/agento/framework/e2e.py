@@ -1,8 +1,8 @@
 """End-to-end tests using real LLM calls and the prod database.
 
 Exercises the full consumer pipeline: dequeue → channel → workflow → runner → finalize.
-The selected token drives the run; for deterministic targeting the scenario
-temporarily disables every other token of the same provider so the LRU pool
+The selected credential drives the run; for deterministic targeting the scenario
+temporarily disables every other credential in the same scope so the LRU pool
 has only one candidate, then restores their enabled state at teardown.
 Requires healthy tokens and DISABLE_LLM=0.
 """
@@ -12,8 +12,8 @@ import logging
 import sys
 import time
 
-from .agent_manager.models import Token
-from .agent_manager.token_store import get_token, list_tokens, select_token
+from .agent_manager.credential_store import get_credential, list_credentials, select_credential
+from .agent_manager.models import CredentialRecord
 from .channels.registry import register_channel
 from .channels.test import TestChannel
 from .consumer import Consumer
@@ -64,19 +64,21 @@ def _delete_job(db_config: DatabaseConfig, job_id: int) -> None:
         conn.close()
 
 
-def _disable_other_tokens(db_config: DatabaseConfig, token: Token) -> list[int]:
-    """Disable every other enabled token of the same agent_type; return their ids."""
+def _disable_other_credentials(
+    db_config: DatabaseConfig, credential: CredentialRecord
+) -> list[int]:
+    """Disable every other enabled credential in the same scope; return their ids."""
     conn = get_connection(db_config)
     try:
         peers = [
-            t.id for t in list_tokens(conn, agent_type=token.agent_type)
-            if t.id != token.id
+            c.id for c in list_credentials(conn, scope=credential.scope)
+            if c.id != credential.id
         ]
         if peers:
             placeholders = ",".join(["%s"] * len(peers))
             with conn.cursor() as cur:
                 cur.execute(
-                    f"UPDATE oauth_token SET enabled = FALSE WHERE id IN ({placeholders})",
+                    f"UPDATE credential SET enabled = FALSE WHERE id IN ({placeholders})",
                     peers,
                 )
             conn.commit()
@@ -85,17 +87,17 @@ def _disable_other_tokens(db_config: DatabaseConfig, token: Token) -> list[int]:
         conn.close()
 
 
-def _restore_tokens(db_config: DatabaseConfig, token_ids: list[int]) -> None:
-    """Re-enable tokens previously disabled by ``_disable_other_tokens``."""
-    if not token_ids:
+def _restore_credentials(db_config: DatabaseConfig, credential_ids: list[int]) -> None:
+    """Re-enable credentials previously disabled by ``_disable_other_credentials``."""
+    if not credential_ids:
         return
     conn = get_connection(db_config)
     try:
-        placeholders = ",".join(["%s"] * len(token_ids))
+        placeholders = ",".join(["%s"] * len(credential_ids))
         with conn.cursor() as cur:
             cur.execute(
-                f"UPDATE oauth_token SET enabled = TRUE WHERE id IN ({placeholders})",
-                token_ids,
+                f"UPDATE credential SET enabled = TRUE WHERE id IN ({placeholders})",
+                credential_ids,
             )
         conn.commit()
     finally:
@@ -111,12 +113,12 @@ def _run_checks(row: dict) -> list[tuple[str, bool, str]]:
         ("input_tokens > 0", (row["input_tokens"] or 0) > 0, str(row["input_tokens"])),
         ("prompt saved", bool(row["prompt"]), f"{len(row['prompt'] or '')} chars"),
         ("output saved", bool(row["output"]), f"{len(row['output'] or '')} chars"),
-        ("result_summary has stats", "subtype=" in (row["result_summary"] or ""), str(row["result_summary"])),
+        ("result_summary has stats", "session_id=" in (row["result_summary"] or ""), str(row["result_summary"])),
     ]
 
 
 def run_scenario(
-    token: Token,
+    credential: CredentialRecord,
     db_config: DatabaseConfig,
     consumer_config: ConsumerConfig,
     logger: logging.Logger,
@@ -124,16 +126,16 @@ def run_scenario(
     keep: bool = False,
     model: str | None = None,
 ) -> bool:
-    """Run one e2e scenario for the given token. Returns True if all checks pass."""
-    description = f"{token.agent_type.value} ({token.label})"
-    ref_id = f"E2E-{token.agent_type.value.upper()}-{token.id}"
+    """Run one e2e scenario for the given credential. True if all checks pass."""
+    description = f"{credential.scope} ({credential.label})"
+    ref_id = f"E2E-{credential.scope.upper()}-{credential.id}"
 
     print(f"\n{'='*60}")
     print(f"E2E: {description}")
     print(f"{'='*60}")
 
     register_channel(TestChannel())
-    disabled_peers = _disable_other_tokens(db_config, token)
+    disabled_peers = _disable_other_credentials(db_config, credential)
 
     try:
         job_id = _insert_test_job(db_config, ref_id)
@@ -177,7 +179,7 @@ def run_scenario(
 
         return all_ok
     finally:
-        _restore_tokens(db_config, disabled_peers)
+        _restore_credentials(db_config, disabled_peers)
 
 
 def cmd_e2e(args) -> None:
@@ -197,23 +199,24 @@ def cmd_e2e(args) -> None:
 
     conn = get_connection(db_config)
     try:
-        if args.oauth_token:
-            token = get_token(conn, args.oauth_token)
-            if token is None:
-                print(f"Token not found: id={args.oauth_token}", file=sys.stderr)
+        if args.credential_id:
+            credential = get_credential(conn, args.credential_id)
+            if credential is None:
+                print(f"Credential not found: id={args.credential_id}", file=sys.stderr)
                 sys.exit(1)
         else:
-            from .agent_manager.models import AgentProvider
-            token = None
-            for provider in AgentProvider:
-                candidate = select_token(conn, provider)
+            from .harness import list_credential_scopes
+
+            credential = None
+            for scope in list_credential_scopes():
+                candidate = select_credential(conn, scope)
                 if candidate is not None:
-                    token = candidate
+                    credential = candidate
                     break
-            if token is None:
+            if credential is None:
                 print(
-                    "No healthy tokens across any provider. "
-                    "Register one: bin/agento token:register <claude|codex> <label>",
+                    "No healthy credentials across any scope. "
+                    "Register one: bin/agento credential:register <scope> <label>",
                     file=sys.stderr,
                 )
                 sys.exit(1)
@@ -221,17 +224,17 @@ def cmd_e2e(args) -> None:
         conn.close()
 
     try:
-        ok = run_scenario(token, db_config, consumer_config, logger, keep=args.keep, model=args.model)
+        ok = run_scenario(credential, db_config, consumer_config, logger, keep=args.keep, model=args.model)
     except Exception as exc:
         print(f"  ERROR: {exc}")
-        logger.exception(f"E2E failed for token {token.id}")
+        logger.exception(f"E2E failed for credential {credential.id}")
         ok = False
 
     print(f"\n{'='*60}")
     print("SUMMARY")
     print(f"{'='*60}")
     status = "PASS" if ok else "FAIL"
-    print(f"  [{status}] {token.agent_type.value} ({token.label})")
+    print(f"  [{status}] {credential.scope} ({credential.label})")
 
     print(f"\n{'ALL PASSED' if ok else 'FAILED'}")
     sys.exit(0 if ok else 1)

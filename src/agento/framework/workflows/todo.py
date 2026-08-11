@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from ..channels.base import Channel
+from ..harness import RunResult
 from ..job_models import Job
-from ..runner import RunResult
 from .base import JobContext, Workflow
 
 
@@ -22,7 +22,9 @@ class TodoWorkflow(Workflow):
 
         items = channel.discover_work(context.config, self.logger)
         if not items:
-            return RunResult(raw_output="No TODO tasks found", subtype="no_work")
+            # No session was started, so session_id stays None — it must only ever
+            # carry a real session id (it is persisted to job.session_id and drives resume).
+            return RunResult(raw_output="No TODO tasks found")
 
         item = items[0]
         self.logger.info(f"Dispatching: {item.reference_id} - {item.title}")

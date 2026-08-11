@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -9,24 +10,25 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agento.framework.agent_manager.errors import AuthenticationError, UsageLimitError
-from agento.framework.agent_manager.models import AgentProvider, Token, TokenStatus
-from agento.framework.runner import Runner
-from agento.modules.claude.src.runner import TokenClaudeRunner
-from agento.modules.codex.src.runner import TokenCodexRunner
+from agento.framework.agent_manager.models import CredentialRecord, CredentialStatus
+from agento.framework.harness import RunRequest, SubprocessRunner
+from agento.modules.claude.src.runner import ClaudeSubprocessRunner
+from agento.modules.codex.src.runner import CodexSubprocessRunner
+from tests.harness_fixtures import make_runner
 
 _EPOCH = datetime(2000, 1, 1)
 
 
-def _make_token(credentials: dict, agent_type: AgentProvider = AgentProvider.CLAUDE) -> Token:
-    return Token(
+def _make_token(credentials: dict, agent_type: str = "claude") -> CredentialRecord:
+    return CredentialRecord(
         id=1,
-        agent_type=agent_type,
+        scope=agent_type,
         type="oauth",
         label="test",
         credentials=credentials,
         token_limit=0,
         enabled=True,
-        status=TokenStatus.OK,
+        status=CredentialStatus.OK,
         priority=0,
         error_msg=None,
         expires_at=None,
@@ -47,16 +49,16 @@ def _make_completed_process(
 
 
 class TestRunnerProtocolCompliance:
-    """Verify that TokenClaudeRunner and TokenCodexRunner satisfy the Runner Protocol."""
+    """Verify that ClaudeSubprocessRunner and CodexSubprocessRunner satisfy the SubprocessRunner Protocol."""
 
     def test_token_claude_runner_is_runner(self):
-        assert issubclass(TokenClaudeRunner, Runner) or isinstance(
-            TokenClaudeRunner(dry_run=True), Runner
+        assert issubclass(ClaudeSubprocessRunner, SubprocessRunner) or isinstance(
+            make_runner("claude", dry_run=True, credential_required=False), SubprocessRunner
         )
 
     def test_token_codex_runner_is_runner(self):
-        assert issubclass(TokenCodexRunner, Runner) or isinstance(
-            TokenCodexRunner(dry_run=True), Runner
+        assert issubclass(CodexSubprocessRunner, SubprocessRunner) or isinstance(
+            make_runner("codex", dry_run=True, credential_required=False), SubprocessRunner
         )
 
 
@@ -66,68 +68,68 @@ class TestExtraEnv:
 
     def test_extra_env_is_merged(self):
         token = _make_token({"raw_auth": {}})  # oauth ⇒ _build_env() == {}
-        runner = TokenClaudeRunner(
-            dry_run=True, token_override=token,
+        runner = make_runner("claude",
+            dry_run=True, credential=token,
             extra_env={"GIT_AUTHOR_NAME": "Mieszko", "GIT_AUTHOR_EMAIL": "m@example.com"},
         )
-        _token, env, _model = runner._resolve_env_and_model(None)
+        env = {**os.environ, **runner._credential_env(runner.context.credential), **runner.context.extra_env}
         assert env["GIT_AUTHOR_NAME"] == "Mieszko"
         assert env["GIT_AUTHOR_EMAIL"] == "m@example.com"
 
     def test_extra_env_overrides_inherited_process_env(self, monkeypatch):
         monkeypatch.setenv("GIT_AUTHOR_NAME", "Stale Inherited")
         token = _make_token({"raw_auth": {}})
-        runner = TokenClaudeRunner(
-            dry_run=True, token_override=token, extra_env={"GIT_AUTHOR_NAME": "Mieszko"},
+        runner = make_runner("claude",
+            dry_run=True, credential=token, extra_env={"GIT_AUTHOR_NAME": "Mieszko"},
         )
-        _token, env, _model = runner._resolve_env_and_model(None)
+        env = {**os.environ, **runner._credential_env(runner.context.credential), **runner.context.extra_env}
         assert env["GIT_AUTHOR_NAME"] == "Mieszko"  # extra_env wins over os.environ
 
     def test_default_no_extra_env(self):
         token = _make_token({"raw_auth": {}})
-        runner = TokenClaudeRunner(dry_run=True, token_override=token)
-        _token, env, _model = runner._resolve_env_and_model(None)
+        runner = make_runner("claude", dry_run=True, credential=token)
+        env = {**os.environ, **runner._credential_env(runner.context.credential), **runner.context.extra_env}
         assert "GIT_AUTHOR_NAME" not in env or env.get("GIT_AUTHOR_NAME") != ""
-        assert runner.extra_env == {}
+        assert runner.context.extra_env == {}
 
 
 class TestTokenRunnerDryRun:
     def test_claude_dry_run(self):
-        runner = TokenClaudeRunner(dry_run=True)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
 
-        result = runner.run("test prompt")
+        result = runner.execute(RunRequest(prompt="test prompt"))
 
         assert result.raw_output == "[DRY RUN] skipped"
 
     def test_codex_dry_run(self):
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
-        result = runner.run("test prompt")
+        result = runner.execute(RunRequest(prompt="test prompt"))
 
         assert result.raw_output == "[DRY RUN] skipped"
 
     def test_claude_resume_dry_run(self):
-        runner = TokenClaudeRunner(dry_run=True)
-        result = runner.resume("session-abc")
+        runner = make_runner("claude", dry_run=True, credential_required=False)
+        result = runner.execute(RunRequest(prompt='', session_id="session-abc"))
         assert result.raw_output == "[DRY RUN] skipped"
 
     def test_codex_resume_dry_run(self):
-        runner = TokenCodexRunner(dry_run=True)
-        result = runner.resume("session-abc")
+        runner = make_runner("codex", dry_run=True, credential_required=False)
+        result = runner.execute(RunRequest(prompt='', session_id="session-abc"))
         assert result.raw_output == "[DRY RUN] skipped"
 
 
-class TestTokenClaudeRunner:
-    def _make_token(self, type_: str, credentials: dict) -> Token:
-        return Token(
+class TestClaudeSubprocessRunner:
+    def _make_token(self, type_: str, credentials: dict) -> CredentialRecord:
+        return CredentialRecord(
             id=1,
-            agent_type=AgentProvider.CLAUDE,
+            scope="claude",
             type=type_,
             label="test",
             credentials=credentials,
             token_limit=0,
             enabled=True,
-            status=TokenStatus.OK,
+            status=CredentialStatus.OK,
             priority=0,
             error_msg=None,
             expires_at=None,
@@ -137,37 +139,37 @@ class TestTokenClaudeRunner:
         )
 
     def test_agent_type(self):
-        runner = TokenClaudeRunner(dry_run=True)
-        assert runner.agent_type == AgentProvider.CLAUDE
+        runner = make_runner("claude", dry_run=True, credential_required=False)
+        assert runner.context.harness == "claude"
 
     def test_build_env_oauth_returns_empty(self):
-        runner = TokenClaudeRunner(dry_run=True)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
         token = self._make_token(
             type_="oauth",
             credentials={"subscription_key": "x", "refresh_token": "y"},
         )
-        assert runner._build_env(token) == {}
+        assert runner._credential_env(token) == {}
 
     def test_build_env_anthropic_api_key(self):
-        runner = TokenClaudeRunner(dry_run=True)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
         token = self._make_token(
             type_="anthropic_api_key",
             credentials={"api_key": "sk-ant-XYZ"},
         )
-        assert runner._build_env(token) == {"ANTHROPIC_API_KEY": "sk-ant-XYZ"}
+        assert runner._credential_env(token) == {"ANTHROPIC_API_KEY": "sk-ant-XYZ"}
 
     def test_build_env_anthropic_api_key_missing_value_raises(self):
-        runner = TokenClaudeRunner(dry_run=True)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
         token = self._make_token(
             type_="anthropic_api_key",
             credentials={},  # type says api_key but credentials are empty
         )
         with pytest.raises(ValueError, match="anthropic_api_key"):
-            runner._build_env(token)
+            runner._credential_env(token)
 
     def test_build_command(self):
-        runner = TokenClaudeRunner(dry_run=True)
-        cmd = runner._build_command("Hello world")
+        runner = make_runner("claude", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt="Hello world"))
         assert cmd == [
             "claude", "-p", "Hello world",
             "--dangerously-skip-permissions",
@@ -178,8 +180,8 @@ class TestTokenClaudeRunner:
         ]
 
     def test_build_command_with_model(self):
-        runner = TokenClaudeRunner(dry_run=True)
-        cmd = runner._build_command("Hello world", model="claude-sonnet-4-20250514")
+        runner = make_runner("claude", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt="Hello world", model="claude-sonnet-4-20250514"))
         assert cmd == [
             "claude", "-p", "Hello world",
             "--dangerously-skip-permissions",
@@ -191,13 +193,13 @@ class TestTokenClaudeRunner:
         ]
 
     def test_build_command_no_model_when_none(self):
-        runner = TokenClaudeRunner(dry_run=True)
-        cmd = runner._build_command("Hello", model=None)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt="Hello", model=None))
         assert "--model" not in cmd
 
     def test_build_resume_command(self):
-        runner = TokenClaudeRunner(dry_run=True)
-        cmd = runner._build_resume_command("sess-123")
+        runner = make_runner("claude", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt='', session_id="sess-123"))
         assert cmd == [
             "claude", "--resume", "sess-123",
             "-p", "Continue working from where you left off.",
@@ -209,13 +211,13 @@ class TestTokenClaudeRunner:
         ]
 
     def test_build_resume_command_with_model(self):
-        runner = TokenClaudeRunner(dry_run=True)
-        cmd = runner._build_resume_command("sess-123", model="claude-sonnet-4-20250514")
+        runner = make_runner("claude", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt='', session_id="sess-123", model="claude-sonnet-4-20250514"))
         assert "--model" in cmd
         assert "claude-sonnet-4-20250514" in cmd
 
     def test_parse_output_valid_json(self):
-        runner = TokenClaudeRunner(dry_run=True)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
         data = {
             "result": "done",
             "usage": {"input_tokens": 100, "output_tokens": 50},
@@ -230,7 +232,7 @@ class TestTokenClaudeRunner:
         assert result.cost_usd == 0.005
 
     def test_parse_output_stream_json(self):
-        runner = TokenClaudeRunner(dry_run=True)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
         raw = (
             '{"type": "init", "session_id": "sess-abc"}\n'
             '{"type": "assistant", "message": "hello"}\n'
@@ -240,16 +242,16 @@ class TestTokenClaudeRunner:
         result = runner._parse_output(raw)
         assert result.input_tokens == 200
         assert result.output_tokens == 100
-        assert result.subtype == "sess-abc"
+        assert result.session_id == "sess-abc"
 
     def test_parse_output_invalid_json(self):
-        runner = TokenClaudeRunner(dry_run=True)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
         result = runner._parse_output("not json")
         assert result.raw_output == "not json"
         assert result.input_tokens is None
 
     def test_try_parse_session_id(self):
-        runner = TokenClaudeRunner(dry_run=True)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
         assert runner._try_parse_session_id('{"session_id": "sess-abc"}') == "sess-abc"
         assert runner._try_parse_session_id('{"type": "init"}') is None
         assert runner._try_parse_session_id("not json") is None
@@ -260,42 +262,42 @@ class TestTokenClaudeRunner:
             '"total_cost_usd": 0.01, "num_turns": 2, "duration_ms": 3000, "session_id": "sess-1"}\n'
         )
 
-        runner = TokenClaudeRunner(
-            config=agent_config,
+        runner = make_runner("claude",
+
             dry_run=False,
-            credentials_override={"subscription_key": "sk-ant-test"},
+            credential=_make_token({"subscription_key": "sk-ant-test"}),
         )
         runner._record_usage = MagicMock()
         runner._execute_process = MagicMock(
             return_value=_make_completed_process(stdout=stream_output),
         )
 
-        result = runner.run("test prompt")
+        result = runner.execute(RunRequest(prompt="test prompt"))
 
         assert result.input_tokens == 200
         assert result.output_tokens == 100
-        assert result.agent_type == "claude"
+        assert result.harness == "claude"
         runner._execute_process.assert_called_once()
 
     def test_run_raises_when_no_active_token(self, agent_config):
-        runner = TokenClaudeRunner(config=agent_config, dry_run=False)
+        runner = make_runner("claude",  dry_run=False)
         runner._resolve_token_from_pool = MagicMock(return_value=None)
 
-        with pytest.raises(RuntimeError, match="No healthy token"):
-            runner.run("test prompt")
+        with pytest.raises(RuntimeError, match="No healthy credential"):
+            runner.execute(RunRequest(prompt="test prompt"))
 
 
-class TestTokenCodexRunner:
-    def _make_token(self, type_: str, credentials: dict) -> Token:
-        return Token(
+class TestCodexSubprocessRunner:
+    def _make_token(self, type_: str, credentials: dict) -> CredentialRecord:
+        return CredentialRecord(
             id=1,
-            agent_type=AgentProvider.CODEX,
+            scope="codex",
             type=type_,
             label="test",
             credentials=credentials,
             token_limit=0,
             enabled=True,
-            status=TokenStatus.OK,
+            status=CredentialStatus.OK,
             priority=0,
             error_msg=None,
             expires_at=None,
@@ -305,11 +307,11 @@ class TestTokenCodexRunner:
         )
 
     def test_agent_type(self):
-        runner = TokenCodexRunner(dry_run=True)
-        assert runner.agent_type == AgentProvider.CODEX
+        runner = make_runner("codex", dry_run=True, credential_required=False)
+        assert runner.context.harness == "codex"
 
     def test_build_env_oauth_returns_empty(self):
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
         token = self._make_token(
             type_="oauth",
             credentials={
@@ -318,27 +320,27 @@ class TestTokenCodexRunner:
                 "raw_auth": {"tokens": {"access_token": "acc-x"}},
             },
         )
-        assert runner._build_env(token) == {}
+        assert runner._credential_env(token) == {}
 
     def test_build_env_openai_api_key_returns_empty(self):
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
         token = self._make_token(
             type_="openai_api_key",
             credentials={"api_key": "sk-X"},
         )
-        assert runner._build_env(token) == {}
+        assert runner._credential_env(token) == {}
 
     def test_build_env_codex_access_token_returns_empty(self):
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
         token = self._make_token(
             type_="codex_access_token",
             credentials={"access_token": "eyJ.payload.sig", "expires_at": 9999999999},
         )
-        assert runner._build_env(token) == {}
+        assert runner._credential_env(token) == {}
 
     def test_build_command(self):
-        runner = TokenCodexRunner(dry_run=True)
-        cmd = runner._build_command("Hello world")
+        runner = make_runner("codex", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt="Hello world"))
         assert cmd == [
             "codex", "exec", "Hello world",
             "--json",
@@ -347,8 +349,8 @@ class TestTokenCodexRunner:
         ]
 
     def test_build_command_with_model(self):
-        runner = TokenCodexRunner(dry_run=True)
-        cmd = runner._build_command("Hello world", model="o3")
+        runner = make_runner("codex", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt="Hello world", model="o3"))
         assert cmd == [
             "codex", "exec", "Hello world",
             "--json",
@@ -358,8 +360,8 @@ class TestTokenCodexRunner:
         ]
 
     def test_build_resume_command(self):
-        runner = TokenCodexRunner(dry_run=True)
-        cmd = runner._build_resume_command("sess-456")
+        runner = make_runner("codex", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt='', session_id="sess-456"))
         assert cmd == [
             "codex", "exec", "resume", "sess-456",
             "Continue working from where you left off.",
@@ -369,16 +371,16 @@ class TestTokenCodexRunner:
         ]
 
     def test_build_resume_command_with_model(self):
-        runner = TokenCodexRunner(dry_run=True)
-        cmd = runner._build_resume_command("sess-456", model="o3")
+        runner = make_runner("codex", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt='', session_id="sess-456", model="o3"))
         assert "--model" in cmd
         assert "o3" in cmd
 
     def test_run_executes_subprocess(self, agent_config):
-        runner = TokenCodexRunner(
-            config=agent_config,
+        runner = make_runner("codex",
+
             dry_run=False,
-            credentials_override={"subscription_key": "sk-openai-test"},
+            credential=_make_token({"subscription_key": "sk-openai-test"}),
         )
         runner._record_usage = MagicMock()
         stream = (
@@ -390,13 +392,13 @@ class TestTokenCodexRunner:
             return_value=_make_completed_process(stdout=stream),
         )
 
-        result = runner.run("test prompt")
+        result = runner.execute(RunRequest(prompt="test prompt"))
 
         assert "codex result output" in result.raw_output
-        assert result.agent_type == "codex"
+        assert result.harness == "codex"
 
 
-class TestTokenCodexRunnerJsonOutput:
+class TestCodexSubprocessRunnerJsonOutput:
     """NDJSON-mode parsing (codex exec --json).
 
     These cover the post-migration contract: stdout carries newline-delimited
@@ -407,37 +409,37 @@ class TestTokenCodexRunnerJsonOutput:
     """
 
     def test_build_command_includes_json_flag(self):
-        runner = TokenCodexRunner(dry_run=True)
-        cmd = runner._build_command("Hello world")
+        runner = make_runner("codex", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt="Hello world"))
         assert "--json" in cmd
 
     def test_build_resume_command_includes_json_flag(self):
-        runner = TokenCodexRunner(dry_run=True)
-        cmd = runner._build_resume_command("sess-456")
+        runner = make_runner("codex", dry_run=True, credential_required=False)
+        cmd = runner.command_builder.headless(runner.context, RunRequest(prompt='', session_id="sess-456"))
         assert "--json" in cmd
 
     def test_try_parse_session_id_from_thread_started(self):
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
         line = '{"type":"thread.started","thread_id":"019e585e-aaa-bbb-ccc"}'
         assert runner._try_parse_session_id(line) == "019e585e-aaa-bbb-ccc"
 
     def test_try_parse_session_id_ignores_other_events(self):
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
         assert runner._try_parse_session_id('{"type":"turn.started"}') is None
         assert runner._try_parse_session_id('{"type":"item.completed","item":{}}') is None
 
     def test_try_parse_session_id_ignores_non_json(self):
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
         assert runner._try_parse_session_id("not json") is None
         assert runner._try_parse_session_id("") is None
 
     def test_parse_output_simple_success(self):
         raw = (_CODEX_FIXTURES / "success_simple.ndjson").read_text()
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
         result = runner._parse_output(raw)
 
-        assert result.subtype == "019e585e-526a-7943-b543-160dddddc56e"
+        assert result.session_id == "019e585e-526a-7943-b543-160dddddc56e"
         assert result.input_tokens == 1234
         # output_tokens covers visible reply + reasoning tokens
         assert result.output_tokens == 50
@@ -452,17 +454,17 @@ class TestTokenCodexRunnerJsonOutput:
         ``turn.failed`` events.
         """
         raw = (_CODEX_FIXTURES / "mcp_payload_with_401_substring.ndjson").read_text()
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
         result = runner._parse_output(raw)  # must NOT raise
 
-        assert result.subtype == "019e585e-ab85-7cb1-bdc5-33a5877cb247"
+        assert result.session_id == "019e585e-ab85-7cb1-bdc5-33a5877cb247"
         assert result.input_tokens == 101854
         assert "353043085362789" in result.raw_output
 
     def test_parse_output_raises_authentication_error_on_turn_failed_401(self):
         raw = (_CODEX_FIXTURES / "auth_failure.ndjson").read_text()
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
         with pytest.raises(AuthenticationError) as exc_info:
             runner._parse_output(raw)
@@ -471,7 +473,7 @@ class TestTokenCodexRunnerJsonOutput:
 
     def test_parse_output_raises_usage_limit_on_turn_failed_429(self):
         raw = (_CODEX_FIXTURES / "usage_limit.ndjson").read_text()
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
         with pytest.raises(UsageLimitError) as exc_info:
             runner._parse_output(raw)
@@ -485,7 +487,7 @@ class TestTokenCodexRunnerJsonOutput:
         payload (order id / total) must NOT trigger UsageLimitError — only a
         structured turn.failed.error message does."""
         raw = (_CODEX_FIXTURES / "mcp_payload_with_429_substring.ndjson").read_text()
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
         result = runner._parse_output(raw)  # must NOT raise
 
@@ -501,7 +503,7 @@ class TestTokenCodexRunnerJsonOutput:
             '{"type":"turn.failed","error":{"message":"Request failed.",'
             '"type":"usage_limit_reached","code":"usage_limit_reached"}}\n'
         )
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
         with pytest.raises(UsageLimitError):
             runner._parse_output(raw)
 
@@ -525,14 +527,14 @@ class TestTokenCodexRunnerJsonOutput:
 
     def test_parse_output_no_turn_completed_returns_partial_result(self):
         """If codex dies mid-stream (no turn.completed), parser still extracts
-        what's available without raising. Token usage is None; raw_output has
+        what's available without raising. CredentialRecord usage is None; raw_output has
         whatever agent_message text was emitted."""
         raw = (_CODEX_FIXTURES / "no_turn_completed.ndjson").read_text()
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
         result = runner._parse_output(raw)
 
-        assert result.subtype == "019e5862-b829-7552-8007-11e34c456a93"
+        assert result.session_id == "019e5862-b829-7552-8007-11e34c456a93"
         assert result.input_tokens is None
         assert result.output_tokens is None
         assert "Toolbox not reachable" in result.raw_output
@@ -541,11 +543,11 @@ class TestTokenCodexRunnerJsonOutput:
         """Process killed right after thread.started — we still get the session
         id (so the consumer can resume), no tokens, empty agent text."""
         raw = (_CODEX_FIXTURES / "thread_started_only.ndjson").read_text()
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
         result = runner._parse_output(raw)
 
-        assert result.subtype == "019e5872-aaaa-bbbb-cccc-ddddeeeeffff"
+        assert result.session_id == "019e5872-aaaa-bbbb-cccc-ddddeeeeffff"
         assert result.input_tokens is None
         assert result.raw_output == ""
 
@@ -558,11 +560,11 @@ class TestTokenCodexRunnerJsonOutput:
             '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"hi"}}\n'
             '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":0}}\n'
         )
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
         result = runner._parse_output(raw)
 
-        assert result.subtype == "sess-x"
+        assert result.session_id == "sess-x"
         assert result.input_tokens == 10
         assert result.output_tokens == 2
         assert "hi" in result.raw_output
@@ -570,11 +572,11 @@ class TestTokenCodexRunnerJsonOutput:
     def test_parse_output_real_success_with_mcp_calls(self):
         """Real captured sample — order lookup w/ multiple toolbox MCP calls."""
         raw = (_CODEX_FIXTURES / "real_success_with_mcp.ndjson").read_text()
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
         result = runner._parse_output(raw)
 
-        assert result.subtype == "019e585e-ab85-7cb1-bdc5-33a5877cb247"
+        assert result.session_id == "019e585e-ab85-7cb1-bdc5-33a5877cb247"
         # turn.completed.usage.input_tokens
         assert result.input_tokens == 101854
         # output_tokens (1904) + reasoning_output_tokens (833)
@@ -595,7 +597,7 @@ class TestTokenCodexRunnerJsonOutput:
         future codex version ships a real init event, add a
         ``with_mcp_init.ndjson`` fixture and a positive test here."""
         raw = (_CODEX_FIXTURES / "real_success_with_mcp.ndjson").read_text()
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
 
         result = runner._parse_output(raw)
 
@@ -606,7 +608,7 @@ class TestTokenCodexRunnerJsonOutput:
         stderr (Rust tracing output) contain '401' substrings that would
         false-positive substring-based auth detection — we sidestep that
         entirely by ignoring stderr."""
-        runner = TokenCodexRunner(dry_run=True)
+        runner = make_runner("codex", dry_run=True, credential_required=False)
         proc = _make_completed_process(
             stdout='{"type":"thread.started","thread_id":"s"}\n',
             stderr="ERROR codex_api: HTTP error: 401 Unauthorized\n",
@@ -620,80 +622,62 @@ class TestTokenCodexRunnerJsonOutput:
 
 class TestSubprocessTimeout:
     def test_timeout_passed_to_init(self):
-        runner = TokenClaudeRunner(dry_run=True, timeout_seconds=900)
-        assert runner.timeout_seconds == 900
+        runner = make_runner("claude", dry_run=True, timeout_seconds=900)
+        assert runner.context.timeout_seconds == 900
 
     def test_default_timeout(self):
-        runner = TokenClaudeRunner(dry_run=True)
-        assert runner.timeout_seconds == 1200
+        runner = make_runner("claude", dry_run=True, credential_required=False)
+        assert runner.context.timeout_seconds == 1200
 
     def test_timeout_expired_propagates(self, agent_config):
         exc = subprocess.TimeoutExpired(cmd="claude", timeout=600)
         exc.session_id = None  # type: ignore[attr-defined]
 
-        runner = TokenClaudeRunner(
-            config=agent_config, dry_run=False, timeout_seconds=600,
-            credentials_override={"subscription_key": "sk-ant-test"},
+        runner = make_runner("claude",
+             dry_run=False, timeout_seconds=600,
+            credential=_make_token({"subscription_key": "sk-ant-test"}),
         )
         runner._execute_process = MagicMock(side_effect=exc)
 
         with pytest.raises(subprocess.TimeoutExpired):
-            runner.run("test")
+            runner.execute(RunRequest(prompt="test"))
 
     def test_timeout_with_session_id(self, agent_config):
         exc = subprocess.TimeoutExpired(cmd="claude", timeout=600)
         exc.session_id = "sess-timeout-abc"  # type: ignore[attr-defined]
 
-        runner = TokenClaudeRunner(
-            config=agent_config, dry_run=False, timeout_seconds=600,
-            credentials_override={"subscription_key": "sk-ant-test"},
+        runner = make_runner("claude",
+             dry_run=False, timeout_seconds=600,
+            credential=_make_token({"subscription_key": "sk-ant-test"}),
         )
         runner._execute_process = MagicMock(side_effect=exc)
 
         with pytest.raises(subprocess.TimeoutExpired) as exc_info:
-            runner.run("test")
+            runner.execute(RunRequest(prompt="test"))
 
         assert exc_info.value.session_id == "sess-timeout-abc"  # type: ignore[attr-defined]
 
 
-class TestCredentialsOverride:
-    """Verify explicit token/credential overrides take precedence over DB resolution."""
+class TestCredentialClaimedByCaller:
+    """The caller claims the credential; the runner never reaches the pool itself.
 
-    def test_override_skips_db(self, agent_config):
-        stream_output = '{"type": "result", "result": "ok", "usage": {"input_tokens": 10, "output_tokens": 5}}\n'
+    Splitting the claim out of the runner is what guarantees the command and the
+    spawned process use the SAME credential — the old runner-side pool fallback
+    could hand the env one credential and the built command another.
+    """
 
-        runner = TokenClaudeRunner(
-            config=agent_config,
-            dry_run=False,
-            credentials_override={"subscription_key": "sk-override"},
-        )
-        runner._resolve_token_from_pool = MagicMock()
-        runner._record_usage = MagicMock()
-        runner._execute_process = MagicMock(
-            return_value=_make_completed_process(stdout=stream_output),
-        )
-
-        runner.run("test")
-
-        runner._resolve_token_from_pool.assert_not_called()
-
-    def test_token_override_preserves_token_type_and_id(self, agent_config):
+    def test_uses_the_context_credential_verbatim(self, agent_config):
         from .conftest import make_token
 
         token = make_token(
             id=10,
-            agent_type=AgentProvider.CLAUDE,
+            agent_type="claude",
             type="anthropic_api_key",
             credentials={"api_key": "sk-ant-X"},
         )
         stream = '{"type": "result", "result": "ok", "usage": {"input_tokens": 1, "output_tokens": 1}}\n'
 
-        runner = TokenClaudeRunner(
-            config=agent_config,
-            dry_run=False,
-            token_override=token,
-        )
-        runner._resolve_token_from_pool = MagicMock()
+        runner = make_runner("claude", dry_run=False, credential=token)
         runner._record_usage = MagicMock()
         captured_env = {}
 
@@ -703,33 +687,24 @@ class TestCredentialsOverride:
 
         runner._execute_process = MagicMock(side_effect=_fake_execute)
 
-        runner.run("test")
+        runner.execute(RunRequest(prompt="test"))
 
-        runner._resolve_token_from_pool.assert_not_called()
         assert captured_env["ANTHROPIC_API_KEY"] == "sk-ant-X"
-        assert runner._record_usage.call_args.args[0] is token
+        assert runner.context.credential is token
 
-    def test_falls_back_to_db_when_no_override(self, agent_config):
-        from .conftest import make_token
+    def test_runner_has_no_pool_access(self):
+        runner = make_runner("claude", dry_run=True)
+        for name in ("_resolve_token_from_pool", "_resolve_credential_from_pool"):
+            assert not hasattr(runner, name)
 
-        pool_token = make_token(
-            id=1,
-            label="p",
-            credentials={"subscription_key": "sk-primary"},
-            token_limit=0,
-        )
-        stream_output = '{"type": "result", "result": "ok", "usage": {"input_tokens": 10, "output_tokens": 5}}\n'
+    def test_missing_required_credential_raises(self, agent_config):
+        runner = make_runner("claude", dry_run=False, credential=None)
+        runner._execute_process = MagicMock()
 
-        runner = TokenClaudeRunner(config=agent_config, dry_run=False)
-        runner._resolve_token_from_pool = MagicMock(return_value=pool_token)
-        runner._record_usage = MagicMock()
-        runner._execute_process = MagicMock(
-            return_value=_make_completed_process(stdout=stream_output),
-        )
+        with pytest.raises(RuntimeError, match="No healthy credential"):
+            runner.execute(RunRequest(prompt="test"))
 
-        runner.run("test")
-
-        runner._resolve_token_from_pool.assert_called_once()
+        runner._execute_process.assert_not_called()
 
 
 class TestRecordUsageBestEffort:
@@ -738,17 +713,17 @@ class TestRecordUsageBestEffort:
     def test_continues_on_usage_recording_failure(self, agent_config):
         stream_output = '{"type": "result", "result": "ok", "usage": {"input_tokens": 10, "output_tokens": 5}}\n'
 
-        runner = TokenClaudeRunner(
-            config=agent_config,
+        runner = make_runner("claude",
+
             dry_run=False,
-            credentials_override={"subscription_key": "sk-test"},
+            credential=_make_token({"subscription_key": "sk-test"}),
         )
         runner._execute_process = MagicMock(
             return_value=_make_completed_process(stdout=stream_output),
         )
 
         # _record_usage silently swallows errors (no DB in test env) — run() should still return
-        result = runner.run("test")
+        result = runner.execute(RunRequest(prompt="test"))
 
         assert result.input_tokens == 10
         assert result.output_tokens == 5
@@ -758,7 +733,7 @@ class TestPidAndSessionCallbacks:
     """Verify PID and session_id callbacks are invoked during _execute_process."""
 
     def test_pid_callback_invoked(self):
-        runner = TokenClaudeRunner(dry_run=True)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
         pids = []
         runner.pid_callback = lambda pid: pids.append(pid)
 
@@ -769,13 +744,13 @@ class TestPidAndSessionCallbacks:
         mock_proc.wait.return_value = 0
         mock_proc.returncode = 0
 
-        with patch("agento.framework.agent_manager.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("agento.framework.harness.subprocess_runner.subprocess.Popen", return_value=mock_proc):
             runner._execute_process(["echo", "test"], {})
 
         assert pids == [12345]
 
     def test_session_id_callback_invoked(self):
-        runner = TokenClaudeRunner(dry_run=True)
+        runner = make_runner("claude", dry_run=True, credential_required=False)
         session_ids = []
         runner.session_id_callback = lambda sid: session_ids.append(sid)
 
@@ -786,7 +761,7 @@ class TestPidAndSessionCallbacks:
         mock_proc.wait.return_value = 0
         mock_proc.returncode = 0
 
-        with patch("agento.framework.agent_manager.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("agento.framework.harness.subprocess_runner.subprocess.Popen", return_value=mock_proc):
             runner._execute_process(["echo", "test"], {})
 
         assert session_ids == ["sess-abc"]
@@ -801,20 +776,20 @@ class TestResumeMethod:
             '"session_id": "sess-resumed"}\n'
         )
 
-        runner = TokenClaudeRunner(
-            config=agent_config,
+        runner = make_runner("claude",
+
             dry_run=False,
-            credentials_override={"subscription_key": "sk-ant-test"},
+            credential=_make_token({"subscription_key": "sk-ant-test"}),
         )
         runner._record_usage = MagicMock()
         runner._execute_process = MagicMock(
             return_value=_make_completed_process(stdout=stream_output),
         )
 
-        result = runner.resume("sess-original", model="claude-sonnet-4-20250514")
+        result = runner.execute(RunRequest(prompt='', session_id="sess-original"))
 
         assert result.input_tokens == 50
-        assert result.agent_type == "claude"
+        assert result.harness == "claude"
 
         # Verify the command passed to _execute_process contains --resume
         call_args = runner._execute_process.call_args[0][0]

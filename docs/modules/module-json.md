@@ -95,7 +95,7 @@ See [src/agento/modules/jira/toolbox/](../../src/agento/modules/jira/toolbox/) f
 
 ### di.json
 
-Registers capabilities your module provides — channels, workflows, runtimes, CLI commands. Bootstrap reads this and populates the corresponding registries.
+Registers capabilities your module provides — channels, workflows, agent harnesses, CLI commands. Bootstrap reads this and populates the corresponding registries.
 
 ```json
 {
@@ -106,20 +106,29 @@ Registers capabilities your module provides — channels, workflows, runtimes, C
     {"type": "cron", "class": "src.workflows.cron.CronWorkflow"},
     {"type": "todo", "class": "src.workflows.todo.TodoWorkflow"}
   ],
-  "runtimes": [
-    {"provider": "claude", "class": "src.runner.TokenClaudeRunner"}
-  ],
-  "config_writers": [
-    {"provider": "claude", "class": "src.config.ClaudeConfigWriter"}
-  ],
-  "sandbox_packages": [
+  "agent_harnesses": [
     {
-      "provider": "claude",
-      "manager": "npm",
-      "package": "@anthropic-ai/claude-code",
-      "binary": "claude",
-      "version_env_key": "CLAUDE_CODE_VERSION",
-      "default_range": "~2.1.142"
+      "id": "claude",
+      "label": "Claude Code",
+      "class": "src.adapter.ClaudeHarnessAdapter",
+      "default_provider": "anthropic",
+      "providers": [
+        {
+          "id": "anthropic",
+          "label": "Anthropic",
+          "credential_required": true,
+          "registration_modes": ["interactive_oauth", "api_key"],
+          "credential_scope": "claude"
+        }
+      ],
+      "capabilities": {"interactive": true, "resume": true, "transcripts": true},
+      "sandbox_package": {
+        "manager": "npm",
+        "package": "@anthropic-ai/claude-code",
+        "binary": "claude",
+        "version_env_key": "CLAUDE_CODE_VERSION",
+        "default_range": "2.1.165"
+      }
     }
   ],
   "commands": [
@@ -136,9 +145,7 @@ Each section is optional — include only what your module provides. The `onboar
 |---------|-----------|----------|
 | `channels` | `name`, `class` | Channel registry — `get_channel(name)` |
 | `workflows` | `type`, `class` | Workflow registry — `get_workflow_class(AgentType)` |
-| `runtimes` | `provider`, `class` | Runner factory — `create_runner(AgentProvider)` |
-| `config_writers` | `provider`, `class` | Config writer registry — `get_config_writer(AgentProvider)` |
-| `sandbox_packages` | `provider`, `manager`, `package`, `binary`, `version_env_key`, `default_range` | Sandbox CLI version registry — drives `docker/.env` pin seeding, sandbox `--build-arg`s, and the `agento doctor` pin check |
+| `agent_harnesses` | `id`, `class`, `default_provider`, `providers[]`, optional `capabilities` / `sandbox_package` | Harness registry — one entry replaces the former `runtimes`, `config_writers`, `cli_invokers`, `auth_strategies`, `transcript_readers` and `sandbox_packages` sections. See [harness-contract.md](../architecture/harness-contract.md) |
 | `commands` | `name`, `class` | CLI command registry — adds `bin/agento <name>` subcommand |
 | `onboarding` | (single class path string) | Onboarding registry — interactive setup during `setup:upgrade` |
 | `regex_identity_types` | (array of identity-type strings) | Regex-identity-type registry — `is_regex_identity_type(type)` |
@@ -155,37 +162,47 @@ VARCHAR(32)`). Both the runtime matcher and the `ingress:bind` CLI validator gat
 `["outlook_sender"]` so a shared mailbox can route inbound mail to different agent_views by sender
 pattern. See [routing](../architecture/routing.md).
 
-#### `sandbox_packages`
+#### `agent_harnesses[].sandbox_package`
 
-Declares the CLI binary your agent module needs installed in the sandbox image, plus a soft version pin. The framework enumerates these declarations at install/upgrade/doctor time — no framework code branches on provider name.
+Declares the CLI binary your agent module needs installed in the sandbox image, plus a soft version pin. The framework enumerates these declarations at install/upgrade/doctor time — no framework code branches on harness name.
 
 | Field | Required | Description |
 |---|---|---|
-| `provider` | yes | Stable identifier, matches `runtimes.provider` for the same agent |
 | `manager` | yes | Package manager (`"npm"` today; shape future-proofs apt/pip) |
 | `package` | yes | Full package spec (e.g. `@anthropic-ai/claude-code`) |
 | `binary` | yes | CLI binary name on `$PATH` — used for `<binary> --version` doctor checks and the doctor row label |
 | `version_env_key` | yes | UPPERCASE name of the env var seeded in `docker/.env` and consumed by the sandbox Dockerfile `ARG`. Must be unique across all modules |
 | `default_range` | yes | npm-style semver range (tilde recommended), used when the customer hasn't set the env var |
 
-The current sandbox Dockerfile hardcodes `RUN npm install -g @anthropic-ai/claude-code @openai/codex`, so a third-party agent module needs that line extended too until the Dockerfile becomes data-driven. The registry contract for pin propagation is in place today.
+The sandbox Dockerfile is **rendered** from these declarations (`cli/templates/sandbox.Dockerfile` + `render_sandbox_dockerfile`), so a third-party agent module gets its CLI installed with no framework edit. Because the rendered line is `"@scope/pkg@${YOUR_VERSION}"`, the fields are validated against a closed schema (regex per field, allow-list of managers) instead of being shell-quoted — quoting would stop the `ARG` from expanding, defeating the pin.
 
-#### `config_writers`
+The **legacy top-level `sandbox_packages` array** is still read for one release cycle so an unmigrated module keeps its pin; an `agent_harnesses` entry wins for the same `version_env_key`.
 
-Each agent provider materializes its own CLI config files (`.claude.json`, `.codex/config.toml`, etc.) before a job runs. The framework dispatches to the provider's `ConfigWriter` — it does **not** know about specific file formats. To add a new agent (OpenCode, Hermes, etc.), implement `ConfigWriter` and register it here.
+#### `agent_harnesses[].class` — the adapter
 
-The protocol (`src/agento/framework/config_writer.py`):
+One object wires the harness's behaviour together. The framework dispatches through it and
+knows nothing about specific file formats or CLI flags. To add a new agent (OpenCode,
+Hermes, …), implement these and declare the harness here:
 
 ```python
-class ConfigWriter(Protocol):
-    def prepare_workspace(self, working_dir, agent_config, *, agent_view_id=None) -> None: ...
-    def inject_runtime_params(self, artifacts_dir, *, job_id) -> None: ...
-    def owned_paths(self) -> tuple[set[str], set[str]]: ...
+class MyHarnessAdapter:
+    command_builder: CommandBuilder        # headless(ctx, req) / interactive(ctx, *, yolo)
+    workspace_adapter: WorkspaceAdapter    # prepare_workspace, inject_runtime_params,
+                                           # owned_paths, persistent_home_paths,
+                                           # write_credentials, credential_env,
+                                           # capture_refreshed_credentials,
+                                           # serialize_toolbox_connection
+    transcript_reader: TranscriptReader | None
+    authenticators: Mapping[CredentialScope, CredentialAuthenticator]
+
+    def create_runner(self, ctx: HarnessRunContext, **kwargs): ...
 ```
 
-- `prepare_workspace` — write provider config files into the build directory (model, MCP servers, permissions, etc.)
-- `inject_runtime_params` — append the per-job `job_id` to MCP URLs in the artifacts copy of the config (workspace/agent_view codes are resolved toolbox-side from `agent_view_id`)
-- `owned_paths` — return `(files, dirs)` this writer manages so framework copies (not symlinks) them into per-job artifacts dirs
+`descriptor` is deliberately not on the adapter: the framework builds it from `di.json`, so
+harnesses can be enumerated with no Python import (needed by `config:set`,
+`enumerate_sandbox_packages` and `module:validate`). Protocols live in
+[`src/agento/framework/harness/protocols.py`](../../src/agento/framework/harness/protocols.py);
+the full contract is in [harness-contract.md](../architecture/harness-contract.md).
 
 Class paths are dotted relative to the module directory: `src.channel.JiraChannel` resolves to `<module>/src/channel.py` → `JiraChannel`.
 

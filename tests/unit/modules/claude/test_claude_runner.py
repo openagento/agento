@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 import pytest
 
 from agento.framework.agent_manager.errors import TransientAuthError, UsageLimitError
-from agento.framework.runner import McpInitReport, McpServerStatus
+from agento.framework.harness import McpInitReport, McpServerStatus
 from agento.modules.claude.src.output_parser import (
     AuthenticationError,
     _parse_reset_at,
@@ -24,7 +24,10 @@ def test_parse_output_success(claude_success):
     assert result.cost_usd == 0.0123
     assert result.num_turns == 3
     assert result.duration_ms == 45000
-    assert result.subtype == "success"
+    # ``session_id`` carries the real session id; the payload's own ``subtype``
+    # ("success") is an outcome word and must never land there — a resume built
+    # from it would target a nonexistent session.
+    assert result.session_id == "sess-legacy-1"
 
 
 def test_parse_output_invalid_json():
@@ -81,7 +84,7 @@ def test_parse_stream_json_result_event():
     assert result.cost_usd == 0.01
     assert result.num_turns == 2
     assert result.duration_ms == 3000
-    assert result.subtype == "sess-abc"
+    assert result.session_id == "sess-abc"
 
 
 def test_parse_stream_json_session_id_from_init():
@@ -91,7 +94,7 @@ def test_parse_stream_json_session_id_from_init():
     )
     result = parse_claude_output(raw)
 
-    assert result.subtype == "sess-init"
+    assert result.session_id == "sess-init"
     assert result.input_tokens == 10
 
 
@@ -190,7 +193,7 @@ def test_parse_stream_json_partial_output_with_session():
     raw = '{"type": "init", "session_id": "sess-partial"}\n'
     result = parse_claude_output(raw)
 
-    assert result.subtype == "sess-partial"
+    assert result.session_id == "sess-partial"
     assert result.input_tokens is None
 
 
@@ -303,7 +306,7 @@ def test_parse_claude_output_mcp_init_survives_missing_result_event():
     )
     result = parse_claude_output(raw)
 
-    assert result.subtype == "sess-x"
+    assert result.session_id == "sess-x"
     assert result.mcp_init == McpInitReport(
         servers=(McpServerStatus("toolbox", "connected"),)
     )

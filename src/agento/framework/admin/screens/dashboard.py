@@ -26,7 +26,7 @@ class DashboardScreen(Screen):
                 yield DataTable(id="recent-jobs-table")
             with Horizontal(id="dashboard-bottom"):
                 with Vertical(id="tokens-panel", classes="panel"):
-                    yield Static("Tokens", classes="panel-title")
+                    yield Static("Credentials", classes="panel-title")
                     yield Static("Loading...", id="tokens-content")
                 with Vertical(id="agents-panel", classes="panel"):
                     yield Static("Agent Views", classes="panel-title")
@@ -88,10 +88,10 @@ class DashboardScreen(Screen):
                 status = t.get("status", "ok")
                 status_tag = " [error]" if status == "error" else ""
                 enabled = "" if t.get("enabled") else " (disabled)"
-                token_lines.append(f"{t['label']} ({t['agent_type']}){status_tag}{enabled}")
+                token_lines.append(f"{t['label']} ({t['scope']}){status_tag}{enabled}")
             self.query_one("#tokens-content", Static).update("\n".join(token_lines))
         else:
-            self.query_one("#tokens-content", Static).update("No tokens registered")
+            self.query_one("#tokens-content", Static).update("No credentials registered")
 
         # Agent views panel
         if data.agent_views:

@@ -8,7 +8,7 @@ import json
 import pytest
 
 from agento.framework.agent_manager.errors import AuthenticationError, TransientAuthError
-from agento.modules.codex.src.runner import TokenCodexRunner
+from agento.modules.codex.src.runner import CodexSubprocessRunner
 
 
 def _turn_failed(message: str) -> str:
@@ -16,7 +16,7 @@ def _turn_failed(message: str) -> str:
 
 
 def _parse(raw: str):
-    return TokenCodexRunner._parse_output(object.__new__(TokenCodexRunner), raw)
+    return CodexSubprocessRunner._parse_output(object.__new__(CodexSubprocessRunner), raw)
 
 
 def test_codex_revoked_token_raises_transient_auth_error():

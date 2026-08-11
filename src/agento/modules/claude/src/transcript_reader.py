@@ -22,7 +22,7 @@ import json
 import logging
 from pathlib import Path
 
-from agento.framework.transcript_reader import ParseSummary, ToolUse
+from agento.framework.harness import ParseSummary, ToolUse
 from agento.framework.workspace_paths import BUILD_DIR
 
 logger = logging.getLogger(__name__)

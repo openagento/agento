@@ -27,7 +27,7 @@ _HEADLESS_CODEX = [
 ]
 
 
-def _base_runtime(provider="claude", model="claude-opus-4-6", *, prompt=False):
+def _base_runtime(harness="claude", model="claude-opus-4-6", *, prompt=False):
     """Payload from the cron-side ``agent_view:prepare-run`` command.
 
     Mirrors :class:`AgentViewPrepareRunCommand`'s JSON output: unified
@@ -35,20 +35,20 @@ def _base_runtime(provider="claude", model="claude-opus-4-6", *, prompt=False):
     passed), a per-run artifacts ``home``/``working_dir``, and an ``env`` dict
     that's empty when no API-key credential delivery is needed.
     """
-    interactive = _INTERACTIVE_CLAUDE if provider == "claude" else _INTERACTIVE_CODEX
-    headless = _HEADLESS_CLAUDE if provider == "claude" else _HEADLESS_CODEX
+    interactive = _INTERACTIVE_CLAUDE if harness == "claude" else _INTERACTIVE_CODEX
+    headless = _HEADLESS_CLAUDE if harness == "claude" else _HEADLESS_CODEX
     return {
         "agent_view_id": 2,
         "agent_view_code": "dev_01",
         "workspace_id": 1,
         "workspace_code": "it",
-        "provider": provider,
+        "harness": harness,
         "model": model,
         "home": "/workspace/artifacts/it/dev_01/run",
         "working_dir": "/workspace/artifacts/it/dev_01/run",
         "command": headless if prompt else interactive,
         "env": {},
-        "token_id": 99,
+        "credential_id": 99,
     }
 
 
@@ -103,9 +103,9 @@ class TestRunCommand:
         assert exc.value.code == 1
         assert "docker-compose.yml not found" in capsys.readouterr().err
 
-    def test_missing_provider_exits_with_hint(self, tmp_path, capsys):
+    def test_missing_harness_exits_with_hint(self, tmp_path, capsys):
         project_root, compose = _project_layout(tmp_path)
-        runtime = {**_base_runtime(), "provider": None, "interactive_command": None}
+        runtime = {**_base_runtime(), "harness": None, "command": None}
         with (
             patch("agento.framework.cli.run.find_project_root", return_value=project_root),
             patch("agento.framework.cli.run.compose_file_flags", return_value=["-f", str(compose)]),
@@ -115,14 +115,14 @@ class TestRunCommand:
             RunCommand().execute(_make_args())
         err = capsys.readouterr().err
         assert exc.value.code == 1
-        assert "no provider configured" in err
-        assert "config:set agent_view/provider" in err
+        assert "no harness configured" in err
+        assert "config:set agent_view/harness" in err
 
-    def test_unregistered_cli_invoker_exits(self, tmp_path, capsys):
+    def test_unregistered_harness_exits(self, tmp_path, capsys):
         project_root, compose = _project_layout(tmp_path)
-        # Cron returns provider but the unified ``command`` is null when no
-        # CliInvoker is registered for the resolved provider.
-        runtime = {**_base_runtime(provider="exotic"), "command": None}
+        # Cron returns a harness but the unified ``command`` is null when that
+        # harness isn't registered (so no CommandBuilder could build one).
+        runtime = {**_base_runtime(harness="exotic"), "command": None}
         with (
             patch("agento.framework.cli.run.find_project_root", return_value=project_root),
             patch("agento.framework.cli.run.compose_file_flags", return_value=["-f", str(compose)]),
@@ -132,7 +132,7 @@ class TestRunCommand:
             RunCommand().execute(_make_args())
         err = capsys.readouterr().err
         assert exc.value.code == 1
-        assert "no CliInvoker registered" in err
+        assert "is not registered" in err
 
     def test_missing_current_build_exits_with_hint(self, tmp_path, capsys):
         project_root, compose = _project_layout(tmp_path, include_current=False)
@@ -171,7 +171,7 @@ class TestRunCommand:
 
     def test_interactive_for_codex_uses_codex_binary(self, tmp_path):
         project_root, compose = _project_layout(tmp_path)
-        runtime = _base_runtime(provider="codex", model="gpt-5.4")
+        runtime = _base_runtime(harness="codex", model="gpt-5.4")
         with (
             patch("agento.framework.cli.run.find_project_root", return_value=project_root),
             patch("agento.framework.cli.run.compose_file_flags", return_value=["-f", str(compose)]),
@@ -238,7 +238,7 @@ class TestRunCommand:
 
     def test_headless_codex_uses_headless_command_from_runtime(self, tmp_path):
         project_root, compose = _project_layout(tmp_path)
-        runtime = _base_runtime(provider="codex", model="gpt-5.4", prompt=True)
+        runtime = _base_runtime(harness="codex", model="gpt-5.4", prompt=True)
         completed = subprocess.CompletedProcess(args=[], returncode=0)
         with (
             patch("agento.framework.cli.run.find_project_root", return_value=project_root),
@@ -287,7 +287,7 @@ class TestRunCommand:
 
     def test_headless_propagates_exit_code(self, tmp_path):
         project_root, compose = _project_layout(tmp_path)
-        runtime = _base_runtime(provider="codex", model="gpt-5.4", prompt=True)
+        runtime = _base_runtime(harness="codex", model="gpt-5.4", prompt=True)
         completed = subprocess.CompletedProcess(args=[], returncode=17)
         with (
             patch("agento.framework.cli.run.find_project_root", return_value=project_root),
@@ -390,7 +390,7 @@ class TestFetchRuntime:
         # the JSON payload, which itself carries the secret in env.
         leaky_stdout = (
             'WARNING: deprecated thing\n'
-            '{"provider": "claude", "env": {"ANTHROPIC_API_KEY": "sk-ant-SECRET"}}\n'
+            '{"harness": "claude", "env": {"ANTHROPIC_API_KEY": "sk-ant-SECRET"}}\n'
         )
         fake_result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=leaky_stdout, stderr="",
@@ -410,27 +410,27 @@ class TestFetchRuntime:
 # unified `command` plus a `working_dir` (per-run artifacts) and an `env` dict
 # whose values must be injected via docker's NAME-ONLY ``-e KEY`` form so the
 # secret value never appears in argv/``ps`` (matches the 1ccb38a stdin-only
-# secrets stance for token:register).
+# secrets stance for credential:register).
 # ---------------------------------------------------------------------------
 
 
-def _prepare_runtime(provider="claude", model="claude-opus-4-6", *, prompt=False, env=None):
+def _prepare_runtime(harness="claude", model="claude-opus-4-6", *, prompt=False, env=None):
     return {
         "agent_view_id": 2,
         "agent_view_code": "dev_01",
         "workspace_id": 1,
         "workspace_code": "it",
-        "provider": provider,
+        "harness": harness,
         "model": model,
         "home": "/workspace/artifacts/it/dev_01/run",
         "working_dir": "/workspace/artifacts/it/dev_01/run",
         "command": (
-            (_HEADLESS_CLAUDE if provider == "claude" else _HEADLESS_CODEX)
+            (_HEADLESS_CLAUDE if harness == "claude" else _HEADLESS_CODEX)
             if prompt else
-            (_INTERACTIVE_CLAUDE if provider == "claude" else _INTERACTIVE_CODEX)
+            (_INTERACTIVE_CLAUDE if harness == "claude" else _INTERACTIVE_CODEX)
         ),
         "env": env or {},
-        "token_id": 99,
+        "credential_id": 99,
     }
 
 

@@ -28,6 +28,8 @@ from agento.framework.job_models import AgentType, Job, JobStatus
 from agento.framework.workspace import AgentView, Workspace
 from agento.modules.claude.src.output_parser import ClaudeResult
 
+pytestmark = pytest.mark.usefixtures("builtin_harnesses")
+
 
 def _make_job(agent_view_id: int | None) -> Job:
     return Job(
@@ -39,6 +41,7 @@ def _make_job(agent_view_id: int | None) -> Job:
         priority=50,
         reference_id="AI-1",
         agent_type=None,
+        provider=None,
         model=None,
         input_tokens=None,
         output_tokens=None,
@@ -62,7 +65,7 @@ def _make_job(agent_view_id: int | None) -> Job:
     )
 
 
-def _runtime_with_agent_view(provider: str = "claude") -> AgentViewRuntime:
+def _runtime_with_agent_view(harness: str = "claude", provider: str = "anthropic") -> AgentViewRuntime:
     now = datetime.now(UTC)
     return AgentViewRuntime(
         agent_view=AgentView(
@@ -73,6 +76,7 @@ def _runtime_with_agent_view(provider: str = "claude") -> AgentViewRuntime:
             id=1, code="acme", label="Acme",
             is_active=True, created_at=now, updated_at=now,
         ),
+        harness=harness,
         provider=provider,
         model="opus-4",
         priority=50,
@@ -84,13 +88,13 @@ def _claude_result() -> ClaudeResult:
     return ClaudeResult(
         raw_output="ok", input_tokens=10, output_tokens=5,
         cost_usd=0.0, num_turns=1, duration_ms=100,
-        subtype="success", agent_type="claude", prompt=None,
+        session_id="success", harness="claude", prompt=None,
     )
 
 
 @pytest.fixture(autouse=True)
 def _mock_token_resolver():
-    with patch("agento.framework.consumer.TokenResolver") as MockCls:
+    with patch("agento.framework.consumer.CredentialResolver") as MockCls:
         mock = MagicMock()
         token = MagicMock()
         token.credentials_path = "/etc/tokens/claude_1.json"
@@ -105,13 +109,15 @@ def _mock_token_resolver():
 @patch("agento.framework.consumer.get_channel")
 @patch("agento.framework.consumer.create_runner")
 @patch("agento.framework.consumer.get_connection")
-@patch("agento.framework.config_writer.get_config_writer")
+@patch("agento.framework.harness.persistent_home_paths_for", return_value=[])
+@patch("agento.framework.harness.workspace_adapter_for")
 @patch("agento.framework.run_preparation.prepare_artifacts_dir")
 @patch("agento.framework.run_preparation.build_artifacts_dir", return_value="/workspace/acme/developer/runs/42")
 @patch("agento.framework.consumer.resolve_agent_view_runtime")
 @patch("agento.framework.consumer.get_event_manager")
 def test_dispatches_check_with_agent_view_id(
     mock_get_em, mock_resolve, mock_build_artifacts, mock_prepare, mock_get_writer,
+    mock_persistent,
     mock_conn, MockRunner, mock_get_ch, mock_get_wf,
     mock_get_current, mock_copy_build,
     sample_db_config, sample_consumer_config,
@@ -155,7 +161,8 @@ def test_skips_dispatch_when_no_agent_view(
     mock_em = MagicMock()
     mock_get_em.return_value = mock_em
     runtime = AgentViewRuntime()
-    runtime.provider = "claude"
+    runtime.harness = "claude"
+    runtime.provider = "anthropic"
     mock_resolve.return_value = runtime
     mock_conn.return_value = MagicMock()
 

@@ -81,16 +81,19 @@ The sandbox image installs agent CLIs from npm (today: `@anthropic-ai/claude-cod
 ```jsonc
 // src/agento/modules/claude/di.json (shipped with the framework)
 {
-  "runtimes": [ /* ... */ ],
-  "cli_invokers": [ /* ... */ ],
-  "sandbox_packages": [
+  "agent_harnesses": [
     {
-      "provider": "claude",
-      "manager": "npm",
-      "package": "@anthropic-ai/claude-code",
-      "binary": "claude",
-      "version_env_key": "CLAUDE_CODE_VERSION",
-      "default_range": "~2.1.142"
+      "id": "claude",
+      "class": "src.adapter.ClaudeHarnessAdapter",
+      "default_provider": "anthropic",
+      "providers": [ /* ... */ ],
+      "sandbox_package": {
+        "manager": "npm",
+        "package": "@anthropic-ai/claude-code",
+        "binary": "claude",
+        "version_env_key": "CLAUDE_CODE_VERSION",
+        "default_range": "2.1.165"
+      }
     }
   ]
 }
@@ -119,7 +122,7 @@ cd docker && docker compose build sandbox && docker compose up -d sandbox
 
 ### Adding a new agent
 
-To register a new agent (e.g. OpenCode, Hermes), drop a module under `app/code/<name>/` with a `module.json` and a `di.json` that declares `sandbox_packages` (plus the usual `runtimes`/`cli_invokers`/etc.). On the next `agento upgrade`:
+To register a new agent (e.g. OpenCode, Hermes), drop a module under `app/code/<name>/` with a `module.json` and a `di.json` declaring one `agent_harnesses` entry that carries a `sandbox_package` (see [harness-contract.md](../architecture/harness-contract.md)). On the next `agento upgrade`:
 
 - `docker/.env` gains a `<KEY>=<default_range>` line for the new agent
 - `docker-compose.yml` gains a `<KEY>: ${<KEY>:-<default>}` build arg under the sandbox service

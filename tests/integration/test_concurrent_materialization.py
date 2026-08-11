@@ -4,7 +4,7 @@ its own per-run artifacts dir. Asserts that concurrency never lets one job's
 credentials leak into — or get clobbered by — another job's run directory.
 
 Real MySQL + mocked runner: the agent never actually runs, but every job goes
-through the real ``materialize_run_workspace`` + ``ClaudeConfigWriter`` path
+through the real ``materialize_run_workspace`` + ``ClaudeWorkspaceAdapter`` path
 that writes ``.claude/.credentials.json`` before the runner is invoked.
 """
 from __future__ import annotations
@@ -64,9 +64,9 @@ def _bind_provider(agent_type: str = "claude") -> None:
         conn.close()
 
 
-def _seed_oauth_token(label: str, access_token: str, email: str) -> int:
+def _seed_credential(label: str, access_token: str, email: str) -> int:
     """Seed an enabled, healthy claude oauth token. Credentials mirror a real
-    oauth payload so ClaudeConfigWriter writes ``.claude/.credentials.json``
+    oauth payload so ClaudeWorkspaceAdapter writes ``.claude/.credentials.json``
     with ``claudeAiOauth.accessToken == access_token``."""
     credentials = encrypt_credentials({
         "subscription_key": access_token,
@@ -85,9 +85,9 @@ def _seed_oauth_token(label: str, access_token: str, email: str) -> int:
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO oauth_token
-                       (agent_type, type, label, credentials, enabled, status, priority)
-                   VALUES ('claude', 'oauth', %s, %s, TRUE, 'ok', 0)""",
+                """INSERT INTO credential
+                       (scope, agent_type, type, label, credentials, enabled, status, priority)
+                   VALUES ('claude', 'claude', 'oauth', %s, %s, TRUE, 'ok', 0)""",
                 (label, credentials),
             )
             return cur.lastrowid
@@ -119,24 +119,24 @@ def test_concurrent_jobs_materialize_isolated_credentials_per_run_dir(
     av_id = _insert_agent_view(ws_id)
 
     for i in range(N_JOBS):
-        _seed_oauth_token(f"tok-{i}", f"sk-oauth-{i}", f"user{i}@example.com")
+        _seed_credential(f"tok-{i}", f"sk-oauth-{i}", f"user{i}@example.com")
 
     # Capture, per run directory, the credential the consumer handed the runner.
     # ``working_dir`` is the per-run artifacts dir where creds were materialized.
     lock = threading.Lock()
     seen: dict[str, str] = {}
 
-    def capturing_run(self_runner, prompt, *, model=None):
+    def capturing_run(self_runner, request):
         with lock:
-            seen[self_runner.working_dir] = self_runner.token_override.credentials["subscription_key"]
+            seen[self_runner.context.working_dir] = self_runner.context.credential.credentials["subscription_key"]
         return ClaudeResult(
             raw_output="ok", input_tokens=100, output_tokens=50,
-            duration_ms=1000, subtype="success", agent_type="claude",
+            duration_ms=1000, session_id="success", harness="claude",
         )
 
     cfg = ConsumerConfig(max_workers=N_JOBS)
 
-    with patch("agento.modules.claude.src.runner.TokenClaudeRunner.run", capturing_run), \
+    with patch("agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute", capturing_run), \
          patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path)), \
          patch("agento.framework.artifacts_dir.BUILD_DIR", str(tmp_path)), \
          patch("agento.modules.workspace_build.src.builder.BUILD_DIR", str(tmp_path)), \

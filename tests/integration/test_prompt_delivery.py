@@ -14,7 +14,7 @@ from .conftest import fetch_job, insert_primary_token, insert_queued_job
 
 
 def _capturing_claude():
-    """Context manager that captures the prompt passed to TokenClaudeRunner.run."""
+    """Context manager that captures the prompt passed to ClaudeSubprocessRunner.execute."""
     result = ClaudeResult(
         raw_output="ok",
         input_tokens=100,
@@ -22,15 +22,15 @@ def _capturing_claude():
         cost_usd=0.001,
         num_turns=2,
         duration_ms=5000,
-        subtype="success",
+        session_id="success",
     )
     captured = {}
 
-    def capture(prompt):
-        captured["prompt"] = prompt
+    def capture(request):
+        captured["prompt"] = request.prompt
         return result
 
-    return patch("agento.modules.claude.src.runner.TokenClaudeRunner.run", side_effect=capture), captured
+    return patch("agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute", side_effect=capture), captured
 
 
 class TestPromptDelivery:

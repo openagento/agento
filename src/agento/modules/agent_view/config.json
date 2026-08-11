@@ -1,4 +1,5 @@
 {
-  "provider": "claude",
+  "harness": "claude",
+  "provider": "anthropic",
   "scheduling/priority": 50
 }

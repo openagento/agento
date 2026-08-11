@@ -19,6 +19,7 @@ def _make_job(**overrides) -> Job:
         priority=50,
         reference_id="AI-42",
         agent_type=None,
+        provider=None,
         model=None,
         input_tokens=None,
         output_tokens=None,

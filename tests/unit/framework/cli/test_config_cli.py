@@ -279,6 +279,47 @@ class TestConfigSetCommand:
 
     @patch("agento.framework.cli.config.get_connection_or_exit")
     @patch("agento.framework.cli.config._load_framework_config")
+    @patch("agento.framework.cli.config._validate_config_path", return_value=True)
+    @patch("agento.framework.cli.config._validate_config_value", return_value=False)
+    @patch("agento.framework.core_config.config_set_auto_encrypt")
+    def test_invalid_value_exits_nonzero(
+        self, mock_write, _vv, _vp, mock_config, mock_conn_fn,
+    ):
+        """A rejected select value must fail the process, not print and exit 0 —
+        scripts (and the e2e suite) treat rc=0 as "the value was set"."""
+        mock_config.return_value = ({}, None, None)
+        mock_conn_fn.return_value = _mock_conn()[0]
+
+        with pytest.raises(SystemExit) as exc:
+            ConfigSetCommand().execute(_set_args(value="codex"))
+
+        assert exc.value.code == 1
+        mock_write.assert_not_called()
+
+    @patch("agento.framework.cli.config.get_connection_or_exit")
+    @patch("agento.framework.cli.config._load_framework_config")
+    @patch("agento.framework.cli.config._validate_config_path", return_value=False)
+    @patch("agento.framework.core_config.config_set_auto_encrypt")
+    def test_invalid_path_exits_nonzero(
+        self, mock_write, _vp, mock_config, mock_conn_fn,
+    ):
+        mock_config.return_value = ({}, None, None)
+        mock_conn_fn.return_value = _mock_conn()[0]
+
+        with pytest.raises(SystemExit) as exc:
+            ConfigSetCommand().execute(_set_args(value="v"))
+
+        assert exc.value.code == 1
+        mock_write.assert_not_called()
+
+    def test_path_without_slash_exits_nonzero(self):
+        with pytest.raises(SystemExit) as exc:
+            ConfigSetCommand().execute(_set_args(path="jira", value="v"))
+
+        assert exc.value.code == 1
+
+    @patch("agento.framework.cli.config.get_connection_or_exit")
+    @patch("agento.framework.cli.config._load_framework_config")
     @patch("agento.framework.workspace.get_agent_view_by_code")
     def test_agent_view_flag_unknown_code_exits(
         self, mock_av, mock_config, mock_conn_fn,

@@ -13,14 +13,13 @@ GHCR pulls.
 from __future__ import annotations
 
 import importlib.resources as ires
-import json
 import re
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
+from ..harness.descriptor import SandboxPackage
 from ..module_status import read_module_status, resolve_module_source
 from ._env import parse_env_file
 from ._output import log_error, log_info
@@ -29,25 +28,9 @@ from ._templates import get_package_version, get_template
 _AGENTO_REQUIRES_PYTHON = ">=3.12"
 
 
-@dataclass(frozen=True)
-class SandboxPackage:
-    """One agent CLI declaration sourced from a module's ``di.json``.
-
-    Agent modules declare ``sandbox_packages`` alongside ``runtimes`` /
-    ``cli_invokers`` to advertise the CLI binary they need installed in the
-    sandbox image, plus a pin range. The framework enumerates these
-    declarations at install/upgrade/doctor time and propagates pins to
-    ``docker/.env``, the sandbox build args, and the doctor check — no
-    framework-side ``if provider == "claude"`` branches.
-    """
-
-    provider: str
-    manager: str  # "npm" today; shape supports apt/pip if a future agent needs them
-    package: str
-    binary: str
-    version_env_key: str
-    default_range: str
-
+# ``SandboxPackage`` is imported above purely to re-export it: existing CLI callers
+# import it from here, but the dataclass belongs to the harness contract.
+__all__ = ["SandboxPackage"]
 
 # Matches a uv.lock package source line:
 #   source = { registry = "<path-or-url>" }
@@ -75,126 +58,126 @@ def parse_semver_floor(value: str) -> tuple[int, int, int] | None:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
 
-def _parse_sandbox_packages_from_di(di_json: Path) -> list[SandboxPackage]:
-    """Read ``sandbox_packages`` from one module's ``di.json``. Returns [] on absence/error."""
-    try:
-        data = json.loads(di_json.read_text())
-    except (OSError, json.JSONDecodeError):
-        return []
-    decls = data.get("sandbox_packages", [])
-    if not isinstance(decls, list):
-        return []
-    out: list[SandboxPackage] = []
-    for d in decls:
-        if not isinstance(d, dict):
-            continue
-        try:
-            out.append(SandboxPackage(
-                provider=d["provider"],
-                manager=d.get("manager", "npm"),
-                package=d["package"],
-                binary=d["binary"],
-                version_env_key=d["version_env_key"],
-                default_range=d["default_range"],
-            ))
-        except KeyError:
-            # Malformed entry — surface as a hard error so a typo doesn't
-            # silently drop an agent's pin.
-            raise RuntimeError(
-                f"Malformed sandbox_packages entry in {di_json}: {d!r}"
-            ) from None
-    return out
-
-
 def _iter_module_dirs(project_root: Path | None) -> list[Path]:
-    """Yield module directories the framework would enumerate at install/upgrade time.
+    """Deprecated shim — module discovery is public now.
 
-    Order matters for shadowing rules — same as ``resolve_module_source``:
-    local (``app/code/``) wins, then core (framework's bundled modules), then
-    PyPI extensions in the project venv. When ``project_root`` is None (fresh
-    install — project doesn't exist yet) only core modules contribute.
+    Kept so existing callers/tests keep working; the implementation moved to
+    ``framework/module_discovery.py`` so core contracts (``framework/harness/``) can
+    use it without depending on this private CLI helper.
     """
-    dirs: list[Path] = []
-    seen: set[str] = set()
+    from ..module_discovery import iter_module_dirs
 
-    if project_root is not None:
-        app_code = project_root / "app" / "code"
-        if app_code.is_dir():
-            for entry in sorted(app_code.iterdir()):
-                if entry.is_dir() and (entry / "module.json").is_file():
-                    dirs.append(entry)
-                    seen.add(entry.name)
-
-    # Core modules ship inside the installed wheel under agento.modules.
-    try:
-        core_root = ires.files("agento.modules")
-    except (FileNotFoundError, ModuleNotFoundError):
-        core_root = None
-    if core_root is not None:
-        for entry in sorted(core_root.iterdir(), key=lambda e: e.name):
-            if entry.name.startswith("_") or not entry.is_dir():
-                continue
-            if entry.name in seen:
-                continue
-            # ires.files returns Traversable; we need a real Path for parsers.
-            with ires.as_file(entry) as p:
-                if (p / "module.json").is_file():
-                    dirs.append(Path(p))
-                    seen.add(entry.name)
-
-    if project_root is not None:
-        venv = project_root / ".venv"
-        for site_packages in venv.glob("lib/python*/site-packages"):
-            # PyPI extensions live at <site-packages>/<name>/module.json (the
-            # package itself acts as a module).
-            for entry in sorted(site_packages.iterdir()):
-                if entry.name.startswith("_") or not entry.is_dir():
-                    continue
-                if entry.name in seen:
-                    continue
-                if (entry / "module.json").is_file():
-                    dirs.append(entry)
-                    seen.add(entry.name)
-
-    return dirs
+    return iter_module_dirs(project_root)
 
 
 def enumerate_sandbox_packages(project_root: Path | None = None) -> list[SandboxPackage]:
-    """Enumerate ``sandbox_packages`` declarations across all reachable modules.
+    """Enumerate agent CLI declarations across all reachable modules.
 
-    Scans core modules (bundled with the framework), local modules
-    (``<project>/app/code/``), and PyPI-installed extensions
-    (``<project>/.venv/lib/python*/site-packages/``). When ``project_root`` is
-    None, only core modules are scanned — matches fresh-install where the
-    project filesystem doesn't exist yet.
-
-    Filters out modules disabled via ``app/etc/modules.json`` (when present).
-    Raises ``RuntimeError`` on duplicate ``version_env_key`` across modules so
-    a copy-paste collision surfaces immediately instead of one agent silently
-    overwriting another's pin in ``docker/.env``.
+    Reads ``agent_harnesses[].sandbox_package`` plus the deprecated top-level
+    ``sandbox_packages`` array (one more cycle). Scans core modules, local modules
+    (``<project>/app/code/``) and PyPI extensions; filters modules disabled via
+    ``app/etc/modules.json``. Raises ``RuntimeError`` on a duplicate
+    ``version_env_key`` so a copy-paste collision surfaces immediately instead of one
+    agent silently overwriting another's pin in ``docker/.env``.
     """
-    status: dict[str, bool] = {}
-    if project_root is not None:
-        status_path = project_root / "app" / "etc" / "modules.json"
-        if status_path.is_file():
-            status = read_module_status(status_path)
+    from ..harness.manifest import enumerate_sandbox_packages as _enumerate
 
-    packages: list[SandboxPackage] = []
-    by_env_key: dict[str, str] = {}
-    for module_dir in _iter_module_dirs(project_root):
-        # Default-enabled when modules.json is absent or doesn't list this module.
-        if status and not status.get(module_dir.name, True):
+    return _enumerate(project_root)
+
+
+def dev_sandbox_dockerfile_path() -> Path:
+    """The in-package sandbox Dockerfile the DEV compose file builds directly.
+
+    Deployment renders the template into ``.agento/docker/sandbox/``; the dev compose file
+    builds this path instead, so it must be a **rendered artifact of the same template**
+    rather than a hand-maintained copy with the agent CLIs hardcoded. Regenerate with
+    ``render_dev_sandbox_dockerfile()``; ``TestSandboxDockerfileIsRendered`` fails if it
+    drifts, so adding a harness cannot silently skip the dev image.
+    """
+    import importlib.resources as ires
+
+    return Path(str(ires.files("agento.framework.docker") / "sandbox" / "Dockerfile"))
+
+
+def render_dev_sandbox_dockerfile(project_root: Path | None = None) -> str:
+    """Render the dev sandbox Dockerfile from the template + declared packages.
+
+    Returns the rendered text (also written to :func:`dev_sandbox_dockerfile_path`).
+    """
+    rendered = render_sandbox_dockerfile(
+        get_template("sandbox.Dockerfile"), enumerate_sandbox_packages(project_root),
+    )
+    dev_sandbox_dockerfile_path().write_text(rendered)
+    return rendered
+
+
+def render_sandbox_dockerfile(template: str, sandbox_packages: list[SandboxPackage]) -> str:
+    """Substitute the agent-CLI markers in the sandbox Dockerfile template.
+
+    Markers:
+    - ``# {{ sandbox_package_args }}`` — one ``ARG <KEY>=<default>`` per package.
+    - ``# {{ sandbox_package_install }}`` — one install RUN per package manager.
+    - ``# {{ sandbox_package_chown }}`` — hands each CLI's package dir + binary to
+      ``agent`` so it can self-update.
+
+    Values are inserted into a FIXED, explicitly DOUBLE-quoted template, never through
+    ``shlex.quote``: single quotes would stop Docker expanding ``${<KEY>}`` and the pin
+    would break. Safety comes from ``SandboxPackage``'s validation instead — after those
+    regexes a package/binary/ARG name cannot contain whitespace, ``$``, a backtick,
+    ``;``, ``&``, ``|``, a quote or a newline, so there is nothing to escape. The install
+    command is selected per ``manager`` from a closed set; it is never built out of the
+    manager string.
+    """
+    arg_lines = "\n".join(
+        f"ARG {p.version_env_key}={p.default_range}" for p in sandbox_packages
+    )
+
+    by_manager: dict[str, list[SandboxPackage]] = {}
+    for p in sandbox_packages:
+        by_manager.setdefault(p.manager, []).append(p)
+
+    install_lines: list[str] = []
+    for manager, packages in sorted(by_manager.items()):
+        if manager == "npm":
+            specs = " ".join(
+                f'"{p.package}@${{{p.version_env_key}}}"' for p in packages
+            )
+            install_lines.append(f"RUN npm install -g {specs}")
+        else:  # pragma: no cover - SandboxPackage rejects unknown managers first
+            raise RuntimeError(
+                f"No sandbox install template for manager {manager!r}; "
+                f"add one here alongside its allowlist entry."
+            )
+
+    # Each CLI self-updates in place, so `agent` must own its node_modules dir and its
+    # binary. `|| true` keeps the build green for a manager that installs elsewhere.
+    chown_lines: list[str] = []
+    for p in sandbox_packages:
+        if p.manager != "npm":  # pragma: no cover - only npm is allowlisted today
             continue
-        for pkg in _parse_sandbox_packages_from_di(module_dir / "di.json"):
-            prior = by_env_key.get(pkg.version_env_key)
-            if prior is not None and prior != module_dir.name:
-                raise RuntimeError(
-                    f"duplicate sandbox_packages.version_env_key {pkg.version_env_key!r} "
-                    f"declared by both {prior!r} and {module_dir.name!r}"
-                )
-            by_env_key[pkg.version_env_key] = module_dir.name
-            packages.append(pkg)
-    return packages
+        chown_lines.append(
+            f"RUN chown -R agent /usr/local/lib/node_modules/{p.package} 2>/dev/null || true"
+            f" && \\\n    chown agent /usr/local/bin/{p.binary} 2>/dev/null || true"
+        )
+
+    out = template
+    out = _replace_marker_line(out, "# {{ sandbox_package_args }}", arg_lines)
+    out = _replace_marker_line(out, "# {{ sandbox_package_install }}", "\n".join(install_lines))
+    out = _replace_marker_line(out, "# {{ sandbox_package_chown }}", "\n".join(chown_lines))
+    return out
+
+
+def _replace_marker_line(text: str, marker: str, replacement: str) -> str:
+    """Replace the whole marker line with ``replacement`` (dropping it when empty)."""
+    lines = text.splitlines()
+    out: list[str] = []
+    for line in lines:
+        if line.strip() == marker:
+            if replacement:
+                out.extend(replacement.splitlines())
+            continue
+        out.append(line)
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
 
 def find_links_for_local_install() -> list[str]:
@@ -386,6 +369,16 @@ def materialize_docker_context(
 
     ctx = ires.files("agento.framework.docker")
     _copy_tree(ctx / "sandbox", target / "sandbox")
+
+    # The sandbox Dockerfile's agent-CLI ARGs/installs are rendered from the enabled
+    # harness declarations, so adding a harness needs no framework edit (and disabling
+    # one stops installing its CLI).
+    (target / "sandbox" / "Dockerfile").write_text(
+        render_sandbox_dockerfile(
+            get_template("sandbox.Dockerfile"),
+            enumerate_sandbox_packages(project_dir),
+        )
+    )
     _copy_tree(ctx / "cron", target / "cron")
     _copy_tree(ctx / "toolbox", target / "toolbox")
 

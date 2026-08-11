@@ -9,7 +9,7 @@ def _auth_error(*, healthy_alternative: bool) -> AuthenticationError:
     """An AuthenticationError as the consumer hands it to evaluate(): the
     ``retry_with_other_token`` flag reflects whether the pool still has a
     healthy token to try after poisoning the offending one."""
-    exc = AuthenticationError("401 Unauthorized", token_id=7)
+    exc = AuthenticationError("401 Unauthorized", credential_id=7)
     exc.retry_with_other_token = healthy_alternative
     return exc
 
@@ -177,7 +177,7 @@ def test_retry_flag_on_non_auth_error_does_not_bypass_non_retryable():
 # this job — but the token self-recovers after its cooldown. Mirrors auth behavior.
 
 def _limit_error(*, healthy_alternative: bool) -> UsageLimitError:
-    exc = UsageLimitError("hit your session limit", token_id=7)
+    exc = UsageLimitError("hit your session limit", credential_id=7)
     exc.retry_with_other_token = healthy_alternative
     return exc
 

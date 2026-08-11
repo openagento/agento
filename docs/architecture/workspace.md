@@ -196,7 +196,7 @@ Five kinds of content land in a build. Three come from the filesystem via the sh
 | # | Source | Write path | How it lands |
 |---|---|---|---|
 | 1 | **Theme** (`workspace/theme/` + `_{ws}` + `_{ws}/_{av}`) | build root | manifest-driven; strategy = `workspace_build/strategy/theme` |
-| 2 | **ConfigWriter output** (`.claude.json`, `.mcp.json`, `.codex/config.toml`) | build root | generated from scoped config — strategy does not apply |
+| 2 | **WorkspaceAdapter output** (`.claude.json`, `.mcp.json`, `.codex/config.toml`) | build root | generated from scoped config — strategy does not apply |
 | 3 | **Instructions** (`AGENTS.md`, `SOUL.md`, `CLAUDE.md`) | build root | generated from DB overrides (falls back to theme file) |
 | 4 | **Modules** (each enabled module's `workspace/` + `_{ws}` + `_{ws}/_{av}`) | `build/modules/{name}/` | manifest-driven; strategy = `workspace_build/strategy/modules` |
 | 5 | **Skills** (enabled skill dirs) | `build/.claude/skills/{name}/` | manifest-driven (single-layer); strategy = `workspace_build/strategy/skills` |
@@ -219,7 +219,7 @@ execute_build(agent_view_id):
        build_manifest([theme/, theme/_{ws}/, theme/_{ws}/_{av}/])
          └─ apply_manifest(build_dir, strategy=strategy/theme)
 
-  4. Run ConfigWriter.prepare_workspace() for the agent_view's provider:
+  4. Run WorkspaceAdapter.prepare_workspace() for the agent_view's harness:
        - Claude → writes .claude.json, .claude/settings.json, .mcp.json
        - Codex  → writes .codex/config.toml with [mcp_servers.*]
 
@@ -251,10 +251,10 @@ Within a source:
   base content (no _)  <  _{workspace_code}/  <  _{workspace_code}/_{agent_view_code}/
 
 Across writes (earlier steps can be overwritten by later ones in the build order):
-  theme  <  ConfigWriter output  <  instructions  <  modules  <  skills
+  theme  <  WorkspaceAdapter output  <  instructions  <  modules  <  skills
   (modules/skills land in their own subdirs, so collisions with theme are rare)
 
-DB-scoped config fallback (feeds instructions + ConfigWriter):
+DB-scoped config fallback (feeds instructions + WorkspaceAdapter):
   global (scope_id=0)  <  workspace  <  agent_view  <  ENV (CONFIG__…)
 ```
 
@@ -422,14 +422,14 @@ This symlink is the **only thing the consumer looks at** to find "the active bui
 
 On job start, the consumer calls `copy_build_to_artifacts_dir(build, artifacts)`:
 
-- **Copied** (small, mutable per-job): items each ConfigWriter declares via `owned_paths()`, plus `CLAUDE.md`, `AGENTS.md`, `SOUL.md`, and `.gitconfig` (copied so a run-time `git config` write can't follow a symlink back into the shared build).
+- **Copied** (small, mutable per-job): items the harness's `WorkspaceAdapter` declares via `owned_paths()`, plus `CLAUDE.md`, `AGENTS.md`, `SOUL.md`, and `.gitconfig` (copied so a run-time `git config` write can't follow a symlink back into the shared build).
 - **Symlinked** (large, read-only): everything else — `app/`, `modules/`, skills, theme assets.
 
 So the artifacts dir starts as a **thin overlay** — gigabytes of static build content are symlinked, only hundreds of bytes are actually copied. Output files produced during the job are added on top.
 
 ### Runtime param injection
 
-After copying, `ConfigWriter.inject_runtime_params()` mutates the copied config files to append the per-job `job_id`:
+After copying, `WorkspaceAdapter.inject_runtime_params()` mutates the copied config files to append the per-job `job_id`:
 
 ```
 Before (in build):
@@ -502,7 +502,8 @@ Acceptable today because typical deployments run one agent_view at a time per cr
 
 ## Related docs
 
-- [Module manifest (`di.json`)](../modules/module-json.md) — how modules declare `config_writers`
+- [Module manifest (`di.json`)](../modules/module-json.md) — how modules declare `agent_harnesses`
+- [Harness contract](harness-contract.md) — the WorkspaceAdapter protocol these builds dispatch through
 - [Config system](../config/) — the 3-tier scoped config fallback that feeds builds
 - [Containers](containers.md) — volume mounts that expose `workspace/` to each container
 - [Publisher–Consumer](publisher-consumer.md) — how jobs are claimed and executed

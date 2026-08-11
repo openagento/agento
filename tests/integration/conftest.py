@@ -29,7 +29,7 @@ TEST_DB = "cron_agent_test"
 # saturation); it does not share this knob on purpose.
 CONCURRENT_WORKERS_STRESS_TEST = 100
 
-# Ensure encryption key is available for tests (used for oauth_token.credentials and obscure configs)
+# Ensure encryption key is available for tests (used for credential.credentials and obscure configs)
 os.environ.setdefault("AGENTO_ENCRYPTION_KEY", "test-encryption-key-for-integration")
 
 
@@ -218,7 +218,7 @@ def _truncate_tables():
             cur.execute("TRUNCATE TABLE job")
             cur.execute("TRUNCATE TABLE schedule")
             cur.execute("TRUNCATE TABLE usage_log")
-            cur.execute("TRUNCATE TABLE oauth_token")
+            cur.execute("TRUNCATE TABLE credential")
             cur.execute("TRUNCATE TABLE skill_registry")
             cur.execute("TRUNCATE TABLE workspace_build")
             cur.execute("SET FOREIGN_KEY_CHECKS = 1")
@@ -230,43 +230,52 @@ def _truncate_tables():
 # Mocks
 # ---------------------------------------------------------------------------
 
-def insert_primary_token(agent_type: str = "claude") -> int:
-    """Insert an enabled oauth_token and bind agent_view/provider at the default
-    scope. Returns the token id. The name is kept for backward-compat with older
-    tests; there is no primary concept anymore — selection is LRU over healthy
-    tokens within the provider pool. The scoped-config bind is what tells the
-    consumer which pool to draw from (no more implicit primary-token fallback)."""
+# Historical harness → model-vendor pairs, frozen here like the data patch: the
+# fixture must not depend on which harness modules happen to be registered.
+_HARNESS_PROVIDERS = {"claude": "anthropic", "codex": "openai"}
+
+
+def insert_primary_token(harness: str = "claude") -> int:
+    """Insert an enabled ``credential`` row and bind ``agent_view/harness`` +
+    ``agent_view/provider`` at the default scope. Returns the credential id. The name is
+    kept for backward-compat with older tests; there is no primary concept anymore —
+    selection is LRU over healthy credentials within the scope's pool. The scoped-config
+    bind is what tells the consumer which pool to draw from."""
     from agento.framework.agent_manager.models import encrypt_credentials
 
-    encrypted = encrypt_credentials({"subscription_key": f"sk-test-{agent_type}"})
+    encrypted = encrypt_credentials({"subscription_key": f"sk-test-{harness}"})
     conn = _test_connection(autocommit=True)
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO oauth_token
-                    (agent_type, label, credentials, enabled, status)
-                VALUES (%s, %s, %s, TRUE, 'ok')
+                INSERT INTO credential
+                    (scope, agent_type, label, credentials, enabled, status)
+                VALUES (%s, %s, %s, %s, TRUE, 'ok')
                 """,
-                (agent_type, f"test-{agent_type}", encrypted),
+                (harness, harness, f"test-{harness}", encrypted),
             )
-            token_id = cur.lastrowid
-            cur.execute(
-                """
-                INSERT INTO core_config_data (scope, scope_id, path, value, encrypted)
-                VALUES ('default', 0, 'agent_view/provider', %s, 0)
-                ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = NOW()
-                """,
-                (agent_type,),
-            )
-            return token_id
+            credential_id = cur.lastrowid
+            for path, value in (
+                ("agent_view/harness", harness),
+                ("agent_view/provider", _HARNESS_PROVIDERS[harness]),
+            ):
+                cur.execute(
+                    """
+                    INSERT INTO core_config_data (scope, scope_id, path, value, encrypted)
+                    VALUES ('default', 0, %s, %s, 0)
+                    ON DUPLICATE KEY UPDATE value = VALUES(value), updated_at = NOW()
+                    """,
+                    (path, value),
+                )
+            return credential_id
     finally:
         conn.close()
 
 
 @pytest.fixture
 def mock_claude():
-    """Patch TokenClaudeRunner.run to return a successful result + insert primary token."""
+    """Patch ClaudeSubprocessRunner.execute to return a successful result + insert primary token."""
     insert_primary_token("claude")
     result = ClaudeResult(
         raw_output="ok",
@@ -275,10 +284,10 @@ def mock_claude():
         cost_usd=0.0123,
         num_turns=3,
         duration_ms=45000,
-        subtype="success",
-        agent_type="claude",
+        session_id="success",
+        harness="claude",
     )
-    with patch("agento.modules.claude.src.runner.TokenClaudeRunner.run", return_value=result):
+    with patch("agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute", return_value=result):
         yield result
 
 
@@ -286,7 +295,7 @@ def mock_claude():
 
 @pytest.fixture
 def mock_codex():
-    """Patch TokenCodexRunner.run to return a successful result + insert primary token."""
+    """Patch CodexSubprocessRunner.execute to return a successful result + insert primary token."""
     insert_primary_token("codex")
     result = ClaudeResult(
         raw_output="Cześć! W czym mogę pomóc?",
@@ -294,12 +303,12 @@ def mock_codex():
         output_tokens=None,
         num_turns=1,
         duration_ms=3200,
-        subtype="019cbcfa-837a-7130-b776-15ac3d39b1ad",
-        agent_type="codex",
+        session_id="019cbcfa-837a-7130-b776-15ac3d39b1ad",
+        harness="codex",
         model="o3",
     )
     with patch(
-        "agento.modules.codex.src.runner.TokenCodexRunner.run",
+        "agento.modules.codex.src.runner.CodexSubprocessRunner.execute",
         return_value=result,
     ):
         yield result

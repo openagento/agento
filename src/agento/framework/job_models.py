@@ -63,7 +63,10 @@ class Job:
     agent_view_id: int | None
     priority: int
     reference_id: str | None
+    # `agent_type` holds the HARNESS id (pre-0.15 column name, kept to avoid a rename);
+    # `provider` is the model/API vendor that served the run. NULL on pre-0.15 rows.
     agent_type: str | None
+    provider: str | None
     model: str | None
     input_tokens: int | None
     output_tokens: int | None
@@ -105,7 +108,7 @@ class Job:
         return cls(
             id=0, schedule_id=None, type=type, source=source,
             agent_view_id=agent_view_id, priority=priority,
-            reference_id=reference_id, agent_type=None, model=None,
+            reference_id=reference_id, agent_type=None, provider=None, model=None,
             input_tokens=None, output_tokens=None, prompt=None, output=None,
             context=context, idempotency_key="", status=JobStatus.RUNNING,
             attempt=1, max_attempts=3, scheduled_after=now, started_at=now,
@@ -134,6 +137,7 @@ class Job:
             priority=row.get("priority", 50),
             reference_id=row["reference_id"],
             agent_type=row.get("agent_type"),
+            provider=row.get("provider"),
             model=row.get("model"),
             input_tokens=row.get("input_tokens"),
             output_tokens=row.get("output_tokens"),

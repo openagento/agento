@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agento.framework.agent_manager.errors import TransientAuthError
-from agento.framework.agent_manager.models import AgentProvider
 from agento.framework.consumer import Consumer
 
 
@@ -25,16 +24,18 @@ def _call(healthy: int, exc: TransientAuthError):
     call args recorded by the patched token_store function."""
     with (
         patch("agento.framework.consumer.get_connection"),
-        patch("agento.framework.consumer.throttle_token") as throttle,
-        patch("agento.framework.consumer.mark_token_error") as poison,
+        patch("agento.framework.consumer.throttle_credential") as throttle,
+        patch("agento.framework.consumer.mark_credential_error") as poison,
         patch(
-            "agento.framework.consumer.count_tokens_for_provider",
+            "agento.framework.consumer.count_credentials_for_scope",
             return_value=(3, healthy),
         ),
-        patch("agento.framework.consumer.get_event_manager") as em,
+        # dispatch_credential_event resolves the manager itself, so patch it at the
+        # source rather than through the consumer's own import.
+        patch("agento.framework.event_manager.get_event_manager") as em,
     ):
         _consumer()._handle_transient_auth(
-            _job(), SimpleNamespace(id=50), AgentProvider.CLAUDE, exc
+            _job(), SimpleNamespace(id=50), "claude", exc
         )
         return throttle, poison, em.return_value.dispatch
 
@@ -77,11 +78,14 @@ def test_transient_auth_attributes_failure_to_resolved_token_when_token_id_absen
     assert throttle.call_args.args[1] == 50
 
 
-def test_transient_auth_dispatches_token_auth_throttled_after():
+def test_transient_auth_dispatches_credential_auth_throttled_after():
     _throttle, _poison, dispatch = _call(
         healthy=1, exc=TransientAuthError("401 OAuth access token has been revoked")
     )
     names = [c.args[0] for c in dispatch.call_args_list]
+    # Dual dispatch: new name + deprecated alias.
+    assert "credential_auth_throttled_after" in names
     assert "token_auth_throttled_after" in names
     # Must NOT masquerade as a poison — workspace_build binds an observer to that one.
+    assert "credential_auth_failed_after" not in names
     assert "token_auth_failed_after" not in names

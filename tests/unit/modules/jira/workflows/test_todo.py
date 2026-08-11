@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from agento.framework.channels.base import PromptFragments, WorkItem
+from agento.framework.harness import RunResult
 from agento.framework.job_models import AgentType, Job
-from agento.framework.runner import RunResult
 from agento.framework.workflows.base import JobContext
 from agento.framework.workflows.todo import TodoWorkflow
 from agento.modules.jira.src.channel import JiraChannel
@@ -112,8 +112,8 @@ def _make_context(update_ref=None):
 class TestTodoExecuteJob:
     def setup_method(self):
         self.runner = MagicMock()
-        self.runner.run.return_value = RunResult(
-            raw_output="OK", input_tokens=100, output_tokens=50, subtype="success"
+        self.runner.execute.return_value = RunResult(
+            raw_output="OK", input_tokens=100, output_tokens=50, session_id="success"
         )
         self.logger = MagicMock()
         self.workflow = TodoWorkflow(self.runner, self.logger)
@@ -126,7 +126,7 @@ class TestTodoExecuteJob:
         result = self.workflow.execute_job(channel, job, context)
 
         assert isinstance(result, RunResult)
-        self.runner.run.assert_called_once()
+        self.runner.execute.assert_called_once()
         context.update_reference_id.assert_not_called()
 
     def test_discovery_found(self):
@@ -158,10 +158,14 @@ class TestTodoExecuteJob:
 
         result = self.workflow.execute_job(channel, job, context)
 
-        assert result.subtype == "no_work"
+        # No agent ran, so there is no session to resume from. The old code stashed a
+        # "no_work" MARKER in this field, which the consumer then persisted as
+        # job.session_id — a resume of attempt 2 would have targeted a session id that
+        # never existed.
+        assert result.session_id is None
         assert result.raw_output == "No TODO tasks found"
         assert result.input_tokens is None
-        self.runner.run.assert_not_called()
+        self.runner.execute.assert_not_called()
 
     def test_non_discoverable_channel_raises(self):
         channel = MagicMock(spec=["name", "get_prompt_fragments", "get_followup_fragments"])

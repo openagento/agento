@@ -28,17 +28,17 @@
 | `config:get <path\|module>` | Get config value (exact path or module tree view) |
 | `config:list [prefix]` | List config values (all scopes) |
 | `config:remove <path> [--scope=S] [--scope-id=N]` | Remove config override from DB |
-| **Tokens** (LRU pool per provider — no sticky primary) | |
-| `token:register <agent> <label>` | Register OAuth token interactively ([details](tokens.md)) |
-| `token:register <agent> <label> --with-api-key` | Register API-key token; secret read from stdin/getpass ([details](tokens.md)) |
-| `token:register <agent> <label> --with-access-token` | Register access-token; JWT read from stdin/getpass ([details](tokens.md)) |
-| `token:set-priority <id> <priority>` | Set pool selection priority (lower wins) |
-| `token:list [--all]` | List tokens with type, priority, status, last_used, expires_at |
-| `token:refresh <id>` | Re-authenticate token (clears status=error) |
-| `token:mark-error <id> "<msg>"` | Quarantine a token (status=error) |
-| `token:reset <id>` | Clear error status without re-auth |
-| `token:deregister <id>` | Disable token |
-| `token:usage` | Show token usage |
+| **Credentials** (LRU pool per scope — no sticky primary; `token:*` are deprecated aliases) | |
+| `credential:register <scope> <label>` | Register OAuth credential interactively ([details](credentials.md)) |
+| `credential:register <scope> <label> --with-api-key` | Register API-key credential; secret read from stdin/getpass ([details](credentials.md)) |
+| `credential:register <scope> <label> --with-access-token` | Register access-token; JWT read from stdin/getpass ([details](credentials.md)) |
+| `credential:set-priority <id> <priority>` | Set pool selection priority (lower wins) |
+| `credential:list [--all]` | List credentials with type, priority, status, last_used, expires_at |
+| `credential:refresh <id>` | Re-authenticate credential (clears status=error) |
+| `credential:mark-error <id> "<msg>"` | Quarantine a credential (status=error) |
+| `credential:reset <id>` | Clear error status without re-auth |
+| `credential:deregister <id>` | Disable credential |
+| `credential:usage` | Show credential usage (incl. credential-less runs by `(harness, provider)`) |
 | **Ingress** | |
 | `ingress:bind <type> <value> <agent_view> [--priority N]` | Bind inbound identity to agent_view. For regex identity types (e.g. `outlook_sender`), `<value>` is a case-insensitive `fullmatch` regex and `--priority` selects the winner (higher wins; ties between different views are ambiguous). |
 | `ingress:list [--type <type>] [--json]` | List all identity bindings |

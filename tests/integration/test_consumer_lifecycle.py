@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from agento.framework.consumer import Consumer
 from agento.modules.claude.src.output_parser import ClaudeResult
-from agento.modules.claude.src.runner import TokenClaudeRunner
+from agento.modules.claude.src.runner import ClaudeSubprocessRunner
 
 from .conftest import fetch_job, insert_primary_token, insert_queued_job, update_job
 
@@ -21,7 +21,7 @@ class TestRetryFlow:
         job_id = insert_queued_job(reference_id="AI-1", idempotency_key="retry:1")
 
         # Attempt 1: fail with RuntimeError
-        with patch.object(TokenClaudeRunner, "run", side_effect=RuntimeError("Claude timeout")):
+        with patch.object(ClaudeSubprocessRunner, "execute", side_effect=RuntimeError("Claude timeout")):
             consumer = Consumer(int_db_config, int_consumer_config, logger)
             job = consumer._try_dequeue()
             assert job is not None
@@ -40,9 +40,9 @@ class TestRetryFlow:
         # Attempt 2: succeed
         success = ClaudeResult(
             raw_output="ok", input_tokens=100, output_tokens=50,
-            cost_usd=0.01, num_turns=2, duration_ms=3000, subtype="success",
+            cost_usd=0.01, num_turns=2, duration_ms=3000, session_id="success",
         )
-        with patch.object(TokenClaudeRunner, "run", return_value=success):
+        with patch.object(ClaudeSubprocessRunner, "execute", return_value=success):
             consumer2 = Consumer(int_db_config, int_consumer_config, logger)
             job2 = consumer2._try_dequeue()
             assert job2 is not None
@@ -59,7 +59,7 @@ class TestRetryFlow:
         logger = logging.getLogger("test")
         job_id = insert_queued_job(reference_id="AI-2", idempotency_key="dead:1")
 
-        with patch.object(TokenClaudeRunner, "run", side_effect=ValueError("Bad prompt")):
+        with patch.object(ClaudeSubprocessRunner, "execute", side_effect=ValueError("Bad prompt")):
             consumer = Consumer(int_db_config, int_consumer_config, logger)
             job = consumer._try_dequeue()
             assert job is not None
@@ -78,7 +78,7 @@ class TestRetryFlow:
             reference_id="AI-3", idempotency_key="maxed:1", max_attempts=1,
         )
 
-        with patch.object(TokenClaudeRunner, "run", side_effect=RuntimeError("fail")):
+        with patch.object(ClaudeSubprocessRunner, "execute", side_effect=RuntimeError("fail")):
             consumer = Consumer(int_db_config, int_consumer_config, logger)
             job = consumer._try_dequeue()
             assert job is not None
@@ -137,7 +137,7 @@ class TestResumeOnTimeout:
         timeout_exc = subprocess.TimeoutExpired(cmd="claude", timeout=600)
         timeout_exc.session_id = "sess-timeout-abc"  # type: ignore[attr-defined]
 
-        with patch.object(TokenClaudeRunner, "run", side_effect=timeout_exc):
+        with patch.object(ClaudeSubprocessRunner, "execute", side_effect=timeout_exc):
             consumer = Consumer(int_db_config, int_consumer_config, logger)
             job = consumer._try_dequeue()
             assert job is not None
@@ -152,7 +152,8 @@ class TestResumeOnTimeout:
         # Move scheduled_after to past
         update_job(job_id, scheduled_after="2000-01-01 00:00:00")
 
-        # Attempt 2: mock resume to succeed
+        # Attempt 2: the resume is just an execute() whose RunRequest carries the
+        # session_id — there is no separate resume() entry point any more.
         resume_result = ClaudeResult(
             raw_output="resumed ok",
             input_tokens=100,
@@ -160,10 +161,12 @@ class TestResumeOnTimeout:
             cost_usd=0.01,
             num_turns=2,
             duration_ms=3000,
-            subtype="sess-timeout-abc",
+            session_id="sess-timeout-abc",
         )
         with (
-            patch.object(TokenClaudeRunner, "resume", return_value=resume_result) as mock_resume,
+            patch.object(
+                ClaudeSubprocessRunner, "execute", return_value=resume_result,
+            ) as mock_execute,
             patch.object(Consumer, "_is_pid_alive", return_value=False),
         ):
             consumer2 = Consumer(int_db_config, int_consumer_config, logger)
@@ -173,7 +176,10 @@ class TestResumeOnTimeout:
             assert job2.session_id == "sess-timeout-abc"
             consumer2._execute_job(job2)
 
-            mock_resume.assert_called_once_with("sess-timeout-abc", model=None)
+            mock_execute.assert_called_once()
+            request = mock_execute.call_args.args[0]
+            assert request.session_id == "sess-timeout-abc"
+            assert request.model is None
 
         row = fetch_job(job_id)
         assert row["status"] == "SUCCESS"

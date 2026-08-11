@@ -12,6 +12,8 @@ from agento.framework.agent_view_runtime import AgentViewRuntime
 from agento.framework.workspace import AgentView, Workspace
 from agento.modules.agent_view.src.commands.runtime_show import AgentViewRuntimeCommand
 
+pytestmark = pytest.mark.usefixtures("builtin_harnesses")
+
 
 def _make_agent_view(id=2, code="dev_01", workspace_id=1):
     now = datetime(2026, 1, 1)
@@ -43,18 +45,11 @@ def _args(code="dev_01", prompt=None, model=None, yolo=False):
     )
 
 
-class _FakeInvoker:
-    def interactive_command(self, *, yolo=False):
-        cmd = ["claude"]
-        if yolo:
-            cmd.append("--dangerously-skip-permissions")
-        return cmd
-
-    def headless_command(self, prompt, *, model=None):
-        cmd = ["claude", "-p", prompt, "--dangerously-skip-permissions"]
-        if model:
-            cmd.extend(["--model", model])
-        return cmd
+# Asserted against the REAL ClaudeCommandBuilder rather than a stub, so a flag drifting
+# between the interactive and headless forms fails here (the exact bug the old split
+# CliInvoker/runner had: interactive silently lost the per-job --mcp-config).
+_MCP_FLAGS = ["--mcp-config", ".mcp.json", "--strict-mcp-config"]
+_INTERACTIVE = ["claude", *_MCP_FLAGS]
 
 
 class TestAgentViewRuntimeCommand:
@@ -79,13 +74,12 @@ class TestAgentViewRuntimeCommand:
         err = capsys.readouterr().err
         assert "agent_view 'unknown' not found" in err
 
-    @patch("agento.framework.cli_invoker.get_cli_invoker")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.db.get_connection_or_exit")
     @patch("agento.framework.cli.runtime._load_framework_config")
     @patch("agento.framework.workspace.get_agent_view_by_code")
     def test_interactive_includes_command(
-        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, mock_get_invoker, capsys,
+        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, capsys,
     ):
         mock_config.return_value = ({}, None, None)
         mock_get_conn.return_value = _mock_conn()
@@ -94,26 +88,25 @@ class TestAgentViewRuntimeCommand:
         mock_resolve.return_value = AgentViewRuntime(
             agent_view=av,
             workspace=_make_workspace(),
-            provider="claude",
+            harness="claude",
+            provider="anthropic",
             model="claude-opus-4-6",
         )
-        mock_get_invoker.return_value = _FakeInvoker()
 
         AgentViewRuntimeCommand().execute(_args())
 
         payload = json.loads(capsys.readouterr().out)
-        assert payload["interactive_command"] == ["claude"]
+        assert payload["interactive_command"] == [*_INTERACTIVE, "--model", "claude-opus-4-6"]
         assert payload["headless_command"] is None
         assert payload["home"] == "/workspace/build/it/dev_01/current"
-        assert payload["provider"] == "claude"
+        assert payload["harness"] == "claude"
 
-    @patch("agento.framework.cli_invoker.get_cli_invoker")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.db.get_connection_or_exit")
     @patch("agento.framework.cli.runtime._load_framework_config")
     @patch("agento.framework.workspace.get_agent_view_by_code")
     def test_yolo_adds_bypass_flag_to_interactive_command(
-        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, mock_get_invoker, capsys,
+        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, capsys,
     ):
         mock_config.return_value = ({}, None, None)
         mock_get_conn.return_value = _mock_conn()
@@ -122,25 +115,25 @@ class TestAgentViewRuntimeCommand:
         mock_resolve.return_value = AgentViewRuntime(
             agent_view=av,
             workspace=_make_workspace(),
-            provider="claude",
+            harness="claude",
+            provider="anthropic",
             model="claude-opus-4-6",
         )
-        mock_get_invoker.return_value = _FakeInvoker()
 
         AgentViewRuntimeCommand().execute(_args(yolo=True))
 
         payload = json.loads(capsys.readouterr().out)
         assert payload["interactive_command"] == [
-            "claude", "--dangerously-skip-permissions",
+            *_INTERACTIVE, "--dangerously-skip-permissions",
+            "--model", "claude-opus-4-6",
         ]
 
-    @patch("agento.framework.cli_invoker.get_cli_invoker")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.db.get_connection_or_exit")
     @patch("agento.framework.cli.runtime._load_framework_config")
     @patch("agento.framework.workspace.get_agent_view_by_code")
     def test_prompt_includes_headless_command(
-        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, mock_get_invoker, capsys,
+        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, capsys,
     ):
         mock_config.return_value = ({}, None, None)
         mock_get_conn.return_value = _mock_conn()
@@ -149,27 +142,27 @@ class TestAgentViewRuntimeCommand:
         mock_resolve.return_value = AgentViewRuntime(
             agent_view=av,
             workspace=_make_workspace(),
-            provider="claude",
+            harness="claude",
+            provider="anthropic",
             model="claude-opus-4-6",
         )
-        mock_get_invoker.return_value = _FakeInvoker()
 
         AgentViewRuntimeCommand().execute(_args(prompt="hi there"))
 
         payload = json.loads(capsys.readouterr().out)
-        assert payload["interactive_command"] == ["claude"]
+        assert payload["interactive_command"] == [*_INTERACTIVE, "--model", "claude-opus-4-6"]
         assert payload["headless_command"] == [
             "claude", "-p", "hi there", "--dangerously-skip-permissions",
+            *_MCP_FLAGS, "--output-format", "stream-json", "--verbose",
             "--model", "claude-opus-4-6",
         ]
 
-    @patch("agento.framework.cli_invoker.get_cli_invoker")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.db.get_connection_or_exit")
     @patch("agento.framework.cli.runtime._load_framework_config")
     @patch("agento.framework.workspace.get_agent_view_by_code")
     def test_model_override_used_in_headless_command(
-        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, mock_get_invoker, capsys,
+        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, capsys,
     ):
         mock_config.return_value = ({}, None, None)
         mock_get_conn.return_value = _mock_conn()
@@ -178,10 +171,10 @@ class TestAgentViewRuntimeCommand:
         mock_resolve.return_value = AgentViewRuntime(
             agent_view=av,
             workspace=_make_workspace(),
-            provider="claude",
+            harness="claude",
+            provider="anthropic",
             model="default-model",
         )
-        mock_get_invoker.return_value = _FakeInvoker()
 
         AgentViewRuntimeCommand().execute(
             _args(prompt="hi", model="override-model"),
@@ -191,13 +184,12 @@ class TestAgentViewRuntimeCommand:
         assert payload["headless_command"][-2:] == ["--model", "override-model"]
         assert payload["model"] == "default-model"  # unchanged; override is ad-hoc
 
-    @patch("agento.framework.cli_invoker.get_cli_invoker")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.db.get_connection_or_exit")
     @patch("agento.framework.cli.runtime._load_framework_config")
     @patch("agento.framework.workspace.get_agent_view_by_code")
-    def test_unregistered_provider_returns_null_commands(
-        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, mock_get_invoker, capsys,
+    def test_unregistered_harness_returns_null_commands(
+        self, mock_av_lookup, mock_config, mock_get_conn, mock_resolve, capsys,
     ):
         mock_config.return_value = ({}, None, None)
         mock_get_conn.return_value = _mock_conn()
@@ -206,10 +198,10 @@ class TestAgentViewRuntimeCommand:
         mock_resolve.return_value = AgentViewRuntime(
             agent_view=av,
             workspace=_make_workspace(),
-            provider="exotic",
+            harness="exotic",
+            provider="whatever",
             model=None,
         )
-        mock_get_invoker.side_effect = KeyError("no invoker")
 
         AgentViewRuntimeCommand().execute(_args(prompt="hi"))
 

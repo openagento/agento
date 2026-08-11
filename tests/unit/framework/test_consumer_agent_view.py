@@ -9,12 +9,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agento.framework.agent_manager.models import AgentProvider
 from agento.framework.agent_view_runtime import AgentViewRuntime
 from agento.framework.consumer import Consumer
 from agento.framework.job_models import AgentType, Job, JobStatus
 from agento.framework.workspace import AgentView, Workspace
 from agento.modules.claude.src.output_parser import ClaudeResult
+from tests.harness_fixtures import stub_workspace_adapters
+
+pytestmark = pytest.mark.usefixtures("builtin_harnesses")
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +41,7 @@ def _make_job(**overrides) -> Job:
         priority=50,
         reference_id="AI-1",
         agent_type=None,
+        provider=None,
         model=None,
         input_tokens=None,
         output_tokens=None,
@@ -67,7 +70,8 @@ def _make_job(**overrides) -> Job:
 def _make_runtime_with_agent_view(
     agent_view_id: int = 2,
     workspace_id: int = 1,
-    provider: str = "claude",
+    harness: str = "claude",
+    provider: str = "anthropic",
     model: str = "opus-4",
     scoped_overrides: dict | None = None,
 ) -> AgentViewRuntime:
@@ -83,6 +87,7 @@ def _make_runtime_with_agent_view(
             id=workspace_id, code="acme", label="Acme Corp",
             is_active=True, created_at=now, updated_at=now,
         ),
+        harness=harness,
         provider=provider,
         model=model,
         priority=50,
@@ -104,8 +109,8 @@ def _make_claude_result(**overrides) -> ClaudeResult:
         cost_usd=0.01,
         num_turns=3,
         duration_ms=5000,
-        subtype="success",
-        agent_type="claude",
+        session_id="success",
+        harness="claude",
         prompt=None,
     )
     defaults.update(overrides)
@@ -117,7 +122,7 @@ class TestRunJobWithAgentView:
 
     @pytest.fixture(autouse=True)
     def _mock_token_resolver(self):
-        with patch("agento.framework.consumer.TokenResolver") as MockCls:
+        with patch("agento.framework.consumer.CredentialResolver") as MockCls:
             mock_resolver = MagicMock()
             token = MagicMock()
             token.credentials_path = "/etc/tokens/claude_1.json"
@@ -129,12 +134,13 @@ class TestRunJobWithAgentView:
     @patch("agento.framework.consumer.get_channel")
     @patch("agento.framework.consumer.create_runner")
     @patch("agento.framework.consumer.get_connection")
-    @patch("agento.framework.config_writer.get_config_writer")
+    @patch("agento.framework.harness.persistent_home_paths_for", return_value=[])
+    @patch("agento.framework.harness.workspace_adapter_for")
     @patch("agento.framework.run_preparation.prepare_artifacts_dir")
     @patch("agento.framework.run_preparation.build_artifacts_dir", return_value="/workspace/acme/developer/runs/42")
     @patch("agento.framework.consumer.resolve_agent_view_runtime")
     def test_calls_config_writer_with_agent_view_id(
-        self, mock_resolve, mock_build, mock_prepare, mock_get_writer,
+        self, mock_resolve, mock_build, mock_prepare, mock_get_writer, mock_persistent,
         mock_conn, MockRunner, mock_get_ch, mock_get_wf,
         sample_db_config, sample_consumer_config,
     ):
@@ -165,12 +171,13 @@ class TestRunJobWithAgentView:
     @patch("agento.framework.consumer.get_channel")
     @patch("agento.framework.consumer.create_runner")
     @patch("agento.framework.consumer.get_connection")
-    @patch("agento.framework.config_writer.get_config_writer")
+    @patch("agento.framework.harness.persistent_home_paths_for", return_value=[])
+    @patch("agento.framework.harness.workspace_adapter_for")
     @patch("agento.framework.run_preparation.prepare_artifacts_dir")
     @patch("agento.framework.run_preparation.build_artifacts_dir", return_value="/workspace/acme/developer/runs/42")
     @patch("agento.framework.consumer.resolve_agent_view_runtime")
     def test_runner_receives_artifacts_dir(
-        self, mock_resolve, mock_build, mock_prepare, mock_get_writer,
+        self, mock_resolve, mock_build, mock_prepare, mock_get_writer, mock_persistent,
         mock_conn, MockRunner, mock_get_ch, mock_get_wf,
         sample_db_config, sample_consumer_config,
     ):
@@ -187,8 +194,8 @@ class TestRunJobWithAgentView:
         consumer._run_job(_make_job(agent_view_id=2))
 
         MockRunner.assert_called_once()
-        assert MockRunner.call_args.kwargs["working_dir"] == "/workspace/acme/developer/runs/42"
-        assert MockRunner.call_args.kwargs["home_dir"] == "/workspace/acme/developer/runs/42"
+        assert MockRunner.call_args.args[1].working_dir == "/workspace/acme/developer/runs/42"
+        assert MockRunner.call_args.args[1].home_dir == "/workspace/acme/developer/runs/42"
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
@@ -219,10 +226,10 @@ class TestRunJobWithAgentView:
 
         mock_materialize.assert_called_once()
         assert (
-            mock_materialize.call_args.kwargs["token"]
-            is MockRunner.call_args.kwargs["token_override"]
+            mock_materialize.call_args.kwargs["credential"]
+            is MockRunner.call_args.args[1].credential
         )
-        assert MockRunner.call_args.kwargs["home_dir"] == "/workspace/acme/developer/runs/42"
+        assert MockRunner.call_args.args[1].home_dir == "/workspace/acme/developer/runs/42"
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
@@ -235,7 +242,8 @@ class TestRunJobWithAgentView:
     ):
         """Job with agent_view_id=None still needs an explicit provider; workspace/agent_view are None so artifacts_dir is skipped."""
         runtime = AgentViewRuntime()
-        runtime.provider = "claude"
+        runtime.harness = "claude"
+        runtime.provider = "anthropic"
         mock_resolve.return_value = runtime
         mock_conn.return_value = MagicMock()
 
@@ -249,8 +257,8 @@ class TestRunJobWithAgentView:
         consumer._run_job(_make_job(agent_view_id=None))
 
         MockRunner.assert_called_once()
-        assert MockRunner.call_args.kwargs["working_dir"] is None
-        assert MockRunner.call_args.kwargs["home_dir"] is None
+        assert MockRunner.call_args.args[1].working_dir == "/workspace"
+        assert MockRunner.call_args.args[1].home_dir is None
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
@@ -263,7 +271,8 @@ class TestRunJobWithAgentView:
     ):
         """An explicit --model flag (Consumer.model_override) wins over runtime.model (config)."""
         runtime = AgentViewRuntime()
-        runtime.provider = "claude"
+        runtime.harness = "claude"
+        runtime.provider = "anthropic"
         runtime.model = "db-model"
         mock_resolve.return_value = runtime
         mock_conn.return_value = MagicMock()
@@ -281,15 +290,15 @@ class TestRunJobWithAgentView:
         consumer._run_job(_make_job(agent_view_id=None))
 
         MockRunner.assert_called_once()
-        assert MockRunner.call_args.kwargs["model_override"] == "flag-model"
+        assert MockRunner.call_args.args[1].model == "flag-model"
 
     def test_scoped_overrides_generate_mcp_config_with_agent_view_id(
         self, tmp_path,
     ):
-        """End-to-end: ClaudeConfigWriter writes .mcp.json with agent_view_id in URL."""
+        """End-to-end: ClaudeWorkspaceAdapter writes .mcp.json with agent_view_id in URL."""
         from agento.framework.config_resolver import ScopedConfigService
-        from agento.framework.config_writer import get_agent_config
-        from agento.modules.claude.src.config import ClaudeConfigWriter
+        from agento.framework.harness import get_agent_config
+        from agento.modules.claude.src.config import ClaudeWorkspaceAdapter
 
         runtime = _make_runtime_with_agent_view(agent_view_id=5)
 
@@ -303,7 +312,7 @@ class TestRunJobWithAgentView:
         ):
             svc = ScopedConfigService(MagicMock())
         agent_config = get_agent_config(svc)
-        writer = ClaudeConfigWriter()
+        writer = ClaudeWorkspaceAdapter()
         writer.prepare_workspace(
             wd, agent_config, agent_view_id=5, toolbox_url="http://toolbox:3001",
         )
@@ -322,7 +331,7 @@ class TestRunJobProviderFallback:
 
     @pytest.fixture(autouse=True)
     def _mock_token_resolver(self):
-        with patch("agento.framework.consumer.TokenResolver") as MockCls:
+        with patch("agento.framework.consumer.CredentialResolver") as MockCls:
             mock_resolver = MagicMock()
             token = MagicMock()
             token.credentials_path = "/etc/tokens/codex_1.json"
@@ -334,16 +343,17 @@ class TestRunJobProviderFallback:
     @patch("agento.framework.consumer.get_channel")
     @patch("agento.framework.consumer.create_runner")
     @patch("agento.framework.consumer.get_connection")
-    @patch("agento.framework.config_writer.get_config_writer")
+    @patch("agento.framework.harness.persistent_home_paths_for", return_value=[])
+    @patch("agento.framework.harness.workspace_adapter_for")
     @patch("agento.framework.run_preparation.prepare_artifacts_dir")
     @patch("agento.framework.run_preparation.build_artifacts_dir", return_value="/workspace/acme/dev/runs/1")
     @patch("agento.framework.consumer.resolve_agent_view_runtime")
     def test_uses_agent_view_provider_over_primary_token(
-        self, mock_resolve, mock_build, mock_prepare, mock_get_writer,
+        self, mock_resolve, mock_build, mock_prepare, mock_get_writer, mock_persistent,
         mock_conn, MockRunner, mock_get_ch, mock_get_wf,
         sample_db_config, sample_consumer_config,
     ):
-        mock_resolve.return_value = _make_runtime_with_agent_view(provider="codex", model="o3")
+        mock_resolve.return_value = _make_runtime_with_agent_view(harness="codex", provider="openai", model="o3")
         mock_conn.return_value = MagicMock()
 
         mock_result = _make_claude_result()
@@ -356,8 +366,8 @@ class TestRunJobProviderFallback:
         consumer._run_job(_make_job(agent_view_id=2))
 
         MockRunner.assert_called_once()
-        assert MockRunner.call_args[0][0] == AgentProvider.CODEX
-        assert MockRunner.call_args.kwargs["model_override"] == "o3"
+        assert MockRunner.call_args[0][0] == "codex"
+        assert MockRunner.call_args.args[1].model == "o3"
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
@@ -375,7 +385,7 @@ class TestRunJobProviderFallback:
 
         consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
 
-        with pytest.raises(RuntimeError, match="No agent_view/provider configured"):
+        with pytest.raises(RuntimeError, match="No agent_view/harness configured"):
             consumer._run_job(_make_job())
 
 
@@ -384,7 +394,7 @@ class TestPostRunCredentialCapture:
 
     @pytest.fixture(autouse=True)
     def _mock_token_resolver(self):
-        with patch("agento.framework.consumer.TokenResolver") as MockCls:
+        with patch("agento.framework.consumer.CredentialResolver") as MockCls:
             mock_resolver = MagicMock()
             token = MagicMock()
             token.credentials = {"raw_auth": {"tokens": {"refresh_token": "old"}}}
@@ -406,16 +416,13 @@ class TestPostRunCredentialCapture:
         MockRunner, mock_get_ch, mock_get_wf, mock_get_current_build, mock_copy_build,
         sample_db_config, sample_consumer_config,
     ):
-        runtime = _make_runtime_with_agent_view(provider="codex")
+        runtime = _make_runtime_with_agent_view(harness="codex", provider="openai")
         mock_resolve.return_value = runtime
         mock_conn.return_value = MagicMock()
 
         mock_writer = MagicMock(spec=["capture_refreshed_credentials", "prepare_workspace", "owned_paths", "persistent_home_paths", "write_credentials", "inject_runtime_params", "migrate_legacy_workspace_config"])
 
-        with patch(
-            "agento.framework.config_writer._CONFIG_WRITERS",
-            {AgentProvider.CODEX: mock_writer},
-        ):
+        with stub_workspace_adapters(codex=mock_writer):
             mock_result = _make_claude_result()
             mock_workflow = MagicMock()
             mock_workflow.execute_job.return_value = mock_result
@@ -439,16 +446,14 @@ class TestPostRunCredentialCapture:
         sample_db_config, sample_consumer_config,
     ):
         runtime = AgentViewRuntime()
-        runtime.provider = "claude"
+        runtime.harness = "claude"
+        runtime.provider = "anthropic"
         mock_resolve.return_value = runtime
         mock_conn.return_value = MagicMock()
 
         mock_writer = MagicMock()
 
-        with patch(
-            "agento.framework.config_writer._CONFIG_WRITERS",
-            {AgentProvider.CLAUDE: mock_writer},
-        ):
+        with stub_workspace_adapters(claude=mock_writer):
             mock_result = _make_claude_result()
             mock_workflow = MagicMock()
             mock_workflow.execute_job.return_value = mock_result
@@ -474,19 +479,17 @@ class TestPostRunCredentialCapture:
         MockRunner, mock_get_ch, mock_get_wf, mock_get_current_build, mock_copy_build,
         sample_db_config, sample_consumer_config,
     ):
-        runtime = _make_runtime_with_agent_view(provider="claude")
+        runtime = _make_runtime_with_agent_view(harness="claude", provider="anthropic")
         mock_resolve.return_value = runtime
         mock_conn.return_value = MagicMock()
 
-        # ClaudeConfigWriter-like writer without capture_refreshed_credentials
+        # ClaudeWorkspaceAdapter-like writer without capture_refreshed_credentials
         mock_writer = MagicMock(
-            spec=["prepare_workspace", "owned_paths", "write_credentials"],
+            spec=["prepare_workspace", "owned_paths", "persistent_home_paths",
+                  "write_credentials"],
         )
 
-        with patch(
-            "agento.framework.config_writer._CONFIG_WRITERS",
-            {AgentProvider.CLAUDE: mock_writer},
-        ):
+        with stub_workspace_adapters(claude=mock_writer):
             mock_result = _make_claude_result()
             mock_workflow = MagicMock()
             mock_workflow.execute_job.return_value = mock_result
@@ -511,7 +514,7 @@ class TestPostRunCredentialCapture:
         MockRunner, mock_get_ch, mock_get_wf, mock_get_current_build, mock_copy_build,
         sample_db_config, sample_consumer_config,
     ):
-        runtime = _make_runtime_with_agent_view(provider="claude")
+        runtime = _make_runtime_with_agent_view(harness="claude", provider="anthropic")
         mock_resolve.return_value = runtime
 
         # Distinct connection per get_connection() call, so we can assert the
@@ -524,14 +527,11 @@ class TestPostRunCredentialCapture:
         mock_conn.side_effect = _new_conn
 
         mock_writer = MagicMock(
-            spec=["prepare_workspace", "owned_paths", "write_credentials",
-                  "capture_refreshed_credentials"],
+            spec=["prepare_workspace", "owned_paths", "persistent_home_paths",
+                  "write_credentials", "capture_refreshed_credentials"],
         )
 
-        with patch(
-            "agento.framework.config_writer._CONFIG_WRITERS",
-            {AgentProvider.CLAUDE: mock_writer},
-        ):
+        with stub_workspace_adapters(claude=mock_writer):
             mock_result = _make_claude_result()
             mock_workflow = MagicMock()
             mock_workflow.execute_job.return_value = mock_result

@@ -1,6 +1,6 @@
 # `agento run` — Run the configured agent CLI
 
-Spawns the agent CLI inside the `sandbox` container, with `HOME` and the working directory set to a per-run artifacts directory copied from the agent_view's current workspace build. Credentials, SSH key, instructions, and skills are all resolved naturally from that HOME. The exact CLI command is built by the provider's registered `CliInvoker` — no provider-specific logic lives in the `run` command itself.
+Spawns the agent CLI inside the `sandbox` container, with `HOME` and the working directory set to a per-run artifacts directory copied from the agent_view's current workspace build. Credentials, SSH key, instructions, and skills are all resolved naturally from that HOME. The exact CLI command is built by the harness's registered `CommandBuilder` — no harness-specific logic lives in the `run` command itself.
 
 Two modes are selected automatically by presence of a prompt argument:
 
@@ -64,7 +64,7 @@ Exit code of the agent CLI is propagated to the shell, so headless mode composes
 
 ## What It Does
 
-1. Calls `docker compose exec -T cron agento agent_view:prepare-run <code>` to run the **same pre-spawn pipeline the consumer runs for a real job**: resolves a token from the LRU pool (stamping `used_at`), materializes a unique per-run artifacts directory under `workspace/artifacts/<workspace>/<agent_view>/<run_id>/`, writes that token's credentials into the artifacts HOME via the provider's `ConfigWriter`, and asks the provider's registered `CliInvoker` for the unified CLI **command** plus any **env-delivered credentials**. When a prompt is provided, the host passes `--prompt <prompt>` so cron returns the provider-specific **headless** command instead of the interactive one; `--yolo` is forwarded the same way so the `CliInvoker` builds the interactive command in bypass mode. The host code itself stays agent-agnostic.
+1. Calls `docker compose exec -T cron agento agent_view:prepare-run <code>` to run the **same pre-spawn pipeline the consumer runs for a real job**: claims a credential from the LRU pool for the view's own scope (stamping `used_at`; a provider that needs none simply gets no credential), materializes a unique per-run artifacts directory under `workspace/artifacts/<workspace>/<agent_view>/<run_id>/`, writes that credential into the artifacts HOME via the harness's `WorkspaceAdapter`, and asks the harness's `CommandBuilder` for the unified CLI **command** plus any **env-delivered credentials**. When a prompt is provided, the host passes `--prompt <prompt>` so cron returns the **headless** command instead of the interactive one; `--yolo` is forwarded the same way so the builder produces the interactive command in bypass mode. The host code itself stays agent-agnostic.
 2. Validates that a build exists on the host at `workspace/build/<workspace>/<agent_view>/current/`.
 3. Executes the returned command inside `sandbox` with `HOME` and `-w` (cwd) both set to the per-run artifacts dir. Any API-key values from the `env` field are injected via docker's **name-only** `-e KEY` form so the secret never appears in `ps`/argv — the value is read from the parent process's environment:
    - **Interactive:** `os.environ.update(env); os.execvp("docker", [..., "exec", "-it", "-u", "agent", "-e", "HOME=…", "-e", "TERM=…", *[("-e", k) for k in env], "-w", <working_dir>, "sandbox", *command])` — replaces the current process so the TTY transfer is clean.
@@ -72,41 +72,60 @@ Exit code of the agent CLI is propagated to the shell, so headless mode composes
 
 ## Agent-Agnostic Architecture
 
-`agento run` never branches on a provider name. Support for a new agent (OpenCode, Hermes, …) requires **zero edits to the framework** — the agent module ships a `CliInvoker` and declares it in its `di.json`:
+`agento run` never branches on a harness name. Support for a new agent (OpenCode, Hermes, …)
+requires **zero edits to the framework** — the agent module declares one harness in its
+`di.json` and ships an adapter whose `CommandBuilder` owns its flags:
 
 ```json
 {
-  "cli_invokers": [
-    {"provider": "myagent", "class": "src.cli.MyAgentCliInvoker"}
+  "agent_harnesses": [
+    {
+      "id": "myagent",
+      "label": "My Agent",
+      "class": "src.adapter.MyAgentHarnessAdapter",
+      "default_provider": "myvendor",
+      "providers": [
+        {"id": "myvendor", "label": "My Vendor", "credential_required": true,
+         "registration_modes": ["api_key"], "credential_scope": "myagent"}
+      ]
+    }
   ]
 }
 ```
 
-The invoker implements two methods:
-
 ```python
-class MyAgentCliInvoker:
-    def interactive_command(self, *, yolo: bool = False) -> list[str]:
+class MyAgentCommandBuilder:
+    def headless(self, ctx: HarnessRunContext, req: RunRequest) -> list[str]:
+        cmd = ["myagent", "run", "--prompt", req.prompt]
+        if req.model or ctx.model:
+            cmd += ["--model", req.model or ctx.model]
+        return cmd
+
+    def interactive(self, ctx: HarnessRunContext, *, yolo: bool = False) -> list[str]:
         cmd = ["myagent"]
         if yolo:                       # `agento run <code> --yolo`
             cmd.append("--skip-approvals")
         return cmd
-
-    def headless_command(self, prompt: str, *, model: str | None = None) -> list[str]:
-        cmd = ["myagent", "run", "--prompt", prompt]
-        if model:
-            cmd += ["--model", model]
-        return cmd
 ```
 
-Framework protocol lives in [`src/agento/framework/cli_invoker.py`](../../src/agento/framework/cli_invoker.py); shipped implementations: [`claude/src/cli.py`](../../src/agento/modules/claude/src/cli.py), [`codex/src/cli.py`](../../src/agento/modules/codex/src/cli.py).
+Both modes come from the **same** object on purpose. Previously Claude's flags lived in
+two places — the consumer's runner and the `CliInvoker` that `agento run` used — and had
+drifted: **neither** of the invoker's modes carried
+`--mcp-config .mcp.json --strict-mcp-config`, which the runner always injected. So every
+`agento run`, interactive or headless, started the agent without the per-job toolbox
+config while real jobs got it. Protocols live in
+[`src/agento/framework/harness/protocols.py`](../../src/agento/framework/harness/protocols.py);
+shipped implementations: [`claude/src/command_builder.py`](../../src/agento/modules/claude/src/command_builder.py),
+[`codex/src/command_builder.py`](../../src/agento/modules/codex/src/command_builder.py).
+Full contract: [../architecture/harness-contract.md](../architecture/harness-contract.md).
 
 ## Preconditions
 
 - Containers running: `agento up` (or `cd docker && docker compose -f docker-compose.dev.yml up -d`).
-- `agent_view/provider` configured:
+- `agent_view/harness` configured (the provider defaults to that harness's own
+  `default_provider`):
   ```bash
-  agento config:set agent_view/provider claude --agent-view dev_01
+  agento config:set agent_view/harness claude --agent-view dev_01
   ```
 - Workspace build exists (config, SSH key, instructions, and assets materialized):
   ```bash
@@ -118,8 +137,8 @@ Framework protocol lives in [`src/agento/framework/cli_invoker.py`](../../src/ag
 | Message | Fix |
 |---|---|
 | `agent_view 'xyz' not found` | Check `agento config:list agent_view` and the `agent_view` table. |
-| `no provider configured` | `agento config:set agent_view/provider <provider> --agent-view <code>` |
-| `provider 'X' has no CliInvoker registered` | The agent module for `X` must declare a `cli_invokers` entry in `di.json`. Built-in providers: `claude`, `codex`. |
+| `no harness configured` | `agento config:set agent_view/harness <harness> --agent-view <code>` |
+| `harness 'X' is not registered` | The agent module for `X` must declare an `agent_harnesses` entry in `di.json`. Built-in harnesses: `claude`, `codex`. |
 | `no build found` | `agento workspace:build --agent-view <code>` |
 | docker exec error | Start containers: `agento up`. |
 
@@ -135,7 +154,7 @@ Resolves provider/model/home but does **not** touch the token pool or materializ
 agento agent_view:runtime dev_01
 # → {"agent_view_id": 2, "agent_view_code": "dev_01",
 #    "workspace_id": 1, "workspace_code": "it",
-#    "provider": "claude", "model": "claude-opus-4-6",
+#    "harness": "claude", "provider": "anthropic", "model": "claude-opus-4-6",
 #    "home": "/workspace/build/it/dev_01/current",
 #    "interactive_command": ["claude"],
 #    "headless_command": null}
@@ -162,14 +181,15 @@ This is the command the host calls under the hood. It resolves a token (stamps `
 agento agent_view:prepare-run dev_01 --prompt "hello"
 # → {"agent_view_id": 2, "agent_view_code": "dev_01",
 #    "workspace_id": 1, "workspace_code": "it",
-#    "provider": "claude", "model": "claude-opus-4-6",
+#    "harness": "claude", "provider": "anthropic", "model": "claude-opus-4-6",
 #    "home": "/workspace/artifacts/it/dev_01/run-1234-a1b2c3d4e5f6",
 #    "working_dir": "/workspace/artifacts/it/dev_01/run-1234-a1b2c3d4e5f6",
 #    "command": ["claude", "-p", "hello", "--dangerously-skip-permissions",
+#                "--mcp-config", ".mcp.json", "--strict-mcp-config",
 #                "--output-format", "stream-json", "--verbose",
 #                "--model", "claude-opus-4-6"],
 #    "env": {"ANTHROPIC_API_KEY": "sk-ant-…"},
-#    "token_id": 42}
+#    "credential_id": 42, "token_id": 42}
 ```
 
 Note: the secret value **only** appears in the JSON payload over the docker exec pipe; the host never echoes it back, and on cron-side parse failures stdout is suppressed (never re-printed to stderr) to avoid leaking the `env` field through error messages.
@@ -177,5 +197,6 @@ Note: the secret value **only** appears in the JSON payload over the docker exec
 ## Related
 
 - [workspace-build.md](workspace-build.md) — how the build directory is materialized
-- [../config/identity.md](../config/identity.md) — how SSH keys and tokens are stored per agent_view
-- [../architecture/events.md](../architecture/events.md) — framework extensibility model (CliInvoker follows the same di.json pattern as ConfigWriter, Runner, AuthStrategy)
+- [../config/identity.md](../config/identity.md) — how SSH keys and credentials are stored per agent_view
+- [../architecture/harness-contract.md](../architecture/harness-contract.md) — the harness/provider/model split and the full plugin contract
+- [../architecture/events.md](../architecture/events.md) — framework extensibility model

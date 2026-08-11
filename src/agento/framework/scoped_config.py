@@ -100,3 +100,54 @@ def scoped_config_set(
                ON DUPLICATE KEY UPDATE value = VALUES(value), encrypted = VALUES(encrypted)""",
             (scope, scope_id, path, stored_value, int(encrypted)),
         )
+
+
+# Origin ranks for a config value, highest wins. `build_scoped_overrides` flattens the
+# three DB scopes into one dict, which is fine for plain reads but loses WHERE a value
+# came from — and the legacy harness/provider fallback has to compare exactly that
+# (a view-level harness must beat a global legacy provider).
+ORIGIN_ENV = 40
+ORIGIN_DB_AGENT_VIEW = 30
+ORIGIN_DB_WORKSPACE = 20
+ORIGIN_DB_DEFAULT = 10
+ORIGIN_CONFIG_JSON = 0
+ORIGIN_ABSENT = -1
+
+
+def resolve_with_origin(
+    conn,
+    path: str,
+    *,
+    agent_view_id: int | None = None,
+    workspace_id: int | None = None,
+    config_json_value: str | None = None,
+) -> tuple[str | None, int]:
+    """Resolve one config path to ``(value, origin_rank)``.
+
+    Deliberately narrow: only the two paths whose relative precedence decides the
+    legacy harness/provider fallback need this, so it does per-scope lookups instead
+    of rewriting the shared resolver.
+    """
+    import os
+
+    from .config_resolver import path_to_env_key
+
+    env_value = os.environ.get(path_to_env_key(path))
+    if env_value is not None:
+        return env_value, ORIGIN_ENV
+
+    for scope, scope_id, rank in (
+        (Scope.AGENT_VIEW, agent_view_id, ORIGIN_DB_AGENT_VIEW),
+        (Scope.WORKSPACE, workspace_id, ORIGIN_DB_WORKSPACE),
+        (Scope.DEFAULT, 0, ORIGIN_DB_DEFAULT),
+    ):
+        if scope_id is None:
+            continue
+        rows = load_scoped_db_overrides(conn, scope, scope_id)
+        entry = rows.get(path)
+        if entry is not None and entry[0] is not None:
+            return entry[0], rank
+
+    if config_json_value is not None:
+        return config_json_value, ORIGIN_CONFIG_JSON
+    return None, ORIGIN_ABSENT

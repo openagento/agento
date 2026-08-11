@@ -7,10 +7,10 @@ from textual.binding import Binding
 
 from .screens.agents import AgentsScreen
 from .screens.config import ConfigScreen
+from .screens.credentials import CredentialsScreen
 from .screens.dashboard import DashboardScreen
 from .screens.jobs import JobsScreen
 from .screens.skills import SkillsScreen
-from .screens.tokens import TokensScreen
 from .screens.tools import ToolsScreen
 from .widgets.sidebar import Sidebar
 
@@ -30,7 +30,7 @@ class AdminApp(App):
     SCREENS = {  # noqa: RUF012
         "dashboard": DashboardScreen,
         "jobs": JobsScreen,
-        "tokens": TokensScreen,
+        "credentials": CredentialsScreen,
         "agents": AgentsScreen,
         "skills": SkillsScreen,
         "tools": ToolsScreen,

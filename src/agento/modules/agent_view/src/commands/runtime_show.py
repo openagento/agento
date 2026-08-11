@@ -1,12 +1,12 @@
 """CLI command: agent_view:runtime — dump resolved runtime profile as JSON.
 
-Used internally by `agento run <code>` to discover provider + HOME path before
+Used internally by `agento run <code>` to discover harness + HOME path before
 spawning the sandbox, and available to users for introspection/debugging.
 
 When ``--prompt`` is supplied, the payload also includes a ``headless_command``
-built by the provider's registered :class:`CliInvoker`. When no prompt is given,
+built by the harness's registered :class:`CommandBuilder`. When no prompt is given,
 only ``interactive_command`` is populated. Both fields are ``null`` if no
-CliInvoker is registered for the resolved provider.
+no harness is registered for the resolved harness id.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class AgentViewRuntimeCommand:
 
     @property
     def help(self) -> str:
-        return "Dump resolved runtime profile (workspace, provider, HOME path, CLI command) as JSON"
+        return "Dump resolved runtime profile (workspace, harness, provider, HOME path, CLI command) as JSON"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("agent_view_code", help="Agent view code")
@@ -43,15 +43,18 @@ class AgentViewRuntimeCommand:
         parser.add_argument(
             "--yolo",
             action="store_true",
-            help="Show the interactive command in bypass mode (with the provider's "
-                 "skip-approvals flag)",
+            help="Show the interactive command in bypass mode (with the harness's skip-approvals flag)",
         )
 
     def execute(self, args: argparse.Namespace) -> None:
         from agento.framework.agent_view_runtime import resolve_agent_view_runtime
         from agento.framework.cli.runtime import _load_framework_config
-        from agento.framework.cli_invoker import get_cli_invoker
         from agento.framework.db import get_connection_or_exit
+        from agento.framework.harness import (
+            HarnessRunContext,
+            RunRequest,
+            find_harness,
+        )
         from agento.framework.workspace import get_agent_view_by_code
 
         db_config, _, _ = _load_framework_config()
@@ -77,25 +80,30 @@ class AgentViewRuntimeCommand:
         interactive_command: list[str] | None = None
         headless_command: list[str] | None = None
         effective_model = args.model or runtime.model
-        if runtime.provider:
-            try:
-                invoker = get_cli_invoker(runtime.provider)
-            except (ValueError, KeyError):
-                invoker = None
-            if invoker is not None:
-                interactive_command = invoker.interactive_command(
-                    yolo=getattr(args, "yolo", False),
+        registered = find_harness(runtime.harness) if runtime.harness else None
+        if registered is not None and runtime.provider:
+            builder = registered.adapter.command_builder
+            # Display only: no credential is claimed here, so credential_required is
+            # False — the real claim happens in agent_view:prepare-run.
+            ctx = HarnessRunContext(
+                harness=runtime.harness,
+                provider=runtime.provider,
+                model=effective_model,
+                home_dir=home,
+                credential_required=False,
+            )
+            interactive_command = builder.interactive(ctx, yolo=getattr(args, "yolo", False))
+            if args.prompt:
+                headless_command = builder.headless(
+                    ctx, RunRequest(prompt=args.prompt, model=effective_model)
                 )
-                if args.prompt:
-                    headless_command = invoker.headless_command(
-                        args.prompt, model=effective_model,
-                    )
 
         payload = {
             "agent_view_id": av.id,
             "agent_view_code": av.code,
             "workspace_id": runtime.workspace.id,
             "workspace_code": runtime.workspace.code,
+            "harness": runtime.harness,
             "provider": runtime.provider,
             "model": runtime.model,
             "home": home,

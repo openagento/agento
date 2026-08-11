@@ -1,17 +1,19 @@
 # Agent Identity (SSH + Credentials)
 
-Each `agent_view` has its own identity: SSH private key, optional public key, optional `~/.ssh/config`, the git commit author (`git_author_name`/`git_author_email`), and (via `token:register`) its agent CLI credentials. **Secrets** (the SSH private key, OAuth credentials) are stored **encrypted in the database** (`obscure` fields); **non-secret public metadata** like the git author name/email is stored as plaintext (`string` fields) — it ends up in public commit metadata anyway. Workspace builds materialize reusable identity/config templates; each run copies that build into an artifacts directory and uses the artifacts directory as the agent's `$HOME`.
+Each `agent_view` has its own identity: SSH private key, optional public key, optional `~/.ssh/config`, the git commit author (`git_author_name`/`git_author_email`), and (via `credential:register`) its agent CLI credentials. **Secrets** (the SSH private key, OAuth credentials) are stored **encrypted in the database** (`obscure` fields); **non-secret public metadata** like the git author name/email is stored as plaintext (`string` fields) — it ends up in public commit metadata anyway. Workspace builds materialize reusable identity/config templates; each run copies that build into an artifacts directory and uses the artifacts directory as the agent's `$HOME`.
 
 ## Registering a New Agent — Quick Start
 
 Minimum viable onboarding for a fresh `agent_view`, using the interactive paste flow (no host paths leaked into Docker, no volume mounts):
 
 ```bash
-# 1. Register the agent CLI credentials (Claude / Codex OAuth token).
-#    The token joins the provider's LRU pool automatically — no primary flag.
-agento token:register claude dev_01
-# 1b. Bind this agent_view to the provider so the consumer knows which pool to draw from.
-agento config:set agent_view/provider claude --scope=agent_view --scope-id=<agent_view_id>
+# 1. Register the agent CLI credential for its SCOPE (Claude / Codex OAuth).
+#    It joins that scope's LRU pool automatically — there is no primary flag.
+agento credential:register claude dev_01
+# 1b. Bind BOTH axes: the harness alone does not identify the model vendor, and the
+#     consumer resolves the credential pool from the (harness, provider) pair.
+agento config:set agent_view/harness  claude    --scope=agent_view --scope-id=<agent_view_id>
+agento config:set agent_view/provider anthropic --scope=agent_view --scope-id=<agent_view_id>
 
 # 2. Paste the SSH private key into the encrypted DB field
 agento config:set agent_view/identity/ssh_private_key --agent-view dev_01
@@ -123,6 +125,6 @@ matches a **verified** email on that account — set `git_author_email` accordin
 
 See [workspace-build.md](../cli/workspace-build.md) for the full build flow.
 
-## Agent Tokens (Claude / Codex)
+## Agent Credentials (per credential scope)
 
-The same DB-obscured pattern applies to OAuth credentials registered via `token:register`. Credentials are stored inside the `oauth_token.credentials` column (encrypted) instead of referencing a JSON file on disk. See [tokens.md](../cli/tokens.md) for the CLI.
+The same DB-obscured pattern applies to OAuth credentials registered via `credential:register`. Credentials are stored inside the `credential.credentials` column (encrypted) instead of referencing a JSON file on disk. See [credentials.md](../cli/credentials.md) for the CLI.

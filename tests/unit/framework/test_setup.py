@@ -26,6 +26,16 @@ class _EventCollector:
 
 
 @pytest.fixture(autouse=True)
+def _ignore_host_module_status():
+    """These tests build fake modules in tmp_path; the HOST's app/etc/modules.json
+    must not decide whether they count as enabled. Without this, disabling a module
+    locally (e.g. `agento module:disable jira`) silently skips the fake module of
+    the same name and the assertions fail on unrelated deployment state."""
+    with patch("agento.framework.module_status.read_module_status", return_value={}):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _clean_events():
     clear_event_manager()
     _EventCollector.reset()
@@ -275,7 +285,12 @@ class TestStrictOnboarding:
 
             # If we need custom all_scanned manifests, mock scan_modules
             if all_scanned is not None:
-                with patch("agento.framework.setup.scan_modules", return_value=all_scanned):
+                # setup now goes through the ONE shared discovery path (which also covers
+                # PyPI extensions mounted outside core/user dirs).
+                with patch(
+                    "agento.framework.setup.scan_all_modules",
+                    return_value=all_scanned,
+                ):
                     result = setup_upgrade(conn, logging.getLogger("test"),
                                          core_dir=core_dir, user_dir=user_dir)
             else:

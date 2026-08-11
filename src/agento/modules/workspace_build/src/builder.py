@@ -441,51 +441,67 @@ def _read_retention_max_builds(conn) -> int:
     return _DEFAULT_MAX_BUILDS
 
 
-def materialize_agent_credentials(conn, build_dir: Path) -> None:
-    """For every registered ConfigWriter, resolve the active OAuth token for that
-    provider (same selection logic as the consumer: primary first, else best-by-capacity)
-    and let the writer materialize it as a provider-specific credentials file in
-    ``build_dir`` (e.g. ``.claude/.credentials.json`` or ``.codex/auth.json``).
+def materialize_agent_credentials(
+    conn, build_dir: Path, *, harness: str | None, provider: str | None
+) -> None:
+    """Materialize the credential for THIS view's effective ``(harness, provider)`` only.
 
-    Providers without any enabled token, or with tokens missing the expected payload,
-    are silently skipped — the agent will need to run ``/login`` on first use.
+    Least privilege (AGENTS.md "Security"): a build is per agent_view, so iterating
+    every registered harness — as this did — handed a Claude view the Codex credential
+    merely because the ``codex`` module was enabled. Now exactly one credential scope
+    is resolved, and a provider that requires no credential writes nothing at all.
+
+    No enabled credential, or one missing the expected payload, is skipped silently —
+    the agent will need to run ``/login`` on first use.
     """
-    from agento.framework.agent_manager.token_resolver import TokenResolver
-    from agento.framework.config_writer import _CONFIG_WRITERS
+    from agento.framework.agent_manager.credential_resolver import CredentialResolver
+    from agento.framework.harness import resolve_provider, workspace_adapter_for
 
-    resolver = TokenResolver()
-    for provider, writer in _CONFIG_WRITERS.items():
+    if not harness or not provider:
+        logger.debug("No effective harness/provider for this build; no credential written")
+        return
+
+    provider_desc = resolve_provider(harness, provider)
+    if not provider_desc.credential_required:
+        logger.debug(
+            "Provider %s/%s requires no credential; nothing to materialize",
+            harness, provider,
+        )
+        return
+
+    scope = provider_desc.credential_scope
+    try:
+        credential = CredentialResolver().resolve(conn, scope)
+    except Exception:
+        logger.debug("No enabled credential for scope=%s; skipping", scope, exc_info=True)
+        return
+    if credential is None or credential.credentials is None:
+        return
+
+    _expiry = (credential.credentials.get("raw_auth") or {}).get("tokens", {}).get("expiry")
+    if _expiry is not None:
         try:
-            token = resolver.resolve(conn, provider)
+            from datetime import UTC, datetime
+            exp_dt = datetime.fromisoformat(str(_expiry).replace("Z", "+00:00"))
+            if exp_dt < datetime.now(UTC):
+                logger.warning(
+                    "Credential for scope=%s is expired (expiry=%s); "
+                    "re-authenticate via `agento credential:register %s <label>`",
+                    scope, _expiry, scope,
+                )
         except Exception:
-            logger.debug("No enabled token for provider=%s; skipping", provider, exc_info=True)
-            continue
-        if token is None or token.credentials is None:
-            continue
-        _expiry = (token.credentials.get("raw_auth") or {}).get("tokens", {}).get("expiry")
-        if _expiry is not None:
-            try:
-                from datetime import UTC, datetime
-                exp_dt = datetime.fromisoformat(str(_expiry).replace("Z", "+00:00"))
-                if exp_dt < datetime.now(UTC):
-                    logger.warning(
-                        "Token for provider=%s is expired (expiry=%s); "
-                        "re-authenticate via `agento token:register %s <label>`",
-                        provider, _expiry, provider.value,
-                    )
-            except Exception:
-                pass
-        try:
-            writer.write_credentials(build_dir, token)
-        except Exception:
-            logger.warning(
-                "ConfigWriter for %s failed to write credentials",
-                provider, exc_info=True,
-            )
+            pass
+    try:
+        workspace_adapter_for(harness).write_credentials(build_dir, credential)
+    except Exception:
+        logger.warning(
+            "WorkspaceAdapter for harness %s failed to write credentials",
+            harness, exc_info=True,
+        )
 
 
 def migrate_legacy_workspace_config(writer, build_dir: Path) -> None:
-    """Let the provider ConfigWriter bridge legacy shared-HOME config into the build."""
+    """Let the provider WorkspaceAdapter bridge legacy shared-HOME config into the build."""
     migrate = getattr(writer, "migrate_legacy_workspace_config", None)
     if migrate is None:
         return
@@ -494,7 +510,7 @@ def migrate_legacy_workspace_config(writer, build_dir: Path) -> None:
         migrate(build_dir, workspace_root)
     except Exception:
         logger.warning(
-            "ConfigWriter %s failed to migrate legacy workspace config",
+            "WorkspaceAdapter %s failed to migrate legacy workspace config",
             writer.__class__.__name__,
             exc_info=True,
         )
@@ -550,10 +566,10 @@ def execute_build(conn, agent_view_id: int, *, force: bool = False) -> BuildResu
     """
     from agento.framework.agent_view_runtime import resolve_agent_view_runtime
     from agento.framework.config_resolver import ScopedConfigService
-    from agento.framework.config_writer import (
-        all_persistent_home_paths,
+    from agento.framework.harness import (
         get_agent_config,
-        get_config_writer,
+        persistent_home_paths_for,
+        workspace_adapter_for,
     )
     from agento.framework.scoped_config import Scope
     from agento.framework.workspace import get_agent_view
@@ -676,13 +692,13 @@ def execute_build(conn, agent_view_id: int, *, force: bool = False) -> BuildResu
         # 1. Theme as base layer (scaffolding, KnowledgeBase, etc.)
         _copy_theme(build_dir, workspace_code, agent_view.code, strategy=strategies["theme"])
 
-        # 2. Agent CLI configs via provider-specific ConfigWriter
+        # 2. Agent CLI configs via provider-specific WorkspaceAdapter
         runtime = resolve_agent_view_runtime(conn, agent_view_id)
         if runtime.provider:
             agent_config = get_agent_config(svc)
             core_cfg = ScopedConfigService(conn).get_module("core") or {}
             toolbox_url = core_cfg.get("toolbox/url") or "http://toolbox:3001"
-            writer = get_config_writer(runtime.provider)
+            writer = workspace_adapter_for(runtime.harness)
             writer.prepare_workspace(
                 build_dir, agent_config,
                 agent_view_id=agent_view_id,
@@ -715,14 +731,19 @@ def execute_build(conn, agent_view_id: int, *, force: bool = False) -> BuildResu
         # are authored correctly (e.g. linked to the Bitbucket account by verified email).
         materialize_git_identity(build_dir, resolved)
 
-        # 8. Persistent-state symlinks for agent-declared paths (Claude/Codex sessions, etc.)
-        # Scoped to runtime.provider — prevents cross-provider state leakage into the build.
-        persistent_paths = all_persistent_home_paths(runtime.provider)
+        # 8. Persistent-state symlinks for harness-declared paths (session dirs, etc.).
+        # Scoped to runtime.harness — prevents cross-harness state leaking into the build.
+        # A view with no harness configured owns no such paths.
+        persistent_paths = (
+            persistent_home_paths_for(runtime.harness) if runtime.harness else []
+        )
         state_dir = ensure_state_dir(workspace_code, agent_view.code, persistent_paths)
         link_persistent_paths(build_dir, state_dir, persistent_paths)
 
-        # 9. Materialize agent OAuth credentials files per registered ConfigWriter
-        materialize_agent_credentials(conn, build_dir)
+        # 9. Materialize agent OAuth credentials files per registered WorkspaceAdapter
+        materialize_agent_credentials(
+            conn, build_dir, harness=runtime.harness, provider=runtime.provider
+        )
 
         # Mark as ready
         with conn.cursor() as cur:

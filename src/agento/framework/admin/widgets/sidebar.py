@@ -43,7 +43,7 @@ class Sidebar(Widget):
         ("dashboard", "  Dashboard"),
         ("jobs", "  Jobs"),
         ("agents", "  Agents"),
-        ("tokens", "  Tokens"),
+        ("credentials", "  Credentials"),
         ("skills", "  Skills"),
         ("tools", "  Tools"),
         ("config", "  Config"),

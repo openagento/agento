@@ -1,4 +1,4 @@
-"""Tests for ClaudeAuthStrategy — captures full ``claudeAiOauth`` + ``.claude.json``."""
+"""Tests for ClaudeCredentialAuthenticator — captures full ``claudeAiOauth`` + ``.claude.json``."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from agento.framework.agent_manager.auth import AuthenticationError
-from agento.modules.claude.src.auth import ClaudeAuthStrategy
+from agento.modules.claude.src.auth import ClaudeCredentialAuthenticator
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def fake_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-class TestClaudeAuthStrategy:
+class TestClaudeCredentialAuthenticator:
     def _stub_run_cli(self, home):
         # Simulate a successful interactive login writing files to HOME
         creds = {
@@ -53,12 +53,12 @@ class TestClaudeAuthStrategy:
         }))
 
     def test_captures_full_oauth_payload(self, fake_home):
-        strategy = ClaudeAuthStrategy()
+        strategy = ClaudeCredentialAuthenticator()
         with patch(
             "agento.modules.claude.src.auth._run_cli",
             side_effect=lambda *a, **kw: self._stub_run_cli(fake_home),
         ):
-            result = strategy.authenticate("/ignored/tmp", logging.getLogger("test"))
+            result = strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
 
         assert result.subscription_key == "sk-ant-oat01-abc"
         assert result.refresh_token == "sk-ant-ort01-def"
@@ -78,12 +78,12 @@ class TestClaudeAuthStrategy:
         assert raw_creds["claudeAiOauth"]["rateLimitTier"] == "default_claude_max_5x"
 
     def test_captures_claude_json_user_state(self, fake_home):
-        strategy = ClaudeAuthStrategy()
+        strategy = ClaudeCredentialAuthenticator()
         with patch(
             "agento.modules.claude.src.auth._run_cli",
             side_effect=lambda *a, **kw: self._stub_run_cli(fake_home),
         ):
-            result = strategy.authenticate("/ignored/tmp", logging.getLogger("test"))
+            result = strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
 
         assert result.raw_auth is not None
         claude_json = result.raw_auth["claude_json"]
@@ -98,22 +98,22 @@ class TestClaudeAuthStrategy:
                 "claudeAiOauth": {"accessToken": "sk-x"}
             }))
 
-        strategy = ClaudeAuthStrategy()
+        strategy = ClaudeCredentialAuthenticator()
         with patch("agento.modules.claude.src.auth._run_cli", side_effect=_only_creds):
-            result = strategy.authenticate("/ignored/tmp", logging.getLogger("test"))
+            result = strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
 
         assert result.subscription_key == "sk-x"
         assert result.raw_auth is not None
         assert result.raw_auth["claude_json"] == {}
 
     def test_missing_credentials_file_raises(self, fake_home):
-        strategy = ClaudeAuthStrategy()
+        strategy = ClaudeCredentialAuthenticator()
         # _run_cli returns without writing anything
         with (
             patch("agento.modules.claude.src.auth._run_cli", lambda *a, **kw: None),
             pytest.raises(AuthenticationError, match="credentials file not found"),
         ):
-            strategy.authenticate("/ignored/tmp", logging.getLogger("test"))
+            strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
 
     def test_credentials_without_access_token_raises(self, fake_home):
         def _no_token(*_args, **_kw):
@@ -121,12 +121,12 @@ class TestClaudeAuthStrategy:
                 json.dumps({"claudeAiOauth": {}})
             )
 
-        strategy = ClaudeAuthStrategy()
+        strategy = ClaudeCredentialAuthenticator()
         with (
             patch("agento.modules.claude.src.auth._run_cli", side_effect=_no_token),
             pytest.raises(AuthenticationError, match="no accessToken"),
         ):
-            strategy.authenticate("/ignored/tmp", logging.getLogger("test"))
+            strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
 
     def test_malformed_claude_json_is_tolerated(self, fake_home):
         def _bad_claude_json(*_args, **_kw):
@@ -135,9 +135,9 @@ class TestClaudeAuthStrategy:
             }))
             (fake_home / ".claude.json").write_text("not-json{")
 
-        strategy = ClaudeAuthStrategy()
+        strategy = ClaudeCredentialAuthenticator()
         with patch("agento.modules.claude.src.auth._run_cli", side_effect=_bad_claude_json):
-            result = strategy.authenticate("/ignored/tmp", logging.getLogger("test"))
+            result = strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
 
         assert result.subscription_key == "sk-x"
         assert result.raw_auth is not None
@@ -146,29 +146,29 @@ class TestClaudeAuthStrategy:
 
 class TestRegisterFromApiKey:
     def test_accepts_sk_ant_prefix(self):
-        creds, token_type = ClaudeAuthStrategy().register_from_api_key("sk-ant-abc123")
+        creds, token_type = ClaudeCredentialAuthenticator().register_from_api_key("sk-ant-abc123")
         assert creds == {"api_key": "sk-ant-abc123"}
         assert token_type == "anthropic_api_key"
 
     def test_rejects_empty(self):
         with pytest.raises(AuthenticationError):
-            ClaudeAuthStrategy().register_from_api_key("")
+            ClaudeCredentialAuthenticator().register_from_api_key("")
 
     def test_rejects_whitespace_only(self):
         with pytest.raises(AuthenticationError):
-            ClaudeAuthStrategy().register_from_api_key("   ")
+            ClaudeCredentialAuthenticator().register_from_api_key("   ")
 
     def test_rejects_openai_proj_prefix(self):
         """OpenAI keys (sk-proj-...) must not be accepted as Anthropic keys."""
         with pytest.raises(AuthenticationError, match="Anthropic"):
-            ClaudeAuthStrategy().register_from_api_key("sk-proj-XXXX")
+            ClaudeCredentialAuthenticator().register_from_api_key("sk-proj-XXXX")
 
     def test_rejects_openai_svcacct_prefix(self):
         """OpenAI service-account keys (sk-svcacct-...) must not be accepted."""
         with pytest.raises(AuthenticationError, match="Anthropic"):
-            ClaudeAuthStrategy().register_from_api_key("sk-svcacct-XXXX")
+            ClaudeCredentialAuthenticator().register_from_api_key("sk-svcacct-XXXX")
 
     def test_strips_surrounding_whitespace(self):
-        creds, token_type = ClaudeAuthStrategy().register_from_api_key("  sk-ant-abc  ")
+        creds, token_type = ClaudeCredentialAuthenticator().register_from_api_key("  sk-ant-abc  ")
         assert creds == {"api_key": "sk-ant-abc"}
         assert token_type == "anthropic_api_key"

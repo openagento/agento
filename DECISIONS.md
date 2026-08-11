@@ -4,6 +4,106 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-08-04 — One closed `AgentProvider` enum split into harness / provider / model
+
+The refactor that made the "framework is agent-agnostic" rule (AGENTS.md #6) actually
+true. Full contract: [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
+
+- **D1 — Three axes, not one.** `AgentProvider(CLAUDE|CODEX)` keyed **five** registries
+  (runners, config writers, CLI invokers, auth strategies, transcript readers), so one enum
+  value had to mean three unrelated things: the driving *program*, the model *vendor*, and
+  implicitly the credential pool. Adding a third agent meant editing the enum — i.e.
+  editing the framework, which the rule forbids. Split into **harness** (program) /
+  **provider** (model-API vendor) / **model**. The axes are genuinely independent: one
+  harness can offer several providers, only some of which need a credential.
+- **D2 — One open registry replaces five enum-keyed maps.** `register_harness(descriptor,
+  adapter)` from a single `agent_harnesses` entry in the module's `di.json`; one loader
+  (`bootstrap._load_agent_harnesses`) replaces five.
+- **D3 — Descriptors are pure data parsed off disk.** Three callers must enumerate
+  harnesses before any Python import or DB access: `config:set` validating a `select`
+  value, `enumerate_sandbox_packages` at install/upgrade/doctor time, and
+  `module:validate` inside `setup:upgrade` (which must fail *before* the first schema
+  change). So static metadata lives in `di.json`, never in the adapter class.
+- **D4 — `credential_required` is the single source of truth, validated bidirectionally.**
+  `true` requires a `credential_scope` **and** non-empty `registration_modes`; `false`
+  must declare neither. A half-declared provider fails to load instead of failing later at
+  `credential:register`.
+- **D5 — One credential scope has exactly one owning harness.** `di.json` carries only a
+  class path, so authenticator identity cannot be checked statically, and `module:validate`
+  must work without importing Python. Sharing a pool between harnesses would need an
+  explicit manifest field; until something needs it, a collision is a hard error at
+  registration.
+- **D6 — The caller claims the credential; the runner has no pool access.** Previously the
+  runner could fall back to the pool itself, so the command it built and the process it
+  spawned could end up on two different credentials. Now the credential travels in
+  `HarnessRunContext`.
+- **D7 — `usage_log.credential_id` is nullable.** A provider that needs no credential must
+  still be observable; the row is attributed by `(harness, provider)`. The first draft had
+  an early `return` in `_record_usage` that cancelled this benefit — removed, because it
+  would have made exactly that class of run invisible.
+- **D8 — Six files in `framework/harness/`, not twelve.** The draft split one protocol per
+  file; grouping by cohesion (`descriptor`, `runtime`, `protocols`, `registry`, `manifest`,
+  `subprocess_runner`) reads better and matches AGENTS.md #1 ("three similar lines >
+  premature abstraction").
+- **D9 — Sandbox package fields are schema-validated, NOT shell-quoted.** They are rendered
+  into a Dockerfile, so a third-party `di.json` must not be able to inject shell — hence a
+  regex per field plus an allow-list of managers. But `shlex.quote` was *wrong* here: the
+  rendered line is `"@openai/codex@${CODEX_VERSION}"`, and quoting stops the `ARG` from
+  expanding, breaking the very pin it was meant to protect. Safety comes from validation.
+- **D10 — No `provider_options/base_url` field.** Speculative: nothing in tree needs a
+  per-provider base URL yet, and an unused config path is a maintenance liability. Add it
+  when a provider actually requires it.
+- **D11 — `WorkspaceAdapter.serialize_toolbox_connection` is deliberately unconstrained.**
+  Writing an `.mcp.json` is a *Claude* implementation detail. A harness that consumes the
+  Toolbox as CLI flags, an extension, or env vars is equally valid, so the framework hands
+  over a `ToolboxConnectionSpec` and lets the harness decide.
+- **D12 — `CredentialAuthenticator` is a total protocol.** Both methods always exist so
+  structural typing (`isinstance` on a `runtime_checkable` Protocol) actually passes; what
+  limits the modes is the *declaration*, and an unsupported branch raises
+  `UnsupportedRegistrationMode`. Replaces `hasattr` probing.
+- **D13 — `capture_refreshed_credentials` joins the protocol.** The consumer used to probe
+  for it with `getattr`, which silently skipped credential capture for any adapter that
+  named the method differently.
+- **D14 — Credential events dual-dispatch under both names.** Renaming five events would
+  break third-party observers, so `dispatch_credential_event` emits the new
+  `credential_*` name AND the deprecated `token_*` name, building **both** payloads from
+  the same data so an observer on either name sees consistent values. Removal tracked in
+  ROADMAP.md.
+- **D15 — Legacy config resolution compares ORIGINS, not presence.** Pre-0.15,
+  `agent_view/provider` held the harness id. Because the new `config.json` always ships a
+  default harness, "harness unset" never happens — a presence test would give an operator
+  carrying `CONFIG__AGENT_VIEW__PROVIDER=codex` the *default* harness plus a provider it
+  does not offer. So the fallback ranks ENV > agent_view > workspace > default >
+  `config.json`. A legacy value is recognised **structurally** (a provider naming a
+  registered harness); two earlier attempts at this used a hardcoded `claude`/`codex` list,
+  which reintroduced in the framework precisely the branch the refactor removes. A pair
+  that is neither valid nor legacy now **raises** instead of silently falling back to
+  Claude.
+- **D16 — The data patch's harness→provider map is FROZEN in the patch.** A data patch is
+  applied once and tracked permanently in `data_patch`, so it must not depend on which
+  modules happen to be enabled at upgrade time: reading the harness registry would skip
+  `provider=codex` rows on a deployment with the codex module disabled, and a later
+  `module:enable codex` would never re-run the patch — leaving that config permanently
+  unmigrated.
+- **Two live bugs fixed on the way.** (a) Claude's flags lived in *two* places
+  (`TokenClaudeRunner._build_command` and `ClaudeCliInvoker.headless_command`) and had
+  already drifted: the invoker omitted `--mcp-config .mcp.json --strict-mcp-config`, so
+  `agento run <view> "<prompt>"` started the agent with **no toolbox**. One
+  `CommandBuilder` per harness makes that unrepresentable. (b) `materialize_agent_credentials`
+  iterated *every* registered harness, handing a Claude view the Codex credential merely
+  because the codex module was enabled — now exactly one scope is resolved (least
+  privilege, AGENTS.md "Security").
+- **`job.provider` added after all (reversal).** The first implementation deliberately
+  skipped it — `job.agent_type` already stores the harness id, and the provider was recorded
+  per run on `usage_log.provider`. Review round 2 supplied the failure that judgement had
+  missed: `replay` had nothing to read, so it substituted the harness's `default_provider`
+  and a run on a non-default provider replayed on the **wrong** one. Migration
+  `031_job_provider.sql` adds the column (nullable — pre-migration rows genuinely do not
+  know) and also widens `agent_type` to `VARCHAR(64)` to match the harness-id contract,
+  which the pre-0.15 `VARCHAR(20)` would have truncated for a long third-party id.
+
+---
+
 ## 2026-07-30 — Token-pool claim uses blocking `FOR UPDATE`, not `SKIP LOCKED`
 
 - **The bug.** `select_token` claimed the LRU token with `SELECT id … LIMIT 1 FOR UPDATE SKIP LOCKED` followed by a *separate* `UPDATE … WHERE id = <that id>`. Under concurrency this handed the **same** token row to two workers: a tightly-synchronized 10-way burst over a 10-token pool produced only 9 distinct tokens ~⅓ of the time (MySQL 8.0.45, REPEATABLE READ). It defeated LRU fairness exactly under the concurrency the pool exists for — surfacing as an intermittent `test_concurrent_materialization` failure and reproduced deterministically in a barrier-synchronized harness.

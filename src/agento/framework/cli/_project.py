@@ -6,32 +6,10 @@ import re
 import sys
 from pathlib import Path
 
+# Re-export (redundant alias marks it intentional): the implementation is framework-level so
+# framework modules can use it without importing from `framework/cli/`.
+from ..project import find_project_root as find_project_root
 from ._output import log_error
-
-
-def find_project_root(start: Path | None = None) -> Path | None:
-    """Walk up from start (default: cwd) looking for an agento project root.
-
-    Detection order:
-    1. .agento/project.json — created by `agento install`
-    2. pyproject.toml with name = "agento" — git clone dev mode
-    """
-    current = (start or Path.cwd()).resolve()
-
-    for directory in [current, *current.parents]:
-        # agento install'd project
-        if (directory / ".agento" / "project.json").is_file():
-            return directory
-        # git clone dev mode
-        pyproject = directory / "pyproject.toml"
-        if pyproject.is_file():
-            try:
-                text = pyproject.read_text()
-                if 'name = "agento"' in text or 'name = "agento-core"' in text:
-                    return directory
-            except OSError:
-                continue
-    return None
 
 
 def find_compose_file(project_root: Path) -> Path | None:

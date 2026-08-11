@@ -1,2 +1,6 @@
 # Secrets
 .env
+
+# User-owned, per-machine compose overrides (never shipped — see
+# docs/deployment/docker-compose-override.md)
+docker-compose.override.yml

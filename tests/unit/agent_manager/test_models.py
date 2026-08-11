@@ -6,9 +6,8 @@ from datetime import datetime
 import pytest
 
 from agento.framework.agent_manager.models import (
-    AgentProvider,
-    Token,
-    TokenStatus,
+    CredentialRecord,
+    CredentialStatus,
     UsageSummary,
 )
 
@@ -32,25 +31,54 @@ _CREDS = {"subscription_key": "sk-test"}
 _CIPHERTEXT = f"aes256:iv:{json.dumps(_CREDS)}"
 
 
-class TestAgentProvider:
-    def test_claude_value(self):
-        assert AgentProvider.CLAUDE.value == "claude"
+class TestScopeColumnFallback:
+    """``scope`` is the new key; ``agent_type`` is dual-written for one release.
 
-    def test_codex_value(self):
-        assert AgentProvider.CODEX.value == "codex"
+    A row written by an older build (or read mid-migration) has only ``agent_type``, so
+    ``from_row`` falls back to it rather than raising.
+    """
 
-    def test_from_string(self):
-        assert AgentProvider("claude") == AgentProvider.CLAUDE
-        assert AgentProvider("codex") == AgentProvider.CODEX
+    def test_scope_column_wins_when_present(self):
+        row = _row(agent_type="claude", scope="claude")
+        assert CredentialRecord.from_row(row).scope == "claude"
+
+    def test_falls_back_to_agent_type_when_scope_is_absent(self):
+        row = _row(agent_type="codex")
+        row.pop("scope", None)
+        assert CredentialRecord.from_row(row).scope == "codex"
+
+    def test_falls_back_when_scope_is_null(self):
+        """The migration adds the column NULL before backfilling it."""
+        row = _row(agent_type="codex", scope=None)
+        assert CredentialRecord.from_row(row).scope == "codex"
 
 
-class TestTokenStatus:
+def _row(**overrides) -> dict:
+    row = {
+        "id": 1,
+        "agent_type": "claude",
+        "label": "prod-1",
+        "credentials": _CIPHERTEXT,
+        "token_limit": 100000,
+        "enabled": 1,
+        "status": "ok",
+        "error_msg": None,
+        "expires_at": None,
+        "used_at": None,
+        "created_at": datetime(2025, 1, 1),
+        "updated_at": datetime(2025, 1, 1),
+    }
+    row.update(overrides)
+    return row
+
+
+class TestCredentialStatus:
     def test_values(self):
-        assert TokenStatus.OK.value == "ok"
-        assert TokenStatus.ERROR.value == "error"
+        assert CredentialStatus.OK.value == "ok"
+        assert CredentialStatus.ERROR.value == "error"
 
 
-class TestToken:
+class TestCredentialRecord:
     def test_from_row(self):
         row = {
             "id": 1,
@@ -67,15 +95,15 @@ class TestToken:
             "updated_at": datetime(2025, 1, 1),
         }
 
-        token = Token.from_row(row)
+        token = CredentialRecord.from_row(row)
 
         assert token.id == 1
-        assert token.agent_type == AgentProvider.CLAUDE
+        assert token.scope == "claude"
         assert token.label == "prod-1"
         assert token.credentials == _CREDS
         assert token.token_limit == 100000
         assert token.enabled is True
-        assert token.status == TokenStatus.OK
+        assert token.status == CredentialStatus.OK
         assert token.error_msg is None
         assert token.expires_at == datetime(2026, 1, 1)
         assert token.used_at == datetime(2025, 12, 31)
@@ -96,12 +124,12 @@ class TestToken:
             "updated_at": datetime(2025, 1, 1),
         }
 
-        token = Token.from_row(row)
+        token = CredentialRecord.from_row(row)
 
-        assert token.agent_type == AgentProvider.CODEX
+        assert token.scope == "codex"
         assert token.enabled is False
         assert token.token_limit == 0
-        assert token.status == TokenStatus.ERROR
+        assert token.status == CredentialStatus.ERROR
         assert token.error_msg == "OAuth token expired"
         assert token.expires_at is None
         assert token.used_at is None
@@ -119,9 +147,9 @@ class TestToken:
             "updated_at": datetime(2025, 1, 1),
         }
 
-        token = Token.from_row(row)
+        token = CredentialRecord.from_row(row)
 
-        assert token.status == TokenStatus.OK
+        assert token.status == CredentialStatus.OK
         assert token.error_msg is None
         assert token.expires_at is None
         assert token.used_at is None
@@ -129,13 +157,13 @@ class TestToken:
 
 class TestUsageSummary:
     def test_creation(self):
-        summary = UsageSummary(token_id=1, total_tokens=50000, call_count=10)
-        assert summary.token_id == 1
+        summary = UsageSummary(credential_id=1, total_tokens=50000, call_count=10)
+        assert summary.credential_id == 1
         assert summary.total_tokens == 50000
         assert summary.call_count == 10
 
 
-class TestTokenTypeAndPriority:
+class TestCredentialTypeAndPriority:
     def test_from_row_populates_type_and_priority(self):
         row = {
             "id": 1, "agent_type": "codex", "label": "x",
@@ -147,7 +175,7 @@ class TestTokenTypeAndPriority:
             "created_at": datetime(2026, 1, 1),
             "updated_at": datetime(2026, 1, 1),
         }
-        t = Token.from_row(row)
+        t = CredentialRecord.from_row(row)
         assert t.type == "codex_access_token"
         assert t.priority == 5
 
@@ -159,7 +187,7 @@ class TestTokenTypeAndPriority:
             "status": "ok", "error_msg": None, "expires_at": None, "used_at": None,
             "created_at": datetime(2026, 1, 1), "updated_at": datetime(2026, 1, 1),
         }
-        t = Token.from_row(row)
+        t = CredentialRecord.from_row(row)
         assert t.type == "oauth"
         assert t.priority == 0
 
@@ -176,6 +204,6 @@ class TestTokenTypeAndPriority:
             "status": "ok", "error_msg": None, "expires_at": None, "used_at": None,
             "created_at": datetime(2026, 1, 1), "updated_at": datetime(2026, 1, 1),
         }
-        t = Token.from_row(row)
+        t = CredentialRecord.from_row(row)
         assert t.type == "oauth"
         assert t.priority == 0

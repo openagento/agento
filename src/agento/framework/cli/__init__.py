@@ -18,9 +18,12 @@ _LOCAL_COMMANDS = frozenset({
 
 # Commands that need an interactive TTY (OAuth flows, onboarding prompts)
 _INTERACTIVE_COMMANDS = frozenset({
-    "admin", "token:refresh", "setup:upgrade",
+    "admin", "credential:refresh", "setup:upgrade",
     # Shortcuts for interactive commands
-    "to:ref", "se:up",
+    "cr:ref", "se:up",
+    # Legacy aliases, one cycle (ROADMAP.md). Dropping them here would silently
+    # break OAuth: without TTY forwarding the login flow cannot prompt.
+    "token:refresh", "to:ref",
 })
 
 # Commands that MAY want a TTY (e.g. config:set in paste mode, token:register
@@ -30,9 +33,11 @@ _INTERACTIVE_COMMANDS = frozenset({
 # inherits full pty semantics (signals, getpass, etc.).
 _MAYBE_INTERACTIVE_COMMANDS = frozenset({
     "config:set", "config:remove",
-    "token:register",
+    "credential:register",
     # Shortcuts
-    "co:se", "co:re", "to:reg",
+    "co:se", "co:re", "cr:reg",
+    # Legacy aliases, one cycle (ROADMAP.md) — `getpass` needs the TTY.
+    "token:register", "to:reg",
 })
 
 
@@ -106,6 +111,17 @@ def _register_framework_commands() -> None:
         ConfigSchemaCommand,
         ConfigSetCommand,
     )
+    from .credential import (
+        CredentialDeregisterCommand,
+        CredentialListCommand,
+        CredentialMarkErrorCommand,
+        CredentialRefreshCommand,
+        CredentialRegisterCommand,
+        CredentialResetCommand,
+        CredentialSetPriorityCommand,
+        CredentialUsageCommand,
+    )
+    from .credential_aliases import LEGACY_TOKEN_COMMANDS
     from .doctor import DoctorCommand
     from .install import InstallCommand
     from .module import (
@@ -125,16 +141,6 @@ def _register_framework_commands() -> None:
         ResumeCommand,
         SetupUpgradeCommand,
     )
-    from .token import (
-        TokenDeregisterCommand,
-        TokenListCommand,
-        TokenMarkErrorCommand,
-        TokenRefreshCommand,
-        TokenRegisterCommand,
-        TokenResetCommand,
-        TokenSetPriorityCommand,
-        TokenUsageCommand,
-    )
     from .upgrade import UpgradeCommand
 
     for cmd_cls in [
@@ -145,20 +151,23 @@ def _register_framework_commands() -> None:
         ConfigSetCommand, ConfigGetCommand, ConfigListCommand, ConfigRemoveCommand, ConfigSchemaCommand, ConfigResolveCommand,
         ConsumerCommand, SetupUpgradeCommand, ReplayCommand, PauseCommand, ResumeCommand, JobListCommand, E2eCommand,
         RunCommand,
-        TokenRegisterCommand, TokenRefreshCommand, TokenListCommand, TokenDeregisterCommand,
-        TokenMarkErrorCommand, TokenResetCommand, TokenSetPriorityCommand, TokenUsageCommand,
+        CredentialRegisterCommand, CredentialRefreshCommand, CredentialListCommand,
+        CredentialDeregisterCommand, CredentialMarkErrorCommand, CredentialResetCommand,
+        CredentialSetPriorityCommand, CredentialUsageCommand,
+        # Hidden `token:*` aliases, kept for one cycle (ROADMAP.md).
+        *LEGACY_TOKEN_COMMANDS,
     ]:
         register_command(cmd_cls())
 
 
 _GROUP_ORDER = [
-    "project", "setup", "module", "config", "token",
+    "project", "setup", "module", "config", "credential",
     "ingress", "job", "jira", "test",
 ]
 
 _GROUP_LABELS = {
     "project": "Project", "setup": "Setup", "module": "Modules",
-    "config": "Configuration", "token": "Tokens", "ingress": "Ingress",
+    "config": "Configuration", "credential": "Credentials", "ingress": "Ingress",
     "job": "Jobs", "jira": "Jira", "test": "Testing",
 }
 
@@ -189,6 +198,9 @@ def _format_help(commands: dict) -> str:
     """Format grouped help output for the CLI."""
     groups: dict[str, list[tuple[str, str]]] = {}
     for name, cmd in commands.items():
+        # Deprecated aliases still resolve, but must not clutter --help.
+        if getattr(cmd, "hidden", False):
+            continue
         group = _command_group(name)
         groups.setdefault(group, []).append((name, cmd.help))
 
@@ -202,12 +214,17 @@ def _format_help(commands: dict) -> str:
 
     ordered_keys = [k for k in _GROUP_ORDER if k in groups]
     extra_keys = sorted(k for k in groups if k not in _GROUP_ORDER)
+    # Column width follows the longest name rather than a fixed 20, so a command name
+    # that outgrows it (e.g. `credential:set-priority`) doesn't run into its description.
+    width = max(
+        (len(name) for cmds in groups.values() for name, _ in cmds), default=0,
+    ) + 2
     for group_key in ordered_keys + extra_keys:
         label = _GROUP_LABELS.get(group_key, group_key.capitalize())
         lines.append("")
         lines.append(f"{label}:")
         for name, help_text in sorted(groups[group_key]):
-            lines.append(f"  {name:<20s}{help_text}")
+            lines.append(f"  {name:<{width}s}{help_text}")
 
     lines.append("")
     lines.append("Run 'agento <command> --help' for details on a specific command.")
@@ -215,8 +232,9 @@ def _format_help(commands: dict) -> str:
     lines.append("Tip: Use shortcuts for faster typing (e.g. 'co:se' for 'config:set',")
     lines.append("'mo:li' for 'module:list'). Pattern: first 2 letters of each colon-segment")
     lines.append("(e.g. 'wo:bu' for 'workspace:build'). Hyphenated segments use each part's")
-    lines.append("initial ('to:sp' for 'token:set-priority'); some namespaces use short forms")
-    lines.append("('tl' for tool, 'av' for agent_view); colliding segments extend ('to:res').")
+    lines.append("initial ('cr:sp' for 'credential:set-priority'); some namespaces use short")
+    lines.append("forms ('cr' for credential, 'tl' for tool, 'av' for agent_view); colliding")
+    lines.append("segments extend ('cr:res' for 'credential:reset').")
     lines.append("")
     return "\n".join(lines)
 

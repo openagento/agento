@@ -27,6 +27,8 @@ from agento.modules.workspace_build.src.builder import (
 
 _BUILDER = "agento.modules.workspace_build.src.builder"
 
+pytestmark = pytest.mark.usefixtures("builtin_harnesses")
+
 
 def _make_agent_view(**overrides):
     defaults = dict(
@@ -1086,16 +1088,16 @@ class TestExecuteBuild:
         cursor.lastrowid = 42
         return conn, cursor
 
-    @patch("agento.framework.config_writer.get_config_writer")
+    @patch("agento.framework.harness.workspace_adapter_for")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.scoped_config.build_scoped_overrides")
     @patch("agento.framework.workspace.get_agent_view")
     def test_full_build_flow(self, mock_get_av, mock_overrides, mock_resolve, mock_get_writer, tmp_path):
         mock_get_av.return_value = _make_agent_view()
-        mock_overrides.return_value = {"agent_view/provider": ("claude", False)}
+        mock_overrides.return_value = {"agent_view/harness": ("claude", False)}
 
         from agento.framework.agent_view_runtime import AgentViewRuntime
-        mock_resolve.return_value = AgentViewRuntime(provider="claude")
+        mock_resolve.return_value = AgentViewRuntime(harness="claude", provider="anthropic")
         mock_writer = MagicMock()
         mock_get_writer.return_value = mock_writer
 
@@ -1115,7 +1117,7 @@ class TestExecuteBuild:
     @patch("agento.framework.workspace.get_agent_view")
     def test_skips_existing_build(self, mock_get_av, mock_overrides, tmp_path):
         mock_get_av.return_value = _make_agent_view()
-        mock_overrides.return_value = {"agent_view/provider": ("claude", False)}
+        mock_overrides.return_value = {"agent_view/harness": ("claude", False)}
         existing_dir = tmp_path / "existing_build"
         existing_dir.mkdir()
         existing = {"id": 99, "build_dir": str(existing_dir)}
@@ -1125,7 +1127,7 @@ class TestExecuteBuild:
         assert result.skipped is True
         assert result.build_id == 99
 
-    @patch("agento.framework.config_writer.get_config_writer")
+    @patch("agento.framework.harness.workspace_adapter_for")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.scoped_config.build_scoped_overrides")
     @patch("agento.framework.workspace.get_agent_view")
@@ -1136,9 +1138,9 @@ class TestExecuteBuild:
         """An ENV override of an agent_view field must change the build checksum
         so the freshness check rebuilds (it previously hashed DB-only values)."""
         mock_get_av.return_value = _make_agent_view()
-        mock_overrides.return_value = {"agent_view/provider": ("claude", False)}
+        mock_overrides.return_value = {"agent_view/harness": ("claude", False)}
         from agento.framework.agent_view_runtime import AgentViewRuntime
-        mock_resolve.return_value = AgentViewRuntime(provider="claude")
+        mock_resolve.return_value = AgentViewRuntime(harness="claude", provider="anthropic")
         mock_get_writer.return_value = MagicMock()
 
         with patch(f"{_BUILDER}.BUILD_DIR", str(tmp_path)):
@@ -1151,7 +1153,7 @@ class TestExecuteBuild:
 
         assert checksum_no_env != checksum_with_env
 
-    @patch("agento.framework.config_writer.get_config_writer")
+    @patch("agento.framework.harness.workspace_adapter_for")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.scoped_config.build_scoped_overrides")
     @patch("agento.framework.workspace.get_agent_view")
@@ -1161,9 +1163,9 @@ class TestExecuteBuild:
     ):
         """AGENTS.md set only via ENV (no DB row) is materialized into the build."""
         mock_get_av.return_value = _make_agent_view()
-        mock_overrides.return_value = {"agent_view/provider": ("claude", False)}
+        mock_overrides.return_value = {"agent_view/harness": ("claude", False)}
         from agento.framework.agent_view_runtime import AgentViewRuntime
-        mock_resolve.return_value = AgentViewRuntime(provider="claude")
+        mock_resolve.return_value = AgentViewRuntime(harness="claude", provider="anthropic")
         mock_get_writer.return_value = MagicMock()
         monkeypatch.setenv("CONFIG__AGENT_VIEW__INSTRUCTIONS__AGENTS_MD", "# from env")
 
@@ -1172,7 +1174,7 @@ class TestExecuteBuild:
 
         assert (Path(result.build_dir) / "AGENTS.md").read_text() == "# from env"
 
-    @patch("agento.framework.config_writer.get_config_writer")
+    @patch("agento.framework.harness.workspace_adapter_for")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.scoped_config.build_scoped_overrides")
     @patch("agento.framework.workspace.get_agent_view")
@@ -1181,9 +1183,9 @@ class TestExecuteBuild:
     ):
         """If DB says ready but build_dir was deleted manually, rebuild instead of lying."""
         mock_get_av.return_value = _make_agent_view()
-        mock_overrides.return_value = {"agent_view/provider": ("claude", False)}
+        mock_overrides.return_value = {"agent_view/harness": ("claude", False)}
         from agento.framework.agent_view_runtime import AgentViewRuntime
-        mock_resolve.return_value = AgentViewRuntime(provider="claude")
+        mock_resolve.return_value = AgentViewRuntime(harness="claude", provider="anthropic")
         mock_get_writer.return_value = MagicMock()
 
         missing_dir = tmp_path / "deleted_by_user"
@@ -1204,7 +1206,7 @@ class TestExecuteBuild:
         ]
         assert update_calls, "Expected stale build 99 to be marked failed"
 
-    @patch("agento.framework.config_writer.get_config_writer")
+    @patch("agento.framework.harness.workspace_adapter_for")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.scoped_config.build_scoped_overrides")
     @patch("agento.framework.workspace.get_agent_view")
@@ -1213,9 +1215,9 @@ class TestExecuteBuild:
     ):
         """force=True: rebuild even when checksum matches and prior dir is intact."""
         mock_get_av.return_value = _make_agent_view()
-        mock_overrides.return_value = {"agent_view/provider": ("claude", False)}
+        mock_overrides.return_value = {"agent_view/harness": ("claude", False)}
         from agento.framework.agent_view_runtime import AgentViewRuntime
-        mock_resolve.return_value = AgentViewRuntime(provider="claude")
+        mock_resolve.return_value = AgentViewRuntime(harness="claude", provider="anthropic")
         mock_get_writer.return_value = MagicMock()
 
         existing_dir = tmp_path / "prior_build"
@@ -1258,7 +1260,7 @@ class TestExecuteBuild:
             execute_build(conn, 1)
 
     @patch("agento.modules.workspace_build.src.builder.materialize_agent_credentials")
-    @patch("agento.framework.config_writer.get_config_writer")
+    @patch("agento.framework.harness.workspace_adapter_for")
     @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
     @patch("agento.framework.scoped_config.build_scoped_overrides")
     @patch("agento.framework.workspace.get_agent_view")
@@ -1272,12 +1274,12 @@ class TestExecuteBuild:
         tmp_path,
     ):
         from agento.framework.agent_view_runtime import AgentViewRuntime
-        from agento.modules.codex.src.config import CodexConfigWriter
+        from agento.modules.codex.src.config import CodexWorkspaceAdapter
 
         mock_get_av.return_value = _make_agent_view()
         mock_overrides.return_value = {"agent_view/provider": ("codex", False)}
-        mock_resolve.return_value = AgentViewRuntime(provider="codex")
-        mock_get_writer.return_value = CodexConfigWriter()
+        mock_resolve.return_value = AgentViewRuntime(harness="codex", provider="openai")
+        mock_get_writer.return_value = CodexWorkspaceAdapter()
         mock_materialize_credentials.return_value = None
 
         legacy_codex = tmp_path / ".codex"

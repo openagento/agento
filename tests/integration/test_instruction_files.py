@@ -123,18 +123,18 @@ class TestInstructionFilesFromScopedConfig:
         # Capture files from artifacts_dir DURING execution (before cleanup)
         captured_files = {}
 
-        def capturing_run(self_runner, prompt, *, model=None):
-            wd = Path(self_runner.working_dir)
+        def capturing_run(self_runner, request):
+            wd = Path(self_runner.context.working_dir)
             for name in ("AGENTS.md", "SOUL.md", "CLAUDE.md"):
                 fpath = wd / name
                 if fpath.exists():
                     captured_files[name] = fpath.read_text()
             return ClaudeResult(
                 raw_output="ok", input_tokens=100, output_tokens=50,
-                duration_ms=1000, subtype="success", agent_type="claude",
+                duration_ms=1000, session_id="success", harness="claude",
             )
 
-        with patch("agento.modules.claude.src.runner.TokenClaudeRunner.run", capturing_run), \
+        with patch("agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute", capturing_run), \
              patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path)), \
              patch("agento.framework.artifacts_dir.BUILD_DIR", str(tmp_path)), \
              patch("agento.modules.workspace_build.src.builder.BUILD_DIR", str(tmp_path)):
@@ -167,18 +167,18 @@ class TestInstructionFilesFromScopedConfig:
 
         captured_files = {}
 
-        def capturing_run(self_runner, prompt, *, model=None):
-            wd = Path(self_runner.working_dir)
+        def capturing_run(self_runner, request):
+            wd = Path(self_runner.context.working_dir)
             for name in ("AGENTS.md", "SOUL.md", "CLAUDE.md"):
                 fpath = wd / name
                 if fpath.exists():
                     captured_files[name] = fpath.read_text()
             return ClaudeResult(
                 raw_output="ok", input_tokens=100, output_tokens=50,
-                duration_ms=1000, subtype="success", agent_type="claude",
+                duration_ms=1000, session_id="success", harness="claude",
             )
 
-        with patch("agento.modules.claude.src.runner.TokenClaudeRunner.run", capturing_run), \
+        with patch("agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute", capturing_run), \
              patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path)), \
              patch("agento.framework.artifacts_dir.BUILD_DIR", str(tmp_path)), \
              patch("agento.modules.workspace_build.src.builder.BUILD_DIR", str(tmp_path)):
@@ -210,18 +210,18 @@ class TestInstructionFilesFromScopedConfig:
 
         captured_files = {}
 
-        def capturing_run(self_runner, prompt, *, model=None):
-            wd = Path(self_runner.working_dir)
+        def capturing_run(self_runner, request):
+            wd = Path(self_runner.context.working_dir)
             for name in ("AGENTS.md", "SOUL.md", "CLAUDE.md"):
                 fpath = wd / name
                 if fpath.exists():
                     captured_files[name] = fpath.read_text()
             return ClaudeResult(
                 raw_output="ok", input_tokens=100, output_tokens=50,
-                duration_ms=1000, subtype="success", agent_type="claude",
+                duration_ms=1000, session_id="success", harness="claude",
             )
 
-        with patch("agento.modules.claude.src.runner.TokenClaudeRunner.run", capturing_run), \
+        with patch("agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute", capturing_run), \
              patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path)), \
              patch("agento.framework.artifacts_dir.BUILD_DIR", str(tmp_path)), \
              patch("agento.modules.workspace_build.src.builder.BUILD_DIR", str(tmp_path)):

@@ -57,7 +57,7 @@ class TestTodoDispatch:
         # AI-10 comes first in JQL order (ORDER BY priority DESC, created ASC)
         assert row["reference_id"] == "AI-10"
         assert row["result_summary"] is not None
-        assert "subtype=" in row["result_summary"]
+        assert "session_id=" in row["result_summary"]
 
     @respx.mock
     def test_todo_dispatch_no_tasks_succeeds_with_summary(

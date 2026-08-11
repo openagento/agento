@@ -13,9 +13,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agento.framework.agent_manager.models import AgentProvider, Token, TokenStatus
+from agento.framework.agent_manager.models import CredentialRecord, CredentialStatus
 from agento.framework.events import WorkspaceBuildCheckEvent
-from agento.modules.claude.src.config import ClaudeConfigWriter
+from agento.modules.claude.src.config import ClaudeWorkspaceAdapter
+from tests.harness_fixtures import stub_workspace_adapters
+
+pytestmark = pytest.mark.usefixtures("builtin_harnesses")
 
 
 @dataclass
@@ -34,20 +37,20 @@ class _WS:
 class _Runtime:
     agent_view: _AV | None
     workspace: _WS | None
-    provider: str | None
+    harness: str | None
 
 
-def _claude_token(token_id: int, type_: str, label: str, credentials: dict) -> Token:
+def _claude_token(token_id: int, type_: str, label: str, credentials: dict) -> CredentialRecord:
     now = datetime(2026, 1, 1, 0, 0)
-    return Token(
+    return CredentialRecord(
         id=token_id,
-        agent_type=AgentProvider.CLAUDE,
+        scope="claude",
         type=type_,
         label=label,
         credentials=credentials,
         token_limit=0,
         enabled=True,
-        status=TokenStatus.OK,
+        status=CredentialStatus.OK,
         priority=0,
         error_msg=None,
         expires_at=None,
@@ -57,7 +60,7 @@ def _claude_token(token_id: int, type_: str, label: str, credentials: dict) -> T
     )
 
 
-def _claude_oauth_token(token_id: int, label: str, access_token: str, email: str) -> Token:
+def _claude_oauth_token(token_id: int, label: str, access_token: str, email: str) -> CredentialRecord:
     return _claude_token(token_id, "oauth", label, {
         "subscription_key": access_token,
         "refresh_token": f"refresh-{token_id}",
@@ -79,7 +82,7 @@ def _claude_oauth_token(token_id: int, label: str, access_token: str, email: str
 class TestMaterializeRunWorkspace:
     def test_returns_none_when_no_agent_view(self):
         from agento.framework.run_preparation import materialize_run_workspace
-        runtime = _Runtime(agent_view=None, workspace=None, provider="claude")
+        runtime = _Runtime(agent_view=None, workspace=None, harness="claude")
         em = MagicMock()
         home, working = materialize_run_workspace(runtime, run_id=1, em=em)
         assert home is None and working is None
@@ -90,7 +93,7 @@ class TestMaterializeRunWorkspace:
         runtime = _Runtime(
             agent_view=_AV(code="dev", id=7),
             workspace=_WS(code="acme", id=3),
-            provider=None,  # no provider → no copy, but freshness still dispatched
+            harness=None,  # no harness → no copy, but freshness still dispatched
         )
         em = MagicMock()
         with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "artifacts")), \
@@ -108,7 +111,7 @@ class TestMaterializeRunWorkspace:
         runtime = _Runtime(
             agent_view=_AV(code="dev", id=7),
             workspace=_WS(code="acme", id=3),
-            provider="claude",
+            harness="claude",
         )
 
         class _Boom(RuntimeError):
@@ -139,7 +142,7 @@ class TestMaterializeRunWorkspace:
         runtime = _Runtime(
             agent_view=_AV(code=av, id=7),
             workspace=_WS(code=ws, id=3),
-            provider=None,  # skip ConfigWriter injection
+            harness=None,  # skip ConfigWriter injection
         )
         em = MagicMock()
 
@@ -181,17 +184,14 @@ class TestMaterializeRunWorkspace:
         runtime = _Runtime(
             agent_view=_AV(code=av, id=7),
             workspace=_WS(code=ws, id=3),
-            provider="claude",
+            harness="claude",
         )
 
         with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "artifacts")), \
              patch("agento.framework.artifacts_dir.BUILD_DIR", str(build_root)), \
-             patch(
-                 "agento.framework.config_writer._CONFIG_WRITERS",
-                 {AgentProvider.CLAUDE: writer},
-             ):
+             stub_workspace_adapters(claude=writer):
             home, working = materialize_run_workspace(
-                runtime, run_id=99, em=MagicMock(), token=token,
+                runtime, run_id=99, em=MagicMock(), credential=token,
             )
 
         assert home == working == tmp_path / "artifacts" / ws / av / "99"
@@ -237,25 +237,22 @@ class TestMaterializeRunWorkspace:
             oauth_a, oauth_b, api_key, oauth_a, oauth_b,
             api_key, oauth_a, oauth_b, api_key, oauth_a,
         ]
-        writer = ClaudeConfigWriter()
+        writer = ClaudeWorkspaceAdapter()
         runtime = _Runtime(
             agent_view=_AV(code=av, id=7),
             workspace=_WS(code=ws, id=3),
-            provider="claude",
+            harness="claude",
         )
 
         with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "artifacts")), \
              patch("agento.framework.artifacts_dir.BUILD_DIR", str(build_root)), \
-             patch(
-                 "agento.framework.config_writer._CONFIG_WRITERS",
-                 {AgentProvider.CLAUDE: writer},
-             ):
+             stub_workspace_adapters(claude=writer):
             homes = [
                 materialize_run_workspace(
                     runtime,
                     run_id=i,
                     em=MagicMock(),
-                    token=token,
+                    credential=token,
                 )[0]
                 for i, token in enumerate(selected, start=1)
             ]

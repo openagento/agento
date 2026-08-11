@@ -41,21 +41,27 @@ Toolbox reads config at each MCP session:
 3. For each tool field: checks ENV → DB → config.json
 4. Passes resolved config to tool adapter
 
-## Agent-view runtime: provider / model / priority
+## Agent-view runtime: harness / provider / model / priority
 
-The per-job runtime profile (`agent_view/provider`, `agent_view/model`, `agent_view/scheduling/priority`) resolves through the same `ScopedConfigService`, so **ENV overrides apply**:
+The per-job runtime profile (`agent_view/harness`, `agent_view/provider`, `agent_view/model`, `agent_view/scheduling/priority`) resolves through the same `ScopedConfigService`, so **ENV overrides apply**:
 
 ```bash
-CONFIG__AGENT_VIEW__PROVIDER=codex
+CONFIG__AGENT_VIEW__HARNESS=codex      # the program driving the agent
+CONFIG__AGENT_VIEW__PROVIDER=openai    # the model/API vendor it talks to
 CONFIG__AGENT_VIEW__MODEL=gpt-5.4-mini
 CONFIG__AGENT_VIEW__SCHEDULING__PRIORITY=80
 ```
+
+Setting `PROVIDER` alone is a **pre-0.15** shape: back then that key held what is now the
+harness. It still works — a provider naming a registered harness is recognised as legacy
+and mapped to that harness plus its default provider — but set both going forward. See
+[harness-contract.md](../architecture/harness-contract.md#pre-015-compatibility).
 
 Precedence for the model specifically: an explicit `--model` flag on `agento run` / `agento e2e` / replay **wins over** ENV/DB config; with no flag, `CONFIG__AGENT_VIEW__MODEL` (ENV) beats the DB value, which beats `config.json`.
 
 ### Workspace build honors ENV too
 
-Workspace materialization (`.mcp.json`, `.codex/config.toml`, `.claude.json`, `AGENTS.md` / `SOUL.md`, `.ssh/`) is built from `ScopedConfigService.resolve_all()` — the **full effective config**, each path resolved ENV → DB → config.json. Its key set is the union of DB-override keys, `CONFIG__*` env keys, and every declared module config field — so provider-specific fields set only via ENV (`CONFIG__AGENT_VIEW__CODEX__APPROVAL_MODE`, `CONFIG__AGENT_VIEW__CLAUDE__PERSONALITY`, …) **and** `config.json`-only defaults (e.g. `agent_view/provider`) both participate. (Tool-field `config.json`-only defaults are excluded — they configure toolbox-side tools and never materialize into the build; tool overrides set via DB/ENV are still included.) The build's freshness checksum hashes that same resolved view, so changing any override or shipped default (then recreating the container, since `CONFIG__*` is read at process start) drifts the checksum and the next job-claim **rebuilds** the workspace. One resolver drives both the checksum and every materialized file — no separate DB-only path.
+Workspace materialization (`.mcp.json`, `.codex/config.toml`, `.claude.json`, `AGENTS.md` / `SOUL.md`, `.ssh/`) is built from `ScopedConfigService.resolve_all()` — the **full effective config**, each path resolved ENV → DB → config.json. Its key set is the union of DB-override keys, `CONFIG__*` env keys, and every declared module config field — so provider-specific fields set only via ENV (`CONFIG__AGENT_VIEW__CODEX__APPROVAL_MODE`, `CONFIG__AGENT_VIEW__CLAUDE__PERSONALITY`, …) **and** `config.json`-only defaults (e.g. `agent_view/harness`) both participate. (Tool-field `config.json`-only defaults are excluded — they configure toolbox-side tools and never materialize into the build; tool overrides set via DB/ENV are still included.) The build's freshness checksum hashes that same resolved view, so changing any override or shipped default (then recreating the container, since `CONFIG__*` is read at process start) drifts the checksum and the next job-claim **rebuilds** the workspace. One resolver drives both the checksum and every materialized file — no separate DB-only path.
 
 ## Scope Restrictions (`showIn*`)
 

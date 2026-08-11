@@ -7,17 +7,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .agent_manager.auth import AuthStrategy, clear_auth_strategies, register_auth_strategy
-from .agent_manager.models import AgentProvider
 from .channels import registry as channel_registry
 from .channels.base import Channel
-from .cli_invoker import CliInvoker, register_cli_invoker
-from .cli_invoker import clear as clear_cli_invokers
 from .commands import Command, register_command
 from .commands import clear as clear_commands
 from .config_resolver import load_db_overrides, read_config_defaults, resolve_module_config
-from .config_writer import ConfigWriter, register_config_writer
-from .config_writer import clear as clear_config_writers
 from .dependency_resolver import resolve_order, validate_dependencies
 from .event_manager import Observer, ObserverEntry, get_event_manager
 from .event_manager import clear as clear_event_manager
@@ -28,20 +22,24 @@ from .events import (
     ModuleReloadEvent,
     ModuleShutdownEvent,
 )
+from .harness import (
+    AgentHarnessAdapter,
+    DuplicateCredentialScopeError,
+    DuplicateHarnessError,
+    parse_harness_declarations,
+    register_harness,
+)
+from .harness import clear as clear_harnesses
 from .ingress_identity import clear_regex_identity_types, register_regex_identity_type
 from .job_models import AgentType
-from .module_loader import ModuleManifest, import_class, scan_modules
+from .module_discovery import scan_all_modules
+from .module_loader import ModuleManifest, import_class
 from .module_status import filter_enabled
 from .onboarding import clear as clear_onboardings
 from .onboarding import register_onboarding
 from .router import Router
 from .router_registry import clear as clear_routers
 from .router_registry import register_router
-from .runner import Runner
-from .runner_factory import clear as clear_runners
-from .runner_factory import register_runner as register_runner_factory
-from .transcript_reader import TranscriptReader, register_transcript_reader
-from .transcript_reader import clear as clear_transcript_readers
 from .workflows import clear as clear_workflows
 from .workflows import register_workflow
 from .workflows.base import Workflow
@@ -116,11 +114,7 @@ def bootstrap(
     """
     channel_registry.clear()
     clear_workflows()
-    clear_runners()
-    clear_config_writers()
-    clear_cli_invokers()
-    clear_auth_strategies()
-    clear_transcript_readers()
+    clear_harnesses()
     clear_commands()
     clear_onboardings()
     clear_routers()
@@ -129,7 +123,10 @@ def bootstrap(
     _MODULE_CONFIGS.clear()
     _MANIFESTS.clear()
 
-    all_scanned = scan_modules(core_dir) + scan_modules(user_dir)
+    # ONE discovery path shared with setup:upgrade and module:validate — it also covers
+    # PyPI extensions bind-mounted at /opt/agento-src/<ext>, which are under neither
+    # core_dir nor user_dir.
+    all_scanned = scan_all_modules(core_dir, user_dir)
     enabled = filter_enabled(all_scanned)
     validate_dependencies(enabled, all_scanned)
     manifests = resolve_order(enabled)
@@ -176,11 +173,7 @@ def bootstrap(
         # Register capabilities
         _load_channels(m)
         _load_workflows(m)
-        _load_runtimes(m)
-        _load_config_writers(m)
-        _load_cli_invokers(m)
-        _load_auth_strategies(m)
-        _load_transcript_readers(m)
+        _load_agent_harnesses(m)
         _load_commands(m)
         _load_onboarding(m)
         _load_routers(m)
@@ -267,99 +260,41 @@ def _load_workflows(m: ModuleManifest) -> None:
             logger.exception("Failed to load workflow %r from module %s", decl.get("type"), m.name)
 
 
-def _load_runtimes(m: ModuleManifest) -> None:
-    for decl in m.provides.get("runtimes", []):
+def _load_agent_harnesses(m: ModuleManifest) -> None:
+    """Register every ``agent_harnesses`` declaration from one module.
+
+    Replaces the five enum-keyed loaders (runtimes / config_writers / cli_invokers /
+    auth_strategies / transcript_readers). The descriptor is built from the declaration
+    itself, so the framework knows a harness's metadata without importing its code.
+    """
+    for decl in parse_harness_declarations(Path(m.path) / "di.json", m.name):
         try:
-            cls = import_class(m.path, decl["class"])
-            if not issubclass(cls, Runner):
+            cls = import_class(m.path, decl.class_path)
+            adapter = cls()
+            if not isinstance(adapter, AgentHarnessAdapter):
                 logger.error(
-                    "Runtime %r from module %s does not implement Runner protocol, skipping",
-                    decl.get("provider"), m.name,
+                    "Harness %r from module %s does not implement AgentHarnessAdapter, skipping",
+                    decl.descriptor.id, m.name,
                 )
                 continue
-
-            def _make_factory(runner_cls: type):
-                def factory(**kwargs: object):
-                    return runner_cls(**kwargs)
-                return factory
-
-            provider = AgentProvider(decl["provider"])
-            register_runner_factory(provider, _make_factory(cls))
-            logger.debug("Registered runtime %r from module %s", decl["provider"], m.name)
+            register_harness(decl.descriptor, adapter)
+            logger.debug("Registered harness %r from module %s", decl.descriptor.id, m.name)
+        except (DuplicateHarnessError, DuplicateCredentialScopeError):
+            # A collision is NOT survivable: swallowing it would silently make the
+            # first-registered harness win, and a duplicate credential scope would let
+            # one harness serve another's credential pool. `module:validate` catches
+            # this before setup:upgrade touches the DB; if it still reaches here, the
+            # deployment is misconfigured and must not come up half-wired.
+            logger.exception(
+                "Harness collision loading %r from module %s", decl.descriptor.id, m.name
+            )
+            raise
         except Exception:
-            logger.exception("Failed to load runtime %r from module %s", decl.get("provider"), m.name)
-
-
-def _load_config_writers(m: ModuleManifest) -> None:
-    for decl in m.provides.get("config_writers", []):
-        try:
-            cls = import_class(m.path, decl["class"])
-            instance = cls()
-            if not isinstance(instance, ConfigWriter):
-                logger.error(
-                    "ConfigWriter %r from module %s does not implement ConfigWriter protocol, skipping",
-                    decl.get("provider"), m.name,
-                )
-                continue
-            provider = AgentProvider(decl["provider"])
-            register_config_writer(provider, instance)
-            logger.debug("Registered config writer %r from module %s", decl["provider"], m.name)
-        except Exception:
-            logger.exception("Failed to load config writer %r from module %s", decl.get("provider"), m.name)
-
-
-def _load_transcript_readers(m: ModuleManifest) -> None:
-    for decl in m.provides.get("transcript_readers", []):
-        try:
-            cls = import_class(m.path, decl["class"])
-            instance = cls()
-            if not isinstance(instance, TranscriptReader):
-                logger.error(
-                    "TranscriptReader %r from module %s does not implement TranscriptReader protocol, skipping",
-                    decl.get("provider"), m.name,
-                )
-                continue
-            provider = AgentProvider(decl["provider"])
-            register_transcript_reader(provider, instance)
-            logger.debug("Registered transcript reader %r from module %s", decl["provider"], m.name)
-        except Exception:
-            logger.exception("Failed to load transcript reader %r from module %s", decl.get("provider"), m.name)
-
-
-def _load_cli_invokers(m: ModuleManifest) -> None:
-    for decl in m.provides.get("cli_invokers", []):
-        try:
-            cls = import_class(m.path, decl["class"])
-            instance = cls()
-            if not isinstance(instance, CliInvoker):
-                logger.error(
-                    "CliInvoker %r from module %s does not implement CliInvoker protocol, skipping",
-                    decl.get("provider"), m.name,
-                )
-                continue
-            provider = AgentProvider(decl["provider"])
-            register_cli_invoker(provider, instance)
-            logger.debug("Registered CLI invoker %r from module %s", decl["provider"], m.name)
-        except Exception:
-            logger.exception("Failed to load CLI invoker %r from module %s", decl.get("provider"), m.name)
-
-
-def _load_auth_strategies(m: ModuleManifest) -> None:
-    for decl in m.provides.get("auth_strategies", []):
-        try:
-            cls = import_class(m.path, decl["class"])
-            instance = cls()
-            if not isinstance(instance, AuthStrategy):
-                logger.error(
-                    "Auth strategy %r from module %s does not implement AuthStrategy protocol, skipping",
-                    decl.get("provider"), m.name,
-                )
-                continue
-            provider = AgentProvider(decl["provider"])
-            register_auth_strategy(provider, instance)
-            logger.debug("Registered auth strategy %r from module %s", decl["provider"], m.name)
-        except Exception:
-            logger.exception("Failed to load auth strategy %r from module %s", decl.get("provider"), m.name)
+            # Other failures (bad import, adapter blows up in __init__) stay per-module:
+            # one broken third-party module must not take the whole consumer down.
+            logger.exception(
+                "Failed to load harness %r from module %s", decl.descriptor.id, m.name
+            )
 
 
 def _load_commands(m: ModuleManifest) -> None:
