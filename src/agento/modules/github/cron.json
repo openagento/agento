@@ -1,0 +1,6 @@
+{
+  "jobs": [
+    {"name": "github_publish_changes", "schedule": "* * * * *", "command": "github:publish-changes"},
+    {"name": "github_publish_comments", "schedule": "0 */2 * * *", "command": "github:publish-comments"}
+  ]
+}

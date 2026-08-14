@@ -4,6 +4,88 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-08-14 — GitHub PR-review channel (`src/agento/modules/github/`)
+
+A port of the Bitbucket channel to GitHub: same two lanes, same zero-trust token boundary, no framework
+changes, no schema migrations. Details: [docs/modules/github.md](docs/modules/github.md).
+
+- **Standalone module, no shared "forge" abstraction with `bitbucket`.** The two providers' comment,
+  review and resolution models diverge materially (three comment surfaces vs one; GraphQL-only thread
+  resolution; an append-only review history instead of an event log; no server-side author filter), so a
+  common base class would be an abstraction over the parts that differ. Per CLAUDE.md principle 1, three
+  similar lines beat a premature abstraction. `bitbucket` is not touched.
+- **Bearer auth, no email.** GitHub authenticates with `Authorization: Bearer <PAT>`; unlike Bitbucket's
+  Basic `base64(email:token)` there is no account email in the auth path at all.
+- **Client-side author filter, `poll_top` applied after it.** `GET /repos/{o}/{r}/pulls` has no author
+  filter, so agent-authored PRs are selected in the toolbox and the cap counts *matching* PRs. Capping
+  before the filter would let a repo full of third-party PRs silently starve the agent's own.
+- **Three comment surfaces merged into one ordering** (issue comments, inline review comments, review
+  bodies). The watermark is therefore cross-surface: an agent reply on any surface silences the others.
+- **The watermark comparison is `>=`, not `>`.** GitHub timestamps are second-precision and nothing
+  orders a comment against a commit (or against a reply on another surface) inside one second, so a tie
+  cannot be broken — only given a direction. `>=` costs at most one unnecessary job, when the real order
+  was "feedback, then answer" and nothing had been published yet; later scans dedupe on the unchanged
+  idempotency key. `>` instead loses a real "answer, then follow-up" permanently and silently. Bitbucket
+  keeps `>` because its `created_on` carries microsecond precision, where the tie is not the ordinary
+  case.
+- **Thread resolution is GraphQL-only, and its failure means "unknown", not "unresolved".** REST exposes
+  neither thread ids nor resolved state. If the GraphQL call fails or its 100-thread/100-comment bound is
+  hit, that PR's comments lane is skipped for the poll. Degrading to "unresolved" would re-raise feedback
+  the agent already resolved, every poll, forever.
+- **`github_set_review` has no `none`.** GitHub cannot retract your own review; the API takes
+  `APPROVE | REQUEST_CHANGES | COMMENT`. `comment` was added in place of the dropped `none`.
+- **Rate limits: 403 *or* 429, and never retry earlier than instructed.** A 403 counts as a rate limit
+  only when it carries `retry-after` or `x-ratelimit-remaining: 0`. If the instructed wait exceeds the
+  15s cap the toolbox gives up the poll rather than shortening the wait — the cap exists because a hold
+  longer than the publisher's 60s HTTP timeout buys nothing, and an integration test asserts the two
+  numbers stay compatible across the language boundary.
+- **The changes lane uses each reviewer's current position, not "any CHANGES_REQUESTED ever".**
+  `GET /pulls/{n}/reviews` is a full history that keeps a superseded review forever, so the history is
+  folded per reviewer (ignoring `COMMENTED`/`PENDING`) and only reviewers currently at
+  `CHANGES_REQUESTED` count. Otherwise an approved PR would be re-queued indefinitely.
+- **Entries without a login are dropped at the toolbox.** GitHub returns `user: null` for deleted/ghost
+  accounts; such a comment must never become a `RequesterTrust.ACCOUNT` requester key.
+- **Truncation blocks publishing, it does not just get logged.** Every bounded scan records itself on the
+  PR record, and the publisher skips a lane whose decision depends on a truncated scan. The force-push
+  watermark reads the PR's **head commit** directly instead of paging its commit list — one request that
+  is always correct — and an absent/unfetchable/undated head commit is itself a truncation.
+- **The API host is fixed (`api.github.com`); GitHub Enterprise Server is out of scope.** A
+  caller-supplied API base on `/verify` would turn the toolbox — the only container holding secrets,
+  reachable from the agent's Docker network — into an SSRF probe against internal hosts.
+- **Scope enforcement is declarative, not prose.** `github_token`, `github_login` and `repo_allowlist`
+  set `showInDefault: false` / `showInWorkspace: false`, so `config:set` refuses them outside agent_view
+  scope (`framework/config_schema.py:is_scope_allowed`). The token therefore cannot reach DEFAULT, where
+  `bootstrap()` would decrypt it in the cron process. The remaining three paths are deliberately
+  unrestricted: `github_owner` may legitimately be deployment-wide, and `enabled`/`poll_top` are
+  operational switches.
+- **Two-sided ENV guard.** `showIn*` binds the DB write path only; `CONFIG__GITHUB__*` still outranks the
+  DB in `resolve_field`. `src/env_guard.py` and `toolbox/env-guard.js` therefore refuse the same three
+  keys on all four surfaces (publisher, REST handlers, MCP registration, onboarding completeness), and an
+  integration test asserts the two key lists cannot drift apart. A one-sided guard would be worthless:
+  the toolbox's own `config-loader.js` accepts the same override.
+
+**Two framework follow-ups this port deliberately did not make** (actionable by someone else):
+
+- **No per-field `toolbox_only` in the config resolver.** A field only the toolbox should ever resolve is
+  still resolved by `bootstrap()` from ENV (`framework/config_resolver.py:209`) for every enabled module,
+  before any module code — including this module's guard — can run; the only remedy available to a module
+  is to refuse to operate. **Owner sign-off 2026-08-13:** this port ships with that residual accepted,
+  because it is a misconfiguration path, not a deployment one — credentials are stored encrypted in
+  `core_config_data` at AGENT_VIEW scope (as `bitbucket` and `outlook` do), `load_db_overrides` reads
+  DEFAULT only, and nothing in this module asks for a `CONFIG__*` credential override. Setting one is the
+  same act that would leak `jira`'s, `outlook`'s or `bitbucket`'s credential today with no guard at all;
+  `github` is the only one of the four that detects it and refuses. See ROADMAP.
+- **N5-2, internal-caller auth.** `/sse` and `/mcp` take `agent_view_id` from the query string with no
+  caller authentication (`src/agento/toolbox/server.js:88,126`), and the module REST handlers take it
+  from the body — exactly as `jira`, `outlook` and `bitbucket` do. `bitbucket/module.json` already
+  declares the same eight capabilities behind the same door, so this module adds a credential and a host,
+  not a capability class. The real fix belongs in `server.js` — bind the view to an authenticated
+  caller/session (e.g. a job-scoped token in the MCP URL that `server.js` resolves `agent_view_id` from)
+  — applied **once for all four modules**; doing it inside `github/` alone would create a fourth pattern
+  and protect nobody else. **Owner sign-off 2026-08-13:** this port ships at parity. See ROADMAP.
+
+---
+
 ## 2026-08-04 — Refresh lease + quarantine provenance: one job at a time may rotate a single-use credential
 
 - **The bug.** On a 10-worker deployment (`AGENTO_CONSUMER_MAX_WORKERS=10`) the Claude OAuth

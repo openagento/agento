@@ -1,0 +1,29 @@
+{
+  "enabled": {"type": "boolean", "label": "Enable GitHub channel"},
+  "github_owner": {"type": "string", "label": "GitHub owner (user or organization) that owns the watched repos"},
+  "github_login": {
+    "type": "string",
+    "label": "Agent's GitHub login (pull request author match)",
+    "description": "Agent_view scope only — a shared login would fan the same PR out across views.",
+    "showInDefault": false,
+    "showInWorkspace": false,
+    "showInAgentView": true
+  },
+  "github_token": {
+    "type": "obscure",
+    "label": "GitHub personal access token (encrypted at rest; toolbox-only)",
+    "description": "Agent_view scope only. bootstrap() resolves DEFAULT-scope obscure config in the cron process and would decrypt the token there.",
+    "showInDefault": false,
+    "showInWorkspace": false,
+    "showInAgentView": true
+  },
+  "repo_allowlist": {
+    "type": "string",
+    "label": "Watched repo names (comma-separated; empty blocks all)",
+    "description": "Agent_view scope only — see github_login.",
+    "showInDefault": false,
+    "showInWorkspace": false,
+    "showInAgentView": true
+  },
+  "poll_top": {"type": "integer", "label": "Max open agent-authored PRs handled per repo per poll (<=100)"}
+}

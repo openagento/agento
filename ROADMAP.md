@@ -1138,6 +1138,20 @@ No framework files touched. No PR to the main repo. Just a module directory in `
   [docs/security/toolbox-only-secret-boundary.md](docs/security/toolbox-only-secret-boundary.md).
   Surfaced by the Outlook sender-routing review (2026-07-24) as pre-existing and out of scope for
   that feature.
+- **Per-field `toolbox_only` exclusion in the config resolver** — a field only the toolbox should ever
+  resolve is still resolved by `bootstrap()` from ENV (`framework/config_resolver.py:209`) for every
+  enabled module, *before* any module code can run, so the only remedy available to a module is to
+  refuse to operate (as `github`'s two-sided `env_guard` does on all four of its surfaces). Closing it
+  properly is a framework change: let `system.json` mark a field toolbox-only and have `resolve_field`
+  skip it outside the toolbox. Surfaced by the GitHub PR-review port (2026-08-14) as pre-existing and
+  accepted as a residual for that port (owner sign-off 2026-08-13).
+- **Internal-caller auth for the toolbox (N5-2)** — `/sse` and `/mcp` take `agent_view_id` from the
+  query string with no caller authentication (`src/agento/toolbox/server.js:88,126`), and the `jira`,
+  `outlook`, `bitbucket` and `github` REST handlers take it from the request body. The fix is to bind
+  the view to an authenticated caller/session in `server.js` (e.g. a job-scoped token in the MCP URL
+  that `server.js` resolves `agent_view_id` from), applied **once for all four modules** — a
+  module-local fix would create a fourth pattern and protect nobody else. Re-confirmed by the GitHub
+  PR-review port (2026-08-14), which ships at parity with the other three (owner sign-off 2026-08-13).
 
 ---
 

@@ -1,6 +1,6 @@
 # Agento — AI Agent Framework
 
-Automates Jira tasks using AI agents (Claude Code, OpenAI Codex) in Docker containers with Magento-inspired modular architecture.
+
 
 ## Core Principles
 
@@ -41,101 +41,16 @@ Automates Jira tasks using AI agents (Claude Code, OpenAI Codex) in Docker conta
 - **Upgrade:** `agento upgrade` upgrades the CLI package, bumps `agento-core` in the project's `pyproject.toml`, runs `uv sync`, refreshes `.agento/docker/` build context + `docker-compose.yml`, and rebuilds local Docker images. Use `agento upgrade --version X.Y.Z` to pin a specific version, `--no-build` to skip image rebuild (CI), `--no-restart` to skip `up -d`.
 - **Extensions** — three sources, all gated through `app/etc/modules.json`: (1) PyPI marketplace via `uv add <pkg>` then `agento module:enable <pkg>` — auto-resolves via `.venv/site-packages/<pkg>/`, regenerates compose with the new mount, restarts containers; (2) local under `app/code/<vendor>/<name>/module.json` — already mounted via `app/code:ro`; (3) drop a vendored copy into `app/code/`. Local always shadows PyPI of the same name.
 
-## Essential Commands
+## Commands
+
+Run `uv run bin/agento` with no arguments for the full grouped command list, and `agento <command> --help` for a single command's flags. Written reference (per-command docs, flags, semantics): [docs/cli/README.md](docs/cli/README.md).
+
+The test entry points are not part of the CLI (container restart/rebuild commands are under **Code via volume mounts** above):
 
 ```bash
-# Tests (all: JSON validation + Python + JS)
-bin/test
-
-# Or individually:
-uv run pytest -q                                       # Python (~756 tests, from repo root)
-cd src/agento/toolbox && npm test && cd -              # JS (vitest, from repo root)
-
-# Project lifecycle
-agento doctor                                          # Check prerequisites
-agento install                                         # Interactive project installation wizard (reinstalls if already installed)
-agento upgrade [--version X.Y.Z]                       # Upgrade CLI + Docker images (latest or specific version)
-agento up                                              # Start Docker Compose
-agento down                                            # Stop containers
-agento logs [service]                                  # View container logs
-agento admin                                           # Launch admin TUI (runs inside Docker)
-agento run <agent_view_code>                           # Interactive agent CLI in sandbox (TTY) — the command comes from the harness's registered CommandBuilder (framework stays agent-agnostic)
-agento run <agent_view_code> "<prompt>"                 # Headless one-shot with the given prompt; propagates agent exit code
-
-# Restart after code changes (dev compose)
-cd docker && docker compose -f docker-compose.dev.yml restart cron toolbox
-
-# Full rebuild (dependency changes only)
-cd docker && docker compose -f docker-compose.dev.yml build cron toolbox && docker compose -f docker-compose.dev.yml up -d --force-recreate
-
-# Setup (after module changes or deploy)
-agento setup:upgrade                                   # Apply migrations, data patches, install crontab, run onboarding
-agento setup:upgrade --dry-run                         # Preview pending work
-agento setup:upgrade --skip-onboarding                 # Skip interactive module onboarding (for CI/CD)
-
-# Modules
-agento module:add <name> --tool mysql:<tool_name>:<description>
-agento module:list                                     # List all modules with enabled/disabled status
-agento module:enable <name>                            # Enable a module (stored in app/etc/modules.json)
-agento module:disable <name>                           # Disable a module (skips loading, cron, config, CLI)
-agento module:validate [name]                          # Validate module structure and sequence deps
-
-# Jobs
-agento job:list [--status DEAD] [--source S] [--agent-view C] [--limit N]  # List recent jobs; surface failed/dead + their error
-agento job:pause <job_id>                              # Stop a running job, keep session
-agento job:resume <job_id>                             # Re-queue paused job; auto-resumes via session_id
-
-# Config
-agento config:set <path> <value> [--scope=<scope>] [--scope-id=<id>]
-agento config:get <path>                               # exact path: per-scope values
-agento config:get <module>                             # module prefix: tree view by scope
-agento config:list [prefix]
-agento config:remove <path> [--scope=<scope>] [--scope-id=<id>]
-agento config:schema [module] [--json]                 # Show config field definitions from system.json
-agento config:resolve <module> [--scope=S] [--scope-id=N] [--json]  # Resolve effective config values with source info
-
-# Credentials (LRU pool per scope — no sticky primary). `token:*` still works as a
-# deprecated hidden alias for one release; see docs/cli/credentials.md.
-agento credential:list                                 # status (+ auto/operator provenance), last_used, expires_at, refresh-lease holder per row
-# A row marked 🔒 is mid-refresh in a live run — do NOT credential:reset/credential:refresh it.
-# Register credentials. --with-api-key / --with-access-token are boolean switches; the
-# secret is read from stdin (piped) or via interactive getpass prompt (TTY).
-# Inline values like `--with-api-key sk-XXX` are REJECTED — they leak through
-# shell history, ps, and CI logs. See docs/cli/credentials.md for details.
-agento credential:register <scope> <label>                                  # interactive OAuth
-agento credential:register codex  <label> --with-api-key                    # TTY: prompts (hidden)
-echo "$OPENAI_API_KEY"      | agento credential:register codex  <label> --with-api-key
-echo "$CODEX_ACCESS_TOKEN"  | agento credential:register codex  <label> --with-access-token
-echo "$ANTHROPIC_API_KEY"   | agento credential:register claude <label> --with-api-key
-agento credential:register codex  <label> --with-api-key < /path/to/key.txt # file redirect
-agento credential:set-priority <credential_id> <priority>                   # lower priority wins
-agento credential:refresh <id>                         # re-auth an existing credential
-agento credential:mark-error <id> "<msg>"              # quarantine a credential (status=error)
-agento credential:reset <id>                           # clear error status without re-auth
-
-# Ingress identity binding (route inbound requests to agent_views)
-agento ingress:bind <type> <value> <agent_view_code> [--priority N]   # e.g. ingress:bind jira jira developer
-# Regex types (e.g. outlook_sender for a shared mailbox): <value> is a case-insensitive fullmatch
-# regex; --priority selects the winner (higher wins; ties between different views are ambiguous):
-agento ingress:bind outlook_sender '[^@]+@company\.com' sales --priority 10
-agento ingress:list [--type <type>] [--json]
-agento ingress:unbind <type> <value>
-
-# Tools (OPT-IN: disabled by default; enabled only when is_enabled resolves to '1' — toolbox isToolEnabled)
-agento tool:list [--agent-view <code>]                 # List tools with enabled/disabled status
-agento tool:enable <name> [--agent-view <code>]        # Enable a tool (also: --scope/--scope-id)
-agento tool:disable <name> [--agent-view <code>]       # Disable a tool (also: --scope/--scope-id)
-
-# Skills (OPT-IN: disabled by default; enabled only when is_enabled resolves to '1')
-agento skill:sync                                      # Scan skills from disk → sync to DB registry
-agento skill:list [--agent-view <code>]                # List skills with enabled/disabled status
-agento skill:enable <name> [--agent-view <code>]       # Enable a skill (also: --scope/--scope-id)
-agento skill:disable <name> [--agent-view <code>]      # Disable a skill (also: --scope/--scope-id)
-
-# Workspace builds (materialized config per agent_view)
-agento workspace:build --agent-view <code> [--force]   # Build workspace for one agent_view (--force rebuilds even if unchanged)
-agento workspace:build --all [--force]                 # Build for all active agent_views
-agento workspace:build-status [--agent-view <code>]    # Show build status
+bin/test                                                # all: JSON validation + Python + JS
+uv run pytest -q                                        # Python only (from repo root)
+cd src/agento/toolbox && npm test && cd -               # JS only (vitest, from repo root)
 ```
 
 ## Documentation
@@ -148,6 +63,10 @@ Full developer documentation in [docs/](docs/):
 - [Config System](docs/config/) — 3-level fallback, encryption, ENV vars
 - [Tool Adapters](docs/tools/) — built-in + creating custom adapters
 - [Architecture](docs/architecture/) — containers, zero-trust, job queue
+
+## Git
+
+Working with git in this repo — commit message format, PR rules, CI-failure escalation — is described in [GIT-WORKFLOW.md](GIT-WORKFLOW.md). Follow it for every commit and PR.
 
 ## Strategic Decisions
 

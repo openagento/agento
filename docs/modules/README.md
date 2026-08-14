@@ -65,3 +65,4 @@ bin/agento config:set my_system/tools/mysql_my_prod/pass
 
 - [Outlook / Microsoft 365 email channel](outlook.md) — DMARC-gated, allow-listed inbound email channel
 - [Bitbucket Cloud PR-review channel](bitbucket.md) — watches an agent's open PRs and queues review work
+- [GitHub PR-review channel](github.md) — watches an agent's open GitHub PRs and queues review work

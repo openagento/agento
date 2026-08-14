@@ -22,6 +22,7 @@ import { register as registerBitbucket } from '../../modules/bitbucket/toolbox/b
 import { register as registerBrowser } from '../../modules/core/toolbox/browser.js';
 import { register as registerEmail } from '../../modules/core/toolbox/email.js';
 import { register as registerSchedule } from '../../modules/core/toolbox/schedule.js';
+import { register as registerGitHub } from '../../modules/github/toolbox/github.js';
 import { register as registerJira } from '../../modules/jira/toolbox/jira.js';
 import { register as registerOutlook } from '../../modules/outlook/toolbox/outlook.js';
 
@@ -31,6 +32,7 @@ import { register as registerOutlook } from '../../modules/outlook/toolbox/outlo
 const REGISTRARS = {
   bitbucket: { 'bitbucket.js': registerBitbucket },
   core: { 'browser.js': registerBrowser, 'email.js': registerEmail, 'schedule.js': registerSchedule },
+  github: { 'github.js': registerGitHub },
   jira: { 'jira.js': registerJira },
   outlook: { 'outlook.js': registerOutlook },
 };
@@ -41,6 +43,7 @@ const REGISTRARS = {
 // 'api.js' would auto-exempt every future module's api.js, including a re-exported registrar.
 const ROUTE_ONLY_FILES = new Set([
   'bitbucket/api.js',
+  'github/api.js',
   'jira/api.js',
   'outlook/api.js',
 ]);
@@ -52,6 +55,9 @@ const SUPPORT_FILES = new Set([
   'bitbucket/bitbucket-auth.js',
   'core/converters.js',
   'core/email-transport.js',
+  'github/api-handlers.js',
+  'github/env-guard.js',
+  'github/github-auth.js',
   'jira/api-handlers.js',
   'jira/jira-proxy.js',
   'outlook/api-handlers.js',

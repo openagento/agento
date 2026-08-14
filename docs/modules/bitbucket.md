@@ -172,8 +172,10 @@ key (git) are different credentials.
   resolves only the non-secret fields via per-path reads, never the token path. The toolbox is the only
   place that resolves+decrypts it (and onboarding verifies it with body creds, transiently). The **agent**
   never receives it in any case.
-- **Authorization boundary = the toolbox.** `enabled`, workspace, `account_uuid` and `repo_allowlist`
-  are resolved from **scoped config** and enforced on **every** REST + MCP call; caller/body args may
+- **Authorization boundary = the toolbox.** Workspace, `account_uuid` and `repo_allowlist` are resolved
+  from **scoped config** and enforced on **every** REST + MCP call; `bitbucket/enabled` gates the
+  publishers and the REST poll, while the agent's MCP surface is gated per tool by `is_enabled` —
+  turning the channel off does not retract a tool the operator enabled. Caller/body args may
   only *narrow* a request, never authorize it. The **workspace is never a tool argument** — every MCP
   tool targets the configured `bitbucket_workspace`, so a caller cannot redirect a call to another
   workspace (an injected `workspace` arg is ignored). Every read/write is bounded to the resolved

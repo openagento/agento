@@ -1,0 +1,12 @@
+{
+  "config_class": "src.config.GitHubConfig",
+  "channels": [
+    {"name": "github-comments", "class": "src.channel.GitHubCommentsChannel"},
+    {"name": "github-changes", "class": "src.channel.GitHubChangesChannel"}
+  ],
+  "commands": [
+    {"name": "github:publish-comments", "class": "src.commands.publish_comments.GitHubPublishCommentsCommand"},
+    {"name": "github:publish-changes", "class": "src.commands.publish_changes.GitHubPublishChangesCommand"}
+  ],
+  "onboarding": "src.onboarding.GitHubOnboarding"
+}

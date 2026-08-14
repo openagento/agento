@@ -114,7 +114,10 @@ whatever the base image/CLI provides (often wrong) — i.e. behaviour is unchang
 **Linking rule:** Bitbucket (and GitHub) link a commit to an account *only* when the commit author email
 matches a **verified** email on that account — set `git_author_email` accordingly. For Bitbucket views,
 `bitbucket` onboarding seeds both fields automatically from the verified account (see
-[bitbucket.md](../modules/bitbucket.md)); override anytime with `config:set`.
+[bitbucket.md](../modules/bitbucket.md)); override anytime with `config:set`. For GitHub views, `github`
+onboarding seeds them from the verified account too, defaulting the email to
+`<id>+<login>@users.noreply.github.com` — the `users.noreply` form **always** links, so no separately
+verified address is needed (see [github.md](../modules/github.md)).
 
 ## How It Reaches the Agent Process
 

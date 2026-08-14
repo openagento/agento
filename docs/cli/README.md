@@ -70,6 +70,8 @@
 | `publish <kind>` | Publish a job (jira-cron, jira-todo, jira-mention) |
 | `bitbucket:publish-comments [--agent-view C] [--top N]` | Sweep open PRs for unanswered reviewer feedback ([details](../modules/bitbucket.md)) |
 | `bitbucket:publish-changes [--agent-view C] [--top N]` | Detect reviewer "changes requested" on open PRs (fast lane) ([details](../modules/bitbucket.md)) |
+| `github:publish-comments [--agent-view C] [--top N]` | Sweep open PRs for unanswered reviewer feedback ([details](../modules/github.md)) |
+| `github:publish-changes [--agent-view C] [--top N]` | Detect an outstanding reviewer "changes requested" on open PRs (fast lane) ([details](../modules/github.md)) |
 | `exec:todo [key]` | Execute next TODO task |
 | `replay <job_id>` | Replay a completed job |
 | `e2e` | Run end-to-end tests |
