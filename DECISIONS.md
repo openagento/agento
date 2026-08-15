@@ -16,6 +16,34 @@ changes, no schema migrations. Details: [docs/modules/github.md](docs/modules/gi
   similar lines beat a premature abstraction. `bitbucket` is not touched.
 - **Bearer auth, no email.** GitHub authenticates with `Authorization: Bearer <PAT>`; unlike Bitbucket's
   Basic `base64(email:token)` there is no account email in the auth path at all.
+- **A failed call reports GitHub's `message`, not the bare status** (2026-08-15, reversing this module's
+  original drain-and-discard). The first live run proved the cost of hiding it: `github_create_pr` was
+  refused because the PAT could not write, the agent was told only `create failed: HTTP 404`, and it
+  concluded — reasonably and wrongly — that the repo was off the allow-list, because "no such repo",
+  "your token may read but not write" and "the org has not approved this token" are the SAME 404 with
+  different messages. The boundary is unchanged, only narrowed to what it was protecting: `describeHttpError`
+  reads `message` + up to three `errors[]` `resource/field/code` triples and NOTHING else (a non-JSON
+  body is an error page — a rate-limit or proxy HTML — and is dropped), caps the text at 300 chars, and
+  redacts the configured token from it first, so relaying the provider's words cannot re-open the
+  credential boundary that drain-and-discard held structurally. Redaction ignores secrets under 8 chars:
+  a one-character "token" is a substring of ordinary words, and rewriting them destroys the diagnostic.
+  `bitbucket` keeps the old behaviour — the same change there would alter a shipped channel's error
+  contract and belongs to its own change, not to this port.
+- **The `repo` ARGUMENT is normalized; the `repo_allowlist` is not** (2026-08-15, reversing "both
+  spellings are DIAGNOSED, never accepted" — GitHub *and* Bitbucket, on the same live-run evidence). The
+  refusal was one half of the same incident: the agent wrote `repo: "openagento/agento"`, was told only
+  that it was "not allowed", rewrote it, and read the resulting 404 as proof that the allow-list was
+  wrong. Two changes, both on the tool side. (1) The format rule now lives in the **argument's own
+  schema description** ("Bare repository name WITHOUT the owner prefix, e.g. `agento` not
+  `openagento/agento`"), because `github_create_pr`'s prose already said "the owner is fixed by
+  configuration" and that is a sentence about policy, not about format — a model that has used `gh`
+  writes `owner/repo` regardless. (2) A prefix that **equals** the configured owner/workspace is
+  stripped and the call proceeds; any other prefix is refused *by name* (`the owner is fixed to "acme"`).
+  This widens nothing: the request URL is built from the configured owner either way, so normalizing the
+  argument cannot redirect a call, and what remains after the strip must still be an **exact** allow-list
+  entry — normalizing *config* entries is the widening that stays forbidden, and an owner-prefixed
+  `repo_allowlist` is still only diagnosed in the error text. Bitbucket's `source_repository` is
+  untouched: `workspace/repo` is its documented form, not a mistake to absorb.
 - **Client-side author filter, `poll_top` applied after it.** `GET /repos/{o}/{r}/pulls` has no author
   filter, so agent-authored PRs are selected in the toolbox and the cap counts *matching* PRs. Capping
   before the filter would let a repo full of third-party PRs silently starve the agent's own.

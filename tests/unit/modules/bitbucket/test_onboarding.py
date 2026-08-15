@@ -3,8 +3,14 @@ from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agento.framework.config_resolver import path_to_env_key
-from agento.modules.bitbucket.src.onboarding import BitbucketOnboarding, _evaluate_completeness
+from agento.modules.bitbucket.src.onboarding import (
+    BitbucketOnboarding,
+    _evaluate_completeness,
+    _normalize_repo_entries,
+)
 
 _OB = "agento.modules.bitbucket.src.onboarding"
 
@@ -279,3 +285,56 @@ def test_run_no_active_views_saves_nothing():
     assert calls["set"] == []
     assert calls["commit"] == 0
     client.verify.assert_not_called()
+
+
+# --- repo allow-list normalization ------------------------------------------------------------------
+# The allow-list is matched EXACTLY against a tool's `repo` argument and the URL is built as
+# repositories/{workspace}/{repo}, so a "workspace/repo" entry can only produce a confusing miss or a
+# 404. The normalization lives here, at the input, never in the runtime allow-list check.
+
+def test_normalize_repo_entries_trims_dedupes_and_keeps_order():
+    assert _normalize_repo_entries(" api , web ,api, ", "acme") == ("api,web", None)
+
+
+def test_normalize_repo_entries_strips_the_matching_workspace_prefix():
+    # Same repository, written the other way — accepted and rewritten to the bare form.
+    assert _normalize_repo_entries("acme/api,web", "acme") == ("api,web", None)
+    assert _normalize_repo_entries("ACME/api", "acme") == ("api", None)
+
+
+def test_normalize_repo_entries_refuses_a_foreign_workspace_prefix():
+    # The workspace is fixed by config; an entry cannot widen it here.
+    normalized, error = _normalize_repo_entries("other/api", "acme")
+    assert normalized == ""
+    assert "other/api" in error and "bare repo slug" in error
+
+
+@pytest.mark.parametrize("raw", ["acme/", "acme/api/extra", " , "])
+def test_normalize_repo_entries_refuses_malformed_input(raw):
+    normalized, error = _normalize_repo_entries(raw, "acme")
+    assert normalized == "" and error
+
+
+def test_run_saves_the_normalized_allow_list():
+    calls, _ = _drive_run(
+        verify_result={"ok": True, "account_uuid": "{a}", "username": "agent"},
+        views=[SimpleNamespace(id=1, code="dev", label="Dev")],
+        inputs=["acme", "e@x.com", "acme/api, web"],
+        token="tok",
+        selects=[],
+    )
+    saved = {path: value for path, value, *_ in calls["set"]}
+    assert saved["bitbucket/repo_allowlist"] == "api,web"
+
+
+def test_run_re_prompts_on_a_bad_allow_list_without_verifying():
+    calls, client = _drive_run(
+        verify_result={"ok": True, "account_uuid": "{a}", "username": "agent"},
+        views=[SimpleNamespace(id=1, code="dev", label="Dev")],
+        inputs=["acme", "e@x.com", "other/api"],
+        token="tok",
+        selects=[1],  # Abort at the retry prompt
+    )
+    # A bad repo list is caught BEFORE the credentials leave the process.
+    client.verify.assert_not_called()
+    assert calls["set"] == [] and calls["commit"] == 0

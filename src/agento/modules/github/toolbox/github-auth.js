@@ -42,6 +42,55 @@ export function linkNext(linkHeader) {
   return typeof linkHeader === 'string' && /(^|,)\s*<[^>]+>\s*;\s*rel="next"/.test(linkHeader);
 }
 
+// The status alone cannot tell an agent what to do next: GitHub answers "the repo does not exist",
+// "your token may read but not write" and "the org has not approved this token" with the SAME 404, and
+// its `message` is the only thing that separates them. So every failed call reports GitHub's own
+// message — the boundary already drawn for GraphQL below ("only `message` fields, never the request,
+// which carries the token"), applied to REST.
+//
+// Only named fields are read, never the raw body: a non-JSON body is an error PAGE (a rate-limit or
+// proxy HTML page), which says nothing about this call and can be arbitrarily large. GitHub echoes
+// neither the Authorization header nor request values in these fields — `errors[]` carries
+// resource/field/code, not the value that failed validation.
+export async function describeHttpError(res, { redact = [] } = {}) {
+  let body = '';
+  try {
+    body = await res.text();
+  } catch {
+    body = ''; // already consumed, or the connection dropped — the status still stands on its own
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    parsed = null;
+  }
+  const parts = [];
+  if (parsed && typeof parsed.message === 'string') parts.push(parsed.message);
+  const errors = parsed && Array.isArray(parsed.errors) ? parsed.errors.slice(0, 3) : [];
+  for (const e of errors) {
+    const one = [e && e.resource, e && e.field, e && e.code, e && e.message]
+      .filter((s) => typeof s === 'string' && s)
+      .join(' ');
+    if (one) parts.push(one);
+  }
+  let detail = parts.join('; ').replace(/\s+/g, ' ').trim();
+  // Redact BEFORE truncating: a secret cut in half by the length cap is still half a secret. The agent
+  // must never receive the token even if GitHub echoes it back — the drain-and-discard rule this
+  // replaced made that structurally impossible, so the replacement has to carry the guarantee itself.
+  // A secret shorter than this is not a credential — it is a substring of ordinary words, and
+  // redacting it would rewrite GitHub's message into nonsense ("Bad creden[redacted]ials" for a
+  // one-character token). The shortest real GitHub credential is far longer: `ghp_` alone is 4.
+  const MIN_SECRET_LEN = 8;
+  for (const secret of redact) {
+    if (typeof secret === 'string' && secret.length >= MIN_SECRET_LEN) {
+      detail = detail.split(secret).join('[redacted]');
+    }
+  }
+  detail = detail.slice(0, 300);
+  return new Error(detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status}`);
+}
+
 // `deps` lets tests inject a fake fetch + a no-op sleep (so retry tests don't actually wait).
 export function createGitHubAuth(cfg = {}, deps = {}) {
   const owner = cfg.github_owner || null;
@@ -168,8 +217,8 @@ export function createGitHubAuth(cfg = {}, deps = {}) {
       body: JSON.stringify({ query, variables }),
     });
     if (!res.ok) {
-      await res.text().catch(() => '');
-      throw new Error(`GraphQL HTTP ${res.status}`);
+      const e = await describeError(res);
+      throw new Error(`GraphQL ${e.message}`);
     }
     const data = await res.json();
     if (Array.isArray(data.errors) && data.errors.length > 0) {
@@ -178,9 +227,16 @@ export function createGitHubAuth(cfg = {}, deps = {}) {
     return data.data;
   }
 
+  // Every caller describes a failed response through the auth object, never the bare helper: that is
+  // what binds the configured token to the redaction list without each call site remembering to.
+  async function describeError(res) {
+    return describeHttpError(res, { redact: [token] });
+  }
+
   return {
     isConfigured,
     ghFetch,
     ghGraphql,
+    describeError,
   };
 }

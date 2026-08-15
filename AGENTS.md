@@ -1,5 +1,6 @@
 # Agento — AI Agent Framework
 
+Use ASD-STE100 Simplified Technical English like words for communitaction.
 
 
 ## Core Principles

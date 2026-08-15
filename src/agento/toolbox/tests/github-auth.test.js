@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createGitHubAuth, linkNext } from '../../modules/github/toolbox/github-auth.js';
+import { createGitHubAuth, describeHttpError, linkNext } from '../../modules/github/toolbox/github-auth.js';
 
 const CFG = { github_owner: 'acme', github_token: 'ghp_secret', github_login: 'agent-bot' };
 const okRes = (body = {}, headers = {}) => ({
@@ -152,6 +152,52 @@ describe('createGitHubAuth', () => {
   it('never echoes the token in an error message', async () => {
     const fetch = vi.fn(async () => { throw new Error('network down'); });
     await expect(createGitHubAuth(CFG, { fetch }).ghFetch(['user'])).rejects.not.toThrow(/ghp_secret/);
+  });
+});
+
+describe('describeHttpError', () => {
+  const failed = (status, body) => ({ ok: false, status, text: async () => body });
+
+  it("carries GitHub's message — the only thing that separates two identical 404s", async () => {
+    // The real incident: POST /pulls answered 404 because the PAT could not write, which is
+    // indistinguishable from "no such repo" until you read the message.
+    const e = await describeHttpError(failed(404, JSON.stringify({ message: 'Not Found' })));
+    expect(e.message).toBe('HTTP 404: Not Found');
+  });
+
+  it('appends the per-field errors[] entries that explain a 422', async () => {
+    const e = await describeHttpError(failed(422, JSON.stringify({
+      message: 'Validation Failed',
+      errors: [{ resource: 'PullRequest', field: 'head', code: 'invalid' }],
+      documentation_url: 'https://docs.github.com/rest',
+    })));
+    expect(e.message).toBe('HTTP 422: Validation Failed; PullRequest head invalid');
+    expect(e.message).not.toContain('docs.github.com'); // only named fields are read
+  });
+
+  it('reports the status alone when the body is not JSON — an error PAGE says nothing about this call', async () => {
+    const e = await describeHttpError(failed(502, '<html><body>Bad gateway</body></html>'));
+    expect(e.message).toBe('HTTP 502');
+    expect(e.message).not.toContain('html');
+  });
+
+  it('redacts a credential GitHub echoed back — but never a string too short to be one', async () => {
+    const echoed = failed(401, JSON.stringify({ message: 'Bad credentials: ghp_secret_value' }));
+    expect((await describeHttpError(echoed, { redact: ['ghp_secret_value'] })).message)
+      .toBe('HTTP 401: Bad credentials: [redacted]');
+
+    // A one-character "token" is a substring of ordinary words; redacting it would rewrite the
+    // message into nonsense and destroy the diagnostic this whole helper exists to deliver.
+    const short = failed(401, JSON.stringify({ message: 'Bad credentials' }));
+    expect((await describeHttpError(short, { redact: ['t'] })).message).toBe('HTTP 401: Bad credentials');
+  });
+
+  it('survives a body that cannot be read, and truncates a long message', async () => {
+    const drained = { ok: false, status: 500, text: async () => { throw new Error('already consumed'); } };
+    expect((await describeHttpError(drained)).message).toBe('HTTP 500');
+
+    const long = await describeHttpError(failed(400, JSON.stringify({ message: 'x'.repeat(1000) })));
+    expect(long.message.length).toBeLessThanOrEqual('HTTP 400: '.length + 300);
   });
 });
 

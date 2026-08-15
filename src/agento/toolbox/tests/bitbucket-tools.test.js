@@ -69,6 +69,60 @@ describe('bitbucket tools: allow-list enforcement + workspace fixed by config', 
     expect(auth.bbFetch).not.toHaveBeenCalled();
   });
 
+  // Every tool states the format on the ARGUMENT, not only in the tool's prose — a model that knows the
+  // "workspace/repo" spelling from the Bitbucket UI writes it unless the schema says otherwise.
+  it.each(ALL_TOOLS)('%s declares the bare-slug rule on the repo argument itself', (name) => {
+    const s = makeServer();
+    register(s, ctx(fakeAuth(() => jsonRes({}))));
+    expect(s.tools[name].schema.repo.description).toMatch(/bare repository slug WITHOUT the workspace prefix/i);
+  });
+
+  // The ARGUMENT is normalized, the ALLOW-LIST is not (next test). Stripping a prefix that equals the
+  // configured workspace cannot redirect the call — the URL is built from config either way.
+  it('accepts the "workspace/repo" spelling of the configured workspace and targets the same repo', async () => {
+    const auth = fakeAuth(() => jsonRes({ id: 1, state: 'OPEN', title: 'X' }));
+    const s = makeServer();
+    register(s, ctx(auth));
+    const r = await s.tools.bitbucket_get_pr.handler({ repo: 'acme/api', pr_id: 1 });
+    expect(r.isError).toBeUndefined();
+    expect(auth.bbFetch.mock.calls[0][0].slice(0, 3)).toEqual(['repositories', 'acme', 'api']);
+  });
+
+  it('refuses a prefix naming another workspace, and says which workspace is fixed', async () => {
+    const auth = fakeAuth(() => jsonRes({}));
+    const s = makeServer();
+    register(s, ctx(auth));
+    const r = await s.tools.bitbucket_get_pr.handler({ repo: 'evil/api', pr_id: 1 });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/bare repository slug/);
+    expect(r.content[0].text).toContain('acme');
+    expect(auth.bbFetch).not.toHaveBeenCalled();
+  });
+
+  // Normalization strips ONE prefix; what remains must still be an exact allow-list entry, and the
+  // message quotes the argument the caller passed rather than the stripped remainder.
+  it('does not let a prefixed argument smuggle a path past the allow-list', async () => {
+    const auth = fakeAuth(() => jsonRes({}));
+    const s = makeServer();
+    register(s, ctx(auth));
+    const r = await s.tools.bitbucket_get_pr.handler({ repo: 'acme/api/../secret', pr_id: 1 });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('"acme/api/../secret"');
+    expect(r.content[0].text).toContain('not in the allow-list');
+    expect(auth.bbFetch).not.toHaveBeenCalled();
+  });
+
+  it('points at the misconfigured allow-list when its entries are workspace-prefixed', async () => {
+    const auth = fakeAuth(() => jsonRes({}));
+    const s = makeServer();
+    register(s, ctx(auth, { moduleConfigs: { bitbucket: { ...CFG, repo_allowlist: 'acme/api' } } }));
+    const r = await s.tools.bitbucket_get_pr.handler({ repo: 'api', pr_id: 1 });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('acme/api');
+    expect(r.content[0].text).toMatch(/repo_allowlist must hold bare repository slugs/);
+    expect(auth.bbFetch).not.toHaveBeenCalled();
+  });
+
   it('ignores a caller-injected workspace and always targets the configured workspace', async () => {
     const auth = fakeAuth(() => jsonRes({ id: 1, state: 'OPEN', title: 'X' }));
     const s = makeServer();

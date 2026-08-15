@@ -26,7 +26,9 @@ function res(body, { status = 200, link = null } = {}) {
     status,
     headers: { get: (k) => (k.toLowerCase() === 'link' ? link : null) },
     json: async () => body,
-    text: async () => '',
+    // One body, either reader — an error fixture's `text()` is its JSON, which is what
+    // `describeError` reads.
+    text: async () => JSON.stringify(body),
   };
 }
 
@@ -115,14 +117,17 @@ describe('POST /api/github/verify', () => {
     expect(fetchSpy.mock.calls[0][0]).toBe('https://api.github.com/user');
   });
 
-  it('reports a 401 without echoing the provider body', async () => {
+  it("reports a 401 with GitHub's message — onboarding prints it to the operator", async () => {
+    // The operator is the only person who can act on this, and the two failures they must tell apart
+    // ("wrong token" vs "right token, permission not granted") differ ONLY in this message.
     const fetchSpy = makeFetch({ '/user': () => res({ message: 'Bad credentials' }, { status: 401 }) });
     const handler = createVerifyHandler(vi.fn(), authFactoryFor(fetchSpy));
     const r = mockRes();
     await handler({ body: { token: 't' } }, r);
     expect(r.body.ok).toBe(false);
     expect(r.body.status).toBe(401);
-    expect(JSON.stringify(r.body)).not.toContain('Bad credentials');
+    expect(r.body.detail).toContain('Bad credentials');
+    expect(JSON.stringify(r.body)).not.toContain('ghp_'); // never the credential itself
   });
 
   it('returns login + id on a 200', async () => {
@@ -262,17 +267,31 @@ describe('POST /api/github/open-prs — discovery', () => {
     expect(widened.r.body.pull_requests).toHaveLength(2);
   });
 
-  it('isolates a failing repo and never surfaces the provider body', async () => {
+  it("isolates a failing repo and carries GitHub's message into the publisher log", async () => {
+    // `errors[]` is read by the operator (run_lane logs each entry) and never enters a job, so the
+    // provider's own words belong here — a bare status cannot distinguish a missing repo from a token
+    // that may read but not write, which is the whole diagnostic.
     const routes = {
-      '/repos/acme/a/pulls': () => res({ message: 'secret internal detail' }, { status: 500 }),
+      '/repos/acme/a/pulls': () => res({ message: 'Resource not accessible by personal access token' }, { status: 403 }),
       '/repos/acme/b/pulls': () => res([pr(9, 'agent-bot')]),
       '/repos/acme/b/pulls/9/reviews': () => res([]),
     };
     const { r } = await callOpenPrs(routes, { cfg: { ...CFG, repo_allowlist: 'a,b' } });
     expect(r.statusCode).toBe(200);
     expect(r.body.pull_requests.map((p) => p.id)).toEqual([9]);
-    expect(r.body.errors).toEqual([{ repo: 'a', error: 'HTTP 500' }]);
-    expect(JSON.stringify(r.body)).not.toContain('secret internal detail');
+    expect(r.body.errors).toEqual([
+      { repo: 'a', error: 'HTTP 403: Resource not accessible by personal access token' },
+    ]);
+    expect(JSON.stringify(r.body)).not.toContain('ghp_secret');
+  });
+
+  it('redacts the token from a repo error, even if GitHub echoes it', async () => {
+    const routes = {
+      '/repos/acme/api/pulls': () => res({ message: 'Bad credentials: ghp_secret' }, { status: 401 }),
+    };
+    const { r } = await callOpenPrs(routes);
+    expect(r.body.errors[0].error).toContain('[redacted]');
+    expect(JSON.stringify(r.body)).not.toContain('ghp_secret');
   });
 });
 

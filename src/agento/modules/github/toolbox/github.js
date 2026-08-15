@@ -35,6 +35,14 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
 
   const idArg = z.union([z.number().int().positive(), z.string().min(1)]);
 
+  // The FORMAT rule belongs in the argument's own description, not only in the tool's prose. "The owner
+  // is fixed by configuration" states a policy; a model that has used `gh` still writes "owner/repo"
+  // because nothing told it the format. One shared schema keeps the eight tools from drifting apart.
+  const repoArgSchema = z.string().min(1).describe(
+    'Bare repository name WITHOUT the owner prefix, e.g. "agento" not "openagento/agento". '
+    + 'The owner comes from configuration.',
+  );
+
   function err(toolName, msg) {
     log(toolName, 'BLOCKED', msg);
     return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
@@ -46,19 +54,48 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
 
   // Fail-closed by config-absence: no token/owner (isConfigured() requires both), or repo not in the
   // resolved allow-list ⇒ rejected. The owner is fixed by config — never a tool argument — so it cannot
-  // be caller-influenced. An empty allow-list rejects every repo.
-  function guardTarget(toolName, repo) {
-    if (!auth.isConfigured()) return err(toolName, 'GitHub not configured for this scope');
-    if (!allowlist.includes(repo)) return err(toolName, `repo "${repo}" is not in the allow-list`);
-    return null;
+  // be caller-influenced. An empty allow-list rejects every repo. Returns `{error}` to return directly,
+  // or `{repo}` — the normalized bare name every caller must use from there on.
+  //
+  // The ARGUMENT is normalized, the ALLOW-LIST never is. "acme/api" under owner "acme" is the agent
+  // writing the `gh` spelling of a target it is entitled to: the request URL is built from the
+  // configured owner either way, so stripping a prefix that EQUALS that owner cannot redirect the call
+  // and cannot widen the allow-list, which stays an exact match on bare names. A prefix naming any
+  // OTHER owner is refused by name (it is a real attempt to leave the configured owner), and an
+  // owner-prefixed allow-list is still only ever DIAGNOSED — normalizing config entries would be the
+  // widening this deliberately avoids.
+  function resolveTarget(toolName, repo) {
+    if (!auth.isConfigured()) return { error: err(toolName, 'GitHub not configured for this scope') };
+    const raw = String(repo);
+    let name = raw;
+    const slash = raw.indexOf('/');
+    if (slash !== -1) {
+      const prefix = raw.slice(0, slash);
+      if (prefix !== String(owner)) {
+        return {
+          error: err(
+            toolName,
+            `repo "${raw}" must be a bare repository name; the owner is fixed to "${owner}" by the github_owner config`,
+          ),
+        };
+      }
+      name = raw.slice(slash + 1);
+    }
+    if (!allowlist.includes(name)) {
+      const malformed = allowlist.filter((r) => r.includes('/'));
+      const hint = malformed.length
+        ? ` — the configured allow-list holds owner-prefixed entries (${malformed.join(', ')}); repo_allowlist must hold bare repository names`
+        : '';
+      // Quote what the CALLER passed: it is what they have to correct, and the stripped remainder of a
+      // malformed argument ("api/x") reads as a name they never wrote.
+      return { error: err(toolName, `repo "${raw}" is not in the allow-list${hint}`) };
+    }
+    return { repo: name };
   }
 
   async function getJson(toolName, segments, opts) {
     const r = await auth.ghFetch(segments, opts);
-    if (!r.ok) {
-      await r.text().catch(() => '');
-      throw new Error(`HTTP ${r.status}`);
-    }
+    if (!r.ok) throw await auth.describeError(r);
     return r.json();
   }
 
@@ -79,7 +116,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
   // registered — a ZodEffects would resolve as the annotations overload and publish a tool with no
   // parameters. The shape is registered; the cross-field rule is enforced in the handler.
   const addCommentShape = {
-    repo: z.string().min(1),
+    repo: repoArgSchema,
     pr_number: idArg,
     content: z.string().min(1),
     in_reply_to: idArg.optional(),
@@ -103,10 +140,11 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
     server.tool(
       'github_get_pr',
       'Read a pull request (title, body, state, head/base branches).',
-      { repo: z.string(), pr_number: idArg },
-      async ({ repo, pr_number: prNumber }) => {
-        const blocked = guardTarget('github_get_pr', repo);
-        if (blocked) return blocked;
+      { repo: repoArgSchema, pr_number: idArg },
+      async ({ repo: repoArg, pr_number: prNumber }) => {
+        const target = resolveTarget('github_get_pr', repoArg);
+        if (target.error) return target.error;
+        const repo = target.repo;
         try {
           const pr = await getJson('github_get_pr', ['repos', owner, repo, 'pulls', prNumber]);
           log('github_get_pr', 'OK', `${owner}/${repo}#${prNumber}`);
@@ -122,22 +160,25 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
     server.tool(
       'github_get_pr_diff',
       "Read a pull request's diff (unified diff text).",
-      { repo: z.string(), pr_number: idArg },
-      async ({ repo, pr_number: prNumber }) => {
-        const blocked = guardTarget('github_get_pr_diff', repo);
-        if (blocked) return blocked;
+      { repo: repoArgSchema, pr_number: idArg },
+      async ({ repo: repoArg, pr_number: prNumber }) => {
+        const target = resolveTarget('github_get_pr_diff', repoArg);
+        if (target.error) return target.error;
+        const repo = target.repo;
         try {
           const r = await auth.ghFetch(['repos', owner, repo, 'pulls', prNumber], {
             accept: 'application/vnd.github.diff',
           });
           if (!r.ok) {
-            await r.text().catch(() => '');
             // 406 is GitHub's answer for a diff it refuses to generate (too large) — a distinct,
             // actionable outcome, not a generic read failure.
             if (r.status === 406) {
+              // Drain before returning: this is the one branch that does not go through
+              // describeError, and an unread body can hold the socket open until GC.
+              await r.text().catch(() => '');
               return err('github_get_pr_diff', 'diff is too large for the API to generate; review the files individually');
             }
-            throw new Error(`HTTP ${r.status}`);
+            throw await auth.describeError(r);
           }
           const diff = await r.text();
           log('github_get_pr_diff', 'OK', `${owner}/${repo}#${prNumber}`);
@@ -153,10 +194,11 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
     server.tool(
       'github_get_pr_comments',
       "Read a pull request's comments — the conversation thread AND the inline review comments.",
-      { repo: z.string(), pr_number: idArg },
-      async ({ repo, pr_number: prNumber }) => {
-        const blocked = guardTarget('github_get_pr_comments', repo);
-        if (blocked) return blocked;
+      { repo: repoArgSchema, pr_number: idArg },
+      async ({ repo: repoArg, pr_number: prNumber }) => {
+        const target = resolveTarget('github_get_pr_comments', repoArg);
+        if (target.error) return target.error;
+        const repo = target.repo;
         try {
           // GitHub splits PR feedback across two REST surfaces; returning one of them would silently
           // hide half the feedback the publisher already acted on.
@@ -184,10 +226,11 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
     server.tool(
       'github_get_pr_reviews',
       "Read a pull request's reviews / review history.",
-      { repo: z.string(), pr_number: idArg },
-      async ({ repo, pr_number: prNumber }) => {
-        const blocked = guardTarget('github_get_pr_reviews', repo);
-        if (blocked) return blocked;
+      { repo: repoArgSchema, pr_number: idArg },
+      async ({ repo: repoArg, pr_number: prNumber }) => {
+        const target = resolveTarget('github_get_pr_reviews', repoArg);
+        if (target.error) return target.error;
+        const repo = target.repo;
         try {
           // The review list is append-only and unbounded on an active PR, so an unpaginated read is
           // exactly the case where the newest (decisive) entries fall off the first page.
@@ -217,9 +260,10 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
         // First statement, so a schema-rejected call never reaches the open-state GET, let alone a write.
         const parsed = addCommentSchema.safeParse(args);
         if (!parsed.success) return err('github_add_comment', parsed.error.issues[0].message);
-        const { repo, pr_number: prNumber, content, in_reply_to: inReplyTo, inline } = parsed.data;
-        const blocked = guardTarget('github_add_comment', repo);
-        if (blocked) return blocked;
+        const { repo: repoArg, pr_number: prNumber, content, in_reply_to: inReplyTo, inline } = parsed.data;
+        const target = resolveTarget('github_add_comment', repoArg);
+        if (target.error) return target.error;
+        const repo = target.repo;
         const gate = await requireOpenPr('github_add_comment', repo, prNumber);
         if (gate.error) return gate.error;
         try {
@@ -239,10 +283,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
             body = { body: content };
           }
           const r = await auth.ghFetch(segments, { method: 'POST', body });
-          if (!r.ok) {
-            await r.text().catch(() => '');
-            throw new Error(`HTTP ${r.status}`);
-          }
+          if (!r.ok) throw await auth.describeError(r);
           log('github_add_comment', 'OK', `${owner}/${repo}#${prNumber}`);
           return ok('Comment posted.');
         } catch (e) {
@@ -256,10 +297,11 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
     server.tool(
       'github_resolve_thread',
       'Resolve the review thread containing a given review comment (GraphQL — REST cannot do this).',
-      { repo: z.string(), pr_number: idArg, comment_id: idArg },
-      async ({ repo, pr_number: prNumber, comment_id: commentId }) => {
-        const blocked = guardTarget('github_resolve_thread', repo);
-        if (blocked) return blocked;
+      { repo: repoArgSchema, pr_number: idArg, comment_id: idArg },
+      async ({ repo: repoArg, pr_number: prNumber, comment_id: commentId }) => {
+        const target = resolveTarget('github_resolve_thread', repoArg);
+        if (target.error) return target.error;
+        const repo = target.repo;
         const gate = await requireOpenPr('github_resolve_thread', repo, prNumber);
         if (gate.error) return gate.error;
         let data;
@@ -308,14 +350,15 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
       'github_set_review',
       'Submit a review decision on a pull request: approve, request_changes, or comment.',
       {
-        repo: z.string(),
+        repo: repoArgSchema,
         pr_number: idArg,
         decision: z.enum(['approve', 'request_changes', 'comment']),
         body: z.string().optional(),
       },
-      async ({ repo, pr_number: prNumber, decision, body }) => {
-        const blocked = guardTarget('github_set_review', repo);
-        if (blocked) return blocked;
+      async ({ repo: repoArg, pr_number: prNumber, decision, body }) => {
+        const target = resolveTarget('github_set_review', repoArg);
+        if (target.error) return target.error;
+        const repo = target.repo;
         // GitHub requires a body for REQUEST_CHANGES and COMMENT; catching it here turns a 422 into a
         // message the agent can act on.
         if (decision !== 'approve' && (!body || !String(body).trim())) {
@@ -331,14 +374,18 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
             method: 'POST', body: payload,
           });
           if (!r.ok) {
-            await r.text().catch(() => '');
+            const failure = await auth.describeError(r);
             // 422 is GitHub's blanket validation status — it also covers a stale commit_id, an
-            // already-pending review, and an event invalid for the PR's state. Name the likeliest
-            // cause without claiming it is the only one.
+            // already-pending review, and an event invalid for the PR's state. GitHub's own message
+            // (carried by `failure`) is what tells those apart, so it leads; the hint follows as the
+            // likeliest cause, not the only one.
             if (r.status === 422) {
-              return err('github_set_review', 'GitHub rejected the review (422 validation failed) — one common cause is that you cannot approve or request changes on your own pull request');
+              return err(
+                'github_set_review',
+                `GitHub rejected the review (422 validation failed): ${failure.message} — one common cause is that you cannot approve or request changes on your own pull request`,
+              );
             }
-            throw new Error(`HTTP ${r.status}`);
+            throw failure;
           }
           log('github_set_review', 'OK', `${owner}/${repo}#${prNumber} ${decision}`);
           return ok(`Review submitted: ${decision}.`);
@@ -357,16 +404,17 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
         'allow-list. head_owner may only be the configured owner (cross-owner forks are refused).',
       ].join('\n'),
       {
-        repo: z.string(),
+        repo: repoArgSchema,
         title: z.string().min(1),
         head_branch: z.string().min(1),
         base_branch: z.string().min(1),
         body: z.string().optional(),
         head_owner: z.string().optional(),
       },
-      async ({ repo, title, head_branch: head, base_branch: base, body, head_owner: headOwner }) => {
-        const blocked = guardTarget('github_create_pr', repo);
-        if (blocked) return blocked;
+      async ({ repo: repoArg, title, head_branch: head, base_branch: base, body, head_owner: headOwner }) => {
+        const target = resolveTarget('github_create_pr', repoArg);
+        if (target.error) return target.error;
+        const repo = target.repo;
         // The allow-list only bounds repos INSIDE the configured owner, so it cannot authorize a fork
         // living under a different owner.
         if (headOwner && String(headOwner) !== String(owner)) {
@@ -385,10 +433,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, githubAuth
           const payload = { title, head: headOwner ? `${headOwner}:${head}` : head, base };
           if (body) payload.body = body;
           const r = await auth.ghFetch(['repos', owner, repo, 'pulls'], { method: 'POST', body: payload });
-          if (!r.ok) {
-            await r.text().catch(() => '');
-            throw new Error(`HTTP ${r.status}`);
-          }
+          if (!r.ok) throw await auth.describeError(r);
           const created = await r.json();
           log('github_create_pr', 'OK', `${owner}/${repo} #${created.number}`);
           return ok(`PR created: #${created.number} ${created.html_url || ''}`.trim());

@@ -38,6 +38,40 @@ _REQUIRED_SCOPES = (
 )
 
 
+def _normalize_repo_entries(raw: str, workspace: str) -> tuple[str, str | None]:
+    """Normalize the watched-repo input to BARE repo slugs (the form every caller uses).
+
+    The allow-list is matched exactly against a tool's ``repo`` argument, and the URL is built as
+    ``repositories/{workspace}/{repo}`` — so a ``workspace/repo`` entry can only ever produce a
+    confusing miss ("repo X is not in the allow-list") or a 404. A ``workspace/`` prefix that matches
+    the workspace just entered is stripped (same repository, written the other way); a DIFFERENT
+    prefix is an error, because the workspace is fixed by config and cannot be widened here.
+
+    Returns ``(normalized_csv, error)`` — exactly one of the two is meaningful.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+    for part in raw.split(","):
+        entry = part.strip()
+        if not entry:
+            continue
+        name = entry
+        if "/" in entry:
+            prefix, _, rest = entry.partition("/")
+            if prefix.strip().lower() != workspace.strip().lower() or not rest.strip() or "/" in rest:
+                return "", (
+                    f'repo "{entry}" is not a bare repo slug. Enter repository slugs without the '
+                    f'workspace (e.g. "agento"); the workspace "{workspace}" is configured separately.'
+                )
+            name = rest.strip()
+        if name not in seen:
+            seen.add(name)
+            names.append(name)
+    if not names:
+        return "", "at least one repo slug is required."
+    return ",".join(names), None
+
+
 def _evaluate_completeness(views: list[tuple[int, int]], rows: list[dict]) -> bool:
     """Pure completeness verdict, mirroring run_lane's usability rule (R5-1) so "complete" never means
     "inert".
@@ -164,13 +198,27 @@ class BitbucketOnboarding:
                 workspace = input("  Bitbucket workspace slug: ").strip()
                 email = input("  Agent Atlassian account email: ").strip()
                 api_token = getpass.getpass("  Atlassian API token: ").strip()
-                repo_allowlist = input("  Watched repo slugs (comma-separated): ").strip()
+                repo_allowlist = input(
+                    "  Watched repo slugs — bare slugs, no workspace/ prefix (comma-separated): "
+                ).strip()
 
                 if not (workspace and email and api_token and repo_allowlist):
                     print("  Error: workspace, email, API token and at least one repo are all required.")
                     if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
                         return
                     continue
+
+                # Validate the repo slugs BEFORE the verify round-trip: a bad list is the operator's
+                # typo, and there is no reason to send the credentials to Bitbucket to learn that.
+                normalized, repo_error = _normalize_repo_entries(repo_allowlist, workspace)
+                if repo_error:
+                    print(f"  Error: {repo_error}")
+                    if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
+                        return
+                    continue
+                if normalized != repo_allowlist:
+                    print(f"  Using repos: {normalized}")
+                repo_allowlist = normalized
 
                 try:
                     result = client.verify(workspace, email, api_token)

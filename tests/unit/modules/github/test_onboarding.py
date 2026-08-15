@@ -7,7 +7,11 @@ import pytest
 
 from agento.framework.config_resolver import path_to_env_key
 from agento.modules.github.src.env_guard import VIEW_SCOPED_ENV_KEYS
-from agento.modules.github.src.onboarding import GitHubOnboarding, _evaluate_completeness
+from agento.modules.github.src.onboarding import (
+    GitHubOnboarding,
+    _evaluate_completeness,
+    _normalize_repo_entries,
+)
 
 _OB = "agento.modules.github.src.onboarding"
 
@@ -224,3 +228,49 @@ def test_run_writes_at_the_selected_view_when_several_are_active():
     for path, _v, _e, scope, sid in calls["set"]:
         assert (scope, sid) == ("agent_view", 2), path
     assert calls["commit"] == 1
+
+
+# --- repo allow-list normalization ------------------------------------------------------------------
+# The allow-list is matched EXACTLY against a tool's `repo` argument and the URL is built as
+# repos/{owner}/{repo}, so an "owner/repo" entry can only produce a confusing miss or a 404. The
+# normalization lives here, at the input, never in the runtime allow-list check.
+
+def test_normalize_repo_entries_trims_dedupes_and_keeps_order():
+    assert _normalize_repo_entries(" api , web ,api, ", "acme") == ("api,web", None)
+
+
+def test_normalize_repo_entries_strips_the_matching_owner_prefix():
+    # Same repository, written the other way — accepted and rewritten to the bare form.
+    assert _normalize_repo_entries("acme/api,web", "acme") == ("api,web", None)
+    assert _normalize_repo_entries("ACME/api", "acme") == ("api", None)
+
+
+def test_normalize_repo_entries_refuses_a_foreign_owner_prefix():
+    # The owner is fixed by config; an entry cannot widen it here.
+    normalized, error = _normalize_repo_entries("other/api", "acme")
+    assert normalized == ""
+    assert "other/api" in error and "bare repo name" in error
+
+
+@pytest.mark.parametrize("raw", ["acme/", "acme/api/extra", " , "])
+def test_normalize_repo_entries_refuses_malformed_input(raw):
+    normalized, error = _normalize_repo_entries(raw, "acme")
+    assert normalized == "" and error
+
+
+def test_run_saves_the_normalized_allow_list():
+    calls, _ = _drive_run(
+        verify_result=_OK, views=_ONE_VIEW, inputs=["acme", "acme/api, web", ""], token="tok", selects=[],
+    )
+    saved = {path: value for path, value, *_ in calls["set"]}
+    assert saved["github/repo_allowlist"] == "api,web"
+
+
+def test_run_re_prompts_on_a_bad_allow_list_without_verifying():
+    calls, client = _drive_run(
+        verify_result=_OK, views=_ONE_VIEW,
+        inputs=["acme", "other/api"], token="tok", selects=[1],  # Abort at the retry prompt
+    )
+    # A bad repo list is caught BEFORE the token leaves the process.
+    client.verify.assert_not_called()
+    assert calls["set"] == [] and calls["commit"] == 0

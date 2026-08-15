@@ -32,7 +32,7 @@ arrive with an operator-configured origin allow-list, not a request-body field.
 | `github/github_owner` | string | any | Owner (user or organization) that owns the watched repos |
 | `github/github_login` | string | **agent_view only** | The agent account's GitHub login (author/self match) |
 | `github/github_token` | **obscure** | **agent_view only** | Personal access token — encrypted at rest, **toolbox-only** |
-| `github/repo_allowlist` | string | **agent_view only** | Comma-separated repo names; **empty ⇒ view skipped** (no scan) |
+| `github/repo_allowlist` | string | **agent_view only** | Comma-separated **bare** repo names (`api,web` — never `acme/api`; the owner comes from `github_owner`); **empty ⇒ view skipped** (no scan) |
 | `github/poll_top` | integer | any | Max **agent-authored** open PRs per repo per poll (clamped 1..100, default 20) |
 
 Onboarding additionally seeds `agent_view/identity/git_author_email` and
@@ -255,6 +255,15 @@ Confirmed against GitHub, not from memory (these are the strings the code compar
   deliberate transmitting path is onboarding's `verify(token)` hop, which posts the operator-typed token
   once, before anything is saved, and never persists it Python-side. The residual ENV window is
   described under *The limit of that enforcement* above.
+- **Error text — GitHub's `message`, never its raw body.** A failed call reports `HTTP <status>:
+  <GitHub's message>` (plus the `resource/field/code` of up to three `errors[]` entries), because the
+  status alone is ambiguous where it matters most: "no such repo", "your token may read but not write"
+  and "the org has not approved this token" are all **404**. Only those named fields are read — a
+  non-JSON body is an error *page* (rate-limit or proxy HTML), which says nothing about the call — the
+  text is capped at 300 characters, and the configured token is redacted from it before truncation, so
+  relaying the provider's words cannot re-open the credential boundary. This applies uniformly to the
+  MCP tools (the agent sees it), the publisher's `errors[]` (the operator's log; it never enters a job)
+  and onboarding's `verify` detail (the operator's terminal).
 - **Authorization boundary = the toolbox.** Owner, `github_login` and `repo_allowlist` are resolved
   from **scoped config** and enforced on **every** REST + MCP call; `github/enabled` gates the
   publishers and the REST poll (an inert view is never scanned), while the agent's MCP surface is gated
@@ -265,6 +274,15 @@ Confirmed against GitHub, not from memory (these are the strings the code compar
   bounded to the resolved `repo_allowlist` (empty allow-list rejects all — fail-closed by config
   absence). `github_create_pr` additionally requires any `owner:branch` head to name the configured
   owner. Write tools re-fetch the PR and reject anything but an **open** one.
+- **`repo` is a bare name — the argument is normalized, the allow-list is not.** The `repo` parameter of
+  every tool carries the rule in its own schema description ("Bare repository name WITHOUT the owner
+  prefix, e.g. `agento` not `openagento/agento`"), because a policy sentence in the tool's prose does not
+  stop a model that has used `gh` from writing `owner/repo`. If it writes it anyway and the prefix
+  **equals** `github_owner`, the prefix is stripped and the call proceeds — the request URL is built from
+  the configured owner either way, so this can neither redirect the call nor widen anything. A prefix
+  naming any **other** owner is refused by name (`the owner is fixed to "acme"`). The **allow-list itself
+  is never normalized**: it stays an exact match on bare names, and owner-prefixed *config* entries are
+  only ever diagnosed in the error text (see `repo_allowlist` above).
 - **Honest boundary (N5-2):** the MCP layer cannot see `agentViewMeta`, and the agent — a shell-capable
   process on the same Docker network as the toolbox — could in principle open its own MCP session with a
   different or omitted `agent_view_id` (`/sse` and `/mcp` take it from the query string; the module REST

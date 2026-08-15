@@ -4,6 +4,6 @@
   "bitbucket_email": {"type": "string", "label": "Agent Atlassian account email (Basic-auth username)"},
   "bitbucket_api_token": {"type": "obscure", "label": "Atlassian API token (encrypted at rest; toolbox-only)"},
   "bitbucket_account_uuid": {"type": "string", "label": "Agent's Bitbucket account UUID (author.uuid match)"},
-  "repo_allowlist": {"type": "string", "label": "Watched repo slugs (comma-separated; empty blocks all)"},
+  "repo_allowlist": {"type": "string", "label": "Watched repo slugs, bare — no workspace/ prefix (comma-separated; empty blocks all)", "description": "Slugs only, e.g. \"agento,agento-docs\": the workspace comes from bitbucket_workspace, so a \"workspace/repo\" entry matches nothing."},
   "poll_top": {"type": "integer", "label": "Max open PRs fetched per repo per poll (<=50)"}
 }

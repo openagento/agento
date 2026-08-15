@@ -30,7 +30,7 @@ workspaces/repos with different credentials).
 | `bitbucket/bitbucket_email` | string | Agent Atlassian account email (Basic-auth username) |
 | `bitbucket/bitbucket_api_token` | **obscure** | Atlassian API token — encrypted at rest, **toolbox-only** |
 | `bitbucket/bitbucket_account_uuid` | string | Agent's Bitbucket account UUID (`author.uuid` match) |
-| `bitbucket/repo_allowlist` | string | Comma-separated repo slugs; **empty ⇒ view skipped** (no scan) |
+| `bitbucket/repo_allowlist` | string | Comma-separated **bare** repo slugs (`api,web` — never `acme/api`; the workspace comes from `bitbucket_workspace`); **empty ⇒ view skipped** (no scan) |
 | `bitbucket/poll_top` | integer | Max open PRs fetched per repo per poll (clamped 1..50, default 20) |
 
 ### Config is always agent_view-scoped (important)
@@ -183,6 +183,14 @@ key (git) are different credentials.
   validates **both** the destination repo and any `source.repository` (forks/cross-repo, whose workspace
   half must equal the configured workspace) against the allow-list. Write tools re-fetch the PR and
   reject anything but an OPEN PR.
+- **`repo` is a bare slug — the argument is normalized, the allow-list is not.** Every tool's `repo`
+  parameter carries the rule in its own schema description ("Bare repository slug WITHOUT the workspace
+  prefix"). If the caller writes `workspace/repo` anyway and the prefix **equals**
+  `bitbucket_workspace`, the prefix is stripped and the call proceeds — the request URL is built from the
+  configured workspace either way, so this neither redirects the call nor widens anything. A prefix
+  naming any **other** workspace is refused by name. The **allow-list itself is never normalized**: it
+  stays an exact match on bare slugs, and workspace-prefixed *config* entries are only diagnosed. This
+  does not touch `source_repository`, which legitimately takes the `workspace/repo` form.
 - **Honest boundary (N5-2):** the MCP layer cannot see `agentViewMeta`, and the agent — a shell-capable
   process on the same Docker network as the toolbox — could in principle open its own MCP session with a
   different/omitted `agent_view_id`. That is the **framework-wide internal-caller-auth gap shared by the

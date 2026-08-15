@@ -19,8 +19,8 @@
   },
   "repo_allowlist": {
     "type": "string",
-    "label": "Watched repo names (comma-separated; empty blocks all)",
-    "description": "Agent_view scope only — see github_login.",
+    "label": "Watched repo names, bare — no owner/ prefix (comma-separated; empty blocks all)",
+    "description": "Agent_view scope only — see github_login. Names only, e.g. \"agento,agento-docs\": the owner comes from github_owner, so an \"owner/repo\" entry matches nothing.",
     "showInDefault": false,
     "showInWorkspace": false,
     "showInAgentView": true

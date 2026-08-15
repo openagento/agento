@@ -24,7 +24,9 @@ function res(body, { status = 200, link = null, text = null } = {}) {
     status,
     headers: { get: (k) => (k.toLowerCase() === 'link' ? link : null) },
     json: async () => body,
-    text: async () => (text === null ? '' : text),
+    // A real Response serves ONE body through either reader, so an error fixture's `text()` must be
+    // its JSON — that is what `describeHttpError` reads. `text` still overrides it (the diff tool).
+    text: async () => (text === null ? JSON.stringify(body) : text),
   };
 }
 
@@ -149,6 +151,54 @@ describe('every tool is bounded by config, not by its arguments', () => {
     const out = await tools[name].handler({ repo: 'api', ...args });
     expect(out.isError).toBe(true);
     expect(out.content[0].text).toMatch(/not configured/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Every tool states the format on the ARGUMENT, not only in the tool's prose: "the owner is fixed by
+  // configuration" is a policy sentence, and a model that has used `gh` writes "owner/repo" anyway.
+  it.each(DECLARED_TOOLS)('%s declares the bare-name rule on the repo argument itself', (name) => {
+    const { tools } = setup();
+    expect(tools[name].schema.repo.description).toMatch(/bare repository name WITHOUT the owner prefix/i);
+  });
+
+  // The ARGUMENT is normalized, the ALLOW-LIST is not (next test). Stripping a prefix that equals the
+  // configured owner cannot redirect the call — the URL is built from config either way — so refusing
+  // it only taught the agent to "fix" the argument into something that 404s.
+  it('accepts the "owner/repo" spelling of the configured owner and targets the same repo', async () => {
+    const { tools, fetchSpy } = setup(openPrRoute);
+    const out = await tools.github_get_pr.handler({ repo: 'acme/api', pr_number: 7 });
+    expect(out.isError).toBeUndefined();
+    expect(fetchSpy.mock.calls[0][0]).toBe('https://api.github.com/repos/acme/api/pulls/7');
+  });
+
+  it.each(Object.entries(repoArgs))('%s refuses a prefix naming another owner, and says which owner is fixed', async (name, args) => {
+    const { tools, fetchSpy } = setup();
+    const out = await tools[name].handler({ repo: 'evil/api', ...args });
+    expect(out.isError).toBe(true);
+    expect(out.content[0].text).toMatch(/bare repository name/);
+    expect(out.content[0].text).toContain('acme');       // the configured owner, so the agent can self-correct
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  // Normalization strips ONE prefix; what remains must still be an exact allow-list entry. The message
+  // quotes the argument the caller actually passed, not the stripped remainder they never wrote.
+  it('does not let a prefixed argument smuggle a path past the allow-list', async () => {
+    const { tools, fetchSpy } = setup();
+    const out = await tools.github_get_pr.handler({ repo: 'acme/api/../secret', pr_number: 7 });
+    expect(out.isError).toBe(true);
+    expect(out.content[0].text).toContain('"acme/api/../secret"');
+    expect(out.content[0].text).toContain('not in the allow-list');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('points at the misconfigured allow-list when its entries are owner-prefixed', async () => {
+    const { tools, fetchSpy } = setup({}, {
+      moduleConfigs: { github: { ...CFG, repo_allowlist: 'acme/api' } },
+    });
+    const out = await tools.github_get_pr.handler({ repo: 'api', pr_number: 7 });
+    expect(out.isError).toBe(true);
+    expect(out.content[0].text).toContain('acme/api');
+    expect(out.content[0].text).toMatch(/repo_allowlist must hold bare repository names/);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -310,7 +360,68 @@ describe('github_set_review', () => {
     const out = await tools.github_set_review.handler({ repo: 'api', pr_number: 7, decision: 'approve' });
     expect(out.isError).toBe(true);
     expect(out.content[0].text).toContain('422 validation failed');
+    expect(out.content[0].text).toContain('Unprocessable');   // GitHub's own message leads the hint
     expect(out.content[0].text).toContain('one common cause');
+  });
+});
+
+// A status with no message sends the agent guessing: the run that prompted these tests read
+// `create failed: HTTP 404` and concluded the repo was off the allow-list, when GitHub was in fact
+// saying the token could not write. Every tool must pass GitHub's own words through.
+describe('GitHub error text reaches the agent', () => {
+  const cases = [
+    {
+      tool: 'github_get_pr',
+      routes: { '/repos/acme/api/pulls/7': () => res({ message: 'Resource not accessible by personal access token' }, { status: 403 }) },
+      call: { repo: 'api', pr_number: 7 },
+      expect: 'Resource not accessible by personal access token',
+    },
+    {
+      tool: 'github_get_pr_diff',
+      routes: { '/repos/acme/api/pulls/7': () => res({ message: 'Bad credentials' }, { status: 401 }) },
+      call: { repo: 'api', pr_number: 7 },
+      expect: 'Bad credentials',
+    },
+    {
+      tool: 'github_add_comment',
+      routes: { ...openPrRoute, '/repos/acme/api/issues/7/comments': () => res({ message: 'Issue is locked' }, { status: 403 }) },
+      call: { repo: 'api', pr_number: 7, content: 'hi' },
+      expect: 'Issue is locked',
+    },
+    {
+      tool: 'github_create_pr',
+      routes: { '/repos/acme/api/pulls': () => res({ message: 'Not Found' }, { status: 404 }) },
+      call: { repo: 'api', title: 't', head_branch: 'feat', base_branch: 'main' },
+      expect: 'HTTP 404: Not Found',
+    },
+  ];
+
+  it.each(cases)("$tool surfaces GitHub's message, not the bare status", async (c) => {
+    const { tools } = setup(c.routes);
+    const out = await tools[c.tool].handler(c.call);
+    expect(out.isError).toBe(true);
+    expect(out.content[0].text).toContain(c.expect);
+  });
+
+  it('never leaks a non-JSON error page — an HTML body yields the status alone', async () => {
+    const { tools } = setup({
+      '/repos/acme/api/pulls/7': () => res({}, { status: 429, text: '<html>rate limited by our edge</html>' }),
+    });
+    const out = await tools.github_get_pr.handler({ repo: 'api', pr_number: 7 });
+    expect(out.content[0].text).toContain('HTTP 429');
+    expect(out.content[0].text).not.toContain('html');
+    expect(out.content[0].text).not.toContain('edge');
+  });
+
+  it('redacts the token even when GitHub echoes it back inside the message', async () => {
+    // Relaying the provider's words re-opens a hole that drain-and-discard closed structurally, so the
+    // redaction is part of the same helper — not a rule each call site has to remember.
+    const { tools } = setup({
+      '/repos/acme/api/pulls/7': () => res({ message: 'Bad credentials for ghp_secret' }, { status: 401 }),
+    });
+    const out = await tools.github_get_pr.handler({ repo: 'api', pr_number: 7 });
+    expect(out.content[0].text).not.toContain('ghp_secret');
+    expect(out.content[0].text).toContain('[redacted]');
   });
 });
 

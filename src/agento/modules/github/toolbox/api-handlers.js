@@ -56,7 +56,7 @@ function clampTop(top, pollTop) {
 
 // Follow GitHub's Link-header pagination up to bounded caps (never an unbounded crawl). `keep` filters
 // each item client-side BEFORE the maxItems cap, so a cap on agent-authored PRs is not consumed by
-// third-party PRs (G-5). Throws a sanitized Error (status only) on a non-2xx page.
+// third-party PRs (G-5). Throws a sanitized Error (status + GitHub's own `message`) on a non-2xx page.
 //
 // Returns { items, truncated }. `truncated` is true when the scan stopped at `maxPages` while GitHub
 // still advertised a next page — i.e. the result is INCOMPLETE. Every caller must propagate that: a
@@ -68,10 +68,7 @@ export async function collectPages(auth, segments, baseQuery, { maxItems = Infin
   const items = [];
   for (let page = 1; page <= maxPages; page += 1) {
     const res = await auth.ghFetch(segments, { query: { ...baseQuery, page, per_page: PER_PAGE } });
-    if (!res.ok) {
-      await res.text().catch(() => ''); // drain, discard (never surface provider body)
-      throw new Error(`HTTP ${res.status}`);
-    }
+    if (!res.ok) throw await auth.describeError(res); // GitHub's own `message`, never the raw body
     const data = await res.json();
     const values = Array.isArray(data) ? data : [];
     for (const v of values) {
@@ -118,9 +115,12 @@ export function createVerifyHandler(log, authFactory = createGitHubAuth) {
     try {
       const r = await auth.ghFetch(['user']);
       if (!r.ok) {
-        await r.text().catch(() => '');
-        log('api/github/verify', 'ERROR', `verify failed (HTTP ${r.status})`);
-        return res.json({ ok: false, status: r.status, detail: `GitHub auth failed (HTTP ${r.status})` });
+        // Onboarding prints this `detail` to the operator, who is the one person who can act on it:
+        // "Bad credentials" (wrong/expired PAT) and "Resource not accessible by personal access token"
+        // (right PAT, missing permission or unapproved by the org) are the same 401/403 otherwise.
+        const failure = await auth.describeError(r);
+        log('api/github/verify', 'ERROR', `verify failed (${failure.message})`);
+        return res.json({ ok: false, status: r.status, detail: `GitHub auth failed (${failure.message})` });
       }
       const user = await r.json();
       log('api/github/verify', 'OK', `verified ${user.login || ''}`);
@@ -324,10 +324,7 @@ async function addCommentsRecord(auth, owner, repo, pr, record, errors, log) {
   } else {
     try {
       const r = await auth.ghFetch(['repos', owner, repo, 'commits', headSha]);
-      if (!r.ok) {
-        await r.text().catch(() => '');
-        throw new Error(`HTTP ${r.status}`);
-      }
+      if (!r.ok) throw await auth.describeError(r);
       const commit = await r.json();
       const date = commit.commit?.committer?.date || commit.commit?.author?.date;
       if (date) {
