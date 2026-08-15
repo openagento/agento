@@ -1,4 +1,4 @@
-"""`agento run <agent_view_code> [--yolo] [prompt]` — spawn the configured agent CLI.
+"""`agento run <agent_view_code> [--yolo] [--pretty] [prompt]` — spawn the configured agent CLI.
 
 Host-side LOCAL command. Two-step docker exec:
 1. Query cron for a full run profile via ``agent_view:prepare-run`` —
@@ -13,17 +13,20 @@ Host-side LOCAL command. Two-step docker exec:
 
 No harness literal appears in this file — the command string and env both
 come from the registered harness's ``CommandBuilder``/``WorkspaceAdapter`` for the
-resolved provider, cron-side.
+resolved provider, cron-side. ``--pretty`` follows the same rule: cron reports the
+dotted path of the harness's own ``StreamRenderer`` and the host only imports it.
 """
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+from ..harness.stream_style import sanitize
 from ..ssh_prelude import wrap_with_ssh_prelude
 from ._project import compose_file_flags, find_project_root
 
@@ -54,6 +57,12 @@ class RunCommand:
                  "--dangerously-bypass-approvals-and-sandbox). Headless is always bypass.",
         )
         parser.add_argument(
+            "--pretty",
+            action="store_true",
+            help="Render the agent's event stream as readable lines instead of raw "
+                 "JSONL. Headless runs only (interactive is already readable).",
+        )
+        parser.add_argument(
             "prompt",
             nargs=argparse.REMAINDER,
             help="Optional one-shot prompt — when present, runs headless instead of interactive",
@@ -74,14 +83,14 @@ class RunCommand:
             sys.exit(1)
 
         # ``prompt`` is captured via argparse.REMAINDER, which greedily swallows
-        # everything after the agent_view_code — including a ``--yolo`` typed in the
-        # natural trailing position (`agento run dev --yolo`). Recover it from the
-        # captured tokens so both `--yolo dev` and `dev --yolo` work.
+        # everything after the agent_view_code — including a ``--yolo``/``--pretty``
+        # typed in the natural trailing position (`agento run dev --yolo`). Recover
+        # them from the captured tokens so both orders work. Cost of the recovery:
+        # a literal flag token inside the prompt text is stripped from the prompt.
         prompt_tokens = list(args.prompt)
-        yolo = bool(getattr(args, "yolo", False))
-        if "--yolo" in prompt_tokens:
-            yolo = True
-            prompt_tokens = [t for t in prompt_tokens if t != "--yolo"]
+        yolo = bool(getattr(args, "yolo", False)) or "--yolo" in prompt_tokens
+        pretty = bool(getattr(args, "pretty", False)) or "--pretty" in prompt_tokens
+        prompt_tokens = [t for t in prompt_tokens if t not in ("--yolo", "--pretty")]
         prompt = " ".join(prompt_tokens).strip()
         runtime = _fetch_runtime(
             compose_flags, args.agent_view_code, prompt=prompt, yolo=yolo,
@@ -145,10 +154,20 @@ class RunCommand:
             # Pass the secret via the child env so docker reads it from there
             # for each name-only -e KEY entry — never via argv.
             child_env = {**os.environ, **secret_env}
+            renderer = _load_stream_renderer(runtime) if pretty else None
+            if renderer is not None:
+                sys.exit(_run_pretty(exec_args, child_env, renderer))
             result = subprocess.run(
                 exec_args, stdin=subprocess.DEVNULL, env=child_env,
             )
             sys.exit(result.returncode)
+
+        if pretty:
+            print(
+                "Note: --pretty applies to headless runs (with a prompt); "
+                "the interactive agent CLI already renders its own output.",
+                file=sys.stderr,
+            )
 
         term = os.environ.get("TERM", "xterm-256color")
         exec_args = [
@@ -167,6 +186,76 @@ class RunCommand:
         # so docker resolves them from the parent for each name-only -e KEY.
         os.environ.update(secret_env)
         os.execvp("docker", exec_args)
+
+
+def _load_stream_renderer(runtime: dict):
+    """Import the harness's own stream renderer from the path cron reported.
+
+    ``prepare-run`` sends a dotted ``module:Class`` path taken from the harness
+    adapter it already loaded — the host never maps a harness id to a module, so
+    no harness literal appears here. Returns ``None`` whenever the renderer
+    cannot be used, which makes ``--pretty`` degrade to the raw stream instead
+    of failing the run.
+    """
+    path = runtime.get("stream_renderer")
+    if not isinstance(path, str) or ":" not in path:
+        return None
+    module_name, _, class_name = path.partition(":")
+    # The path comes from the container. Only the framework's own package is
+    # importable here — a module loaded by file path cron-side gets a synthetic
+    # name that this check rejects, along with anything else unexpected.
+    if module_name != "agento" and not module_name.startswith("agento."):
+        return None
+    try:
+        module = importlib.import_module(module_name)
+        return getattr(module, class_name)()
+    except Exception as exc:
+        print(
+            f"Note: --pretty unavailable ({exc}); streaming raw output.",
+            file=sys.stderr,
+        )
+        return None
+
+
+def _run_pretty(exec_args: list[str], child_env: dict, renderer) -> int:
+    """Stream the agent's stdout through ``renderer``; return its exit code.
+
+    A line the renderer cannot handle is printed raw, so no output is ever lost.
+    ``stderr`` stays inherited, exactly as in the raw path. Every event is
+    sanitized before rendering — see :func:`sanitize`; a raw passthrough line is
+    still JSON-escaped and therefore inert.
+    """
+    proc = subprocess.Popen(
+        exec_args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        env=child_env,
+        text=True,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            # Covers a blank line too — the raw stream printed it, so this does.
+            print(line, flush=True)
+            continue
+        if not isinstance(event, dict):
+            print(line, flush=True)
+            continue
+        try:
+            # Sanitize BEFORE rendering, so the renderer's own styling survives
+            # and no renderer can forget to scrub its inputs.
+            rendered = renderer.render(sanitize(event))
+        except Exception:
+            print(line, flush=True)
+            continue
+        # Only ``None`` suppresses. An empty string is a rendered result and is
+        # printed as the blank line the renderer asked for.
+        if rendered is not None:
+            print(rendered, flush=True)
+    return proc.wait()
 
 
 def _fetch_runtime(

@@ -7,6 +7,9 @@ Two modes are selected automatically by presence of a prompt argument:
 | Invocation | Mode | Semantics |
 |---|---|---|
 | `agento run <code>` | **Interactive** | Opens a TTY session inside the sandbox (`docker exec -it`). Signals, paste, arrow keys work as if the CLI were local. The agent's own per-action approval prompts apply — unless you pass `--yolo`. |
+| `agento run <code> "<prompt>"` | **Headless (one-shot)** | Runs the agent with the given prompt, streams output to your terminal, then exits with the agent's exit code (`docker exec -T`). Stdin is closed. Add `--pretty` for a readable stream. |
+
+Shortcut: `ru`.
 
 ### `--yolo` — skip interactive approval prompts
 
@@ -18,9 +21,32 @@ agento run --yolo dev_01        # same — flag may precede the code
 ```
 
 This is safe by construction: the agent runs inside the isolated `sandbox` container with no credentials of its own (the toolbox is the only container with secrets). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
-| `agento run <code> "<prompt>"` | **Headless (one-shot)** | Runs the agent with the given prompt, streams output to your terminal, then exits with the agent's exit code (`docker exec -T`). Stdin is closed. |
 
-Shortcut: `ru`.
+### `--pretty` — human-readable event stream
+
+A headless run streams the agent CLI's own machine format — Claude Code `stream-json` JSONL, Codex `--json` NDJSON. That is right for parsing and unreadable for a person watching the run. `--pretty` renders each event as one line instead:
+
+```bash
+agento run qa_01 --pretty "create a PR for this branch"
+agento run --pretty qa_01 "…"    # same — flag may precede the code
+```
+
+```
+· claude-opus-4-6 · session 1f48657e · 42 tools
+I will read the branch first.
+⏺ Bash(git log --oneline -5)
+  ⎿  c928a7f [feat] New channel: GitHub (+4 lines)
+✓ done · 4 turns · 31.2s · $0.1140
+```
+
+Notes:
+- Applies to **headless** runs only. Interactive sessions already draw their own output, so the flag prints a note and is ignored there.
+- Raw JSONL stays the default — nothing about the machine-readable path changes.
+- **It never loses output.** A line that is not JSON, a renderer that raises, or a harness with no renderer all fall back to printing the raw line, so `--pretty` can degrade but never swallow or crash a run.
+- Colour is used only when stdout is a TTY, so `agento run … --pretty > log.txt` yields clean text.
+- A result is shown as its **first line**; the rest is counted, not hidden — `… (+4 lines)`. Drop `--pretty` for the whole text.
+
+Rendering is per harness, because each harness's stream format is its own: the framework asks the harness for a `StreamRenderer` rather than parsing the events itself. A harness that ships none simply has no pretty mode. See [harness contract](../architecture/harness-contract.md).
 
 ## Usage
 
@@ -68,7 +94,7 @@ Exit code of the agent CLI is propagated to the shell, so headless mode composes
 2. Validates that a build exists on the host at `workspace/build/<workspace>/<agent_view>/current/`.
 3. Executes the returned command inside `sandbox` with `HOME` and `-w` (cwd) both set to the per-run artifacts dir. Any API-key values from the `env` field are injected via docker's **name-only** `-e KEY` form so the secret never appears in `ps`/argv — the value is read from the parent process's environment:
    - **Interactive:** `os.environ.update(env); os.execvp("docker", [..., "exec", "-it", "-u", "agent", "-e", "HOME=…", "-e", "TERM=…", *[("-e", k) for k in env], "-w", <working_dir>, "sandbox", *command])` — replaces the current process so the TTY transfer is clean.
-   - **Headless:** `subprocess.run([..., "exec", "-T", "-u", "agent", "-e", "HOME=…", *[("-e", k) for k in env], "-w", <working_dir>, "sandbox", *command], env={**os.environ, **env}, stdin=subprocess.DEVNULL)` — waits for completion and propagates the exit code.
+   - **Headless:** `subprocess.run([..., "exec", "-T", "-u", "agent", "-e", "HOME=…", *[("-e", k) for k in env], "-w", <working_dir>, "sandbox", *command], env={**os.environ, **env}, stdin=subprocess.DEVNULL)` — waits for completion and propagates the exit code. With `--pretty` the same argv runs under `subprocess.Popen(..., stdout=subprocess.PIPE)` so the host can render each event line; `stdin`, env and the exit code are identical, and `stderr` stays inherited.
 
 ## Agent-Agnostic Architecture
 
@@ -175,7 +201,7 @@ agento agent_view:runtime dev_01 --prompt "hello" --model claude-sonnet-4-6
 
 ### `agent_view:prepare-run` — what `agento run` actually invokes
 
-This is the command the host calls under the hood. It resolves a token (stamps `used_at` in the LRU pool!), materializes the per-run artifacts directory on `/workspace`, and returns the unified `command` plus an `env` dict for API-key credential delivery. **Calling it has side effects** (token rotation + artifacts dir creation) — use sparingly when introspecting.
+This is the command the host calls under the hood. It resolves a token (stamps `used_at` in the LRU pool!), materializes the per-run artifacts directory on `/workspace`, and returns the unified `command`, the harness's `stream_renderer` path (for `--pretty`; `null` when the harness ships none), plus an `env` dict for API-key credential delivery. **Calling it has side effects** (token rotation + artifacts dir creation) — use sparingly when introspecting.
 
 ```bash
 agento agent_view:prepare-run dev_01 --prompt "hello"
@@ -188,6 +214,7 @@ agento agent_view:prepare-run dev_01 --prompt "hello"
 #                "--mcp-config", ".mcp.json", "--strict-mcp-config",
 #                "--output-format", "stream-json", "--verbose",
 #                "--model", "claude-opus-4-6"],
+#    "stream_renderer": "agento.modules.claude.src.stream_renderer:ClaudeStreamRenderer",
 #    "env": {"ANTHROPIC_API_KEY": "sk-ant-…"},
 #    "credential_id": 42, "token_id": 42}
 ```

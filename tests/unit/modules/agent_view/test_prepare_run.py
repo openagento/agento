@@ -71,7 +71,10 @@ def writer_stub():
     return w
 
 
-def _run_command(args, runtime, token, builder, writer, home, working_dir, *, return_mocks=False):
+def _run_command(
+    args, runtime, token, builder, writer, home, working_dir, *,
+    return_mocks=False, harness=None,
+):
     """Drive the command's ``execute`` with all heavy deps mocked."""
     from agento.modules.agent_view.src.commands.prepare_run import (
         AgentViewPrepareRunCommand,
@@ -97,7 +100,8 @@ def _run_command(args, runtime, token, builder, writer, home, working_dir, *, re
     ) as mock_materialize, patch(
         "agento.framework.harness.workspace_adapter_for", return_value=writer,
     ), patch(
-        "agento.framework.harness.get_harness", return_value=_harness_with(builder),
+        "agento.framework.harness.get_harness",
+        return_value=harness if harness is not None else _harness_with(builder),
     ):
         MockResolver.return_value.resolve.return_value = token
         buf = io.StringIO()
@@ -229,3 +233,54 @@ class TestAgentViewPrepareRunCommand:
         # error message because the cron-side path didn't crash.
         assert payload["harness"] == "claude"
         assert payload["env"] == {"ANTHROPIC_API_KEY": "sk-ant-SECRET"}
+        # Nothing to render either — the host falls back to the raw stream.
+        assert payload["stream_renderer"] is None
+
+    def test_payload_carries_the_harness_stream_renderer_path(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        """`agento run --pretty` learns its renderer from this field only.
+
+        The value is the dotted path of the class the cron-side adapter already
+        holds, so the host never maps a harness id to a module.
+        """
+        from agento.modules.claude.src.stream_renderer import ClaudeStreamRenderer
+
+        harness = _harness_with(builder_stub)
+        harness.adapter.stream_renderer = ClaudeStreamRenderer()
+        payload = _run_command(
+            _make_args(), runtime_stub, token_stub, builder_stub, writer_stub,
+            tmp_path / "artifacts", tmp_path / "artifacts",
+            harness=harness,
+        )
+        assert payload["stream_renderer"] == (
+            "agento.modules.claude.src.stream_renderer:ClaudeStreamRenderer"
+        )
+
+    def test_renderer_not_satisfying_the_protocol_yields_a_null_path(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        # A half-implemented renderer must not reach the host, where it would
+        # raise once per event. Degrade to the raw stream instead.
+        class NotARenderer:
+            pass
+
+        harness = _harness_with(builder_stub)
+        harness.adapter.stream_renderer = NotARenderer()
+        payload = _run_command(
+            _make_args(), runtime_stub, token_stub, builder_stub, writer_stub,
+            tmp_path / "artifacts", tmp_path / "artifacts",
+            harness=harness,
+        )
+        assert payload["stream_renderer"] is None
+
+    def test_harness_without_a_renderer_yields_a_null_path(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        # A harness that never declares one (any future harness, by default) must
+        # still produce a valid payload — `--pretty` then streams raw.
+        payload = _run_command(
+            _make_args(), runtime_stub, token_stub, builder_stub, writer_stub,
+            tmp_path / "artifacts", tmp_path / "artifacts",
+        )
+        assert payload["stream_renderer"] is None

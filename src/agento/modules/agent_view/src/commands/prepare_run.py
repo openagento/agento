@@ -63,6 +63,7 @@ class AgentViewPrepareRunCommand:
         from agento.framework.harness import (
             HarnessRunContext,
             RunRequest,
+            StreamRenderer,
             get_harness,
             resolve_provider,
             workspace_adapter_for,
@@ -166,11 +167,31 @@ class AgentViewPrepareRunCommand:
         # ``command: null`` so the host ``RunCommand`` can show its actionable
         # "no harness registered" hint instead of cron raising a traceback.
         command: list[str] | None
+        # Dotted path of the harness's own stream renderer, for `agento run --pretty`.
+        # ``getattr`` because the member is optional: a harness without one simply
+        # has no pretty mode and the host streams raw.
+        stream_renderer: str | None = None
         try:
-            builder = get_harness(runtime.harness).adapter.command_builder
+            adapter = get_harness(runtime.harness).adapter
+            builder = adapter.command_builder
         except (ValueError, KeyError):
             command = None
         else:
+            renderer = getattr(adapter, "stream_renderer", None)
+            # Ship the path only for something that actually satisfies the
+            # protocol. A half-implemented renderer would otherwise reach the
+            # host and raise once per event; degrading to raw is the safe answer.
+            if isinstance(renderer, StreamRenderer):
+                stream_renderer = (
+                    f"{type(renderer).__module__}:{type(renderer).__qualname__}"
+                )
+            elif renderer is not None:
+                print(
+                    f"Warning: harness {runtime.harness!r} declares a stream_renderer "
+                    f"that does not implement StreamRenderer.render — `agento run "
+                    f"--pretty` will stream raw output.",
+                    file=sys.stderr,
+                )
             ctx = HarnessRunContext(
                 harness=runtime.harness,
                 provider=provider_desc.id,
@@ -198,6 +219,7 @@ class AgentViewPrepareRunCommand:
             "home": str(home) if home is not None else None,
             "working_dir": str(working_dir) if working_dir is not None else None,
             "command": command,
+            "stream_renderer": stream_renderer,
             "env": env,
             "credential_id": credential.id if credential is not None else None,
             # Deprecated duplicate of credential_id, kept for one release so an older

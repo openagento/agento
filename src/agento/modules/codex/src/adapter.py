@@ -16,6 +16,7 @@ from agento.modules.codex.src.auth import CodexCredentialAuthenticator
 from agento.modules.codex.src.command_builder import CodexCommandBuilder
 from agento.modules.codex.src.config import CodexWorkspaceAdapter
 from agento.modules.codex.src.runner import CodexSubprocessRunner
+from agento.modules.codex.src.stream_renderer import CodexStreamRenderer
 from agento.modules.codex.src.transcript_reader import CodexTranscriptReader
 
 CREDENTIAL_SCOPE = CredentialScope("codex")
@@ -26,6 +27,7 @@ class CodexHarnessAdapter:
         self._command_builder = CodexCommandBuilder()
         self._workspace_adapter = CodexWorkspaceAdapter()
         self._transcript_reader = CodexTranscriptReader()
+        self._stream_renderer = CodexStreamRenderer()
         self._authenticators: dict[CredentialScope, CredentialAuthenticator] = {
             CREDENTIAL_SCOPE: CodexCredentialAuthenticator(),
         }
@@ -41,6 +43,10 @@ class CodexHarnessAdapter:
     @property
     def transcript_reader(self) -> CodexTranscriptReader:
         return self._transcript_reader
+
+    @property
+    def stream_renderer(self) -> CodexStreamRenderer:
+        return self._stream_renderer
 
     @property
     def authenticators(self) -> Mapping[CredentialScope, CredentialAuthenticator]:

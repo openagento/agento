@@ -265,6 +265,26 @@ class TranscriptReader(Protocol):
 
 
 @runtime_checkable
+class StreamRenderer(Protocol):
+    """Turns one event of a harness's stdout event stream into terminal text.
+
+    Used by ``agento run --pretty``. The stream formats differ per harness
+    (Claude Code stream-json vs Codex NDJSON vs whatever comes next), so the
+    framework never parses them — it asks the harness's own renderer.
+    """
+
+    def render(self, event: dict) -> str | None:
+        """Return the text to print for ``event``, or ``None`` to suppress it.
+
+        ``None`` means *deliberately hidden* (init noise, echoes) — the caller
+        prints nothing, never the raw JSON. Raising is also allowed: the caller
+        falls back to printing the raw line, so a renderer bug can never
+        swallow a run's output.
+        """
+        ...
+
+
+@runtime_checkable
 class CredentialAuthenticator(Protocol):
     """How credentials for one credential scope are obtained.
 
@@ -306,6 +326,13 @@ class AgentHarnessAdapter(Protocol):
 
     @property
     def transcript_reader(self) -> TranscriptReader | None: ...
+
+    # ``stream_renderer`` (-> StreamRenderer | None) is deliberately NOT declared
+    # here. ``AgentHarnessAdapter`` is ``runtime_checkable`` and ``register_harness``
+    # isinstance-checks every adapter, so a member declared here is *required*: an
+    # existing or third-party harness without it would stop loading entirely. Pretty
+    # rendering must be opt-in, so it is read with ``getattr(adapter,
+    # "stream_renderer", None)`` and a harness that omits it simply streams raw.
 
     @property
     def authenticators(self) -> Mapping[CredentialScope, CredentialAuthenticator]:

@@ -83,11 +83,52 @@ The module supplies one object implementing `AgentHarnessAdapter`, which wires t
 | `CommandBuilder`          | `headless(ctx, request)` and `interactive(ctx, *, yolo)` — **the only** place that harness's CLI flags exist |
 | `WorkspaceAdapter`        | materializes config + credentials into a build/run dir; owns `owned_paths`, `persistent_home_paths`, `capture_refreshed_credentials`, `serialize_toolbox_connection` |
 | `TranscriptReader`        | parses that harness's own session transcript (optional — `None` when it keeps none) |
+| `StreamRenderer`          | renders one **live stdout event** as terminal text for `agento run --pretty` (optional — omit the member entirely and the run streams raw) |
 | `CredentialAuthenticator` | one per credential-requiring scope: interactive OAuth + `register_from_secret(mode, secret)` |
 | `create_runner(ctx)`      | builds a runner bound to the run context                          |
 
 `descriptor` is deliberately **absent** from the adapter: the framework builds it from
 `di.json` so it can be enumerated without importing the module's Python.
+
+### Adding pretty rendering to a harness
+
+`StreamRenderer` is the seam for `agento run --pretty`. `TranscriptReader` is **not** the
+right one: it reads an on-disk transcript by `session_id`, while `--pretty` renders the
+live stdout stream as it arrives.
+
+A harness opts in with one class and one property — nothing to declare in `di.json`:
+
+```python
+# src/agento/modules/<harness>/src/stream_renderer.py
+from agento.framework.harness.stream_style import BRANCH, BULLET, bold, dim, truncate
+
+class MyStreamRenderer:
+    def render(self, event: dict) -> str | None:
+        ...   # return the line to print, or None to hide this event
+```
+
+```python
+# src/agento/modules/<harness>/src/adapter.py
+    @property
+    def stream_renderer(self) -> MyStreamRenderer:
+        return self._stream_renderer
+```
+
+The member is read with `getattr(adapter, "stream_renderer", None)` and is deliberately
+**not** declared on `AgentHarnessAdapter`: that protocol is `runtime_checkable` and every
+adapter is isinstance-checked at registration, so a declared member would be *required*
+and an existing harness without one would stop loading. Omitting it is a supported state —
+`--pretty` then streams the raw event JSON exactly as it does today.
+
+Cron reports the renderer's dotted `module:Class` path in the `agent_view:prepare-run`
+payload and the host imports it, so `run.py` never maps a harness id to a module. Only
+paths under the `agento.` package are imported; a module loaded from `app/code/` gets a
+synthetic module name that the host cannot import, and such a harness streams raw.
+
+Contract for `render`: return the text to print, `None` to hide the event deliberately, and
+raise if you must — the caller prints the raw line on any exception, so a renderer bug can
+never swallow a run's output. Do not return raw JSON for an event type you do not know; a
+short dim line keeps a silent format change visible.
 
 ### One CommandBuilder, not two
 
