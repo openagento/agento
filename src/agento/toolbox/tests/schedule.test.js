@@ -20,13 +20,18 @@ function fakeServer() {
 }
 
 // db.getCronPool() -> pool.getConnection() -> conn { execute, release }.
-// execute dispatches by SQL: SELECT returns [ [jobRow] ] (or [[]] when missing); INSERT returns [ {affectedRows} ].
-function fakeDb(jobRow, { affectedRows = 1, failExecute = false } = {}) {
+// execute dispatches by SQL:
+//   parent-job SELECT (WHERE id = ?) -> [ [jobRow] ] (or [[]] when missing)
+//   dedupe SELECT (WHERE idempotency_key = ?) -> [ [dupRow] ] when simulating a
+//     duplicate, else [[]]
+//   INSERT -> [ {affectedRows} ]
+function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null } = {}) {
   const calls = { getConnection: 0, executed: [], released: 0 };
   const conn = {
     async execute(sql, params) {
       calls.executed.push({ sql, params });
       if (failExecute) throw new Error('db boom');
+      if (/^\s*SELECT/i.test(sql) && /idempotency_key/i.test(sql)) return [dupRow ? [dupRow] : []];
       if (/^\s*SELECT/i.test(sql)) return [jobRow ? [jobRow] : []];
       return [{ affectedRows }];
     },
@@ -101,8 +106,11 @@ describe('schedule_followup inherits identity from the current job', () => {
     const select = calls.executed[0];
     expect(select.sql).toMatch(/^\s*SELECT/i);
     expect(select.params).toEqual([42]);
-    const insert = calls.executed[1];
-    expect(insert.sql).toMatch(/INSERT IGNORE INTO job/i);
+    const dedup = calls.executed[1];
+    expect(dedup.sql).toMatch(/SELECT id FROM job WHERE idempotency_key/i);
+    const insert = calls.executed[2];
+    expect(insert.sql).toMatch(/INSERT INTO job/i);
+    expect(insert.sql).not.toMatch(/INSERT IGNORE/i);
     // params order: [source, agent_view_id, priority, reference_id, context, idempotencyKey, scheduled_after]
     expect(insert.params[0]).toBe('jira');
     expect(insert.params[1]).toBe(7);
@@ -124,7 +132,7 @@ describe('schedule_followup inherits identity from the current job', () => {
     );
 
     expect(res.isError).toBeFalsy();
-    const insert = calls.executed[1];
+    const insert = calls.executed[2];
     expect(insert.params[3]).toBe(ref);
   });
 
@@ -139,8 +147,31 @@ describe('schedule_followup inherits identity from the current job', () => {
     );
 
     expect(res.isError).toBeFalsy();
-    const insert = calls.executed[1];
+    const insert = calls.executed[2];
     expect(insert.params[1]).toBeNull();
+  });
+
+  it('idempotency key already exists → returns duplicate message without INSERT', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(
+      { source: 'jira', reference_id: 'AI-9', agent_view_id: 7, priority: 20 },
+      { dupRow: { id: 123 } }
+    );
+    register(server, baseCtx({ db, jobId: 42 }));
+
+    const res = await server.tools.schedule_followup.handler(
+      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' }
+    );
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toMatch(/duplicate prevented/i);
+    // parent-job SELECT + dedupe SELECT, but NO INSERT
+    expect(calls.executed).toHaveLength(2);
+    expect(calls.executed[0].sql).toMatch(/^\s*SELECT/i);
+    expect(calls.executed[1].sql).toMatch(/idempotency_key/i);
+    expect(calls.executed.some((c) => /INSERT/i.test(c.sql))).toBe(false);
+    expect(calls.released).toBe(1);
   });
 });
 

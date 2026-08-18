@@ -90,8 +90,23 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
           const isoMinute = scheduledDate.toISOString().slice(0, 16).replace(':', '');
           const idempotencyKey = `followup:${source}:${reference_id}:${isoMinute}`;
 
+          // Dedupe with a SELECT before INSERT: an INSERT IGNORE rejected by the
+          // unique idempotency_key still burns an auto_increment id, growing the job
+          // id counter on every duplicate (AG-22). Check first to keep it flat.
+          const [dup] = await conn.execute(
+            'SELECT id FROM job WHERE idempotency_key = ? LIMIT 1',
+            [idempotencyKey]
+          );
+          if (dup.length > 0) {
+            log('schedule_followup', 'DUP', `user=${user} source=${source} ref=${reference_id} key=${idempotencyKey}`);
+            return {
+              content: [{ type: 'text', text:
+                `Follow-up already scheduled for ${reference_id} at that time (duplicate prevented).` }],
+            };
+          }
+
           const [result] = await conn.execute(
-            `INSERT IGNORE INTO job
+            `INSERT INTO job
                (type, source, agent_view_id, priority, reference_id, context, idempotency_key, status, attempt, max_attempts, scheduled_after)
              VALUES
                ('followup', ?, ?, ?, ?, ?, ?, 'TODO', 0, 3, ?)`,
