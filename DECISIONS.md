@@ -4,6 +4,25 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-08-18 — Job dedupe by SELECT-then-INSERT, not `INSERT IGNORE` (AG-22)
+
+- **`INSERT IGNORE` burns an auto_increment id on every rejected duplicate.** MySQL/InnoDB allocates the
+  next `job.id` *before* the unique-key check on `idempotency_key`, so a duplicate publish that inserts
+  nothing still advances the counter. High-churn sources (an idempotency key that rotates on every remote
+  poll) therefore drove `job.id` up unbounded even though no row was written. The dedupe worked; the id
+  space leaked.
+- **Fix: `SELECT id ... WHERE idempotency_key = ?` first, then a plain `INSERT` only when absent.** No
+  probe row is inserted, so the counter stays flat for duplicates. Applied in both publish paths —
+  `framework/publisher.py` (Python) and `modules/core/toolbox/schedule.js` (the `schedule_followup`
+  tool). The `uq_jobs_idempotency` unique key is kept as the source of truth.
+- **The unique key still guards the race.** SELECT-then-INSERT is not atomic: two publishers can both
+  pass the SELECT. Both paths catch the resulting duplicate-key error and report a duplicate, never an
+  error — the Python path on `pymysql.err.IntegrityError` (rolls back, returns `False`); the JS path on
+  `ER_DUP_ENTRY` (errno 1062), returning the same "duplicate prevented" message as a SELECT hit.
+  Correctness still rests on the unique constraint; the SELECT only spares the common case its wasted id.
+
+---
+
 ## 2026-08-14 — GitHub PR-review channel (`src/agento/modules/github/`)
 
 A port of the Bitbucket channel to GitHub: same two lanes, same zero-trust token boundary, no framework

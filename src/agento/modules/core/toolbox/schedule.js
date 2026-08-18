@@ -90,13 +90,43 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
           const isoMinute = scheduledDate.toISOString().slice(0, 16).replace(':', '');
           const idempotencyKey = `followup:${source}:${reference_id}:${isoMinute}`;
 
-          const [result] = await conn.execute(
-            `INSERT IGNORE INTO job
-               (type, source, agent_view_id, priority, reference_id, context, idempotency_key, status, attempt, max_attempts, scheduled_after)
-             VALUES
-               ('followup', ?, ?, ?, ?, ?, ?, 'TODO', 0, 3, ?)`,
-            [source, agent_view_id, priority, reference_id, instructions, idempotencyKey, mysqlDatetime]
+          // Dedupe with a SELECT before INSERT: an INSERT IGNORE rejected by the
+          // unique idempotency_key still burns an auto_increment id, growing the job
+          // id counter on every duplicate (AG-22). Check first to keep it flat.
+          const [dup] = await conn.execute(
+            'SELECT id FROM job WHERE idempotency_key = ? LIMIT 1',
+            [idempotencyKey]
           );
+          if (dup.length > 0) {
+            log('schedule_followup', 'DUP', `user=${user} source=${source} ref=${reference_id} key=${idempotencyKey}`);
+            return {
+              content: [{ type: 'text', text:
+                `Follow-up already scheduled for ${reference_id} at that time (duplicate prevented).` }],
+            };
+          }
+
+          let result;
+          try {
+            [result] = await conn.execute(
+              `INSERT INTO job
+                 (type, source, agent_view_id, priority, reference_id, context, idempotency_key, status, attempt, max_attempts, scheduled_after)
+               VALUES
+                 ('followup', ?, ?, ?, ?, ?, ?, 'TODO', 0, 3, ?)`,
+              [source, agent_view_id, priority, reference_id, instructions, idempotencyKey, mysqlDatetime]
+            );
+          } catch (err) {
+            // Race: another publisher inserted the same idempotency_key between our
+            // dedupe SELECT and this INSERT. The unique key rejects it — treat as a
+            // duplicate, not an error (mirrors publisher.py).
+            if (err && (err.code === 'ER_DUP_ENTRY' || err.errno === 1062)) {
+              log('schedule_followup', 'DUP', `user=${user} source=${source} ref=${reference_id} key=${idempotencyKey} (race)`);
+              return {
+                content: [{ type: 'text', text:
+                  `Follow-up already scheduled for ${reference_id} at that time (duplicate prevented).` }],
+              };
+            }
+            throw err;
+          }
 
           if (result.affectedRows > 0) {
             log('schedule_followup', 'OK', `user=${user} source=${source} ref=${reference_id} av=${agent_view_id} at=${mysqlDatetime} key=${idempotencyKey}`);
