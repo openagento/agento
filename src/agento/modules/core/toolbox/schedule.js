@@ -105,13 +105,28 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
             };
           }
 
-          const [result] = await conn.execute(
-            `INSERT INTO job
-               (type, source, agent_view_id, priority, reference_id, context, idempotency_key, status, attempt, max_attempts, scheduled_after)
-             VALUES
-               ('followup', ?, ?, ?, ?, ?, ?, 'TODO', 0, 3, ?)`,
-            [source, agent_view_id, priority, reference_id, instructions, idempotencyKey, mysqlDatetime]
-          );
+          let result;
+          try {
+            [result] = await conn.execute(
+              `INSERT INTO job
+                 (type, source, agent_view_id, priority, reference_id, context, idempotency_key, status, attempt, max_attempts, scheduled_after)
+               VALUES
+                 ('followup', ?, ?, ?, ?, ?, ?, 'TODO', 0, 3, ?)`,
+              [source, agent_view_id, priority, reference_id, instructions, idempotencyKey, mysqlDatetime]
+            );
+          } catch (err) {
+            // Race: another publisher inserted the same idempotency_key between our
+            // dedupe SELECT and this INSERT. The unique key rejects it — treat as a
+            // duplicate, not an error (mirrors publisher.py).
+            if (err && (err.code === 'ER_DUP_ENTRY' || err.errno === 1062)) {
+              log('schedule_followup', 'DUP', `user=${user} source=${source} ref=${reference_id} key=${idempotencyKey} (race)`);
+              return {
+                content: [{ type: 'text', text:
+                  `Follow-up already scheduled for ${reference_id} at that time (duplicate prevented).` }],
+              };
+            }
+            throw err;
+          }
 
           if (result.affectedRows > 0) {
             log('schedule_followup', 'OK', `user=${user} source=${source} ref=${reference_id} av=${agent_view_id} at=${mysqlDatetime} key=${idempotencyKey}`);

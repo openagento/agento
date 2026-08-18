@@ -16,9 +16,10 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   `framework/publisher.py` (Python) and `modules/core/toolbox/schedule.js` (the `schedule_followup`
   tool). The `uq_jobs_idempotency` unique key is kept as the source of truth.
 - **The unique key still guards the race.** SELECT-then-INSERT is not atomic: two publishers can both
-  pass the SELECT. The Python path catches the resulting `pymysql.err.IntegrityError`, rolls back and
-  returns `False` (duplicate), so a lost race is reported as a duplicate, never an error. Correctness
-  still rests on the unique constraint; the SELECT only spares the common case its wasted id.
+  pass the SELECT. Both paths catch the resulting duplicate-key error and report a duplicate, never an
+  error — the Python path on `pymysql.err.IntegrityError` (rolls back, returns `False`); the JS path on
+  `ER_DUP_ENTRY` (errno 1062), returning the same "duplicate prevented" message as a SELECT hit.
+  Correctness still rests on the unique constraint; the SELECT only spares the common case its wasted id.
 
 ---
 

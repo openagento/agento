@@ -25,7 +25,7 @@ function fakeServer() {
 //   dedupe SELECT (WHERE idempotency_key = ?) -> [ [dupRow] ] when simulating a
 //     duplicate, else [[]]
 //   INSERT -> [ {affectedRows} ]
-function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null } = {}) {
+function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null, insertDupError = false } = {}) {
   const calls = { getConnection: 0, executed: [], released: 0 };
   const conn = {
     async execute(sql, params) {
@@ -33,6 +33,14 @@ function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null }
       if (failExecute) throw new Error('db boom');
       if (/^\s*SELECT/i.test(sql) && /idempotency_key/i.test(sql)) return [dupRow ? [dupRow] : []];
       if (/^\s*SELECT/i.test(sql)) return [jobRow ? [jobRow] : []];
+      // Simulate a lost race: the dedupe SELECT saw no row, but a concurrent
+      // publisher inserted the same idempotency_key before this INSERT lands.
+      if (insertDupError) {
+        const err = new Error("Duplicate entry for key 'uq_jobs_idempotency'");
+        err.code = 'ER_DUP_ENTRY';
+        err.errno = 1062;
+        throw err;
+      }
       return [{ affectedRows }];
     },
     release() { calls.released += 1; },
@@ -171,6 +179,27 @@ describe('schedule_followup inherits identity from the current job', () => {
     expect(calls.executed[0].sql).toMatch(/^\s*SELECT/i);
     expect(calls.executed[1].sql).toMatch(/idempotency_key/i);
     expect(calls.executed.some((c) => /INSERT/i.test(c.sql))).toBe(false);
+    expect(calls.released).toBe(1);
+  });
+
+  it('race: INSERT hits the unique key → duplicate message, not an error', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(
+      { source: 'jira', reference_id: 'AI-9', agent_view_id: 7, priority: 20 },
+      { insertDupError: true }
+    );
+    register(server, baseCtx({ db, jobId: 42 }));
+
+    const res = await server.tools.schedule_followup.handler(
+      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' }
+    );
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toMatch(/duplicate prevented/i);
+    // parent-job SELECT + dedupe SELECT + the INSERT that lost the race
+    expect(calls.executed).toHaveLength(3);
+    expect(calls.executed[2].sql).toMatch(/INSERT INTO job/i);
     expect(calls.released).toBe(1);
   });
 });
