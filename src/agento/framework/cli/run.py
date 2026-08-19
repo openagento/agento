@@ -271,7 +271,7 @@ def _fetch_runtime(
     """
     cmd = [
         "docker", "compose", *compose_flags,
-        "exec", "-T", "cron",
+        "exec", "-T", "-u", "agent", "cron",
         "/opt/cron-agent/run.sh", "agent_view:prepare-run", agent_view_code,
     ]
     if prompt:

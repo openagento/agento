@@ -408,6 +408,57 @@ class TestFetchRuntime:
         assert "sk-ant-SECRET" not in err
         assert "could not parse runtime JSON" in err
 
+    def test_execs_as_agent_user(self):
+        """``prepare-run`` MUST run as ``agent``, not root.
+
+        It materializes the per-run HOME and writes ``.claude/.credentials.json``
+        mode 0600, and it also writes back into the SHARED build dir. Without
+        ``-u agent`` docker execs as uid 0, so the agent CLI (started as
+        ``agent`` by ``execute()``) cannot read its own credentials, and the
+        root-owned build dir then breaks ``copy_build_to_artifacts_dir()`` for
+        the consumer too. The flag must sit BEFORE the service name — anything
+        after ``cron`` is an argument to ``run.sh``, not a docker option.
+        """
+        from agento.framework.cli.run import _fetch_runtime
+
+        fake_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=json.dumps(_base_runtime()) + "\n", stderr="",
+        )
+        with patch(
+            "agento.framework.cli.run.subprocess.run", return_value=fake_result,
+        ) as mock_run:
+            _fetch_runtime(["-f", "/x/docker-compose.yml"], "dev_01")
+        assert mock_run.call_args.args[0] == [
+            "docker", "compose", "-f", "/x/docker-compose.yml",
+            "exec", "-T", "-u", "agent", "cron",
+            "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
+        ]
+
+    def test_appends_prompt_and_yolo_after_service_args(self):
+        """``--prompt``/``--yolo`` are arguments to ``prepare-run``, so they go
+        at the TAIL — they must never displace ``-u agent`` from its position
+        before the service name."""
+        from agento.framework.cli.run import _fetch_runtime
+
+        fake_result = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=json.dumps(_base_runtime(prompt=True)) + "\n", stderr="",
+        )
+        with patch(
+            "agento.framework.cli.run.subprocess.run", return_value=fake_result,
+        ) as mock_run:
+            _fetch_runtime(
+                ["-f", "/x/docker-compose.yml"], "dev_01",
+                prompt="hello", yolo=True,
+            )
+        assert mock_run.call_args.args[0] == [
+            "docker", "compose", "-f", "/x/docker-compose.yml",
+            "exec", "-T", "-u", "agent", "cron",
+            "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
+            "--prompt", "hello", "--yolo",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # New contract: cli/run.py calls `agent_view:prepare-run`, which returns a
