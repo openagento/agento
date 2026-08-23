@@ -49,6 +49,9 @@ def token_stub():
 def builder_stub():
     """Stands in for the harness's CommandBuilder (the ex-CliInvoker)."""
     builder = MagicMock()
+    # The protocol returns `str | None`; a bare MagicMock would land in the JSON
+    # payload as an unserialisable object. claude/codex return None here.
+    builder.stdin_payload.return_value = None
     builder.interactive.return_value = ["claude"]
     builder.headless.return_value = [
         "claude", "-p", "hello",
@@ -159,6 +162,44 @@ class TestAgentViewPrepareRunCommand:
         request = builder_stub.headless.call_args.args[1]
         assert (request.prompt, request.model) == ("hello", None)
 
+    def test_payload_carries_the_builders_stdin_verbatim(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        """A command is argv PLUS stdin: the host path must get the same payload the
+        consumer's runner would, or a stdin-only harness runs with its prompt nowhere."""
+        builder_stub.stdin_payload.return_value = "prompt-on-stdin"
+        payload = _run_command(
+            _make_args(prompt="hello"), runtime_stub, token_stub, builder_stub, writer_stub,
+            home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+        )
+        assert payload["stdin"] == "prompt-on-stdin"
+        # Same ctx/request the command was built from — not a second, divergent call.
+        assert builder_stub.stdin_payload.call_args.args[1] is (
+            builder_stub.headless.call_args.args[1]
+        )
+
+    def test_payload_stdin_is_none_for_argv_prompt_harnesses(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        """claude/codex: stdin stays closed, so the field must be null, not absent."""
+        payload = _run_command(
+            _make_args(prompt="hello"), runtime_stub, token_stub, builder_stub, writer_stub,
+            home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+        )
+        assert "stdin" in payload
+        assert payload["stdin"] is None
+
+    def test_interactive_payload_has_no_stdin(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        """No prompt -> interactive TTY; stdin belongs to the terminal, not to us."""
+        builder_stub.stdin_payload.return_value = "must-not-be-used"
+        payload = _run_command(
+            _make_args(prompt=None), runtime_stub, token_stub, builder_stub, writer_stub,
+            home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+        )
+        assert payload["stdin"] is None
+
     def test_secret_never_in_command(
         self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
     ):
@@ -187,6 +228,38 @@ class TestAgentViewPrepareRunCommand:
         assert isinstance(run_id, str)
         assert run_id.startswith("run-")
         assert run_id != "run"
+
+    def test_the_model_override_reaches_materialization(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        """``--model`` must be computed BEFORE the workspace is materialized.
+
+        The workspace bakes the model expectation a harness guard enforces, so an override
+        decided after materialization cannot reach it and the run is failed for doing
+        exactly what was asked. This asserts the ORDERING via the value handed over.
+        """
+        _, mock_materialize = _run_command(
+            _make_args(model="anthropic/claude-haiku-4.5"),
+            runtime_stub, token_stub, builder_stub, writer_stub,
+            home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+            return_mocks=True,
+        )
+        kwargs = mock_materialize.call_args.kwargs
+        assert kwargs["effective_model"] == "anthropic/claude-haiku-4.5"
+
+    def test_without_an_override_the_configured_model_is_passed(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        runtime_stub.model = "anthropic/claude-sonnet-4.5"
+        _, mock_materialize = _run_command(
+            _make_args(), runtime_stub, token_stub, builder_stub, writer_stub,
+            home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+            return_mocks=True,
+        )
+        assert (
+            mock_materialize.call_args.kwargs["effective_model"]
+            == "anthropic/claude-sonnet-4.5"
+        )
 
     def test_unregistered_harness_returns_null_command(
         self, tmp_path, runtime_stub, token_stub, writer_stub,

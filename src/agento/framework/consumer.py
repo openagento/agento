@@ -56,6 +56,8 @@ from .harness import (
     RunRequest,
     RunResult,
     create_runner,
+    get_harness,
+    get_harness_config,
     resolve_provider,
     workspace_adapter_for,
 )
@@ -76,6 +78,20 @@ _DEFAULT_LIMIT_THROTTLE = timedelta(hours=1)
 # refresh capture. 15 min outlasts the 60s/300s retry backoffs, so attempts 2 and 3
 # are guaranteed to land on a different token, while still auto-recovering fast.
 _DEFAULT_TRANSIENT_AUTH_THROTTLE = timedelta(minutes=15)
+
+
+def _should_resume(
+    *, attempt: int, session_id: str | None, pid_alive: bool, can_resume: bool
+) -> bool:
+    """Whether to resume the stored session instead of starting a fresh run.
+
+    ``can_resume`` is the harness's declared ``capabilities.resume`` and is
+    authoritative. A harness that cannot resume must start fresh rather than be
+    handed a session id: the consumer resumes with an EMPTY prompt, so a CLI that
+    merely re-opens the session would exit having done nothing and be recorded as
+    a success. Extracted from ``_run_job`` so the gate is directly testable.
+    """
+    return attempt > 1 and session_id is not None and not pid_alive and can_resume
 
 
 @dataclass
@@ -498,6 +514,7 @@ class Consumer:
                         "--scope=agent_view --scope-id=<id>"
                     )
                 harness = runtime.harness
+                harness_entry = get_harness(harness)
                 provider_desc = resolve_provider(harness, runtime.provider)
                 # Explicit --model flag (e2e/replay) wins over config (ENV/DB) model.
                 model_override = self.model_override or runtime.model
@@ -549,6 +566,11 @@ class Consumer:
                 toolbox_url=toolbox_url,
                 em=em,
                 credential=credential,
+                # The effective model for THIS run — `--model` (e2e/replay) overrides
+                # config. Without it the harness's per-run injection would carry the
+                # build-time value and a legitimate override could be rejected by its
+                # own model guard.
+                effective_model=model_override,
             )
 
             em.dispatch("agent_view_run_start_before", AgentViewRunStartedEvent(
@@ -589,6 +611,10 @@ class Consumer:
                     credential_required=provider_desc.credential_required,
                     credential=credential,
                     extra_env=git_env or {},
+                    harness_config=(
+                        get_harness_config(agent_config_svc, harness_entry)
+                        if agent_config_svc is not None else {}
+                    ),
                 )
                 runner = create_runner(
                     harness,
@@ -611,11 +637,11 @@ class Consumer:
                     on_session_id=_on_session_id,
                 )
 
-                # Resume instead of fresh run if previous attempt left a session_id
-                should_resume = (
-                    job.attempt > 1
-                    and job.session_id is not None
-                    and not self._is_pid_alive(job.pid)
+                should_resume = _should_resume(
+                    attempt=job.attempt,
+                    session_id=job.session_id,
+                    pid_alive=self._is_pid_alive(job.pid),
+                    can_resume=harness_entry.descriptor.capabilities.resume,
                 )
                 if should_resume:
                     self.logger.info(

@@ -1173,3 +1173,16 @@ Each is a one-release compatibility shim; remove all of them together.
 | `--oauth_token` flag alias (`agento replay`, `agento e2e`) | `framework/cli/runtime.py` | drop the second flag name |
 | `_iter_module_dirs` shim | `framework/cli/_provisioning.py` | callers use `framework/module_discovery.py` |
 | Pre-0.15 `agent_view/provider`-as-harness fallback | `framework/agent_view_runtime._resolve_harness_and_provider` | keep until the data patch has demonstrably run everywhere; then delete the legacy branch |
+
+## Ungated Toolbox REST endpoints (raised during the Pi harness work)
+
+`registerModuleRestApis` registers `POST /api/jira/request`, `/api/jira/search`,
+`/api/jira/issue/comments`, `/api/bitbucket/verify` and `/api/outlook/delta` with
+`isToolEnabled` **undefined** (`toolbox/config-loader.js`) — no opt-in, no agent_view
+scope, no binding to a job. `/api/jira/request` is a generic Jira proxy. These are
+reachable from any sandbox over the shared docker network, for **every** harness, and they
+bypass the `is_enabled` allow-list that governs every MCP tool.
+
+Not caused by the Pi work and deliberately out of its scope, but it is a real gap in the
+opt-in tool model and wants its own decision: either gate them behind `isToolEnabled` like
+the MCP tools, or remove them if the MCP path has superseded them.

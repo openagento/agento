@@ -196,7 +196,7 @@ Five kinds of content land in a build. Three come from the filesystem via the sh
 | # | Source | Write path | How it lands |
 |---|---|---|---|
 | 1 | **Theme** (`workspace/theme/` + `_{ws}` + `_{ws}/_{av}`) | build root | manifest-driven; strategy = `workspace_build/strategy/theme` |
-| 2 | **WorkspaceAdapter output** (`.claude.json`, `.mcp.json`, `.codex/config.toml`) | build root | generated from scoped config — strategy does not apply |
+| 2 | **WorkspaceAdapter output** (`.claude.json`, `.mcp.json`, `.codex/config.toml`, `.pi/`) | build root | generated from scoped config — strategy does not apply |
 | 3 | **Instructions** (`AGENTS.md`, `SOUL.md`, `CLAUDE.md`) | build root | generated from DB overrides (falls back to theme file) |
 | 4 | **Modules** (each enabled module's `workspace/` + `_{ws}` + `_{ws}/_{av}`) | `build/modules/{name}/` | manifest-driven; strategy = `workspace_build/strategy/modules` |
 | 5 | **Skills** (enabled skill dirs) | `build/.claude/skills/{name}/` | manifest-driven (single-layer); strategy = `workspace_build/strategy/skills` |

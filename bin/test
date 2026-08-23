@@ -196,12 +196,20 @@ fi
 echo ""
 
 # ============================================================
-echo -e "${CYAN}[5/8] ESLint (Toolbox)${NC}"
+echo -e "${CYAN}[5/8] ESLint (Toolbox + module bridges)${NC}"
 echo "========================================"
 
+# Two invocations, not one. ESLint refuses paths outside its config's base directory, so
+# `eslint .` from the toolbox dir CANNOT reach a module's bridge — and it does not follow
+# imports either, so a test importing a bridge does not pull its source into the lint set.
+# Without the second pass a bridge would ship unlinted while this step reported success.
+eslint_ok=1
 cd "$PROJECT_DIR/src/agento/toolbox"
-if npx eslint . 2>&1; then
-  echo -e "  ${GREEN}eslint: all checks passed${NC}"
+npx eslint . 2>&1 || eslint_ok=0
+cd "$PROJECT_DIR/src/agento"
+npx --prefix toolbox eslint --config toolbox/eslint.config.js "modules/*/bridge/**/*.js" 2>&1 || eslint_ok=0
+if [ "$eslint_ok" = "1" ]; then
+  echo -e "  ${GREEN}eslint: all checks passed (toolbox + bridges)${NC}"
   ((pass++)) || true
 else
   ((fail++)) || true

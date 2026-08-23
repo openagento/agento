@@ -1,6 +1,6 @@
 # Agento Developer Documentation
 
-Agento is an AI agent framework that automates Jira tasks using Claude Code / OpenAI Codex in Docker containers, with Magento-inspired modular architecture.
+Agento is an AI agent framework that automates Jira tasks using AI coding agents (Claude Code, OpenAI Codex, Pi) in Docker containers, with Magento-inspired modular architecture.
 
 ## Start Here
 

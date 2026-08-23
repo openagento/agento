@@ -82,6 +82,8 @@ def copy_build_to_artifacts_dir(
     *,
     job_id: int | None = None,
     harness: str | None = None,
+    effective_model: str | None = None,
+    effective_provider: str | None = None,
 ) -> None:
     """Thin bootstrap: copy small config files, symlink large readonly content.
 
@@ -110,10 +112,48 @@ def copy_build_to_artifacts_dir(
             dest.symlink_to(item.resolve())
 
     # Inject runtime params via provider-specific WorkspaceAdapter
-    if job_id is not None and harness is not None:
+    if harness is not None:
         try:
+            import inspect as _inspect
+
             from agento.framework.harness import workspace_adapter_for
             writer = workspace_adapter_for(harness)
-            writer.inject_runtime_params(artifacts_dir, job_id=job_id)
+            kwargs: dict = {"job_id": job_id}
+            # `effective_*` are the PER-RUN values (a `--model` override wins over
+            # build-time config). A build-time expectation would otherwise fail a
+            # legitimate override. Signature-aware so an adapter predating these keywords
+            # is not handed an unknown one.
+            # An EXPLICITLY NAMED override parameter, never `**kwargs`. A legacy adapter may
+            # carry `**kwargs` purely for forward compatibility while still declaring
+            # `job_id: int` — treating that as "understands a job-less run" would hand it a
+            # `None` it renders into its config as the literal "None". So `**kwargs` is good
+            # enough to RECEIVE an override alongside a real job id, but only a named
+            # parameter admits the job-less call.
+            declares_model = declares_provider = takes_kwargs = False
+            try:
+                params = _inspect.signature(writer.inject_runtime_params).parameters
+                takes_kwargs = any(
+                    prm.kind is _inspect.Parameter.VAR_KEYWORD for prm in params.values()
+                )
+                declares_model = "effective_model" in params
+                declares_provider = "effective_provider" in params
+                if effective_model and (declares_model or takes_kwargs):
+                    kwargs["effective_model"] = effective_model
+                if effective_provider and (declares_provider or takes_kwargs):
+                    kwargs["effective_provider"] = effective_provider
+            except (TypeError, ValueError):  # pragma: no cover - exotic callables
+                pass
+            # A `None` job_id (a string-id `agento run`) has no job scope to inject, so the
+            # call is worth making ONLY to apply a per-run override — and only to an adapter
+            # that named the keyword for the override actually being supplied. Both halves
+            # are checked independently: an adapter that declares `effective_provider` alone
+            # was previously excluded, because the gate keyed on `effective_model` only.
+            explicit_override = bool(
+                (effective_model and declares_model)
+                or (effective_provider and declares_provider)
+            )
+            if job_id is None and not explicit_override:
+                return
+            writer.inject_runtime_params(artifacts_dir, **kwargs)
         except KeyError:
             logger.warning("No WorkspaceAdapter for harness %r, skipping runtime param injection", harness)

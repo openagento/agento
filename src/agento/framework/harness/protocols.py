@@ -6,6 +6,7 @@ module directly and never branches on a harness id.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -105,6 +106,17 @@ class CommandBuilder(Protocol):
         """
         ...
 
+    def stdin_payload(self, ctx: HarnessRunContext, req: RunRequest) -> str | None:
+        """Text to write to the process stdin, which is then closed. ``None`` -> DEVNULL.
+
+        A command is argv *plus* stdin: some CLIs take the prompt only on stdin
+        (argv-borne prompts starting with ``-`` are parsed as flags). Both spawn
+        paths — the consumer's runner and ``agento run`` on the host — ask the same
+        builder, so they can never disagree about how the prompt is delivered.
+        Return ``None`` to keep stdin closed.
+        """
+        ...
+
 
 @runtime_checkable
 class WorkspaceAdapter(Protocol):
@@ -121,9 +133,39 @@ class WorkspaceAdapter(Protocol):
         *,
         agent_view_id: int | None = None,
         toolbox_url: str,
-    ) -> None: ...
+        harness_config: dict[str, str] | None = None,
+    ) -> None:
+        """Materialize this harness's configuration into ``working_dir``.
 
-    def inject_runtime_params(self, artifacts_dir: Path, *, job_id: int) -> None: ...
+        ``agent_config`` is the flattened ``agent_view/*`` config. ``harness_config`` is
+        the harness's OWN allow-listed module config (see ``runtime_config_fields``), for
+        the cases where a build-time file has to reflect it; ``None`` when the harness
+        declares no such fields.
+        """
+        ...
+
+    def inject_runtime_params(self, artifacts_dir: Path, *, job_id: int | None) -> None:
+        """Apply per-run facts to the copied build in ``artifacts_dir``.
+
+        ``job_id`` is the job scope, or ``None`` for a run that has no job — ``agento run``
+        identifies its run by a string id. An adapter that only scopes by job id may
+        return early on ``None``.
+
+        An adapter MAY additionally accept ``effective_model`` / ``effective_provider``
+        keyword arguments — the per-run values, where a ``--model`` override wins over
+        build-time config. The framework inspects the signature and passes each one only to
+        an adapter that can receive it: a NAMED parameter, or ``**kwargs``.
+
+        These two rules interact, and the interaction is the contract. ``job_id=None`` is
+        passed ONLY to an adapter that declares a NAMED ``effective_model`` or
+        ``effective_provider`` parameter matching the override actually supplied — there is
+        otherwise nothing for the call to do. ``**kwargs`` deliberately does NOT qualify: it
+        is a forward-compatibility idiom, so an adapter could carry it while still declaring
+        ``job_id: int``, and it would then be handed a ``None`` it renders as the literal
+        "None". So if you name an ``effective_*`` parameter, also widen ``job_id`` to
+        ``int | None``.
+        """
+        ...
 
     def owned_paths(self) -> tuple[set[str], set[str]]:
         """Return (files, dirs) owned by this harness.
@@ -207,8 +249,8 @@ class WorkspaceAdapter(Protocol):
         """Materialize the Toolbox connection however this harness consumes it.
 
         Deliberately unconstrained: an MCP JSON file, CLI flags, an extension install,
-        or env vars are all valid — the framework does not assume MCP (Pi, for one, has
-        no MCP at all).
+        or env vars are all valid — the framework does not assume MCP, because not
+        every harness supports it.
 
         **Not yet on the framework's own call path.** The two shipped harnesses still
         materialize their Toolbox wiring inside :meth:`prepare_workspace`, which already
@@ -357,3 +399,51 @@ def get_agent_config(svc) -> dict[str, str]:
         for path, value in svc.resolve_all().items()
         if path.startswith(AGENT_CONFIG_PREFIX)
     }
+
+
+def supply_harness_config(writer, kwargs: dict, harness_config: dict[str, str]) -> dict:
+    """Add ``harness_config`` to ``kwargs`` only if ``writer`` accepts it.
+
+    ``prepare_workspace`` gained the keyword after third-party adapters were already
+    possible. A default in the Protocol does NOT make an existing implementation accept
+    an unknown keyword — passing it unconditionally raises ``TypeError`` in someone else's
+    adapter. So the caller asks first. An adapter that does not take it simply does not
+    receive it, which is correct: not taking it means not using it.
+    """
+    if not harness_config:
+        return kwargs
+    try:
+        params = inspect.signature(writer.prepare_workspace).parameters
+    except (TypeError, ValueError):  # pragma: no cover - exotic callables
+        return kwargs
+    accepts = "harness_config" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    if accepts:
+        return {**kwargs, "harness_config": harness_config}
+    return kwargs
+
+
+def get_harness_config(svc, registered) -> dict[str, str]:
+    """The harness's OWN allow-listed config, for command construction.
+
+    Resolves only the exact paths ``{module}/{field}`` named by the declaration's
+    ``runtime_config_fields``. Deliberately NOT built on ``svc.resolve_all()``:
+    that resolves every declared path, and ``_resolve_from_db`` decrypts every
+    ``obscure`` value on the way — Jira/Outlook/Bitbucket secrets included. This
+    dict lands on ``HarnessRunContext``, which builds argv, so it must contain
+    exactly what the manifest allow-listed and nothing else.
+
+    The namespace comes from the declaring MODULE, never the harness id: config
+    paths are ``{module}/{field}`` and the two names differ in practice.
+    """
+    fields = getattr(registered, "runtime_config_fields", ()) or ()
+    module = getattr(registered, "module", "") or ""
+    if not fields or not module:
+        return {}
+    out: dict[str, str] = {}
+    for fname in fields:
+        value = svc.get(f"{module}/{fname}")
+        if value is not None:
+            out[fname] = value
+    return out

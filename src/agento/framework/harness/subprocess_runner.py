@@ -10,6 +10,7 @@ Formerly ``agent_manager.runner.TokenRunner``. Two things changed beyond the mov
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
@@ -142,11 +143,19 @@ class SubprocessRunner(ABC):
 
     # -- process execution ----------------------------------------------------
 
-    def _execute_process(self, cmd: list[str], env: dict) -> subprocess.CompletedProcess:
+    def _execute_process(
+        self, cmd: list[str], env: dict, stdin_payload: str | None = None
+    ) -> subprocess.CompletedProcess:
         """Execute a subprocess with incremental output reading.
 
         Reads stdout/stderr in threads so that the session id can be reported via
         callback immediately, and partial output survives a timeout.
+
+        ``stdin_payload`` is written from its OWN thread and the stream is then
+        closed. It cannot be written inline: a harness may read stdin only after
+        doing startup work (loading extensions, opening a network handshake), so a
+        payload larger than the pipe buffer would block the parent — and the
+        timeout logic (``proc.wait``) lives on this thread.
         """
         if self.context.home_dir is not None:
             env = {**env, "HOME": self.context.home_dir}
@@ -156,13 +165,35 @@ class SubprocessRunner(ABC):
 
         proc = subprocess.Popen(
             spawn_cmd,
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE if stdin_payload is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             cwd=self.context.working_dir,
             env=env,
         )
+
+        stdin_thread: threading.Thread | None = None
+        if stdin_payload is not None:
+            # Bind the pipe once: `stdin=PIPE` was requested above, so it exists, and
+            # the local keeps the type checker from seeing `IO | None` on every use.
+            stdin_pipe = proc.stdin
+            assert stdin_pipe is not None
+
+            def _write_stdin() -> None:
+                try:
+                    stdin_pipe.write(stdin_payload)
+                except (BrokenPipeError, ValueError, OSError):
+                    # The child died before reading it all — a failed extension load
+                    # exits before touching stdin. Swallow it so the normal rc!=0 path
+                    # reports the real error instead of this symptom.
+                    pass
+                finally:
+                    with contextlib.suppress(BrokenPipeError, ValueError, OSError):
+                        stdin_pipe.close()
+
+            stdin_thread = threading.Thread(target=_write_stdin, daemon=True)
+            stdin_thread.start()
 
         if self.pid_callback:
             try:
@@ -206,6 +237,8 @@ class SubprocessRunner(ABC):
 
         stdout_thread.join(timeout=5)
         stderr_thread.join(timeout=5)
+        if stdin_thread is not None:
+            stdin_thread.join(timeout=5)
 
         stdout = "".join(stdout_lines)
         stderr = "".join(stderr_lines)
@@ -252,7 +285,12 @@ class SubprocessRunner(ABC):
         self._log_cmd = self._cmd_metadata(cmd, request)
         self.logger.info(f"{ctx.harness}-cli exec: {self._log_cmd}")
 
-        proc = self._execute_process(cmd, env)
+        # A command is argv plus stdin. Builders that do not use stdin return None
+        # (getattr keeps a third-party builder predating this contract working).
+        payload = getattr(self.command_builder, "stdin_payload", lambda *_: None)(
+            ctx, request
+        )
+        proc = self._execute_process(cmd, env, payload)
         self.logger.info(
             f"{ctx.harness}-cli rc={proc.returncode} "
             f"stdout={len(proc.stdout)}b stderr={len(proc.stderr)}b"

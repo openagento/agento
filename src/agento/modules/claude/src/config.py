@@ -283,6 +283,7 @@ class ClaudeWorkspaceAdapter:
         *,
         agent_view_id: int | None = None,
         toolbox_url: str,
+        harness_config: dict[str, str] | None = None,
     ) -> None:
         working_dir.mkdir(parents=True, exist_ok=True)
         self._write_claude_json(working_dir, agent_config)
@@ -297,8 +298,18 @@ class ClaudeWorkspaceAdapter:
         self,
         artifacts_dir: Path,
         *,
-        job_id: int,
+        job_id: int | None,
     ) -> None:
+        """Scope the copied config to one job.
+
+        ``job_id=None`` means the run has no job scope (a string-id ``agento run``). There
+        is nothing to scope then, so return early rather than render the literal "None"
+        into the config. The framework does not currently make this call for this adapter —
+        it only passes ``None`` to adapters that name an ``effective_*`` override keyword —
+        but the Protocol permits it, so honouring it here keeps the declared type true.
+        """
+        if job_id is None:
+            return
         mcp_path = artifacts_dir / ".mcp.json"
         if not mcp_path.is_file():
             return

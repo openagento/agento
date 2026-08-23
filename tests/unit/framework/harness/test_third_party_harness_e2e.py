@@ -34,7 +34,9 @@ def fake_harness():
     clear()
     module_dir = FIXTURES / "fake_harness"
     for decl in parse_harness_declarations(module_dir / "di.json", "fake_harness"):
-        register_harness(decl.descriptor, import_class(module_dir, decl.class_path)())
+        register_harness(decl.descriptor, import_class(module_dir, decl.class_path)(),
+                             decl.module, decl.runtime_config_fields,
+                             _module_config_schema(module_dir))
     yield
     clear()
 
@@ -157,3 +159,17 @@ class TestCredentiallessProvider:
         assert recorded[0]["credential_id"] is None
         assert (recorded[0]["harness"], recorded[0]["provider"]) == ("fake", "fake_local")
         assert recorded[0]["tokens_used"] == 5
+
+
+def _module_config_schema(module_dir):
+    """Read the fixture module's system.json (empty when it has none)."""
+    import json as _json
+    from pathlib import Path as _Path
+    p = _Path(module_dir) / "system.json"
+    if not p.is_file():
+        return {}
+    try:
+        data = _json.loads(p.read_text())
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}

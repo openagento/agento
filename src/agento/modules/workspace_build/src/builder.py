@@ -568,7 +568,10 @@ def execute_build(conn, agent_view_id: int, *, force: bool = False) -> BuildResu
     from agento.framework.config_resolver import ScopedConfigService
     from agento.framework.harness import (
         get_agent_config,
+        get_harness,
+        get_harness_config,
         persistent_home_paths_for,
+        supply_harness_config,
         workspace_adapter_for,
     )
     from agento.framework.scoped_config import Scope
@@ -699,11 +702,12 @@ def execute_build(conn, agent_view_id: int, *, force: bool = False) -> BuildResu
             core_cfg = ScopedConfigService(conn).get_module("core") or {}
             toolbox_url = core_cfg.get("toolbox/url") or "http://toolbox:3001"
             writer = workspace_adapter_for(runtime.harness)
-            writer.prepare_workspace(
-                build_dir, agent_config,
-                agent_view_id=agent_view_id,
-                toolbox_url=toolbox_url,
+            kwargs = supply_harness_config(
+                writer,
+                {"agent_view_id": agent_view_id, "toolbox_url": toolbox_url},
+                get_harness_config(svc, get_harness(runtime.harness)),
             )
+            writer.prepare_workspace(build_dir, agent_config, **kwargs)
             migrate_legacy_workspace_config(writer, build_dir)
 
         # 3. Instruction files (AGENTS.md, SOUL.md, CLAUDE.md)

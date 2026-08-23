@@ -24,6 +24,8 @@ RUN apt-get update && \
     ln -s /opt/mssql-tools18/bin/bcp /usr/local/bin/bcp && \
     # Lightweight editor (for crontab -e, etc.) + gosu for entrypoint user-switching
     apt-get install -y --no-install-recommends nano gosu && \
+    # Debian ships fd as `fdfind`; agents look for `fd` too
+    ln -sf /usr/bin/fdfind /usr/local/bin/fd && \
     # Cleanup
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/*

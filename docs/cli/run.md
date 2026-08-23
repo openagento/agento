@@ -164,7 +164,7 @@ Full contract: [../architecture/harness-contract.md](../architecture/harness-con
 |---|---|
 | `agent_view 'xyz' not found` | Check `agento config:list agent_view` and the `agent_view` table. |
 | `no harness configured` | `agento config:set agent_view/harness <harness> --agent-view <code>` |
-| `harness 'X' is not registered` | The agent module for `X` must declare an `agent_harnesses` entry in `di.json`. Built-in harnesses: `claude`, `codex`. |
+| `harness 'X' is not registered` | The agent module for `X` must declare an `agent_harnesses` entry in `di.json`. Built-in harnesses: `claude`, `codex`, `pi`. |
 | `no build found` | `agento workspace:build --agent-view <code>` |
 | docker exec error | Start containers: `agento up`. |
 

@@ -89,6 +89,11 @@ class HarnessRunContext:
     credential_required: bool = True
     credential: object | None = field(default=None, repr=False)
     extra_env: dict[str, str] = field(default_factory=dict, repr=False)
+    # The declaring module's OWN config, restricted to the fields its manifest
+    # allow-lists via `runtime_config_fields`. Never the whole resolved config:
+    # this context builds argv, and `resolve_all()` decrypts every module's
+    # `obscure` values. Populated by `get_harness_config`.
+    harness_config: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 @dataclass(frozen=True)

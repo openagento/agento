@@ -10,6 +10,7 @@ services:
         HOST_GID: ${HOST_GID:-20}
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.165}
         CODEX_VERSION: ${CODEX_VERSION:-0.137.0}
+        PI_VERSION: ${PI_VERSION:-0.84.1}
     image: agento-sandbox:latest
     volumes:
       - ../workspace:/workspace

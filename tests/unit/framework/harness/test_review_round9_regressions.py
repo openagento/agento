@@ -261,18 +261,18 @@ class TestScopeUniquenessWithinOneHarness:
         descriptor = self._descriptor("shared", "shared")
 
         with pytest.raises(DuplicateCredentialScopeError, match="more than"):
-            register_harness(descriptor, self._adapter(["shared"]))
+            register_harness(descriptor, self._adapter(["shared"]), "m", (), {})
 
     def test_the_error_names_the_duplicated_scope(self):
         clear()
         with pytest.raises(DuplicateCredentialScopeError, match="shared"):
-            register_harness(self._descriptor("shared", "shared"), self._adapter(["shared"]))
+            register_harness(self._descriptor("shared", "shared"), self._adapter(["shared"]), "m", (), {})
 
     def test_distinct_scopes_on_one_harness_are_fine(self):
         clear()
         descriptor = self._descriptor("scope_a", "scope_b")
 
-        register_harness(descriptor, self._adapter(["scope_a", "scope_b"]))
+        register_harness(descriptor, self._adapter(["scope_a", "scope_b"]), "m", (), {})
 
         from agento.framework.harness import list_credential_scopes
 
@@ -286,7 +286,7 @@ class TestScopeUniquenessWithinOneHarness:
         before = dict(_scope_owners())
 
         with pytest.raises(DuplicateCredentialScopeError):
-            register_harness(self._descriptor("shared", "shared"), self._adapter(["shared"]))
+            register_harness(self._descriptor("shared", "shared"), self._adapter(["shared"]), "m", (), {})
 
         assert _scope_owners() == before
 

@@ -249,7 +249,7 @@ _REVOKED_RAW = (
 )
 
 
-def _revoked_process(self, cmd, env):
+def _revoked_process(self, cmd, env, stdin_payload=None):
     """Stand in for the claude subprocess: rc=1 plus the raw revoked-401 stream-json.
     Patched at ``_execute_process`` so ``_extract_raw``/``_parse_output`` still run."""
     return subprocess.CompletedProcess(cmd, 1, _REVOKED_RAW, "")

@@ -16,7 +16,7 @@ Containerized environment for running AI coding assistants.
 Interactive agent sessions are launched per `agent_view` via the framework CLI:
 
 ```bash
-agento run <agent_view_code>    # Runs the configured agent (claude/codex) in sandbox
+agento run <agent_view_code>    # Runs the configured agent (claude/codex/pi) in sandbox
 ```
 
 The command resolves the agent_view's provider + HOME (from the materialized workspace build) and spawns an interactive session in the `sandbox` container. See [docs/cli/run.md](../docs/cli/run.md) for details.

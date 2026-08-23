@@ -15,7 +15,14 @@
   "model": {
     "type": "string",
     "label": "Agent model",
-    "description": "Model ID passed to the provider CLI via --model. Claude: claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 (aliases: opus, sonnet, haiku). Codex: gpt-5.4 | gpt-5.4-mini."
+    "description": "Model ID passed to the harness CLI. Claude: claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 (aliases: opus, sonnet, haiku). Codex: gpt-5.4 | gpt-5.4-mini. Pi: an EXACT catalogue id (e.g. anthropic/claude-sonnet-4.5) \u2014 Pi resolves an unmatched name by silent substring matching, so Agento fails the run on any mismatch; see docs/modules/pi.md."
+  },
+  "provider_options/base_url": {
+    "type": "string",
+    "label": "Provider base URL",
+    "description": "API endpoint for a self-hosted provider (e.g. http://ollama:11434/v1). Shown only for providers whose di.json declares the 'base_url' provider option; hosted providers do not use it.",
+    "provider_option": "base_url",
+    "showInAgentView": true
   },
   "scheduling/priority": {
     "type": "integer",

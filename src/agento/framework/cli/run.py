@@ -19,11 +19,13 @@ dotted path of the harness's own ``StreamRenderer`` and the host only imports it
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib
 import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from ..harness.stream_style import sanitize
@@ -154,12 +156,23 @@ class RunCommand:
             # Pass the secret via the child env so docker reads it from there
             # for each name-only -e KEY entry — never via argv.
             child_env = {**os.environ, **secret_env}
+            # A harness may take its prompt only on stdin; `docker compose exec -T`
+            # forwards it into the container. `input=None` does NOT mean DEVNULL —
+            # it inherits this terminal — so the no-payload branch keeps DEVNULL
+            # explicitly. `text=True` is required: without it the streams are binary
+            # and passing a str raises TypeError before the agent is ever spawned.
+            stdin_payload = runtime.get("stdin")
             renderer = _load_stream_renderer(runtime) if pretty else None
             if renderer is not None:
-                sys.exit(_run_pretty(exec_args, child_env, renderer))
-            result = subprocess.run(
-                exec_args, stdin=subprocess.DEVNULL, env=child_env,
-            )
+                sys.exit(_run_pretty(exec_args, child_env, renderer, stdin_payload))
+            if stdin_payload is not None:
+                result = subprocess.run(
+                    exec_args, input=stdin_payload, text=True, env=child_env,
+                )
+            else:
+                result = subprocess.run(
+                    exec_args, stdin=subprocess.DEVNULL, env=child_env,
+                )
             sys.exit(result.returncode)
 
         if pretty:
@@ -217,21 +230,44 @@ def _load_stream_renderer(runtime: dict):
         return None
 
 
-def _run_pretty(exec_args: list[str], child_env: dict, renderer) -> int:
+def _run_pretty(
+    exec_args: list[str], child_env: dict, renderer, stdin_payload: str | None = None,
+) -> int:
     """Stream the agent's stdout through ``renderer``; return its exit code.
 
     A line the renderer cannot handle is printed raw, so no output is ever lost.
     ``stderr`` stays inherited, exactly as in the raw path. Every event is
     sanitized before rendering — see :func:`sanitize`; a raw passthrough line is
     still JSON-escaped and therefore inert.
+
+    ``stdin_payload`` is written from its OWN thread, for the same reason
+    ``SubprocessRunner`` does it: a CLI may read stdin only after startup work, so
+    a payload larger than the pipe buffer would block this thread — which is the
+    one draining stdout. ``--pretty`` must not change how the prompt is delivered.
     """
     proc = subprocess.Popen(
         exec_args,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE if stdin_payload is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         env=child_env,
         text=True,
     )
+    if stdin_payload is not None:
+        stdin_pipe = proc.stdin
+        assert stdin_pipe is not None
+
+        def _write_stdin() -> None:
+            try:
+                stdin_pipe.write(stdin_payload)
+            except (BrokenPipeError, ValueError, OSError):
+                # The child died before reading it all; the real error surfaces
+                # through its non-zero exit code, not through this symptom.
+                pass
+            finally:
+                with contextlib.suppress(BrokenPipeError, ValueError, OSError):
+                    stdin_pipe.close()
+
+        threading.Thread(target=_write_stdin, daemon=True).start()
     assert proc.stdout is not None
     for line in proc.stdout:
         line = line.rstrip("\n")

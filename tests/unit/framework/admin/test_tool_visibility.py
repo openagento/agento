@@ -12,6 +12,8 @@ import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[4]
 MODULES = REPO / "src/agento/modules"
 TOOLBOX = REPO / "src/agento/toolbox"
@@ -21,6 +23,19 @@ WRAPPED = {
     "browser_navigate", "browser_wait_for", "browser_take_screenshot",
     "browser_snapshot", "browser_evaluate", "browser_start_video", "browser_stop_video",
 }
+
+
+@pytest.fixture(autouse=True)
+def _every_core_module_enabled():
+    """Assert on the shipped manifests, not on this checkout's ``app/etc/modules.json``.
+
+    ``filter_enabled`` reads that file from the cwd, so a developer who disabled a
+    core module (jira, say) would see these tests fail for a deployment choice that
+    has nothing to do with tool declarations. An empty status means "all enabled",
+    which is also what a fresh checkout and CI see.
+    """
+    with patch("agento.framework.module_status.read_module_status", return_value={}):
+        yield
 
 
 def _manifest_tools(module: str) -> list[dict]:

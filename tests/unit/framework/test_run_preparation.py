@@ -290,3 +290,83 @@ class TestMaterializeRunWorkspace:
         build_json = json.loads((actual_build / ".claude.json").read_text())
         assert build_json["oauthAccount"]["emailAddress"] == "stale@example.com"
         assert backup_path.exists()
+
+
+def _codex_model(text: str) -> str | None:
+    for line in text.splitlines():
+        if line.startswith("model ="):
+            return line.split("=", 1)[1].strip().strip('"')
+    return None
+
+
+# (harness, relative output path, how to read the model out of that file)
+_SIBLING_CASES = [
+    ("claude", ".claude.json", lambda text: json.loads(text).get("model")),
+    ("codex", ".codex/config.toml", _codex_model),
+]
+
+
+class TestTheNoBuildFallbackOverlayReachesEverySibling:
+    """The overlay is generic, so assert it on the REAL sibling adapters.
+
+    `run_preparation` overlays the per-run effective model into the `agent_config` the
+    no-build fallback materialises from. `claude/src/config.py:384` and
+    `codex/src/config.py:299` both read `agent_config["model"]`, so a `--model` override now
+    reaches their generated config on that path — a behaviour change to two harnesses this
+    work was not aimed at.
+
+    A first version of these tests substituted a `_Writer` double for BOTH adapters and
+    asserted what the double received. A reviewer pointed out that proves nothing about the
+    siblings: mutate either real adapter to stop reading `agent_config["model"]` and those
+    tests still pass. So these drive the real adapters and assert the model that lands in
+    the file each one actually writes.
+    """
+
+    def _materialize(self, tmp_path, harness, effective_model):
+        from unittest.mock import MagicMock, patch
+
+        from agento.framework.run_preparation import materialize_run_workspace
+
+        class _Svc:
+            def resolve_all(self):
+                return {"agent_view/model": "configured-model"}
+
+            def get(self, path):
+                return None
+
+        runtime = _Runtime(
+            agent_view=_AV(code="dev", id=7),
+            workspace=_WS(code="acme", id=3),
+            harness=harness,
+        )
+        kwargs = {} if effective_model is None else {"effective_model": effective_model}
+        with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "a")), \
+             patch("agento.framework.artifacts_dir.BUILD_DIR", str(tmp_path / "b")), \
+             patch("agento.framework.run_preparation.BUILD_DIR", str(tmp_path / "b")), \
+             patch("agento.framework.harness.persistent_home_paths_for", return_value=[]):
+            _, working = materialize_run_workspace(
+                runtime,
+                run_id="cli-1",
+                agent_config_svc=_Svc(),
+                em=MagicMock(),
+                **kwargs,
+            )
+        return working
+
+    @pytest.mark.parametrize("harness,rel,extract", _SIBLING_CASES)
+    def test_the_override_lands_in_the_real_adapters_output(
+        self, tmp_path, harness, rel, extract,
+    ):
+        working = self._materialize(tmp_path, harness, "override-model")
+        written = working / rel
+        assert written.is_file(), f"{harness} wrote no {rel}"
+        assert extract(written.read_text()) == "override-model"
+
+    @pytest.mark.parametrize("harness,rel,extract", _SIBLING_CASES)
+    def test_without_an_override_the_configured_model_lands_instead(
+        self, tmp_path, harness, rel, extract,
+    ):
+        working = self._materialize(tmp_path, harness, None)
+        written = working / rel
+        assert written.is_file(), f"{harness} wrote no {rel}"
+        assert extract(written.read_text()) == "configured-model"

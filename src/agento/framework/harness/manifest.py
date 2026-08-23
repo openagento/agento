@@ -27,6 +27,9 @@ class HarnessDeclaration:
     class_path: str
     descriptor: HarnessDescriptor
     raw: dict
+    # Config fields of THIS module that may be seen when building a command.
+    # Absent/empty => the channel is inactive for this harness.
+    runtime_config_fields: tuple[str, ...] = ()
 
 
 def parse_harness_declarations(di_json: Path, module: str) -> list[HarnessDeclaration]:
@@ -59,6 +62,18 @@ def parse_harness_declarations(di_json: Path, module: str) -> list[HarnessDeclar
             descriptor = HarnessDescriptor.from_declaration(decl)
         except ValueError as e:
             raise ValueError(f"{di_json}: {e}") from None
+        fields = decl.get("runtime_config_fields", [])
+        if not isinstance(fields, list) or not all(
+            isinstance(f, str) and f for f in fields
+        ):
+            raise ValueError(
+                f"{di_json}: harness {decl.get('id')!r} 'runtime_config_fields' must be "
+                f"an array of non-empty strings"
+            )
+        if len(fields) != len(set(fields)):
+            raise ValueError(
+                f"{di_json}: harness {decl.get('id')!r} 'runtime_config_fields' has duplicates"
+            )
         out.append(
             HarnessDeclaration(
                 module=module,
@@ -66,6 +81,7 @@ def parse_harness_declarations(di_json: Path, module: str) -> list[HarnessDeclar
                 class_path=class_path,
                 descriptor=descriptor,
                 raw=decl,
+                runtime_config_fields=tuple(fields),
             )
         )
     return out

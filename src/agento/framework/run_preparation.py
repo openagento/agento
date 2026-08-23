@@ -46,6 +46,7 @@ def materialize_run_workspace(
     em=None,
     credential: CredentialRecord | None = None,
     purge_credentials: bool = False,
+    effective_model: str | None = None,
 ) -> tuple[Path | None, Path | None]:
     """Prepare ``(home_dir, working_dir)`` for one run.
 
@@ -57,10 +58,12 @@ def materialize_run_workspace(
     Falls back to a fresh ``WorkspaceAdapter.prepare_workspace`` when no build
     exists yet.
 
-    ``run_id`` is the job id (``int``) for the consumer or a unique string
-    for ``agento run``. Pass ``int`` job ids to get per-job
-    ``inject_runtime_params``; ``str`` ids skip injection (interactive run
-    uses the build's baked ``.mcp.json``).
+    ``run_id`` is the job id (``int``) for the consumer or a unique string for
+    ``agento run``. An ``int`` id scopes the run to a job via
+    ``inject_runtime_params``. A ``str`` id has no job scope, so nothing is scoped —
+    but injection still runs when a per-run override has to reach the harness's config,
+    and only for an adapter that names an ``effective_*`` keyword. Without an override a
+    ``str`` id is not injected at all and the build's baked config is used as-is.
 
     Returns ``(None, None)`` when ``runtime`` carries no agent_view/workspace
     (blank jobs), mirroring the consumer guard.
@@ -83,14 +86,22 @@ def materialize_run_workspace(
     current_build = get_current_build_dir(
         runtime.workspace.code, runtime.agent_view.code,
     )
+    # The per-run model: an explicit override (`--model`) wins over the agent_view's
+    # configured value. Resolved for BOTH branches — while this lived inside the
+    # `current_build` branch the no-build fallback never saw an override at all.
+    effective_model = effective_model or getattr(runtime, "model", None)
+
     state_build_root: Path | None = None
     if current_build is not None:
-        # int job ids drive per-job .mcp.json injection; str run ids skip it.
+        # int job ids scope the run to a job; a str run id (`agento run`) has no job
+        # scope, but still needs the per-run override applied.
         inject_id = run_id if isinstance(run_id, int) else None
         copy_build_to_artifacts_dir(
             current_build, artifacts_dir,
             job_id=inject_id,
             harness=runtime.harness,
+            effective_model=effective_model,
+            effective_provider=getattr(runtime, "provider", None),
         )
         state_build_root = _build_root_for_current_build(
             current_build,
@@ -98,14 +109,33 @@ def materialize_run_workspace(
             runtime.agent_view.code,
         )
     elif runtime.harness:
-        from .harness import get_agent_config, workspace_adapter_for
-        agent_config = get_agent_config(agent_config_svc) if agent_config_svc else {}
-        writer = workspace_adapter_for(runtime.harness)
-        writer.prepare_workspace(
-            artifacts_dir, agent_config,
-            agent_view_id=runtime.agent_view.id,
-            toolbox_url=toolbox_url,
+        from .harness import (
+            get_agent_config,
+            get_harness,
+            get_harness_config,
+            supply_harness_config,
+            workspace_adapter_for,
         )
+        agent_config = get_agent_config(agent_config_svc) if agent_config_svc else {}
+        # There is no build to inject into on this path, so the override has to reach the
+        # adapter through the config it materializes FROM — otherwise a `--model` run
+        # bakes the configured model as its expectation and the guard fails a legitimate
+        # override on the one path that has no second chance to correct it.
+        if effective_model:
+            agent_config = {**agent_config, "model": effective_model}
+        writer = workspace_adapter_for(runtime.harness)
+        # The no-build fallback must supply the harness's own allow-listed config too, or
+        # settings that depend on it are silently ignored on this path only.
+        harness_config = (
+            get_harness_config(agent_config_svc, get_harness(runtime.harness))
+            if agent_config_svc is not None else {}
+        )
+        kwargs = supply_harness_config(
+            writer,
+            {"agent_view_id": runtime.agent_view.id, "toolbox_url": toolbox_url},
+            harness_config,
+        )
+        writer.prepare_workspace(artifacts_dir, agent_config, **kwargs)
 
     if runtime.harness:
         from .harness import persistent_home_paths_for, workspace_adapter_for

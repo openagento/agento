@@ -76,7 +76,7 @@ RUN npx playwright install chromium
 
 ## Pinning agent CLI versions
 
-The sandbox image installs agent CLIs from npm (today: `@anthropic-ai/claude-code` and `@openai/codex`). Without a pin, every rebuild grabs `latest` — and upstream patch releases sometimes ship behavior changes (e.g. claude-code 2.1.69 silently disabled `.mcp.json` trust auto-approval). Agento soft-pins each agent's CLI from that agent's own module declaration in `di.json`:
+The sandbox image installs agent CLIs from npm, one per enabled module's `sandbox_package` declaration (today: `@anthropic-ai/claude-code`, `@openai/codex` and `@earendil-works/pi-coding-agent`). Without a pin, every rebuild grabs `latest` — and upstream patch releases sometimes ship behavior changes (e.g. claude-code 2.1.69 silently disabled `.mcp.json` trust auto-approval). Agento soft-pins each agent's CLI from that agent's own module declaration in `di.json`:
 
 ```jsonc
 // src/agento/modules/claude/di.json (shipped with the framework)
@@ -129,7 +129,7 @@ To register a new agent (e.g. OpenCode, Hermes), drop a module under `app/code/<
 - `agento doctor` adds a `<binary> pin` row
 - The framework needs zero edits
 
-*(Current limitation: the sandbox Dockerfile still hardcodes the `npm install -g` line for claude + codex. Until a follow-up makes it data-driven, a third agent's CLI binary won't actually be installed into the image — the pin propagation is in place, but the install line in [src/agento/framework/docker/sandbox/Dockerfile](../../src/agento/framework/docker/sandbox/Dockerfile) also needs the new package added. That's the one remaining framework edit.)*
+*(This limitation is gone. The sandbox Dockerfile is rendered from the enabled modules' `sandbox_package` declarations, so a third agent's CLI is installed with no framework edit — `pi` was added exactly that way. Regenerate after enabling a module: `python -c 'from agento.framework.cli._provisioning import render_dev_sandbox_dockerfile as r; r()'`, or let `agento install`/`upgrade` do it.)*
 
 ## Combining multiple overrides
 

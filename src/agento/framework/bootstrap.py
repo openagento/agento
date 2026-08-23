@@ -26,6 +26,7 @@ from .harness import (
     AgentHarnessAdapter,
     DuplicateCredentialScopeError,
     DuplicateHarnessError,
+    ObscureRuntimeConfigError,
     parse_harness_declarations,
     register_harness,
 )
@@ -277,16 +278,34 @@ def _load_agent_harnesses(m: ModuleManifest) -> None:
                     decl.descriptor.id, m.name,
                 )
                 continue
-            register_harness(decl.descriptor, adapter)
+            register_harness(
+                decl.descriptor,
+                adapter,
+                decl.module,
+                decl.runtime_config_fields,
+                dict(getattr(m, "config", {}) or {}),
+            )
             logger.debug("Registered harness %r from module %s", decl.descriptor.id, m.name)
-        except (DuplicateHarnessError, DuplicateCredentialScopeError):
+        except (
+            DuplicateHarnessError,
+            DuplicateCredentialScopeError,
+            ObscureRuntimeConfigError,
+        ):
             # A collision is NOT survivable: swallowing it would silently make the
             # first-registered harness win, and a duplicate credential scope would let
             # one harness serve another's credential pool. `module:validate` catches
             # this before setup:upgrade touches the DB; if it still reaches here, the
             # deployment is misconfigured and must not come up half-wired.
+            #
+            # A bad `runtime_config_fields` allow-list joins them for the same reason:
+            # it is a SECURITY misconfiguration (a secret declared readable at command
+            # construction, or a field whose schema cannot prove it is not one). Letting
+            # the generic handler below skip the harness would turn that into a confusing
+            # "no harness registered" at job time, with the real cause buried in a log
+            # line nobody reads. Fail the boot instead.
             logger.exception(
-                "Harness collision loading %r from module %s", decl.descriptor.id, m.name
+                "Fatal harness registration error for %r from module %s",
+                decl.descriptor.id, m.name,
             )
             raise
         except Exception:

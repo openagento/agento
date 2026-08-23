@@ -681,7 +681,7 @@ class TestCredentialClaimedByCaller:
         runner._record_usage = MagicMock()
         captured_env = {}
 
-        def _fake_execute(_cmd, env):
+        def _fake_execute(_cmd, env, stdin_payload=None):
             captured_env.update(env)
             return _make_completed_process(stdout=stream)
 

@@ -35,7 +35,21 @@ class FakeCommandBuilder:
         model = req.model or ctx.model
         if model:
             cmd += ["--model", model]
+        # Reads THIS module's own config. The module is `fake_harness` while the
+        # harness id is `fake`, so this only resolves if the namespace is derived
+        # from the declaring module rather than the harness id.
+        #
+        # A config value is mapped to a CONSTANT flag, never interpolated into an
+        # argument: the value is operator-supplied and this builds a command line.
+        if ctx.harness_config.get("verbose") == "1":
+            cmd.append("--verbose")
         return cmd
+
+    def stdin_payload(self, ctx: HarnessRunContext, req: RunRequest) -> str | None:
+        """Exercises the stdin channel; off by default so existing runs are unchanged."""
+        if ctx.harness_config.get("stdin_prompt") == "1":
+            return req.prompt or ""
+        return None
 
     def interactive(self, ctx: HarnessRunContext, *, yolo: bool = False) -> list[str]:
         cmd = ["fake", "shell"]
@@ -54,6 +68,7 @@ class FakeWorkspaceAdapter:
         *,
         agent_view_id: int | None = None,
         toolbox_url: str,
+        harness_config: dict[str, str] | None = None,
     ) -> None:
         working_dir.mkdir(parents=True, exist_ok=True)
         (working_dir / "fake.json").write_text(

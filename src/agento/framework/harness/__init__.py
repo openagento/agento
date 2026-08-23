@@ -38,10 +38,18 @@ from .protocols import (
     UnsupportedRegistrationMode,
     WorkspaceAdapter,
     get_agent_config,
+    get_harness_config,
+    supply_harness_config,
+)
+from .provider_options import (
+    PROVIDER_OPTION_KEY,
+    is_provider_option_hidden,
+    provider_option_names,
 )
 from .registry import (
     DuplicateCredentialScopeError,
     DuplicateHarnessError,
+    ObscureRuntimeConfigError,
     RegisteredHarness,
     UnknownHarnessError,
     clear,
@@ -72,6 +80,7 @@ from .subprocess_runner import SubprocessRunner
 
 __all__ = [
     "AGENT_CONFIG_PREFIX",
+    "PROVIDER_OPTION_KEY",
     "SUPPORTED_SOURCES",
     "AgentHarnessAdapter",
     "AuthResult",
@@ -89,6 +98,7 @@ __all__ = [
     "McpInitReport",
     "McpServerStatus",
     "ModelProviderDescriptor",
+    "ObscureRuntimeConfigError",
     "ParseSummary",
     "ProviderId",
     "RegisteredHarness",
@@ -112,16 +122,20 @@ __all__ = [
     "get_agent_config",
     "get_authenticator",
     "get_harness",
+    "get_harness_config",
     "get_harness_for_scope",
+    "is_provider_option_hidden",
     "list_credential_scopes",
     "list_descriptors",
     "list_harnesses",
     "owned_paths_for",
     "parse_harness_declarations",
     "persistent_home_paths_for",
+    "provider_option_names",
     "register_harness",
     "resolve_credential_scope",
     "resolve_options",
     "resolve_provider",
+    "supply_harness_config",
     "workspace_adapter_for",
 ]

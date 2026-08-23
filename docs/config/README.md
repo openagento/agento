@@ -41,6 +41,36 @@ Toolbox reads config at each MCP session:
 3. For each tool field: checks ENV → DB → config.json
 4. Passes resolved config to tool adapter
 
+## Harness-owned runtime config (`runtime_config_fields`)
+
+Most config is read by a module at run time. A harness sometimes needs one of its **own**
+module's values *while the command line is being built* — a flag toggled per agent_view,
+say. Those fields must be allow-listed in the harness declaration:
+
+```json
+{ "id": "example", "runtime_config_fields": ["builtin_tools"], ... }
+```
+
+They then resolve into `HarnessRunContext.harness_config` (readable by that harness's
+`CommandBuilder`) and are also offered to `WorkspaceAdapter.prepare_workspace` as
+`harness_config=…` for settings that have to be written into a build-time file — supplied
+only when the adapter's signature accepts the keyword, so an older third-party adapter
+keeps working. Three properties are deliberate, and they are a security
+boundary rather than a convenience:
+
+- **The namespace is the declaring MODULE, not the harness id.** Paths are
+  `{module}/{field}`, and the two names are not interchangeable — the test fixture
+  `fake_harness` declares harness id `fake`.
+- **Resolution is per-path (`svc.get`), never `resolve_all()`.** `resolve_all()` resolves
+  every declared path and decrypts every module's `obscure` values along the way; this
+  dict is used to build a command line.
+- **Secrets are refused**, at `module:validate` *and* at registration, before any DB
+  change. A field is a secret when its schema is `{"type": "obscure"}`. A schema entry
+  that is not an object is refused too — it carries no `type`, so it cannot be proven
+  safe. A misconfiguration here fails the boot rather than silently skipping the harness.
+
+See [architecture/harness-contract.md](../architecture/harness-contract.md).
+
 ## Agent-view runtime: harness / provider / model / priority
 
 The per-job runtime profile (`agent_view/harness`, `agent_view/provider`, `agent_view/model`, `agent_view/scheduling/priority`) resolves through the same `ScopedConfigService`, so **ENV overrides apply**:

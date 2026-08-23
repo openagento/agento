@@ -1,7 +1,7 @@
 """``serialize_toolbox_connection`` must not assume MCP.
 
-Pi has no MCP at all ("build CLI tools with READMEs, or an extension that adds MCP
-support"), so the framework hands over a plain :class:`ToolboxConnectionSpec` and every
+Not every harness supports MCP — some expose tools only through their own extension
+mechanism — so the framework hands over a plain :class:`ToolboxConnectionSpec` and every
 harness materializes it its own way. The framework's own call path still routes Toolbox
 wiring through ``prepare_workspace`` (the transport-agnostic rewrite is Etap 2), so these
 tests exist to keep the declared seam implemented and honest on every shipped adapter
@@ -70,7 +70,9 @@ class TestTransportAgnostic:
         framework ever grew an assumption about the format, this fails."""
         module_dir = FIXTURES / "fake_harness"
         for decl in parse_harness_declarations(module_dir / "di.json", "fake_harness"):
-            register_harness(decl.descriptor, import_class(module_dir, decl.class_path)())
+            register_harness(decl.descriptor, import_class(module_dir, decl.class_path)(),
+                             decl.module, decl.runtime_config_fields,
+                             _module_config_schema(module_dir))
 
         from agento.framework.harness import workspace_adapter_for
 
@@ -89,3 +91,17 @@ class TestSpecDoesNotLeakHeaders:
 
     def test_headers_are_still_readable_by_an_adapter(self):
         assert _spec().headers == {"Authorization": "Bearer sk-SECRET-TOOLBOX"}
+
+
+def _module_config_schema(module_dir):
+    """Read the fixture module's system.json (empty when it has none)."""
+    import json as _json
+    from pathlib import Path as _Path
+    p = _Path(module_dir) / "system.json"
+    if not p.is_file():
+        return {}
+    try:
+        data = _json.loads(p.read_text())
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}

@@ -387,6 +387,8 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
 
     results: list[ResolvedField] = []
     for field_name, field_schema in target.fields.items():
+        if _hidden_provider_option(field_schema, svc):
+            continue
         field_type = field_schema.get("type", "string")
         label = field_schema.get("label", field_name)
         description = field_schema.get("description", "")
@@ -700,6 +702,26 @@ def _resolved_all(svc) -> dict:
             cached = {}
         svc._admin_resolved_cache = cached
     return cached
+
+
+def _hidden_provider_option(field_schema: dict, svc) -> bool:
+    """Skip a provider-option field the selected provider does not declare.
+
+    Same "effective value" source as ``_field_options``: ``resolve_all()`` sees a
+    harness/provider inherited from a broader scope or set via ``CONFIG__*``, which raw
+    DB rows at this scope do not. Resolution failures leave the field visible — see
+    ``is_provider_option_hidden``.
+    """
+    from ..harness import PROVIDER_OPTION_KEY, is_provider_option_hidden
+
+    if not field_schema.get(PROVIDER_OPTION_KEY):
+        return False
+    resolved = _resolved_all(svc)
+    return is_provider_option_hidden(
+        field_schema,
+        harness=resolved.get("agent_view/harness"),
+        provider=resolved.get("agent_view/provider"),
+    )
 
 
 def _field_options(

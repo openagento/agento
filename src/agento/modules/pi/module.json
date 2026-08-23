@@ -1,0 +1,7 @@
+{
+  "name": "pi",
+  "version": "1.0.0",
+  "description": "Pi Coding Agent runtime (OpenRouter + Ollama)",
+  "sequence": [],
+  "order": 200
+}

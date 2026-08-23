@@ -92,7 +92,9 @@ class TestLegacySingleAxisConfig:
         module_dir = fixtures / "fake_harness"
         register_builtin_harnesses()
         for decl in parse_harness_declarations(module_dir / "di.json", "fake_harness"):
-            register_harness(decl.descriptor, import_class(module_dir, decl.class_path)())
+            register_harness(decl.descriptor, import_class(module_dir, decl.class_path)(),
+                             decl.module, decl.runtime_config_fields,
+                             _module_config_schema(module_dir))
 
         db(Scope.AGENT_VIEW, 7, "agent_view/provider", "fake")
 
@@ -140,3 +142,17 @@ class TestLegacySingleAxisConfig:
         assert {"claude", "codex"}.isdisjoint(literals), (
             f"framework resolution hardcodes harness ids: {literals}"
         )
+
+
+def _module_config_schema(module_dir):
+    """Read the fixture module's system.json (empty when it has none)."""
+    import json as _json
+    from pathlib import Path as _Path
+    p = _Path(module_dir) / "system.json"
+    if not p.is_file():
+        return {}
+    try:
+        data = _json.loads(p.read_text())
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}

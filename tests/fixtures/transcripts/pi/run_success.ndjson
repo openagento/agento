@@ -1,0 +1,10 @@
+{"type":"session","version":3,"id":"01931f0e-aaaa-bbbb-cccc-000000000001","timestamp":"2026-08-12T09:00:00.000Z","cwd":"/workspace/run-42"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"assistant","content":[]}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Looking at the ticket."}],"provider":"openrouter","model":"anthropic/claude-sonnet-4.5","usage":{"input":1200,"output":340},"stopReason":"toolUse"}}
+{"type":"turn_end","turnIndex":0}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Done."}],"provider":"openrouter","model":"anthropic/claude-sonnet-4.5","usage":{"input":800,"output":120},"stopReason":"stop"}}
+{"type":"turn_end","turnIndex":1}
+{"type":"agent_end","messages":[]}

@@ -65,13 +65,13 @@ Agento runs three Docker containers on a shared network:
 
 - **Cron** (Python) -- Job queue consumer, scheduler, CLI host. Manages the lifecycle of agent jobs, runs migrations, and dispatches events. Connects to MySQL for job state, config, and module metadata.
 - **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over stdio. The only container with access to secrets.
-- **Sandbox** (Claude Code / OpenAI Codex) -- Ephemeral container where the AI agent executes. Has no credentials, no direct database access. Communicates with the toolbox exclusively through MCP tool calls.
+- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container where the AI agent executes. Has no credentials, no direct database access. Communicates with the toolbox exclusively through MCP tool calls.
 
 ## Module System
 
 Agento uses a Magento-inspired modular architecture. Each module is a self-contained package.
 
-**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, core, crypt, agent_view).
+**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view).
 
 **User modules** live in `app/code/` and are deployment-specific (gitignored by default).
 

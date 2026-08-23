@@ -230,8 +230,63 @@ true. Full contract: [docs/architecture/harness-contract.md](docs/architecture/h
   **provider** (model-API vendor) / **model**. The axes are genuinely independent: one
   harness can offer several providers, only some of which need a credential.
 - **D2 — One open registry replaces five enum-keyed maps.** `register_harness(descriptor,
-  adapter)` from a single `agent_harnesses` entry in the module's `di.json`; one loader
-  (`bootstrap._load_agent_harnesses`) replaces five.
+  adapter, module, runtime_config_fields, config_schema)` from a single `agent_harnesses`
+  entry in the module's `di.json`; one loader (`bootstrap._load_agent_harnesses`) replaces
+  five. The last three arguments are positional and required: a default would let a missed
+  call site register a silently broken config channel (an empty namespace resolves nothing,
+  an empty allow-list disables it) that bypasses declaration validation altogether.
+- **D2b — A command is argv *plus* stdin.** `CommandBuilder.stdin_payload` was added
+  because a CLI may accept its prompt only on stdin: Pi's `-p` refuses a value starting
+  with `-` (`dist/cli/args.js:109-116`) and Agento prompts come from Jira titles and mail
+  subjects. It belongs to the builder, not the runner, because there are **two** spawn
+  paths (the consumer's `SubprocessRunner` and `agento run` via `prepare_run.py`) and one
+  definition of the invocation. `input=None` does NOT mean `DEVNULL` — it inherits the
+  caller's stdin — so the no-payload branch keeps `stdin=DEVNULL` explicitly, and
+  `input=<str>` requires `text=True` or it raises before the agent is spawned.
+- **D2g — Raw MCP JSON Schema is used as Pi's tool parameter schema, unconverted.**
+  Spike S1 against the live API: a `tools/list` `inputSchema` containing a nested object, a
+  string `enum` and an optional field works directly as `ToolDefinition.parameters`, and the
+  model calls the tool with correctly typed arguments. So there is no `Type.Object`
+  conversion layer and no `StringEnum` shim — the plan's contingency for those is dead and
+  deliberately not implemented.
+- **D2h — Only `registerTool()` may be called while a Pi extension loads.**
+  `core/extensions/loader.js:135-155` installs throwing stubs for every *action* method
+  (`getAllTools`, `appendEntry`, `sendMessage`, `setModel`, `getCommands`, …) until
+  `Runner.bindCore()` runs; the source comments that `registerTool()` is the exception. The
+  bridge therefore does its whole handshake and registration in the factory (where a throw
+  is usefully fatal) but touches no other API until a handler fires. Test doubles for the
+  extension API MUST throw on action methods during load — one that implemented
+  `getAllTools()` as a working function hid a bridge that could not load at all.
+- **D2c — The Pi bridge has zero runtime dependencies.** Pi ships no MCP client, so
+  `modules/pi/bridge/agento-toolbox.js` is one. It cannot import `@modelcontextprotocol/sdk`
+  or `zod`: Node resolves bare imports by walking up from the importing file, and the
+  per-job build directory it is loaded from has no `node_modules` above it (the globally
+  installed Pi's modules are not on that path). Validation is therefore hand-written and
+  total. `RULES.md` gained a scoped rule for this artifact class rather than the code
+  taking a silent exception to the Zod requirement.
+- **D2d — Pi's `cost_reporting` is `false` and its `num_turns` is not comparable.** Pi
+  prices from its own model catalogue, and a generated `models.json` (Ollama) carries no
+  rates, so a cost figure would be fiction there (same choice as codex). ⚠ Qualified by a
+  live spike: `usage.cost.total` **is** populated for OpenRouter, so the "no rates"
+  reasoning covers Ollama only. Capabilities are declared per **harness**, not per
+  provider, so `false` stays as the conservative value — but reporting cost for
+  credentialed providers is a defensible follow-up, not a closed question. `num_turns` counts Pi
+  `turn_end` events, which do not mean what claude's or codex's turns mean — compare Pi
+  runs only to Pi runs.
+- **D2e — Model identity is verified positively, never by absence of a warning.** Pi
+  resolves an unmatched model by silent substring matching on id *or* name and returns the
+  highest-sorting alias, emitting nothing (`dist/core/model-resolver.js:104-127`); its
+  "not found" warning fires only when nothing matched at all. So the runner compares the
+  `provider`/`model` on each assistant message (`docs/session-format.md:85-86`) against
+  the request and fails the job on a mismatch, and the bridge does the same in-process on
+  every spawn path, setting `process.exitCode = 1` when headless. A mismatch is a plain
+  run error, never a credential verdict.
+- **D2f — Toolbox MCP sessions expire on an idle TTL.** They used to be dropped only via
+  `transport.onclose`, but the consumer SIGKILLs a timed-out agent, so no `DELETE` is ever
+  sent and the entry survived until the container restarted. This affected **every**
+  harness (`/mcp` serves codex too) and cannot be fixed client-side, because SIGKILL leaves
+  no chance to clean up. `toolbox/mcp-sessions.js` adds a refresh-on-request TTL and an
+  unref'd sweeper.
 - **D3 — Descriptors are pure data parsed off disk.** Three callers must enumerate
   harnesses before any Python import or DB access: `config:set` validating a `select`
   value, `enumerate_sandbox_packages` at install/upgrade/doctor time, and

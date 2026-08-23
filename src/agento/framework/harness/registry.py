@@ -33,18 +33,44 @@ class UnknownHarnessError(KeyError):
     """No harness registered under this id."""
 
 
+class ObscureRuntimeConfigError(Exception):
+    """A harness allow-listed a config field that is a secret, or does not exist."""
+
+
 @dataclass(frozen=True)
 class RegisteredHarness:
     descriptor: HarnessDescriptor
     adapter: AgentHarnessAdapter
+    # The declaring MODULE's name — config paths are `{module}/{field}`, and a
+    # module name is NOT interchangeable with the harness id (fixture
+    # `fake_harness` declares harness id `fake`). Deriving the namespace from
+    # `descriptor.id` silently resolves nothing.
+    module: str = ""
+    # Allow-list of that module's fields readable when building a command.
+    runtime_config_fields: tuple[str, ...] = ()
 
 
 _HARNESSES: dict[HarnessId, RegisteredHarness] = {}
 _SCOPE_OWNERS: dict[CredentialScope, HarnessId] = {}
 
 
-def register_harness(descriptor: HarnessDescriptor, adapter: AgentHarnessAdapter) -> None:
-    """Register a harness. Raises on a duplicate id or a duplicate credential scope."""
+def register_harness(
+    descriptor: HarnessDescriptor,
+    adapter: AgentHarnessAdapter,
+    module: str,
+    runtime_config_fields: tuple[str, ...],
+    config_schema: dict,
+) -> None:
+    """Register a harness. Raises on a duplicate id or a duplicate credential scope.
+
+    ``module``/``runtime_config_fields``/``config_schema`` are positional and
+    required on purpose. A default would let a missed call site register a
+    silently broken channel: an empty namespace resolves nothing and an empty
+    allow-list disables the channel outright — neither exposes a value, but both
+    bypass declaration validation entirely, so the misconfiguration surfaces much
+    later as an unexplained missing setting. A missed call site is a TypeError
+    instead.
+    """
     if descriptor.id in _HARNESSES:
         raise DuplicateHarnessError(
             f"Harness {descriptor.id!r} is already registered by another declaration"
@@ -82,7 +108,51 @@ def register_harness(descriptor: HarnessDescriptor, adapter: AgentHarnessAdapter
             f"its credential-requiring scopes {sorted(declared)}"
         )
 
-    _HARNESSES[HarnessId(descriptor.id)] = RegisteredHarness(descriptor, adapter)
+    # Shape first: the manifest parser and module:validate both enforce this, but a
+    # direct caller bypasses them, and the plan requires validation at BOTH layers —
+    # duplicates would otherwise register verbatim, e.g. ('verbose', 'verbose').
+    if not all(isinstance(f, str) and f for f in runtime_config_fields):
+        raise ObscureRuntimeConfigError(
+            f"Harness {descriptor.id!r}: runtime_config_fields must be non-empty strings"
+        )
+    if len(runtime_config_fields) != len(set(runtime_config_fields)):
+        dupes = sorted(
+            {f for f in runtime_config_fields if list(runtime_config_fields).count(f) > 1}
+        )
+        raise ObscureRuntimeConfigError(
+            f"Harness {descriptor.id!r}: runtime_config_fields has duplicates {dupes}"
+        )
+
+    # Every allow-listed field must exist in the declaring module's schema and must
+    # not be a secret. Secrets are declared by TYPE (`{"type": "obscure"}`) — there
+    # is no `obscure: true` anywhere in the codebase, so checking for that flag
+    # would never match and would admit the very field it is meant to block.
+    for fname in runtime_config_fields:
+        field_schema = config_schema.get(fname)
+        if field_schema is None:
+            raise ObscureRuntimeConfigError(
+                f"Harness {descriptor.id!r}: runtime_config_fields names {fname!r}, which "
+                f"module {module!r} does not declare in system.json"
+            )
+        if not isinstance(field_schema, dict):
+            # `ModuleManifest.config` is system.json when present, but falls back to
+            # module.json's `config` key, which may be {field: "default"} strings. A
+            # non-dict entry carries no `type`, so we cannot prove the field is NOT a
+            # secret — refuse rather than skip the check and admit it (fail closed).
+            raise ObscureRuntimeConfigError(
+                f"Harness {descriptor.id!r}: runtime_config_fields names {fname!r}, but "
+                f"module {module!r} declares it as {type(field_schema).__name__}, not a "
+                f"schema object; cannot prove it is not a secret"
+            )
+        if field_schema.get("type") == "obscure":
+            raise ObscureRuntimeConfigError(
+                f"Harness {descriptor.id!r}: runtime_config_fields names {fname!r}, which is "
+                f"an 'obscure' (secret) field; secrets must never reach command construction"
+            )
+
+    _HARNESSES[HarnessId(descriptor.id)] = RegisteredHarness(
+        descriptor, adapter, module, tuple(runtime_config_fields)
+    )
     for scope in scopes:
         _SCOPE_OWNERS[scope] = HarnessId(descriptor.id)
     logger.debug("Registered harness %r (providers=%s)", descriptor.id, list(scopes))

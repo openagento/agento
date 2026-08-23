@@ -26,6 +26,20 @@ _PROVIDER = SimpleNamespace(
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_harness_registry():
+    """``_run_job`` looks the harness up in the registry — for its declared
+    ``capabilities`` and its allow-listed runtime config. These tests never call
+    ``bootstrap()``, so the registry is empty and the lookup would raise before any
+    credential wiring runs.
+    """
+    with (
+        patch("agento.framework.consumer.get_harness", return_value=MagicMock()),
+        patch("agento.framework.consumer.get_harness_config", return_value={}),
+    ):
+        yield
+
+
 def _consumer(db=None) -> Consumer:
     return Consumer(
         db or MagicMock(), ConsumerConfig(poll_interval=0.01), logging.getLogger("test")

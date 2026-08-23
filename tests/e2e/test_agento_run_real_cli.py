@@ -55,7 +55,16 @@ _E2E_ENABLED = os.environ.get("AGENTO_E2E") == "1"
 # Cheap model per harness — keeps the real run inexpensive. The harness ids
 # themselves are discovered; only "which model is cheap" needs a human. A harness
 # missing here is skipped with an explicit reason rather than failing the suite.
-_CHEAP_MODEL_BY_HARNESS = {"claude": "haiku", "codex": "gpt-5.4-mini"}
+# `pi` uses a FREE OpenRouter model, so its case costs nothing. Deliberately a
+# concrete model and not a router (`openrouter/free`, `openrouter/auto`, …): a router
+# dispatches to a different model by design, which Pi reports as the model that ran, and
+# the identity guard would correctly flag that as a mismatch. Routers need
+# `pi/allow_model_substitution=1`; a concrete id exercises the STRICT path instead.
+_CHEAP_MODEL_BY_HARNESS = {
+    "claude": "haiku",
+    "codex": "gpt-5.4-mini",
+    "pi": "nvidia/nemotron-3.5-lightning:free",
+}
 
 # Far below any real priority so the chosen credential deterministically wins
 # selection (ORDER BY priority ASC) regardless of the others.

@@ -41,3 +41,7 @@ class ClaudeCommandBuilder:
         if ctx.model:
             cmd += ["--model", ctx.model]
         return cmd
+
+    def stdin_payload(self, ctx: HarnessRunContext, req: RunRequest) -> str | None:
+        """No stdin: the prompt is argv-borne. Keeps stdin closed (DEVNULL)."""
+        return None

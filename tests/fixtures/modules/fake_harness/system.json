@@ -1,0 +1,22 @@
+{
+  "stdin_prompt": {
+    "type": "select",
+    "label": "Deliver the prompt on stdin",
+    "options": [
+      "0",
+      "1"
+    ]
+  },
+  "api_secret": {
+    "type": "obscure",
+    "label": "A secret that must never reach argv"
+  },
+  "verbose": {
+    "type": "select",
+    "label": "Add the constant --verbose flag",
+    "options": [
+      "0",
+      "1"
+    ]
+  }
+}

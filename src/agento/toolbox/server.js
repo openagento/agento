@@ -6,6 +6,7 @@ import express from 'express';
 import { registerTools, registerModuleRestApis, loadScopedDbOverrides } from './config-loader.js';
 import { SqlPoolRegistry } from './adapters/sql-pool-registry.js';
 import { createHealthRegistration } from './health-registration.js';
+import { McpSessionRegistry, DEFAULT_IDLE_MS, DEFAULT_SWEEP_MS } from './mcp-sessions.js';
 import { logToolboxMcp, logToolboxRest, logPublisher, createScopedLogger, createPhasedLogger } from './log.js';
 import * as db from './db.js';
 import * as playwright from './playwright-client.js';
@@ -112,13 +113,25 @@ app.post('/messages', async (req, res) => {
 });
 
 // Streamable HTTP transport (used by Codex and newer MCP clients)
-// Stateful: reuse server+transport per session to avoid re-registering tools on every request
-const mcpSessions = new Map();
+// Stateful: reuse server+transport per session to avoid re-registering tools on every
+// request. The registry carries an idle TTL because a SIGKILLed agent never sends DELETE
+// — see mcp-sessions.js for why that has to be fixed server-side.
+const MCP_SESSION_IDLE_MS =
+  parseInt(process.env.MCP_SESSION_IDLE_MS || '', 10) || DEFAULT_IDLE_MS;
+const MCP_SESSION_SWEEP_MS =
+  parseInt(process.env.MCP_SESSION_SWEEP_MS || '', 10) || DEFAULT_SWEEP_MS;
+
+const mcpSessions = new McpSessionRegistry({
+  idleMs: MCP_SESSION_IDLE_MS,
+  logger: (message) => console.log(message),
+});
+mcpSessions.startSweeper(MCP_SESSION_SWEEP_MS);
 
 app.all('/mcp', async (req, res) => {
   const sessionId = req.headers['mcp-session-id'];
   if (sessionId && mcpSessions.has(sessionId)) {
     const { transport } = mcpSessions.get(sessionId);
+    mcpSessions.touch(sessionId);
     await transport.handleRequest(req, res, req.body);
     return;
   }
@@ -144,7 +157,7 @@ app.all('/mcp', async (req, res) => {
   await transport.handleRequest(req, res, req.body);
 
   if (transport.sessionId) {
-    mcpSessions.set(transport.sessionId, { transport, server });
+    mcpSessions.set(transport.sessionId, { transport, server, lastSeen: Date.now() });
   }
 });
 

@@ -1,0 +1,34 @@
+{
+  "builtin_tools": {
+    "type": "select",
+    "label": "Pi built-in tools",
+    "description": "Disable to run with ONLY Toolbox tools (no bash/read/edit/write) \u2014 tighter least privilege than claude or codex can express.",
+    "options": [
+      {
+        "value": "1",
+        "label": "Enabled (default)"
+      },
+      {
+        "value": "0",
+        "label": "Disabled \u2014 Toolbox tools only"
+      }
+    ],
+    "showInAgentView": true
+  },
+  "allow_model_substitution": {
+    "type": "select",
+    "label": "Allow the provider to substitute the model",
+    "description": "Set to 1 ONLY for router/meta models that dispatch to another model by design (OpenRouter's openrouter/free, openrouter/auto, \u2026 \u2014 identifiable by architecture.tokenizer == \"Router\" in https://openrouter.ai/api/v1/models). It disables the model-identity check, which would otherwise correctly flag the dispatch as a mismatch. The PROVIDER check stays active.",
+    "options": [
+      {
+        "value": "0",
+        "label": "No \u2014 fail on any model mismatch (default)"
+      },
+      {
+        "value": "1",
+        "label": "Yes \u2014 router/meta model, model identity will differ"
+      }
+    ],
+    "showInAgentView": true
+  }
+}

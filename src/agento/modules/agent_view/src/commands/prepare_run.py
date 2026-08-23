@@ -65,6 +65,7 @@ class AgentViewPrepareRunCommand:
             RunRequest,
             StreamRenderer,
             get_harness,
+            get_harness_config,
             resolve_provider,
             workspace_adapter_for,
         )
@@ -135,6 +136,11 @@ class AgentViewPrepareRunCommand:
         finally:
             conn.close()
 
+        # Computed BEFORE materializing, not after: the workspace bakes the model
+        # expectation the bridge enforces, so an `--model` override decided later cannot
+        # reach it and the run is failed for doing exactly what was asked.
+        effective_model = args.model or runtime.model
+
         home, working_dir = materialize_run_workspace(
             runtime,
             run_id=_new_run_id(),
@@ -142,6 +148,7 @@ class AgentViewPrepareRunCommand:
             toolbox_url=toolbox_url,
             credential=credential,
             purge_credentials=purge_credentials,
+            effective_model=effective_model,
         )
 
         writer = workspace_adapter_for(runtime.harness)
@@ -162,7 +169,6 @@ class AgentViewPrepareRunCommand:
             ),
         }
 
-        effective_model = args.model or runtime.model
         # Mirror ``agent_view:runtime``: an unregistered harness yields a JSON
         # ``command: null`` so the host ``RunCommand`` can show its actionable
         # "no harness registered" hint instead of cron raising a traceback.
@@ -171,8 +177,10 @@ class AgentViewPrepareRunCommand:
         # ``getattr`` because the member is optional: a harness without one simply
         # has no pretty mode and the host streams raw.
         stream_renderer: str | None = None
+        stdin_payload: str | None = None
         try:
-            adapter = get_harness(runtime.harness).adapter
+            harness_entry = get_harness(runtime.harness)
+            adapter = harness_entry.adapter
             builder = adapter.command_builder
         except (ValueError, KeyError):
             command = None
@@ -200,11 +208,14 @@ class AgentViewPrepareRunCommand:
                 home_dir=str(home) if home is not None else None,
                 credential_required=provider_desc.credential_required,
                 credential=credential,
+                harness_config=get_harness_config(agent_config_svc, harness_entry),
             )
             if args.prompt:
-                command = builder.headless(
-                    ctx, RunRequest(prompt=args.prompt, model=effective_model)
-                )
+                req = RunRequest(prompt=args.prompt, model=effective_model)
+                command = builder.headless(ctx, req)
+                # A command is argv plus stdin — the host runner must deliver the same
+                # stdin the consumer's runner would, or a stdin-only harness gets no prompt.
+                stdin_payload = getattr(builder, "stdin_payload", lambda *_: None)(ctx, req)
             else:
                 command = builder.interactive(ctx, yolo=getattr(args, "yolo", False))
 
@@ -220,6 +231,7 @@ class AgentViewPrepareRunCommand:
             "working_dir": str(working_dir) if working_dir is not None else None,
             "command": command,
             "stream_renderer": stream_renderer,
+            "stdin": stdin_payload,
             "env": env,
             "credential_id": credential.id if credential is not None else None,
             # Deprecated duplicate of credential_id, kept for one release so an older

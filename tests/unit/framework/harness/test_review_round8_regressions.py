@@ -179,7 +179,7 @@ class TestEveryRunnerFailureCarriesItsOutput:
         runner = make_runner("claude", credential=None, credential_required=False)
         runner._record_usage = MagicMock()
 
-        def _timeout(cmd, env):
+        def _timeout(cmd, env, stdin_payload=None):
             exc = subprocess.TimeoutExpired(cmd="claude", timeout=1, output=OUTPUT_SENTINEL)
             exc.session_id = None
             exc.agent_output = OUTPUT_SENTINEL

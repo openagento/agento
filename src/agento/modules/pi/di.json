@@ -1,0 +1,50 @@
+{
+  "agent_harnesses": [
+    {
+      "id": "pi",
+      "label": "Pi Coding Agent",
+      "class": "src.adapter.PiHarnessAdapter",
+      "default_provider": "openrouter",
+      "providers": [
+        {
+          "id": "openrouter",
+          "label": "OpenRouter",
+          "credential_required": true,
+          "registration_modes": [
+            "api_key"
+          ],
+          "credential_scope": "openrouter"
+        },
+        {
+          "id": "ollama",
+          "label": "Ollama (local, no credential)",
+          "credential_required": false,
+          "provider_options": [
+            "base_url"
+          ]
+        }
+      ],
+      "capabilities": {
+        "interactive": true,
+        "resume": true,
+        "transcripts": true,
+        "structured_events": true,
+        "toolbox": true,
+        "mcp_init_report": true,
+        "usage_reporting": true,
+        "cost_reporting": false
+      },
+      "runtime_config_fields": [
+        "builtin_tools",
+        "allow_model_substitution"
+      ],
+      "sandbox_package": {
+        "manager": "npm",
+        "package": "@earendil-works/pi-coding-agent",
+        "binary": "pi",
+        "version_env_key": "PI_VERSION",
+        "default_range": "0.84.1"
+      }
+    }
+  ]
+}

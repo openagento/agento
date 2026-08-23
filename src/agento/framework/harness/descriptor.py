@@ -88,6 +88,14 @@ class ModelProviderDescriptor:
     credential_required: bool
     registration_modes: tuple[CredentialRegistrationMode, ...] = ()
     credential_scope: CredentialScope | None = None
+    provider_options: tuple[str, ...] = ()
+    """``agent_view/provider_options/<name>`` fields THIS provider needs.
+
+    A self-hosted provider needs an endpoint; a hosted one does not. Declaring the
+    names here is what lets admin show such a field only for the providers it applies
+    to, without any core module naming a provider — the same agent-agnosticism rule
+    that keeps provider ids out of framework branches.
+    """
 
     @classmethod
     def from_declaration(cls, decl: dict) -> ModelProviderDescriptor:
@@ -122,6 +130,36 @@ class ModelProviderDescriptor:
         if scope is not None:
             _validate_id(str(scope), f"provider {provider_id!r} credential_scope")
 
+        # `.get(key, [])` and nothing more. Absent -> `[]`. Present-but-null -> `None`,
+        # which fails the isinstance check below, because an explicit
+        # `"provider_options": null` is a malformed declaration and not a way to say "none".
+        # Two earlier versions each widened this by one step and each opened a hole: a
+        # trailing `or []` swallowed every falsey value (`false`, `0`, `""`), and a
+        # replacement `if raw is None: raw = []` reintroduced exactly that hole for `null`.
+        # Entries are likewise not coerced: `str(raw)` turned `[5]` into `("5",)`, i.e. a
+        # manifest typo became a valid-looking option name.
+        raw_options = decl.get("provider_options", [])
+        if not isinstance(raw_options, list):
+            raise ValueError(
+                f"Provider {provider_id!r}: provider_options must be an array, got "
+                f"{type(raw_options).__name__} {raw_options!r}"
+            )
+        options: list[str] = []
+        for raw in raw_options:
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError(
+                    f"Provider {provider_id!r}: provider_options entries must be "
+                    f"non-empty strings, got {type(raw).__name__} {raw!r}"
+                )
+            # Same bounded-id rule as every other declared name: these become
+            # `agent_view/provider_options/<name>` config paths.
+            _validate_id(raw, f"provider {provider_id!r} provider_options entry")
+            if raw in options:
+                raise ValueError(
+                    f"Provider {provider_id!r}: duplicate provider_options entry {raw!r}"
+                )
+            options.append(raw)
+
         # credential_required is the single source of truth; scope and modes must
         # agree with it in both directions so a half-declared provider cannot load.
         if required:
@@ -152,6 +190,7 @@ class ModelProviderDescriptor:
             credential_required=required,
             registration_modes=tuple(modes),
             credential_scope=CredentialScope(str(scope)) if scope else None,
+            provider_options=tuple(options),
         )
 
 

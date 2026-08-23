@@ -10,5 +10,7 @@ poppler-utils | PDF tools (pdftotext)
 default-mysql-client | MySQL client
 ca-certificates | SSL certificates
 socat | TCP forwarder (for Codex OAuth callback)
+ripgrep | Fast recursive search (rg) — used by agent file-search tools
+fd-find | Fast file finder (fdfind) — used by agent file-search tools
 
 # mssql-tools18 (sqlcmd) - installed via Microsoft repo in Dockerfile

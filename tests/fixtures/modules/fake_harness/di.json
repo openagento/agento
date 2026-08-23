@@ -15,7 +15,10 @@
           "id": "fake_cloud",
           "label": "Fake Cloud",
           "credential_required": true,
-          "registration_modes": ["api_key", "access_token"],
+          "registration_modes": [
+            "api_key",
+            "access_token"
+          ],
           "credential_scope": "fake_cloud"
         }
       ],
@@ -35,7 +38,11 @@
         "binary": "fake",
         "version_env_key": "FAKE_CLI_VERSION",
         "default_range": "1.2.3"
-      }
+      },
+      "runtime_config_fields": [
+        "stdin_prompt",
+        "verbose"
+      ]
     }
   ]
 }

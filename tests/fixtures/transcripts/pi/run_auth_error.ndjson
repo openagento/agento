@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"01931f0e-aaaa-bbbb-cccc-000000000002","timestamp":"2026-08-12T09:10:00.000Z","cwd":"/workspace/run-43"}
+{"type":"message_end","message":{"role":"assistant","content":[],"provider":"openrouter","model":"m","stopReason":"error","errorMessage":"401 Unauthorized: invalid api key"}}

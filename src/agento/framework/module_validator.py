@@ -512,6 +512,22 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                             f"system.json: field '{field_name}' depends_on "
                             f"'{depends_on}' which is not a field in this system.json"
                         )
+                # A `provider_option` no provider declares hides the field FOREVER, with
+                # no error anywhere — exactly the "guard that cannot fire" shape. So the
+                # name must be a non-empty string AND claimed by some provider on disk.
+                provider_option = field_def.get("provider_option")
+                if provider_option is not None:
+                    if not isinstance(provider_option, str) or not provider_option.strip():
+                        errors.append(
+                            f"system.json: field '{field_name}' provider_option must be "
+                            f"a non-empty string"
+                        )
+                    elif not _provider_option_is_declared(provider_option.strip()):
+                        errors.append(
+                            f"system.json: field '{field_name}' provider_option "
+                            f"'{provider_option}' is declared by no provider of any "
+                            f"installed harness — the field would never be shown"
+                        )
                 if has_options and not is_select:
                     errors.append(
                         f"system.json: field '{field_name}' has 'options' but type is '{field_type}' (only select/multiselect support options)"
@@ -629,6 +645,107 @@ def _collision_errors(candidates: list[tuple[str, Path]]) -> list[tuple[str, str
     return errors
 
 
+def _provider_option_is_declared(option: str) -> bool:
+    """Whether ANY provider of any INSTALLED harness declares this provider option.
+
+    Installed, not enabled — deliberately. ``agent_view`` is a core module and always
+    enabled, but the only provider claiming ``base_url`` lives in ``pi``. Checking enabled
+    modules made ``module:validate`` fail on ``agent_view`` the moment someone disabled
+    ``pi``, which breaks the rule that every module must be safely disableable (and would
+    abort ``setup:upgrade`` before any DB change). It also blocked validating a
+    not-yet-enabled extension that declares its own provider option.
+
+    Runtime *visibility* still resolves against enabled modules only: an unresolvable
+    provider leaves the field shown, which is the safe direction.
+
+    Read off disk — ``module:validate`` runs without a ``bootstrap()``. Declarations are
+    parsed per module dir rather than through ``enumerate_harness_declarations``, which
+    raises on duplicate harness ids; across the INSTALLED set a duplicate is legitimate
+    (a local module shadowing a PyPI one of the same name). An unreadable manifest means
+    "cannot tell" — return True so a discovery failure never becomes a bogus error.
+    """
+    try:
+        from .harness.manifest import parse_harness_declarations
+        from .module_discovery import iter_module_dirs, resolve_module_root
+
+        for module_dir in iter_module_dirs(resolve_module_root()):
+            try:
+                declarations = parse_harness_declarations(
+                    module_dir / "di.json", module_dir.name
+                )
+            except Exception:
+                continue
+            for declaration in declarations:
+                for provider in declaration.descriptor.providers:
+                    if option in provider.provider_options:
+                        return True
+        return False
+    except Exception:
+        return True
+
+
+def _validate_runtime_config_fields(decl: dict, i: int, module_dir: Path) -> list[str]:
+    """Validate one declaration's ``runtime_config_fields`` against system.json.
+
+    Static twin of the check in ``register_harness``: a malformed allow-list must
+    fail ``module:validate`` (and therefore ``setup:upgrade``) BEFORE any DB change,
+    not at bootstrap. Secrets are declared as ``{"type": "obscure"}`` — checking an
+    ``obscure: true`` flag would never match and would fail open.
+    """
+    errors: list[str] = []
+    fields = decl.get("runtime_config_fields", [])
+    if not isinstance(fields, list):
+        return [f"di.json: agent_harnesses[{i}] 'runtime_config_fields' must be an array"]
+    if not fields:
+        return []
+    if any(not isinstance(f, str) or not f for f in fields):
+        errors.append(
+            f"di.json: agent_harnesses[{i}] 'runtime_config_fields' must contain "
+            f"non-empty strings"
+        )
+        return errors
+    if len(fields) != len(set(fields)):
+        errors.append(
+            f"di.json: agent_harnesses[{i}] 'runtime_config_fields' contains duplicates"
+        )
+
+    system_path = module_dir / "system.json"
+    if not system_path.is_file():
+        errors.append(
+            f"di.json: agent_harnesses[{i}] declares runtime_config_fields but the module "
+            f"has no system.json to declare them in"
+        )
+        return errors
+    try:
+        schema = json.loads(system_path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        errors.append(f"system.json: unreadable — {e}")
+        return errors
+    if not isinstance(schema, dict):
+        errors.append("system.json: must be an object")
+        return errors
+
+    for fname in fields:
+        fs = schema.get(fname)
+        if fs is None:
+            errors.append(
+                f"di.json: runtime_config_fields names '{fname}', which system.json "
+                f"does not declare"
+            )
+        elif not isinstance(fs, dict):
+            errors.append(
+                f"di.json: runtime_config_fields names '{fname}', but system.json declares "
+                f"it as a {type(fs).__name__} rather than a schema object; cannot prove "
+                f"it is not a secret"
+            )
+        elif fs.get("type") == "obscure":
+            errors.append(
+                f"di.json: runtime_config_fields names '{fname}', which is an 'obscure' "
+                f"(secret) field; secrets must never reach command construction"
+            )
+    return errors
+
+
 def _validate_agent_harnesses(module_dir: Path, decls) -> list[str]:
     """Statically validate ``agent_harnesses`` — before any DB change in setup:upgrade.
 
@@ -684,4 +801,6 @@ def _validate_agent_harnesses(module_dir: Path, decls) -> list[str]:
                     f"'{pkg.version_env_key}'"
                 )
             seen_env_keys.add(pkg.version_env_key)
+
+        errors.extend(_validate_runtime_config_fields(decl, i, module_dir))
     return errors

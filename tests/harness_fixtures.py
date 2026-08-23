@@ -27,14 +27,20 @@ def register_module_harness(module: str) -> None:
     module_dir = MODULES_ROOT / module
     for decl in parse_harness_declarations(module_dir / "di.json", module):
         adapter = import_class(module_dir, decl.class_path)()
-        register_harness(decl.descriptor, adapter)
+        register_harness(decl.descriptor, adapter, decl.module,
+                         decl.runtime_config_fields, _module_config_schema(module_dir))
+
+
+# Every harness the framework ships. Adding one here is what makes the shared fixtures,
+# the parity tests and the framework-source guard cover it.
+BUILTIN_HARNESS_MODULES = ("claude", "codex", "pi")
 
 
 def register_builtin_harnesses() -> None:
-    """Register both shipped harnesses (claude + codex) from a clean registry."""
+    """Register every shipped harness from a clean registry."""
     clear()
-    register_module_harness("claude")
-    register_module_harness("codex")
+    for module in BUILTIN_HARNESS_MODULES:
+        register_module_harness(module)
 
 
 def make_runner(
@@ -105,3 +111,17 @@ def stub_workspace_adapters(**adapters):
             if name.startswith("agento.") and hasattr(module, "workspace_adapter_for"):
                 stack.enter_context(patch.object(module, "workspace_adapter_for", mock))
         yield mock
+
+
+def _module_config_schema(module_dir):
+    """Read the fixture module's system.json (empty when it has none)."""
+    import json as _json
+    from pathlib import Path as _Path
+    p = _Path(module_dir) / "system.json"
+    if not p.is_file():
+        return {}
+    try:
+        data = _json.loads(p.read_text())
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}

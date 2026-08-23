@@ -2,6 +2,7 @@
 
 Use ASD-STE100 Simplified Technical English like words for communitaction.
 
+Automates Jira tasks using AI agents (Claude Code, OpenAI Codex, Pi) in Docker containers with Magento-inspired modular architecture. The set of agents is open — see [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
 
 ## Core Principles
 
@@ -23,6 +24,14 @@ Use ASD-STE100 Simplified Technical English like words for communitaction.
 - **Core modules:** `src/agento/modules/<name>/` with `module.json` — ship with framework
 - **User modules:** `app/code/<name>/` with `module.json` + `config.json` — per-deployment, gitignored
 - **Module dependencies (`sequence`):** If a module imports classes/functions from another module, it **must** declare that module in `sequence`. Prefer using framework code (`src/agento/framework/`) + events/observers over inter-module imports — framework code requires no `sequence` entry. If inter-module dependency is unavoidable (e.g., `jira_periodic_tasks` → `jira`), declare it in `sequence`. Every module must be safely disableable: disabling a module (and its dependents down the chain) must leave the system fully operational.
+- **Harness runtime config:** a harness may read its **own** module's config while building
+  the command line, but only fields allow-listed in its `di.json` `runtime_config_fields`.
+  They arrive as `HarnessRunContext.harness_config` (for command building) and, when the adapter's signature accepts it, as `prepare_workspace(..., harness_config=…)` (for build-time files) — resolved per-path as `{module}/{field}`
+  (the declaring **module**, not the harness id) and **never** via `resolve_all()`, which
+  would decrypt every module's `obscure` values into a context used to build argv. A field
+  whose schema is `{"type": "obscure"}` — or whose schema is not an object, and so cannot be
+  proven safe — is rejected by `module:validate` and again at registration, and a violation
+  fails the boot. See [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
 - **Config:** 3-level fallback: ENV (`CONFIG__MODULE__PATH`) → DB (`core_config_data`) → `config.json`. Per-agent_view scoped config via `scope='agent_view'` in DB.
 - **Concurrent execution:** `AGENTO_CONSUMER_MAX_WORKERS` env var (default 10). Per-run isolation makes concurrent runs safe.
 - **Consumer hot-reload:** every `AGENTO_CONSUMER_POLL_INTERVAL` (5s default) the consumer re-runs `bootstrap()` when idle — `mo:en/mo:di`, `config:set`, and `app/code/` edits apply live without restart. Caveat: edits to core module Python code (`src/agento/modules/`) still require a process restart due to `sys.modules` caching.
@@ -49,7 +58,7 @@ Run `uv run bin/agento` with no arguments for the full grouped command list, and
 The test entry points are not part of the CLI (container restart/rebuild commands are under **Code via volume mounts** above):
 
 ```bash
-bin/test                                                # all: JSON validation + Python + JS
+bin/test                                                # all: JSON validation + Python + JS. For LLm use run AGENTO_E2E=1 bin/test
 uv run pytest -q                                        # Python only (from repo root)
 cd src/agento/toolbox && npm test && cd -               # JS only (vitest, from repo root)
 ```

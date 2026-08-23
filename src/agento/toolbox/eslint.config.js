@@ -18,6 +18,10 @@ export default [
         Blob: "readonly",
         FormData: "readonly",
         fetch: "readonly",
+        AbortSignal: "readonly",
+        AbortController: "readonly",
+        Response: "readonly",
+        Request: "readonly",
       },
     },
     rules: {

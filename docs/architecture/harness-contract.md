@@ -68,6 +68,25 @@ must agree with it **in both directions** — `true` needs a scope and at least 
 registration mode, `false` must declare neither. A half-declared provider fails to load
 rather than failing later at `credential:register`.
 
+A provider may also declare `provider_options` — the `agent_view/provider_options/<name>`
+config fields *it* needs. A self-hosted provider needs an endpoint override; a hosted one
+does not, and an operator on the hosted one should not be shown an empty box that will never
+apply to them. The matching `system.json` field opts in by naming the option:
+
+```json
+"provider_options/base_url": { "type": "string", "provider_option": "base_url" }
+```
+
+Admin then shows that field only when the effective provider declares `base_url`. The
+condition lives with the **provider**, so no core module and no framework code names a
+provider — the same agent-agnosticism rule as everywhere else. Visibility hides only on
+positive knowledge: an unset or unresolvable harness/provider leaves the field visible,
+because hiding a field the operator still needs is the worse failure. `module:validate`
+rejects a `provider_option` no installed provider declares, since such a field would be
+invisible forever with no error anywhere. That check reads **installed** providers, not
+enabled ones, so disabling the module that declares an option cannot invalidate the
+manifest of the module that uses it — every module stays safely disableable.
+
 `sandbox_package` is rendered into the sandbox Dockerfile, so every field is validated
 against a closed schema (regex per field, allow-list of managers) before any string
 reaches the template. Note the fields are **not** `shlex.quote`d: the rendered line is
@@ -80,7 +99,7 @@ The module supplies one object implementing `AgentHarnessAdapter`, which wires t
 
 | Protocol                  | Responsibility                                                    |
 |---------------------------|-------------------------------------------------------------------|
-| `CommandBuilder`          | `headless(ctx, request)` and `interactive(ctx, *, yolo)` — **the only** place that harness's CLI flags exist |
+| `CommandBuilder`          | `headless(ctx, request)`, `interactive(ctx, *, yolo)` and `stdin_payload(ctx, request)` — **the only** place that harness's CLI invocation exists |
 | `WorkspaceAdapter`        | materializes config + credentials into a build/run dir; owns `owned_paths`, `persistent_home_paths`, `capture_refreshed_credentials`, `serialize_toolbox_connection` |
 | `TranscriptReader`        | parses that harness's own session transcript (optional — `None` when it keeps none) |
 | `StreamRenderer`          | renders one **live stdout event** as terminal text for `agento run --pretty` (optional — omit the member entirely and the run streams raw) |
@@ -129,6 +148,63 @@ Contract for `render`: return the text to print, `None` to hide the event delibe
 raise if you must — the caller prints the raw line on any exception, so a renderer bug can
 never swallow a run's output. Do not return raw JSON for an event type you do not know; a
 short dim line keeps a silent format change visible.
+
+### A command is argv *plus* stdin
+
+`stdin_payload(ctx, request)` returns the text written to the process's stdin, which is
+then closed; `None` keeps stdin at `DEVNULL`. It belongs to the `CommandBuilder` and not
+to the runner because Agento has **two** spawn paths — the consumer's `SubprocessRunner`
+and `agento run` on the host, via `prepare_run.py`'s JSON payload — and both must deliver
+the invocation the same way. A harness whose CLI accepts its prompt only on stdin (because
+an argv prompt beginning with `-` parses as a flag) would otherwise run with the prompt
+going nowhere on one of the two paths.
+
+Two implementation constraints that are easy to get wrong:
+
+- The payload is written from its **own thread**, alongside the stdout/stderr drain
+  threads. A CLI may read stdin only after startup work, so a payload larger than the
+  pipe buffer would block the parent — and the timeout (`proc.wait`) runs on the main
+  thread. `BrokenPipeError` is swallowed there so a process that died during startup
+  still reports its real error through the normal non-zero-exit path.
+- On the host path, `subprocess.run(..., input=payload)` requires `text=True`, and
+  `input=None` does **not** mean `DEVNULL` — it inherits the caller's stdin. So the
+  no-payload branch keeps `stdin=subprocess.DEVNULL` explicitly.
+
+### Capabilities are enforced, not decorative
+
+`capabilities.resume` gates the consumer's resume branch (`_should_resume`). The consumer
+resumes with an **empty** prompt, so a CLI that merely re-opens a session without
+continuing work would exit successfully having done nothing — a silent false success. A
+harness that declares `resume: false` therefore starts fresh instead.
+
+### `runtime_config_fields` — the harness's own config, at command-build time
+
+A harness may need one of its **own** module config values to build a command (a flag
+toggled per agent_view, say). The declaration allow-lists them:
+
+```json
+{ "id": "example", "runtime_config_fields": ["builtin_tools"], ... }
+```
+
+`get_harness_config()` resolves exactly those paths as `{module}/{field}` via
+`svc.get()`. The result lands on `HarnessRunContext.harness_config` for command building,
+and is also offered to `WorkspaceAdapter.prepare_workspace(..., harness_config=…)` for
+settings that must be baked into a build-time file. That keyword is supplied **only when
+the adapter's signature accepts it** (`supply_harness_config`): a default in this Protocol
+does not make an existing third-party implementation tolerate an unknown keyword, so the
+caller inspects first. Three properties
+matter:
+
+- **The namespace comes from the declaring module, never the harness id.** They are not
+  interchangeable — `tests/fixtures/modules/fake_harness/` is module `fake_harness`
+  declaring harness id `fake`. `RegisteredHarness` therefore carries `module`.
+- **It never calls `resolve_all()`.** That resolves every declared path and decrypts every
+  module's `obscure` values on the way; this dict is used to build argv.
+- **Secrets are refused at registration and by `module:validate`**, before any DB change.
+  A field is a secret when its schema is `{"type": "obscure"}` — there is no `obscure: true`
+  form anywhere, so checking for one would never match and would admit the field. A schema
+  entry that is not an object is also refused: it carries no `type`, so it cannot be proven
+  safe.
 
 ### One CommandBuilder, not two
 
@@ -219,6 +295,62 @@ registries and five loaders collapsed into one registry and one loader
 No framework file changes at any step. `tests/fixtures/modules/fake_harness/` is a
 working third harness used by the test suite to keep that claim honest — including a
 test asserting no framework source file names it.
+
+### Adding a harness vs. extending the contract
+
+That promise covers steps 1–5 above: *adding a harness*. It does **not** mean the contract
+itself never changes. Those are two different activities and only the first is free:
+
+| | Adding a harness | Extending the contract |
+|---|---|---|
+| What changes | one module under `src/agento/modules/` | `src/agento/framework/` **and** every existing adapter |
+| Framework edits | none — enforced by the test above | yes, by definition |
+| Obligations | implement the protocols | migrate all sibling adapters, add compatibility tests, and keep `bin/test` green **with the new capability alone**, before any harness uses it |
+| Names a harness | n/a | never — an extension is harness-agnostic or it is not an extension |
+
+`stdin_payload`, the `capabilities.resume` gate and `runtime_config_fields` were all
+contract *extensions*: the framework genuinely lacked the capability, so no amount of
+module-side code could have supplied it. Each was landed first, harness-agnostically, with
+`claude` and `codex` migrated and the fixture harness exercising it — and only then was it
+available to a new harness. When you find yourself editing the framework to add an agent,
+that is the signal you are doing this second thing, and it carries the obligations in the
+right-hand column rather than being a reason to weaken the left one.
+
+### `serialize_toolbox_connection` — declared, not yet on the call path
+
+Stating the current state precisely, because the protocol table alone reads as though this
+hook were already load-bearing:
+
+A workspace build is materialized once per **agent_view**, while the Toolbox URL a run must
+call carries per-job scoping (`?agent_view_id=…&job_id=…`). Two methods divide that work:
+
+1. `prepare_workspace(...)` writes the build-time configuration. **Today every shipped
+   adapter writes its Toolbox wiring directly here** — they do not route it through
+   `serialize_toolbox_connection`.
+2. `inject_runtime_params(artifacts_dir, job_id=…)` rewrites that configuration inside the
+   per-run directory, adding the job id. Without this step a run has no job scope at
+   all — its tool calls simply are not attributed to a job (there is no misattribution to
+   another job, since no job builds the agent_view workspace).
+
+   `job_id` is `int | None`: `None` means the run has no job scope, which is what a
+   string-id `agento run` has. An adapter MAY also accept `effective_model` /
+   `effective_provider` — the per-run values, where a `--model` override beats build-time
+   config. Each is passed to any adapter that can receive it, whether by a named parameter
+   or by `**kwargs`.
+   **The two rules interact:** `job_id=None` is passed *only* to an adapter declaring a
+   **named** `effective_model` or `effective_provider` matching the override supplied,
+   because otherwise the call has nothing to do. `**kwargs` does not qualify — it is a
+   forward-compatibility idiom, and an adapter carrying it may still declare `job_id: int`.
+   So an adapter that names an override parameter must also widen `job_id` to `int | None`.
+   Both shipped siblings accept `int | None` and return early on `None`.
+
+`serialize_toolbox_connection` is the **declared seam** for making step 1
+transport-agnostic — the framework would hand over a plain `ToolboxConnectionSpec` and each
+harness would render it into whatever its CLI reads (an MCP JSON file, CLI flags, an
+extension install, env vars). That rewrite is deferred; the method is implemented and tested
+on every shipped adapter so the seam cannot rot into unexercised surface in the meantime.
+See `protocols.py` and `tests/unit/framework/harness/test_toolbox_connection.py`, which say
+the same thing at the source.
 
 ## See also
 

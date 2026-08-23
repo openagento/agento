@@ -24,6 +24,8 @@ RUN apt-get update && \
     ln -s /opt/mssql-tools18/bin/bcp /usr/local/bin/bcp && \
     # Lightweight editor (for crontab -e, etc.) + gosu for entrypoint user-switching
     apt-get install -y --no-install-recommends nano gosu && \
+    # Debian ships fd as `fdfind`; agents look for `fd` too
+    ln -sf /usr/bin/fdfind /usr/local/bin/fd && \
     # Cleanup
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/*
@@ -37,7 +39,8 @@ ENV EDITOR=nano
 # release. Adding a harness needs NO edit here.
 ARG CLAUDE_CODE_VERSION=2.1.165
 ARG CODEX_VERSION=0.137.0
-RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}"
+ARG PI_VERSION=0.84.1
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" "@earendil-works/pi-coding-agent@${PI_VERSION}"
 
 # Disable claude-code's built-in self-updater so the exact pin above can't
 # be silently superseded at runtime.
@@ -71,6 +74,8 @@ RUN chown -R agent /usr/local/lib/node_modules/@anthropic-ai/claude-code 2>/dev/
     chown agent /usr/local/bin/claude 2>/dev/null || true
 RUN chown -R agent /usr/local/lib/node_modules/@openai/codex 2>/dev/null || true && \
     chown agent /usr/local/bin/codex 2>/dev/null || true
+RUN chown -R agent /usr/local/lib/node_modules/@earendil-works/pi-coding-agent 2>/dev/null || true && \
+    chown agent /usr/local/bin/pi 2>/dev/null || true
 
 # Entrypoint: ensures config files exist and symlinks them to home
 COPY entrypoint.sh /entrypoint.sh

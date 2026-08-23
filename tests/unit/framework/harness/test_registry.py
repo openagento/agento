@@ -40,7 +40,8 @@ def _register_fixture(module: str) -> None:
     module_dir = FIXTURES / module
     for decl in parse_harness_declarations(module_dir / "di.json", module):
         adapter = import_class(module_dir, decl.class_path)()
-        register_harness(decl.descriptor, adapter)
+        register_harness(decl.descriptor, adapter, decl.module,
+                         decl.runtime_config_fields, _module_config_schema(module_dir))
 
 
 @pytest.fixture(autouse=True)
@@ -141,7 +142,8 @@ class TestScopeOwnership:
         adapter._authenticators = {}  # simulate a code/declaration mismatch
 
         with pytest.raises(ValueError, match="authenticators keys"):
-            register_harness(decl.descriptor, adapter)
+            register_harness(decl.descriptor, adapter, decl.module,
+                         decl.runtime_config_fields, _module_config_schema(module_dir))
 
 
 class TestLookupFailures:
@@ -173,3 +175,17 @@ class TestLookupFailures:
         clear()
         assert list_harnesses() == []
         assert list_credential_scopes() == []
+
+
+def _module_config_schema(module_dir):
+    """Read the fixture module's system.json (empty when it has none)."""
+    import json as _json
+    from pathlib import Path as _Path
+    p = _Path(module_dir) / "system.json"
+    if not p.is_file():
+        return {}
+    try:
+        data = _json.loads(p.read_text())
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
