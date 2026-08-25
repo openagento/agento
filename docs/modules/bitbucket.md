@@ -191,13 +191,14 @@ key (git) are different credentials.
   naming any **other** workspace is refused by name. The **allow-list itself is never normalized**: it
   stays an exact match on bare slugs, and workspace-prefixed *config* entries are only diagnosed. This
   does not touch `source_repository`, which legitimately takes the `workspace/repo` form.
-- **Honest boundary (N5-2):** the MCP layer cannot see `agentViewMeta`, and the agent — a shell-capable
-  process on the same Docker network as the toolbox — could in principle open its own MCP session with a
-  different/omitted `agent_view_id`. That is the **framework-wide internal-caller-auth gap shared by the
-  Jira and Outlook channels**; fixing it needs a framework change and is out of scope here. The Bitbucket
-  module does not worsen it and compensates (token toolbox-only, opt-in tools, allow-list-bounded,
-  fail-closed). Bitbucket config is **always agent_view-scoped** (never DEFAULT), which also minimizes
-  cross-view exposure under this gap.
+- **Caller authentication (N5-2, capability half closed 2026-08-23):** with the capability issued to
+  its own run, the agent cannot open an MCP session naming another view (a co-tenant run's token read
+  off the shared workspace still can — see [zero-trust.md](../architecture/zero-trust.md)). Every MCP session and every `/api` route needs a **capability token**, and the toolbox
+  reads `agent_view_id` (and `job_id`) from the `toolbox_capability` row, never from a query string or a
+  request body. A body `agent_view_id` is only compared with the capability's scope; a mismatch is
+  refused. The module's own compensations still apply and are still worth having (token toolbox-only,
+  opt-in tools, allow-list-bounded, fail-closed), and Bitbucket config stays **always agent_view-scoped**
+  (never DEFAULT). See [docs/architecture/zero-trust.md](../architecture/zero-trust.md).
 - **Rate limits / outages:** the toolbox retries on 429 for any method (the request was rejected, not
   processed) and on 5xx for **idempotent GETs only** — mutating POSTs (comment/resolve/review/create) are
   **not** auto-retried on 5xx, to avoid duplicate writes. `Retry-After` is honored; backoff is capped.

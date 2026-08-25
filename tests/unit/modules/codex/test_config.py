@@ -67,7 +67,7 @@ class TestPrepareWorkspace:
         )
         data = tomllib.loads((work_dir / ".codex" / "config.toml").read_text())
         assert data["mcp_servers"]["toolbox"]["type"] == "sse"
-        assert "agent_view_id=2" in data["mcp_servers"]["toolbox"]["url"]
+        assert data["mcp_servers"]["toolbox"]["url"] == "http://toolbox:3001/sse"
 
     def test_auto_injects_toolbox_streamable_http(self, writer, work_dir):
         writer.prepare_workspace(
@@ -76,8 +76,9 @@ class TestPrepareWorkspace:
         )
         data = tomllib.loads((work_dir / ".codex" / "config.toml").read_text())
         assert data["mcp_servers"]["toolbox"]["type"] == "streamable_http"
-        assert data["mcp_servers"]["toolbox"]["url"].startswith("http://toolbox:3001/mcp")
-        assert "agent_view_id=3" in data["mcp_servers"]["toolbox"]["url"]
+        # The build is shared across runs, so it bakes no agent_view_id and no job_id:
+        # claims live in the capability row the run injects, never in the URL.
+        assert data["mcp_servers"]["toolbox"]["url"] == "http://toolbox:3001/mcp"
 
     def test_no_agent_view_id_leaves_url_unchanged(self, writer, work_dir):
         writer.prepare_workspace(work_dir, {"model": "o3"}, toolbox_url=self.TOOLBOX)
@@ -113,44 +114,105 @@ class TestPrepareWorkspace:
 
 
 class TestInjectRuntimeParams:
-    def test_appends_params_to_toml_urls(self, writer, work_dir):
+    TOOLBOX = "http://toolbox:3001"
+
+    def _write(self, work_dir, url, extra=""):
+        codex_dir = work_dir / ".codex"
+        codex_dir.mkdir(parents=True, exist_ok=True)
+        (codex_dir / "config.toml").write_text(
+            'model = "o3"\n'
+            + extra
+            + "\n[mcp_servers.toolbox]\n"
+            'type = "sse"\n'
+            f'url = "{url}"\n'
+        )
+        return codex_dir
+
+    def test_appends_the_capability_to_the_toolbox_url(self, writer, work_dir):
+        codex_dir = self._write(work_dir, "http://toolbox:3001/sse")
+
+        writer.inject_runtime_params(work_dir, capability_token="tok10", toolbox_url=self.TOOLBOX)
+
+        data = tomllib.loads((codex_dir / "config.toml").read_text())
+        assert data["mcp_servers"]["toolbox"]["url"] == "http://toolbox:3001/sse?cap=tok10"
+
+    def test_noop_when_no_config_toml(self, writer, work_dir):
+        writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
+        assert not (work_dir / ".codex" / "config.toml").exists()
+
+    def test_preserves_model_and_approval_mode(self, writer, work_dir):
+        codex_dir = self._write(
+            work_dir, "http://toolbox:3001/sse", extra='approval_mode = "full-auto"\n'
+        )
+
+        writer.inject_runtime_params(work_dir, capability_token="tok5", toolbox_url=self.TOOLBOX)
+
+        data = tomllib.loads((codex_dir / "config.toml").read_text())
+        assert data["model"] == "o3"
+        assert data["approval_mode"] == "full-auto"
+        assert "cap=tok5" in data["mcp_servers"]["toolbox"]["url"]
+
+    def test_targets_only_the_toolbox_origin(self, writer, work_dir):
         codex_dir = work_dir / ".codex"
         codex_dir.mkdir(parents=True)
         (codex_dir / "config.toml").write_text(
             'model = "o3"\n'
             "\n[mcp_servers.toolbox]\n"
+            'type = "streamable_http"\n'
+            'url = "http://toolbox:3001/mcp"\n'
+            "\n[mcp_servers.vendor]\n"
             'type = "sse"\n'
-            'url = "http://toolbox:3001/sse?agent_view_id=2"\n'
+            'url = "https://vendor.example.com/mcp"\n'
         )
 
-        writer.inject_runtime_params(work_dir, job_id=10)
+        writer.inject_runtime_params(work_dir, capability_token="tok123", toolbox_url=self.TOOLBOX)
 
         data = tomllib.loads((codex_dir / "config.toml").read_text())
-        assert data["mcp_servers"]["toolbox"]["url"] == (
-            "http://toolbox:3001/sse?agent_view_id=2&job_id=10"
-        )
+        assert data["mcp_servers"]["toolbox"]["url"] == "http://toolbox:3001/mcp?cap=tok123"
+        assert data["mcp_servers"]["vendor"]["url"] == "https://vendor.example.com/mcp"
 
-    def test_noop_when_no_config_toml(self, writer, work_dir):
-        writer.inject_runtime_params(work_dir, job_id=10)
-        assert not (work_dir / ".codex" / "config.toml").exists()
+    def test_does_not_leak_to_a_lookalike_host(self, writer, work_dir):
+        codex_dir = self._write(work_dir, "http://toolbox.evil.com:3001/mcp")
 
-    def test_preserves_model_and_approval_mode(self, writer, work_dir):
-        codex_dir = work_dir / ".codex"
-        codex_dir.mkdir(parents=True)
-        (codex_dir / "config.toml").write_text(
-            'model = "gpt-5"\n'
-            'approval_mode = "full-auto"\n'
-            "\n[mcp_servers.toolbox]\n"
-            'type = "sse"\n'
-            'url = "http://toolbox:3001/sse?agent_view_id=1"\n'
-        )
-
-        writer.inject_runtime_params(work_dir, job_id=5)
+        writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
 
         data = tomllib.loads((codex_dir / "config.toml").read_text())
-        assert data["model"] == "gpt-5"
-        assert data["approval_mode"] == "full-auto"
-        assert "job_id=5" in data["mcp_servers"]["toolbox"]["url"]
+        assert data["mcp_servers"]["toolbox"]["url"] == "http://toolbox.evil.com:3001/mcp"
+
+    def test_same_origin_but_a_different_path_is_not_injected(self, writer, work_dir):
+        codex_dir = self._write(work_dir, "http://toolbox:3001/admin")
+
+        writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
+
+        data = tomllib.loads((codex_dir / "config.toml").read_text())
+        assert data["mcp_servers"]["toolbox"]["url"] == "http://toolbox:3001/admin"
+
+    def test_an_unparseable_server_entry_is_skipped_not_matched(self, writer, work_dir):
+        codex_dir = self._write(work_dir, "not-a-url")
+
+        writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
+
+        data = tomllib.loads((codex_dir / "config.toml").read_text())
+        assert data["mcp_servers"]["toolbox"]["url"] == "not-a-url"
+
+    def test_a_malformed_toolbox_url_raises_and_injects_nowhere(self, writer, work_dir):
+        codex_dir = self._write(work_dir, "http://toolbox:3001/mcp")
+        original = (codex_dir / "config.toml").read_text()
+
+        with pytest.raises(ValueError):
+            writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url="::::")
+
+        assert (codex_dir / "config.toml").read_text() == original
+
+    def test_a_shadowing_operator_entry_receives_no_capability(self, writer, work_dir):
+        # Shadowing stays legal (containers.md:57); it simply opts out of authentication,
+        # so the toolbox refuses that session rather than the framework refusing the config.
+        codex_dir = self._write(work_dir, "http://other-host:3001/mcp")
+
+        writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
+
+        data = tomllib.loads((codex_dir / "config.toml").read_text())
+        assert data["mcp_servers"]["toolbox"]["url"] == "http://other-host:3001/mcp"
 
 
 class TestWriteCredentials:

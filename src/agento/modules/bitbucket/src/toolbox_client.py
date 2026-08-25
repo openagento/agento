@@ -18,8 +18,20 @@ class BitbucketToolboxClient:
     the publisher only passes ``agent_view_id`` (which view to act as) and a lane.
     """
 
-    def __init__(self, base_url: str, timeout: float = 60.0):
-        self._client = httpx.Client(base_url=base_url, timeout=timeout)
+    def __init__(
+        self, base_url: str, timeout: float = 60.0, *, capability_token: str
+    ):
+        # Every /api route is capability-guarded. The token rides in a header, never in
+        # the URL or the body: a URL reaches access logs, and a body claim is only ever
+        # cross-checked against the capability — never trusted on its own.
+        # REQUIRED, not optional. Every /api route is capability-guarded, so a client built
+        # without a token can only make a request that is already known to fail with 401 —
+        # better to fail here, where the missing scope owner is still visible, than at the
+        # far end of an HTTP call.
+        if not capability_token:
+            raise ValueError("capability_token is required — every /api route is guarded")
+        headers = {"Authorization": f"Bearer {capability_token}"}
+        self._client = httpx.Client(base_url=base_url, timeout=timeout, headers=headers)
 
     def verify(self, workspace: str, email: str, api_token: str) -> dict:
         """Verify Basic-auth creds against ``GET /2.0/user`` (used by onboarding, before any save).

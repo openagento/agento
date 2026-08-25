@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -28,6 +29,9 @@ REQUIRED_MANIFEST_FIELDS = {"name", "version", "description"}
 FULL_ACCESS_TOOL_NAME_SUFFIXES = {"mysql_root": "_root"}
 RESERVED_TOOL_NAME_SUFFIXES = frozenset(FULL_ACCESS_TOOL_NAME_SUFFIXES.values())
 VALID_FIELD_TYPES = {"string", "integer", "boolean", "obscure", "select", "multiselect", "json", "textarea"}
+# The only `access` value that means anything. Every other spelling is a typo, and a typo
+# here reads as "unrestricted" — the field the author meant to hide becomes resolvable.
+VALID_ACCESS_VALUES = {"toolbox_only"}
 # A tool registered by `server.tool('<name>', …)` in a module's toolbox JS but absent from
 # module.json `tools[]` is invisible on the admin Tools screen and in `tool:list` (both
 # enumerate manifests only), so its `tools/<name>/is_enabled` key can never be flipped there.
@@ -235,7 +239,10 @@ def _resolve_class_path(module_dir: Path, class_path: str) -> bool:
     Class path format: 'src.commands.hello.HelloCommand'
     -> check if {module_dir}/src/commands/hello.py exists.
     """
-    if not is_confined_class_path(module_dir, class_path):
+    # A non-string reaches here from a hand-edited manifest ("class": 7, [], {}). `.rsplit`
+    # would raise AttributeError and abort the whole validation run, so the caller's type
+    # check reports it instead and this stays total.
+    if not isinstance(class_path, str) or not is_confined_class_path(module_dir, class_path):
         return False
     parts = class_path.rsplit(".", 1)
     if len(parts) < 2:
@@ -345,6 +352,15 @@ def _validate_field_tester(
     return errors
 
 
+def _class_path_errors(module_dir: Path, label: str, class_path) -> list[str]:
+    """Report a declared class path — wrong TYPE and unresolvable are different errors."""
+    if not isinstance(class_path, str):
+        return [f"{label} 'class' must be a string, got {type(class_path).__name__}"]
+    if not _resolve_class_path(module_dir, class_path):
+        return [f"{label} class '{class_path}' does not resolve to a .py file"]
+    return []
+
+
 def validate_module(module_dir: Path) -> list[str]:
     """Validate a module directory structure and manifests.
 
@@ -383,6 +399,13 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
         if field not in manifest:
             errors.append(f"module.json: missing required field '{field}'")
 
+    # The name keys the module registry, the tool namespace and every config path. A
+    # non-string one is unhashable in half of those places and silently wrong in the rest.
+    if "name" in manifest and (
+        not isinstance(manifest["name"], str) or not manifest["name"].strip()
+    ):
+        errors.append("module.json: 'name' must be a non-empty string")
+
     # Validate sequence
     sequence = manifest.get("sequence", [])
     if not isinstance(sequence, list):
@@ -409,10 +432,19 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                     errors.append(f"module.json: tools[{i}] missing '{tf}'")
 
             tool_name = str(tool.get("name", ""))
-            suffix = FULL_ACCESS_TOOL_NAME_SUFFIXES.get(tool.get("type"))
+            # `dict.get(<list>)` raises TypeError (unhashable), which aborts validation
+            # instead of reporting the malformed manifest. Report, then look up safely.
+            tool_type = tool.get("type")
+            if "type" in tool and not isinstance(tool_type, str):
+                errors.append(
+                    f"module.json: tools[{i}] 'type' must be a string, got "
+                    f"{type(tool_type).__name__}"
+                )
+                tool_type = None
+            suffix = FULL_ACCESS_TOOL_NAME_SUFFIXES.get(tool_type)
             if suffix and not tool_name.endswith(suffix):
                 errors.append(
-                    f"module.json: tools[{i}] type '{tool['type']}' grants full read/write, so its "
+                    f"module.json: tools[{i}] type '{tool_type}' grants full read/write, so its "
                     f"name '{tool_name}' must end in '{suffix}' — capability must be visible "
                     "in the tool name (enablement is keyed by name, so renaming forces fresh consent)"
                 )
@@ -422,7 +454,7 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                     errors.append(
                         f"module.json: tools[{i}] name '{tool_name}' ends in '{squatted}', which is "
                         f"reserved for full-access tool types ({', '.join(sorted(FULL_ACCESS_TOOL_NAME_SUFFIXES))}) "
-                        f"— type '{tool.get('type')}' must not use it, otherwise the tool could later be "
+                        f"— type '{tool_type}' must not use it, otherwise the tool could later be "
                         "escalated in place by editing only its type, keeping its is_enabled grant"
                     )
 
@@ -504,11 +536,20 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
             if "agent_harnesses" in di:
                 errors.extend(_validate_agent_harnesses(module_dir, di["agent_harnesses"]))
             for section in ("channels", "workflows", "commands"):
-                for entry in di.get(section, []):
-                    if isinstance(entry, dict) and "class" in entry and not _resolve_class_path(module_dir, entry["class"]):
-                        errors.append(
-                            f"di.json: {section} class '{entry['class']}' does not resolve to a .py file"
-                        )
+                if section not in di:
+                    continue
+                entries = di[section]
+                # A section that is not an array is malformed, not empty: iterating a dict
+                # would walk its KEYS and report nothing, and a scalar would raise TypeError.
+                if not isinstance(entries, list):
+                    errors.append(f"di.json: '{section}' must be an array")
+                    continue
+                for entry in entries:
+                    if not isinstance(entry, dict) or "class" not in entry:
+                        continue
+                    errors.extend(
+                        _class_path_errors(module_dir, f"di.json: {section}", entry["class"])
+                    )
             if "regex_identity_types" in di:
                 regex_types = di["regex_identity_types"]
                 # Key presence (not `is not None`): an explicit `null` is a malformed declaration
@@ -537,10 +578,11 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                 if not isinstance(observer_list, list):
                     continue
                 for observer in observer_list:
-                    if isinstance(observer, dict) and "class" in observer and not _resolve_class_path(module_dir, observer["class"]):
-                        errors.append(
-                            f"events.json: observer class '{observer['class']}' does not resolve to a .py file"
-                        )
+                    if not isinstance(observer, dict) or "class" not in observer:
+                        continue
+                    errors.extend(
+                        _class_path_errors(module_dir, "events.json: observer", observer["class"])
+                    )
 
     # config.json
     config_path = module_dir / "config.json"
@@ -576,9 +618,16 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                 if not isinstance(field_def, dict):
                     continue
                 field_type = field_def.get("type")
-                if field_type and field_type not in VALID_FIELD_TYPES:
+                # A `not in` against a set raises TypeError on a list or a dict value, which
+                # aborts validation instead of reporting the malformed manifest. Every
+                # membership test on a manifest value checks the type first.
+                # `if field_type` would skip every FALSY wrong type — `[]`, `{}`, `0`, `""`,
+                # `false` all read as "absent" and pass. Only a genuinely absent key may pass.
+                if field_type is not None and (
+                    not isinstance(field_type, str) or field_type not in VALID_FIELD_TYPES
+                ):
                     errors.append(
-                        f"system.json: field '{field_name}' has invalid type '{field_type}'"
+                        f"system.json: field '{field_name}' has invalid type {field_type!r}"
                     )
                 # Validate options for select/multiselect fields. A select supplies
                 # EXACTLY ONE of literal `options` or a dynamic `options_source`
@@ -604,12 +653,62 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                             f"system.json: field '{field_name}' has 'options_source' but type "
                             f"is '{field_type}' (only select/multiselect support options)"
                         )
-                    elif field_def["options_source"] not in SUPPORTED_SOURCES:
+                    elif not isinstance(field_def["options_source"], str) or (
+                        field_def["options_source"] not in SUPPORTED_SOURCES
+                    ):
                         errors.append(
                             f"system.json: field '{field_name}' options_source "
-                            f"'{field_def['options_source']}' is not supported "
+                            f"{field_def['options_source']!r} is not supported "
                             f"(known: {', '.join(SUPPORTED_SOURCES)})"
                         )
+                # The two security keys fail OPEN on a typo: `is_toolbox_only` compares
+                # `access` with the exact string, and `env_allowed` refuses only the exact
+                # boolean `false`. So `"toolbox-only"` or `"allowEnv": "false"` would deploy
+                # with the boundary silently off. Reject them here, before any DB change.
+                access = field_def.get("access")
+                # `not in` on a list or a dict raises TypeError (unhashable), which aborts
+                # validation instead of reporting it — the type check has to come first.
+                if access is not None and (
+                    not isinstance(access, str) or access not in VALID_ACCESS_VALUES
+                ):
+                    errors.append(
+                        f"system.json: field '{field_name}' has invalid access {access!r} "
+                        f"(known: {', '.join(sorted(VALID_ACCESS_VALUES))}) — a value the "
+                        "resolver does not know leaves the field unrestricted"
+                    )
+                for flag in ("showInDefault", "showInWorkspace", "showInAgentView"):
+                    if flag in field_def and not isinstance(field_def[flag], bool):
+                        errors.append(
+                            f"system.json: field '{field_name}' has non-boolean {flag} "
+                            f"{field_def[flag]!r} — the scope gate reads it as truthy, so the "
+                            "field stays editable at that scope"
+                        )
+                if "allowEnv" in field_def and not isinstance(field_def["allowEnv"], bool):
+                    errors.append(
+                        f"system.json: field '{field_name}' has non-boolean allowEnv "
+                        f"{field_def['allowEnv']!r} — only `false` refuses the ENV source, so "
+                        "any other type leaves the field settable from the environment"
+                    )
+
+                # A field that refused the ENV source cannot be supplied through the
+                # environment. Catching it here means `setup:upgrade` aborts BEFORE any DB
+                # change, instead of the deploy running with a value the resolver ignores.
+                if field_def.get("allowEnv") is False:
+                    # The SAME mapping the resolver uses (`-` -> `_`, `/` -> `__`), imported
+                    # rather than restated: a validator that computes a different key than the
+                    # resolver silently passes the variable it promised to reject (a hyphenated
+                    # module, a slash-keyed field).
+                    from .config_resolver import path_to_env_key
+
+                    env_key = path_to_env_key(f"{module_name}/{field_name}")
+                    if os.environ.get(env_key) is not None:
+                        errors.append(
+                            f"system.json: field '{field_name}' declares allowEnv:false but "
+                            f"{env_key} is set — the resolver ignores it. Remove the variable "
+                            f"and use `agento config:set {module_name}/{field_name} "
+                            f"--scope workspace` (the value is read from stdin — never argv)."
+                        )
+
                 # `depends_on` is validated for EVERY field, not only those with an
                 # options_source: a literal-options select can declare it too, and a
                 # dangling dependency there silently narrows to nothing at runtime.
@@ -704,7 +803,10 @@ def validate_all(core_dir: Path, user_dir: Path) -> dict[str, list[str]]:
         if errors:
             results[name] = errors
         if manifest is not None:
-            all_modules[manifest.get("name", name)] = manifest
+            # A malformed 'name' is already reported above. Keying on it here would raise
+            # TypeError (unhashable) and abort the whole run before printing any of it.
+            declared = manifest.get("name")
+            all_modules[declared if isinstance(declared, str) and declared else name] = manifest
 
     for module_name, errs in validate_tool_namespace(
         (name, manifest.get("tools", [])) for name, manifest in all_modules.items()
@@ -714,7 +816,12 @@ def validate_all(core_dir: Path, user_dir: Path) -> dict[str, list[str]]:
     # Cross-validate sequence references
     available_names = set(all_modules.keys())
     for name, manifest in all_modules.items():
-        for dep in manifest.get("sequence", []):
+        sequence = manifest.get("sequence", [])
+        if not isinstance(sequence, list):
+            continue  # already reported per-module; iterating a dict/str here reports nonsense
+        for dep in sequence:
+            if not isinstance(dep, str):
+                continue  # already reported per-module; `in` on an unhashable dep would raise
             if dep not in available_names:
                 results.setdefault(name, []).append(
                     f"module.json: sequence dependency '{dep}' not found on disk"

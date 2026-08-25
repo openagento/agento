@@ -2,6 +2,13 @@
 
 ENV vars have the highest config priority — they override DB and config.json values.
 
+> **Exception: a field may refuse the ENV source.** `"allowEnv": false` in `system.json` makes both
+> resolvers ignore that field's `CONFIG__*` var, and `module:validate` **fails a deploy** that sets one.
+> A field with `"access": "toolbox_only"` goes further: Python never resolves it at all, from any
+> source. Use both for credentials that must stay inside the toolbox — a container environment is
+> plaintext, readable by anything that can run `docker inspect`. See
+> [Access Restrictions](README.md#access-restrictions-access-allowenv).
+
 ## Convention
 
 ```

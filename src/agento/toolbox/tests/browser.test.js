@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// The framework injects the shared toolbox helpers through the registration context
+// (config-loader.js TOOLBOX_HELPERS); a module cannot import framework code by path.
+import { sanitizeHealthError } from '../health-run.js';
 
 describe('browser tools', () => {
   let mockClient;
@@ -386,6 +389,7 @@ describe('browser tools', () => {
 
       const results = await healthcheck({
         playwright: { getClient: () => mockClient },
+        sanitizeHealthError,
       });
 
       expect(mockClient.listTools).toHaveBeenCalled();
@@ -404,6 +408,7 @@ describe('browser tools', () => {
 
       const results = await healthcheck({
         playwright: { getClient: () => hangingClient },
+        sanitizeHealthError,
       });
 
       expect(results[0]).toMatchObject({ tool: 'browser', status: 'fail' });
@@ -421,8 +426,10 @@ describe('browser tools', () => {
         },
       });
 
-      expect(results[0]).toMatchObject({ tool: 'browser', status: 'fail' });
-      expect(results[0].error).toContain('failed permanently');
+      // A stable category — NOT the prose form, which would carry `lastError` ('boom') into
+      // the /health?test=true response. The prose stays on the tool-call path.
+      expect(results[0]).toMatchObject({ tool: 'browser', status: 'fail', error: 'unreachable' });
+      expect(JSON.stringify(results[0])).not.toContain('boom');
     });
 
     it('falls back to generic error when getState is not provided', async () => {
@@ -436,7 +443,7 @@ describe('browser tools', () => {
       expect(results[0]).toEqual({
         tool: 'browser',
         status: 'fail',
-        error: 'Playwright MCP not connected',
+        error: 'unreachable',
       });
     });
   });

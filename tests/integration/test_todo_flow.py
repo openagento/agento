@@ -16,7 +16,7 @@ class TestTodoDispatch:
 
     @respx.mock
     def test_todo_dispatch_publishes_dequeues_and_succeeds(
-        self, int_db_config, int_consumer_config, mock_claude, jira_todo_fixture
+        self, int_db_config, int_consumer_config, mock_claude, jira_todo_fixture, int_agent_view
     ):
         """Full flow: publish dispatch → consumer dequeues → picks task → executes → SUCCESS."""
         # Mock Jira: return TODO tasks (AI-10 High, AI-11 Critical)
@@ -61,7 +61,7 @@ class TestTodoDispatch:
 
     @respx.mock
     def test_todo_dispatch_no_tasks_succeeds_with_summary(
-        self, int_db_config, int_consumer_config, mock_claude, jira_empty_fixture
+        self, int_db_config, int_consumer_config, mock_claude, jira_empty_fixture, int_agent_view
     ):
         """When Jira has no TODO tasks, dispatch job still succeeds with informative summary."""
         respx.post("http://toolbox:3001/api/jira/search").mock(

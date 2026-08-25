@@ -155,26 +155,37 @@ docker compose restart
 
 ### Security hardening backlog
 
-- **Toolbox-only secret boundary in Python bootstrap** — `bootstrap` transiently decrypts
-  DEFAULT-scope `obscure` config in the cron/consumer/CLI, so non-toolbox Python processes hold
-  decrypted secrets (contradicting "Toolbox = only container with secrets"). Design + scope in
+- **Toolbox-only secret boundary in Python bootstrap** — **PARTIALLY DELIVERED (2026-08-23).**
+  `bootstrap` still transiently decrypts DEFAULT-scope `obscure` config in the cron/consumer/CLI —
+  but **not** for a field declaring `access: "toolbox_only"`, which the Outlook Graph credentials
+  now do. What remains open is item 3 of the PRD: `app_monitor` consumes its obscure SMTP password
+  cron-side to send breach alerts, so it needs a toolbox transport before it can be marked the same
+  way. Design + scope in
   [docs/security/toolbox-only-secret-boundary.md](docs/security/toolbox-only-secret-boundary.md).
   Surfaced by the Outlook sender-routing review (2026-07-24) as pre-existing and out of scope for
   that feature.
-- **Per-field `toolbox_only` exclusion in the config resolver** — a field only the toolbox should ever
-  resolve is still resolved by `bootstrap()` from ENV (`framework/config_resolver.py:209`) for every
-  enabled module, *before* any module code can run, so the only remedy available to a module is to
-  refuse to operate (as `github`'s two-sided `env_guard` does on all four of its surfaces). Closing it
-  properly is a framework change: let `system.json` mark a field toolbox-only and have `resolve_field`
-  skip it outside the toolbox. Surfaced by the GitHub PR-review port (2026-08-14) as pre-existing and
-  accepted as a residual for that port (owner sign-off 2026-08-13).
-- **Internal-caller auth for the toolbox (N5-2)** — `/sse` and `/mcp` take `agent_view_id` from the
-  query string with no caller authentication (`src/agento/toolbox/server.js:88,126`), and the `jira`,
-  `outlook`, `bitbucket` and `github` REST handlers take it from the request body. The fix is to bind
-  the view to an authenticated caller/session in `server.js` (e.g. a job-scoped token in the MCP URL
-  that `server.js` resolves `agent_view_id` from), applied **once for all four modules** — a
-  module-local fix would create a fourth pattern and protect nobody else. Re-confirmed by the GitHub
-  PR-review port (2026-08-14), which ships at parity with the other three (owner sign-off 2026-08-13).
+- **Per-run identity boundary for the sandbox (the segmentation half of the toolbox east-west work)**
+  — **OPEN.** Capability tokens stop a caller from *asking* for another view's scope, but every agent
+  process the consumer spawns runs as the same `agent` account and the cron container mounts the whole
+  workspace, so one concurrent run can read another run's live token out of its MCP config and
+  authenticate as that view. Directory-per-run is not an identity boundary and file modes cannot make
+  it one. Closing it needs a distinct UID per run or a container per run. Until then, concurrent runs
+  in one deployment are mutually trusting — documented in
+  [docs/architecture/zero-trust.md](docs/architecture/zero-trust.md).
+- **Per-field `toolbox_only` exclusion in the config resolver** — **DELIVERED (2026-08-23).**
+  `system.json` now carries `"access": "toolbox_only"` and `"allowEnv": false` per field. Python's
+  `resolve_field` returns `None` for a `toolbox_only` field, `ScopedConfigService.get()` raises on a
+  direct read, the bulk `resolve_all()` skips it, and `module:validate` fails a deploy that sets a
+  `CONFIG__*` override for an `allowEnv: false` field. Both resolvers (Python and toolbox JS) enforce
+  the same two keys. The `github` `env_guard` is no longer the only remedy.
+- **Internal-caller auth for the toolbox (N5-2)** — **capability half DELIVERED (2026-08-23); the
+  co-tenant half stays OPEN** (see the per-run identity boundary entry). Every MCP session and
+  every `/api` route now needs a **capability token**; the scope (`agent_view_id`, `job_id`) is read
+  from the `toolbox_capability` DB row, never from a query string or a request body. A caller may
+  still send `agent_view_id` in a body, but it is only ever compared with the capability's own scope —
+  a mismatch is refused. Applied once for all four modules, as the entry required. Rationale (why a
+  DB-backed capability and not a shared HMAC secret, and why network segmentation alone was rejected)
+  is in [DECISIONS.md](DECISIONS.md).
 
 ### Deprecation removals due next release (v0.16)
 

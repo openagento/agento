@@ -106,6 +106,7 @@ def _make_context(update_ref=None):
         config=MagicMock(),
         logger=MagicMock(),
         update_reference_id=update_ref or MagicMock(),
+        capability_token="cap",
     )
 
 

@@ -75,8 +75,17 @@ class FakeWorkspaceAdapter:
             json.dumps({"agent_view_id": agent_view_id, "toolbox": toolbox_url})
         )
 
-    def inject_runtime_params(self, artifacts_dir: Path, *, job_id: int) -> None:
-        (artifacts_dir / "fake-job").write_text(str(job_id))
+    def inject_runtime_params(
+        self,
+        artifacts_dir: Path,
+        *,
+        job_id: int | None,
+        run_id: str | None = None,
+        capability_token: str | None = None,
+        toolbox_url: str | None = None,
+    ) -> None:
+        if capability_token:
+            (artifacts_dir / "fake-cap").write_text(capability_token)
 
     def owned_paths(self) -> tuple[set[str], set[str]]:
         return {"fake.json"}, set()

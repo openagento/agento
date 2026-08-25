@@ -7,7 +7,10 @@ import re
 import pymysql
 
 from agento.framework.bootstrap import get_module_config
+from agento.framework.cli import terminal
 from agento.framework.core_config import config_set, config_set_auto_encrypt
+from agento.framework.toolbox_capability import capability_client
+from agento.framework.workspace import get_active_agent_views
 from agento.modules.jira.src.toolbox_client import ToolboxAPIError, ToolboxClient
 
 _REQUIRED_KEYS = (
@@ -67,7 +70,32 @@ class JiraOnboarding:
             print("  Error: core/toolbox/url not configured. Run 'agento config:set core/toolbox/url <url>' first.")
             return
 
-        toolbox = ToolboxClient(toolbox_url)
+        # The toolbox scopes every REST call to a capability, and a capability needs a
+        # view — so the owning view is chosen BEFORE anything is verified.
+        views = get_active_agent_views(conn)
+        if not views:
+            print("  Error: no active agent_view. Verification runs against the toolbox, "
+                  "which scopes every call to one. Create/activate an agent_view first.")
+            return
+        if len(views) > 1:
+            idx = terminal.select(
+                "Which agent_view owns this Jira account?",
+                [f"{av.code} ({av.label})" for av in views],
+            )
+            owner_view = views[idx]
+        else:
+            owner_view = views[0]
+
+        # A capability per bounded request, minted only once the human has finished typing.
+        # Onboarding waits on an operator between calls; a capability held across that wait
+        # is both expired by the time it is used and live while nothing uses it.
+        toolbox = capability_client(
+            lambda token: ToolboxClient(toolbox_url, capability_token=token),
+            agent_view_id=owner_view.id,
+        )
+        self._configure(conn, logger, toolbox, toolbox_url)
+
+    def _configure(self, conn, logger, toolbox, toolbox_url) -> None:
 
         # 2. Collect Jira URL
         url_input = input("  Jira project or issue URL (e.g. https://myteam.atlassian.net/browse/AI-123): ").strip()
@@ -97,7 +125,8 @@ class JiraOnboarding:
 
         # 6. Verify via /myself — also gets display name and account ID
         try:
-            myself = toolbox.jira_request("GET", "/rest/api/3/myself")
+            with toolbox() as client:
+                myself = client.jira_request("GET", "/rest/api/3/myself")
         except ToolboxAPIError as e:
             print(f"  Error: Jira authentication failed: {e}")
             return
@@ -124,7 +153,8 @@ class JiraOnboarding:
         projects = []
         if auto_project_key:
             try:
-                toolbox.jira_request("GET", f"/rest/api/3/project/{auto_project_key}")
+                with toolbox() as client:
+                    client.jira_request("GET", f"/rest/api/3/project/{auto_project_key}")
                 projects.append(auto_project_key)
                 print(f"  Auto-detected project: {auto_project_key}")
             except ToolboxAPIError as e:
@@ -137,7 +167,8 @@ class JiraOnboarding:
                 if not key:
                     continue
                 try:
-                    toolbox.jira_request("GET", f"/rest/api/3/project/{key}")
+                    with toolbox() as client:
+                        client.jira_request("GET", f"/rest/api/3/project/{key}")
                     if key not in projects:
                         projects.append(key)
                 except ToolboxAPIError as e:

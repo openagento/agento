@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from contextlib import closing
 
+from agento.framework.toolbox_capability import rest_capability
 from agento.modules.jira.src.toolbox_client import ToolboxClient
 from agento.modules.jira_periodic_tasks.src.crontab import CronEntry, CrontabManager
 from agento.modules.jira_periodic_tasks.src.sync import JiraCronSync
@@ -50,14 +53,13 @@ class SyncCommand:
                     all_entries: list[CronEntry] = []
 
                     if not agent_views:
-                        logger.debug("No active agent_views, falling back to global jira config")
-                        jira_config = get_module_config("jira")
-                        syncer = JiraCronSync(
-                            jira_config, periodic_config,
-                            ToolboxClient(jira_config.toolbox_url),
-                            crontab, logger, db_config=db_config,
+                        # No global fallback: a viewless sync has no scope to mint a
+                        # toolbox capability for, so every REST call would be refused.
+                        logger.error(
+                            "no active agent_view — jira_periodic_tasks sync is per-view. "
+                            "Configure one (see docs/architecture/workspace.md) and re-run."
                         )
-                        all_entries = syncer.sync_view(dry_run=args.dry_run)
+                        sys.exit(1)
                     else:
                         for av in agent_views:
                             try:
@@ -74,13 +76,22 @@ class SyncCommand:
                                         "Jira disabled for agent_view %s, skipping", av.code
                                     )
                                     continue
-                                syncer = JiraCronSync(
-                                    jira_config, periodic_config,
-                                    ToolboxClient(jira_config.toolbox_url),
-                                    crontab, logger, db_config=db_config,
-                                    agent_view_id=av.id, agent_view_code=av.code,
-                                )
-                                all_entries.extend(syncer.sync_view(dry_run=args.dry_run))
+                                with rest_capability(
+                                    agent_view_id=av.id, db_config=db_config
+                                ) as capability_token, closing(
+                                    ToolboxClient(
+                                        jira_config.toolbox_url,
+                                        capability_token=capability_token,
+                                    )
+                                ) as toolbox:
+                                    syncer = JiraCronSync(
+                                        jira_config, periodic_config, toolbox,
+                                        crontab, logger, db_config=db_config,
+                                        agent_view_id=av.id, agent_view_code=av.code,
+                                    )
+                                    all_entries.extend(
+                                        syncer.sync_view(dry_run=args.dry_run)
+                                    )
                             except Exception:
                                 logger.exception(
                                     "Sync failed for agent_view %s — continuing", av.code

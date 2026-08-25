@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .config_schema import ToolboxOnlyConfigError, env_allowed, is_toolbox_only
 from .encryptor import get_encryptor
 
 logger = logging.getLogger(__name__)
@@ -227,10 +228,16 @@ def resolve_field(
     """Resolve a single module config field using 3-level fallback."""
     field_type = field_schema.get("type", "string")
 
-    # 1. ENV var (highest priority)
-    env_val = os.environ.get(_env_key(module_name, field_name))
-    if env_val is not None:
-        return ResolvedValue(value=_coerce_type(env_val, field_type), source="env")
+    # 0. Only the toolbox may hold this value. Return BEFORE the ENV read and before the
+    # DB read, so neither os.environ nor the decryptor is ever touched for it.
+    if is_toolbox_only(field_schema):
+        return ResolvedValue(value=None, source="toolbox_only")
+
+    # 1. ENV var (highest priority), unless the field opted out of the ENV source
+    if env_allowed(field_schema):
+        env_val = os.environ.get(_env_key(module_name, field_name))
+        if env_val is not None:
+            return ResolvedValue(value=_coerce_type(env_val, field_type), source="env")
 
     # 2. DB override
     db_val, found = _resolve_from_db(
@@ -396,17 +403,74 @@ class ScopedConfigService:
         and cannot be decrypted, instead of falling through to ``config.json``.
         Use it wherever the answer "not set" would be a misdiagnosis.
         """
-        env_val = os.environ.get(path_to_env_key(path))
-        if env_val is not None:
-            return env_val
+        field_schema = self._field_schema(path)
+        # RAISE rather than return None: "you may not read this" and "it is not configured"
+        # are different answers, and a caller that cannot tell them apart fails open.
+        if is_toolbox_only(field_schema):
+            raise ToolboxOnlyConfigError(
+                f"{path} is toolbox_only — only the toolbox may resolve it. Python must not "
+                f"read or decrypt this value."
+            )
 
-        db_val, found = _resolve_from_db(
-            path.replace("-", "_"), self._overrides, strict=strict
-        )
+        if env_allowed(field_schema):
+            env_val = os.environ.get(path_to_env_key(path))
+            if env_val is not None:
+                return env_val
+
+        db_path = path.replace("-", "_")
+        # Last backstop for a process that has not completed a single bootstrap: no live
+        # manifests AND nothing remembered means the security metadata of every field is
+        # unknown, so an ENCRYPTED value (the storage form of every secret) is refused
+        # rather than decrypted on a guess. A plaintext row is not a secret and still
+        # resolves, so ordinary config reads are unaffected.
+        if not field_schema and self._encrypted_value_without_schema(db_path):
+            raise ToolboxOnlyConfigError(
+                f"{path} is stored encrypted and no module schema is loaded — refusing to "
+                f"decrypt a value whose access metadata cannot be read."
+            )
+        db_val, found = _resolve_from_db(db_path, self._overrides, strict=strict)
         if found and db_val is not None:
             return db_val
 
         return self._resolve_config_json(path)
+
+    def _encrypted_value_without_schema(self, db_path: str) -> bool:
+        """True when the value is encrypted and NO module schema is loaded at all."""
+        from .bootstrap import get_manifests
+
+        override = self._overrides.get(db_path)
+        if not override or not override[1]:
+            return False
+        try:
+            return not get_manifests()
+        except Exception:
+            return True
+
+    def _field_schema(self, path: str) -> dict:
+        """The system.json schema for a config path, or {} when there is none.
+
+        Falls back to the sticky restricted-field registry whenever the live manifests
+        cannot answer — an empty registry (a re-bootstrap that failed part-way), a module
+        that is no longer enabled, or a lookup that raised. Security metadata absent is
+        NOT the same as "unrestricted": without this fallback a failed reload makes
+        `access: "toolbox_only"` fail open and Python decrypts the secret.
+        """
+        from .bootstrap import get_manifests
+        from .config_schema import restricted_schema
+
+        module_name, _, field_name = path.partition("/")
+        if field_name:
+            try:
+                manifests = get_manifests()
+            except Exception:
+                manifests = []
+            for manifest in manifests or []:
+                if manifest.name == module_name:
+                    schema = (manifest.config or {}).get(field_name)
+                    if isinstance(schema, dict):
+                        return schema
+                    break
+        return restricted_schema(path) or {}
 
     def is_set_at_scope(self, path: str) -> bool:
         """True if a row for ``path`` exists at exactly this (scope, scope_id).
@@ -435,7 +499,22 @@ class ScopedConfigService:
         }
         for m in get_manifests():
             paths.update(f"{m.name}/{field}" for field in m.config)
-        return {p: v for p in paths if (v := self.get(p)) is not None}
+        # A toolbox_only path is skipped, never resolved: `get()` RAISES on one (a direct read is a
+        # bug), but a bulk walk over every declared field is not a read of that field — the builder
+        # calls this on every run. Absent == "not Python's to know", same as an unset value.
+        resolved: dict[str, str] = {}
+        for p in paths:
+            if is_toolbox_only(self._field_schema(p)):
+                continue
+            try:
+                value = self.get(p)
+            except ToolboxOnlyConfigError:
+                # Same rule as a declared toolbox_only field: a value Python may not read is
+                # ABSENT from the materialized config, never guessed at and never decrypted.
+                continue
+            if value is not None:
+                resolved[p] = value
+        return resolved
 
     def get_module(self, module_name: str, *, include_obscure: bool = True):
         """Resolve a module's full config (coerced); typed dataclass if declared.

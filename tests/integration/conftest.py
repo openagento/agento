@@ -215,6 +215,7 @@ def _truncate_tables():
     try:
         with conn.cursor() as cur:
             cur.execute("SET FOREIGN_KEY_CHECKS = 0")
+            cur.execute("TRUNCATE TABLE toolbox_capability")
             cur.execute("TRUNCATE TABLE job")
             cur.execute("TRUNCATE TABLE schedule")
             cur.execute("TRUNCATE TABLE usage_log")
@@ -271,6 +272,82 @@ def insert_primary_token(harness: str = "claude") -> int:
             return credential_id
     finally:
         conn.close()
+
+
+@pytest.fixture
+def int_agent_view(tmp_path, int_db_config, monkeypatch):
+    """An active workspace + agent_view, the jira ingress binding that routes jobs to it, and
+    the build-path redirection a view-scoped run needs.
+
+    Every toolbox REST call is scoped to a capability, and a capability needs a view — a
+    discovery job with no agent_view has nothing to mint against and cannot reach the toolbox.
+    Production reaches the same conclusion earlier: ``todo:publish`` refuses to run without a
+    view. These flows therefore need one.
+    """
+    # A view-scoped job also runs the workspace-build freshness observer, which builds under
+    # BUILD_DIR and opens its OWN connection from env. Same redirection the other build-touching
+    # integration tests use (test_concurrent_materialization, test_app_monitor_e2e).
+    build_root = str(tmp_path / "build")
+    artifacts_root = str(tmp_path / "artifacts")
+    patches = [
+        patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", artifacts_root),
+        patch("agento.framework.artifacts_dir.BUILD_DIR", build_root),
+        patch("agento.modules.workspace_build.src.builder.BUILD_DIR", build_root),
+        patch("agento.modules.claude.src.transcript_reader.BUILD_DIR", build_root),
+        patch("agento.modules.codex.src.transcript_reader.BUILD_DIR", build_root),
+        # ONE patch, on the class itself. Both observers import the SAME DatabaseConfig, so
+        # patching two module paths would patch one attribute twice — and stopping them in start
+        # order then restores the first mock instead of the real classmethod, leaking a localhost
+        # config into every later test that calls from_env().
+        patch.object(DatabaseConfig, "from_env", return_value=int_db_config),
+    ]
+    for p_ in patches:
+        p_.start()
+    # A view-scoped job resolves its module config at the view's scope (ENV -> DB ->
+    # config.json), not from the bootstrap registry `set_module_config` fills, so the
+    # integration jira identity has to arrive through a source that resolver reads.
+    monkeypatch.setenv("CONFIG__JIRA__USER", "agenty@example.com")
+    monkeypatch.setenv("CONFIG__JIRA__JIRA_ASSIGNEE", "agenty@example.com")
+    monkeypatch.setenv("CONFIG__JIRA__JIRA_PROJECTS", '["AI"]')
+
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            # workspace / agent_view are NOT truncated between tests — reuse the rows.
+            cur.execute("SELECT id FROM workspace WHERE code = %s", ("dev",))
+            row = cur.fetchone()
+            if row:
+                workspace_id = row["id"]
+            else:
+                cur.execute("INSERT INTO workspace (code, label) VALUES (%s, %s)", ("dev", "dev"))
+                workspace_id = cur.lastrowid
+
+            cur.execute("SELECT id FROM agent_view WHERE code = %s", ("developer",))
+            row = cur.fetchone()
+            if row:
+                agent_view_id = row["id"]
+            else:
+                cur.execute(
+                    "INSERT INTO agent_view (workspace_id, code, label) VALUES (%s, %s, %s)",
+                    (workspace_id, "developer", "developer"),
+                )
+                agent_view_id = cur.lastrowid
+
+            # Jira publishing routes through an ingress identity; with no binding
+            # `_resolve_routing` returns (None, 50) and the job is published viewless.
+            cur.execute(
+                "INSERT IGNORE INTO ingress_identity "
+                "(identity_type, identity_value, agent_view_id) VALUES (%s, %s, %s)",
+                ("jira", "jira", agent_view_id),
+            )
+    finally:
+        conn.close()
+
+    try:
+        yield agent_view_id
+    finally:
+        for p_ in patches:
+            p_.stop()
 
 
 @pytest.fixture
@@ -375,6 +452,7 @@ def insert_queued_job(
     max_attempts: int = 3,
     source: str = "jira",
     context: str | None = None,
+    agent_view_id: int | None = None,
 ) -> int:
     """Insert a TODO job and return its id."""
     conn = _test_connection(autocommit=True)
@@ -382,11 +460,11 @@ def insert_queued_job(
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO job (type, source, reference_id, context,
+                INSERT INTO job (type, source, agent_view_id, reference_id, context,
                                   idempotency_key, status, attempt, max_attempts)
-                VALUES (%s, %s, %s, %s, %s, 'TODO', 0, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s)
                 """,
-                (job_type, source, reference_id, context,
+                (job_type, source, agent_view_id, reference_id, context,
                  idempotency_key, max_attempts),
             )
             return cur.lastrowid

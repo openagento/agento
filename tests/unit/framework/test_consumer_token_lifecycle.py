@@ -21,6 +21,19 @@ from agento.framework.agent_manager.errors import (
 from agento.framework.consumer import Consumer
 from agento.framework.consumer_config import ConsumerConfig
 
+
+@pytest.fixture(autouse=True)
+def _stub_run_capabilities():
+    """The mint reads a real `job` row (SELECT ... FOR UPDATE) these tests do not seed.
+
+    Its own behaviour is covered by tests/unit/framework/test_consumer_capability.py.
+    """
+    with patch.object(
+        Consumer, "_issue_run_capabilities", return_value=("cap-mcp", None)
+    ) as m:
+        yield m
+
+
 _PROVIDER = SimpleNamespace(
     id="anthropic", credential_scope="claude", credential_required=True
 )

@@ -2,7 +2,11 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agento.modules.jira.src.toolbox_client import ToolboxAPIError
 from agento.modules.jira_periodic_tasks.src.onboarding import (
@@ -145,7 +149,19 @@ def _make_toolbox_mock(responses=None):
     return toolbox
 
 
+_OB = "agento.modules.jira_periodic_tasks.src.onboarding"
+
+
 class TestRun:
+    @pytest.fixture(autouse=True)
+    def _one_active_view(self):
+        """Configuration now picks the owning view first and mints a capability for it —
+        every toolbox REST call is capability-scoped."""
+        view = SimpleNamespace(id=1, code="dev", label="Dev")
+        with patch(f"{_OB}.get_active_agent_views", return_value=[view]), \
+             patch("agento.framework.toolbox_capability.rest_capability", lambda *a, **k: nullcontext("cap")):
+            yield view
+
     @patch("agento.modules.jira_periodic_tasks.src.onboarding.ToolboxClient")
     @patch("agento.modules.jira_periodic_tasks.src.onboarding.get_module_config")
     @patch("agento.modules.jira_periodic_tasks.src.onboarding.config_set")

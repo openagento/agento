@@ -36,6 +36,14 @@ class OutlookConfig:
             return default
         return value not in (False, 0, "0", "false", "False")
 
+    @staticmethod
+    def _as_str(value: object, default: str) -> str:
+        # `value or default` would turn an EXPLICIT "" — an operator deliberately clearing the
+        # setting — back into the default. Only a missing/None value falls back.
+        if value is None:
+            return default
+        return str(value)
+
     @classmethod
     def from_dict(cls, data: dict) -> OutlookConfig:
         enabled = cls._as_bool(data.get("enabled"), False)
@@ -50,8 +58,8 @@ class OutlookConfig:
             poll_top = 10
         poll_top = min(max(poll_top, 1), 50)
         allowed_senders = data.get("allowed_senders") or ""
-        activation_modes = data.get("activation_modes") or "direct,mention"
-        summon_token = data.get("summon_token") or "@agento"
+        activation_modes = cls._as_str(data.get("activation_modes"), "direct,mention")
+        summon_token = cls._as_str(data.get("summon_token"), "@agento")
         mailbox_aliases = data.get("mailbox_aliases") or ""
         # thread_read_max_messages: parse defensively (str/int/garbage), default 50, floor 1, cap 200.
         max_raw = data.get("thread_read_max_messages", 50)
