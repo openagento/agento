@@ -36,7 +36,7 @@ async function mapWithConcurrency(items, limit, worker) {
   return results;
 }
 
-export async function healthcheck({ moduleConfigs }) {
+export async function healthcheck({ moduleConfigs, sanitizeHealthError }) {
   const cfg = moduleConfigs?.jira || {};
   const config = {
     host: cfg.jira_host || null,
@@ -55,11 +55,11 @@ export async function healthcheck({ moduleConfigs }) {
       headers: { 'Authorization': `Basic ${auth}`, 'Accept': 'application/json' },
     });
     if (!response.ok) {
-      return [{ tool: 'jira', status: 'fail', ms: Date.now() - start, error: `HTTP ${response.status}` }];
+      return [{ tool: 'jira', status: 'fail', ms: Date.now() - start, error: sanitizeHealthError(`HTTP ${response.status}`) }];
     }
     return [{ tool: 'jira', status: 'ok', ms: Date.now() - start }];
   } catch (err) {
-    return [{ tool: 'jira', status: 'fail', ms: Date.now() - start, error: err.message }];
+    return [{ tool: 'jira', status: 'fail', ms: Date.now() - start, error: sanitizeHealthError(err) }];
   }
 }
 

@@ -340,7 +340,7 @@ async function resolvePaths(paths, moduleName, moduleDir, overrides, system = {}
   for (const p of paths) {
     if (!p.startsWith(`${moduleName}/`)) return { foreign: p };
     const field = fieldOf(p);
-    const { value, state } = resolveModuleFieldStrict(moduleName, field, defaults, overrides);
+    const { value, state } = resolveModuleFieldStrict(moduleName, field, defaults, overrides, system[field]);
     if (state === 'undecryptable') return { undecryptable: field };
     if (state === 'unset' || value === null || value === '') missing.push(field);
     values[p] = value;

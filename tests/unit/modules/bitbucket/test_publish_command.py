@@ -1,5 +1,5 @@
 """run_lane loop behaviour — fan-out guard, skips, per-repo/per-PR isolation, client cleanup."""
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -43,6 +43,10 @@ def _run(
 
     with ExitStack() as stack:
         mock_views = stack.enter_context(patch(f"{_LOOP}.get_active_agent_views", return_value=views))
+        # The loop mints one capability per view; these tests pass a stub connection.
+        stack.enter_context(
+            patch(f"{_LOOP}.rest_capability", lambda *a, **k: nullcontext("cap"))
+        )
         MockSCS = stack.enter_context(patch(f"{_LOOP}.ScopedConfigService"))
         stack.enter_context(patch(f"{_LOOP}.resolve_publish_priority", return_value=50))
         mock_lso = stack.enter_context(patch(f"{_LOOP}.load_scoped_db_overrides"))
@@ -80,7 +84,9 @@ def test_disabled_view_skipped():
     published, m = _run(views=[_view(1, "dev")], cfg_by_view={1: _cfg(enabled="0")})
     assert published == 0
     m["client"].open_prs.assert_not_called()
-    m["client"].close.assert_called_once()
+    # The client is built per view, AFTER the enabled/allow-list gates, so a skipped
+    # view builds none — and there is nothing to close.
+    m["client"].close.assert_not_called()
 
 
 def test_empty_allowlist_skipped():
@@ -148,6 +154,10 @@ def test_client_closed_even_when_open_prs_raises():
     logger = MagicMock()
     with ExitStack() as stack:
         stack.enter_context(patch(f"{_LOOP}.get_active_agent_views", return_value=[_view(1, "dev")]))
+        # The loop mints one capability per view; these tests pass a stub connection.
+        stack.enter_context(
+            patch(f"{_LOOP}.rest_capability", lambda *a, **k: nullcontext("cap"))
+        )
         MockSCS = stack.enter_context(patch(f"{_LOOP}.ScopedConfigService"))
         stack.enter_context(patch(f"{_LOOP}.resolve_publish_priority", return_value=50))
         stack.enter_context(patch(f"{_LOOP}.load_scoped_db_overrides", return_value={}))

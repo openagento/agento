@@ -30,7 +30,7 @@ class TestCronSync:
             return_value=httpx.Response(200, json=jira_cykliczne_fixture)
         )
 
-        toolbox = ToolboxClient(int_config.toolbox_url)
+        toolbox = ToolboxClient(int_config.toolbox_url, capability_token="test-cap")
         logger = logging.getLogger("test")
 
         with patch("subprocess.run") as run:

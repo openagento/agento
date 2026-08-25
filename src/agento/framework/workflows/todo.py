@@ -20,7 +20,19 @@ class TodoWorkflow(Workflow):
                 f"TODO jobs for this channel must have a reference_id."
             )
 
-        items = channel.discover_work(context.config, self.logger)
+        # Discovery talks to the toolbox REST API, which is capability-guarded. A
+        # required keyword (no default) makes a channel that forgets it fail here,
+        # not with a 401 deep inside the HTTP layer.
+        if context.capability_token is None:
+            raise ValueError(
+                f"Work discovery for channel {channel.name!r} needs an internal_rest "
+                f"capability, but the job carries none. Discovery jobs are minted one "
+                f"only when they have no reference_id and belong to an agent_view."
+            )
+
+        items = channel.discover_work(
+            context.config, self.logger, capability_token=context.capability_token
+        )
         if not items:
             # No session was started, so session_id stays None — it must only ever
             # carry a real session id (it is persisted to job.session_id and drives resume).

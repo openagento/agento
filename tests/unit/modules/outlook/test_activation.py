@@ -199,3 +199,29 @@ def test_decide_agent_authored_with_collaboration_still_silent_without_mode():
     )
     assert d.can_respond is False
     assert d.reason == "no_active_mode"
+
+
+# ---- an emptied setting must actually disable, not silently re-enable ----
+
+def test_decide_with_activation_modes_cleared_never_responds():
+    """`config:set outlook/activation_modes ""` is how an operator mutes a mailbox."""
+    d = decide(
+        agent_authored=False, cfg=_cfg(modes=""), mailbox=MAILBOX, aliases=[],
+        to_addrs=_to(MAILBOX), cc_addrs=[], subject="@agento pomóż", body_preview="@agento",
+    )
+    assert d == Decision(can_respond=False, reason="no_active_mode")
+
+
+def test_decide_with_summon_token_cleared_disables_mention_but_keeps_direct():
+    cfg = _cfg(token="")
+    silent = decide(
+        agent_authored=False, cfg=cfg, mailbox=MAILBOX, aliases=[],
+        to_addrs=_to("human@example.com"), cc_addrs=_to(MAILBOX),
+        subject="@agento pomóż", body_preview="@agento",
+    )
+    assert silent.reason == "no_active_mode"
+    direct = decide(
+        agent_authored=False, cfg=cfg, mailbox=MAILBOX, aliases=[],
+        to_addrs=_to(MAILBOX), cc_addrs=[], subject="Pytanie", body_preview="treść",
+    )
+    assert direct.can_respond is True

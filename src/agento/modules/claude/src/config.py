@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
-from agento.framework.harness import ToolboxConnectionSpec
+from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
 from agento.framework.harness.run_scope import scope_toolbox_url
 
 if TYPE_CHECKING:
@@ -289,27 +289,28 @@ class ClaudeWorkspaceAdapter:
         working_dir.mkdir(parents=True, exist_ok=True)
         self._write_claude_json(working_dir, agent_config)
         self._write_settings_json(working_dir, agent_config)
-        self._write_mcp_json(
-            working_dir, agent_config,
-            agent_view_id=agent_view_id,
-            toolbox_url=toolbox_url,
-        )
+        self._write_mcp_json(working_dir, agent_config, toolbox_url=toolbox_url)
 
     def inject_runtime_params(
         self,
         artifacts_dir: Path,
         *,
-        job_id: int | None,
+        job_id: int | None = None,
         run_id: str | None = None,
+        capability_token: str | None = None,
+        toolbox_url: str | None = None,
     ) -> None:
-        """Scope the copied config to one run.
+        """Scope the copied config to one run and hand it the run's toolbox capability.
 
         ``job_id=None`` means the run has no job scope (a string-id ``agento run``); its
         ``run_id`` scopes it instead, so the toolbox can still give it a desk of its own.
-        With neither there is nothing to scope, so return early rather than render the
-        literal "None" into the config.
+        With neither and no capability there is nothing to inject, so return early rather
+        than render the literal "None" into the config.
         """
-        if job_id is None and not run_id:
+        # Validate the TRUSTED input first, so a misconfigured core/toolbox/url fails the
+        # run whether or not an MCP file happens to exist.
+        target = toolbox_origin(toolbox_url) if capability_token else None
+        if job_id is None and not run_id and not capability_token:
             return
         mcp_path = artifacts_dir / ".mcp.json"
         if not mcp_path.is_file():
@@ -323,8 +324,21 @@ class ClaudeWorkspaceAdapter:
             if not isinstance(server_cfg, dict):
                 continue
             url = server_cfg.get("url")
-            if isinstance(url, str) and ("/sse" in url or "/mcp" in url):
-                server_cfg["url"] = scope_toolbox_url(url, job_id, run_id)
+            if not isinstance(url, str):
+                continue
+            # With a capability: endpoint match, NOT a "/mcp in url" substring test —
+            # operators may add third-party MCP servers, and the toolbox capability must
+            # never travel to one of them.
+            if target is not None:
+                if not is_toolbox_endpoint(url, target):
+                    continue
+            elif not ("/sse" in url or "/mcp" in url):
+                continue
+            url = scope_toolbox_url(url, job_id, run_id)
+            if capability_token:
+                sep = "&" if "?" in url else "?"
+                url = f"{url}{sep}cap={capability_token}"
+            server_cfg["url"] = url
         mcp_path.write_text(json.dumps(data, indent=2))
 
     def credential_ttl_seconds(self, credential: CredentialRecord) -> int | None:
@@ -468,7 +482,6 @@ class ClaudeWorkspaceAdapter:
         working_dir: Path,
         agent_config: dict[str, str],
         *,
-        agent_view_id: int | None = None,
         toolbox_url: str,
     ) -> None:
         # Auto-inject the toolbox MCP entry; operators can add more (or shadow
@@ -508,13 +521,6 @@ class ClaudeWorkspaceAdapter:
                             continue
                         server_cfg["type"] = derived
                     servers[name] = server_cfg
-
-        if agent_view_id is not None:
-            for server_cfg in servers.values():
-                url = server_cfg.get("url")
-                if isinstance(url, str) and ("/sse" in url or "/mcp" in url):
-                    sep = "&" if "?" in url else "?"
-                    server_cfg["url"] = f"{url}{sep}agent_view_id={agent_view_id}"
 
         mcp_config = {"mcpServers": servers}
         config_path = working_dir / ".mcp.json"

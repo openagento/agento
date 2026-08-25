@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// The framework injects the shared toolbox helpers through the registration context
+// (config-loader.js TOOLBOX_HELPERS); a module cannot import framework code by path.
+import { matchesWhitelist } from '../email-match.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,7 +40,7 @@ async function buildHandler(coreOverrides = {}) {
       captured = { name, desc, schema, handler };
     },
   };
-  register(server, { log, moduleConfigs, isToolEnabled: () => true });
+  register(server, { log, moduleConfigs, isToolEnabled: () => true, matchesWhitelist });
   return { handler: captured.handler, schema: captured.schema, log };
 }
 

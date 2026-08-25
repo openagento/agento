@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from ..channels.base import Channel
 from ..harness import Runner, RunRequest, RunResult
@@ -17,6 +17,9 @@ class JobContext:
     config: object  # Module config object (e.g. JiraConfig) resolved via bootstrap
     logger: logging.Logger
     update_reference_id: Callable[[int, str], None]
+    # Short-lived internal_rest capability for the discovery flow. `repr=False` so a
+    # dataclass repr in a log line can never carry it.
+    capability_token: str | None = field(default=None, repr=False)
 
 
 class Workflow(ABC):
