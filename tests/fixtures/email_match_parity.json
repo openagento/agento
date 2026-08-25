@@ -1,0 +1,132 @@
+{
+  "_comment": "Shared truth table for the address allow-list matcher. Read by BOTH src/agento/toolbox/tests/email-match.test.js (JS matchesWhitelist) and tests/unit/modules/outlook/test_email_match_parity.py (Python _matches_allowed). A divergence between the two gates is fail-open on one side, so the table lives in one file.",
+  "cases": [
+    {
+      "why": "empty list blocks everything",
+      "patterns": [],
+      "address": "anyone@x.com",
+      "expected": false
+    },
+    {
+      "why": "exact match",
+      "patterns": [
+        "bob@mycompany.com"
+      ],
+      "address": "bob@mycompany.com",
+      "expected": true
+    },
+    {
+      "why": "case-insensitive on both sides",
+      "patterns": [
+        "Bob@MyCompany.com"
+      ],
+      "address": "bOB@mycompany.COM",
+      "expected": true
+    },
+    {
+      "why": "wildcard local part",
+      "patterns": [
+        "*@mycompany.com"
+      ],
+      "address": "bob@mycompany.com",
+      "expected": true
+    },
+    {
+      "why": "wildcard must not cross the @ — subdomain",
+      "patterns": [
+        "*@mycompany.com"
+      ],
+      "address": "evil@sub.mycompany.com",
+      "expected": false
+    },
+    {
+      "why": "wildcard must not cross the @ — second @",
+      "patterns": [
+        "*@corp.com"
+      ],
+      "address": "a@b@corp.com",
+      "expected": false
+    },
+    {
+      "why": "? is a literal, never a quantifier (fail-open direction)",
+      "patterns": [
+        "a?b@x.com"
+      ],
+      "address": "a?b@x.com",
+      "expected": true
+    },
+    {
+      "why": "? is a literal — it does not make b optional",
+      "patterns": [
+        "a?b@x.com"
+      ],
+      "address": "b@x.com",
+      "expected": false
+    },
+    {
+      "why": ". and + are literals",
+      "patterns": [
+        "a.b+c@x.com"
+      ],
+      "address": "a.b+c@x.com",
+      "expected": true
+    },
+    {
+      "why": ". is not any-char",
+      "patterns": [
+        "a.b+c@x.com"
+      ],
+      "address": "axbxc@x.com",
+      "expected": false
+    },
+    {
+      "why": "anchored — no suffix match",
+      "patterns": [
+        "bob@x.com"
+      ],
+      "address": "bob@x.com.evil.net",
+      "expected": false
+    },
+    {
+      "why": "anchored — no prefix match",
+      "patterns": [
+        "bob@x.com"
+      ],
+      "address": "notbob@x.com",
+      "expected": false
+    },
+    {
+      "why": "missing address fails closed even against a bare wildcard",
+      "patterns": [
+        "*"
+      ],
+      "address": "",
+      "expected": false
+    },
+    {
+      "why": "missing address fails closed against a normal pattern",
+      "patterns": [
+        "*@corp.com"
+      ],
+      "address": "",
+      "expected": false
+    },
+    {
+      "why": "any pattern in the list may match",
+      "patterns": [
+        "a@x.com",
+        "*@y.com"
+      ],
+      "address": "z@y.com",
+      "expected": true
+    },
+    {
+      "why": "surrounding whitespace is normalised away, not treated as part of the address",
+      "patterns": [
+        "bob@x.com"
+      ],
+      "address": "bob@x.com\n",
+      "expected": true
+    }
+  ]
+}

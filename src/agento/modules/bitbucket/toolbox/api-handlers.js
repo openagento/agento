@@ -92,20 +92,13 @@ export function createVerifyHandler(log, authFactory = createBitbucketAuth) {
 
 // --- POST /api/bitbucket/open-prs (publisher). Scoped-config is the authorization boundary; body
 //     values may only NARROW (top), never authorize (no caller workspace/uuid/allowlist). ---
-export function createOpenPrsHandler({ loadScopedDbOverrides, loadModuleConfigs }, log, authFactory = createBitbucketAuth) {
+export function createOpenPrsHandler({ loadScopedDbOverridesStrict, loadModuleConfigs }, log, authFactory = createBitbucketAuth) {
   return async (req, res) => {
-    const { agent_view_id: agentViewId, lane, top } = req.body || {};
-    if (!agentViewId) {
-      return res.status(400).json({ error: 'agent_view_id is required' });
-    }
+    const { lane, top } = req.body || {};
+    const agentViewId = req.capability.agentViewId;
 
-    // Fail closed on an unknown agent_view: the base loader returns global overrides with
-    // agentViewMeta=null when the view does not exist — never silently act at global scope.
-    const { overrides, agentViewMeta } = await loadScopedDbOverrides(agentViewId);
-    if (!agentViewMeta) {
-      log('api/bitbucket/open-prs', 'ERROR', `unknown agent_view_id=${agentViewId}`);
-      return res.status(404).json({ error: 'Unknown agent_view_id' });
-    }
+    // The strict loader THROWS for an unknown view instead of widening to global config.
+    const { overrides } = await loadScopedDbOverridesStrict(agentViewId);
 
     const moduleConfigs = await loadModuleConfigs(overrides);
     const cfg = moduleConfigs.bitbucket || {};

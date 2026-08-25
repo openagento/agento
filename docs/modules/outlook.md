@@ -46,7 +46,7 @@ manifests.
 |---|---|
 | Graph auth (cert **or** client secret) | `toolbox/graph-auth.js` (`@azure/identity`) |
 | 5 MCP tools (read / get-attachment / reply / send / mark) | `toolbox/outlook.js` |
-| Delta-poll REST endpoint (`POST /api/outlook/delta`, validated cursor resume + paging + DMARC parse) | `toolbox/api.js`, `toolbox/api-handlers.js` |
+| Delta-poll REST endpoint (`POST /api/outlook/delta`, **capability-authenticated**, validated cursor resume + paging + DMARC parse + inbound gate) | `toolbox/api.js`, `toolbox/api-handlers.js` |
 | Channel prompt fragments + publisher security gate | `src/channel.py` |
 | Poll command (`outlook:publish`, cron every minute — loops active agent_views; `--agent-view <code>` for one) | `src/commands/publish.py`, `cron.json` |
 | Per-mailbox delta cursor store + table | `src/cursor.py`, `sql/001_outlook_poll_cursor.sql` |
@@ -56,6 +56,12 @@ manifests.
 ## Configuration
 
 Set via `agento config:set outlook/<key> <value>` (or `CONFIG__OUTLOOK__<KEY>` env). Keys:
+
+> **Not the three Graph credentials.** `outlook_client_secret`, `outlook_cert_pem` and
+> `outlook_cert_password` declare `access: "toolbox_only"` + `allowEnv: false`: the `CONFIG__OUTLOOK__*`
+> source is refused for them (`setup:upgrade` aborts if one is set), and the value is never passed as
+> a positional argument. Set them at workspace scope with the value on **stdin**:
+> `agento config:set outlook/outlook_client_secret --scope workspace --scope-id <id>`.
 
 | Key | Type | Notes |
 |---|---|---|
@@ -90,14 +96,14 @@ The **per-agent_view publisher** reads only **non-secret** fields — `enabled`,
 `outlook_mailbox_user_id` (the mailbox UPN, resolved before polling to group views into direct/routed mode),
 and the activation/marker keys in [Stateless activation & loop safety](#stateless-activation--loop-safety) —
 via per-path config `.get()` (never `get_module()`), so the publisher itself never resolves the obscure Graph
-secret. The Graph credentials are consumed **toolbox-side** (that is where all Graph HTTP happens). Note the
-precise scope: the Graph secret is still a declared `obscure` field, and — as a **pre-existing**
-framework-wide behavior outside this change's scope — the framework `bootstrap()` **transiently
-decrypts** DEFAULT/ENV-scope obscure module config on the cron (and consumer, and CLI); the
-`OutlookConfig` dataclass drops the secret so it never reaches the job/registry, but the transient
-decrypt is real. This is a known limitation tracked by the
-[toolbox-only secret-boundary hardening PRD](../security/toolbox-only-secret-boundary.md) — the
-regex+priority routing change neither introduces nor worsens it. Loop suppression
+secret. The Graph credentials are consumed **toolbox-side** (that is where all Graph HTTP happens), and
+Python no longer resolves them **at all**: `outlook_client_secret`, `outlook_cert_pem` and
+`outlook_cert_password` declare `access: "toolbox_only"`, so `bootstrap()` skips them, `resolve_all()`
+skips them, and a direct `.get()` on one raises `ToolboxOnlyConfigError`. They also declare
+`allowEnv: false`, so a `CONFIG__OUTLOOK__*` variable cannot supply them either. The transient
+decrypt that earlier versions performed on the cron is gone for these fields; the remaining open case
+is `app_monitor`'s SMTP password, which is consumed cron-side by design — see the
+[toolbox-only secret-boundary hardening PRD](../security/toolbox-only-secret-boundary.md). Loop suppression
 introduces **no new secret** — it is address-based and **auto-derived from the agent_views** (no
 hand-maintained list), so there is nothing extra to resolve or protect (see
 [Stateless activation & loop safety](#stateless-activation--loop-safety)).
@@ -114,16 +120,17 @@ agento config:set outlook/outlook_mailbox_user_id agenty@mycompany.com
 # The secret is an `obscure` field, so it is auto-encrypted (AES-256-CBC). NEVER pass it as the
 # positional value (it would leak into `ps aux` and shell history) — omit the value so agento
 # prompts/reads stdin, or pipe it in:
-agento config:set outlook/outlook_client_secret              # prompts / reads stdin
-# or: printf '%s' "$OUTLOOK_CLIENT_SECRET" | agento config:set outlook/outlook_client_secret
+# Workspace scope, NOT default — see the callout under "Authentication".
+agento config:set outlook/outlook_client_secret --scope workspace --scope-id <id>   # prompts / reads stdin
+# or: printf '%s' "$OUTLOOK_CLIENT_SECRET" | agento config:set outlook/outlook_client_secret --scope workspace --scope-id <id>
 
 # Option B — certificate (PEM contents stored encrypted; NO file mount)
 # Easiest: run `agento setup:upgrade`, choose Outlook -> "Certificate (paste PEM contents)",
 # paste the full PEM (cert + private key) ending with a line "END", and enter the passphrase if any.
 # Or set it manually — outlook_cert_pem is an `obscure` field, so omit the value and let agento
 # read it from stdin (NEVER pass a path or the contents as a positional value):
-agento config:set outlook/outlook_cert_pem < /path/to/app.pem
-agento config:set outlook/outlook_cert_password            # only if the PEM is encrypted
+agento config:set outlook/outlook_cert_pem --scope workspace --scope-id <id> < /path/to/app.pem
+agento config:set outlook/outlook_cert_password --scope workspace --scope-id <id>   # only if the PEM is encrypted
 # (tenant_id / client_id / mailbox_user_id as above)
 ```
 
@@ -140,6 +147,21 @@ The Azure app registration needs application permission `Mail.ReadWrite` (and `M
 with admin consent.
 
 ## The inbound security gate
+
+**The gate runs in the toolbox first, in the publisher second.** `POST /api/outlook/delta` needs an
+`internal_rest` capability and takes the calling view from **that capability's row**, never from the
+request body — so the publisher cannot poll a mailbox on behalf of a view it was not issued for. The
+delta handler applies the allow-list (the union across the views sharing the mailbox, in routed mode)
+and the DMARC verdict **before returning a message**, so a non-allow-listed or DMARC-failed message
+never leaves the toolbox. `OutlookPublisher.publish_mail` then applies the same gate again on the
+Python side.
+
+That is deliberate defence in depth, not duplication: the toolbox gate is the one that keeps the
+message out of the cron process at all, and the Python gate is what still holds if a future caller
+reaches the publisher another way. Both use the **same** matcher — `matchesWhitelist` lives in
+`src/agento/toolbox/email-match.js` (framework level, so no module imports another module), with a
+parity test against the Python twin.
+
 
 `OutlookPublisher.publish_mail` enforces, in order:
 
@@ -239,10 +261,21 @@ Otherwise the publisher **stays silent** — it creates no job but still advance
 message is evaluated once, not re-clogged). This mirrors the "not for us → leave unread, advance"
 pattern; the channel never *holds* on a policy decision.
 
+**An explicitly empty value means empty, not "default".** `activation_modes=""` enables **no** mode, so
+the view never activates on anything (`reason=no_active_mode`) — the mailbox is still polled and the
+cursor still advances, so nothing re-clogs. `summon_token=""` disables `mention` while leaving `direct`
+working. Only a **missing** value falls back to the default (`direct,mention` / `@agento`). This is the
+switch to use when you want a view to stop responding without disabling the whole module.
+
 ### Reply is reply-to-all
 
 `outlook_reply` replies to **every** participant Graph will deliver to — `(Reply-To || From) ∪ To ∪ Cc`,
-minus the agent's own mailbox — keeping a group thread in one conversation. Every recipient is gated
+minus **every address that is this mailbox** — keeping a group thread in one conversation. "Its own
+mailbox" means the primary UPN **and** every entry in `outlook/mailbox_aliases`: mail delivered to an
+alias keeps that alias in the reply-all list, so without this the agent would gate itself against
+`core/email_whitelist` — reporting itself as dropped under `remove`, or blocking the whole reply under
+`block`. Matching is trimmed and lowercased on both sides, and it is exact: `support@corp.com.evil.com`
+is not `support@corp.com`. Every recipient is gated
 against `core/email_whitelist`, and **only whitelisted addresses ever receive the reply**. What happens to
 a non-whitelisted recipient is governed by **`outlook/reply_policy`**:
 
@@ -445,13 +478,16 @@ mailbox). Disabling the flag bypasses **both** checks — a documented security 
 
 ```bash
 agento module:enable outlook
-# Global Azure app credentials at the default scope (one app shared across views) — see
-# "Authentication" above: tenant_id / client_id / client_secret-or-cert_pem.
+# Azure app identity (tenant_id / client_id) at the default scope — one app shared across views.
+# The credential itself (client_secret OR cert_pem + cert_password) goes at WORKSPACE scope, never
+# default: a default-scope obscure value is decrypted by the cron process during bootstrap. See the
+# callout under "Authentication" above.
 
-# Easiest: `agento setup:upgrade` runs onboarding — it stores the creds at default and, when there is
-# more than one active agent_view, prompts you to pick which view owns the mailbox (writing it at that
-# view's scope). The manual equivalent, per agent_view (omit --scope/--scope-id for a single-view
-# deployment to use the default scope):
+# Easiest: `agento setup:upgrade` runs onboarding. It asks ONE scope question — which agent_view owns
+# the mailbox — and derives everything else from it: tenant_id / client_id go to the default scope,
+# the Graph secret (or cert PEM) goes to THAT view's workspace scope, and the mailbox goes to that
+# view's own scope when several views are active (default scope when there is only one). The manual
+# equivalent, per agent_view (omit --scope/--scope-id for a single-view deployment):
 agento config:set outlook/outlook_mailbox_user_id agenty@mycompany.com --scope agent_view --scope-id <id>
 agento config:set outlook/allowed_senders "sklep@mycompanystudio.com,mklauza@mycompany.com,*@mycompany.com" --scope agent_view --scope-id <id>
 agento config:set outlook/enabled 1 --scope agent_view --scope-id <id>

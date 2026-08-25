@@ -20,7 +20,7 @@ def test_list_delta_returns_full_payload_with_mailbox_and_delta_link():
             "conversationId": "c1", "dmarc": "pass",
         }]})
     )
-    client = OutlookToolboxClient("http://toolbox:3001")
+    client = OutlookToolboxClient("http://toolbox:3001", capability_token="test-cap")
     resp = client.list_delta(top=10)
     client.close()
     assert resp["mailbox"] == "dev@example.com"
@@ -38,7 +38,7 @@ def test_list_delta_sends_top_agent_view_id_and_cursors_in_body():
         return httpx.Response(200, json={"mailbox": "dev@example.com", "deltaLink": "L", "resynced": False, "messages": []})
 
     respx.post("http://toolbox:3001/api/outlook/delta").mock(side_effect=_handler)
-    client = OutlookToolboxClient("http://toolbox:3001")
+    client = OutlookToolboxClient("http://toolbox:3001", capability_token="test-cap")
     resp = client.list_delta(top=7, agent_view_id=5, cursors={"dev@example.com": "PREV"})
     client.close()
     assert captured == {"top": 7, "agent_view_id": 5, "cursors": {"dev@example.com": "PREV"}}
@@ -54,7 +54,7 @@ def test_list_delta_omits_agent_view_id_when_none_and_defaults_cursors():
         return httpx.Response(200, json={"mailbox": None, "deltaLink": None, "resynced": False, "messages": []})
 
     respx.post("http://toolbox:3001/api/outlook/delta").mock(side_effect=_handler)
-    client = OutlookToolboxClient("http://toolbox:3001")
+    client = OutlookToolboxClient("http://toolbox:3001", capability_token="test-cap")
     resp = client.list_delta(top=3)
     client.close()
     assert captured == {"top": 3, "cursors": {}}
@@ -67,7 +67,7 @@ def test_list_delta_raises_on_non_200():
     respx.post("http://toolbox:3001/api/outlook/delta").mock(
         return_value=httpx.Response(502, text="boom")
     )
-    client = OutlookToolboxClient("http://toolbox:3001")
+    client = OutlookToolboxClient("http://toolbox:3001", capability_token="test-cap")
     with pytest.raises(ToolboxAPIError) as exc:
         client.list_delta(top=1, agent_view_id=9, cursors={})
     client.close()

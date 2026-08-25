@@ -14,7 +14,7 @@ def test_verify_posts_creds_and_returns_body():
     route = respx.post(f"{BASE}/api/bitbucket/verify").mock(
         return_value=Response(200, json={"ok": True, "account_uuid": "{a}", "username": "agent"})
     )
-    client = BitbucketToolboxClient(BASE)
+    client = BitbucketToolboxClient(BASE, capability_token="test-cap")
     try:
         result = client.verify("acme", "e@x.com", "tok")
     finally:
@@ -31,7 +31,7 @@ def test_open_prs_posts_agent_view_id_lane_and_top():
     route = respx.post(f"{BASE}/api/bitbucket/open-prs").mock(
         return_value=Response(200, json={"pull_requests": [{"id": 1}], "errors": []})
     )
-    client = BitbucketToolboxClient(BASE)
+    client = BitbucketToolboxClient(BASE, capability_token="test-cap")
     try:
         result = client.open_prs(7, lane="changes", top=5)
     finally:
@@ -47,7 +47,7 @@ def test_open_prs_omits_top_when_none():
     route = respx.post(f"{BASE}/api/bitbucket/open-prs").mock(
         return_value=Response(200, json={"pull_requests": [], "errors": []})
     )
-    client = BitbucketToolboxClient(BASE)
+    client = BitbucketToolboxClient(BASE, capability_token="test-cap")
     try:
         client.open_prs(7, lane="comments")
     finally:
@@ -58,7 +58,7 @@ def test_open_prs_omits_top_when_none():
 @respx.mock
 def test_non_200_raises_toolbox_api_error():
     respx.post(f"{BASE}/api/bitbucket/open-prs").mock(return_value=Response(503, text="upstream down"))
-    client = BitbucketToolboxClient(BASE)
+    client = BitbucketToolboxClient(BASE, capability_token="test-cap")
     try:
         with pytest.raises(ToolboxAPIError) as exc:
             client.open_prs(7, lane="comments")

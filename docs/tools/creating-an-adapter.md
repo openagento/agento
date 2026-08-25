@@ -12,6 +12,7 @@ import pg from 'pg';
 import { logToolboxMcp as log } from '../log.js';
 import { isReadOnlySql } from './sql-read-only.js';
 import { getSqlTimeoutMs } from './sql-timeout.js';
+import { sanitizeHealthError } from '../health-run.js';
 
 function createPostgresTool(server, toolName, description, config, options) {
   const port = parseInt(config.port || '5432', 10);
@@ -86,7 +87,8 @@ export function registerPostgresTools(server, tools, options) {
         await poolHandle.use(pool => pool.query('SELECT 1'));
         results.push({ tool: name, status: 'ok', ms: Date.now() - start });
       } catch (err) {
-        results.push({ tool: name, status: 'fail', ms: Date.now() - start, error: err.message });
+        // A stable category, never the driver's text — see the rule below.
+        results.push({ tool: name, status: 'fail', ms: Date.now() - start, error: sanitizeHealthError(err) });
       }
     }
     return results;
@@ -176,7 +178,25 @@ Every adapter should log through `options.log` when present (the session's agent
 
 The shared validator deliberately rejects backslashes inside PostgreSQL string literals. PostgreSQL `E'...'` strings always interpret backslash escapes, while plain strings depend on server settings; rejecting the ambiguous form prevents the validator and server from disagreeing about where a statement ends.
 
-The `healthcheck` function is called by `/health?test=true` to verify connectivity. It should return one result per tool: `ok` (connected), `fail` (error), or `skip` (not configured).
+The `healthcheck` function is called by the scoped diagnostic `/health?test=true` to verify connectivity. The view comes from the `internal_rest` capability row, never from the URL — a `?agent_view_id=` that disagrees with the capability is answered `400`, not silently ignored. It should return one result per tool: `ok` (connected), `fail` (error), or `skip` (not configured).
+
+**The scoped diagnostic is authenticated.** It requires an `internal_rest` capability
+(`Authorization: Bearer <token>`) and answers `401` without one — it reports which backends are
+reachable, which is an infrastructure oracle for anything inside the sandbox. Bare `/health` stays
+unauthenticated **liveness only**. See [docs/cli/capability.md](../cli/capability.md).
+
+> **Rule for every adapter: the `error` a healthcheck returns is a stable public contract, not free
+> text.** It must be one of `auth failed`, `unreachable`, `timeout`, `misconfigured`, `failed` —
+> never a raw `err.message`. A driver error routinely embeds the credential it just used (a
+> connection string, an SMTP reply, a Graph error naming the client secret), so the raw text is
+> inspected only to pick a category and is then **discarded** — not returned to the caller and not
+> written to the server log either, since "log it server-side" is not a safe destination for a
+> secret. `runHealthchecks()` writes no log line at all — the category reaches the operator in the
+> `/health?test=true` response, and driver detail is read from the backend's own log. The framework applies `sanitizeHealthError()`
+> (`src/agento/toolbox/health-run.js`) as a backstop, but an adapter that hands it a raw message is
+> still relying on a net rather than on its own contract. Comply by calling
+> `sanitizeHealthError(err)` yourself in the adapter, as the example above does — it is idempotent,
+> so a category you pass in comes back unchanged and the central backstop cannot downgrade it.
 
 ## Module JS Tool Healthchecks
 
@@ -189,7 +209,8 @@ export async function healthcheck({ moduleConfigs, db }) {
     await db.getCronPool().query('SELECT 1');
     return [{ tool: 'my_tool', status: 'ok', ms: Date.now() - start }];
   } catch (err) {
-    return [{ tool: 'my_tool', status: 'fail', ms: Date.now() - start, error: err.message }];
+    // A category, never err.message — see the rule above.
+    return [{ tool: 'my_tool', status: 'fail', ms: Date.now() - start, error: 'unreachable' }];
   }
 }
 ```

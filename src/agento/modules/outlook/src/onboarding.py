@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 
 import pymysql
 
-# Identity + auth live at the DEFAULT scope (the global Azure app). Auth is satisfied by EITHER a
-# client secret OR a certificate PEM (its contents, stored encrypted) — checked separately. The
-# mailbox UPN may live at the default scope (single-view) OR an agent_view scope (multi-view), so it
-# is checked at ANY scope, not just default.
+# Identity lives at the DEFAULT scope (the global Azure app). The AUTH material — client secret or
+# certificate PEM — is `toolbox_only` and lives at WORKSPACE scope: a secret readable at the default
+# scope is readable by every view in the deployment, and `showInDefault: false` in system.json makes
+# the default scope illegal for it anyway. Auth is satisfied by EITHER a client secret OR a
+# certificate PEM (its contents, stored encrypted) — checked separately. The mailbox UPN may live at
+# the default scope (single-view) OR an agent_view scope (multi-view), so it is checked at ANY scope.
 _IDENTITY_KEYS = (
     "outlook/outlook_tenant_id",
     "outlook/outlook_client_id",
@@ -142,49 +145,126 @@ def _print_next_steps() -> None:
     )
 
 
+def _set_secret(conn, path: str, value: str, workspace_id: int) -> None:
+    """Write a toolbox_only Graph secret at WORKSPACE scope, encrypted.
+
+    Never at the default scope: `showInDefault: false` makes it illegal there, and a
+    default-scope row is readable by every view in the deployment.
+    """
+    from agento.framework.core_config import config_set_auto_encrypt
+    from agento.framework.scoped_config import Scope
+
+    config_set_auto_encrypt(
+        conn, path, value, scope=Scope.WORKSPACE, scope_id=workspace_id
+    )
+
+
+def _delete_secret(conn, path: str, workspace_id: int) -> None:
+    """Remove a Graph secret from workspace scope AND from the legacy default scope.
+
+    A deployment onboarded before the secrets moved still holds a default-scope row; the
+    data patch migrates it, but a re-run that switches auth method must not leave one
+    behind either (graph-auth gives the certificate precedence when both are present).
+    """
+    from agento.framework.core_config import config_delete
+    from agento.framework.scoped_config import Scope
+
+    config_delete(conn, path, scope=Scope.WORKSPACE, scope_id=workspace_id)
+    config_delete(conn, path, scope=Scope.DEFAULT, scope_id=0)
+
+
 class OutlookOnboarding:
     def describe(self) -> str:
         return "Configure Outlook / Microsoft 365 mailbox connection (Graph app credentials)"
 
     def is_complete(self, conn: pymysql.connections.Connection) -> bool:
-        # Identity + auth (the global Azure app) must exist at the DEFAULT scope. The mailbox UPN may
-        # live at ANY scope: default (single-view) or agent_view (multi-view).
-        default_keys = _IDENTITY_KEYS + _AUTH_KEYS
-        placeholders = ",".join(["%s"] * len(default_keys))
+        # Completeness is ONE COHERENT CHAIN, not three independent existence checks: some
+        # active agent_view must resolve BOTH the Graph auth material (workspace scope, its own
+        # workspace) AND a mailbox UPN (its own agent_view scope, or default). "Any workspace has
+        # a secret" plus "any scope has a mailbox" reads as complete even when the two belong to
+        # different views — the exact split that leaves the strict resolver unable to see the
+        # credential. Identity (the tenant-wide Azure app) stays at the DEFAULT scope.
+        from agento.framework.workspace import get_active_agent_views
+
+        placeholders = ",".join(["%s"] * len(_IDENTITY_KEYS))
+        auth_placeholders = ",".join(["%s"] * len(_AUTH_KEYS))
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT DISTINCT path FROM core_config_data "
                 f"WHERE path IN ({placeholders}) AND scope = 'default' AND scope_id = 0 "
                 f"AND value IS NOT NULL AND value <> ''",
-                default_keys,
+                _IDENTITY_KEYS,
             )
             found = {row["path"] if isinstance(row, dict) else row[0] for row in cur.fetchall()}
-            has_identity = set(_IDENTITY_KEYS).issubset(found)
-            has_auth = any(k in found for k in _AUTH_KEYS)
-            cur.execute(
-                "SELECT 1 FROM core_config_data "
-                "WHERE path = %s AND value IS NOT NULL AND value <> '' LIMIT 1",
-                (_MAILBOX_KEY,),
-            )
-            has_mailbox = cur.fetchone() is not None
-        return has_identity and has_auth and has_mailbox
+            if not set(_IDENTITY_KEYS).issubset(found):
+                return False
+
+            for view in get_active_agent_views(conn):
+                cur.execute(
+                    f"SELECT 1 FROM core_config_data "
+                    f"WHERE path IN ({auth_placeholders}) AND scope = 'workspace' "
+                    f"AND scope_id = %s AND value IS NOT NULL AND value <> '' LIMIT 1",
+                    (*_AUTH_KEYS, view.workspace_id),
+                )
+                if cur.fetchone() is None:
+                    continue
+                cur.execute(
+                    "SELECT 1 FROM core_config_data "
+                    "WHERE path = %s AND value IS NOT NULL AND value <> '' "
+                    "AND ((scope = 'agent_view' AND scope_id = %s) "
+                    "     OR (scope = 'default' AND scope_id = 0)) LIMIT 1",
+                    (_MAILBOX_KEY, view.id),
+                )
+                if cur.fetchone() is not None:
+                    return True
+        return False
 
     def run(self, conn, config: dict, logger: logging.Logger) -> None:
         import getpass
 
         from agento.framework.cli import terminal
-        from agento.framework.core_config import (
-            config_delete,
-            config_set,
-            config_set_auto_encrypt,
-        )
+        from agento.framework.core_config import config_set
         from agento.framework.scoped_config import Scope, scoped_config_set
-        from agento.framework.workspace import get_active_agent_views
+        from agento.framework.toolbox_capability import (
+            rest_capability,
+        )
+        from agento.framework.workspace import get_active_agent_views, get_workspace
 
         print("\n=== Outlook / Microsoft 365 onboarding ===")
         tenant = input("Azure tenant ID: ").strip()
         client_id = input("Azure app (client) ID: ").strip()
         mailbox = input("Mailbox UPN to monitor (e.g. agent@example.com): ").strip()
+
+        # ONE choice, made FIRST: the agent_view that owns the mailbox. Its workspace is then
+        # DERIVED, never chosen separately. Asking the two questions independently lets an
+        # operator store the Graph secret at workspace A and bind the mailbox to a view in
+        # workspace B, and the strict resolver then cannot see the credential it just wrote.
+        views = get_active_agent_views(conn)
+        if not views:
+            print(
+                "  Aborted: no active agent_view. The Graph secret is stored at the owning view's "
+                "workspace scope (never at default, where every view could read it). Run "
+                "`agento setup:upgrade` — it seeds the `default` workspace and the `agent01` "
+                "agent_view — and re-run onboarding."
+            )
+            return
+        if len(views) == 1:
+            chosen_av = views[0]
+        else:
+            chosen_av = views[
+                terminal.select("Which agent_view owns this mailbox?", [av.code for av in views])
+            ]
+        ws = get_workspace(conn, chosen_av.workspace_id)
+        if ws is None:
+            print(
+                f"  Aborted: agent_view '{chosen_av.code}' names workspace id "
+                f"{chosen_av.workspace_id}, which does not exist."
+            )
+            return
+        print(
+            f"  Mailbox owner: agent_view '{chosen_av.code}'. Graph credentials will be stored "
+            f"at its workspace scope: {ws.code}."
+        )
 
         auth_choice = terminal.select(
             "Graph authentication method",
@@ -198,11 +278,11 @@ class OutlookOnboarding:
         # cert material survive (graph-auth gives the certificate precedence when both are present).
         if auth_choice == 0:
             secret = getpass.getpass("Azure app client secret: ").strip()
-            config_set_auto_encrypt(conn, "outlook/outlook_client_secret", secret)
+            _set_secret(conn, "outlook/outlook_client_secret", secret, ws.id)
             # Switched to secret auth: drop any stale certificate material (+ legacy path).
-            config_delete(conn, "outlook/outlook_cert_pem")
-            config_delete(conn, "outlook/outlook_cert_password")
-            config_delete(conn, "outlook/outlook_cert_path")
+            _delete_secret(conn, "outlook/outlook_cert_pem", ws.id)
+            _delete_secret(conn, "outlook/outlook_cert_password", ws.id)
+            _delete_secret(conn, "outlook/outlook_cert_path", ws.id)
         else:
             pem = ""
             while True:
@@ -226,27 +306,21 @@ class OutlookOnboarding:
             cert_password = getpass.getpass(
                 "Certificate PEM passphrase (leave empty if unencrypted): "
             )
-            config_set_auto_encrypt(conn, "outlook/outlook_cert_pem", pem)
+            _set_secret(conn, "outlook/outlook_cert_pem", pem, ws.id)
             if cert_password != "":
-                config_set_auto_encrypt(conn, "outlook/outlook_cert_password", cert_password)
+                _set_secret(conn, "outlook/outlook_cert_password", cert_password, ws.id)
             else:
-                config_delete(conn, "outlook/outlook_cert_password")
+                _delete_secret(conn, "outlook/outlook_cert_password", ws.id)
             # Switched to certificate auth: drop any stale client secret (+ legacy path).
-            config_delete(conn, "outlook/outlook_client_secret")
-            config_delete(conn, "outlook/outlook_cert_path")
+            _delete_secret(conn, "outlook/outlook_client_secret", ws.id)
+            _delete_secret(conn, "outlook/outlook_cert_path", ws.id)
 
-        # Mailbox: the mailbox identifies the agent_view. One mailbox per onboarding run.
-        verify_agent_view_id: int | None = None
-        views = get_active_agent_views(conn)
-        chosen_av = None
+        # Mailbox: the mailbox identifies the agent_view, chosen above. One mailbox per run.
+        # With several views the binding must be explicit (agent_view scope); with exactly one
+        # view the default scope still resolves through it via the scope fallback.
         if len(views) > 1:
-            idx = terminal.select(
-                "Which agent_view owns this mailbox?", [av.code for av in views]
-            )
-            chosen_av = views[idx]
             target_scope, target_scope_id = Scope.AGENT_VIEW, chosen_av.id
         else:
-            # 0 or 1 active view -> default scope (a single view resolves it via fallback).
             target_scope, target_scope_id = Scope.DEFAULT, 0
 
         # Shared-mailbox notice: the mailbox resolves agent_view -> workspace -> default, so the same
@@ -274,15 +348,16 @@ class OutlookOnboarding:
                 print("  Aborted: nothing saved (no config written).")
                 return
 
-        if chosen_av is not None:
+        if target_scope is Scope.AGENT_VIEW:
             scoped_config_set(
                 conn, _MAILBOX_KEY, mailbox,
                 scope=Scope.AGENT_VIEW, scope_id=chosen_av.id, encrypted=False,
             )
-            verify_agent_view_id = chosen_av.id
             print(f"  Mailbox '{mailbox}' bound to agent_view '{chosen_av.code}'.")
         else:
             config_set(conn, _MAILBOX_KEY, mailbox)
+        # Either way the verification capability is minted for the view that owns the mailbox —
+        # the same view whose workspace now holds the Graph secret.
         conn.commit()
 
         # Read-gate warning (scoped config, not a global switch): remind the operator if reading is
@@ -304,17 +379,17 @@ class OutlookOnboarding:
                   "Set it, then run `agento outlook:publish --top 1`.")
             _print_next_steps()
             return
-        client = OutlookToolboxClient(toolbox_url)
         try:
-            client.list_delta(top=1, agent_view_id=verify_agent_view_id)
-            logger.info("Outlook Graph verification OK")
-            print(f"  Verified: Graph auth + mailbox '{mailbox}' reachable.")
+            with rest_capability(agent_view_id=chosen_av.id) as capability_token, closing(
+                OutlookToolboxClient(toolbox_url, capability_token=capability_token)
+            ) as client:
+                client.list_delta(top=1, agent_view_id=chosen_av.id)
+                logger.info("Outlook Graph verification OK")
+                print(f"  Verified: Graph auth + mailbox '{mailbox}' reachable.")
         except ToolboxAPIError as e:
             print(f"  Error: Graph verification failed ({e}). Check tenant/client/auth/mailbox.")
         except Exception as e:  # toolbox unreachable, network, etc.
             print(f"  Error: Toolbox not reachable at {toolbox_url}: {e}")
-        finally:
-            client.close()
 
         # Tools ship DISABLED (opt-in), an allow-list gate is required, and polling is opt-in — tell
         # the operator the explicit steps before Outlook acts.

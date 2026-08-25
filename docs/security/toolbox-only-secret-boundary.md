@@ -1,14 +1,18 @@
 # Security hardening: toolbox-only secret boundary in Python bootstrap
 
-**Status:** Backlog (design note). **Surfaced by:** the Outlook regex+priority sender-routing
-review (2026-07-24), where this was confirmed **pre-existing** and **out of scope** for that
-routing feature. See [DECISIONS.md](../../DECISIONS.md) (2026-07-24) and
-[ROADMAP.md](../../ROADMAP.md).
+**Status:** Items 1, 2, 4 and 5 **delivered 2026-08-23** for the Outlook fields; item 3
+(`app_monitor` SMTP) stays open. **Surfaced by:** the Outlook regex+priority sender-routing review
+(2026-07-24), where this was confirmed **pre-existing** and **out of scope** for that routing feature.
+See [DECISIONS.md](../../DECISIONS.md) (2026-07-24, 2026-08-23) and [ROADMAP.md](../../ROADMAP.md).
 
-## Problem
+## Problem (the state BEFORE the 2026-08-23 delivery — kept for the rationale)
 
-`docs/architecture/zero-trust.md` and `AGENTS.md` stated **"Toolbox = only container with
-secrets."** In practice this is an aspiration, not an enforced invariant, on the **Python** side:
+`docs/architecture/zero-trust.md` and `AGENTS.md` state **"Toolbox = only container with
+secrets."** This section describes what that meant on the **Python** side before `access:
+"toolbox_only"` existed. Every bullet below still holds for a field that does NOT declare it;
+a field that DOES is now skipped by `bootstrap()` and `resolve_all()`, raises on a direct `.get()`,
+and (with `allowEnv: false`) refuses the ENV source as well. The Outlook Graph fields declare both;
+`app_monitor`'s SMTP password does not, and is item 3 — still open.
 
 - `bootstrap()` → `resolve_module_config()` resolves **every** declared field of **every** enabled
   module, and `config_resolver` **decrypts** any DEFAULT-scope `obscure` field
@@ -32,18 +36,28 @@ a naive per-caller opt-out is both incomplete (consumer + ENV) and harmful (brea
 
 ## Proposed scope
 
-1. A new per-field classification **`toolbox_only`** in `system.json`, **distinct from `obscure`**
-   (Outlook Graph creds and app_monitor SMTP are both `obscure` today, so a single flag can't
-   separate "the toolbox needs it" from "a Python process legitimately needs it").
-2. `bootstrap`/`resolve_module_config` **never resolve `toolbox_only` fields** — across **all**
-   Python callers (cron, consumer reload, CLI), covering **both** the DB and the ENV `CONFIG__*`
-   source.
-3. Migrate `app_monitor`'s cron-side SMTP breach transport to a **toolbox-owned transport** (do not
-   restore Python-side SMTP decryption).
-4. Fix the doc/compose drift (`zero-trust.md` vs `secrets.env` mounted into cron).
-5. Regression tests proving the decryptor is never invoked for `toolbox_only` fields on any Python
-   bootstrap path (DB and ENV), and that legitimately-needed secrets (e.g. app_monitor SMTP) still
-   work via the toolbox transport.
+1. ✅ **Delivered.** A per-field `"access": "toolbox_only"` classification in `system.json`,
+   distinct from `obscure`, plus `"allowEnv": false` for the ENV half. Both are enforced in **both**
+   resolvers (Python and the toolbox's JS mirror). Applied to `outlook_client_secret`,
+   `outlook_cert_pem` and `outlook_cert_password`.
+2. ✅ **Delivered.** `resolve_field` returns `None` (source `toolbox_only`) for such a field, so
+   `bootstrap`/`resolve_module_config` never decrypt it on any Python path — cron, consumer reload or
+   CLI. A *direct* `ScopedConfigService.get()` on one **raises** (`ToolboxOnlyConfigError`: a direct
+   read is a bug), while the bulk `resolve_all()` walk skips it. The ENV source is refused separately
+   by `allowEnv: false`, so `CONFIG__OUTLOOK__OUTLOOK_CLIENT_SECRET` cannot smuggle the value back in,
+   and `module:validate` fails a deploy that sets one.
+3. ⬜ **Open.** Migrate `app_monitor`'s cron-side SMTP breach transport to a **toolbox-owned
+   transport** (do not restore Python-side SMTP decryption). This is why the boundary is enforced
+   per field rather than for every `obscure` field at once.
+4. ✅ **Delivered (documentation half).** `zero-trust.md` now states exactly what is enforced
+   (`toolbox_only` fields) and what is not (other `obscure` fields, the mounted `secrets.env`, the
+   plaintext `CONFIG__*` path), instead of claiming a blanket invariant. The compose mount itself
+   stays until item 3 removes the last cron-side consumer.
+5. ✅ **Delivered.** `tests/unit/framework/test_toolbox_only_config.py` proves the decryptor is
+   never invoked for a `toolbox_only` field on either source, that a direct `get()` raises, that the
+   bulk `resolve_all()` omits the path rather than raising, and that an ENV key cannot smuggle the
+   value back in. The JS mirror is covered in `src/agento/toolbox/tests/`. `app_monitor`'s SMTP path
+   is untouched and still works (item 3).
 
 ## Note
 
