@@ -3,12 +3,16 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agento.modules.jira.src.onboarding import JiraOnboarding, _parse_jira_url
 from agento.modules.jira.src.toolbox_client import ToolboxAPIError
+
+_OB = "agento.modules.jira.src.onboarding"
 
 
 def _mock_conn(db_overrides=None, scoped_rows=None):
@@ -171,6 +175,15 @@ def _make_toolbox_mock(responses=None):
 
 
 class TestRun:
+    @pytest.fixture(autouse=True)
+    def _one_active_view(self):
+        """Onboarding now selects the owning view BEFORE verifying, and mints a
+        capability for it — verification runs against the capability-guarded toolbox."""
+        view = SimpleNamespace(id=1, code="dev", label="Dev")
+        with patch(f"{_OB}.get_active_agent_views", return_value=[view]), \
+             patch("agento.framework.toolbox_capability.rest_capability", lambda *a, **k: nullcontext("cap")):
+            yield view
+
     @patch("agento.modules.jira.src.onboarding.ToolboxClient")
     @patch("agento.modules.jira.src.onboarding.get_module_config")
     @patch("agento.modules.jira.src.onboarding.config_set")

@@ -6,9 +6,14 @@ import logging
 import pymysql
 
 from agento.framework.bootstrap import get_module_config
+from agento.framework.cli import terminal
 from agento.framework.config_resolver import load_db_overrides, read_config_defaults
 from agento.framework.core_config import config_set
 from agento.framework.encryptor import get_encryptor
+from agento.framework.toolbox_capability import (
+    capability_client,
+)
+from agento.framework.workspace import get_active_agent_views
 from agento.modules.jira.src.toolbox_client import ToolboxAPIError, ToolboxClient
 
 
@@ -31,9 +36,35 @@ class PeriodicTasksOnboarding:
             print("  Error: core/toolbox/url not configured. Run 'agento config:set core/toolbox/url <url>' first.")
             return
 
-        toolbox = ToolboxClient(toolbox_url)
+        # The toolbox scopes every REST call to a capability, and a capability needs a
+        # view — chosen before anything is verified.
+        views = get_active_agent_views(conn)
+        if not views:
+            print("  Error: no active agent_view. Configuration runs against the toolbox, "
+                  "which scopes every call to one. Create/activate an agent_view first.")
+            return
+        if len(views) > 1:
+            idx = terminal.select(
+                "Which agent_view owns this Jira account?",
+                [f"{av.code} ({av.label})" for av in views],
+            )
+            owner_view = views[idx]
+        else:
+            owner_view = views[0]
+
+        # A capability per bounded step, minted only between the operator's answers: this flow
+        # blocks on `input()` several times, and a capability minted before those waits is
+        # expired by the step that needs it while staying live for the whole wait.
+        client_for = capability_client(
+            lambda token: ToolboxClient(toolbox_url, capability_token=token),
+            agent_view_id=owner_view.id,
+        )
+        self._configure(conn, logger, config, client_for, toolbox_url)
+
+    def _configure(self, conn, logger, config, client_for, toolbox_url) -> None:
         try:
-            toolbox.jira_request("GET", "/rest/api/3/myself")
+            with client_for() as toolbox:
+                toolbox.jira_request("GET", "/rest/api/3/myself")
         except ToolboxAPIError as e:
             print(f"  Error: Cannot reach Jira via toolbox: {e}")
             return
@@ -62,41 +93,47 @@ class PeriodicTasksOnboarding:
                 return
 
         try:
-            toolbox.jira_request("GET", f"/rest/api/3/project/{project_key}")
+            with client_for() as toolbox:
+                toolbox.jira_request("GET", f"/rest/api/3/project/{project_key}")
         except ToolboxAPIError as e:
             print(f"  Error: Project '{project_key}' not found or not accessible: {e}")
             return
 
         # 3. Status name
         status_name = input("  Status name for periodic tasks [Periodic]: ").strip() or "Periodic"
-        status_id = _find_status(toolbox, project_key, status_name)
+        with client_for() as toolbox:
+            status_id = _find_status(toolbox, project_key, status_name)
 
         if status_id:
             print(f"  Found existing status '{status_name}' (id: {status_id})")
         else:
             print(f"  Status '{status_name}' not found in project. Attempting to create...")
-            status_id = _create_status(toolbox, project_key, status_name, admin_auth)
+            with client_for() as toolbox:
+                status_id = _create_status(toolbox, project_key, status_name, admin_auth)
             if not status_id:
                 return
 
         # 4. Field name
         field_name = input("  Custom field name for frequency [Frequency]: ").strip() or "Frequency"
-        field_id = _find_field(toolbox, field_name)
+        with client_for() as toolbox:
+            field_id = _find_field(toolbox, field_name)
 
         if field_id:
             print(f"  Found existing field '{field_name}' (id: {field_id})")
         else:
             print(f"  Field '{field_name}' not found. Creating...")
-            field_id = _create_field(toolbox, field_name, admin_auth)
+            with client_for() as toolbox:
+                field_id = _create_field(toolbox, field_name, admin_auth)
             if not field_id:
                 return
 
         # 5. Add dropdown options
-        if not _sync_field_options(toolbox, field_id, config, logger, admin_auth):
-            return
+        with client_for() as toolbox:
+            if not _sync_field_options(toolbox, field_id, config, logger, admin_auth):
+                return
 
-        # 6. Screen mapping (best-effort for company-managed projects)
-        _try_screen_mapping(toolbox, project_key, field_id, logger, admin_auth)
+            # 6. Screen mapping (best-effort for company-managed projects)
+            _try_screen_mapping(toolbox, project_key, field_id, logger, admin_auth)
 
         # 7. Save config to DB
         config_set(conn, "jira_periodic_tasks/jira_status", status_name)

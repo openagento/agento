@@ -6,6 +6,9 @@ import logging
 import pymysql
 
 from agento.framework.scoped_config import Scope, scoped_config_set
+from agento.framework.toolbox_capability import (
+    capability_client,
+)
 
 from .env_guard import offending_env_keys
 from .toolbox_client import GitHubToolboxClient
@@ -198,64 +201,6 @@ class GitHubOnboarding:
             "  Classic token equivalent: the `repo` scope (`public_repo` for public repositories only)."
         )
 
-        client = GitHubToolboxClient(toolbox_url)
-        try:
-            # Verify-before-save loop: nothing is written until a credential verifies.
-            while True:
-                owner_name = input("  GitHub owner (user or organization): ").strip()
-                token = getpass.getpass("  GitHub personal access token: ").strip()
-                repo_allowlist = input(
-                    "  Watched repo names — bare names, no owner/ prefix (comma-separated): "
-                ).strip()
-
-                if not (owner_name and token and repo_allowlist):
-                    print("  Error: owner, token and at least one repo are all required.")
-                    if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
-                        return
-                    continue
-
-                # Validate the repo names BEFORE the verify round-trip: a bad list is the operator's
-                # typo, and there is no reason to send the token to GitHub to learn that.
-                normalized, repo_error = _normalize_repo_entries(repo_allowlist, owner_name)
-                if repo_error:
-                    print(f"  Error: {repo_error}")
-                    if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
-                        return
-                    continue
-                if normalized != repo_allowlist:
-                    print(f"  Using repos: {normalized}")
-                repo_allowlist = normalized
-
-                try:
-                    result = client.verify(token)
-                except Exception as e:  # toolbox unreachable / network / non-200
-                    print(f"  Error: could not verify via toolbox at {toolbox_url}: {e}")
-                    if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
-                        return
-                    continue
-
-                if result.get("ok"):
-                    login = result.get("login") or ""
-                    user_id = result.get("id") or ""
-                    print(f"  Verified: authenticated as {login} (id {user_id}).")
-                    break
-
-                detail = result.get("detail") or f"HTTP {result.get('status')}"
-                print(f"  Error: credential verification failed ({detail}). Nothing saved.")
-                if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
-                    return
-        finally:
-            client.close()
-
-        # GitHub links a commit to an account only when the author email is a verified email on it — the
-        # users.noreply default always links, and needs no address the operator has to verify.
-        print(
-            "  GitHub links a commit to an account only when the author email is a verified email on it "
-            "— the `users.noreply` default always links."
-        )
-        default_email = f"{user_id}+{login}@users.noreply.github.com"
-        email = input(f"  Git commit author email [{default_email}]: ").strip() or default_email
-
         # Always write at an AGENT_VIEW scope (never DEFAULT): the token must not live at DEFAULT (else
         # bootstrap would decrypt it in cron), and agent_view-scoped login/repo_allowlist keep per-view
         # attribution correct. Auto-select the sole view; prompt when there are several.
@@ -269,6 +214,71 @@ class GitHubOnboarding:
             owner_view = views[0]
         scope, scope_id = Scope.AGENT_VIEW, owner_view.id
         scope_desc = f"agent_view '{owner_view.code}'"
+
+        # Select the owning view BEFORE verifying: verification runs against the toolbox,
+        # which scopes every call to a capability, and a capability needs a view. There is
+        # no correct scope to verify under before the operator has chosen one.
+        # One capability per verification attempt, minted after the operator finishes typing:
+        # the retry loop waits on a human, and a capability minted before that wait is dead by
+        # the time `verify` uses it — and live for two minutes while nothing uses it.
+        client_for = capability_client(
+            lambda token: GitHubToolboxClient(toolbox_url, capability_token=token),
+            agent_view_id=owner_view.id,
+        )
+        # Verify-before-save loop: nothing is written until a credential verifies.
+        while True:
+            owner_name = input("  GitHub owner (user or organization): ").strip()
+            token = getpass.getpass("  GitHub personal access token: ").strip()
+            repo_allowlist = input(
+                "  Watched repo names — bare names, no owner/ prefix (comma-separated): "
+            ).strip()
+
+            if not (owner_name and token and repo_allowlist):
+                print("  Error: owner, token and at least one repo are all required.")
+                if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
+                    return
+                continue
+
+            # Validate the repo names BEFORE the verify round-trip: a bad list is the operator's
+            # typo, and there is no reason to send the token to GitHub to learn that.
+            normalized, repo_error = _normalize_repo_entries(repo_allowlist, owner_name)
+            if repo_error:
+                print(f"  Error: {repo_error}")
+                if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
+                    return
+                continue
+            if normalized != repo_allowlist:
+                print(f"  Using repos: {normalized}")
+            repo_allowlist = normalized
+
+            try:
+                with client_for() as client:
+                    result = client.verify(token)
+            except Exception as e:  # toolbox unreachable / network / non-200
+                print(f"  Error: could not verify via toolbox at {toolbox_url}: {e}")
+                if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
+                    return
+                continue
+
+            if result.get("ok"):
+                login = result.get("login") or ""
+                user_id = result.get("id") or ""
+                print(f"  Verified: authenticated as {login} (id {user_id}).")
+                break
+
+            detail = result.get("detail") or f"HTTP {result.get('status')}"
+            print(f"  Error: credential verification failed ({detail}). Nothing saved.")
+            if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
+                return
+
+        # GitHub links a commit to an account only when the author email is a verified email on it — the
+        # users.noreply default always links, and needs no address the operator has to verify.
+        print(
+            "  GitHub links a commit to an account only when the author email is a verified email on it "
+            "— the `users.noreply` default always links."
+        )
+        default_email = f"{user_id}+{login}@users.noreply.github.com"
+        email = input(f"  Git commit author email [{default_email}]: ").strip() or default_email
 
         # Single transaction: commit only AFTER a successful verify.
         scoped_config_set(conn, "github/github_owner", owner_name, scope=scope, scope_id=scope_id)

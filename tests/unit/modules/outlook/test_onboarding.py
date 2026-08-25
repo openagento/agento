@@ -24,13 +24,56 @@ _VALID_PEM_LINES = [
 ]
 
 
-def _conn_for_is_complete(default_paths, has_mailbox=True):
-    """Mock a conn for is_complete: fetchall -> default-scope identity/auth paths; fetchone ->
-    whether a mailbox row exists at ANY scope."""
+def _conn_for_is_complete(present_paths, has_mailbox=True, views=((1, 10),)):
+    """Mock a conn for is_complete.
+
+    Completeness is checked as ONE chain per active agent_view: identity at DEFAULT scope
+    (fetchall), then — per view — the auth material at ITS workspace scope (fetchone) and a
+    mailbox at ITS agent_view scope or default (fetchone). ``views`` is a list of
+    ``(view_id, workspace_id)`` pairs; ``present_paths``/``has_mailbox`` describe what the
+    FIRST view resolves, so a test states which paths exist and nothing else.
+    """
     conn = MagicMock()
     cur = conn.cursor.return_value.__enter__.return_value
-    cur.fetchall.return_value = [{"path": p} for p in default_paths]
-    cur.fetchone.return_value = (1,) if has_mailbox else None
+    present = set(present_paths)
+    state = {"last_sql": "", "identity_read": False}
+
+    def _execute(sql, params=()):
+        state["last_sql"] = sql
+        state["last_params"] = params
+        return None
+
+    def _fetchone():
+        # The mailbox path is a bound PARAMETER, so it never appears in the SQL text.
+        if "outlook/outlook_mailbox_user_id" in tuple(state.get("last_params") or ()):
+            return {"1": 1} if has_mailbox else None
+        # the workspace-scope auth query
+        return (
+            {"1": 1}
+            if present & {"outlook/outlook_client_secret", "outlook/outlook_cert_pem"}
+            else None
+        )
+
+    def _fetchall():
+        # The identity query comes first; every later fetchall is get_active_agent_views.
+        if not state["identity_read"]:
+            state["identity_read"] = True
+            return [
+                {"path": p}
+                for p in present_paths
+                if p in ("outlook/outlook_tenant_id", "outlook/outlook_client_id")
+            ]
+        return [
+            {
+                "id": vid, "workspace_id": wid, "code": f"v{vid}", "label": f"v{vid}",
+                "is_active": 1, "created_at": None, "updated_at": None,
+            }
+            for vid, wid in views
+        ]
+
+    cur.execute.side_effect = _execute
+    cur.fetchall.side_effect = _fetchall
+    cur.fetchone.side_effect = _fetchone
     return conn
 
 
@@ -88,18 +131,58 @@ def test_is_complete_false_when_missing_identity_keys():
     assert OutlookOnboarding().is_complete(conn) is False
 
 
-def test_is_complete_mailbox_query_is_scope_agnostic():
-    # The mailbox existence query (the 2nd execute) must NOT be restricted to scope='default'.
+def test_is_complete_mailbox_query_accepts_the_view_scope_and_the_default_scope():
+    """The mailbox may sit at the VIEW's own scope or at default — but not at another view's.
+
+    A query restricted to scope='default' would miss a multi-view deployment; an unrestricted
+    one would accept a mailbox bound to a different view than the one holding the credential,
+    which is the split this check exists to reject.
+    """
     conn = _conn_for_is_complete([
         "outlook/outlook_tenant_id",
         "outlook/outlook_client_id",
         "outlook/outlook_client_secret",
-    ], has_mailbox=True)
+    ], has_mailbox=True, views=((5, 7),))
     cur = conn.cursor.return_value.__enter__.return_value
     OutlookOnboarding().is_complete(conn)
-    mailbox_sql = cur.execute.call_args_list[1].args[0]
-    assert "outlook_mailbox_user_id" in str(cur.execute.call_args_list[1].args[1])
-    assert "scope" not in mailbox_sql.lower()
+    # 0 = identity at default scope, 1 = active views, 2 = auth at the view's workspace,
+    # 3 = the mailbox at the view's own scope or default.
+    mailbox_sql, mailbox_params = cur.execute.call_args_list[3].args
+    assert "outlook/outlook_mailbox_user_id" in mailbox_params
+    assert 5 in mailbox_params
+    assert "agent_view" in mailbox_sql and "default" in mailbox_sql
+
+
+def test_is_complete_false_when_the_auth_and_the_mailbox_belong_to_different_views():
+    """The credential is at view A's workspace, the mailbox at view B — no coherent chain."""
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    state = {"identity_read": False, "params": ()}
+
+    def _execute(sql, params=()):
+        state["params"] = params
+        return None
+
+    def _fetchall():
+        if not state["identity_read"]:
+            state["identity_read"] = True
+            return [{"path": "outlook/outlook_tenant_id"}, {"path": "outlook/outlook_client_id"}]
+        return [
+            {"id": vid, "workspace_id": wid, "code": f"v{vid}", "label": "x",
+             "is_active": 1, "created_at": None, "updated_at": None}
+            for vid, wid in ((1, 10), (2, 20))
+        ]
+
+    def _fetchone():
+        params = tuple(state["params"])
+        if "outlook/outlook_mailbox_user_id" in params:
+            return {"1": 1} if 2 in params else None      # mailbox only for view 2
+        return {"1": 1} if 10 in params else None         # auth only for view 1's workspace
+
+    cur.execute.side_effect = _execute
+    cur.fetchall.side_effect = _fetchall
+    cur.fetchone.side_effect = _fetchone
+    assert OutlookOnboarding().is_complete(conn) is False
 
 
 # --- PEM reader / validation helpers -------------------------------------------------------------
@@ -142,7 +225,7 @@ def test_pem_has_cert_and_key_requires_both_markers():
 # --- run(): branch-switch cleanup + per-view mailbox + next-steps ---------------------------------
 
 def _patch_run(monkeypatch, *, auth_choice, inputs, getpass_value, views=None, view_choice=0,
-               toolbox_url=""):
+               toolbox_url="", workspaces=None):
     """Patch onboarding's run() dependencies; return (conn, calls).
 
     `calls` records the ORDER of config writes/deletes/selects and conn.commit so tests can assert
@@ -172,11 +255,13 @@ def _patch_run(monkeypatch, *, auth_choice, inputs, getpass_value, views=None, v
     )
     monkeypatch.setattr(
         "agento.framework.core_config.config_set_auto_encrypt",
-        lambda conn, path, value, **k: calls.append(("set_enc", path, value)),
+        lambda conn, path, value, **k: calls.append(
+            ("set_enc", path, value, k.get("scope"), k.get("scope_id"))
+        ),
     )
     monkeypatch.setattr(
         "agento.framework.core_config.config_delete",
-        lambda conn, path, **k: calls.append(("del", path)),
+        lambda conn, path, **k: calls.append(("del", path, k.get("scope"), k.get("scope_id"))),
     )
     monkeypatch.setattr(
         "agento.framework.scoped_config.scoped_config_set",
@@ -185,8 +270,15 @@ def _patch_run(monkeypatch, *, auth_choice, inputs, getpass_value, views=None, v
         ),
     )
     if views is None:
-        views = [SimpleNamespace(id=1, code="dev")]
+        views = [SimpleNamespace(id=1, code="dev", workspace_id=7)]
     monkeypatch.setattr("agento.framework.workspace.get_active_agent_views", lambda conn: views)
+    if workspaces is None:
+        # The destination workspace is DERIVED from the chosen view, never chosen separately.
+        workspaces = [SimpleNamespace(id=7, code="dev", label="Dev")]
+    by_id = {w.id: w for w in workspaces}
+    monkeypatch.setattr(
+        "agento.framework.workspace.get_workspace", lambda conn, wid: by_id.get(wid)
+    )
     monkeypatch.setattr(
         "agento.framework.bootstrap.get_module_config",
         lambda m: {"toolbox/url": toolbox_url} if toolbox_url else {},
@@ -198,6 +290,10 @@ def _patch_run(monkeypatch, *, auth_choice, inputs, getpass_value, views=None, v
         lambda *a, **k: client,
     )
     return conn, calls
+
+
+def _wrote(calls, path, value):
+    return any(c[0] == "set_enc" and c[1] == path and c[2] == value for c in calls)
 
 
 def _deleted(calls):
@@ -220,7 +316,7 @@ def test_run_secret_branch_clears_stale_cert_material_before_commit(monkeypatch)
     )
     OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
 
-    assert ("set_enc", "outlook/outlook_client_secret", "the-secret") in calls
+    assert _wrote(calls, "outlook/outlook_client_secret", "the-secret")
     deleted = _deleted(calls)
     assert "outlook/outlook_cert_pem" in deleted
     assert "outlook/outlook_cert_password" in deleted
@@ -237,7 +333,7 @@ def test_run_cert_branch_stores_pem_clears_secret_and_blank_passphrase(monkeypat
     )
     OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
 
-    assert ("set_enc", "outlook/outlook_cert_pem", "\n".join(_VALID_PEM_LINES)) in calls
+    assert _wrote(calls, "outlook/outlook_cert_pem", "\n".join(_VALID_PEM_LINES))
     assert not any(c[0] == "set_enc" and c[1] == "outlook/outlook_cert_password" for c in calls)
     deleted = _deleted(calls)
     assert "outlook/outlook_cert_password" in deleted
@@ -255,7 +351,7 @@ def test_run_cert_branch_keeps_passphrase_unstripped(monkeypatch):
     )
     OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
 
-    assert ("set_enc", "outlook/outlook_cert_password", "  spaced-pass  ") in calls
+    assert _wrote(calls, "outlook/outlook_cert_password", "  spaced-pass  ")
     assert "outlook/outlook_cert_password" not in _deleted(calls)
 
 
@@ -268,7 +364,7 @@ def test_run_cert_branch_reprompts_until_pem_has_both_markers(monkeypatch):
         getpass_value="",
     )
     OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
-    assert ("set_enc", "outlook/outlook_cert_pem", "\n".join(_VALID_PEM_LINES)) in calls
+    assert _wrote(calls, "outlook/outlook_cert_pem", "\n".join(_VALID_PEM_LINES))
 
 
 def test_single_active_view_saves_mailbox_at_default(monkeypatch):
@@ -277,7 +373,7 @@ def test_single_active_view_saves_mailbox_at_default(monkeypatch):
         auth_choice=0,
         inputs=["tid", "cid", "agent@example.com"],
         getpass_value="sec",
-        views=[SimpleNamespace(id=1, code="dev")],
+        views=[SimpleNamespace(id=1, code="dev", workspace_id=7)],
     )
     OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
 
@@ -295,7 +391,8 @@ def test_multi_view_selects_and_saves_mailbox_at_agent_view_scope(monkeypatch):
         auth_choice=0,
         inputs=["tid", "cid", "agent@example.com"],
         getpass_value="sec",
-        views=[SimpleNamespace(id=10, code="dev"), SimpleNamespace(id=20, code="ops")],
+        views=[SimpleNamespace(id=10, code="dev", workspace_id=7),
+               SimpleNamespace(id=20, code="ops", workspace_id=7)],
         view_choice=1,  # pick the second view (id=20)
     )
     OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
@@ -432,7 +529,7 @@ def test_run_abort_on_mailbox_conflict_rolls_back_and_does_not_commit(monkeypatc
         auth_choice=0,
         inputs=["tid", "cid", "agent@example.com"],
         getpass_value="sec",
-        views=[SimpleNamespace(id=1, code="dev")],  # single view -> default-scope target
+        views=[SimpleNamespace(id=1, code="dev", workspace_id=7)],  # single view -> default-scope target
         view_choice=0,  # the conflict confirm prompt -> "No — abort"
     )
     conn.cursor.return_value.__enter__.return_value.fetchall.return_value = [("agent_view", 7)]
@@ -442,3 +539,106 @@ def test_run_abort_on_mailbox_conflict_rolls_back_and_does_not_commit(monkeypatc
     conn.rollback.assert_called_once()
     assert not any(c[0] == "commit" for c in calls)
     assert not any(len(c) > 1 and c[1] == "outlook/outlook_mailbox_user_id" for c in calls)
+
+
+# --- Graph secrets live at WORKSPACE scope --------------------------------------------------------
+
+def test_secret_branch_writes_the_client_secret_at_workspace_scope(monkeypatch):
+    conn, calls = _patch_run(
+        monkeypatch, auth_choice=0,
+        inputs=["tenant", "client", "agent@example.com"], getpass_value="sec",
+    )
+    OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
+    writes = [c for c in calls if c[0] == "set_enc" and c[1] == "outlook/outlook_client_secret"]
+    assert writes, "the client secret must be written"
+    assert writes[0][3] == Scope.WORKSPACE
+    assert writes[0][4] == 7  # the single active workspace
+
+
+def test_cert_branch_writes_the_pem_at_workspace_scope(monkeypatch):
+    conn, calls = _patch_run(
+        monkeypatch, auth_choice=1,
+        inputs=["tenant", "client", "agent@example.com", *_VALID_PEM_LINES, "END"],
+        getpass_value="pw",
+    )
+    OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
+    pem = [c for c in calls if c[0] == "set_enc" and c[1] == "outlook/outlook_cert_pem"]
+    assert pem and pem[0][3] == Scope.WORKSPACE
+
+
+def test_no_secret_is_ever_written_at_default_scope(monkeypatch):
+    conn, calls = _patch_run(
+        monkeypatch, auth_choice=0,
+        inputs=["tenant", "client", "agent@example.com"], getpass_value="sec",
+    )
+    OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
+    secret_paths = {
+        "outlook/outlook_client_secret", "outlook/outlook_cert_pem", "outlook/outlook_cert_password",
+    }
+    at_default = [
+        c for c in calls
+        if c[0] == "set_enc" and c[1] in secret_paths and c[3] == Scope.DEFAULT
+    ]
+    assert at_default == []
+
+
+def test_a_stale_secret_is_cleared_from_the_legacy_default_scope_too(monkeypatch):
+    """A deployment onboarded before the move still has a default-scope row; switching auth
+    method must not leave it behind (graph-auth prefers a certificate when both exist)."""
+    conn, calls = _patch_run(
+        monkeypatch, auth_choice=0,
+        inputs=["tenant", "client", "agent@example.com"], getpass_value="sec",
+    )
+    OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
+    cert_deletes = [c for c in calls if c[0] == "del" and c[1] == "outlook/outlook_cert_pem"]
+    scopes = {c[2] for c in cert_deletes}
+    assert scopes == {Scope.WORKSPACE, Scope.DEFAULT}
+
+
+def test_the_secret_lands_in_the_chosen_views_own_workspace(monkeypatch):
+    """ONE question — which view owns the mailbox — and the workspace follows from it.
+
+    Asking for the workspace separately let an operator store the Graph secret in workspace A
+    while binding the mailbox to a view in workspace B; the strict resolver then could not see
+    the credential that had just been written.
+    """
+    conn, calls = _patch_run(
+        monkeypatch, auth_choice=0,
+        inputs=["tenant", "client", "agent@example.com"], getpass_value="sec",
+        views=[SimpleNamespace(id=1, code="dev", workspace_id=7),
+               SimpleNamespace(id=2, code="prod", workspace_id=9)],
+        view_choice=1,
+        workspaces=[
+            SimpleNamespace(id=7, code="dev", label="Dev"),
+            SimpleNamespace(id=9, code="prod", label="Prod"),
+        ],
+    )
+    OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
+    assert not any(c[0] == "select" and "workspace" in c[1].lower() for c in calls)
+    writes = [c for c in calls if c[0] == "set_enc" and c[1] == "outlook/outlook_client_secret"]
+    assert writes[0][4] == 9
+    # The mailbox is bound to the SAME view whose workspace now holds the secret.
+    assert ("scoped_set", "outlook/outlook_mailbox_user_id", "agent@example.com",
+            Scope.AGENT_VIEW, 2, False) in calls
+
+
+def test_it_aborts_without_any_active_agent_view_and_writes_nothing(monkeypatch):
+    conn, calls = _patch_run(
+        monkeypatch, auth_choice=0,
+        inputs=["tenant", "client", "agent@example.com"], getpass_value="sec",
+        views=[],
+    )
+    OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
+    assert [c for c in calls if c[0] in ("set", "set_enc", "scoped_set")] == []
+    conn.commit.assert_not_called()
+
+
+def test_it_aborts_without_any_workspace_and_writes_nothing(monkeypatch):
+    conn, calls = _patch_run(
+        monkeypatch, auth_choice=0,
+        inputs=["tenant", "client", "agent@example.com"], getpass_value="sec",
+        workspaces=[],
+    )
+    OutlookOnboarding().run(conn, {}, logging.getLogger("t"))
+    assert [c for c in calls if c[0] in ("set_enc", "scoped_set")] == []
+    conn.commit.assert_not_called()

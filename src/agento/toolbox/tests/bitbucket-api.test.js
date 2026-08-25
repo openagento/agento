@@ -6,6 +6,10 @@ import {
   isEnabled,
   parseRepoAllowlist,
 } from '../../modules/bitbucket/toolbox/api-handlers.js';
+import { ScopeResolutionError } from '../config-loader.js';
+
+// The scope is the capability's, never the body's.
+const cap = (agentViewId = 7) => ({ kind: 'internal_rest', agentViewId, jobId: null });
 
 function mockRes() {
   return {
@@ -53,7 +57,7 @@ describe('POST /api/bitbucket/verify', () => {
   it('returns ok:false 400 when fields are missing (no token echoed)', async () => {
     const handler = createVerifyHandler(vi.fn(), () => ({ isConfigured: () => false }));
     const res = mockRes();
-    await handler({ body: { workspace: 'acme' } }, res);
+    await handler({ body: { workspace: 'acme' }, capability: cap() }, res);
     expect(res.body.ok).toBe(false);
     expect(res.body.status).toBe(400);
   });
@@ -62,7 +66,7 @@ describe('POST /api/bitbucket/verify', () => {
     const auth = { isConfigured: () => true, bbFetch: async () => jsonRes({ uuid: '{me}', nickname: 'agent' }) };
     const handler = createVerifyHandler(vi.fn(), () => auth);
     const res = mockRes();
-    await handler({ body: { workspace: 'acme', email: 'e', api_token: 't' } }, res);
+    await handler({ body: { workspace: 'acme', email: 'e', api_token: 't' }, capability: cap() }, res);
     expect(res.body).toEqual({ ok: true, account_uuid: '{me}', username: 'agent' });
   });
 
@@ -70,7 +74,7 @@ describe('POST /api/bitbucket/verify', () => {
     const auth = { isConfigured: () => true, bbFetch: async () => jsonRes({}, 401) };
     const handler = createVerifyHandler(vi.fn(), () => auth);
     const res = mockRes();
-    await handler({ body: { workspace: 'acme', email: 'e', api_token: 'super-secret' } }, res);
+    await handler({ body: { workspace: 'acme', email: 'e', api_token: 'super-secret' }, capability: cap() }, res);
     expect(res.body.ok).toBe(false);
     expect(res.body.status).toBe(401);
     expect(JSON.stringify(res.body)).not.toContain('super-secret');
@@ -83,34 +87,43 @@ describe('POST /api/bitbucket/open-prs', () => {
     bitbucket_email: 'e@x.com', bitbucket_api_token: 'tok', repo_allowlist: 'api', poll_top: '20',
   };
 
-  function deps({ meta = { id: 7 }, cfg = baseCfg } = {}) {
+  function deps({ meta = { id: 7 }, cfg = baseCfg, scopeError = null } = {}) {
     return {
-      loadScopedDbOverrides: async () => ({ overrides: {}, agentViewMeta: meta }),
+      loadScopedDbOverridesStrict: async () => {
+        if (scopeError) throw scopeError;
+        return { overrides: {}, agentViewMeta: meta };
+      },
       loadModuleConfigs: async () => ({ bitbucket: cfg }),
     };
   }
 
-  it('fails closed (404) on an unknown agent_view', async () => {
-    const handler = createOpenPrsHandler(deps({ meta: null }), vi.fn(), () => fakeAuth({}));
-    const res = mockRes();
-    await handler({ body: { agent_view_id: 999, lane: 'comments' } }, res);
-    expect(res.statusCode).toBe(404);
+  it('fails closed when the capability names a view that no longer exists', async () => {
+    // The strict resolver THROWS instead of widening to global config; createModuleRouteApp
+    // turns that into 403 centrally, so the handler must not swallow it.
+    const handler = createOpenPrsHandler(
+      deps({ scopeError: new ScopeResolutionError('gone') }), vi.fn(), () => fakeAuth({}),
+    );
+    await expect(handler({ body: { lane: 'comments' }, capability: cap() }, mockRes()))
+      .rejects.toBeInstanceOf(ScopeResolutionError);
   });
+
+  // The conflicting-claim rejection moved OUT of this handler: createModuleRouteApp applies it to
+  // every module route, so no module can forget it. Its test lives in rest-auth-coverage.test.js.
 
   it('returns 403 when the channel is disabled for the scope', async () => {
     const handler = createOpenPrsHandler(
       deps({ cfg: { ...baseCfg, enabled: '0' } }), vi.fn(), () => fakeAuth({}),
     );
     const res = mockRes();
-    await handler({ body: { agent_view_id: 7, lane: 'comments' } }, res);
+    await handler({ body: { agent_view_id: 7, lane: 'comments' }, capability: cap() }, res);
     expect(res.statusCode).toBe(403);
   });
 
-  it('400 when agent_view_id is missing', async () => {
-    const handler = createOpenPrsHandler(deps(), vi.fn(), () => fakeAuth({}));
+  it('takes the scope from the capability when the body names no view', async () => {
+    const handler = createOpenPrsHandler(deps({ cfg: { ...baseCfg, enabled: '0' } }), vi.fn(), () => fakeAuth({}));
     const res = mockRes();
-    await handler({ body: { lane: 'comments' } }, res);
-    expect(res.statusCode).toBe(400);
+    await handler({ body: { lane: 'comments' }, capability: cap() }, res);
+    expect(res.statusCode).toBe(403); // resolved the scope, then refused on config — not a 400
   });
 
   it('uses the SCOPED account_uuid in the query (ignores any caller-supplied value) and normalizes a comments record', async () => {
@@ -124,7 +137,7 @@ describe('POST /api/bitbucket/open-prs', () => {
     const handler = createOpenPrsHandler(deps(), vi.fn(), () => auth);
     const res = mockRes();
     // caller tries to inject a different uuid/allowlist — must be ignored.
-    await handler({ body: { agent_view_id: 7, lane: 'comments', account_uuid: '{evil}', repo_allowlist: 'secret' } }, res);
+    await handler({ body: { agent_view_id: 7, lane: 'comments', account_uuid: '{evil}', repo_allowlist: 'secret' }, capability: cap() }, res);
 
     const listCall = auth.bbFetch.mock.calls.find((c) => c[0].join('/') === 'repositories/acme/api/pullrequests');
     expect(listCall[1].query.q).toContain('author.uuid="{me}"'); // scoped, not caller-supplied
@@ -149,7 +162,7 @@ describe('POST /api/bitbucket/open-prs', () => {
     });
     const handler = createOpenPrsHandler(deps(), vi.fn(), () => auth);
     const res = mockRes();
-    await handler({ body: { agent_view_id: 7, lane: 'comments' } }, res);
+    await handler({ body: { lane: 'comments' }, capability: cap(7) }, res);
 
     const commitsCall = auth.bbFetch.mock.calls.find(
       (c) => c[0].join('/') === 'repositories/acme/api/pullrequests/42/commits',
@@ -172,7 +185,7 @@ describe('POST /api/bitbucket/open-prs', () => {
       deps({ cfg: { ...baseCfg, repo_allowlist: 'bad,api' } }), vi.fn(), () => auth,
     );
     const res = mockRes();
-    await handler({ body: { agent_view_id: 7, lane: 'comments' } }, res);
+    await handler({ body: { agent_view_id: 7, lane: 'comments' }, capability: cap() }, res);
     expect(res.body.errors).toHaveLength(1);
     expect(res.body.errors[0].repo).toBe('bad');
     expect(res.body.pull_requests).toHaveLength(1);
@@ -192,7 +205,7 @@ describe('POST /api/bitbucket/open-prs', () => {
       deps({ cfg: { ...baseCfg, poll_top: '2' } }), vi.fn(), () => auth,
     );
     const res = mockRes();
-    await handler({ body: { agent_view_id: 7, lane: 'comments' } }, res);
+    await handler({ body: { agent_view_id: 7, lane: 'comments' }, capability: cap() }, res);
     expect(res.body.pull_requests).toHaveLength(2); // 3 available, capped to 2
   });
 
@@ -209,7 +222,7 @@ describe('POST /api/bitbucket/open-prs', () => {
     });
     const handler = createOpenPrsHandler(deps(), vi.fn(), () => auth);
     const res = mockRes();
-    await handler({ body: { agent_view_id: 7, lane: 'changes' } }, res);
+    await handler({ body: { agent_view_id: 7, lane: 'changes' }, capability: cap() }, res);
     const rec = res.body.pull_requests[0];
     expect(rec.changes_requests).toEqual([{ user_uuid: '{rev}', date: 'T2' }]);
   });

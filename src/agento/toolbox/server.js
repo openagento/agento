@@ -3,12 +3,13 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express from 'express';
-import { registerTools, registerModuleRestApis, loadScopedDbOverrides } from './config-loader.js';
+import { registerTools, registerModuleRestApis, loadScopedDbOverridesStrict, ScopeResolutionError } from './config-loader.js';
+import { requireCapability, tokenHash, extractToken, rejectScopeMismatch } from './capability.js';
+import { runHealthchecks } from './health-run.js';
 import { SqlPoolRegistry } from './adapters/sql-pool-registry.js';
 import { createHealthRegistration } from './health-registration.js';
 import { McpSessionRegistry, DEFAULT_IDLE_MS, DEFAULT_SWEEP_MS } from './mcp-sessions.js';
-import { logToolboxMcp, logToolboxRest, logPublisher, createScopedLogger, createPhasedLogger } from './log.js';
-import { runHealthchecks } from './healthchecks.js';
+import { logToolboxMcp, logToolboxRest, logPublisher, createScopedLogger, createPhasedLogger, errorCategory } from './log.js';
 import {
   ProbeLimiter, parseConfigTestRequest, registerConfigTests, runConfigTest,
 } from './config-tests.js';
@@ -51,7 +52,7 @@ async function createServer(agentViewId = null, jobId = null, runId = null) {
   // Build scoped context with agent_view-aware logger before registering tools,
   // so adapters use the scoped log from the start.
   let artifactsDir = FALLBACK_ARTIFACTS_DIR;
-  // jobId (from req.query.job_id, null for interactive runs / tool-list) flows to every tool's
+  // jobId (from the request's capability row, null for interactive runs / tool-list) flows to every tool's
   // register() via registerTools -> enrichedContext; schedule_followup uses it to inherit the
   // current job's channel/reference/scope.
   // invocationLog is the MCP tool-invocation logger for this session: logToolboxMcp for
@@ -60,7 +61,7 @@ async function createServer(agentViewId = null, jobId = null, runId = null) {
   let sessionContext = { ...context, artifactsDir, jobId };
   let preloadedOverrides = null;
   if (agentViewId) {
-    const { overrides, agentViewMeta } = await loadScopedDbOverrides(agentViewId);
+    const { overrides, agentViewMeta } = await loadScopedDbOverridesStrict(agentViewId);
     preloadedOverrides = overrides;
     if (agentViewMeta) {
       artifactsDir = buildArtifactsDir(agentViewMeta, jobId, runId);
@@ -80,14 +81,48 @@ async function createServer(agentViewId = null, jobId = null, runId = null) {
   return { server, healthchecks };
 }
 
-app.get('/sse', async (req, res) => {
-  const agentViewId = req.query.agent_view_id ? parseInt(req.query.agent_view_id, 10) : null;
-  const jobId = req.query.job_id ? parseInt(req.query.job_id, 10) : null;
-  const runId = req.query.run_id ? String(req.query.run_id) : null;
-  const transport = new SSEServerTransport('/messages', res);
-  sessions.set(transport.sessionId, transport);
+const MCP_KINDS = ['mcp_job', 'mcp_interactive'];
 
-  const { server } = await createServer(agentViewId, jobId, runId);
+// `run_id` names an interactive run's desk. The capability row has no run id, so it
+// comes from the query string — it NAMES a directory, it grants no scope: the view and
+// the job still come only from the capability. A `job_id` in the query (the harness
+// URL still carries one for a job run) may only AGREE with the capability's job.
+function runIdFrom(req) {
+  return req.capability.jobId === null && req.query.run_id ? String(req.query.run_id) : null;
+}
+
+function rejectJobMismatch(req, res) {
+  const supplied = req.query.job_id;
+  if (supplied === undefined || String(supplied) === String(req.capability.jobId)) return false;
+  logToolboxRest('auth', 'ERROR', 'supplied job_id disagrees with the capability');
+  res.status(400).json({ error: 'job_id does not match the capability' });
+  return true;
+}
+
+
+// SSE is verified ONCE, at connect: a long-lived stream has no per-request hook, so a token
+// revoked mid-stream is only enforced at the next connect. /mcp re-verifies every request.
+app.get('/sse', requireCapability({ kinds: MCP_KINDS }, logToolboxRest), async (req, res) => {
+  if (rejectScopeMismatch(req, res, logToolboxRest, 'sse') || rejectJobMismatch(req, res)) return undefined;
+  const { agentViewId, jobId } = req.capability;
+  let server;
+  try {
+    ({ server } = await createServer(agentViewId, jobId, runIdFrom(req)));
+  } catch (err) {
+    return sendScopeError(res, err);
+  }
+  // The endpoint the SDK advertises carries the connect capability. An MCP client configures a
+  // bare URL and sends NO headers on the `/messages` POST — it posts to this string verbatim —
+  // so without `cap` here the guarded `/messages` would answer 401 to every legitimate client.
+  // The SDK appends `sessionId` with URLSearchParams, which keeps `cap` intact.
+  const connectToken = extractToken(req);
+  const transport = new SSEServerTransport(
+    `/messages?cap=${encodeURIComponent(connectToken)}`,
+    res
+  );
+  // The session is owned by the capability that opened it. `/messages` carries the sessionId in a
+  // QUERY STRING — a value that lands in access logs — so the id alone must never authorize a post.
+  sessions.set(transport.sessionId, { transport, capabilityHash: tokenHash(connectToken) });
 
   res.on('close', () => {
     sessions.delete(transport.sessionId);
@@ -97,14 +132,30 @@ app.get('/sse', async (req, res) => {
   await server.connect(transport);
 });
 
-app.post('/messages', async (req, res) => {
-  const sessionId = req.query.sessionId;
-  const transport = sessions.get(sessionId);
-  if (transport) {
-    await transport.handlePostMessage(req, res);
-  } else {
-    res.status(400).json({ error: 'Unknown session' });
+// A capability that names a view the toolbox cannot resolve is a 403 (the scope is gone);
+// a resolver failure is a 503 (transient). Neither may fall back to global config.
+function sendScopeError(res, err) {
+  if (err instanceof ScopeResolutionError) {
+    logToolboxRest('auth', 'ERROR', `capability scope unresolvable: ${err.message}`);
+    return res.status(403).json({ error: 'capability scope unresolvable' });
   }
+  logToolboxRest('auth', 'ERROR', `scope resolution failed: ${errorCategory(err)}`);
+  return res.status(503).json({ error: 'scope resolution unavailable' });
+}
+
+// The SSE stream is one half of the transport; THIS is the half that carries the tool calls.
+// It is guarded exactly like `/mcp`: a valid MCP capability, and the one that opened the session.
+app.post('/messages', requireCapability({ kinds: MCP_KINDS }, logToolboxRest), async (req, res) => {
+  const sessionId = req.query.sessionId;
+  const entry = sessions.get(sessionId);
+  if (!entry) {
+    return res.status(400).json({ error: 'Unknown session' });
+  }
+  if (entry.capabilityHash !== tokenHash(extractToken(req))) {
+    logToolboxRest('auth', 'ERROR', `capability does not own sse session ${sessionId}`);
+    return res.status(403).json({ error: 'capability does not own this session' });
+  }
+  return entry.transport.handlePostMessage(req, res);
 });
 
 // Streamable HTTP transport (used by Codex and newer MCP clients)
@@ -122,22 +173,34 @@ const mcpSessions = new McpSessionRegistry({
 });
 mcpSessions.startSweeper(MCP_SESSION_SWEEP_MS);
 
-app.all('/mcp', async (req, res) => {
+// The guard runs BEFORE the session short-circuit, so every Streamable-HTTP request
+// re-verifies against the DB and a revoked token dies at its very next request.
+app.all('/mcp', requireCapability({ kinds: MCP_KINDS }, logToolboxRest), async (req, res) => {
   const sessionId = req.headers['mcp-session-id'];
   if (sessionId && mcpSessions.has(sessionId)) {
-    const { transport } = mcpSessions.get(sessionId);
+    const entry = mcpSessions.get(sessionId);
+    // A live session is owned by the capability that created it. A different
+    // capability may not drive it, even if that capability is itself valid.
+    if (entry.capabilityHash !== tokenHash(extractToken(req))) {
+      logToolboxRest('auth', 'ERROR', `capability does not own mcp session ${sessionId}`);
+      return res.status(403).json({ error: 'capability does not own this session' });
+    }
     mcpSessions.touch(sessionId);
-    await transport.handleRequest(req, res, req.body);
+    await entry.transport.handleRequest(req, res, req.body);
     return;
   }
 
-  const agentViewId = req.query.agent_view_id ? parseInt(req.query.agent_view_id, 10) : null;
-  const jobId = req.query.job_id ? parseInt(req.query.job_id, 10) : null;
-  const runId = req.query.run_id ? String(req.query.run_id) : null;
+  if (rejectScopeMismatch(req, res, logToolboxRest, 'mcp') || rejectJobMismatch(req, res)) return undefined;
+  const { agentViewId, jobId } = req.capability;
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
   });
-  const { server } = await createServer(agentViewId, jobId, runId);
+  let server;
+  try {
+    ({ server } = await createServer(agentViewId, jobId, runIdFrom(req)));
+  } catch (err) {
+    return sendScopeError(res, err);
+  }
 
   let closing = false;
   transport.onclose = () => {
@@ -153,7 +216,11 @@ app.all('/mcp', async (req, res) => {
   await transport.handleRequest(req, res, req.body);
 
   if (transport.sessionId) {
-    mcpSessions.set(transport.sessionId, { transport, server, lastSeen: Date.now() });
+    mcpSessions.set(transport.sessionId, {
+      transport,
+      server,
+      capabilityHash: tokenHash(extractToken(req)),
+    });
   }
 });
 
@@ -161,13 +228,13 @@ let configTestRegistry = new Map();
 
 // POST /config-test?path=<module>/<field>[&agent_view_id=N]
 //
-// POST because this triggers a live login attempt at a third party. The toolbox
-// authenticates no caller — the internal Docker network IS its boundary, exactly
-// as for `/sse`, `/mcp` and `/health`, all of which already take an
-// `agent_view_id` from the caller and hand back that view's credentials. Adding
-// a check here alone would buy nothing while the MCP routes stay open.
+// POST because this triggers a live login attempt at a third party. Like scoped
+// `/health`, it is an operator action, so it needs an `internal_rest` capability
+// and takes its scope from THAT row, never from the query: `?agent_view_id=` may
+// only agree with it. It is the one route that also accepts a VIEWLESS
+// capability, which tests the default scope — every other guard refuses one.
 //
-// What IS new is that a caller could hammer a real credential and trip an
+// A caller could also hammer a real credential and trip an
 // account lockout, so one CREDENTIAL may be probed at most once every
 // CONFIG_TEST_COOLDOWN_MS. Keyed per credential (declaration group + scope), not
 // per config path — six field paths reaching one Graph token must share one
@@ -186,10 +253,12 @@ const CONFIG_TEST_COOLDOWN_MS = 3_000;
 // internally, like `sessions` above and `mcpSessions` below.
 const configTestLimiter = new ProbeLimiter({ cooldownMs: CONFIG_TEST_COOLDOWN_MS });
 
-app.post('/config-test', async (req, res) => {
+app.post('/config-test', requireCapability({ kinds: ['internal_rest'], allowViewless: true }, logToolboxRest), async (req, res) => {
+  if (rejectScopeMismatch(req, res, logToolboxRest, 'config-test')) return undefined;
   const parsed = parseConfigTestRequest(req.query);
   if (parsed.error) return res.json({ ...parsed.error, path: parsed.path });
-  const { configPath, agentViewId } = parsed;
+  const { configPath } = parsed;
+  const { agentViewId } = req.capability;
   const result = await runConfigTest(
     { path: configPath, agentViewId },
     { namedTests: configTestRegistry, limiter: configTestLimiter },
@@ -199,33 +268,51 @@ app.post('/config-test', async (req, res) => {
   res.json(result);
 });
 
-app.get('/health', async (req, res) => {
-  const agentViewId = req.query.agent_view_id ? parseInt(req.query.agent_view_id, 10) : null;
-  const runTests = req.query.test === 'true';
+// Scoped diagnostics are an operator/publisher action, so ONLY internal_rest qualifies.
+// An mcp_job token is held by the sandboxed agent; letting it drive ?test=true would let the
+// agent fire every scoped, secret-backed healthcheck at will.
+const healthGuard = requireCapability({ kinds: ['internal_rest'] }, logToolboxRest);
 
-  const { tools, healthchecks, obscureValues } = await createHealthRegistration(agentViewId, context);
-
-  // Docker HEALTHCHECK uses this endpoint to decide container liveness — it cares
-  // about the HTTP status code only. A dead Playwright subsystem leaves the body
-  // status=degraded but HTTP 200, so the container stays (healthy) and other
-  // adapters keep serving.
-  if (!runTests) {
-    const response = { status: 'ok', tools, playwright: playwright.getPlaywrightState() };
-    if (agentViewId) response.agent_view_id = agentViewId;
-    return res.json(response);
+async function scopedHealth(req, res) {
+  // `?agent_view_id=` no longer selects the scope (the capability row does), so a value that
+  // disagrees is a 400 rather than a silently different answer. `?test=true` is the documented
+  // way to ask for the scoped diagnostic.
+  if (rejectScopeMismatch(req, res, logToolboxRest, 'health')) return undefined;
+  const agentViewId = req.capability.agentViewId;
+  let registration;
+  try {
+    registration = await createHealthRegistration(agentViewId, context, { strict: true });
+  } catch (err) {
+    return sendScopeError(res, err);
   }
+  const { tools, healthchecks } = registration;
+  const runTests = req.query.test === 'true';
+  const response = { status: 'ok', tools, playwright: playwright.getPlaywrightState(), agent_view_id: agentViewId };
+  if (runTests) {
+    response.checks = await runHealthchecks(healthchecks);
+    response.status = response.checks.some(c => c.status === 'fail') ? 'degraded' : 'ok';
+  }
+  return res.json(response);
+}
 
-  const checks = await runHealthchecks(healthchecks, obscureValues);
-  const hasFail = checks.some(c => c.status === 'fail');
-  const response = {
-    status: hasFail ? 'degraded' : 'ok',
-    tools,
-    checks,
-    playwright: playwright.getPlaywrightState(),
-  };
-  if (agentViewId) response.agent_view_id = agentViewId;
-  res.json(response);
+app.get('/health', async (req, res) => {
+  // Bare /health stays unauthenticated: Docker's HEALTHCHECK needs it, and it exposes only
+  // tool names and Playwright state. It cares about the HTTP status code only — a dead
+  // Playwright subsystem leaves the body status=degraded but HTTP 200, so the container
+  // stays (healthy) and other adapters keep serving.
+  const wantsScope = req.query.agent_view_id !== undefined || req.query.test === 'true';
+  if (!wantsScope) {
+    const { tools } = await createHealthRegistration(null, context);
+    return res.json({ status: 'ok', tools, playwright: playwright.getPlaywrightState() });
+  }
+  return healthGuard(req, res, () => scopedHealth(req, res));
 });
+
+// EVERY module REST route lives under /api and is scoped by a capability. Guarding the
+// namespace (rather than each route) means a new module inherits authentication with no
+// opt-in, and cannot forget it. Handlers read req.capability; a caller-supplied
+// agent_view_id in a body may only MATCH it, never override it.
+app.use('/api', requireCapability({ kinds: ['internal_rest'] }, logToolboxRest));
 
 // Register module REST APIs and start Playwright in parallel, then listen
 Promise.allSettled([

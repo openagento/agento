@@ -100,7 +100,7 @@ The module supplies one object implementing `AgentHarnessAdapter`, which wires t
 | Protocol                  | Responsibility                                                    |
 |---------------------------|-------------------------------------------------------------------|
 | `CommandBuilder`          | `headless(ctx, request)`, `interactive(ctx, *, yolo)` and `stdin_payload(ctx, request)` — **the only** place that harness's CLI invocation exists |
-| `WorkspaceAdapter`        | materializes config + credentials into a build/run dir; owns `owned_paths`, `persistent_home_paths`, `capture_refreshed_credentials`, `serialize_toolbox_connection` |
+| `WorkspaceAdapter`        | materializes config + credentials into a build/run dir; owns `owned_paths`, `persistent_home_paths`, `inject_runtime_params`, `capture_refreshed_credentials`, `serialize_toolbox_connection` |
 | `TranscriptReader`        | parses that harness's own session transcript (optional — `None` when it keeps none) |
 | `StreamRenderer`          | renders one **live stdout event** as terminal text for `agento run --pretty` (optional — omit the member entirely and the run streams raw) |
 | `CredentialAuthenticator` | one per credential-requiring scope: interactive OAuth + `register_from_secret(mode, secret)` |
@@ -108,6 +108,44 @@ The module supplies one object implementing `AgentHarnessAdapter`, which wires t
 
 `descriptor` is deliberately **absent** from the adapter: the framework builds it from
 `di.json` so it can be enumerated without importing the module's Python.
+
+### `inject_runtime_params` — the capability injection point
+
+```python
+def inject_runtime_params(
+    self,
+    artifacts_dir: Path,
+    *,
+    job_id: int | None,
+    run_id: str | None = None,
+    capability_token: str | None = None,
+    toolbox_url: str | None = None,
+) -> None: ...
+```
+
+`capability_token` arrives with the trusted `toolbox_url` it belongs to, and only to an adapter that
+names the keyword (or takes `**kwargs`); an adapter that cannot receive it gets no token and its
+session is refused `401`. `job_id` / `run_id` still scope the run's desk (see below). The build
+directory is shared by every run of the agent_view and therefore carries no claims; this call is where
+the *per-run* credential enters the *copied* config.
+
+The adapter's responsibility is narrow and is a security contract, not a style choice:
+
+- Inject the capability into **the toolbox's own MCP entry only**. Match by **origin and path** —
+  `(scheme, host, port)` equal to the toolbox's, and a path of exactly `/mcp` or `/sse`. Use the
+  framework helpers `toolbox_origin()` / `is_toolbox_endpoint()` from
+  `agento.framework.harness` rather than writing the comparison again.
+- **Never match by substring.** Operators may add third-party MCP servers under
+  `agent_view/mcp/servers`; a `"/mcp" in url` test would hand them the capability. An adapter that
+  injects the token anywhere but our own endpoint is a security defect.
+- **Validate the trusted input first.** `toolbox_origin()` raises on a `toolbox_url` that is not a
+  usable http(s) origin, and the adapter must call it *before* touching any file, so a misconfigured
+  `core/toolbox/url` fails the run loudly instead of scattering the token. Never compare a sentinel:
+  a helper returning `None` on failure would make two failures compare equal and match everything.
+- **Never log the token**, and never write it anywhere but the run's own config file.
+
+An entry the operator added that shadows the `toolbox` key stays legal — it simply fails the endpoint
+test, receives no capability, and is refused `401` by the toolbox. Fail-closed by construction.
 
 ### Adding pretty rendering to a harness
 
