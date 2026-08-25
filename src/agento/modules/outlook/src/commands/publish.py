@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+from contextlib import closing
 
 from agento.framework.agent_view_runtime import resolve_publish_priority
 from agento.framework.config_resolver import ScopedConfigService
@@ -12,17 +13,20 @@ from agento.framework.ingress_identity import get_active_identities_for_type
 from agento.framework.log import get_logger
 from agento.framework.router import RoutingContext, resolve_agent_view
 from agento.framework.scoped_config import Scope
+from agento.framework.toolbox_capability import (
+    rest_capability,
+)
 from agento.framework.workspace import get_active_agent_views
 from agento.modules.outlook.src.channel import OutlookPublisher
 from agento.modules.outlook.src.config import OutlookConfig
 from agento.modules.outlook.src.cursor import load_cursors, save_cursor
 from agento.modules.outlook.src.toolbox_client import OutlookToolboxClient
 
-# Non-secret outlook config paths, read per-path (never get_module). NOTE: this per-path discipline
-# keeps the ROUTING code below from resolving Graph secrets, but the surrounding execute() still
-# calls bootstrap(db_conn=conn), which transiently decrypts DEFAULT-scope obscure config (incl. the
-# Graph creds) in the cron — a pre-existing, framework-wide limitation tracked by the toolbox-only
-# secret-boundary hardening PRD (docs/security/toolbox-only-secret-boundary.md), NOT closed here.
+# Non-secret outlook config paths, read per-path (never get_module). The Graph secrets are now
+# declared `access: "toolbox_only"`, so Python skips them everywhere — bootstrap() included — and a
+# direct .get() on one RAISES. The framework-wide limitation is therefore closed for the Outlook
+# fields; only app_monitor's SMTP password still reaches the cron by design (see
+# docs/security/toolbox-only-secret-boundary.md).
 _CONFIG_PATHS = (
     "enabled", "poll_top", "allowed_senders", "activation_modes", "summon_token",
     "direct_requires_sole_recipient", "mailbox_aliases", "allow_bot_collaboration",
@@ -241,136 +245,142 @@ def publish_all_views(
     No active/eligible views -> clean no-op. Per-group errors log + continue. The toolbox client is
     always closed."""
     views = get_active_agent_views(conn)
-    client = OutlookToolboxClient(toolbox_url)
     publisher = OutlookPublisher()
     cursors = load_cursors(conn)
     published = 0
-    try:
-        # Build mailbox groups BEFORE polling: {normalized UPN: [views]} over outlook-enabled views
-        # with a configured mailbox.
-        groups: dict[str, list] = {}
-        view_cfgs: dict[int, OutlookConfig] = {}
-        for av in views:
-            cfg = _resolve_outlook_config(conn, av.id)
-            view_cfgs[av.id] = cfg
-            if not cfg.enabled:
-                logger.debug("Outlook disabled for agent_view %s (id=%d), skipping", av.code, av.id)
-                continue
-            upn = _resolve_mailbox_upn(conn, av.id)
-            if not upn:
-                logger.warning("Outlook mailbox unconfigured for agent_view %s (id=%d), skipping", av.code, av.id)
-                continue
-            groups.setdefault(upn, []).append(av)
+    # Build mailbox groups BEFORE polling: {normalized UPN: [views]} over outlook-enabled views
+    # with a configured mailbox.
+    groups: dict[str, list] = {}
+    view_cfgs: dict[int, OutlookConfig] = {}
+    for av in views:
+        cfg = _resolve_outlook_config(conn, av.id)
+        view_cfgs[av.id] = cfg
+        if not cfg.enabled:
+            logger.debug("Outlook disabled for agent_view %s (id=%d), skipping", av.code, av.id)
+            continue
+        upn = _resolve_mailbox_upn(conn, av.id)
+        if not upn:
+            logger.warning("Outlook mailbox unconfigured for agent_view %s (id=%d), skipping", av.code, av.id)
+            continue
+        groups.setdefault(upn, []).append(av)
 
-        # --agent-view: process only the group CONTAINING that view, WITHOUT shrinking it (a filtered
-        # shared mailbox stays routed — PRD §7.4).
-        if agent_view_code:
-            groups = {
-                upn: gv for upn, gv in groups.items()
-                if any(v.code == agent_view_code for v in gv)
-            }
+    # --agent-view: process only the group CONTAINING that view, WITHOUT shrinking it (a filtered
+    # shared mailbox stays routed — PRD §7.4).
+    if agent_view_code:
+        groups = {
+            upn: gv for upn, gv in groups.items()
+            if any(v.code == agent_view_code for v in gv)
+        }
 
-        # Publisher-start effective-policy log: one line per enabled view (code, mailbox, mode, and
-        # the effective allowed_senders COUNT — never the raw patterns, which may be external
-        # addresses/domains; use `config:resolve` for the resolved values). Standalone loop so a
-        # per-group error below never skips a policy log.
-        for upn, group_views in groups.items():
-            mode = "routed" if len(group_views) >= 2 else "direct"
-            for av in group_views:
-                vc = view_cfgs[av.id]
-                logger.info(
-                    "Effective outlook policy",
-                    extra={"agent_view": av.code, "mailbox": upn, "mode": mode,
-                           "allowed_senders_count": len(vc.allowed_senders_list)},
-                )
+    # Publisher-start effective-policy log: one line per enabled view (code, mailbox, mode, and
+    # the effective allowed_senders COUNT — never the raw patterns, which may be external
+    # addresses/domains; use `config:resolve` for the resolved values). Standalone loop so a
+    # per-group error below never skips a policy log.
+    for upn, group_views in groups.items():
+        mode = "routed" if len(group_views) >= 2 else "direct"
+        for av in group_views:
+            vc = view_cfgs[av.id]
+            logger.info(
+                "Effective outlook policy",
+                extra={"agent_view": av.code, "mailbox": upn, "mode": mode,
+                       "allowed_senders_count": len(vc.allowed_senders_list)},
+            )
 
-        zero_bindings: bool | None = None  # batch-independent, computed once when first needed
-        for upn, group_views in groups.items():
-            try:
-                poll_owner = min(group_views, key=lambda v: v.id)
-                cfg = view_cfgs[poll_owner.id]
-                routed = len(group_views) >= 2
-                if routed:
-                    divergent = _shared_policy_divergence(group_views, view_cfgs)
-                    if divergent:
-                        where = ", ".join(f"{code}:{field}" for code, field in divergent)
-                        logger.error(
-                            "Outlook shared mailbox %s: members have divergent activation policy "
-                            "config (%s); skipping group (not polled) until reconciled", upn, where,
-                        )
-                        get_event_manager().dispatch(
-                            "mailbox_stall_after",
-                            MailboxStalledEvent(
-                                channel="outlook", mailbox=upn,
-                                reason="policy_divergence", detail=where,
-                            ),
-                        )
-                        continue
-                top = top_override if top_override else cfg.poll_top
-                resp = client.list_delta(top=top, agent_view_id=poll_owner.id, cursors=cursors)
-                mailbox_key = (resp.get("mailbox") or "").strip().lower()
-                if not mailbox_key:
-                    logger.warning(
-                        "Outlook mailbox unresolved for agent_view %s (id=%d), skipping",
-                        poll_owner.code, poll_owner.id,
-                    )
-                    continue
-                if mailbox_key != upn:
-                    # Config UPN and the toolbox-resolved mailbox disagree — a resolution drift.
-                    # Hold (do not advance) rather than publish against the wrong cursor.
-                    logger.warning(
-                        "Outlook mailbox mismatch for agent_view %s: config=%s resolved=%s; holding",
-                        poll_owner.code, upn, mailbox_key,
+    zero_bindings: bool | None = None  # batch-independent, computed once when first needed
+    for upn, group_views in groups.items():
+        try:
+            poll_owner = min(group_views, key=lambda v: v.id)
+            cfg = view_cfgs[poll_owner.id]
+            routed = len(group_views) >= 2
+            if routed:
+                divergent = _shared_policy_divergence(group_views, view_cfgs)
+                if divergent:
+                    where = ", ".join(f"{code}:{field}" for code, field in divergent)
+                    logger.error(
+                        "Outlook shared mailbox %s: members have divergent activation policy "
+                        "config (%s); skipping group (not polled) until reconciled", upn, where,
                     )
                     get_event_manager().dispatch(
                         "mailbox_stall_after",
                         MailboxStalledEvent(
-                            channel="outlook", mailbox=upn, reason="upn_mismatch",
-                            detail=f"configured UPN resolved to {mailbox_key}",
+                            channel="outlook", mailbox=upn,
+                            reason="policy_divergence", detail=where,
                         ),
                     )
                     continue
-                messages = resp.get("messages", [])
-                if routed:
-                    if zero_bindings is None:
-                        zero_bindings = not get_active_identities_for_type(conn, "outlook_sender")
-                    if zero_bindings:
-                        logger.warning(
-                            "Outlook shared mailbox %s is in routed mode but no active "
-                            "outlook_sender bindings exist — mail will NOT be published. Configure "
-                            "`agento ingress:bind outlook_sender '<regex>' <view> --priority <n>`.",
-                            upn,
-                        )
-                        get_event_manager().dispatch(
-                            "mailbox_stall_after",
-                            MailboxStalledEvent(
-                                channel="outlook", mailbox=upn, reason="no_bindings",
-                                detail="routed mode but no active outlook_sender bindings",
-                            ),
-                        )
-                    pub_count, hold = _publish_group_routed(
-                        publisher, db_config, conn, group_views, cfg, view_cfgs, messages, logger,
-                        mailbox_key, cfg.mailbox_aliases_list,
-                    )
-                else:
-                    priority = resolve_publish_priority(conn, poll_owner.id)
-                    pub_count, hold = _publish_view_messages(
-                        publisher, db_config, poll_owner, cfg, messages, priority, logger,
-                        mailbox_key, cfg.mailbox_aliases_list,
-                    )
-                published += pub_count
-                # PERSIST-THEN-ADVANCE: only after publishing, and only when the batch had no
-                # transient condition. A held / errored cursor is re-fetched on the next poll.
-                new_link = resp.get("deltaLink")
-                if new_link and not hold:
-                    save_cursor(conn, mailbox_key, new_link)
-            except Exception:
-                logger.exception(
-                    "Outlook publish failed for mailbox group %s — continuing with remaining groups", upn,
+            top = top_override if top_override else cfg.poll_top
+            # The capability is scoped to the group's poll owner — the toolbox derives
+            # the mailbox from it. Minted and revoked per group, so one client never
+            # carries two views' scopes.
+            with rest_capability(
+                agent_view_id=poll_owner.id, db_config=db_config
+            ) as capability_token, closing(
+                OutlookToolboxClient(toolbox_url, capability_token=capability_token)
+            ) as client:
+                resp = client.list_delta(
+                    top=top, agent_view_id=poll_owner.id, cursors=cursors,
+                )
+            mailbox_key = (resp.get("mailbox") or "").strip().lower()
+            if not mailbox_key:
+                logger.warning(
+                    "Outlook mailbox unresolved for agent_view %s (id=%d), skipping",
+                    poll_owner.code, poll_owner.id,
                 )
                 continue
-    finally:
-        client.close()
+            if mailbox_key != upn:
+                # Config UPN and the toolbox-resolved mailbox disagree — a resolution drift.
+                # Hold (do not advance) rather than publish against the wrong cursor.
+                logger.warning(
+                    "Outlook mailbox mismatch for agent_view %s: config=%s resolved=%s; holding",
+                    poll_owner.code, upn, mailbox_key,
+                )
+                get_event_manager().dispatch(
+                    "mailbox_stall_after",
+                    MailboxStalledEvent(
+                        channel="outlook", mailbox=upn, reason="upn_mismatch",
+                        detail=f"configured UPN resolved to {mailbox_key}",
+                    ),
+                )
+                continue
+            messages = resp.get("messages", [])
+            if routed:
+                if zero_bindings is None:
+                    zero_bindings = not get_active_identities_for_type(conn, "outlook_sender")
+                if zero_bindings:
+                    logger.warning(
+                        "Outlook shared mailbox %s is in routed mode but no active "
+                        "outlook_sender bindings exist — mail will NOT be published. Configure "
+                        "`agento ingress:bind outlook_sender '<regex>' <view> --priority <n>`.",
+                        upn,
+                    )
+                    get_event_manager().dispatch(
+                        "mailbox_stall_after",
+                        MailboxStalledEvent(
+                            channel="outlook", mailbox=upn, reason="no_bindings",
+                            detail="routed mode but no active outlook_sender bindings",
+                        ),
+                    )
+                pub_count, hold = _publish_group_routed(
+                    publisher, db_config, conn, group_views, cfg, view_cfgs, messages, logger,
+                    mailbox_key, cfg.mailbox_aliases_list,
+                )
+            else:
+                priority = resolve_publish_priority(conn, poll_owner.id)
+                pub_count, hold = _publish_view_messages(
+                    publisher, db_config, poll_owner, cfg, messages, priority, logger,
+                    mailbox_key, cfg.mailbox_aliases_list,
+                )
+            published += pub_count
+            # PERSIST-THEN-ADVANCE: only after publishing, and only when the batch had no
+            # transient condition. A held / errored cursor is re-fetched on the next poll.
+            new_link = resp.get("deltaLink")
+            if new_link and not hold:
+                save_cursor(conn, mailbox_key, new_link)
+        except Exception:
+            logger.exception(
+                "Outlook publish failed for mailbox group %s — continuing with remaining groups", upn,
+            )
+            continue
     return published
 
 

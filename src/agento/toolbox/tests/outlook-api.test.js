@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import { createDeltaHandler, parseDmarcVerdict, isAutoReply } from '../../modules/outlook/toolbox/api-handlers.js';
+import {
+  createDeltaHandler, parseDmarcVerdict, isAutoReply, parseAllowedSenders, deriveMailboxAllowedSenders,
+} from '../../modules/outlook/toolbox/api-handlers.js';
+import { createRequireCapability } from '../capability.js';
+// The real shared matcher, injected the way the framework injects it (config-loader
+// TOOLBOX_HELPERS) — a module cannot import framework code by path.
+import { matchesWhitelist } from '../email-match.js';
 
 // Inject a fake auth so token acquisition needs no real @azure/identity; the only global fetch the
 // handler makes is the Graph messages call. isConfigured mirrors graph-auth's real rule.
@@ -102,7 +108,13 @@ describe('isAutoReply (RFC 3834 Auto-Submitted + common vendor headers)', () => 
   });
 });
 
-const ok = (c) => async () => ({ cfg: c, resolved: true });
+const ok = (c) => async () => ({ cfg: c });
+// The /api guard verified this before the handler ran; the handler reads the scope from it.
+const CAP = { kind: 'internal_rest', agentViewId: 42, jobId: null };
+const capReq = { capability: CAP };
+// Admit any single-@ address, so tests about paging/mapping are not also tests of the gate.
+// `*` never crosses the `@`, so this is 'anything that looks like an address', not '.*'.
+const ALLOW_ALL = async () => ['*@*'];
 
 // Replay a queued list of fetch responses (one per Graph call: delta pages, 410s, hydration GETs).
 function queueFetch(responses) {
@@ -131,9 +143,9 @@ describe('POST /api/outlook/delta handler', () => {
   beforeEach(() => vi.unstubAllGlobals());
 
   it('returns 500 when not configured', async () => {
-    const handler = createDeltaHandler(ok({}), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok({}), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: {} }, res);
+    await handler({ ...capReq, body: {} }, res);
     expect(res.statusCode).toBe(500);
   });
 
@@ -146,9 +158,9 @@ describe('POST /api/outlook/delta handler', () => {
         '@odata.deltaLink': AGENT_DELTA('NEW'),
       }),
     ]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { top: 10, cursors: {} } }, res);
+    await handler({ ...capReq, body: { top: 10, cursors: {} } }, res);
     expect(res.statusCode).toBe(200);
     expect(res.body.mailbox).toBe('agent@example.com');
     expect(res.body.messages).toHaveLength(1);
@@ -161,8 +173,8 @@ describe('POST /api/outlook/delta handler', () => {
 
   it('resumes by applying a VALID stored deltaLink as-is', async () => {
     const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D2') })]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
-    await handler({ body: { cursors: { 'agent@example.com': AGENT_DELTA('PREV') } } }, mockRes());
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
+    await handler({ ...capReq, body: { cursors: { 'agent@example.com': AGENT_DELTA('PREV') } } }, mockRes());
     expect(calls[0]).toBe(AGENT_DELTA('PREV')); // applied verbatim, per Graph's contract
   });
 
@@ -174,9 +186,9 @@ describe('POST /api/outlook/delta handler', () => {
   it('AG-40: applies a stored deltaLink in Graph\'s quoted-key folder form as-is (no forced re-enum)', async () => {
     const quoted = "https://graph.microsoft.com/v1.0/users/agent@example.com/mailFolders('Inbox')/messages/delta?$deltatoken=Q";
     const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D2') })]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: { 'agent@example.com': quoted } } }, res);
+    await handler({ ...capReq, body: { cursors: { 'agent@example.com': quoted } } }, res);
     expect(calls[0]).toBe(quoted); // applied verbatim, not discarded
     expect(res.body.resynced).toBe(false); // the bug's tell: this used to be true on every poll
   });
@@ -184,9 +196,9 @@ describe('POST /api/outlook/delta handler', () => {
   it('AG-40: applies a stored deltaLink in the %-encoded quoted-key folder form as-is', async () => {
     const enc = 'https://graph.microsoft.com/v1.0/users/agent@example.com/mailFolders(%27Inbox%27)/messages/delta?$deltatoken=E';
     const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D2') })]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: { 'agent@example.com': enc } } }, res);
+    await handler({ ...capReq, body: { cursors: { 'agent@example.com': enc } } }, res);
     expect(calls[0]).toBe(enc);
     expect(res.body.resynced).toBe(false);
   });
@@ -194,9 +206,9 @@ describe('POST /api/outlook/delta handler', () => {
   it('AG-40: a quoted-key cursor for a FOREIGN mailbox is still rejected → full base enum', async () => {
     const foreign = "https://graph.microsoft.com/v1.0/users/victim@example.com/mailFolders('Inbox')/messages/delta?$deltatoken=V";
     const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') })]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: { 'agent@example.com': foreign } } }, res);
+    await handler({ ...capReq, body: { cursors: { 'agent@example.com': foreign } } }, res);
     expect(calls[0]).not.toContain('victim'); // mailbox-equality guard survives the widened folder shape
     expect(calls[0]).toContain('/users/agent%40example.com/mailFolders/Inbox/messages/delta');
     expect(res.body.resynced).toBe(true);
@@ -207,17 +219,17 @@ describe('POST /api/outlook/delta handler', () => {
     // cannot slip a foreign structure past the shape check.
     const traversal = "https://graph.microsoft.com/v1.0/users/agent@example.com/mailFolders('a')/x/messages/delta?$deltatoken=T";
     const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') })]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
-    await handler({ body: { cursors: { 'agent@example.com': traversal } } }, mockRes());
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
+    await handler({ ...capReq, body: { cursors: { 'agent@example.com': traversal } } }, mockRes());
     expect(calls[0]).toContain('/users/agent%40example.com/mailFolders/Inbox/messages/delta'); // base URL, cursor discarded
   });
 
   it('SSRF/cross-mailbox: discards a cursor whose user segment is NOT the resolved mailbox → full base enum', async () => {
     const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') })]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
     // A real Graph deltaLink for ANOTHER mailbox (victim) — would read victim's mail with the app token.
-    await handler({ body: { cursors: { 'agent@example.com': linkFor('victim@example.com', 'V') } } }, res);
+    await handler({ ...capReq, body: { cursors: { 'agent@example.com': linkFor('victim@example.com', 'V') } } }, res);
     expect(calls[0]).toContain('/users/agent%40example.com/'); // resolved mailbox base URL...
     expect(calls[0]).not.toContain('victim'); // ...NOT the foreign cursor
     expect(calls[0]).toContain('$select='); // it's a base enumeration
@@ -233,8 +245,8 @@ describe('POST /api/outlook/delta handler', () => {
       12345,
     ]) {
       const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') })]);
-      const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
-      await handler({ body: { cursors: { 'agent@example.com': bad } } }, mockRes());
+      const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
+      await handler({ ...capReq, body: { cursors: { 'agent@example.com': bad } } }, mockRes());
       expect(calls[0]).toContain('/users/agent%40example.com/mailFolders/Inbox/messages/delta'); // base URL, never the bad cursor
       vi.unstubAllGlobals();
     }
@@ -242,8 +254,8 @@ describe('POST /api/outlook/delta handler', () => {
 
   it('discards a same-mailbox delta URL that lacks $deltatoken (not a real cursor) → full base enum', async () => {
     const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') })]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
-    await handler({ body: { cursors: {
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
+    await handler({ ...capReq, body: { cursors: {
       'agent@example.com': 'https://graph.microsoft.com/v1.0/users/agent@example.com/mailFolders/Inbox/messages/delta?changeType=deleted' } } }, mockRes());
     expect(calls[0]).toContain('/users/agent%40example.com/mailFolders/Inbox/messages/delta');
     expect(calls[0]).toContain('$select='); // base enumeration, not the token-less caller URL
@@ -252,9 +264,9 @@ describe('POST /api/outlook/delta handler', () => {
 
   it('does NOT crash on a cursor with malformed %-encoding — discards it → full base enum', async () => {
     const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') })]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: {
+    await handler({ ...capReq, body: { cursors: {
       'agent@example.com': 'https://graph.microsoft.com/v1.0/users/%ZZ/mailFolders/x/messages/delta?$deltatoken=T' } } }, res);
     expect(res.statusCode).toBe(200); // no uncaught throw
     expect(calls[0]).toContain('/users/agent%40example.com/mailFolders/Inbox/messages/delta');
@@ -267,9 +279,9 @@ describe('POST /api/outlook/delta handler', () => {
       jsonRes({ value: [{ id: 'b', from: { emailAddress: { address: 'x@y.com' } }, internetMessageHeaders: hdr('dmarc=pass') }],
                 '@odata.deltaLink': AGENT_DELTA('END') }),
     ]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: { 'agent@example.com': AGENT_DELTA('start') } } }, res);
+    await handler({ ...capReq, body: { cursors: { 'agent@example.com': AGENT_DELTA('start') } } }, res);
     expect(res.body.messages.map((m) => m.id)).toEqual(['a', 'b']);
     expect(res.body.deltaLink).toBe(AGENT_DELTA('END'));
   });
@@ -280,9 +292,9 @@ describe('POST /api/outlook/delta handler', () => {
       jsonRes({ value: [{ id: 'r1', from: { emailAddress: { address: 'x@y.com' } }, internetMessageHeaders: hdr('dmarc=pass') }],
                 '@odata.deltaLink': AGENT_DELTA('FRESH') }),
     ]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: { 'agent@example.com': AGENT_DELTA('STALE') } } }, res);
+    await handler({ ...capReq, body: { cursors: { 'agent@example.com': AGENT_DELTA('STALE') } } }, res);
     expect(res.statusCode).toBe(200);
     expect(res.body.resynced).toBe(true);
     expect(res.body.messages.map((m) => m.id)).toEqual(['r1']);
@@ -300,9 +312,9 @@ describe('POST /api/outlook/delta handler', () => {
       jsonRes({ value: [{ id: 'r1', from: { emailAddress: { address: 'x@y.com' } }, internetMessageHeaders: hdr('dmarc=pass') }],
                 '@odata.deltaLink': AGENT_DELTA('FRESH') }),
     ]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: { 'agent@example.com': AGENT_DELTA('STALE') } } }, res);
+    await handler({ ...capReq, body: { cursors: { 'agent@example.com': AGENT_DELTA('STALE') } } }, res);
     expect(res.statusCode).toBe(200);
     expect(res.body.resynced).toBe(true);
     expect(res.body.messages.map((m) => m.id)).toEqual(['r1']);
@@ -315,9 +327,9 @@ describe('POST /api/outlook/delta handler', () => {
                 '@odata.deltaLink': AGENT_DELTA('D') }),
       jsonRes({ internetMessageHeaders: hdr('dmarc=pass') }), // hydration GET
     ]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: {} } }, res);
+    await handler({ ...capReq, body: { cursors: {} } }, res);
     expect(res.body.messages[0].dmarc).toBe('pass');
     expect(calls[1]).toContain('/messages/m9');
     expect(calls[1]).toContain('internetMessageHeaders');
@@ -330,9 +342,9 @@ describe('POST /api/outlook/delta handler', () => {
         { id: 'rm2', '@removed': { reason: 'changed' } },
       ], '@odata.deltaLink': AGENT_DELTA('D') }),
     ]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: {} } }, res);
+    await handler({ ...capReq, body: { cursors: {} } }, res);
     expect(res.statusCode).toBe(200);
     expect(res.body.messages).toEqual([]); // removed items are folder-sync events, not publishable mail
     expect(res.body.deltaLink).toBe(AGENT_DELTA('D'));
@@ -344,54 +356,89 @@ describe('POST /api/outlook/delta handler', () => {
       jsonRes({ value: [{ id: 'm9', from: { emailAddress: { address: 'x@y.com' } } }], '@odata.deltaLink': AGENT_DELTA('D') }),
       jsonRes({}, { ok: false, status: 500 }), // hydration GET fails
     ]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: {} } }, res);
+    await handler({ ...capReq, body: { cursors: {} } }, res);
     expect(res.statusCode).toBe(502);
   });
 
   it('FAIL-CLOSED: returns 502 if paging never reaches an @odata.deltaLink (no partial success)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       jsonRes({ value: [], '@odata.nextLink': 'https://graph.microsoft.com/v1.0/next' }))); // only ever nextLink → cap hit
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: {} } }, res);
+    await handler({ ...capReq, body: { cursors: {} } }, res);
     expect(res.statusCode).toBe(502);
   });
 
-  it('FAIL-CLOSED: rejects a non-positive-integer agent_view_id with 400 (no resolver/Graph call)', async () => {
-    const resolver = vi.fn(ok(cfg));
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-    const handler = createDeltaHandler(resolver, vi.fn(), fakeAuthFactory);
-    for (const bad of ['7', 0, -1, 1.5]) {
-      const res = mockRes();
-      await handler({ body: { agent_view_id: bad } }, res);
-      expect(res.statusCode).toBe(400);
-    }
-    expect(resolver).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('FAIL-CLOSED: returns 404 (no global fallback) when a supplied id does not resolve', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-    const handler = createDeltaHandler(async () => ({ cfg, resolved: false }), vi.fn(), fakeAuthFactory);
-    const res = mockRes();
-    await handler({ body: { agent_view_id: 999 } }, res);
-    expect(res.statusCode).toBe(404);
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it('forwards agent_view_id to the resolver and passes null when absent', async () => {
+  it('derives agent_view_id from the capability and ignores a body value it agrees with', async () => {
     queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') }),
                 jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') })]);
-    const resolver = vi.fn(async () => ({ cfg, resolved: true }));
-    const handler = createDeltaHandler(resolver, vi.fn(), fakeAuthFactory);
-    await handler({ body: { agent_view_id: 42, cursors: {} } }, mockRes());
-    await handler({ body: { cursors: {} } }, mockRes());
+    const resolver = vi.fn(async () => ({ cfg }));
+    const handler = createDeltaHandler(resolver, vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
+    await handler({ ...capReq, body: { agent_view_id: 42, cursors: {} } }, mockRes());
+    await handler({ ...capReq, body: { cursors: {} } }, mockRes());
     expect(resolver).toHaveBeenNthCalledWith(1, 42);
-    expect(resolver).toHaveBeenNthCalledWith(2, null);
+    expect(resolver).toHaveBeenNthCalledWith(2, 42); // NOT null — the body never selects the scope
+  });
+
+  // The conflicting-claim rejection moved OUT of this handler: createModuleRouteApp applies it to
+  // every module route, so no module can forget it. Its test lives in rest-auth-coverage.test.js.
+});
+
+// The route chain is guard -> handler. These compose the real middleware with the real handler,
+// so they prove the delta route itself is unreachable without an internal_rest capability —
+// not merely that the middleware, in isolation, rejects things.
+describe('delta route capability enforcement (guard + handler)', () => {
+  beforeEach(() => vi.unstubAllGlobals());
+
+  // Runs the chain the way Express would: middleware first, handler only if next() is called.
+  async function callRoute(verify, req) {
+    const res = mockRes();
+    const mw = createRequireCapability(verify, { kinds: ['internal_rest'] }, () => {});
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
+    await new Promise((resolve) => {
+      const next = () => handler(req, res).then(resolve, resolve);
+      Promise.resolve(mw(req, res, next)).then(() => resolve(), () => resolve());
+    });
+    return res;
+  }
+
+  it('401s with no capability and makes zero Graph calls', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const res = await callRoute(async () => null, { headers: {}, body: {} });
+    expect(res.statusCode).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('403s for a forged or expired capability and makes zero Graph calls', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    // An unknown or expired token is indistinguishable to the verifier: both return null.
+    const res = await callRoute(async () => null, { headers: { authorization: 'Bearer forged' }, body: {} });
+    expect(res.statusCode).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('403s for an mcp_job capability — an agent cannot start a mailbox sync', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    // The real verifier returns null when the row's kind is outside the guard's `kinds`.
+    const verify = async (t, { kinds }) => (kinds.includes('mcp_job') ? { kind: 'mcp_job', agentViewId: 42, jobId: '9' } : null);
+    const res = await callRoute(verify, { headers: { authorization: 'Bearer agent-held' }, body: {} });
+    expect(res.statusCode).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves cursor and resync behaviour for a valid capability', async () => {
+    queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('NEXT') })]);
+    const res = await callRoute(async () => ({ ...CAP }),
+      { headers: { authorization: 'Bearer good' },
+        body: { cursors: { 'agent@example.com': AGENT_DELTA('PREV') } } });
+    expect(res.statusCode).toBe(200);
+    expect(res.body.resynced).toBe(false);
+    expect(res.body.deltaLink).toBe(AGENT_DELTA('NEXT'));
   });
 });
 
@@ -413,9 +460,9 @@ describe('delta map carries to / cc / bodyPreview (activation plumbing)', () => 
         '@odata.deltaLink': AGENT_DELTA('NEW'),
       }),
     ]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: {} } }, res);
+    await handler({ ...capReq, body: { cursors: {} } }, res);
     const m = res.body.messages[0];
     expect(m.to).toEqual([{ name: 'To1', address: 'to1@y.com' }]);
     expect(m.cc).toEqual([{ name: 'Cc1', address: 'cc1@y.com' }]);
@@ -433,9 +480,9 @@ describe('delta map carries to / cc / bodyPreview (activation plumbing)', () => 
         '@odata.deltaLink': AGENT_DELTA('NEW'),
       }),
     ]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: {} } }, res);
+    await handler({ ...capReq, body: { cursors: {} } }, res);
     expect(res.body.messages[0].to).toEqual([]);
     expect(res.body.messages[0].cc).toEqual([]);
   });
@@ -454,10 +501,10 @@ describe('agent_authored (fleet-mailbox loop detection) in the delta map', () =>
         '@odata.deltaLink': AGENT_DELTA('D'),
       }),
     ]);
-    const resolver = async () => ({ cfg, resolved: true, fleetMailboxes });
-    const handler = createDeltaHandler(resolver, vi.fn(), fakeAuthFactory);
+    const resolver = async () => ({ cfg, fleetMailboxes });
+    const handler = createDeltaHandler(resolver, vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: {} } }, res);
+    await handler({ ...capReq, body: { cursors: {} } }, res);
     return res;
   };
 
@@ -491,26 +538,176 @@ describe('auto_reply (RFC 3834 drop signal) in the delta map', () => {
         value: [{
           id: 'm1', from: { emailAddress: { address: 'oof@example.com' } },
           internetMessageHeaders: [
-            { name: 'Authentication-Results', value: 'dmarc=fail' },
+            { name: 'Authentication-Results', value: 'dmarc=pass' },
             { name: 'Auto-Submitted', value: headerValue },
           ],
         }],
         '@odata.deltaLink': AGENT_DELTA('D'),
       }),
     ]);
-    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     const res = mockRes();
-    await handler({ body: { cursors: {} } }, res);
+    await handler({ ...capReq, body: { cursors: {} } }, res);
     return res;
   };
 
   it('an out-of-office auto-reply carries auto_reply: true (alongside its dmarc verdict)', async () => {
     const res = await runWith('auto-replied');
-    expect(res.body.messages[0]).toMatchObject({ dmarc: 'fail', auto_reply: true });
+    expect(res.body.messages[0]).toMatchObject({ dmarc: 'pass', auto_reply: true });
   });
 
   it('an ordinary human reply carries auto_reply: false', async () => {
     const res = await runWith('no');
     expect(res.body.messages[0].auto_reply).toBe(false);
+  });
+});
+
+// The inbound gate used to live in Python, AFTER the toolbox had already returned every message.
+// A blocked sender's id, subject, recipients and preview reached the agent's job payload before
+// anything rejected them. Gating inside the handler means they never leave the toolbox at all.
+describe('inbound gate inside the delta handler', () => {
+  beforeEach(() => vi.unstubAllGlobals());
+
+  const msg = (id, address, dmarc = 'dmarc=pass') => ({
+    id, subject: `subject of ${id}`,
+    from: { emailAddress: { address, name: 'Sender' } },
+    toRecipients: [{ emailAddress: { address: 'agent@example.com' } }],
+    ccRecipients: [{ emailAddress: { address: 'watcher@example.com' } }],
+    bodyPreview: `preview of ${id}`,
+    receivedDateTime: '2026-01-01T00:00:00Z', conversationId: `c-${id}`,
+    internetMessageHeaders: hdr(dmarc),
+  });
+
+  async function runDelta(items, allowed) {
+    queueFetch([jsonRes({ value: items, '@odata.deltaLink': AGENT_DELTA('NEXT') })]);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, async () => allowed, matchesWhitelist);
+    const res = mockRes();
+    await handler({ ...capReq, body: { cursors: {} } }, res);
+    return res;
+  }
+
+  it('drops a non-allow-listed sender entirely — no id, subject, recipients or preview', async () => {
+    const res = await runDelta([msg('m1', 'stranger@evil.com')], ['*@corp.com']);
+    expect(res.body.messages).toEqual([]);
+    // Nothing about the message may survive anywhere in the response.
+    expect(JSON.stringify(res.body)).not.toContain('m1');
+    expect(JSON.stringify(res.body)).not.toContain('subject of m1');
+    expect(JSON.stringify(res.body)).not.toContain('preview of m1');
+    expect(JSON.stringify(res.body)).not.toContain('watcher@example.com');
+  });
+
+  it('drops a DMARC-failing message from an allow-listed sender', async () => {
+    const res = await runDelta([msg('m1', 'bob@corp.com', 'dmarc=fail')], ['*@corp.com']);
+    expect(res.body.messages).toEqual([]);
+  });
+
+  it('returns id, subject, to/cc and preview only for admitted messages', async () => {
+    const res = await runDelta(
+      [msg('good', 'bob@corp.com'), msg('bad', 'stranger@evil.com')], ['*@corp.com']);
+    expect(res.body.messages).toHaveLength(1);
+    expect(res.body.messages[0].id).toBe('good');
+    expect(res.body.messages[0].subject).toBe('subject of good');
+    expect(res.body.messages[0].bodyPreview).toBe('preview of good');
+    expect(res.body.messages[0].cc[0].address).toBe('watcher@example.com');
+  });
+
+  it('hydrates DMARC headers ONLY for allow-listed senders', async () => {
+    const bare = (id, address) => { const m = msg(id, address); delete m.internetMessageHeaders; return m; };
+    const { calls } = queueFetch([
+      jsonRes({ value: [bare('bad', 'stranger@evil.com'), bare('good', 'bob@corp.com')],
+                '@odata.deltaLink': AGENT_DELTA('NEXT') }),
+      jsonRes({ internetMessageHeaders: hdr('dmarc=pass') }),
+    ]);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, async () => ['*@corp.com'], matchesWhitelist);
+    const res = mockRes();
+    await handler({ ...capReq, body: { cursors: {} } }, res);
+    expect(res.body.messages).toHaveLength(1);
+    // One delta page + exactly one hydration GET — the blocked message cost no Graph call.
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toContain('/messages/good?');
+  });
+
+  it('advances the cursor even when every message is dropped', async () => {
+    const res = await runDelta([msg('m1', 'stranger@evil.com')], ['*@corp.com']);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.deltaLink).toBe(AGENT_DELTA('NEXT'));
+    expect(res.body.resynced).toBe(false);
+  });
+
+  it('blocks everything when the union is empty', async () => {
+    const res = await runDelta([msg('m1', 'bob@corp.com')], []);
+    expect(res.body.messages).toEqual([]);
+  });
+
+  it('does not let a wildcard cross the @ — *@corp.com rejects a@b@corp.com', async () => {
+    const res = await runDelta([msg('m1', 'a@b@corp.com')], ['*@corp.com']);
+    expect(res.body.messages).toEqual([]);
+  });
+
+  it('a handler wired with no union callback admits nothing (fail-closed default)', async () => {
+    queueFetch([jsonRes({ value: [msg('m1', 'bob@corp.com')], '@odata.deltaLink': AGENT_DELTA('NEXT') })]);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const res = mockRes();
+    await handler({ ...capReq, body: { cursors: {} } }, res);
+    expect(res.body.messages).toEqual([]);
+  });
+});
+
+describe('deriveMailboxAllowedSenders (the union across views sharing a mailbox)', () => {
+  const view = (mailbox, allowed, enabled = 'true') => ({
+    enabled, outlook_mailbox_user_id: mailbox, allowed_senders: allowed,
+  });
+
+  const derive = (views, mailbox, log = () => {}) =>
+    deriveMailboxAllowedSenders({
+      listActiveAgentViewIds: async () => Object.keys(views).map(Number),
+      resolveOutlookConfig: async (id) => views[id],
+      mailbox,
+    }, log);
+
+  it('parses a comma-separated list, trimming and lowercasing', () => {
+    expect(parseAllowedSenders(' A@x.com , *@Y.com ,, ')).toEqual(['a@x.com', '*@y.com']);
+    expect(parseAllowedSenders(undefined)).toEqual([]);
+  });
+
+  it('unions allowed_senders across every view sharing the mailbox', async () => {
+    const views = {
+      1: view('shared@example.com', 'a@x.com'),
+      2: view('shared@example.com', 'b@y.com,a@x.com'),
+    };
+    expect((await derive(views, 'shared@example.com')).sort()).toEqual(['a@x.com', 'b@y.com']);
+  });
+
+  it('excludes views bound to a different mailbox from the union', async () => {
+    const views = {
+      1: view('shared@example.com', 'a@x.com'),
+      2: view('other@example.com', 'elsewhere@z.com'),
+    };
+    expect(await derive(views, 'shared@example.com')).toEqual(['a@x.com']);
+  });
+
+  it('excludes a view whose outlook module is disabled', async () => {
+    const views = {
+      1: view('shared@example.com', 'a@x.com'),
+      2: view('shared@example.com', 'disabled@z.com', 'false'),
+    };
+    expect(await derive(views, 'shared@example.com')).toEqual(['a@x.com']);
+  });
+
+  it('matches the mailbox case-insensitively and ignores surrounding whitespace', async () => {
+    const views = { 1: view('  Shared@Example.com ', 'a@x.com') };
+    expect(await derive(views, 'shared@example.com')).toEqual(['a@x.com']);
+  });
+
+  it('FAIL-CLOSED: an unresolvable union admits nothing and is logged', async () => {
+    const lines = [];
+    const result = await deriveMailboxAllowedSenders({
+      listActiveAgentViewIds: async () => { throw new Error('db down'); },
+      resolveOutlookConfig: async () => ({}),
+      mailbox: 'shared@example.com',
+      errorCategory: (err) => err?.code || err?.name || 'Error',
+    }, (...a) => lines.push(a.join(' ')));
+    expect(result).toEqual([]);
+    expect(lines.join(' ')).toContain('allowed-sender union failed');
   });
 });

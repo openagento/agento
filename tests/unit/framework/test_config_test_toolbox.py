@@ -1,6 +1,8 @@
 """The toolbox arm: validate the URL, call /config-test, map the four states."""
 from __future__ import annotations
 
+import contextlib
+
 import httpx
 import pytest
 import respx
@@ -18,7 +20,20 @@ PATH = "core/smtp_pass"
 
 
 @pytest.fixture
-def url(monkeypatch):
+def minted(monkeypatch):
+    """Record each capability mint instead of writing to a DB."""
+    calls: list[dict] = []
+
+    def _fake(**kwargs):
+        calls.append(kwargs)
+        return contextlib.nullcontext("tok-rest")
+
+    monkeypatch.setattr("agento.framework.config_test.toolbox.rest_capability", _fake)
+    return calls
+
+
+@pytest.fixture
+def url(monkeypatch, minted):
     """Pin the endpoint without a DB — the resolver is exercised separately."""
     monkeypatch.setattr(
         "agento.framework.config_test.toolbox._resolve_toolbox_url",
@@ -139,6 +154,36 @@ def test_the_default_scope_sends_no_agent_view_id(url):
     )
     run_toolbox_test(None, PATH, scope="default")
     assert "agent_view_id" not in route.calls[0].request.url.params
+
+
+@respx.mock
+def test_the_capability_is_minted_for_the_tested_scope_and_sent_as_a_bearer(url, minted):
+    """The route takes its scope from the capability row, so the mint must match the scope:
+    the view for an agent_view test, viewless for the default one. Never in the URL."""
+    route = respx.post(f"{url}/config-test").mock(
+        return_value=httpx.Response(200, json={"status": "ok", "code": "OK"})
+    )
+    run_toolbox_test(None, "agent_view/x", scope="agent_view", scope_id=7)
+    run_toolbox_test(None, PATH, scope="default")
+    assert [m["agent_view_id"] for m in minted] == [7, None]
+    for call in route.calls:
+        assert call.request.headers["authorization"] == "Bearer tok-rest"
+        assert "tok-rest" not in str(call.request.url)
+
+
+def test_a_failed_mint_is_an_error_not_a_raise(monkeypatch):
+    monkeypatch.setattr(
+        "agento.framework.config_test.toolbox._resolve_toolbox_url",
+        lambda conn: DEFAULT_TOOLBOX_URL,
+    )
+
+    def _boom(**_):
+        raise RuntimeError("mysql://u:secret@db down")
+
+    monkeypatch.setattr("agento.framework.config_test.toolbox.rest_capability", _boom)
+    r = run_toolbox_test(None, PATH, scope="default")
+    assert (r.status, r.code) == (ERROR, "CAPABILITY_UNAVAILABLE")
+    assert "secret" not in r.message
 
 
 @respx.mock

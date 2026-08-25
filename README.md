@@ -66,7 +66,7 @@ network — the **Artifacts** container deliberately joins none of it:
 
 - **Cron** (Python) -- Job queue consumer, scheduler, CLI host. Manages the lifecycle of agent jobs, runs migrations, and dispatches events. Connects to MySQL for job state, config, and module metadata.
 - **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over stdio. The only container with access to secrets.
-- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container where the AI agent executes. Has no credentials, no direct database access. Communicates with the toolbox exclusively through MCP tool calls.
+- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container where the AI agent executes. Holds no upstream service credentials and no direct database access — only its own run's toolbox capability, scoped to one agent_view and expiring. Communicates with the toolbox exclusively through MCP tool calls.
 - **Artifacts** (Node.js) -- Static HTTP for the `versioned_artifacts` published tree. On no shared network and holding no secret, published on `127.0.0.1` only, so an artifact is readable by a person at the host and by no agent.
 
 ## Module System

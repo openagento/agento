@@ -93,6 +93,41 @@ Precedence for the model specifically: an explicit `--model` flag on `agento run
 
 Workspace materialization (`.mcp.json`, `.codex/config.toml`, `.claude.json`, `AGENTS.md` / `SOUL.md`, `.ssh/`) is built from `ScopedConfigService.resolve_all()` — the **full effective config**, each path resolved ENV → DB → config.json. Its key set is the union of DB-override keys, `CONFIG__*` env keys, and every declared module config field — so provider-specific fields set only via ENV (`CONFIG__AGENT_VIEW__CODEX__APPROVAL_MODE`, `CONFIG__AGENT_VIEW__CLAUDE__PERSONALITY`, …) **and** `config.json`-only defaults (e.g. `agent_view/harness`) both participate. (Tool-field `config.json`-only defaults are excluded — they configure toolbox-side tools and never materialize into the build; tool overrides set via DB/ENV are still included.) The build's freshness checksum hashes that same resolved view, so changing any override or shipped default (then recreating the container, since `CONFIG__*` is read at process start) drifts the checksum and the next job-claim **rebuilds** the workspace. One resolver drives both the checksum and every materialized file — no separate DB-only path.
 
+## Access Restrictions (`access`, `allowEnv`)
+
+Two `system.json` keys narrow **who** may resolve a field and **which source** may supply it. Both are
+enforced in **both** resolvers — Python (`framework/config_resolver.py`) and the toolbox mirror
+(`src/agento/toolbox/config-loader.js`) — so neither language is a way around the other.
+
+```json
+{
+  "outlook_client_secret": {
+    "type": "obscure",
+    "label": "Graph client secret",
+    "access": "toolbox_only",
+    "allowEnv": false,
+    "showInDefault": false
+  }
+}
+```
+
+- **`"access": "toolbox_only"`** — Python never resolves the field, so it is never decrypted outside
+  the toolbox. `resolve_field` returns `None` with source `toolbox_only`; a **direct**
+  `ScopedConfigService.get()` **raises** `ToolboxOnlyConfigError`, because a direct read is a bug in
+  the caller; the bulk `resolve_all()` walk simply **omits** the path (walking every declared field is
+  not a read of that one). `get_module()` sees `None`, exactly like an unset value.
+- **`"allowEnv": false`** — the ENV source is refused for this field. `CONFIG__OUTLOOK__OUTLOOK_CLIENT_SECRET`
+  is ignored rather than honoured, and `module:validate` **fails the deploy** that sets one, so a
+  misconfiguration is loud instead of silent. Use it for anything that must not travel as plaintext in
+  a container environment.
+- The two are independent: `allowEnv: false` alone closes the ENV hole for a field a Python process
+  still legitimately needs (`app_monitor`'s SMTP password today).
+- Combine with `showIn*` (below) to also keep the value off the DEFAULT scope, so `bootstrap()`'s
+  DEFAULT-only walk never sees the row at all.
+
+See [zero-trust.md](../architecture/zero-trust.md) and
+[toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
+
 ## Scope Restrictions (`showIn*`)
 
 Fields declared in a module's `system.json` may restrict which scopes allow editing, using Magento-style flags:
@@ -129,7 +164,7 @@ See [Config Testers](testers.md).
 
 ## Further Reading
 
-- [ENV Variables](env-vars.md) — naming convention and examples
+- [ENV Variables](env-vars.md) — naming convention, examples, and the `allowEnv: false` exception
 - [core_config_data](core-config-data.md) — DB table and CLI
 - [Encryption](encryption.md) — obscure fields and AES-256-CBC
 - [Config Testers](testers.md) — declaring a "Test connection" for a field

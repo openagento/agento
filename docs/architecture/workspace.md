@@ -44,7 +44,7 @@ workspace/
 │           │       ├── .claude.json        #     model, systemPrompt, permissions
 │           │       ├── .claude/            #     settings.json, skills/<name>/ directories
 │           │       ├── .codex/             #     config.toml (model, [mcp_servers.*])
-│           │       ├── .mcp.json           #     Toolbox URL with ?agent_view_id=N
+│           │       ├── .mcp.json           #     Toolbox URL — no claims (shared by every run)
 │           │       ├── AGENTS.md           #     Resolved instructions
 │           │       ├── SOUL.md             #     Resolved personality
 │           │       ├── CLAUDE.md           #     Pointer → AGENTS.md
@@ -61,7 +61,7 @@ workspace/
 │               ├── .claude.json            #     Copied from build
 │               ├── .claude/                #     Copied from build (agent may write to it)
 │               ├── .codex/                 #     Copied from build
-│               ├── .mcp.json               #     Copied + ?job_id=N injected
+│               ├── .mcp.json               #     Copied + ?cap=<capability> injected
 │               ├── AGENTS.md               #     Copied from build
 │               ├── SOUL.md                 #     Copied from build
 │               ├── CLAUDE.md               #     Copied from build
@@ -414,7 +414,7 @@ This symlink is the **only thing the consumer looks at** to find "the active bui
 
 **Why a separate artifacts dir per job:**
 
-1. **Parallel jobs can't clobber each other.** If two jobs ran against the same `build/.../current` directly, they'd both try to mutate `.mcp.json` (injecting their own `job_id`) and race.
+1. **Parallel jobs can't clobber each other.** If two jobs ran against the same `build/.../current` directly, they'd both try to mutate `.mcp.json` (injecting their own capability) and race.
 2. **Agent CLIs write scratch files.** Claude Code drops `.claude/` state, history, cache. A per-job dir keeps this isolated from the build.
 3. **Outputs are scoped per job.** Screenshots, recorded videos, downloaded Jira attachments all land under `artifacts/{ws}/{av}/{job_id}/` so they're trivially attributable.
 
@@ -429,17 +429,32 @@ So the artifacts dir starts as a **thin overlay** — gigabytes of static build 
 
 ### Runtime param injection
 
-After copying, `WorkspaceAdapter.inject_runtime_params()` mutates the copied config files to append the per-job `job_id`:
+**The build carries no claims.** It is shared by every run of the agent_view, so its `.mcp.json` /
+`.codex/config.toml` holds the bare toolbox URL — no `agent_view_id`, no `job_id`. After copying,
+`WorkspaceAdapter.inject_runtime_params(artifacts_dir, job_id=…, run_id=…, capability_token=…, toolbox_url=…)`
+mutates the **copied** config, appends the run's scope (which names its desk) and its own capability:
 
 ```
 Before (in build):
-  http://toolbox:3001/mcp?agent_view_id=2
+  http://toolbox:3001/mcp
 
 After (in artifacts):
-  http://toolbox:3001/mcp?agent_view_id=2&job_id=42
+  http://toolbox:3001/mcp?job_id=42&cap=<capability token>
 ```
 
-The toolbox uses `agent_view_id` to look up the agent_view row (and its workspace) in the DB, and `job_id` to scope logs and artifact output paths back to the exact job that made each MCP call. There's no need to pass `workspace_code`/`agent_view_code` on the URL — the toolbox resolves them from `agent_view_id`.
+The toolbox hashes that token, finds its `toolbox_capability` row, and reads `agent_view_id` and
+`job_id` from **the row** — so the URL can no longer assert a scope, only present a credential. There is
+still no need to pass `workspace_code`/`agent_view_code`: the toolbox resolves them from the
+`agent_view_id` it derived.
+
+**Only the toolbox's own MCP entry is touched.** The adapter matches an entry by origin **and** path
+(`/mcp` or `/sse`), never by substring, so a third-party MCP server an operator added under
+`agent_view/mcp/servers` never receives the capability. A misconfigured `core/toolbox/url` raises and the
+run fails, rather than scattering the token.
+
+**Interactive runs go through the same path.** `agent_view:prepare-run` mints an `mcp_interactive`
+capability and injects it into the run dir's MCP config — and deliberately keeps it out of the JSON it
+prints, because that output reaches the host terminal and its shell history.
 
 ### Cleanup
 
@@ -469,7 +484,7 @@ drwxr-xr-x  ..
 drwxr-xr-x  .claude/     # copied from build
 -rw-r--r--  .claude.json # copied from build
 drwxr-xr-x  .codex/      # copied from build
--rw-r--r--  .mcp.json    # copied + ?job_id=42 injected
+-rw-r--r--  .mcp.json    # copied + ?cap=<capability> injected
 -rw-r--r--  AGENTS.md
 -rw-r--r--  SOUL.md
 -rw-r--r--  CLAUDE.md
@@ -488,7 +503,7 @@ The agent's world is:
 - **home** = shared CLI session store (globally accessible via symlinks)
 - **Everything else** is reached through MCP tool calls to the toolbox
 
-No credentials, no direct DB access, no awareness of other jobs.
+No upstream service credentials (only the run's own scoped toolbox capability), no direct DB access, no awareness of other jobs.
 
 ---
 

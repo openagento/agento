@@ -145,7 +145,13 @@ class WorkspaceAdapter(Protocol):
         ...
 
     def inject_runtime_params(
-        self, artifacts_dir: Path, *, job_id: int | None, run_id: str | None = None,
+        self,
+        artifacts_dir: Path,
+        *,
+        job_id: int | None,
+        run_id: str | None = None,
+        capability_token: str | None = None,
+        toolbox_url: str | None = None,
     ) -> None:
         """Apply per-run facts to the copied build in ``artifacts_dir``.
 
@@ -159,6 +165,14 @@ class WorkspaceAdapter(Protocol):
         the URL names — a URL naming neither id lands on the shared ``_fallback`` desk and
         gets no desk at all. Build the scope with
         ``agento.framework.harness.run_scope.scope_toolbox_url`` rather than by hand.
+
+        ``capability_token`` is the run's toolbox credential, with the trusted
+        ``toolbox_url`` it belongs to. Append it (``cap=<token>``) ONLY to a server whose
+        URL is our toolbox's MCP endpoint — match with
+        ``agento.framework.harness.is_toolbox_endpoint(url, toolbox_origin(toolbox_url))``,
+        never a ``"/mcp" in url`` test — so it can never travel to an operator's
+        third-party MCP server. An adapter that does not accept it gets no token, and the
+        toolbox refuses its session with ``401``.
 
         An adapter MAY additionally accept ``effective_model`` / ``effective_provider``
         keyword arguments — the per-run values, where a ``--model`` override wins over

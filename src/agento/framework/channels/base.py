@@ -83,7 +83,7 @@ class DiscoverableChannel(Protocol):
     """Channel that can discover pending work items."""
 
     def discover_work(
-        self, config: object, logger: logging.Logger
+        self, config: object, logger: logging.Logger, *, capability_token: str
     ) -> list[WorkItem]: ...
 
 

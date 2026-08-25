@@ -6,12 +6,20 @@ import signal
 import time
 
 from .job_models import Job, JobStatus
+from .toolbox_capability import revoke_job_capabilities
 
 
-def fetch_job(conn, job_id: int) -> Job | None:
-    """Fetch a single job by ID. Returns None if not found."""
+def fetch_job(conn, job_id: int, *, for_update: bool = False) -> Job | None:
+    """Fetch a single job by ID. Returns None if not found.
+
+    ``for_update`` takes a row lock, so a caller that decides on the status it
+    reads is serialised against a concurrent writer of that same row.
+    """
+    sql = "SELECT * FROM job WHERE id = %s"
+    if for_update:
+        sql += " FOR UPDATE"
     with conn.cursor() as cur:
-        cur.execute("SELECT * FROM job WHERE id = %s", (job_id,))
+        cur.execute(sql, (job_id,))
         row = cur.fetchone()
     if row is None:
         return None
@@ -30,7 +38,9 @@ def pause_job(conn, job_id: int) -> Job:
     Raises ValueError if job is not found or no longer in RUNNING status
     at the moment the UPDATE executes.
     """
-    job = fetch_job(conn, job_id)
+    # FOR UPDATE: without the lock this read is stale the moment the consumer
+    # mints the run's capabilities, and the revoke below would find nothing.
+    job = fetch_job(conn, job_id, for_update=True)
     if job is None:
         raise ValueError(f"Job not found: id={job_id}")
     if job.status != JobStatus.RUNNING:
@@ -48,6 +58,10 @@ def pause_job(conn, job_id: int) -> Job:
             (job_id,),
         )
         rows = cur.rowcount
+    if rows:
+        # Same transaction as the status flip: a paused job must not keep a live
+        # capability, and a failing revoke must not leave the job PAUSED.
+        revoke_job_capabilities(conn, job_id, commit=False)
     conn.commit()
 
     if rows == 0:

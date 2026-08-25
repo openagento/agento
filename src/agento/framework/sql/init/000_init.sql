@@ -192,6 +192,25 @@ CREATE TABLE IF NOT EXISTS ingress_identity (
         FOREIGN KEY (agent_view_id) REFERENCES agent_view(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Toolbox capability tokens (hashes only — the raw token is never stored).
+CREATE TABLE toolbox_capability (
+    id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    token_hash    CHAR(64)        NOT NULL,
+    kind          VARCHAR(32)     NOT NULL,
+    agent_view_id INT UNSIGNED    NULL,
+    job_id        BIGINT UNSIGNED NULL,
+    expires_at    DATETIME        NOT NULL,
+    revoked_at    DATETIME        NULL,
+    created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_toolbox_capability_hash (token_hash),
+    KEY idx_toolbox_capability_job (job_id),
+    KEY idx_toolbox_capability_expires (expires_at),
+    -- A deleted agent_view takes its live capabilities with it, so a token can never
+    -- outlive the scope it names and land on the strict resolver's error path instead.
+    CONSTRAINT fk_toolbox_capability_view FOREIGN KEY (agent_view_id)
+        REFERENCES agent_view (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Mark all framework migrations as applied so setup:upgrade skips them
 INSERT INTO schema_migration (version) VALUES
     ('001_create_tables'),
@@ -228,4 +247,5 @@ INSERT INTO schema_migration (version) VALUES
     ('031_job_provider'),
     ('032_credential_label_unique_per_scope'),
     ('033_drop_historical_credential_indexes'),
-    ('034_credential_error_source_and_refresh_lease');
+    ('034_credential_error_source_and_refresh_lease'),
+    ('035_toolbox_capability');

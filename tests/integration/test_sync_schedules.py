@@ -32,7 +32,7 @@ class TestSyncScheduleLifecycle:
     ):
         """First sync: 2 issues enabled. Second sync: 1 removed → disabled."""
         logger = logging.getLogger("test")
-        toolbox = ToolboxClient(int_config.toolbox_url)
+        toolbox = ToolboxClient(int_config.toolbox_url, capability_token="test-cap")
 
         # First sync: AI-2 and AI-3 (AI-4 has null freq, AI-5 unknown — both skipped)
         respx.post("http://toolbox:3001/api/jira/search").mock(
@@ -74,7 +74,7 @@ class TestSyncScheduleLifecycle:
     def test_sync_updates_existing_schedule_summary(self, int_config, int_periodic_config, int_db_config):
         """ON DUPLICATE KEY UPDATE: summary changes are reflected."""
         logger = logging.getLogger("test")
-        toolbox = ToolboxClient(int_config.toolbox_url)
+        toolbox = ToolboxClient(int_config.toolbox_url, capability_token="test-cap")
 
         fixture_v1 = {
             "issues": [{

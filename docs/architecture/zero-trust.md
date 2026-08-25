@@ -1,17 +1,23 @@
 # Zero-Trust Credential Model
 
-Toolbox is the **only** container with access to secrets. The AI agent has no credentials.
+Toolbox is the **only** container with access to secrets. The AI agent holds no upstream service
+credentials — the one credential it carries is its own run's capability token, which buys nothing but
+the toolbox, scoped to one agent_view and expiring.
 
-> **Known limitation (aspirational, not yet fully enforced on the Python side).** `bootstrap()`
-> transiently decrypts **all** DEFAULT-scope `obscure` config while resolving module config, so the
-> cron, the consumer (every hot-reload), and the CLI briefly hold decrypted secrets. For
-> *toolbox-only* creds (e.g. the Outlook Graph secret) this decryption is unnecessary and the value
-> is discarded unused. But it is **not** universally unused: `app_monitor` intentionally consumes
-> the obscure SMTP password **cron-side** to send breach alerts (`observers.py`), so that credential
-> genuinely lives in the cron today and needs migration to a toolbox-owned transport. `secrets.env`
-> is also mounted into the cron service today, and the `CONFIG__*` ENV path is plaintext regardless.
-> A per-field `toolbox_only` classification + the app_monitor SMTP transport migration are the
-> tracked fix — see [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
+> **Enforced per field, still aspirational for the rest.** A field marked
+> `"access": "toolbox_only"` in `system.json` is **never** resolved by Python: `resolve_field` returns
+> `None`, `ScopedConfigService.get()` raises, and the bulk `resolve_all()` skips it. The Outlook Graph
+> secret, certificate and certificate password are classified this way, so `bootstrap()` no longer
+> decrypts them in the cron.
+>
+> Other `obscure` fields are still decrypted transiently by `bootstrap()` while resolving DEFAULT-scope
+> module config, so the cron, the consumer (every hot-reload) and the CLI briefly hold them. One of them
+> is used there on purpose: `app_monitor` consumes the obscure SMTP password **cron-side** to send breach
+> alerts (`observers.py`), so that credential genuinely lives in the cron and still needs migration to a
+> toolbox-owned transport. `secrets.env` is also mounted into the cron service today, and the `CONFIG__*`
+> ENV path is plaintext regardless — which is why `allowEnv: false` refuses the ENV source for a field
+> that must not travel that way. Remaining work: item 3 of the
+> [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md) PRD.
 
 ## Security Boundary
 
@@ -26,7 +32,7 @@ Toolbox is the **only** container with access to secrets. The AI agent has no cr
 │  database passwords, API tokens    │
 │  (except its own OAuth)            │
 └───────────┬────────────────────────┘
-            │ MCP over streamable HTTP (Claude + Codex) — no credentials in request
+            │ MCP over streamable HTTP (Claude + Codex) — capability only, no service creds
             ▼
 ┌────────────────────────────────────┐
 │  Toolbox                           │
@@ -40,10 +46,93 @@ Toolbox is the **only** container with access to secrets. The AI agent has no cr
 └────────────────────────────────────┘
 ```
 
+## Toolbox East-West Authentication
+
+Nothing reaches the toolbox anonymously. Every MCP session and every `/api` route carries a
+**capability token**, and the toolbox derives the request's scope from that token — never from what
+the caller says about itself.
+
+**The claims are server-side.** The token is a random opaque string; the `toolbox_capability` table
+stores only its SHA-256 hash, together with `kind`, `agent_view_id`, an optional `job_id`,
+`expires_at` and `revoked_at`. On each request the toolbox hashes the presented token, looks the row
+up, and uses **that row's** `agent_view_id` / `job_id`. A query string or request body may still
+carry an `agent_view_id`, but it is only compared with the capability's scope — a mismatch is refused
+(400), never honoured. So with the capability issued to its own run, an agent cannot select another
+view — a guarantee rather than a hope. What it does not cover is an agent that obtains a *different*
+run's capability off the shared workspace; see the co-tenant limit below.
+
+`POST /config-test` (a live credential probe, see [testers](../config/testers.md)) is guarded the
+same way: an `internal_rest` capability, scope from the row. It is the one route that also accepts a
+**viewless** `internal_rest` capability, which tests the default scope; every other guard refuses
+one. `run_id` on an MCP URL names an interactive run's desk directory only — it grants no scope, and
+a `job_id` on the URL may only agree with the capability's job.
+
+**Three kinds, each with the smallest privilege that works:**
+
+| Kind | Holder | Reaches | TTL |
+|------|--------|---------|-----|
+| `mcp_job` | a consumer-run job | `/mcp`, `/sse` | the job's lifetime |
+| `mcp_interactive` | one interactive `agento run` | `/mcp`, `/sse` | 12 h |
+| `internal_rest` | Python publishers, channels, onboarding | `/api/*`, scoped `/health` | 120 s |
+
+`mcp_job` cannot be minted by hand ([`capability:mint`](../cli/capability.md) refuses it): its
+lifetime is bound to the job's terminal transition, and a hand-minted one would outlive the code that
+revokes it. The scoped `/health` diagnostic accepts `internal_rest` **only** — an MCP kind lives
+inside the sandbox, and a diagnostic that reports backend reachability would be an infrastructure
+oracle for the agent.
+
+**Status codes:** `401` = no token. `403` = a token that is present but invalid, expired or revoked,
+or a view the resolver cannot resolve. `503` = the scope resolver itself failed (a DB blip) — the
+request is refused rather than widened to global scope.
+
+**Revocation stops the next tool call on both transports.** Streamable HTTP re-verifies the
+capability on every request. SSE is two halves: the `/sse` stream is verified once at connect (a
+long-lived stream has no per-request hook), but `POST /messages` — the half that actually carries
+the tool calls — is verified per request like `/mcp`. So a revoked token stops the next CALL either
+way; what a revoke cannot do on SSE is tear down the open stream itself, which then delivers nothing
+new. **Both halves are also bound to the session's own capability:** a session is owned by the
+capability that opened it, and a different — even perfectly valid — capability driving it is `403`.
+That matters because `/messages` addresses the session by a **query string** `sessionId`, a value
+access logs keep; the id alone authorizes nothing.
+
+An MCP client is configured with a bare URL and sends no headers of its own, so the `/messages`
+endpoint the server advertises in its `endpoint` event carries `?cap=<capability>` — the same
+credential the client used to open `/sse`, on the same channel, to the same client. The client posts
+to that string verbatim. This is why the guard did not break the transport, and why `cap` must never
+be echoed into a log line. Job capabilities are additionally revoked at every terminal transition (`SUCCESS`, retry
+to `TODO`, `DEAD`, `pause_job`, and stale-job recovery), inside the same transaction that writes the
+status — a failing revoke rolls the status back, leaving the job `RUNNING` for the recovery path.
+
+**Where tokens come from.** The consumer mints one per job; `agent_view:prepare-run` mints one per
+interactive run; both are injected into the run's own MCP config entry only, matched by origin **and**
+path (`/mcp` or `/sse`), never by substring — an operator's third-party MCP server never receives it.
+Operators mint the other two kinds with [`capability:mint`](../cli/capability.md). A minted token is a
+credential: stdout once, onward only through stdin or a mode-0600 file, never argv, a log, or shell
+history. Any capability the framework persists from agent output is replaced with `cap=***` first.
+
+**What a capability does NOT protect against: a co-tenant run on the same host.** A run's token is
+written into that run's own MCP config, inside its own artifacts directory. Concurrent runs are
+isolated by *directory*, not by *identity*: every agent process the consumer spawns runs as the same
+`agent` account, and the cron container mounts the whole workspace, so file permissions cannot keep
+one run out of another run's config file. A shell-capable agent that reads a co-tenant's live token
+authenticates as that co-tenant's view. Mode `0600` does not change this — same UID, same access.
+
+That is a residual limitation, not a regression: before capabilities the toolbox served **any**
+caller on the network with **any** requested scope, so the same agent needed no theft at all. What
+capabilities add is a bound on the window — a job token is revoked at the job's terminal transition,
+so a stolen token dies with the run it came from — and a complete audit trail of which row a request
+resolved through. Closing it fully needs a per-run **identity** boundary (a distinct UID per run, or
+a container per run), which is the sandbox-segmentation half of the same work item and is tracked in
+[ROADMAP.md](../../ROADMAP.md). Until then, treat concurrent runs in one deployment as mutually
+trusting, and do not rely on view separation as a boundary between mutually hostile tenants.
+
+**Why not a shared secret, and why not segmentation alone** — see the 2026-08-23 entry in
+[DECISIONS.md](../../DECISIONS.md).
+
 ## How It Works
 
 1. Agent calls MCP tool: `mysql_myapp_prod` with query `SELECT * FROM users LIMIT 5`
-2. Toolbox receives the request (no credentials in the request — just tool name + query)
+2. Toolbox receives the request (no service credentials in it — a capability token, the tool name and the query)
 3. Toolbox resolves connection config from modules + core_config_data + ENV
 4. Toolbox validates the query is read-only (`SELECT` only)
 5. Toolbox executes the query using its own credentials

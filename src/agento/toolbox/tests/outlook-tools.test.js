@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import { register, matchesWhitelist } from '../../modules/outlook/toolbox/outlook.js';
+import { register, buildSelfAddresses } from '../../modules/outlook/toolbox/outlook.js';
+// The framework injects the shared toolbox helpers through the registration context
+// (config-loader.js TOOLBOX_HELPERS); a module cannot import framework code by path.
+import { matchesWhitelist } from '../email-match.js';
 
 // Inject a fake graph-auth so no real @azure/identity is needed; Graph HTTP is stubbed via global fetch.
 const graphAuthFactory = () => ({
@@ -34,6 +37,7 @@ const textRes = () => ({ ok: true, text: () => Promise.resolve(''), json: () => 
 function ctx(overrides = {}) {
   return {
     log: vi.fn(),
+    matchesWhitelist,
     moduleConfigs: { outlook: cfg, core: { email_whitelist: 'sklep@mycompanystudio.com, *@mycompany.com' } },
     isToolEnabled: () => true,
     graphAuthFactory,
@@ -54,6 +58,7 @@ const ctxWithPolicy = (policy, extra = {}) => ctx({
 function ctxWithOutlook(outlookOverrides = {}) {
   return {
     log: vi.fn(),
+    matchesWhitelist,
     moduleConfigs: {
       outlook: { ...cfg, allowed_senders: 'sklep@mycompanystudio.com, *@mycompany.com', ...outlookOverrides },
       core: { email_whitelist: 'sklep@mycompanystudio.com, *@mycompany.com' },
@@ -140,7 +145,7 @@ describe('outlook_reply = reply-all (reply_policy=block → block-whole whitelis
     expect(r.isError).toBe(true);
     // only the metadata lookup happened; no createReplyAll
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toContain('$select=from,replyTo,toRecipients,ccRecipients,conversationId');
+    expect(fetchMock.mock.calls[0][0]).toContain('$select=from,replyTo,toRecipients,ccRecipients');
     expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith('/createReplyAll'))).toBe(false);
   });
 
@@ -483,6 +488,7 @@ describe('MCP tools target the per-agent_view mailbox (no code change — scoped
   function ctxForView(mailbox) {
     return {
       log: vi.fn(),
+      matchesWhitelist,
       moduleConfigs: {
         outlook: { ...cfg, outlook_mailbox_user_id: mailbox },
         core: { email_whitelist: 'sklep@mycompanystudio.com, *@mycompany.com' },
@@ -724,6 +730,7 @@ describe('outlook thread read (tools/outlook_list_thread/is_enabled) — read sc
       jobId: 10,
       agentViewId: 5,
       artifactsDir: '/workspace/artifacts/ws/av/10',
+      matchesWhitelist,
       ...ctxOverrides,
     };
   }
@@ -999,5 +1006,85 @@ describe('a getToken rejection surfaced through a tool stays sanitized', () => {
     expect(r.isError).toBe(true);
     expect(r.content[0].text).not.toMatch(/client secret|AADSTS|private key/i);
     expect(fetchMock).not.toHaveBeenCalled(); // token acquisition failed before any Graph HTTP call
+  });
+});
+
+// A mailbox reachable under several addresses: mail arriving via an alias keeps that alias in the
+// reply-all recipient list. The alias is the agent ITSELF, so it must never be gated against
+// core/email_whitelist — otherwise the agent reports itself as dropped, or (reply_policy=block)
+// refuses to answer the thread at all.
+const ctxWithAliases = (aliases, policy) => ctx({
+  moduleConfigs: {
+    outlook: { ...cfg, mailbox_aliases: aliases, ...(policy ? { reply_policy: policy } : {}) },
+    core: { email_whitelist: 'sklep@mycompanystudio.com, *@mycompany.com' },
+  },
+});
+
+describe('buildSelfAddresses', () => {
+  it('includes the primary mailbox, lowercased', () => {
+    expect([...buildSelfAddresses('Agent@Example.com', '')]).toEqual(['agent@example.com']);
+  });
+
+  it('includes the aliases, trimmed and lowercased', () => {
+    const s = buildSelfAddresses('agent@example.com', ' Support@Corp.com , sales@corp.com ');
+    expect(s.has('support@corp.com')).toBe(true);
+    expect(s.has('sales@corp.com')).toBe(true);
+  });
+
+  it('ignores blank entries and a missing mailbox', () => {
+    expect([...buildSelfAddresses('', ' , ,')]).toEqual([]);
+  });
+});
+
+describe('outlook_reply self-exclusion covers the mailbox aliases', () => {
+  it('does not gate an alias against the whitelist (reply_policy=remove)', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonRes({
+        from: { emailAddress: { address: 'sklep@mycompanystudio.com' } },
+        toRecipients: [{ emailAddress: { address: 'support@corp.com' } }],
+        ccRecipients: [],
+      }))
+      .mockResolvedValueOnce(jsonRes({ id: 'd1' }))
+      .mockResolvedValueOnce(textRes());
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, ctxWithAliases('support@corp.com'));
+    const r = await s.tools.outlook_reply.handler({ message_id: 'm1', body: '<p>hi</p>' });
+    expect(r.isError).toBeUndefined();
+    // Only the whitelisted sender remains → nothing to drop → no PATCH, straight to send.
+    expect(r.content[0].text).not.toContain('support@corp.com');
+    expect(fetchMock.mock.calls[2][0]).toMatch(/\/send$/);
+  });
+
+  it('does not block a group thread because of a non-whitelisted alias (reply_policy=block)', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonRes({
+        from: { emailAddress: { address: 'sklep@mycompanystudio.com' } },
+        toRecipients: [{ emailAddress: { address: 'SUPPORT@corp.com' } }],
+        ccRecipients: [{ emailAddress: { address: 'bob@mycompany.com' } }],
+      }))
+      .mockResolvedValueOnce(jsonRes({ id: 'd1' }))
+      .mockResolvedValueOnce(textRes());
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, ctxWithAliases(' support@corp.com ', 'block'));
+    const r = await s.tools.outlook_reply.handler({ message_id: 'm1', body: '<p>hi</p>' });
+    expect(r.isError).toBeUndefined();
+    expect(fetchMock.mock.calls[2][0]).toMatch(/\/send$/);
+  });
+
+  it('still gates a real stranger that only LOOKS like an alias', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonRes({
+        from: { emailAddress: { address: 'sklep@mycompanystudio.com' } },
+        toRecipients: [{ emailAddress: { address: 'support@corp.com.evil.com' } }],
+        ccRecipients: [],
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, ctxWithAliases('support@corp.com', 'block'));
+    const r = await s.tools.outlook_reply.handler({ message_id: 'm1', body: '<p>hi</p>' });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain('support@corp.com.evil.com');
   });
 });

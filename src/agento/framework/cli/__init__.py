@@ -111,6 +111,7 @@ def _register_framework_commands() -> None:
     """Register framework commands directly (no bootstrap needed)."""
     from ..admin import AdminCommand
     from ..commands import register_command
+    from .capability import CapabilityMintCommand, CapabilityRevokeCommand
     from .compose import DownCommand, LogsCommand, UpCommand
     from .config import (
         ConfigGetCommand,
@@ -165,6 +166,7 @@ def _register_framework_commands() -> None:
         CredentialRegisterCommand, CredentialRefreshCommand, CredentialListCommand,
         CredentialDeregisterCommand, CredentialMarkErrorCommand, CredentialResetCommand,
         CredentialSetPriorityCommand, CredentialUsageCommand,
+        CapabilityMintCommand, CapabilityRevokeCommand,
         # Hidden `token:*` aliases, kept for one cycle (ROADMAP.md).
         *LEGACY_TOKEN_COMMANDS,
     ]:
@@ -172,13 +174,14 @@ def _register_framework_commands() -> None:
 
 
 _GROUP_ORDER = [
-    "project", "setup", "module", "config", "credential",
+    "project", "setup", "module", "config", "credential", "capability",
     "ingress", "job", "jira", "test",
 ]
 
 _GROUP_LABELS = {
     "project": "Project", "setup": "Setup", "module": "Modules",
-    "config": "Configuration", "credential": "Credentials", "ingress": "Ingress",
+    "config": "Configuration", "credential": "Credentials",
+    "capability": "Capabilities", "ingress": "Ingress",
     "job": "Jobs", "jira": "Jira", "test": "Testing",
 }
 

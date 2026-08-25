@@ -135,6 +135,8 @@ All pools targeting the same adapter, host, and port share `core/server_concurre
 
 SQL healthchecks use the same server budget but are actively cancelled at the health endpoint deadline: MySQL destroys its borrowed connection and MSSQL cancels its request. A timed-out `/health?test=true` therefore cannot leave an invisible query occupying the shared budget.
 
+The scoped diagnostic requires an `internal_rest` capability (`Authorization: Bearer <token>`, `401` without one); bare `/health` remains unauthenticated liveness. Its `error` field is always one of the stable categories `auth failed` / `unreachable` / `timeout` / `misconfigured` / `failed` — a driver message would carry the connection credential it just used, so it is discarded rather than returned or logged. See [creating-an-adapter.md](creating-an-adapter.md) and [docs/cli/capability.md](../cli/capability.md).
+
 ```bash
 # Defaults applied to every SQL tool and every DB server endpoint
 agento config:set core/client_connection_pool_max_per_tool 10
