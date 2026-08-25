@@ -5,14 +5,16 @@ import logging
 
 import httpx
 
+from agento.framework.toolbox_capability import rest_capability
+
 logger = logging.getLogger(__name__)
 
 
-def _resolve_account_id(toolbox_url, agent_view_id=None):
+def _resolve_account_id(toolbox_url, agent_view_id=None, *, capability_token: str):
     """Call /myself via toolbox and return accountId or None."""
     from .toolbox_client import ToolboxClient
 
-    toolbox = ToolboxClient(toolbox_url)
+    toolbox = ToolboxClient(toolbox_url, capability_token=capability_token)
     try:
         myself = toolbox.jira_request(
             "GET", "/rest/api/3/myself",
@@ -48,10 +50,11 @@ class ResolveAccountIdObserver:
             from agento.framework.db import get_connection
             from agento.framework.workspace import get_active_agent_views
 
-            conn = get_connection(DatabaseConfig.from_env())
+            db_config = DatabaseConfig.from_env()
+            conn = get_connection(db_config)
             try:
                 for av in get_active_agent_views(conn):
-                    self._resolve_single_agent_view(conn, av, toolbox_url)
+                    self._resolve_single_agent_view(conn, av, toolbox_url, db_config)
             finally:
                 conn.close()
 
@@ -60,7 +63,7 @@ class ResolveAccountIdObserver:
         except Exception:
             logger.warning("jira: failed to resolve agent_view account IDs (non-fatal)")
 
-    def _resolve_single_agent_view(self, conn, av, toolbox_url):
+    def _resolve_single_agent_view(self, conn, av, toolbox_url, db_config):
         from agento.framework.config_resolver import ScopedConfigService
         from agento.framework.scoped_config import (
             Scope,
@@ -88,8 +91,13 @@ class ResolveAccountIdObserver:
         if not scoped_user or not scoped_token:
             return
 
+        # This observer runs OUTSIDE any job: it has no job capability to borrow and no
+        # terminal transition to revoke through, so it owns the whole lifetime.
         try:
-            account_id = _resolve_account_id(toolbox_url, agent_view_id=av.id)
+            with rest_capability(agent_view_id=av.id, db_config=db_config) as capability_token:
+                account_id = _resolve_account_id(
+                    toolbox_url, agent_view_id=av.id, capability_token=capability_token,
+                )
             if not account_id:
                 logger.warning("jira: /myself missing accountId for agent_view %s", av.code)
                 return

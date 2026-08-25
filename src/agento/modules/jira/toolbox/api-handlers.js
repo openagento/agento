@@ -17,7 +17,8 @@ function missingCredFields(user, token, host) {
 
 export function createSearchHandler(configResolver, log) {
   return async (req, res) => {
-    const { jql, fields = [], maxResults = 50, agent_view_id } = req.body;
+    const { jql, fields = [], maxResults = 50 } = req.body;
+    const agent_view_id = req.capability.agentViewId;
 
     if (!jql) {
       log('api/jira/search', 'ERROR', `agent_view_id=${agent_view_id ?? '?'} jql missing`);
@@ -64,7 +65,8 @@ export function createSearchHandler(configResolver, log) {
 
 export function createCommentsHandler(configResolver, log) {
   return async (req, res) => {
-    const { issue_key, agent_view_id } = req.body;
+    const { issue_key } = req.body;
+    const agent_view_id = req.capability.agentViewId;
 
     if (!issue_key) {
       log('api/jira/issue/comments', 'ERROR', `agent_view_id=${agent_view_id ?? '?'} issue_key missing`);

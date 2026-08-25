@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+// The framework injects the shared toolbox helpers through the registration context
+// (config-loader.js TOOLBOX_HELPERS); a module cannot import framework code by path.
+import { matchesWhitelist } from '../email-match.js';
 
 // Mock node:fs/promises so stat/realpath/readFile/writeFile/mkdir are controllable — real /workspace
 // does not exist in CI, and realpath is used by both attachment validation and the artifact-dir write.
@@ -44,6 +47,7 @@ const ARTIFACTS = '/workspace/artifacts/ws/av/123';
 function ctxWithOutlook(outlookOverrides = {}, artifactsDir = ARTIFACTS) {
   return {
     log: vi.fn(),
+    matchesWhitelist,
     moduleConfigs: {
       outlook: { ...cfg, allowed_senders: 'sklep@mycompanystudio.com, *@mycompany.com', ...outlookOverrides },
       core: { email_whitelist: 'sklep@mycompanystudio.com, *@mycompany.com' },

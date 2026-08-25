@@ -16,6 +16,19 @@ from agento.framework.workspace import AgentView, Workspace
 from agento.modules.claude.src.output_parser import ClaudeResult
 from tests.harness_fixtures import stub_workspace_adapters
 
+
+@pytest.fixture(autouse=True)
+def _stub_run_capabilities():
+    """The mint reads a real `job` row (SELECT ... FOR UPDATE) these tests do not seed.
+
+    Its own behaviour is covered by tests/unit/framework/test_consumer_capability.py.
+    """
+    with patch.object(
+        Consumer, "_issue_run_capabilities", return_value=("cap-mcp", None)
+    ) as m:
+        yield m
+
+
 pytestmark = pytest.mark.usefixtures("builtin_harnesses")
 
 
@@ -292,10 +305,15 @@ class TestRunJobWithAgentView:
         MockRunner.assert_called_once()
         assert MockRunner.call_args.args[1].model == "flag-model"
 
-    def test_scoped_overrides_generate_mcp_config_with_agent_view_id(
+    def test_scoped_overrides_generate_mcp_config_without_claims_in_the_url(
         self, tmp_path,
     ):
-        """End-to-end: ClaudeWorkspaceAdapter writes .mcp.json with agent_view_id in URL."""
+        """End-to-end: the build's .mcp.json carries the toolbox URL and NO claims.
+
+        The agent_view is derived server-side from the run's capability, which
+        `inject_runtime_params` writes into the per-run copy — never into the shared
+        build, which several runs may reuse.
+        """
         from agento.framework.config_resolver import ScopedConfigService
         from agento.framework.harness import get_agent_config
         from agento.modules.claude.src.config import ClaudeWorkspaceAdapter
@@ -319,7 +337,9 @@ class TestRunJobWithAgentView:
 
         mcp_config = json.loads((wd / ".mcp.json").read_text())
         url = mcp_config["mcpServers"]["toolbox"]["url"]
-        assert "agent_view_id=5" in url
+        assert url == "http://toolbox:3001/sse"
+        assert "agent_view_id" not in url
+        assert "cap=" not in url
 
         # Also verify .claude.json was generated
         claude_config = json.loads((wd / ".claude.json").read_text())

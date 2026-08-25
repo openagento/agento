@@ -134,27 +134,19 @@ export function createVerifyHandler(log, authFactory = createGitHubAuth) {
 
 // --- POST /api/github/open-prs (publisher). Scoped-config is the authorization boundary; body values
 //     may only NARROW (top), never authorize (no caller owner/login/allowlist). ---
-export function createOpenPrsHandler({ loadScopedDbOverrides, loadModuleConfigs }, log, authFactory = createGitHubAuth) {
+export function createOpenPrsHandler({ loadScopedDbOverridesStrict, loadModuleConfigs }, log, authFactory = createGitHubAuth) {
   return async (req, res) => {
     if (refusedForEnvOverride(res, log, 'api/github/open-prs')) return;
-    const { agent_view_id: agentViewId, lane, top } = req.body || {};
-    const viewId = Number(agentViewId);
-    if (!Number.isInteger(viewId) || viewId <= 0) {
-      return res.status(400).json({ error: 'agent_view_id must be a positive integer' });
-    }
+    const { lane, top } = req.body || {};
+    const viewId = req.capability.agentViewId;
     // A typo'd lane must fail loudly: silently returning bare records would make the publisher find
     // no work forever, which looks exactly like "nothing to do".
     if (!LANES.includes(lane)) {
       return res.status(400).json({ error: `lane must be one of: ${LANES.join(', ')}` });
     }
 
-    // Fail closed on an unknown agent_view: the base loader returns global overrides with
-    // agentViewMeta=null when the view does not exist — never silently act at global scope.
-    const { overrides, agentViewMeta } = await loadScopedDbOverrides(viewId);
-    if (!agentViewMeta) {
-      log('api/github/open-prs', 'ERROR', `unknown agent_view_id=${viewId}`);
-      return res.status(404).json({ error: 'Unknown agent_view_id' });
-    }
+    // The strict loader THROWS for an unknown view instead of widening to global config.
+    const { overrides } = await loadScopedDbOverridesStrict(viewId);
 
     const moduleConfigs = await loadModuleConfigs(overrides);
     const cfg = moduleConfigs.github || {};

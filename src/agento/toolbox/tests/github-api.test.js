@@ -9,6 +9,7 @@ import {
   parseRepoAllowlist,
 } from '../../modules/github/toolbox/api-handlers.js';
 import { VIEW_SCOPED_ENV_KEYS } from '../../modules/github/toolbox/env-guard.js';
+import { ScopeResolutionError } from '../config-loader.js';
 import { createGitHubAuth } from '../../modules/github/toolbox/github-auth.js';
 
 function mockRes() {
@@ -56,19 +57,25 @@ const CFG = {
   poll_top: '20',
 };
 
-function openPrs(fetchSpy, { cfg = CFG, agentViewMeta = { id: 1, code: 'dev' } } = {}) {
+function openPrs(fetchSpy, { cfg = CFG, agentViewMeta = { id: 1, code: 'dev' }, scopeError = null } = {}) {
   const deps = {
-    loadScopedDbOverrides: vi.fn(async () => ({ overrides: {}, agentViewMeta })),
+    loadScopedDbOverridesStrict: vi.fn(async () => {
+      if (scopeError) throw scopeError;
+      return { overrides: {}, agentViewMeta };
+    }),
     loadModuleConfigs: vi.fn(async () => ({ github: cfg })),
   };
   return { handler: createOpenPrsHandler(deps, vi.fn(), authFactoryFor(fetchSpy)), deps };
 }
 
-async function callOpenPrs(routes, { body = { agent_view_id: 1, lane: 'changes' }, ...opts } = {}) {
+// The scope is the capability's, never the body's: every call carries a verified capability.
+const cap = (agentViewId = 1) => ({ kind: 'internal_rest', agentViewId, jobId: null });
+
+async function callOpenPrs(routes, { body = { lane: 'changes' }, capability = cap(), ...opts } = {}) {
   const fetchSpy = makeFetch(routes);
   const { handler } = openPrs(fetchSpy, opts);
   const r = mockRes();
-  await handler({ body }, r);
+  await handler({ body, capability }, r);
   return { r, fetchSpy };
 }
 
@@ -151,25 +158,30 @@ describe('POST /api/github/verify', () => {
 });
 
 describe('POST /api/github/open-prs — request validation', () => {
-  it('rejects a missing / non-numeric / zero / negative agent_view_id', async () => {
-    for (const id of [undefined, 'abc', 0, -1, 1.5]) {
-      const { r } = await callOpenPrs({}, { body: { agent_view_id: id, lane: 'changes' } });
-      expect(r.statusCode).toBe(400);
-      expect(r.body.error).toMatch(/agent_view_id/);
-    }
+  // The conflicting-claim rejection moved OUT of this handler: createModuleRouteApp applies it to
+  // every module route, so no module can forget it. Its test lives in rest-auth-coverage.test.js.
+
+  it('takes the scope from the capability and ignores a body agent_view_id that agrees', async () => {
+    const { r } = await callOpenPrs({}, { body: { agent_view_id: 1, lane: 'changes' }, capability: cap(1) });
+    expect(r.statusCode).not.toBe(400);
   });
 
   it('rejects a missing or unknown lane, naming the valid lanes', async () => {
     for (const lane of [undefined, 'commets', '']) {
-      const { r } = await callOpenPrs({}, { body: { agent_view_id: 1, lane } });
+      const { r } = await callOpenPrs({}, { body: { lane } });
       expect(r.statusCode).toBe(400);
       expect(r.body.error).toContain(LANES.join(', '));
     }
   });
 
-  it('fails closed with 404 when the agent_view is unknown', async () => {
-    const { r } = await callOpenPrs({}, { agentViewMeta: null });
-    expect(r.statusCode).toBe(404);
+  it('fails closed when the capability names a view that no longer exists', async () => {
+    // The strict resolver THROWS instead of widening to global config; createModuleRouteApp
+    // turns that into 403 centrally, so the handler must not swallow it.
+    const fetchSpy = makeFetch({});
+    const { handler } = openPrs(fetchSpy, { scopeError: new ScopeResolutionError('gone') });
+    await expect(handler({ body: { lane: 'changes' }, capability: cap() }, mockRes()))
+      .rejects.toBeInstanceOf(ScopeResolutionError);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('answers 403 when the channel is disabled for the scope', async () => {
@@ -198,7 +210,7 @@ describe('POST /api/github/open-prs — request validation', () => {
     };
     const { r, fetchSpy } = await callOpenPrs(routes, {
       body: {
-        agent_view_id: 1, lane: 'changes',
+        lane: 'changes',
         owner: 'evil', repo_allowlist: 'secret-repo', github_login: 'someone-else',
       },
     });
@@ -217,11 +229,11 @@ describe.each(VIEW_SCOPED_ENV_KEYS)('ENV guard — %s set as a global override',
     const fetchSpy = makeFetch({});
     const { handler, deps } = openPrs(fetchSpy);
     const r = mockRes();
-    await handler({ body: { agent_view_id: 1, lane: 'comments' } }, r);
+    await handler({ body: { lane: 'comments' }, capability: cap() }, r);
     expect(r.statusCode).toBe(503);
     expect(r.body.error).toContain(key);
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(deps.loadScopedDbOverrides).not.toHaveBeenCalled();
+    expect(deps.loadScopedDbOverridesStrict).not.toHaveBeenCalled();
   });
 
   it('refuses /verify with 503 too — a guard on one route only is not a guard', async () => {

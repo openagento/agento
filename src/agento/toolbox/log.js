@@ -75,3 +75,14 @@ export function createScopedLogger(agentViewMeta) {
     } catch { /* best-effort */ }
   };
 }
+
+// A caught error's `message` is free text written by a driver: mysql2 puts the connection
+// target in it, a Graph failure quotes the credential it used, an HTTP client embeds the URL
+// (and any token in it). Logging it is the same leak as returning it, so every new boundary
+// logs a STABLE CATEGORY instead — the error's own code/name, which is an identifier, not text.
+export function errorCategory(err) {
+  if (err === null || err === undefined) return 'unknown';
+  const code = typeof err.code === 'string' ? err.code : null;
+  const name = typeof err.name === 'string' ? err.name : null;
+  return code || name || 'Error';
+}

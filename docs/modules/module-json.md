@@ -187,8 +187,10 @@ Hermes, …), implement these and declare the harness here:
 ```python
 class MyHarnessAdapter:
     command_builder: CommandBuilder        # headless(ctx, req) / interactive(ctx, *, yolo)
-    workspace_adapter: WorkspaceAdapter    # prepare_workspace, inject_runtime_params,
-                                           # owned_paths, persistent_home_paths,
+    workspace_adapter: WorkspaceAdapter    # prepare_workspace, owned_paths,
+                                           # persistent_home_paths,
+                                           # inject_runtime_params(artifacts_dir, *,
+                                           #     capability_token, toolbox_url),
                                            # write_credentials, credential_env,
                                            # capture_refreshed_credentials,
                                            # serialize_toolbox_connection
@@ -197,6 +199,11 @@ class MyHarnessAdapter:
 
     def create_runner(self, ctx: HarnessRunContext, **kwargs): ...
 ```
+
+`inject_runtime_params` carries a security contract a third-party harness must honour: it puts the
+run's capability token into **the toolbox's own MCP entry only**, matched by origin *and* path
+(`/mcp` or `/sse`) — never by substring, or an operator's third-party MCP server would receive it.
+See [harness-contract.md](../architecture/harness-contract.md#inject_runtime_params--the-capability-injection-point).
 
 `descriptor` is deliberately not on the adapter: the framework builds it from `di.json`, so
 harnesses can be enumerated with no Python import (needed by `config:set`,

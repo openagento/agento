@@ -71,7 +71,7 @@ async function mkdirWithinWorkspace(dir) {
 }
 
 // Validate agent-supplied attachment paths BEFORE any Graph call. Hardened replica of core/email.js's
-// validateAttachments (NOT imported — inter-module dependency, like matchesWhitelist): adds realpath
+// validateAttachments (NOT imported — inter-module dependency): adds realpath
 // traversal/symlink containment because this runs in the secrets container. Returns { error, records }
 // with records = [{ realPath, name, size }]; realPath is the resolved, contained path used for ALL later
 // I/O so the validated path is exactly the read path. First failing path → { error, records: [] }.
@@ -141,32 +141,25 @@ function odataAttachmentType(t) {
   return 'file';
 }
 
-// Replicate core's matchesWhitelist semantics locally (src/agento/modules/core/toolbox/email.js) rather
-// than importing it (avoids an inter-module dependency). Anchored, case-insensitive; the glob `*` ->
-// `[^@]*` (matches a local part but never crosses `@`); every OTHER regex metachar in the literal
-// segments is escaped (so `a?b@x.com` matches literally, never as a `?` quantifier — escaping the
-// fail-OPEN direction). An EMPTY whitelist matches nothing -> blocks all (fail-closed). Kept in lockstep
-// with channel.py `_matches_allowed`. Exported for direct unit testing.
-export function matchesWhitelist(email, whitelist) {
-  const addr = (email || '').toLowerCase();
-  return whitelist.some((pattern) => {
-    const re =
-      '^' +
-      pattern
-        .toLowerCase()
-        .split('*')
-        .map((seg) => seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-        .join('[^@]*') +
-      '$';
-    return new RegExp(re).test(addr);
-  });
-}
-
 function loadWhitelist(moduleConfigs) {
   return (moduleConfigs?.core?.email_whitelist || '')
     .split(',')
     .map((p) => p.trim().toLowerCase())
     .filter(Boolean);
+}
+
+// Every address that IS this mailbox: the primary UPN plus outlook/mailbox_aliases. Mail delivered to an
+// alias keeps that alias in the reply-all recipient list; gating it against core/email_whitelist would make
+// the agent report (or block) itself. Comparison is trimmed + lowercased on both sides.
+export function buildSelfAddresses(mailbox, aliasesCsv) {
+  const out = new Set();
+  const primary = (mailbox || '').trim().toLowerCase();
+  if (primary) out.add(primary);
+  for (const a of String(aliasesCsv || '').split(',')) {
+    const v = a.trim().toLowerCase();
+    if (v) out.add(v);
+  }
+  return out;
 }
 
 // Inbound allow-list (outlook/allowed_senders) — same comma-separated glob format used by the publisher
@@ -208,11 +201,15 @@ async function ensureOk(res) {
   }
 }
 
-export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthFactory, artifactsDir, db, jobId, agentViewId }) {
+// `matchesWhitelist` is the shared toolbox matcher (one implementation, in lockstep with the
+// Python twin). It arrives through the registration context because a module cannot import
+// framework code by path (see config-loader.js TOOLBOX_HELPERS).
+export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthFactory, artifactsDir, db, jobId, agentViewId, matchesWhitelist }) {
   const cfg = moduleConfigs?.outlook || {};
   const auth = (graphAuthFactory || createGraphAuth)(cfg);
   const whitelist = loadWhitelist(moduleConfigs);
   const replyPolicy = resolveReplyPolicy(cfg.reply_policy);
+  const mailboxAliases = cfg.mailbox_aliases;
 
   // Bot-to-bot loop suppression needs NO outbound stamping: an inbound message is treated as
   // agent-authored when its (DMARC-verified) From is one of the deployment's fleet mailboxes — the set
@@ -613,7 +610,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
   async function sendThreadedReply(mailbox, messageId, body, records) {
     const metaRes = await graphFetch(
       `/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}` +
-        '?$select=from,replyTo,toRecipients,ccRecipients,conversationId'
+        '?$select=from,replyTo,toRecipients,ccRecipients'
     );
     await ensureOk(metaRes);
     const meta = await metaRes.json();
@@ -622,8 +619,8 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
       : [meta?.from?.emailAddress?.address];
     const to = (meta?.toRecipients || []).map((r) => r.emailAddress?.address);
     const cc = (meta?.ccRecipients || []).map((r) => r.emailAddress?.address);
-    const self = (mailbox || '').toLowerCase();
-    const notSelf = (a) => a && a.toLowerCase() !== self;
+    const selfAddresses = buildSelfAddresses(mailbox, mailboxAliases);
+    const notSelf = (a) => a && !selfAddresses.has(a.trim().toLowerCase());
     // Case-insensitive dedupe + self-exclusion so an address isn't gated/reported twice and the agent's
     // own mailbox (which createReplyAll drops server-side) isn't gated.
     const recipients = dedupeCI([...origin, ...to, ...cc].filter(notSelf));
@@ -1062,15 +1059,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
           // the shared helper attaches → sends → DELETEs the draft on failure. No attachments → the
           // single-shot /sendMail below.
           if (attachments?.length) {
-            let records = [];
-            if (attachments?.length) {
-              const v = await validateAttachments(attachments);
-              if (v.error) {
-                log('outlook_send_mail', 'ERROR', `mailbox=${mailbox} ${v.error}`);
-                return { content: [{ type: 'text', text: v.error }], isError: true };
-              }
-              records = v.records;
+            const v = await validateAttachments(attachments);
+            if (v.error) {
+              log('outlook_send_mail', 'ERROR', `mailbox=${mailbox} ${v.error}`);
+              return { content: [{ type: 'text', text: v.error }], isError: true };
             }
+            const records = v.records;
             // POST /messages creates a draft in Drafts; the shared helper finishes it.
             const draftRes = await graphFetch(`/users/${encodeURIComponent(mailbox)}/messages`, {
               method: 'POST',

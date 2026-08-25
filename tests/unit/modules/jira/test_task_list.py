@@ -47,7 +47,7 @@ def test_get_todo_tasks(sample_config, jira_todo):
     respx.post("http://toolbox:3001/api/jira/search").mock(
         return_value=httpx.Response(200, json=jira_todo)
     )
-    client = ToolboxClient("http://toolbox:3001")
+    client = ToolboxClient("http://toolbox:3001", capability_token="test-cap")
     builder = _make_builder(client, sample_config)
 
     tasks = builder.get_todo_tasks()
@@ -65,7 +65,7 @@ def test_get_todo_tasks_empty(sample_config, jira_empty):
     respx.post("http://toolbox:3001/api/jira/search").mock(
         return_value=httpx.Response(200, json=jira_empty)
     )
-    client = ToolboxClient("http://toolbox:3001")
+    client = ToolboxClient("http://toolbox:3001", capability_token="test-cap")
     builder = _make_builder(client, sample_config)
 
     tasks = builder.get_todo_tasks()

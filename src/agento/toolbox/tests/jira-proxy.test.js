@@ -10,8 +10,10 @@ describe('createJiraProxyHandler', () => {
     token: 'tok123',
   };
 
-  function mockReqRes(body = {}) {
-    const req = { body };
+  // The capability is the scope. These fixtures mirror the real flow: whatever the body says,
+  // it can only agree with the verified capability.
+  function mockReqRes(body = {}, agentViewId = Number(body.agent_view_id ?? 8)) {
+    const req = { body, capability: { kind: 'internal_rest', agentViewId, jobId: null } };
     const res = { status: vi.fn().mockReturnThis(), json: vi.fn() };
     return { req, res };
   }

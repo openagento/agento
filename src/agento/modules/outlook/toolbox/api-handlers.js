@@ -163,27 +163,57 @@ function baseDeltaUrl(mailbox, top) {
   );
 }
 
-// configResolver: async (agentViewId) => { cfg, resolved, fleetMailboxes }. `resolved` is false only when
-// a non-null id did not match an existing agent_view; `fleetMailboxes` is the auto-derived fleet Set for
-// loop suppression (missing/undefined is treated as empty). `authFactory` is injectable for tests.
-export function createDeltaHandler(configResolver, log, authFactory = createGraphAuth) {
+export function parseAllowedSenders(value) {
+  return String(value || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+}
+
+// The inbound allow-list for a MAILBOX, not for a view: on a shared mailbox the toolbox cannot know
+// which view a message will route to — routing happens in Python, after the fetch. Applying one
+// view's list would silently drop a co-tenant's mail, so the gate here is the union across every
+// enabled view bound to this mailbox. That is exactly the pre-route filter publish.py already
+// applies; the per-view refinement after routing stays, as defence in depth.
+export async function deriveMailboxAllowedSenders({ listActiveAgentViewIds, resolveOutlookConfig, mailbox, errorCategory }, log) {
+  const target = (mailbox || '').trim().toLowerCase();
+  try {
+    const ids = await listActiveAgentViewIds();
+    const lists = await Promise.all((ids || []).map(async (id) => {
+      const cfg = await resolveOutlookConfig(id);
+      if (!isEnabledValue(cfg?.enabled)) return [];
+      if ((cfg?.outlook_mailbox_user_id || '').trim().toLowerCase() !== target) return [];
+      return parseAllowedSenders(cfg?.allowed_senders);
+    }));
+    return [...new Set(lists.flat())];
+  } catch (err) {
+    // FAIL-CLOSED: an unresolvable union admits nothing. Unlike fleet derivation (where an empty
+    // set only disables loop suppression), empty here is the safe direction.
+    log?.('api/outlook/allowed', 'ERROR', `allowed-sender union failed: ${errorCategory(err)}`);
+    return [];
+  }
+}
+
+// configResolver: async (agentViewId) => { cfg, fleetMailboxes }. `fleetMailboxes` is the
+// auto-derived fleet Set for loop suppression (missing/undefined is treated as empty).
+// `authFactory` is injectable for tests.
+// `matchesWhitelist` is the shared toolbox matcher; it arrives through the registration context
+// because a module cannot import framework code by path (see config-loader.js TOOLBOX_HELPERS).
+export function createDeltaHandler(
+  configResolver, log, authFactory = createGraphAuth,
+  // FAIL-CLOSED default: a caller that forgets to wire the union admits nothing.
+  allowedSendersFor = async () => [],
+  // FAIL-CLOSED default: with no matcher wired, no sender is on the allow list.
+  matchesWhitelist = () => false,
+) {
   return async (req, res) => {
     const body = req.body || {};
     // Clamp to a safe integer 1..50 — never let NaN / negative values reach the Graph $top query param.
     const rawTop = parseInt(body.top, 10);
     const top = Math.min(Math.max(Number.isFinite(rawTop) ? rawTop : 10, 1), 50);
-    const agentViewId = body.agent_view_id ?? null;
-    // FAIL-CLOSED: a supplied agent_view_id must be a positive integer (absent/null = global scope).
-    if (agentViewId !== null && !(Number.isInteger(agentViewId) && agentViewId > 0)) {
-      log('api/outlook/delta', 'ERROR', `invalid agent_view_id=${JSON.stringify(agentViewId)}`);
-      return res.status(400).json({ error: 'agent_view_id must be a positive integer' });
-    }
-    const { cfg, resolved, fleetMailboxes } = await configResolver(agentViewId);
-    // FAIL-CLOSED: a supplied id that does not resolve must NOT fall back to the global mailbox.
-    if (agentViewId !== null && !resolved) {
-      log('api/outlook/delta', 'ERROR', `agent_view_id=${agentViewId} not found`);
-      return res.status(404).json({ error: 'agent_view not found' });
-    }
+    // The scope comes from the capability the /api guard verified, never from the body. A body
+    // agent_view_id may only AGREE with it — createModuleRouteApp answers 400 for a disagreeing
+    // one before this handler runs. A capability naming a view the toolbox cannot resolve is
+    // already a 403 from the strict resolver, so there is no "unresolved view" case here.
+    const agentViewId = req.capability.agentViewId;
+    const { cfg, fleetMailboxes } = await configResolver(agentViewId);
     const auth = authFactory(cfg);
     if (!auth.isConfigured()) {
       log('api/outlook/delta', 'ERROR', `agent_view_id=${agentViewId ?? '?'} not configured`);
@@ -192,6 +222,9 @@ export function createDeltaHandler(configResolver, log, authFactory = createGrap
     const mailbox = auth.getMailboxUserId(); // resolved, NON-SECRET UPN — returned for the publisher's seen_mailboxes dedupe
     const mailboxKey = (mailbox || '').trim().toLowerCase(); // match Python cursor key .strip().lower()
     const agentMailboxes = fleetMailboxes instanceof Set ? fleetMailboxes : new Set(); // auto-derived fleet → loop suppression
+    // The inbound gate runs HERE, before any message leaves the toolbox — a blocked sender's id,
+    // subject, recipients and preview are never returned, so the agent cannot see them at all.
+    const allowedSenders = await allowedSendersFor(mailbox);
     const cursors = body.cursors && typeof body.cursors === 'object' && !Array.isArray(body.cursors) ? body.cursors : {};
     const rawCursor = cursors[mailboxKey];
     // Use the stored deltaLink only if it validates as THIS mailbox's delta cursor; else full base enum.
@@ -268,6 +301,10 @@ export function createDeltaHandler(configResolver, log, authFactory = createGrap
         // idempotency). Skip @removed — they carry no headers, so hydrating them would 404 → 502 →
         // pin the cursor forever. They are not published; the cursor still advances on the deltaLink.
         if (m['@removed']) continue;
+        // Gate on the sender BEFORE hydrating headers: a blocked sender costs no Graph call, and
+        // nothing about the message is built. The cursor still advances — a dropped message is
+        // handled, not deferred.
+        if (!matchesWhitelist(m.from?.emailAddress?.address, allowedSenders)) continue;
         let headers = m.internetMessageHeaders;
         if (!Array.isArray(headers)) {
           const hr = await fetch(
@@ -282,6 +319,10 @@ export function createDeltaHandler(configResolver, log, authFactory = createGrap
           }
           headers = (await hr.json()).internetMessageHeaders;
         }
+        // DMARC is the second half of the same gate: an allow-listed address is worthless if
+        // anyone can spoof it.
+        const dmarc = parseDmarcVerdict(headers);
+        if (dmarc !== 'pass') continue;
         messages.push({
           id: m.id,
           subject: m.subject,
@@ -291,7 +332,7 @@ export function createDeltaHandler(configResolver, log, authFactory = createGrap
           bodyPreview: m.bodyPreview,
           receivedDateTime: m.receivedDateTime,
           conversationId: m.conversationId,
-          dmarc: parseDmarcVerdict(headers),
+          dmarc,
           agent_authored: isAgentSender(m.from?.emailAddress?.address, agentMailboxes),
           auto_reply: isAutoReply(headers),
         });
