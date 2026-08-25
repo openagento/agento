@@ -177,11 +177,14 @@ function describePlaywrightState(getState) {
   return { error: 'Browser service is in inconsistent state — check toolbox logs.' };
 }
 
-export async function healthcheck({ playwright }) {
+export async function healthcheck({ playwright, sanitizeHealthError }) {
   const client = playwright.getClient();
   if (!client) {
-    const { error } = describePlaywrightState(playwright.getState);
-    return [{ tool: 'browser', status: 'fail', error }];
+    // Every "no client" state — not connected, starting, restarting, failed — means the same
+    // thing to a healthcheck caller: the browser backend is not usable. The prose form is for
+    // a TOOL CALL, and it can embed `lastError` (a spawn failure carrying a path or an argv),
+    // which is not something a healthcheck result may carry.
+    return [{ tool: 'browser', status: 'fail', error: 'unreachable' }];
   }
   const t0 = Date.now();
   try {
@@ -191,7 +194,7 @@ export async function healthcheck({ playwright }) {
     ]);
     return [{ tool: 'browser', status: 'ok', ms: Date.now() - t0 }];
   } catch (err) {
-    return [{ tool: 'browser', status: 'fail', error: err.message }];
+    return [{ tool: 'browser', status: 'fail', error: sanitizeHealthError(err) }];
   }
 }
 

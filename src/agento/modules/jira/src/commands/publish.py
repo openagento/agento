@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import sys
+from contextlib import closing
 
 from agento.framework.job_models import JobRequester, RequesterTrust
 from agento.framework.log import get_logger
+from agento.framework.toolbox_capability import rest_capability
 from agento.modules.jira.src.channel import JiraPublisher, publish_cron
 from agento.modules.jira.src.task_list import TaskListBuilder
 from agento.modules.jira.src.toolbox_client import ToolboxClient
@@ -149,7 +150,6 @@ class PublishCommand:
     def _execute_per_agent_view(self, kind, args, db_config, conn, logger):
         """Iterate active agent_views, resolve scoped config for each, publish."""
         from agento.framework.agent_view_runtime import resolve_publish_priority
-        from agento.framework.bootstrap import get_module_config
         from agento.framework.config_resolver import ScopedConfigService
         from agento.framework.scoped_config import Scope
         from agento.framework.workspace import get_active_agent_views
@@ -157,11 +157,14 @@ class PublishCommand:
         agent_views = get_active_agent_views(conn)
 
         if not agent_views:
-            # Fallback: no agent_views configured, use global config (backward compat)
-            logger.debug("No active agent_views, falling back to global config")
-            jira_config = get_module_config("jira")
-            self._execute_global(kind, args, db_config, jira_config, logger)
-            return
+            # No global fallback: the toolbox scopes every REST call to a capability, and
+            # a capability requires a view. A viewless publish has no correct scope, so it
+            # fails loudly rather than running unauthenticated.
+            logger.error(
+                "no active agent_view — jira publishing is per-view. Configure one for "
+                "this workspace (see docs/architecture/workspace.md) and re-run."
+            )
+            sys.exit(1)
 
         for av in agent_views:
             try:
@@ -176,14 +179,21 @@ class PublishCommand:
                 priority = resolve_publish_priority(conn, av.id)
                 logger.info("Publishing %s for agent_view %s (id=%d)", kind, av.code, av.id)
 
-                if kind == "jira-todo":
-                    self._publish_todo_for_agent_view(args, db_config, jira_config, av.id, priority, logger)
-                elif kind == "jira-mention":
-                    count = _publisher.publish_mentions(
-                        jira_config, logger, db_config=db_config,
-                        agent_view_id=av.id, priority=priority,
-                    )
-                    logger.info("Published %d mention jobs for agent_view %s", count, av.code)
+                # One short-lived capability per view, minted and revoked around this
+                # view's calls — the toolbox derives the view from it.
+                with rest_capability(agent_view_id=av.id, db_config=db_config) as capability_token:
+                    if kind == "jira-todo":
+                        self._publish_todo_for_agent_view(
+                            args, db_config, jira_config, av.id, priority, logger,
+                            capability_token=capability_token,
+                        )
+                    elif kind == "jira-mention":
+                        count = _publisher.publish_mentions(
+                            jira_config, logger, db_config=db_config,
+                            agent_view_id=av.id, priority=priority,
+                            capability_token=capability_token,
+                        )
+                        logger.info("Published %d mention jobs for agent_view %s", count, av.code)
             except Exception:
                 logger.exception(
                     "Publish %s failed for agent_view %s (id=%d) — continuing with remaining views",
@@ -191,7 +201,10 @@ class PublishCommand:
                 )
                 continue
 
-    def _publish_todo_for_agent_view(self, args, db_config, jira_config, agent_view_id, priority, logger):
+    def _publish_todo_for_agent_view(
+        self, args, db_config, jira_config, agent_view_id, priority, logger,
+        *, capability_token: str,
+    ):
         """Publish all TODO tasks for a specific agent_view."""
         if args.issue_key:
             _publisher.publish_todo(
@@ -203,58 +216,25 @@ class PublishCommand:
         if not ai_user:
             logger.warning("jira_assignee/user not set for this agent_view, skipping")
             return
-        toolbox = ToolboxClient(jira_config.toolbox_url)
-        builder = TaskListBuilder(toolbox, jira_config, ai_user, logger, agent_view_id=agent_view_id)
-        tasks = builder.get_todo_tasks()
-        if not tasks:
-            logger.debug("No TODO tasks, skipping")
-            return
-        published = 0
-        for task in tasks:
-            inserted = _publisher.publish_todo(
-                db_config, reference_id=task.issue.key,
-                updated=task.issue.updated, logger=logger,
-                agent_view_id=agent_view_id, priority=priority,
-                requester=_todo_requester(builder, task.issue),
-            )
-            if inserted:
-                published += 1
-        logger.info("Published %d of %d todo jobs for agent_view %d", published, len(tasks), agent_view_id)
-
-    def _execute_global(self, kind, args, db_config, jira_config, logger):
-        """Fallback: execute with global config (no agent_views configured)."""
-        from agento.modules.jira.src.channel import publish_mentions, publish_todo
-
-        if kind == "jira-todo":
-            if args.issue_key:
-                publish_todo(db_config, args.issue_key, logger=logger)
-            else:
-                ai_user = jira_config.jira_assignee or jira_config.user
-                if not ai_user:
-                    logger.error("config.jira_assignee/user not set")
-                    sys.exit(1)
-                toolbox = ToolboxClient(jira_config.toolbox_url)
-                builder = TaskListBuilder(toolbox, jira_config, ai_user, logger)
-                tasks = builder.get_todo_tasks()
-                if not tasks:
-                    logger.debug("No TODO tasks in Jira, skipping publish")
-                    return
-                published = 0
-                for task in tasks:
-                    payload = dataclasses.asdict(task.issue)
-                    payload.pop("reporter_email", None)  # audit-only: keep PII out of routing payload + routing events
-                    inserted = publish_todo(
-                        db_config, issue_key=task.issue.key,
-                        updated=task.issue.updated, logger=logger,
-                        payload=payload,
-                        requester=_todo_requester(builder, task.issue),
-                    )
-                    if inserted:
-                        published += 1
-                logger.info("Published %d of %d todo jobs (global)", published, len(tasks))
-        elif kind == "jira-mention":
-            count = publish_mentions(jira_config, logger, db_config=db_config)
-            logger.info("Published %d mention jobs", count)
+        with closing(
+            ToolboxClient(jira_config.toolbox_url, capability_token=capability_token)
+        ) as toolbox:
+            builder = TaskListBuilder(toolbox, jira_config, ai_user, logger, agent_view_id=agent_view_id)
+            tasks = builder.get_todo_tasks()
+            if not tasks:
+                logger.debug("No TODO tasks, skipping")
+                return
+            published = 0
+            for task in tasks:
+                inserted = _publisher.publish_todo(
+                    db_config, reference_id=task.issue.key,
+                    updated=task.issue.updated, logger=logger,
+                    agent_view_id=agent_view_id, priority=priority,
+                    requester=_todo_requester(builder, task.issue),
+                )
+                if inserted:
+                    published += 1
+            logger.info("Published %d of %d todo jobs for agent_view %d", published, len(tasks), agent_view_id)
 
     def _resolve_single_agent_view(self, conn, logger):
         """If exactly 1 jira-enabled agent_view exists, return (id, priority). Else (None, 50)."""

@@ -97,7 +97,7 @@ class TestPromptDelivery:
 
     @respx.mock
     def test_todo_dispatch_delivers_prompt_for_picked_task(
-        self, int_db_config, int_consumer_config, jira_todo_fixture
+        self, int_db_config, int_consumer_config, jira_todo_fixture, int_agent_view
     ):
         respx.post("http://toolbox:3001/api/jira/search").mock(
             return_value=httpx.Response(200, json=jira_todo_fixture)
@@ -107,6 +107,8 @@ class TestPromptDelivery:
             job_type="todo",
             reference_id=None,
             idempotency_key="todo-dispatch:1",
+            # Discovery mints an internal_rest capability, which needs a scope.
+            agent_view_id=int_agent_view,
         )
 
         patcher, captured = _capturing_claude()

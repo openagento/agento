@@ -7,6 +7,8 @@ needs to change.
 """
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from .descriptor import (
     CredentialRegistrationMode,
     CredentialScope,
@@ -79,6 +81,41 @@ from .runtime import (
 )
 from .subprocess_runner import SubprocessRunner
 
+_MCP_PATHS = ("/mcp", "/sse")
+
+
+def toolbox_origin(url: str) -> tuple[str, str, int]:
+    """Parse a trusted toolbox URL into a comparable origin, or raise.
+
+    Raising (rather than returning None) is the whole point: a sentinel return value
+    compares equal to another sentinel, so a malformed toolbox_url would match every
+    malformed server entry and inject the capability into all of them.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"toolbox_url is not a usable http(s) origin: {url!r}")
+    return (
+        parts.scheme,
+        parts.hostname.lower(),
+        parts.port or (443 if parts.scheme == "https" else 80),
+    )
+
+
+def is_toolbox_endpoint(url: str, target: tuple[str, str, int]) -> bool:
+    """True only for OUR toolbox's MCP endpoint. Any parse failure is False."""
+    try:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return False
+        origin = (
+            parts.scheme,
+            parts.hostname.lower(),
+            parts.port or (443 if parts.scheme == "https" else 80),
+        )
+    except ValueError:
+        return False
+    return origin == target and parts.path.rstrip("/") in _MCP_PATHS
+
 __all__ = [
     "AGENT_CONFIG_PREFIX",
     "PROVIDER_OPTION_KEY",
@@ -127,6 +164,7 @@ __all__ = [
     "get_harness_config",
     "get_harness_for_scope",
     "is_provider_option_hidden",
+    "is_toolbox_endpoint",
     "list_credential_scopes",
     "list_descriptors",
     "list_harnesses",
@@ -139,5 +177,6 @@ __all__ = [
     "resolve_options",
     "resolve_provider",
     "supply_harness_config",
+    "toolbox_origin",
     "workspace_adapter_for",
 ]

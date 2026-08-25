@@ -3,13 +3,13 @@ import express from 'express';
 import { createSearchHandler, createCommentsHandler } from './api-handlers.js';
 import { createJiraProxyHandler } from './jira-proxy.js';
 
-export function register(server, { app, log, loadModuleConfigs, loadScopedDbOverrides }) {
+export function register(server, { app, log, loadModuleConfigs, loadScopedDbOverridesStrict }) {
   if (!app || !loadModuleConfigs) return;
 
   async function getJiraConfig(agentViewId = null) {
     let overrides = null;
-    if (agentViewId && loadScopedDbOverrides) {
-      ({ overrides } = await loadScopedDbOverrides(agentViewId));
+    if (agentViewId && loadScopedDbOverridesStrict) {
+      ({ overrides } = await loadScopedDbOverridesStrict(agentViewId));
     }
     const configs = await loadModuleConfigs(overrides);
     const cfg = configs?.jira || {};

@@ -71,6 +71,18 @@ def _mock_connection(row=None):
     return mock_conn, mock_cursor
 
 
+def _last_job_update(mock_cursor):
+    """The last `UPDATE job ...` execute call.
+
+    Finalize also revokes the job's toolbox capabilities in the same transaction,
+    so the LAST execute is no longer the status write.
+    """
+    for call in reversed(mock_cursor.execute.call_args_list):
+        if "UPDATE job" in call[0][0]:
+            return call[0]
+    raise AssertionError("no UPDATE job executed")
+
+
 def _make_row(**overrides) -> dict:
     row = {
         "id": 1,
@@ -139,8 +151,8 @@ class TestRecoverStaleJobs:
         with patch.object(Consumer, "_is_pid_alive", return_value=False):
             consumer._recover_stale_jobs()
 
-        # SELECT + 1 UPDATE
-        assert mock_cursor.execute.call_count == 2
+        # SELECT + 1 UPDATE + capability revoke
+        assert mock_cursor.execute.call_count == 3
         update_sql = mock_cursor.execute.call_args_list[1][0][0]
         assert "status = 'TODO'" in update_sql
         mock_conn.commit.assert_called_once()
@@ -192,8 +204,8 @@ class TestRecoverStaleJobs:
         consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
         consumer._recover_stale_jobs()
 
-        # SELECT + UPDATE (null PID, old timestamp -> dead)
-        assert mock_cursor.execute.call_count == 2
+        # SELECT + UPDATE + capability revoke (null PID, old timestamp)
+        assert mock_cursor.execute.call_count == 3
         update_sql = mock_cursor.execute.call_args_list[1][0][0]
         assert "status = 'TODO'" in update_sql
 
@@ -640,14 +652,14 @@ class TestFinalize:
 
         consumer._finalize_job(job, error=None, job_result=job_result, elapsed_ms=1000)
 
-        sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
+        sql_arg = _last_job_update(mock_cursor)[0]
         assert "SUCCESS" in sql_arg
         assert "agent_type" in sql_arg
         assert "provider" in sql_arg
         assert "model" in sql_arg
         assert "prompt" in sql_arg
         assert "output" in sql_arg
-        params = mock_cursor.execute.call_args_list[-1][0][1]
+        params = _last_job_update(mock_cursor)[1]
         assert params[0] == "done"               # result_summary
         assert params[1] == "claude"             # agent_type (= harness id)
         assert params[2] == "anthropic"          # provider (model vendor)
@@ -668,7 +680,7 @@ class TestFinalize:
 
         consumer._finalize_job(job, error=None, job_result=None, elapsed_ms=1000)
 
-        params = mock_cursor.execute.call_args_list[-1][0][1]
+        params = _last_job_update(mock_cursor)[1]
         assert params[0] is None  # result_summary
         assert params[1] is None  # agent_type
         assert params[2] is None  # model
@@ -690,7 +702,7 @@ class TestFinalize:
             job, error=RuntimeError("timeout"), job_result=None, elapsed_ms=5000
         )
 
-        sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
+        sql_arg = _last_job_update(mock_cursor)[0]
         assert "TODO" in sql_arg
         assert "scheduled_after" in sql_arg
         assert "session_id" in sql_arg  # session_id COALESCE in retry SQL
@@ -713,7 +725,7 @@ class TestFinalize:
         error.session_id = "sess-from-error"  # type: ignore[attr-defined]
         consumer._finalize_job(job, error=error, job_result=None, elapsed_ms=5000)
 
-        params = mock_cursor.execute.call_args_list[-1][0][1]
+        params = _last_job_update(mock_cursor)[1]
         # session_id should be extracted from error
         assert "sess-from-error" in params
 
@@ -736,7 +748,7 @@ class TestFinalize:
             job, error=ValueError("bad input"), job_result=None, elapsed_ms=100
         )
 
-        sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
+        sql_arg = _last_job_update(mock_cursor)[0]
         assert "DEAD" in sql_arg
         mock_conn.commit.assert_called_once()
 
@@ -759,7 +771,7 @@ class TestFinalize:
             job, error=RuntimeError("fail"), job_result=None, elapsed_ms=100
         )
 
-        sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
+        sql_arg = _last_job_update(mock_cursor)[0]
         assert "DEAD" in sql_arg
 
     @patch("agento.framework.consumer.evaluate_retry")
@@ -872,12 +884,17 @@ class TestFinalize:
         error = CredentialsBusyError("all healthy tokens locked", pool_retry_at=None)
         consumer._finalize_job(job, error=error, job_result=None, elapsed_ms=2000)
 
-        sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
+        # The ordinary retry also revokes the job's capabilities, so the job UPDATE is not
+        # the last statement.
+        update = next(
+            c for c in reversed(mock_cursor.execute.call_args_list) if "UPDATE job" in c[0][0]
+        )
+        sql_arg = update[0][0]
         assert "TODO" in sql_arg
         assert "DEAD" not in sql_arg
         # Ordinary backoff retry, so no attempt refund.
         assert "GREATEST(attempt - 1, 0)" not in sql_arg
-        params = mock_cursor.execute.call_args_list[-1][0][1]
+        params = update[0][1]
         scheduled_after = params[4]
         # ~60s backoff from now, not a lease-derived wait.
         assert scheduled_after <= datetime.now(UTC) + timedelta(seconds=120)
@@ -901,7 +918,7 @@ class TestFinalize:
         long_error = RuntimeError("x" * 3000)
         consumer._finalize_job(job, error=long_error, job_result=None, elapsed_ms=100)
 
-        params = mock_cursor.execute.call_args_list[-1][0][1]
+        params = _last_job_update(mock_cursor)[1]
         error_msg = params[0]
         assert len(error_msg) <= 2000
 

@@ -193,7 +193,7 @@ class TestPrepareWorkspace:
         assert data["mcpServers"] == {
             "toolbox": {
                 "type": "http",
-                "url": "http://toolbox:3001/mcp?agent_view_id=3",
+                "url": "http://toolbox:3001/mcp",
                 "alwaysLoad": True,
             },
         }
@@ -222,12 +222,14 @@ class TestPrepareWorkspace:
         data = json.loads((work_dir / ".mcp.json").read_text())
         assert list(data["mcpServers"].keys()) == ["toolbox"]
 
-    def test_appends_agent_view_id_to_toolbox_url(self, writer, work_dir):
+    def test_the_build_bakes_no_claims_into_the_url(self, writer, work_dir):
+        # The build is shared across runs, so it must carry no agent_view_id and no job_id.
+        # Claims live in the capability row the run injects, never in the URL.
         writer.prepare_workspace(
             work_dir, {}, agent_view_id=2, toolbox_url=self.TOOLBOX,
         )
         data = json.loads((work_dir / ".mcp.json").read_text())
-        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/mcp?agent_view_id=2"
+        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/mcp"
 
     def test_no_agent_view_id_leaves_url_unchanged(self, writer, work_dir):
         writer.prepare_workspace(work_dir, {}, toolbox_url=self.TOOLBOX)
@@ -243,57 +245,54 @@ class TestPrepareWorkspace:
         data = json.loads((work_dir / ".mcp.json").read_text())
         assert "url" not in data["mcpServers"]["other"]
 
-    def test_injects_into_any_sse_or_mcp_url(self, writer, work_dir):
+    def test_an_operator_mcp_url_is_left_exactly_as_written(self, writer, work_dir):
         servers = '{"other": {"type": "sse", "url": "http://other:4000/sse"}}'
         writer.prepare_workspace(
             work_dir, {"mcp/servers": servers},
             agent_view_id=5, toolbox_url=self.TOOLBOX,
         )
         data = json.loads((work_dir / ".mcp.json").read_text())
-        assert "agent_view_id=5" in data["mcpServers"]["other"]["url"]
+        assert data["mcpServers"]["other"]["url"] == "http://other:4000/sse"
 
 
 class TestInjectRuntimeParams:
-    def test_appends_params_to_mcp_json(self, writer, work_dir):
-        mcp = {"mcpServers": {"toolbox": {"url": "http://toolbox:3001/sse?agent_view_id=2"}}}
+    TOOLBOX = "http://toolbox:3001"
+
+    def test_appends_the_capability_to_the_toolbox_sse_url(self, writer, work_dir):
+        mcp = {"mcpServers": {"toolbox": {"url": "http://toolbox:3001/sse"}}}
         (work_dir / ".mcp.json").write_text(json.dumps(mcp))
 
-        writer.inject_runtime_params(work_dir, job_id=10)
+        writer.inject_runtime_params(work_dir, capability_token="tok10", toolbox_url=self.TOOLBOX)
 
         data = json.loads((work_dir / ".mcp.json").read_text())
-        assert data["mcpServers"]["toolbox"]["url"] == (
-            "http://toolbox:3001/sse?agent_view_id=2&job_id=10"
-        )
+        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/sse?cap=tok10"
 
     def test_noop_when_no_mcp_json(self, writer, work_dir):
-        writer.inject_runtime_params(work_dir, job_id=10)
+        writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
         assert not (work_dir / ".mcp.json").exists()
 
     def test_handles_mcp_url(self, writer, work_dir):
-        mcp = {"mcpServers": {"toolbox": {"url": "http://toolbox:3001/mcp?agent_view_id=2"}}}
+        mcp = {"mcpServers": {"toolbox": {"url": "http://toolbox:3001/mcp"}}}
         (work_dir / ".mcp.json").write_text(json.dumps(mcp))
 
-        writer.inject_runtime_params(work_dir, job_id=5)
+        writer.inject_runtime_params(work_dir, capability_token="tok5", toolbox_url=self.TOOLBOX)
 
         data = json.loads((work_dir / ".mcp.json").read_text())
-        assert "job_id=5" in data["mcpServers"]["toolbox"]["url"]
+        assert "cap=tok5" in data["mcpServers"]["toolbox"]["url"]
 
     def test_preserves_type(self, writer, work_dir):
         mcp = {
             "mcpServers": {
-                "toolbox": {
-                    "type": "http",
-                    "url": "http://toolbox:3001/mcp?agent_view_id=1",
-                },
+                "toolbox": {"type": "http", "url": "http://toolbox:3001/mcp"},
             },
         }
         (work_dir / ".mcp.json").write_text(json.dumps(mcp))
 
-        writer.inject_runtime_params(work_dir, job_id=7)
+        writer.inject_runtime_params(work_dir, capability_token="tok7", toolbox_url=self.TOOLBOX)
 
         data = json.loads((work_dir / ".mcp.json").read_text())
         assert data["mcpServers"]["toolbox"]["type"] == "http"
-        assert "job_id=7" in data["mcpServers"]["toolbox"]["url"]
+        assert "cap=tok7" in data["mcpServers"]["toolbox"]["url"]
 
     def test_tolerates_malformed_entries(self, writer, work_dir):
         mcp = {
@@ -305,12 +304,74 @@ class TestInjectRuntimeParams:
         }
         (work_dir / ".mcp.json").write_text(json.dumps(mcp))
 
-        writer.inject_runtime_params(work_dir, job_id=8)
+        writer.inject_runtime_params(work_dir, capability_token="tok8", toolbox_url=self.TOOLBOX)
 
         data = json.loads((work_dir / ".mcp.json").read_text())
         assert data["mcpServers"]["broken"] == "nope"
         assert data["mcpServers"]["numeric"]["url"] == 123
-        assert "job_id=8" in data["mcpServers"]["toolbox"]["url"]
+        assert "cap=tok8" in data["mcpServers"]["toolbox"]["url"]
+
+    def test_targets_only_the_toolbox_origin(self, writer, work_dir):
+        mcp = {"mcpServers": {
+            "toolbox": {"url": "http://toolbox:3001/mcp"},
+            "vendor": {"url": "https://vendor.example.com/mcp"},
+        }}
+        (work_dir / ".mcp.json").write_text(json.dumps(mcp))
+
+        writer.inject_runtime_params(work_dir, capability_token="tok123", toolbox_url=self.TOOLBOX)
+
+        servers = json.loads((work_dir / ".mcp.json").read_text())["mcpServers"]
+        assert servers["toolbox"]["url"] == "http://toolbox:3001/mcp?cap=tok123"
+        assert servers["vendor"]["url"] == "https://vendor.example.com/mcp"
+
+    def test_does_not_leak_to_a_lookalike_host(self, writer, work_dir):
+        mcp = {"mcpServers": {"evil": {"url": "http://toolbox.evil.com:3001/mcp"}}}
+        (work_dir / ".mcp.json").write_text(json.dumps(mcp))
+
+        writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
+
+        assert json.loads((work_dir / ".mcp.json").read_text())["mcpServers"]["evil"]["url"] == (
+            "http://toolbox.evil.com:3001/mcp"
+        )
+
+    def test_same_origin_but_a_different_path_is_not_injected(self, writer, work_dir):
+        mcp = {"mcpServers": {"admin": {"url": "http://toolbox:3001/admin"}}}
+        (work_dir / ".mcp.json").write_text(json.dumps(mcp))
+
+        writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
+
+        assert json.loads((work_dir / ".mcp.json").read_text())["mcpServers"]["admin"]["url"] == (
+            "http://toolbox:3001/admin"
+        )
+
+    def test_an_unparseable_server_entry_is_skipped_not_matched(self, writer, work_dir):
+        mcp = {"mcpServers": {"weird": {"url": "not-a-url"}}}
+        (work_dir / ".mcp.json").write_text(json.dumps(mcp))
+
+        writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
+
+        assert json.loads((work_dir / ".mcp.json").read_text())["mcpServers"]["weird"]["url"] == "not-a-url"
+
+    def test_a_malformed_toolbox_url_raises_and_injects_nowhere(self, writer, work_dir):
+        original = json.dumps({"mcpServers": {"vendor": {"url": "not-a-url"}}})
+        (work_dir / ".mcp.json").write_text(original)
+
+        with pytest.raises(ValueError):
+            writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url="::::")
+
+        assert (work_dir / ".mcp.json").read_text() == original
+
+    def test_a_shadowing_operator_entry_receives_no_capability(self, writer, work_dir):
+        # Shadowing stays legal (containers.md:57); it simply opts out of authentication,
+        # so the toolbox refuses that session rather than the framework refusing the config.
+        mcp = {"mcpServers": {"toolbox": {"url": "http://other-host:3001/mcp"}}}
+        (work_dir / ".mcp.json").write_text(json.dumps(mcp))
+
+        writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
+
+        assert json.loads((work_dir / ".mcp.json").read_text())["mcpServers"]["toolbox"]["url"] == (
+            "http://other-host:3001/mcp"
+        )
 
 
 class TestWriteCredentials:

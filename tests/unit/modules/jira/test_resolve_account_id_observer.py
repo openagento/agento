@@ -1,8 +1,19 @@
 """Tests for ResolveAccountIdObserver."""
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agento.modules.jira.src.config import JiraConfig
 from agento.modules.jira.src.observers import ResolveAccountIdObserver
+
+
+@pytest.fixture(autouse=True)
+def _no_real_capability():
+    """`rest_capability` opens its OWN connection (the toolbox reads the row from another
+    process), so a unit test that mocks only the caller's connection would dial a real DB."""
+    with patch("agento.modules.jira.src.observers.rest_capability", lambda *a, **k: nullcontext("cap")):
+        yield
 
 
 def _make_event(name="jira"):
@@ -85,9 +96,12 @@ class TestAgentViewScopeResolve:
             observer = ResolveAccountIdObserver()
             observer.execute(_make_event())
 
-        mock_resolve.assert_called_once_with(
-            "http://toolbox:3001", agent_view_id=2,
-        )
+        assert mock_resolve.call_count == 1
+        call = mock_resolve.call_args
+        assert call.args == ("http://toolbox:3001",)
+        assert call.kwargs["agent_view_id"] == 2
+        # The observer owns the capability's whole lifetime — it runs outside any job.
+        assert call.kwargs["capability_token"]
         mock_scoped_set.assert_called_once()
 
     @patch(f"{_FWK}.workspace.get_active_agent_views")

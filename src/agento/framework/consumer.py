@@ -67,6 +67,16 @@ from .harness import (
 from .job_models import Job, JobStatus
 from .retry_policy import evaluate as evaluate_retry
 from .run_preparation import materialize_run_workspace
+from .secret_redaction import redact_exception, redact_secret
+from .toolbox_capability import (
+    KIND_INTERNAL_REST,
+    KIND_MCP_JOB,
+    MCP_CAPABILITY_TTL_SECONDS,
+    REST_CAPABILITY_TTL_SECONDS,
+    issue_capability,
+    purge_expired_capabilities,
+    revoke_job_capabilities,
+)
 from .workflows import get_workflow_class
 from .workflows.base import JobContext
 
@@ -105,6 +115,9 @@ def _should_resume(
     return attempt > 1 and session_id is not None and not pid_alive and can_resume
 
 
+_CAPABILITY_PURGE_INTERVAL_SECONDS = 3600
+
+
 @dataclass
 class _JobResult:
     """Carries execution metadata from _run_job to _finalize_job."""
@@ -121,6 +134,13 @@ class _JobResult:
     output: str | None = None
     session_id: str | None = None
     mcp_init: McpInitReport | None = None
+
+    def redacted(self, *secrets: str | None) -> _JobResult:
+        """Strip the run's own capability tokens from the text this run persists."""
+        self.summary = redact_secret(self.summary, *secrets) or ""
+        self.prompt = redact_secret(self.prompt, *secrets)
+        self.output = redact_secret(self.output, *secrets)
+        return self
 
     @classmethod
     def from_run_result(cls, result: RunResult, summary: str) -> _JobResult:
@@ -178,6 +198,8 @@ class Consumer:
             lease_ttl_seconds=_DEFAULT_LEASE_TTL_SECONDS,
         )
         self._active_jobs = 0
+        # Monotonic clock, so a wall-clock jump cannot delay or spam the purge.
+        self._last_capability_purge = time.monotonic()
         self._active_jobs_lock = threading.Lock()
         # Refresh leases this process holds: lease_owner -> credential_id. Guarded by
         # _active_jobs_lock. Renewing an entry whose worker has ended would keep a DB
@@ -282,6 +304,17 @@ class Consumer:
             )
         except Exception:
             self.logger.exception("Re-bootstrap failed — continuing with previous registry")
+        try:
+            now = time.monotonic()
+            if now - self._last_capability_purge >= _CAPABILITY_PURGE_INTERVAL_SECONDS:
+                self._last_capability_purge = now
+                purged = purge_expired_capabilities(conn)
+                if purged:
+                    self.logger.info(
+                        "Purged expired toolbox capabilities", extra={"rows": purged}
+                    )
+        except Exception:
+            self.logger.warning("Capability purge failed (best-effort)")
         finally:
             conn.close()
 
@@ -385,6 +418,7 @@ class Consumer:
                                 """,
                                 (f"Recovered: process dead (pid={pid})", job_id),
                             )
+                            revoke_job_capabilities(conn, job_id, commit=False)
                             retried += 1
                             self.logger.warning(
                                 f"Recovered stale job -> TODO (retry) | "
@@ -403,6 +437,7 @@ class Consumer:
                                 """,
                                 (f"Recovered: process dead (pid={pid}), max attempts reached", job_id),
                             )
+                            revoke_job_capabilities(conn, job_id, commit=False)
                             dead += 1
                             self.logger.warning(
                                 f"Recovered stale job -> DEAD | "
@@ -492,7 +527,56 @@ class Consumer:
             worker_slot=worker_slot, job_id=job.id, elapsed_ms=elapsed_ms,
         ))
 
-    def _run_job(self, job: Job) -> _JobResult:
+    def _issue_run_capabilities(
+        self, conn, job: Job
+    ) -> tuple[str | None, str | None] | None:
+        """Mint this run's toolbox capabilities, or None if the job is no longer runnable.
+
+        ``SELECT ... FOR UPDATE`` serialises issuance against ``pause_job``: the row
+        lock makes a concurrent pause either land first — we read a non-RUNNING status
+        and issue nothing — or wait for this commit, so its revoke-by-job_id retires
+        the rows we just wrote. Without the lock a pause between claim and mint would
+        revoke zero capabilities and the tokens would outlive the paused job.
+        """
+        if job.agent_view_id is None:
+            return None, None
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT status FROM job WHERE id = %s FOR UPDATE", (job.id,))
+            row = cur.fetchone()
+        status = row["status"] if row else None
+        if status != JobStatus.RUNNING.value:
+            conn.rollback()
+            self.logger.info(
+                "Job no longer RUNNING, abandoning run before issuing capabilities",
+                extra={"job_id": job.id, "status": status},
+            )
+            return None
+
+        mcp_token = issue_capability(
+            conn,
+            kind=KIND_MCP_JOB,
+            agent_view_id=job.agent_view_id,
+            job_id=job.id,
+            ttl_seconds=MCP_CAPABILITY_TTL_SECONDS,
+            commit=False,
+        )
+        rest_token = None
+        if job.reference_id is None:
+            # Discovery flow only: the channel still has to find the upstream item,
+            # which it does over the toolbox REST API.
+            rest_token = issue_capability(
+                conn,
+                kind=KIND_INTERNAL_REST,
+                agent_view_id=job.agent_view_id,
+                job_id=job.id,
+                ttl_seconds=REST_CAPABILITY_TTL_SECONDS,
+                commit=False,
+            )
+        conn.commit()
+        return mcp_token, rest_token
+
+    def _run_job(self, job: Job) -> _JobResult | None:
         """Dispatch to the appropriate workflow with agent_view routing."""
         channel = get_channel(job.source)
         em = get_event_manager()
@@ -501,6 +585,7 @@ class Consumer:
         # UnboundLocalError before the call if anything above raised, so "the callee
         # tolerates None" is not enough.
         home_dir = credential = harness = lease_owner = None
+        capability_token = rest_capability_token = None
         # Whether the lease was actually ACQUIRED, which is not the same as having issued an
         # owner: only a refresh-imminent credential is leased. The detector below depends on
         # the difference, so the two must not be conflated.
@@ -565,24 +650,40 @@ class Consumer:
                     ScopedConfigService(conn, Scope.AGENT_VIEW, job.agent_view_id)
                     if job.agent_view_id is not None else None
                 )
+
+                # Mint the run's capabilities inside the SAME open connection — a
+                # closed connection cannot issue.
+                mint = self._issue_run_capabilities(conn, job)
+                if mint is None:
+                    return None
+                capability_token, rest_capability_token = mint
             finally:
                 conn.close()
 
-            # Per-job artifacts directory (only when agent_view is set) — extracted
-            # so `agento run` exercises the same pipeline (see run_preparation.py).
-            home_dir, artifacts_dir = materialize_run_workspace(
-                runtime,
-                run_id=job.id,
-                agent_config_svc=agent_config_svc,
-                toolbox_url=toolbox_url,
-                em=em,
-                credential=credential,
-                # The effective model for THIS run — `--model` (e2e/replay) overrides
-                # config. Without it the harness's per-run injection would carry the
-                # build-time value and a legitimate override could be rejected by its
-                # own model guard.
-                effective_model=model_override,
-            )
+            # The redaction barrier starts HERE, at the mint — not at the run. Everything
+            # between the mint and the run handles the raw token (materialization writes it
+            # into the harness MCP config), so a failure in that window raises an exception
+            # whose message can carry it, and `_execute_job` persists that message verbatim.
+            try:
+                # Per-job artifacts directory (only when agent_view is set) — extracted
+                # so `agento run` exercises the same pipeline (see run_preparation.py).
+                home_dir, artifacts_dir = materialize_run_workspace(
+                    runtime,
+                    run_id=job.id,
+                    agent_config_svc=agent_config_svc,
+                    toolbox_url=toolbox_url,
+                    em=em,
+                    credential=credential,
+                    capability_token=capability_token,
+                    # The effective model for THIS run — `--model` (e2e/replay) overrides
+                    # config. Without it the harness's per-run injection would carry the
+                    # build-time value and a legitimate override could be rejected by its
+                    # own model guard.
+                    effective_model=model_override,
+                )
+            except Exception as exc:
+                redact_exception(exc, capability_token, rest_capability_token)
+                raise
 
             em.dispatch("agent_view_run_start_before", AgentViewRunStartedEvent(
                 job=job,
@@ -664,7 +765,9 @@ class Consumer:
                     )
                     result.prompt = f"[RESUME] session_id={job.session_id}"
                     summary = f"resumed session_id={job.session_id} {result.stats_line}"
-                    return _JobResult.from_run_result(result, summary)
+                    return _JobResult.from_run_result(result, summary).redacted(
+                        capability_token, rest_capability_token,
+                    )
 
                 workflow = get_workflow_class(job.type)(runner, self.logger)
 
@@ -688,6 +791,7 @@ class Consumer:
                     config=module_config,
                     logger=self.logger,
                     update_reference_id=self._update_job_reference_id,
+                    capability_token=rest_capability_token,
                 )
                 result = workflow.execute_job(channel, job, context)
 
@@ -696,21 +800,30 @@ class Consumer:
                     if result.input_tokens is None and result.raw_output
                     else f"session_id={result.session_id or '?'} {result.stats_line}"
                 )
-                return _JobResult.from_run_result(result, summary)
+                return _JobResult.from_run_result(result, summary).redacted(
+                    capability_token, rest_capability_token,
+                )
             except TransientAuthError as exc:
                 success = False
+                redact_exception(exc, capability_token, rest_capability_token)
                 self._handle_transient_auth(job, credential, scope, exc)
                 raise
             except UsageLimitError as exc:
                 success = False
+                redact_exception(exc, capability_token, rest_capability_token)
                 self._handle_usage_limit(job, credential, scope, exc)
                 raise
             except AuthenticationError as exc:
                 success = False
+                redact_exception(exc, capability_token, rest_capability_token)
                 self._handle_auth_failure(job, credential, scope, exc)
                 raise
-            except Exception:
+            except Exception as exc:
                 success = False
+                # Single barrier: everything the consumer persists from a failure
+                # (`error_message` via str(exc), `job.output` via `agent_output`)
+                # passes through here.
+                redact_exception(exc, capability_token, rest_capability_token)
                 raise
             finally:
                 em.dispatch("agent_view_run_finish_after", AgentViewRunFinishedEvent(
@@ -1058,6 +1171,10 @@ class Consumer:
                                 job.id,
                             ),
                         )
+                    # Same transaction as the terminal status: a failing revoke rolls
+                    # the status back too, leaving the job RUNNING for
+                    # _recover_stale_jobs — which revokes as well.
+                    revoke_job_capabilities(conn, job.id, commit=False)
                     conn.commit()
                     self.logger.info(
                         "Job succeeded",
@@ -1204,6 +1321,7 @@ class Consumer:
                                     session_id, scheduled_after, job.id,
                                 ),
                             )
+                        revoke_job_capabilities(conn, job.id, commit=False)
                         conn.commit()
                         self.logger.info(
                             f"Job scheduled for retry: {decision.reason}",
@@ -1265,6 +1383,7 @@ class Consumer:
                                 """,
                                 (error_msg, error_class, agent_output, session_id, job.id),
                             )
+                        revoke_job_capabilities(conn, job.id, commit=False)
                         conn.commit()
                         self.logger.warning(
                             f"Job dead-lettered: {decision.reason}",

@@ -1,5 +1,5 @@
 import logging
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -132,6 +132,15 @@ def _drive_run(
 
     with ExitStack() as stack:
         stack.enter_context(patch(f"{_OB}.GitHubToolboxClient", return_value=client))
+        # Capability issuance commits on its own; keep the commit counter about config only.
+        stack.enter_context(
+            # Patched at the framework, not at the module: onboarding now asks for a client
+            # per bounded request through `capability_client`, which mints inside this call.
+            patch(
+                "agento.framework.toolbox_capability.rest_capability",
+                lambda *a, **k: nullcontext("cap"),
+            )
+        )
         stack.enter_context(patch(
             f"{_OB}.scoped_config_set",
             side_effect=lambda conn, path, value, **k: calls["set"].append(

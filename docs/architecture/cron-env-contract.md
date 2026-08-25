@@ -60,6 +60,20 @@ If a new var follows an external convention (e.g. a third-party SDK looks for
 `OPENAI_API_KEY`), don't fight the convention — instead add the prefix to the
 entrypoint whitelist explicitly and document it in the table above.
 
+## No env var for toolbox authentication — by design
+
+Toolbox east-west auth adds **no** `AGENTO_*` variable, and that is the decision, not an oversight.
+
+A shared signing key in the cron container would sit next to a shell-capable agent, so it is
+exfiltratable; and one key mints every scope, so a single leak grants the whole deployment. Capability
+tokens live in the `toolbox_capability` table instead: each one is random, opaque, bound to one
+agent_view (and one job), expiring, and revocable. Nothing reusable ever reaches the agent-adjacent
+container.
+
+So if you are adding a secret to this whitelist to let the cron talk to the toolbox — don't. Mint a
+capability instead (`agento capability:mint`, or `issue_capability()` from framework code) and pass it
+as `Authorization: Bearer`. See [docs/cli/capability.md](../cli/capability.md).
+
 ## Verifying a var actually reaches the consumer
 
 After setting an env var in `docker-compose.override.yml`:

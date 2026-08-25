@@ -49,6 +49,10 @@ and it is why there is no "let the framework decrypt this for a tester" permissi
 | SMTP, HTTP APIs, Graph | the **toolbox** | designed to be the only container that holds tool credentials (known gaps: [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt)) — it already resolves and decrypts them for every tool |
 | the agent_view SSH keypair | the **framework** (the module's own Python) | Node cannot parse an OpenSSH private key (`crypto.createPrivateKey` → `DECODER routines::unsupported`); `cryptography.load_ssh_private_key` can, and `agent_view:identity:show` already decrypts that field in-process |
 
+The CLI reaches the toolbox probe through `POST /config-test` with a short-lived `internal_rest`
+capability minted for the scope under test (viewless for the default scope) and revoked after the one
+request; the toolbox takes the scope from that capability, never from the query string.
+
 A toolbox probe proves the **toolbox's** vantage point. That is the right one — the toolbox is what
 sends the mail and calls the API — but it is not the cron container's, so a network path broken only
 outside the toolbox will still read `ok`.

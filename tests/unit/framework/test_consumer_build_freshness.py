@@ -28,6 +28,19 @@ from agento.framework.job_models import AgentType, Job, JobStatus
 from agento.framework.workspace import AgentView, Workspace
 from agento.modules.claude.src.output_parser import ClaudeResult
 
+
+@pytest.fixture(autouse=True)
+def _stub_run_capabilities():
+    """The mint reads a real `job` row (SELECT ... FOR UPDATE) these tests do not seed.
+
+    Its own behaviour is covered by tests/unit/framework/test_consumer_capability.py.
+    """
+    with patch.object(
+        Consumer, "_issue_run_capabilities", return_value=("cap-mcp", None)
+    ) as m:
+        yield m
+
+
 pytestmark = pytest.mark.usefixtures("builtin_harnesses")
 
 

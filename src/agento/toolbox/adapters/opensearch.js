@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { logToolboxMcp as processLog } from '../log.js';
+import { sanitizeHealthError } from '../health-run.js';
 
 function createOpensearchTool(server, toolName, description, config, options = {}) {
   // See the mssql adapter: prefer the injected agent_view-scoped session logger.
@@ -109,10 +110,10 @@ export function registerOpensearchTools(server, tools, options = {}) {
         if (response.ok) {
           results.push({ tool: name, status: 'ok', ms: Date.now() - start });
         } else {
-          results.push({ tool: name, status: 'fail', ms: Date.now() - start, error: `HTTP ${response.status}` });
+          results.push({ tool: name, status: 'fail', ms: Date.now() - start, error: sanitizeHealthError(`HTTP ${response.status}`) });
         }
       } catch (err) {
-        results.push({ tool: name, status: 'fail', ms: Date.now() - start, error: err.message });
+        results.push({ tool: name, status: 'fail', ms: Date.now() - start, error: sanitizeHealthError(err) });
       }
     }
     return results;

@@ -719,3 +719,30 @@ def test_dmarc_still_enforced_and_breach_scoped_to_union(int_db_config, two_view
     assert not fetch_all_jobs()
     breach_logs = [r for r in caplog.records if "SECURITY_BREACH" in r.getMessage()]
     assert len(breach_logs) == 1  # only the union-trusted spoof alerts
+
+
+@respx.mock
+def test_cleared_activation_modes_publishes_nothing_but_advances_the_cursor(int_db_config, two_views):
+    """`config:set outlook/activation_modes ""` must mute the mailbox for real. Before the fix the
+    empty string fell back to "direct,mention" and a directly-addressed mail still made a job."""
+    dev_id, _ = two_views
+    conn = _test_connection(autocommit=True)
+    try:
+        scoped_config_set(conn, "outlook/activation_modes", "", scope=Scope.AGENT_VIEW, scope_id=dev_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+    by_view = {dev_id: {"mailbox": "dev@example.com", "deltaLink": "L-MUTED", "messages": [
+        {"id": "muted-1", "from": {"address": "sklep@mycompanystudio.com"}, "dmarc": "pass",
+         "to": [{"address": "dev@example.com"}], "cc": [],
+         "subject": "@agento pilne", "bodyPreview": "@agento pilne"}]}}
+    respx.post(DELTA_URL).mock(side_effect=_delta_stub(by_view))
+
+    assert _run_dev(int_db_config) == 0
+    assert not fetch_all_jobs()
+    rconn = _test_connection(autocommit=False)
+    try:
+        assert load_cursors(rconn) == {"dev@example.com": "L-MUTED"}
+    finally:
+        rconn.close()
