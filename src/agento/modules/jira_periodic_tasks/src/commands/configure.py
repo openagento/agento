@@ -9,6 +9,9 @@ exception to toolbox-only secret confinement (plan C6). Every *other* config rea
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
+
+from agento.framework.toolbox_capability import rest_capability
 
 
 class ConfigureCommand:
@@ -70,9 +73,24 @@ class ConfigureCommand:
                 print("Error: core/toolbox/url not configured. Run 'agento config:set core/toolbox/url <url>'.")
                 sys.exit(1)
 
-            toolbox = ToolboxClient(toolbox_url)
+            # The toolbox scopes every REST call to a capability, and a capability needs
+            # a view. The reachability probe therefore runs as one real active view.
+            probe_views = get_active_agent_views(conn)
+            if not probe_views:
+                print("Error: no active agent_view — jira_periodic_tasks is per-view. "
+                      "Configure one (see docs/architecture/workspace.md) and re-run.")
+                sys.exit(1)
             try:
-                toolbox.jira_request("GET", "/rest/api/3/myself")
+                with rest_capability(
+                    agent_view_id=probe_views[0].id, db_config=db_config
+                ) as probe_token, closing(
+                    ToolboxClient(toolbox_url, capability_token=probe_token)
+                ) as toolbox:
+                    toolbox.jira_request(
+                        "GET", "/rest/api/3/myself", agent_view_id=probe_views[0].id,
+                    )
+            except SystemExit:
+                raise
             except Exception as e:
                 print(f"Error: cannot reach Jira via toolbox at {toolbox_url}: {e}")
                 sys.exit(1)

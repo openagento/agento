@@ -644,6 +644,8 @@ class TestProductionWiring:
         c._save_pid = lambda *a: None
         c._save_session_id = lambda *a: None
         c._is_pid_alive = lambda pid: False
+        # Capability minting needs a real job row; this test is about the harness ctx.
+        c._issue_run_capabilities = lambda conn, job: (None, None)
 
         job = SimpleNamespace(
             id=1, agent_view_id=7, source="blank", type="blank", attempt=attempt,

@@ -6,6 +6,9 @@ import logging
 import pymysql
 
 from agento.framework.scoped_config import Scope, scoped_config_set
+from agento.framework.toolbox_capability import (
+    capability_client,
+)
 
 from .toolbox_client import BitbucketToolboxClient
 
@@ -191,56 +194,6 @@ class BitbucketOnboarding:
             "    " + ", ".join(_REQUIRED_SCOPES)
         )
 
-        client = BitbucketToolboxClient(toolbox_url)
-        try:
-            # Verify-before-save loop: nothing is written until a credential set verifies (D-4).
-            while True:
-                workspace = input("  Bitbucket workspace slug: ").strip()
-                email = input("  Agent Atlassian account email: ").strip()
-                api_token = getpass.getpass("  Atlassian API token: ").strip()
-                repo_allowlist = input(
-                    "  Watched repo slugs — bare slugs, no workspace/ prefix (comma-separated): "
-                ).strip()
-
-                if not (workspace and email and api_token and repo_allowlist):
-                    print("  Error: workspace, email, API token and at least one repo are all required.")
-                    if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
-                        return
-                    continue
-
-                # Validate the repo slugs BEFORE the verify round-trip: a bad list is the operator's
-                # typo, and there is no reason to send the credentials to Bitbucket to learn that.
-                normalized, repo_error = _normalize_repo_entries(repo_allowlist, workspace)
-                if repo_error:
-                    print(f"  Error: {repo_error}")
-                    if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
-                        return
-                    continue
-                if normalized != repo_allowlist:
-                    print(f"  Using repos: {normalized}")
-                repo_allowlist = normalized
-
-                try:
-                    result = client.verify(workspace, email, api_token)
-                except Exception as e:  # toolbox unreachable / network / non-200
-                    print(f"  Error: could not verify via toolbox at {toolbox_url}: {e}")
-                    if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
-                        return
-                    continue
-
-                if result.get("ok"):
-                    account_uuid = result.get("account_uuid") or ""
-                    username = result.get("username") or ""
-                    print(f"  Verified: authenticated as {username} ({account_uuid}).")
-                    break
-
-                detail = result.get("detail") or f"HTTP {result.get('status')}"
-                print(f"  Error: credential verification failed ({detail}). Nothing saved.")
-                if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
-                    return
-        finally:
-            client.close()
-
         # Always write at an AGENT_VIEW scope (never DEFAULT): the token must not live at DEFAULT (else
         # bootstrap would decrypt it in cron), and agent_view-scoped account_uuid/repo_allowlist keep
         # per-view attribution correct. Auto-select the sole view; prompt when there are several.
@@ -254,6 +207,63 @@ class BitbucketOnboarding:
             owner = views[0]
         scope, scope_id = Scope.AGENT_VIEW, owner.id
         scope_desc = f"agent_view '{owner.code}'"
+
+        # Select the owning view BEFORE verifying: verification runs against the toolbox,
+        # which scopes every call to a capability, and a capability needs a view. There is
+        # no correct scope to verify under before the operator has chosen one.
+        # One capability per verification attempt, minted after the operator finishes typing:
+        # the retry loop waits on a human, and a capability minted before that wait is dead by
+        # the time `verify` uses it — and live for two minutes while nothing uses it.
+        client_for = capability_client(
+            lambda token: BitbucketToolboxClient(toolbox_url, capability_token=token),
+            agent_view_id=owner.id,
+        )
+        # Verify-before-save loop: nothing is written until a credential set verifies (D-4).
+        while True:
+            workspace = input("  Bitbucket workspace slug: ").strip()
+            email = input("  Agent Atlassian account email: ").strip()
+            api_token = getpass.getpass("  Atlassian API token: ").strip()
+            repo_allowlist = input(
+                "  Watched repo slugs — bare slugs, no workspace/ prefix (comma-separated): "
+            ).strip()
+
+            if not (workspace and email and api_token and repo_allowlist):
+                print("  Error: workspace, email, API token and at least one repo are all required.")
+                if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
+                    return
+                continue
+
+            # Validate the repo slugs BEFORE the verify round-trip: a bad list is the operator's
+            # typo, and there is no reason to send the credentials to Bitbucket to learn that.
+            normalized, repo_error = _normalize_repo_entries(repo_allowlist, workspace)
+            if repo_error:
+                print(f"  Error: {repo_error}")
+                if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
+                    return
+                continue
+            if normalized != repo_allowlist:
+                print(f"  Using repos: {normalized}")
+            repo_allowlist = normalized
+
+            try:
+                with client_for() as client:
+                    result = client.verify(workspace, email, api_token)
+            except Exception as e:  # toolbox unreachable / network / non-200
+                print(f"  Error: could not verify via toolbox at {toolbox_url}: {e}")
+                if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
+                    return
+                continue
+
+            if result.get("ok"):
+                account_uuid = result.get("account_uuid") or ""
+                username = result.get("username") or ""
+                print(f"  Verified: authenticated as {username} ({account_uuid}).")
+                break
+
+            detail = result.get("detail") or f"HTTP {result.get('status')}"
+            print(f"  Error: credential verification failed ({detail}). Nothing saved.")
+            if terminal.select("How to proceed?", ["Retry", "Abort (nothing saved)"]) == 1:
+                return
 
         # Single transaction: commit only AFTER a successful verify.
         scoped_config_set(conn, "bitbucket/bitbucket_workspace", workspace, scope=scope, scope_id=scope_id)

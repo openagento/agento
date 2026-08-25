@@ -703,6 +703,21 @@ describe('resolveConfigValue', () => {
   it('returns null when no source has the path', () => {
     expect(resolveConfigValue('tools/unknown/is_enabled', {}, {})).toBe(null);
   });
+
+  // The raw-path resolver is the sibling of resolveModuleField; a field that refuses the ENV
+  // source must refuse it through BOTH entrypoints, or the raw one is the way around it.
+  it('ignores a CONFIG__ env override for a field declaring allowEnv:false', () => {
+    process.env.CONFIG__TOOLS__EMAIL_SEND__IS_ENABLED = 'from-env';
+    const dbOverrides = { 'tools/email_send/is_enabled': { value: 'from-db', encrypted: false } };
+    expect(
+      resolveConfigValue('tools/email_send/is_enabled', dbOverrides, {}, { allowEnv: false }),
+    ).toBe('from-db');
+    // No metadata (and allowEnv:true) keeps the ENV source, so the default path is unchanged.
+    expect(resolveConfigValue('tools/email_send/is_enabled', dbOverrides, {})).toBe('from-env');
+    expect(
+      resolveConfigValue('tools/email_send/is_enabled', dbOverrides, {}, { allowEnv: true }),
+    ).toBe('from-env');
+  });
 });
 
 describe('registerTools integration', () => {
@@ -1178,5 +1193,67 @@ describe('loadStrictScopedOverrides', () => {
   it('throws when the default-scope query itself fails', async () => {
     const mod = await mockPool(vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED')));
     await expect(mod.loadStrictScopedOverrides(null)).rejects.toThrow(/ECONNREFUSED/);
+  });
+});
+
+// A secret in the process environment is readable by every child process and lands in crash
+// dumps and `ps` output. A field may refuse that source with `allowEnv: false`; the DB is then
+// the only way to supply it.
+describe('allowEnv:false skips the ENV source', () => {
+  const KEY = 'CONFIG__OUTLOOK__OUTLOOK_CLIENT_SECRET';
+  let resolveModuleField;
+
+  beforeEach(async () => {
+    vi.doMock('../db.js', () => ({ getCronPool: () => ({ query: vi.fn().mockResolvedValue([[]]) }) }));
+    vi.doMock('../log.js', () => ({ logToolboxMcp: vi.fn(), logToolboxRest: vi.fn(), logPublisher: vi.fn() }));
+    vi.resetModules();
+    resolveModuleField = (await import('../config-loader.js')).resolveModuleField;
+  });
+
+  function withEnv(value, fn) {
+    const saved = process.env[KEY];
+    process.env[KEY] = value;
+    try {
+      return fn();
+    } finally {
+      // Restore, or this leaks into every later test in the file (vitest shares the env).
+      if (saved === undefined) delete process.env[KEY];
+      else process.env[KEY] = saved;
+    }
+  }
+
+  it('ignores a CONFIG__ override for a field declaring allowEnv:false', () => {
+    const v = withEnv('from-env', () => resolveModuleField(
+      'outlook', 'outlook_client_secret', {},
+      { 'outlook/outlook_client_secret': { value: 'from-db', encrypted: false } },
+      { allowEnv: false },
+    ));
+    expect(v).toBe('from-db');
+  });
+
+  it('falls through to the config.json default rather than the env', () => {
+    const v = withEnv('from-env', () => resolveModuleField(
+      'outlook', 'outlook_client_secret', { outlook_client_secret: 'from-json' }, {},
+      { allowEnv: false },
+    ));
+    expect(v).toBe('from-json');
+  });
+
+  it('still reads the env for a field that did not refuse it', () => {
+    const v = withEnv('from-env', () => resolveModuleField(
+      'outlook', 'outlook_client_secret', {},
+      { 'outlook/outlook_client_secret': { value: 'from-db', encrypted: false } },
+      {},
+    ));
+    expect(v).toBe('from-env');
+  });
+
+  it('the toolbox still resolves a toolbox_only field — it is the intended owner', () => {
+    const v = resolveModuleField(
+      'outlook', 'outlook_client_secret', {},
+      { 'outlook/outlook_client_secret': { value: 'from-db', encrypted: false } },
+      { access: 'toolbox_only', allowEnv: false },
+    );
+    expect(v).toBe('from-db');
   });
 });

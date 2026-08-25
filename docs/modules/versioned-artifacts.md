@@ -95,11 +95,10 @@ use** — never over the store. A store-wide count would answer "how many artifa
 other agent_view hold", and — with `artifact:delete` reachable only by an operator — it would
 let one view lock creation out for everyone until a human intervened. The administrative CLI is exempt from ownership and from the cap.
 
-> **Known limit — this SCOPES, it does not authorize.** `agent_view_id` is asserted by the
-> caller (`?agent_view_id=` on the toolbox SSE URL), so a forged one reaches another view's
-> artifacts. It is the ceiling on every per-agent_view gate here, `allowed_artifacts`
-> included. The fix is session-bound identity in the framework, not a check in this module —
-> see ROADMAP.md.
+> **Session-bound identity.** `agent_view_id` comes from the MCP session's capability row
+> (AG-16), not from the URL, so a caller cannot name another view. What remains open is the
+> co-tenant limit — a run that reads another run's live capability off the shared workspace;
+> see [zero-trust.md](../architecture/zero-trust.md).
 
 > **`save_version`, not `publish`, is the HTTP exposure boundary.** Every saved version is
 > materialized under `published/<code>/v/<id>/` and is served from that moment; `publish` only

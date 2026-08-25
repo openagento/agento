@@ -39,7 +39,7 @@ class TestCronSync:
                 return MagicMock(returncode=0)
             return MagicMock(returncode=0)
 
-        toolbox = ToolboxClient(int_config.toolbox_url)
+        toolbox = ToolboxClient(int_config.toolbox_url, capability_token="test-cap")
         logger = logging.getLogger("test")
 
         with patch("agento.modules.jira_periodic_tasks.src.crontab.subprocess.run", side_effect=mock_subprocess_run):

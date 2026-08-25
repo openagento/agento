@@ -4,6 +4,7 @@ import { logToolboxMcp as processLog } from '../log.js';
 import { runCancellable } from '../cancellable-operation.js';
 import { isReadOnlySql } from './sql-read-only.js';
 import { getSqlTimeoutMs } from './sql-timeout.js';
+import { sanitizeHealthError } from '../health-run.js';
 
 const ALLOWED_KEYWORDS = ['SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN', 'WITH'];
 
@@ -190,7 +191,7 @@ function registerTierTools(server, tools, options, tier) {
         }), { signal, waitTimeoutMs: timeoutMs });
         results.push({ tool: name, status: 'ok', ms: Date.now() - start });
       } catch (err) {
-        results.push({ tool: name, status: 'fail', ms: Date.now() - start, error: err.message });
+        results.push({ tool: name, status: 'fail', ms: Date.now() - start, error: sanitizeHealthError(err) });
       } finally {
         if (connection && !cancelled) connection.release();
       }

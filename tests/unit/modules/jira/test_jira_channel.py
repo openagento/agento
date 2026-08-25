@@ -91,7 +91,9 @@ class TestDiscoverWork:
 
         jira = JiraChannel()
         import logging
-        items = jira.discover_work(sample_config, logging.getLogger("test"))
+        items = jira.discover_work(
+            sample_config, logging.getLogger("test"), capability_token="cap",
+        )
 
         assert len(items) == 1
         assert items[0].reference_id == "AI-50"
@@ -105,7 +107,9 @@ class TestDiscoverWork:
 
         jira = JiraChannel()
         import logging
-        items = jira.discover_work(sample_config, logging.getLogger("test"))
+        items = jira.discover_work(
+            sample_config, logging.getLogger("test"), capability_token="cap",
+        )
         assert items == []
 
 

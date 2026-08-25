@@ -36,9 +36,10 @@ class TestPrepareWorkspace:
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=1, toolbox_url="http://tb:3001")
         assert not (tmp_path / ".pi" / "agent" / "AGENTS.md").exists()
 
-    def test_scopes_the_url_to_the_agent_view(self, adapter, tmp_path):
+    def test_the_url_carries_no_agent_view(self, adapter, tmp_path):
+        """The toolbox takes the view from the run's capability, never from the URL."""
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=7, toolbox_url="http://toolbox:3001")
-        assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp?agent_view_id=7"
+        assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp"
 
     def test_no_agent_view_leaves_the_url_unscoped(self, adapter, tmp_path):
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=None, toolbox_url="http://toolbox:3001/")
@@ -136,7 +137,21 @@ class TestJobScoping:
     def test_inject_runtime_params_appends_the_job_id(self, adapter, tmp_path):
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=7, toolbox_url="http://toolbox:3001")
         adapter.inject_runtime_params(tmp_path, job_id=42)
-        assert read_conn(tmp_path)["url"].endswith("?agent_view_id=7&job_id=42")
+        assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp?job_id=42"
+
+    def test_inject_runtime_params_appends_the_capability(self, adapter, tmp_path):
+        adapter.prepare_workspace(tmp_path, {}, agent_view_id=7, toolbox_url="http://toolbox:3001")
+        adapter.inject_runtime_params(
+            tmp_path, job_id=42, capability_token="tok", toolbox_url="http://toolbox:3001",
+        )
+        assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp?job_id=42&cap=tok"
+
+    def test_the_capability_never_goes_to_another_origin(self, adapter, tmp_path):
+        adapter.prepare_workspace(tmp_path, {}, agent_view_id=7, toolbox_url="http://elsewhere:3001")
+        adapter.inject_runtime_params(
+            tmp_path, job_id=42, capability_token="tok", toolbox_url="http://toolbox:3001",
+        )
+        assert "cap=" not in read_conn(tmp_path)["url"]
 
     def test_uses_a_question_mark_when_there_is_no_query_yet(self, adapter, tmp_path):
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=None, toolbox_url="http://tb:3001")

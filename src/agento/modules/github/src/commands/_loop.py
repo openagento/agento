@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import argparse
 import logging
+from contextlib import closing
 
 from agento.framework.agent_view_runtime import resolve_publish_priority
 from agento.framework.config_resolver import ScopedConfigService
 from agento.framework.scoped_config import Scope, load_scoped_db_overrides
+from agento.framework.toolbox_capability import (
+    rest_capability,
+)
 from agento.framework.workspace import get_active_agent_views
 
 from ..channel import GitHubPublisher
@@ -55,61 +59,63 @@ def run_lane(
         )
         return 0
 
-    client = GitHubToolboxClient(toolbox_url)
     publisher = GitHubPublisher()
     published = 0
     views = get_active_agent_views(conn)
     multi_view = len(views) > 1
-    try:
-        for av in views:
-            if agent_view_code and av.code != agent_view_code:
+    for av in views:
+        if agent_view_code and av.code != agent_view_code:
+            continue
+        try:
+            # Resolve ONLY the non-secret fields the publisher needs. We deliberately do NOT call
+            # get_module("github") here: that resolves every system.json field — including the
+            # obscure github_token, which the framework decrypts during resolution — whereas
+            # per-path .get() never touches the token path. The token stays toolbox-only.
+            sc = ScopedConfigService(conn, Scope.AGENT_VIEW, av.id)
+            cfg = GitHubConfig.from_dict({
+                "enabled": sc.get("github/enabled"),
+                "github_owner": sc.get("github/github_owner"),
+                "github_login": sc.get("github/github_login"),
+                "repo_allowlist": sc.get("github/repo_allowlist"),
+                "poll_top": sc.get("github/poll_top"),
+            })
+            if not cfg.enabled:
+                continue  # inert until enabled (the toolbox re-enforces this too)
+            if not cfg.repo_list:
+                continue  # empty allow-list ⇒ skip early, no scan, no error
+            if multi_view and not _view_scoped_github_identity(conn, av.id):
+                logger.info(
+                    "github: multi-view deployment; agent_view %s has no view-scoped "
+                    "github_login/repo_allowlist — skipping to avoid DEFAULT fan-out",
+                    av.code,
+                )
                 continue
-            try:
-                # Resolve ONLY the non-secret fields the publisher needs. We deliberately do NOT call
-                # get_module("github") here: that resolves every system.json field — including the
-                # obscure github_token, which the framework decrypts during resolution — whereas
-                # per-path .get() never touches the token path. The token stays toolbox-only.
-                sc = ScopedConfigService(conn, Scope.AGENT_VIEW, av.id)
-                cfg = GitHubConfig.from_dict({
-                    "enabled": sc.get("github/enabled"),
-                    "github_owner": sc.get("github/github_owner"),
-                    "github_login": sc.get("github/github_login"),
-                    "repo_allowlist": sc.get("github/repo_allowlist"),
-                    "poll_top": sc.get("github/poll_top"),
-                })
-                if not cfg.enabled:
-                    continue  # inert until enabled (the toolbox re-enforces this too)
-                if not cfg.repo_list:
-                    continue  # empty allow-list ⇒ skip early, no scan, no error
-                if multi_view and not _view_scoped_github_identity(conn, av.id):
-                    logger.info(
-                        "github: multi-view deployment; agent_view %s has no view-scoped "
-                        "github_login/repo_allowlist — skipping to avoid DEFAULT fan-out",
-                        av.code,
-                    )
-                    continue
 
+            # One capability per view, minted and revoked around this view's calls:
+            # the toolbox derives the view from it, so a client shared across views
+            # would be a client with the wrong scope for all but one of them.
+            with rest_capability(agent_view_id=av.id, db_config=db_config) as capability_token, closing(
+                GitHubToolboxClient(toolbox_url, capability_token=capability_token)
+            ) as client:
                 resp = client.open_prs(av.id, lane=lane, top=top_override)
-                for err in resp.get("errors", []):
-                    logger.warning("github repo error (view %s): %s", av.code, err)
+            for err in resp.get("errors", []):
+                logger.warning("github repo error (view %s): %s", av.code, err)
 
-                priority = resolve_publish_priority(conn, av.id)
-                for pr in resp.get("pull_requests", []):
-                    try:
-                        if publisher.publish_pr(
-                            db_config, pr, lane=lane, agent_view_id=av.id,
-                            priority=priority, login=cfg.login, logger=logger,
-                        ):
-                            published += 1
-                    except Exception:
-                        logger.exception(
-                            "github publish failed for PR %s (view %s) — continuing",
-                            pr.get("id"), av.code,
-                        )
-            except Exception:
-                logger.exception("github lane=%s failed for view %s — continuing", lane, av.code)
-    finally:
-        client.close()
+            priority = resolve_publish_priority(conn, av.id)
+            for pr in resp.get("pull_requests", []):
+                try:
+                    if publisher.publish_pr(
+                        db_config, pr, lane=lane, agent_view_id=av.id,
+                        priority=priority, login=cfg.login, logger=logger,
+                    ):
+                        published += 1
+                except Exception:
+                    logger.exception(
+                        "github publish failed for PR %s (view %s) — continuing",
+                        pr.get("id"), av.code,
+                    )
+        except Exception:
+            logger.exception("github lane=%s failed for view %s — continuing", lane, av.code)
     return published
 
 

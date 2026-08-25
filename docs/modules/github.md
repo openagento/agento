@@ -283,15 +283,15 @@ Confirmed against GitHub, not from memory (these are the strings the code compar
   naming any **other** owner is refused by name (`the owner is fixed to "acme"`). The **allow-list itself
   is never normalized**: it stays an exact match on bare names, and owner-prefixed *config* entries are
   only ever diagnosed in the error text (see `repo_allowlist` above).
-- **Honest boundary (N5-2):** the MCP layer cannot see `agentViewMeta`, and the agent — a shell-capable
-  process on the same Docker network as the toolbox — could in principle open its own MCP session with a
-  different or omitted `agent_view_id` (`/sse` and `/mcp` take it from the query string; the module REST
-  handlers take it from the body). That is the **framework-wide internal-caller-auth gap shared by the
-  Jira, Outlook and Bitbucket channels** — `bitbucket` already exposes the same eight capabilities behind
-  the same door. This module ships at parity: it neither worsens nor fixes the gap, and compensates the
-  same way (token toolbox-only, opt-in tools, allow-list-bounded, fail-closed). The fix belongs in
-  `src/agento/toolbox/server.js`, applied once for all four modules; it is recorded as a framework
-  follow-up in [DECISIONS.md](../../DECISIONS.md) and [ROADMAP.md](../../ROADMAP.md).
+- **Caller authentication (N5-2, capability half closed 2026-08-23):** with the capability issued to
+  its own run, the agent cannot open an MCP session naming another view (a co-tenant run's token read
+  off the shared workspace still can — see [zero-trust.md](../architecture/zero-trust.md)). Every MCP session and every `/api` route needs a **capability token**; `/mcp` and `/sse`
+  take `agent_view_id` and `job_id` from the `toolbox_capability` row the token hashes to, and the module
+  REST handlers compare any body `agent_view_id` with that scope instead of trusting it. The fix landed
+  in `src/agento/toolbox/server.js` once for all four channels — see
+  [DECISIONS.md](../../DECISIONS.md) and [docs/architecture/zero-trust.md](../architecture/zero-trust.md).
+  The module's own compensations are unchanged (token toolbox-only, opt-in tools, allow-list-bounded,
+  fail-closed).
 - **Rate limits / outages:** GitHub signals a rate limit with **403 or 429**; a 403 counts as one only
   when it carries `retry-after` or `x-ratelimit-remaining: 0`. The toolbox never retries earlier than
   instructed, and if the instructed wait exceeds its 15s cap it **gives up this poll** — the cap is

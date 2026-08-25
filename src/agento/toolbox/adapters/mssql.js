@@ -4,6 +4,7 @@ import { logToolboxMcp as processLog } from '../log.js';
 import { runCancellable } from '../cancellable-operation.js';
 import { isReadOnlySql } from './sql-read-only.js';
 import { getSqlTimeoutMs } from './sql-timeout.js';
+import { sanitizeHealthError } from '../health-run.js';
 
 const ALLOWED_KEYWORDS = ['SELECT', 'WITH'];
 
@@ -148,7 +149,7 @@ export function registerMssqlTools(server, tools, options = {}) {
         results.push({ tool: name, status: 'ok', ms: Date.now() - start });
       } catch (err) {
         if (pool?.healthy === false) poolHandle.invalidate();
-        results.push({ tool: name, status: 'fail', ms: Date.now() - start, error: err.message });
+        results.push({ tool: name, status: 'fail', ms: Date.now() - start, error: sanitizeHealthError(err) });
       }
     }
     return results;

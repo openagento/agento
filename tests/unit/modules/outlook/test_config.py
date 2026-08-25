@@ -78,3 +78,30 @@ def test_toolbox_url_empty_when_core_missing_or_not_dict():
 
     with patch("agento.framework.bootstrap.get_module_config", return_value=_CoreCfg()):
         assert OutlookConfig.from_dict({}).toolbox_url == ""
+
+
+# --- explicit empty is a deliberate choice, not "missing" ----------------------------------------
+
+def test_missing_activation_modes_uses_the_default():
+    assert OutlookConfig.from_dict({}).activation_modes == "direct,mention"
+
+
+def test_explicit_empty_activation_modes_disables_every_mode():
+    """An operator who clears the value wants NO activation path, not the default two back."""
+    c = OutlookConfig.from_dict({"activation_modes": ""})
+    assert c.activation_modes == ""
+    assert c.activation_modes_set == set()
+
+
+def test_a_none_activation_modes_still_falls_back():
+    """A DB row deleted (or never written) resolves to None — that IS missing."""
+    assert OutlookConfig.from_dict({"activation_modes": None}).activation_modes == "direct,mention"
+
+
+def test_explicit_empty_summon_token_is_kept_empty():
+    assert OutlookConfig.from_dict({"summon_token": ""}).summon_token == ""
+
+
+def test_missing_summon_token_uses_the_default():
+    assert OutlookConfig.from_dict({}).summon_token == "@agento"
+    assert OutlookConfig.from_dict({"summon_token": None}).summon_token == "@agento"

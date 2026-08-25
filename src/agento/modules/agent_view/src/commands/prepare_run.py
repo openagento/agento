@@ -12,6 +12,7 @@ same stance as the recent stdin-only-secrets credential:register hardening.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -20,6 +21,39 @@ import uuid
 
 def _new_run_id() -> str:
     return f"run-{os.getpid()}-{uuid.uuid4().hex[:12]}"
+
+
+@contextlib.contextmanager
+def _revoke_on_failure(db_config, token: str):
+    """Redact the capability from any failure in the post-mint window, then revoke it.
+
+    Revocation opens its own connection: the minting one is already closed by the time
+    the run environment is materialized.
+    """
+    from agento.framework.secret_redaction import redact_exception
+
+    try:
+        yield
+    except BaseException as exc:
+        redact_exception(exc, token)
+        try:
+            from agento.framework.db import get_connection
+            from agento.framework.toolbox_capability import revoke_capability
+
+            conn = get_connection(db_config)
+            try:
+                revoke_capability(conn, token)
+            finally:
+                conn.close()
+        except Exception as revoke_error:  # reported, never masks the original failure
+            # The category only. A driver error embeds the DSN it just used — host, user,
+            # sometimes the password — and this line prints to an operator terminal.
+            print(
+                "Warning: could not revoke the interactive capability "
+                f"({type(revoke_error).__name__})",
+                file=sys.stderr,
+            )
+        raise
 
 
 class AgentViewPrepareRunCommand:
@@ -71,6 +105,11 @@ class AgentViewPrepareRunCommand:
         )
         from agento.framework.run_preparation import materialize_run_workspace
         from agento.framework.scoped_config import Scope
+        from agento.framework.toolbox_capability import (
+            INTERACTIVE_CAPABILITY_TTL_SECONDS,
+            KIND_MCP_INTERACTIVE,
+            issue_capability,
+        )
         from agento.framework.workspace import get_agent_view_by_code
 
         db_config, _, _ = _load_framework_config()
@@ -133,109 +172,127 @@ class AgentViewPrepareRunCommand:
             core_cfg = ScopedConfigService(conn).get_module("core") or {}
             toolbox_url = core_cfg.get("toolbox/url") or "http://toolbox:3001"
             agent_config_svc = ScopedConfigService(conn, Scope.AGENT_VIEW, av.id)
+
+            # Minted while conn is open — the `finally` below closes it, and a closed
+            # connection cannot issue. An interactive run has no job, so the capability
+            # is `mcp_interactive` (job_id NULL) and expires on its own TTL: nothing
+            # revokes it when the operator closes the CLI.
+            capability_token = issue_capability(
+                conn,
+                kind=KIND_MCP_INTERACTIVE,
+                agent_view_id=av.id,
+                job_id=None,
+                ttl_seconds=INTERACTIVE_CAPABILITY_TTL_SECONDS,
+            )
         finally:
             conn.close()
 
-        # Computed BEFORE materializing, not after: the workspace bakes the model
-        # expectation the bridge enforces, so an `--model` override decided later cannot
-        # reach it and the run is failed for doing exactly what was asked.
-        effective_model = args.model or runtime.model
+        # Between the mint and the JSON payload the raw capability is in hand: it is written
+        # into the harness MCP config and travels through every helper below. A failure here
+        # would otherwise put the token into the CLI's stderr AND leave a 12-hour interactive
+        # capability alive for a run that never starts.
+        with _revoke_on_failure(db_config, capability_token):
+            # Computed BEFORE materializing, not after: the workspace bakes the model
+            # expectation the bridge enforces, so an `--model` override decided later cannot
+            # reach it and the run is failed for doing exactly what was asked.
+            effective_model = args.model or runtime.model
 
-        home, working_dir = materialize_run_workspace(
-            runtime,
-            run_id=_new_run_id(),
-            agent_config_svc=agent_config_svc,
-            toolbox_url=toolbox_url,
-            credential=credential,
-            purge_credentials=purge_credentials,
-            effective_model=effective_model,
-        )
-
-        writer = workspace_adapter_for(runtime.harness)
-        env = writer.credential_env(credential) if credential is not None else {}
-        # Add GIT_AUTHOR_*/GIT_COMMITTER_* from the agent_view identity so the agent's commits are
-        # authored correctly even in a clone with its own repo-local .git/config (env beats all
-        # gitconfig levels). Non-secret, but delivered the same name-only -e way by `agento run`.
-        from agento.framework.git_identity import (
-            GIT_AUTHOR_EMAIL_PATH,
-            GIT_AUTHOR_NAME_PATH,
-            git_identity_env,
-        )
-        env = {
-            **env,
-            **git_identity_env(
-                agent_config_svc.get(GIT_AUTHOR_NAME_PATH) or "",
-                agent_config_svc.get(GIT_AUTHOR_EMAIL_PATH) or "",
-            ),
-        }
-
-        # Mirror ``agent_view:runtime``: an unregistered harness yields a JSON
-        # ``command: null`` so the host ``RunCommand`` can show its actionable
-        # "no harness registered" hint instead of cron raising a traceback.
-        command: list[str] | None
-        # Dotted path of the harness's own stream renderer, for `agento run --pretty`.
-        # ``getattr`` because the member is optional: a harness without one simply
-        # has no pretty mode and the host streams raw.
-        stream_renderer: str | None = None
-        stdin_payload: str | None = None
-        try:
-            harness_entry = get_harness(runtime.harness)
-            adapter = harness_entry.adapter
-            builder = adapter.command_builder
-        except (ValueError, KeyError):
-            command = None
-        else:
-            renderer = getattr(adapter, "stream_renderer", None)
-            # Ship the path only for something that actually satisfies the
-            # protocol. A half-implemented renderer would otherwise reach the
-            # host and raise once per event; degrading to raw is the safe answer.
-            if isinstance(renderer, StreamRenderer):
-                stream_renderer = (
-                    f"{type(renderer).__module__}:{type(renderer).__qualname__}"
-                )
-            elif renderer is not None:
-                print(
-                    f"Warning: harness {runtime.harness!r} declares a stream_renderer "
-                    f"that does not implement StreamRenderer.render — `agento run "
-                    f"--pretty` will stream raw output.",
-                    file=sys.stderr,
-                )
-            ctx = HarnessRunContext(
-                harness=runtime.harness,
-                provider=provider_desc.id,
-                model=effective_model,
-                working_dir=str(working_dir) if working_dir is not None else "/workspace",
-                home_dir=str(home) if home is not None else None,
-                credential_required=provider_desc.credential_required,
+            home, working_dir = materialize_run_workspace(
+                runtime,
+                run_id=_new_run_id(),
+                agent_config_svc=agent_config_svc,
+                toolbox_url=toolbox_url,
                 credential=credential,
-                harness_config=get_harness_config(agent_config_svc, harness_entry),
+                purge_credentials=purge_credentials,
+                effective_model=effective_model,
+                capability_token=capability_token,
             )
-            if args.prompt:
-                req = RunRequest(prompt=args.prompt, model=effective_model)
-                command = builder.headless(ctx, req)
-                # A command is argv plus stdin — the host runner must deliver the same
-                # stdin the consumer's runner would, or a stdin-only harness gets no prompt.
-                stdin_payload = getattr(builder, "stdin_payload", lambda *_: None)(ctx, req)
-            else:
-                command = builder.interactive(ctx, yolo=getattr(args, "yolo", False))
 
-        payload = {
-            "agent_view_id": av.id,
-            "agent_view_code": av.code,
-            "workspace_id": runtime.workspace.id,
-            "workspace_code": runtime.workspace.code,
-            "harness": runtime.harness,
-            "provider": runtime.provider,
-            "model": effective_model,
-            "home": str(home) if home is not None else None,
-            "working_dir": str(working_dir) if working_dir is not None else None,
-            "command": command,
-            "stream_renderer": stream_renderer,
-            "stdin": stdin_payload,
-            "env": env,
-            "credential_id": credential.id if credential is not None else None,
-            # Deprecated duplicate of credential_id, kept for one release so an older
-            # host-side `agento run` reading token_id keeps working.
-            "token_id": credential.id if credential is not None else None,
-        }
-        print(json.dumps(payload))
+            writer = workspace_adapter_for(runtime.harness)
+            env = writer.credential_env(credential) if credential is not None else {}
+            # Add GIT_AUTHOR_*/GIT_COMMITTER_* from the agent_view identity so the agent's commits are
+            # authored correctly even in a clone with its own repo-local .git/config (env beats all
+            # gitconfig levels). Non-secret, but delivered the same name-only -e way by `agento run`.
+            from agento.framework.git_identity import (
+                GIT_AUTHOR_EMAIL_PATH,
+                GIT_AUTHOR_NAME_PATH,
+                git_identity_env,
+            )
+            env = {
+                **env,
+                **git_identity_env(
+                    agent_config_svc.get(GIT_AUTHOR_NAME_PATH) or "",
+                    agent_config_svc.get(GIT_AUTHOR_EMAIL_PATH) or "",
+                ),
+            }
+
+            # Mirror ``agent_view:runtime``: an unregistered harness yields a JSON
+            # ``command: null`` so the host ``RunCommand`` can show its actionable
+            # "no harness registered" hint instead of cron raising a traceback.
+            command: list[str] | None
+            # Dotted path of the harness's own stream renderer, for `agento run --pretty`.
+            # ``getattr`` because the member is optional: a harness without one simply
+            # has no pretty mode and the host streams raw.
+            stream_renderer: str | None = None
+            stdin_payload: str | None = None
+            try:
+                harness_entry = get_harness(runtime.harness)
+                adapter = harness_entry.adapter
+                builder = adapter.command_builder
+            except (ValueError, KeyError):
+                command = None
+            else:
+                renderer = getattr(adapter, "stream_renderer", None)
+                # Ship the path only for something that actually satisfies the
+                # protocol. A half-implemented renderer would otherwise reach the
+                # host and raise once per event; degrading to raw is the safe answer.
+                if isinstance(renderer, StreamRenderer):
+                    stream_renderer = (
+                        f"{type(renderer).__module__}:{type(renderer).__qualname__}"
+                    )
+                elif renderer is not None:
+                    print(
+                        f"Warning: harness {runtime.harness!r} declares a stream_renderer "
+                        f"that does not implement StreamRenderer.render — `agento run "
+                        f"--pretty` will stream raw output.",
+                        file=sys.stderr,
+                    )
+                ctx = HarnessRunContext(
+                    harness=runtime.harness,
+                    provider=provider_desc.id,
+                    model=effective_model,
+                    working_dir=str(working_dir) if working_dir is not None else "/workspace",
+                    home_dir=str(home) if home is not None else None,
+                    credential_required=provider_desc.credential_required,
+                    credential=credential,
+                    harness_config=get_harness_config(agent_config_svc, harness_entry),
+                )
+                if args.prompt:
+                    req = RunRequest(prompt=args.prompt, model=effective_model)
+                    command = builder.headless(ctx, req)
+                    # A command is argv plus stdin — the host runner must deliver the same
+                    # stdin the consumer's runner would, or a stdin-only harness gets no prompt.
+                    stdin_payload = getattr(builder, "stdin_payload", lambda *_: None)(ctx, req)
+                else:
+                    command = builder.interactive(ctx, yolo=getattr(args, "yolo", False))
+
+            payload = {
+                "agent_view_id": av.id,
+                "agent_view_code": av.code,
+                "workspace_id": runtime.workspace.id,
+                "workspace_code": runtime.workspace.code,
+                "harness": runtime.harness,
+                "provider": runtime.provider,
+                "model": effective_model,
+                "home": str(home) if home is not None else None,
+                "working_dir": str(working_dir) if working_dir is not None else None,
+                "command": command,
+                "stream_renderer": stream_renderer,
+                "stdin": stdin_payload,
+                "env": env,
+                "credential_id": credential.id if credential is not None else None,
+                # Deprecated duplicate of credential_id, kept for one release so an older
+                # host-side `agento run` reading token_id keeps working.
+                "token_id": credential.id if credential is not None else None,
+            }
+            print(json.dumps(payload))

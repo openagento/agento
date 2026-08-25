@@ -294,3 +294,38 @@ class TestBootstrapRegexIdentityTypes:
 
 # Used by test_lifecycle_events_dispatched
 _lifecycle_calls: list[str] = []
+
+
+class TestManifestRegistrySurvivesAFailedReload:
+    """The consumer re-bootstraps on every idle tick and CONTINUES when that fails. Clearing the
+    manifest registry before fallible discovery leaves a window in which every config field looks
+    like it declares no security metadata — the window a hot reload runs through."""
+
+    def test_a_reload_that_raises_keeps_the_previous_manifests(self, tmp_path: Path, monkeypatch):
+        _write_module(tmp_path, "keeper", {"name": "keeper"})
+        bootstrap(str(tmp_path))
+        before = [m.name for m in get_manifests()]
+        assert "keeper" in before
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("bad manifest on disk")
+
+        monkeypatch.setattr("agento.framework.bootstrap.scan_all_modules", _boom)
+        with pytest.raises(RuntimeError):
+            bootstrap(str(tmp_path))
+        assert [m.name for m in get_manifests()] == before
+
+    def test_a_scanned_modules_restricted_field_is_remembered(self, tmp_path: Path):
+        """Remembering is driven by the SCAN, not by the enabled set, so a module that is later
+        disabled cannot turn its toolbox_only secret into a readable one. This asserts the
+        remembering half; the fail-closed read is asserted in test_toolbox_only_config.py."""
+        from agento.framework.config_schema import clear_restricted_fields, restricted_schema
+
+        clear_restricted_fields()
+        mod_dir = _write_module(tmp_path, "vault", {"name": "vault"})
+        (mod_dir / "system.json").write_text(json.dumps({
+            "the_secret": {"type": "obscure", "access": "toolbox_only", "allowEnv": False},
+        }))
+        bootstrap(str(tmp_path))
+        assert restricted_schema("vault/the_secret") is not None
+        clear_restricted_fields()

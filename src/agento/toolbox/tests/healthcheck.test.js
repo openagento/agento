@@ -95,7 +95,9 @@ describe('adapter healthchecks', () => {
 
       const { healthcheck } = registerMysqlTools(server, tools, { sqlPoolRegistry: sqlPoolRegistry() });
       const results = await healthcheck();
-      expect(results[0]).toMatchObject({ tool: 'mysql_broken', status: 'fail', error: 'ECONNREFUSED' });
+      // The adapter categorizes the driver error itself — a mysql2 message routinely embeds the
+      // DSN and the user it dialled with.
+      expect(results[0]).toMatchObject({ tool: 'mysql_broken', status: 'fail', error: 'unreachable' });
       expect(connection.release).toHaveBeenCalledOnce();
     });
 
@@ -236,7 +238,8 @@ describe('adapter healthchecks', () => {
 
       const { healthcheck } = registerOpensearchTools(server, tools);
       const results = await healthcheck();
-      expect(results[0]).toMatchObject({ tool: 'os_down', status: 'fail', error: 'HTTP 503' });
+      // The producer maps the status itself: a 5xx is a stable 'unreachable', not 'HTTP 503'.
+      expect(results[0]).toMatchObject({ tool: 'os_down', status: 'fail', error: 'unreachable' });
 
       globalThis.fetch = originalFetch;
     });

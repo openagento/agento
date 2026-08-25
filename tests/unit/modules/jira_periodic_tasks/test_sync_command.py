@@ -3,11 +3,21 @@ from __future__ import annotations
 
 import argparse
 import logging
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agento.modules.jira.src.config import JiraConfig
 from agento.modules.jira_periodic_tasks.src.crontab import CronEntry
 
+
+@pytest.fixture(autouse=True)
+def _no_real_capability():
+    """`rest_capability` opens its OWN connection (the toolbox reads the row from another
+    process), so a unit test that mocks only the caller's connection would dial a real DB."""
+    with patch("agento.modules.jira_periodic_tasks.src.commands.sync.rest_capability", lambda *a, **k: nullcontext("cap")):
+        yield
 
 def _args(dry_run: bool = False) -> argparse.Namespace:
     return argparse.Namespace(dry_run=dry_run)
@@ -77,29 +87,21 @@ def _patch_orchestrator_deps(stack: list):
     return mocks
 
 
-def test_execute_no_agent_views_falls_back_to_global_config():
+def test_execute_without_any_agent_view_exits_and_never_syncs():
+    """No global fallback: a viewless sync has no scope to mint a toolbox
+    capability for, so every REST call would be refused."""
     from contextlib import ExitStack
 
     with ExitStack() as stack:
         m = _patch_orchestrator_deps(stack)
         m["get_active_avs"].return_value = []
-        global_cfg = _make_jira_config()
-        m["get_module_config"].side_effect = lambda name, *a, **kw: (
-            global_cfg if name == "jira" else MagicMock()
-        )
-
-        syncer = MagicMock()
-        syncer.sync_view.return_value = [_make_entry("AI-1")]
-        m["syncer_cls"].return_value = syncer
 
         from agento.modules.jira_periodic_tasks.src.commands.sync import SyncCommand
-        SyncCommand().execute(_args())
+        with pytest.raises(SystemExit) as ei:
+            SyncCommand().execute(_args())
 
-        m["syncer_cls"].assert_called_once()
-        # Global path: no agent_view_id/code passed
-        _, kwargs = m["syncer_cls"].call_args
-        assert kwargs.get("agent_view_id") is None
-        assert kwargs.get("agent_view_code", "") == ""
+        assert ei.value.code == 1
+        m["syncer_cls"].assert_not_called()
 
 
 def test_execute_iterates_active_agent_views_per_view():

@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
@@ -8,6 +9,17 @@ from agento.modules.outlook.src.channel import OutlookAdmission, _matches_allowe
 from agento.modules.outlook.src.commands.publish import publish_all_views
 
 P = "agento.modules.outlook.src.commands.publish"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_capability():
+    """`rest_capability` opens its OWN connection (the toolbox reads the row from another
+    process), so a unit test that mocks only the caller's connection would dial a real DB."""
+    with patch(
+        "agento.modules.outlook.src.commands.publish.rest_capability",
+        lambda *a, **k: nullcontext("cap"),
+    ):
+        yield
 
 
 def _views(*specs):
@@ -93,7 +105,8 @@ def test_multi_view_fans_each_mailbox_to_its_own_view(MockClient, MockPub, mock_
     assert by_view == {1: "d1", 2: "o1"}
     prios = {c.kwargs["agent_view_id"]: c.kwargs["priority"] for c in pub.publish_mail.call_args_list}
     assert prios == {1: 51, 2: 52}
-    client.close.assert_called_once()
+    # One client per mailbox group now — each carries that group's own capability.
+    assert client.close.call_count == 2
 
 
 @patch(f"{P}.save_cursor")
@@ -602,7 +615,8 @@ def test_no_active_views_is_a_clean_noop(MockClient, MockPub, mock_gaav, mock_lo
     count = publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
     assert count == 0
     MockPub.return_value.publish_mail.assert_not_called()
-    client.close.assert_called_once()
+    # No group is polled, so no client is built and none needs closing.
+    client.close.assert_not_called()
 
 
 @patch(f"{P}.save_cursor")
@@ -629,7 +643,8 @@ def test_per_view_error_logs_and_continues(MockClient, MockPub, mock_gaav, mock_
 
     assert count == 1
     logger.exception.assert_called()
-    client.close.assert_called_once()
+    # Two groups, two clients — the failing one is still closed.
+    assert client.close.call_count == 2
 
 
 @patch(f"{P}.save_cursor")

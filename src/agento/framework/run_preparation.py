@@ -47,6 +47,7 @@ def materialize_run_workspace(
     credential: CredentialRecord | None = None,
     purge_credentials: bool = False,
     effective_model: str | None = None,
+    capability_token: str | None = None,
 ) -> tuple[Path | None, Path | None]:
     """Prepare ``(home_dir, working_dir)`` for one run.
 
@@ -62,8 +63,10 @@ def materialize_run_workspace(
     ``agento run``. An ``int`` id scopes the run to a job via
     ``inject_runtime_params``; a ``str`` id scopes it to the run itself, so the toolbox
     can still give it a desk of its own. Injection also runs when a per-run override has
-    to reach the harness's config. Each is passed only to an adapter that names the
-    keyword, so an adapter predating either keeps the build's baked config as-is.
+    to reach the harness's config, and when the run carries a ``capability_token`` — the
+    build itself carries no claims, so a run without one reaches the toolbox with none.
+    Each is passed only to an adapter that names the keyword, so an adapter predating
+    either keeps the build's baked config as-is.
 
     Returns ``(None, None)`` when ``runtime`` carries no agent_view/workspace
     (blank jobs), mirroring the consumer guard.
@@ -102,6 +105,8 @@ def materialize_run_workspace(
             current_build, artifacts_dir,
             job_id=inject_id,
             run_id=inject_run,
+            capability_token=capability_token,
+            toolbox_url=toolbox_url,
             harness=runtime.harness,
             effective_model=effective_model,
             effective_provider=getattr(runtime, "provider", None),
@@ -139,6 +144,17 @@ def materialize_run_workspace(
             harness_config,
         )
         writer.prepare_workspace(artifacts_dir, agent_config, **kwargs)
+        if capability_token is not None:
+            # The build-copy path injects via copy_build_to_artifacts_dir; a
+            # freshly-prepared workspace must get the same treatment or the run
+            # would reach the toolbox with no capability at all.
+            writer.inject_runtime_params(
+                artifacts_dir,
+                job_id=run_id if isinstance(run_id, int) else None,
+                run_id=run_id if isinstance(run_id, str) else None,
+                capability_token=capability_token,
+                toolbox_url=toolbox_url,
+            )
 
     if runtime.harness:
         from .harness import persistent_home_paths_for, workspace_adapter_for

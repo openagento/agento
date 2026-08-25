@@ -12,6 +12,7 @@ from .channels.base import Channel
 from .commands import Command, register_command
 from .commands import clear as clear_commands
 from .config_resolver import load_db_overrides, read_config_defaults, resolve_module_config
+from .config_schema import remember_restricted_fields
 from .dependency_resolver import resolve_order, validate_dependencies
 from .event_manager import Observer, ObserverEntry, get_event_manager
 from .event_manager import clear as clear_event_manager
@@ -122,12 +123,19 @@ def bootstrap(
     clear_regex_identity_types()
     clear_event_manager()
     _MODULE_CONFIGS.clear()
-    _MANIFESTS.clear()
+    # _MANIFESTS is NOT cleared here. Discovery below can raise (a bad manifest, a
+    # dependency cycle), and an empty registry between the clear and the repopulate makes
+    # every field look like it declares no security metadata. It is replaced atomically
+    # once discovery succeeds, so a failed reload keeps the previous good schema.
 
     # ONE discovery path shared with setup:upgrade and module:validate — it also covers
     # PyPI extensions bind-mounted at /opt/agento-src/<ext>, which are under neither
     # core_dir nor user_dir.
     all_scanned = scan_all_modules(core_dir, user_dir)
+    # Remember the restricted fields of EVERY scanned module, enabled or not: disabling a
+    # module must not turn its `toolbox_only` secret into a readable one.
+    for scanned in all_scanned:
+        remember_restricted_fields(scanned.name, scanned.config)
     enabled = filter_enabled(all_scanned)
     validate_dependencies(enabled, all_scanned)
     manifests = resolve_order(enabled)
@@ -183,8 +191,9 @@ def bootstrap(
         # Dispatch module_loaded (capabilities registered)
         em.dispatch("module_load_after", ModuleLoadedEvent(name=m.name, path=m.path))
 
-    # Store manifests for shutdown and introspection
-    _MANIFESTS.extend(manifests)
+    # Store manifests for shutdown and introspection — replaced in one statement, never
+    # cleared first (see the note above the discovery block).
+    _MANIFESTS[:] = manifests
 
     # Dispatch module_ready (all modules loaded, safe to query registries)
     for m in manifests:
