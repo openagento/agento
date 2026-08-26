@@ -219,6 +219,34 @@ def get_authenticator(scope: str) -> CredentialAuthenticator | None:
     return _HARNESSES[owner].adapter.authenticators.get(CredentialScope(scope))
 
 
+def account_label_for_scope(scope: str, credentials: dict | None) -> str | None:
+    """The human-facing account (e.g. the OAuth e-mail) behind a decrypted credential.
+
+    Agent-agnostic and best-effort: it dispatches to the scope's own authenticator, which
+    is the only component that knows where its CLI records the authenticated account
+    (Claude keeps it in ``.claude.json``'s ``oauthAccount.emailAddress``; Codex in the
+    ``id_token`` JWT). The framework itself never reaches into a payload shape.
+
+    Returns ``None`` when the scope is unknown, the authenticator does not implement
+    extraction, the payload carries no account (API-key credentials), or extraction
+    raises. Read via ``getattr`` so a third-party authenticator predating ``account_label``
+    degrades to "unknown" instead of breaking ``credential:list``.
+    """
+    if not credentials:
+        return None
+    authenticator = get_authenticator(scope)
+    if authenticator is None:
+        return None
+    extractor = getattr(authenticator, "account_label", None)
+    if extractor is None:
+        return None
+    try:
+        label = extractor(credentials)
+    except Exception:  # never let a malformed payload break the listing/registration path
+        return None
+    return label if isinstance(label, str) and label.strip() else None
+
+
 def clear() -> None:
     """Reset registry (for testing and consumer hot-reload)."""
     _HARNESSES.clear()

@@ -97,3 +97,23 @@ class ClaudeCredentialAuthenticator:
         raise UnsupportedRegistrationMode(
             f"Claude does not support registration mode {mode.value!r}"
         )
+
+    def account_label(self, credentials: dict) -> str | None:
+        """The Claude account e-mail captured at OAuth time.
+
+        Claude Code records the logged-in account in ``~/.claude.json`` under
+        ``oauthAccount.emailAddress``; ``authenticate_interactive`` copies that file
+        verbatim into ``raw_auth.claude_json``. Returns ``None`` for API-key credentials
+        (no OAuth account) or a payload missing the field, so the caller shows the
+        account as unknown rather than guessing."""
+        raw_auth = credentials.get("raw_auth")
+        if not isinstance(raw_auth, dict):
+            return None
+        claude_json = raw_auth.get("claude_json")
+        if not isinstance(claude_json, dict):
+            return None
+        account = claude_json.get("oauthAccount")
+        if not isinstance(account, dict):
+            return None
+        email = account.get("emailAddress")
+        return email if isinstance(email, str) and email.strip() else None

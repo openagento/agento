@@ -156,6 +156,8 @@ If you pass an inline value (`--with-api-key sk-XXX`), argparse rejects it with 
 
 `register` also resets `status='ok'` and clears any prior `error_msg`, so re-running it on an existing label is a valid recovery path.
 
+If the account you are registering (its OAuth e-mail) already backs another enabled label in the same scope, `register` prints a warning and still proceeds. Two credentials on one account share a single-use refresh token and race on rotation, which can invalidate the chain — `credential:deregister` one unless the duplicate is intentional.
+
 ## List Credentials
 
 ```bash
@@ -165,7 +167,7 @@ agento credential:list --json
 agento credential:list --all    # include disabled tokens
 ```
 
-Each row shows `type`, `priority`, `status`, `last_used`, and `expires`. A token that is temporarily rate/usage-limited shows `status=ok (throttled)` plus a `⏳ throttled until <time>` line; an errored token shows its truncated `error_msg` and its provenance — `status=error (auto)` (self-clears on the next successful run), `status=error (operator)` (never does), or `status=error (operator?)` for a quarantine predating the `error_source` column. A row under a live refresh lease adds a `🔒 refresh lease held by job-<id>-attempt-<n> until <time>` line — leave it alone. `--json` includes `error_source`, `lease_owner` and `leased_until` alongside `throttled_until` and `expires_at`. The `credentials` blob is never surfaced.
+Each row shows `account`, `type`, `priority`, `status`, `last_used`, and `expires`. `account` is the **real authenticated identity** behind the label — the OAuth e-mail Claude records in `oauthAccount.emailAddress`, or the one in a Codex `id_token` — extracted from the stored credential, not from the free-text label. It shows `account=?` when the credential carries none (API keys) or it cannot be read. Because the label is free text, this is the surface for spotting a label that does not match its account, or two labels pointing at one account. A token that is temporarily rate/usage-limited shows `status=ok (throttled)` plus a `⏳ throttled until <time>` line; an errored token shows its truncated `error_msg` and its provenance — `status=error (auto)` (self-clears on the next successful run), `status=error (operator)` (never does), or `status=error (operator?)` for a quarantine predating the `error_source` column. A row under a live refresh lease adds a `🔒 refresh lease held by job-<id>-attempt-<n> until <time>` line — leave it alone. `--json` includes `account`, `error_source`, `lease_owner` and `leased_until` alongside `throttled_until` and `expires_at`. The `credentials` blob is never surfaced.
 
 ## Set Pool Priority
 

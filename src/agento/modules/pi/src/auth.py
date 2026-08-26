@@ -42,3 +42,8 @@ class PiOpenRouterAuthenticator:
         raise UnsupportedRegistrationMode(
             f"Pi/OpenRouter does not support registration mode {mode.value!r}"
         )
+
+    def account_label(self, credentials: dict) -> str | None:
+        """OpenRouter authenticates with a bare API key that carries no account
+        identity, so there is nothing to show next to the label."""
+        return None

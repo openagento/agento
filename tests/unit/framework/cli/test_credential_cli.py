@@ -618,3 +618,109 @@ class TestRefusesToWriteThroughALease:
         write_conn.close.assert_called_once()
         lookup_conn.rollback.assert_not_called()
         events.dispatch.assert_not_called()
+
+
+class TestCredentialListShowsAccount:
+    """AG-45: the real authenticated account is shown next to the label, so a label that
+    does not match its account (or two labels on one account) is detectable by an
+    operator. ``builtin_harnesses`` (module fixture) registers the claude authenticator."""
+
+    def _claude_row(self, id_, label, email):
+        now = datetime.now(UTC).replace(tzinfo=None)
+        creds = (
+            {"raw_auth": {"claude_json": {"oauthAccount": {"emailAddress": email}}}}
+            if email else {"api_key": "sk-ant-x"}
+        )
+        return CredentialRecord(
+            id=id_, scope="claude", type="oauth", label=label, credentials=creds,
+            token_limit=0, enabled=True, status=CredentialStatus.OK, priority=0,
+            error_msg=None, expires_at=None, used_at=None, created_at=now, updated_at=now,
+        )
+
+    def _run(self, rows, *, as_json, capsys):
+        from agento.framework.cli.credential import CredentialListCommand
+        args = argparse.Namespace(scope=None, all=True, json=as_json)
+        with patch("agento.framework.cli.credential._load_framework_config",
+                   return_value=(MagicMock(), MagicMock(), MagicMock(usage_window_hours=24))), \
+             patch("agento.framework.cli.credential.get_connection_or_exit"), \
+             patch("agento.framework.agent_manager.list_credentials", return_value=rows), \
+             patch("agento.framework.agent_manager.get_usage_summaries", return_value=[]):
+            CredentialListCommand().execute(args)
+        return capsys.readouterr().out
+
+    def test_text_shows_oauth_email(self, capsys):
+        out = self._run([self._claude_row(1, "prod", "ops@example.com")],
+                        as_json=False, capsys=capsys)
+        assert "account=ops@example.com" in out
+
+    def test_text_shows_placeholder_for_api_key(self, capsys):
+        out = self._run([self._claude_row(1, "prod", None)], as_json=False, capsys=capsys)
+        assert "account=?" in out
+
+    def test_json_exposes_account(self, capsys):
+        import json
+        rows = json.loads(self._run(
+            [self._claude_row(1, "a", "ops@example.com"), self._claude_row(2, "b", None)],
+            as_json=True, capsys=capsys,
+        ))
+        by_id = {r["id"]: r for r in rows}
+        assert by_id[1]["account"] == "ops@example.com"
+        assert by_id[2]["account"] is None
+
+
+class TestCredentialRegisterWarnsOnDuplicateAccount:
+    """AG-45: registering a second label on an oauthAccount that already has one warns —
+    the two rows share a single-use refresh token and race on rotation."""
+
+    def _claude_row(self, id_, label, email):
+        now = datetime.now(UTC).replace(tzinfo=None)
+        return CredentialRecord(
+            id=id_, scope="claude", type="oauth", label=label,
+            credentials={"raw_auth": {"claude_json": {"oauthAccount": {"emailAddress": email}}}},
+            token_limit=0, enabled=True, status=CredentialStatus.OK, priority=0,
+            error_msg=None, expires_at=None, used_at=None, created_at=now, updated_at=now,
+        )
+
+    def _register(self, incoming_email, existing, *, label, capsys):
+        from agento.framework.cli.credential import CredentialRegisterCommand
+        incoming = {"raw_auth": {"claude_json": {"oauthAccount": {"emailAddress": incoming_email}}}}
+        args = argparse.Namespace(
+            scope="claude", label=label, token_limit=0,
+            with_api_key=False, with_access_token=False,
+        )
+        with patch("agento.framework.cli.credential._load_framework_config",
+                   return_value=({}, None, None)), \
+             patch("agento.framework.cli.credential.get_connection_or_exit",
+                   return_value=MagicMock()), \
+             patch("agento.framework.cli.credential._resolve_credentials",
+                   return_value=(incoming, "oauth")), \
+             patch("agento.framework.agent_manager.list_credentials",
+                   return_value=existing), \
+             patch("agento.framework.agent_manager.register_credential",
+                   return_value=self._claude_row(9, label, incoming_email)), \
+             patch("agento.framework.event_manager.get_event_manager", return_value=MagicMock()):
+            CredentialRegisterCommand().execute(args)
+        return capsys.readouterr().err
+
+    def test_warns_when_other_label_holds_same_account(self, capsys):
+        err = self._register(
+            "ops@example.com", [self._claude_row(1, "prod", "ops@example.com")],
+            label="prod-copy", capsys=capsys,
+        )
+        assert "already registered" in err
+        assert "[1] prod" in err
+
+    def test_no_warning_when_reregistering_same_label(self, capsys):
+        # Refreshing the same credential (same label) is not a duplicate account.
+        err = self._register(
+            "ops@example.com", [self._claude_row(1, "prod", "ops@example.com")],
+            label="prod", capsys=capsys,
+        )
+        assert "already registered" not in err
+
+    def test_no_warning_for_distinct_accounts(self, capsys):
+        err = self._register(
+            "new@example.com", [self._claude_row(1, "prod", "ops@example.com")],
+            label="second", capsys=capsys,
+        )
+        assert "already registered" not in err

@@ -347,6 +347,20 @@ class CredentialAuthenticator(Protocol):
         """Return ``(credentials_dict, credential_type)`` for a pasted secret."""
         ...
 
+    # ``account_label`` is deliberately NOT declared as a required member. This Protocol
+    # is ``runtime_checkable`` and the two methods above are the contract every
+    # authenticator must satisfy; a third-party authenticator written before this method
+    # existed must keep passing a structural check. So the framework reads it with
+    # ``getattr(authenticator, "account_label", None)`` (see
+    # ``registry.account_label_for_scope``) — an authenticator that omits it degrades to
+    # "account unknown" instead of breaking ``credential:list``. Shipped authenticators
+    # implement it with this signature:
+    #
+    #     def account_label(self, credentials: dict) -> str | None:
+    #         '''Human-facing account identity (e.g. the OAuth e-mail) recorded in the
+    #         decrypted ``credentials`` payload, or ``None`` when the payload carries no
+    #         account (API-key credentials) or it cannot be extracted.'''
+
 
 @runtime_checkable
 class AgentHarnessAdapter(Protocol):

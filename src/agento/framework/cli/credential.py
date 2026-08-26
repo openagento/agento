@@ -75,6 +75,7 @@ class CredentialRegisterCommand:
 
         conn = get_connection_or_exit(db_config)
         try:
+            _warn_on_duplicate_account(conn, scope, args.label, credentials)
             try:
                 credential = register_credential(
                     conn,
@@ -122,6 +123,42 @@ def _validate_scope(scope: str) -> str:
         )
         sys.exit(1)
     return scope
+
+
+def _warn_on_duplicate_account(conn, scope: str, label: str, credentials: dict) -> None:
+    """Warn (do not block) when another enabled credential in ``scope`` already holds the
+    same OAuth account as the one being registered.
+
+    Two rows on one ``oauthAccount`` both rotate the SAME single-use refresh token, so a
+    concurrent pick races and can invalidate the chain — the failure mode AG-45 flags. The
+    account comes from the authenticator, not the label, so a mislabelled duplicate is
+    still caught. Skipped for API-key credentials (no account to compare) and for the row's
+    own label (re-registering / refreshing the same credential is not a duplicate)."""
+    from ..agent_manager import list_credentials
+    from ..harness import account_label_for_scope
+
+    incoming = account_label_for_scope(scope, credentials)
+    if not incoming:
+        return
+    try:
+        existing = list_credentials(conn, scope=scope, enabled_only=True)
+    except Exception:
+        # A read-side hiccup must never abort a registration; the warning is advisory.
+        return
+    clashes = [
+        c for c in existing
+        if c.label != label and account_label_for_scope(c.scope, c.credentials) == incoming
+    ]
+    if not clashes:
+        return
+    others = ", ".join(f"[{c.id}] {c.label}" for c in clashes)
+    print(
+        f"Warning: account {incoming} is already registered in scope {scope!r} under "
+        f"{others}. Two credentials for one account share a single-use refresh token and "
+        f"race on rotation — deregister one (agento credential:deregister <id>) unless the "
+        f"duplicate is intentional.",
+        file=sys.stderr,
+    )
 
 
 def _supported_modes(scope: str) -> set:
@@ -383,6 +420,7 @@ class CredentialListCommand:
 
     def execute(self, args: argparse.Namespace) -> None:
         from ..agent_manager import get_usage_summaries, list_credentials
+        from ..harness import account_label_for_scope
 
         db_config, _, am_config = _load_framework_config()
         conn = get_connection_or_exit(db_config)
@@ -418,6 +456,11 @@ class CredentialListCommand:
                     # cycle so existing --json consumers keep working (ROADMAP.md).
                     "scope": t.scope,
                     "agent_type": t.scope,
+                    # The real authenticated account behind the label — `null` when the
+                    # credential carries none (API key) or it cannot be extracted. Lets an
+                    # operator detect a label that does not match its account, or two rows
+                    # on one account (AG-45).
+                    "account": account_label_for_scope(t.scope, t.credentials),
                     "type": t.type,
                     "priority": t.priority,
                     "label": t.label,
@@ -463,8 +506,12 @@ class CredentialListCommand:
             expires_str = f"expires={_format_expiry(t.expires_at, now)}"
             type_str = f"type={t.type}"
             prio_str = f"priority={t.priority}"
+            # Show the real authenticated account next to the label so a label that does
+            # not match its account — or two labels on one account — is visible (AG-45).
+            account = account_label_for_scope(t.scope, t.credentials)
+            account_str = f"account={account or '?'}"
             line = (
-                f"  [{t.id}] {t.scope:8} {t.label:20} "
+                f"  [{t.id}] {t.scope:8} {t.label:20} {account_str:32} "
                 f"{type_str:28} {prio_str:12} "
                 f"{usage_str}  {status_str}  {used_at_str}  {expires_str}"
             )
