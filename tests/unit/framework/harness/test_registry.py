@@ -189,3 +189,36 @@ def _module_config_schema(module_dir):
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+class TestAccountLabelForScope:
+    """AG-45: the framework resolves a credential's real account through the owning
+    authenticator, agent-agnostically — it never reaches into a payload shape itself."""
+
+    def test_dispatches_to_the_scope_authenticator(self):
+        from agento.framework.harness import account_label_for_scope
+        register_builtin_harnesses()
+        creds = {"raw_auth": {"claude_json": {"oauthAccount": {"emailAddress": "ops@example.com"}}}}
+        assert account_label_for_scope("claude", creds) == "ops@example.com"
+
+    def test_none_for_unknown_scope(self):
+        from agento.framework.harness import account_label_for_scope
+        register_builtin_harnesses()
+        assert account_label_for_scope("nope", {"x": 1}) is None
+
+    def test_none_for_empty_credentials(self):
+        from agento.framework.harness import account_label_for_scope
+        register_builtin_harnesses()
+        assert account_label_for_scope("claude", None) is None
+        assert account_label_for_scope("claude", {}) is None
+
+    def test_swallows_extractor_errors(self):
+        from agento.framework.harness import account_label_for_scope, get_authenticator
+        register_builtin_harnesses()
+        auth = get_authenticator("claude")
+
+        def boom(_creds):
+            raise RuntimeError("malformed payload")
+
+        object.__setattr__(auth, "account_label", boom)
+        assert account_label_for_scope("claude", {"raw_auth": {}}) is None

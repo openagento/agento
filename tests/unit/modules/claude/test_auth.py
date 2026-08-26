@@ -172,3 +172,29 @@ class TestRegisterFromApiKey:
         creds, token_type = ClaudeCredentialAuthenticator().register_from_api_key("  sk-ant-abc  ")
         assert creds == {"api_key": "sk-ant-abc"}
         assert token_type == "anthropic_api_key"
+
+
+class TestAccountLabel:
+    """AG-45: the real OAuth account behind the label, extracted from the captured
+    ``.claude.json`` ``oauthAccount.emailAddress``."""
+
+    def test_extracts_email_from_captured_claude_json(self):
+        creds = {
+            "subscription_key": "sk-ant-oat01-abc",
+            "raw_auth": {"claude_json": {"oauthAccount": {"emailAddress": "ops@example.com"}}},
+        }
+        assert ClaudeCredentialAuthenticator().account_label(creds) == "ops@example.com"
+
+    def test_none_for_api_key_credentials(self):
+        assert ClaudeCredentialAuthenticator().account_label({"api_key": "sk-ant-abc"}) is None
+
+    def test_none_when_oauth_account_missing(self):
+        creds = {"raw_auth": {"claude_json": {"userID": "u1"}}}
+        assert ClaudeCredentialAuthenticator().account_label(creds) is None
+
+    def test_none_when_email_blank(self):
+        creds = {"raw_auth": {"claude_json": {"oauthAccount": {"emailAddress": "  "}}}}
+        assert ClaudeCredentialAuthenticator().account_label(creds) is None
+
+    def test_none_when_raw_auth_malformed(self):
+        assert ClaudeCredentialAuthenticator().account_label({"raw_auth": "nope"}) is None

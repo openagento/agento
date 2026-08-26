@@ -119,3 +119,30 @@ class CodexCredentialAuthenticator:
         raise UnsupportedRegistrationMode(
             f"Codex does not support registration mode {mode.value!r}"
         )
+
+    def account_label(self, credentials: dict) -> str | None:
+        """The ChatGPT/OpenAI account e-mail behind a Codex credential.
+
+        Read from the ``id_token`` JWT's ``email`` claim (OpenAI also nests it under the
+        ``https://api.openai.com/profile`` claim). The device-auth flow stores the
+        ``id_token`` both flat on the payload and inside ``raw_auth.tokens``; both are
+        checked. Returns ``None`` when there is no id_token (access-token / API-key
+        credentials) or it cannot be decoded."""
+        id_token = credentials.get("id_token")
+        if not id_token:
+            raw_auth = credentials.get("raw_auth")
+            tokens = raw_auth.get("tokens") if isinstance(raw_auth, dict) else None
+            id_token = tokens.get("id_token") if isinstance(tokens, dict) else None
+        if not isinstance(id_token, str) or id_token.count(".") != 2:
+            return None
+        try:
+            payload = json.loads(_b64url_decode(id_token.split(".")[1]))
+        except (AuthenticationError, json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        email = payload.get("email")
+        if not email:
+            profile = payload.get("https://api.openai.com/profile")
+            email = profile.get("email") if isinstance(profile, dict) else None
+        return email if isinstance(email, str) and email.strip() else None

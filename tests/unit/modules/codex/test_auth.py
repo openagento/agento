@@ -87,3 +87,32 @@ class TestRegisterFromApiKey:
         creds, token_type = CodexCredentialAuthenticator().register_from_api_key("  sk-proj-abc  ")
         assert creds == {"api_key": "sk-proj-abc"}
         assert token_type == "openai_api_key"
+
+
+class TestAccountLabel:
+    """AG-45: the ChatGPT/OpenAI account e-mail, decoded from the id_token JWT."""
+
+    def test_extracts_email_claim_flat_id_token(self):
+        token = _make_jwt({"email": "dev@openai-user.com"})
+        creds = {"subscription_key": "sk", "id_token": token}
+        assert CodexCredentialAuthenticator().account_label(creds) == "dev@openai-user.com"
+
+    def test_extracts_email_from_openai_profile_claim(self):
+        token = _make_jwt({"https://api.openai.com/profile": {"email": "p@openai-user.com"}})
+        creds = {"id_token": token}
+        assert CodexCredentialAuthenticator().account_label(creds) == "p@openai-user.com"
+
+    def test_reads_id_token_nested_in_raw_auth_tokens(self):
+        token = _make_jwt({"email": "nested@openai-user.com"})
+        creds = {"raw_auth": {"tokens": {"id_token": token}}}
+        assert CodexCredentialAuthenticator().account_label(creds) == "nested@openai-user.com"
+
+    def test_none_without_id_token(self):
+        assert CodexCredentialAuthenticator().account_label({"access_token": "sk"}) is None
+
+    def test_none_for_undecodable_id_token(self):
+        assert CodexCredentialAuthenticator().account_label({"id_token": "aaa.@@@.sig"}) is None
+
+    def test_none_when_no_email_claim(self):
+        token = _make_jwt({"sub": "user-123"})
+        assert CodexCredentialAuthenticator().account_label({"id_token": token}) is None
