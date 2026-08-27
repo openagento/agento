@@ -8,6 +8,10 @@ import { SqlPoolRegistry } from './adapters/sql-pool-registry.js';
 import { createHealthRegistration } from './health-registration.js';
 import { McpSessionRegistry, DEFAULT_IDLE_MS, DEFAULT_SWEEP_MS } from './mcp-sessions.js';
 import { logToolboxMcp, logToolboxRest, logPublisher, createScopedLogger, createPhasedLogger } from './log.js';
+import { runHealthchecks } from './healthchecks.js';
+import {
+  ProbeLimiter, parseConfigTestRequest, registerConfigTests, runConfigTest,
+} from './config-tests.js';
 import * as db from './db.js';
 import * as playwright from './playwright-client.js';
 
@@ -161,42 +165,53 @@ app.all('/mcp', async (req, res) => {
   }
 });
 
-const HEALTHCHECK_TIMEOUT_MS = 10_000;
+let configTestRegistry = new Map();
 
-async function runHealthchecks(healthchecks) {
-  const results = await Promise.allSettled(
-    healthchecks.map(fn => {
-      const controller = new globalThis.AbortController();
-      let timer;
-      const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          controller.abort();
-          reject(new Error('timeout'));
-        }, HEALTHCHECK_TIMEOUT_MS);
-      });
-      return Promise.race([
-        fn({ signal: controller.signal, timeoutMs: HEALTHCHECK_TIMEOUT_MS }),
-        timeout,
-      ]).finally(() => clearTimeout(timer));
-    })
+// POST /config-test?path=<module>/<field>[&agent_view_id=N]
+//
+// POST because this triggers a live login attempt at a third party. The toolbox
+// authenticates no caller — the internal Docker network IS its boundary, exactly
+// as for `/sse`, `/mcp` and `/health`, all of which already take an
+// `agent_view_id` from the caller and hand back that view's credentials. Adding
+// a check here alone would buy nothing while the MCP routes stay open.
+//
+// What IS new is that a caller could hammer a real credential and trip an
+// account lockout, so one CREDENTIAL may be probed at most once every
+// CONFIG_TEST_COOLDOWN_MS. Keyed per credential (declaration group + scope), not
+// per config path — six field paths reaching one Graph token must share one
+// budget — and not per caller, because there is no caller identity to key on and
+// the resource being protected is the remote account. `runConfigTest` applies it
+// at the last line before the probe call — after every verdict it reaches on its
+// own — so a static fault (a duplicate probe name, unreadable config, an empty
+// field) keeps its own diagnosis on a retry instead of being masked by COOLDOWN.
+// See `ProbeLimiter`.
+//
+// Always HTTP 200 with a four-state body: the FRAMEWORK decides how to render
+// "could not check" versus "credential rejected", and an HTTP error code would
+// collapse that distinction into the transport layer.
+const CONFIG_TEST_COOLDOWN_MS = 3_000;
+// Constructed once at module load and never rebound per session — bounded
+// internally, like `sessions` above and `mcpSessions` below.
+const configTestLimiter = new ProbeLimiter({ cooldownMs: CONFIG_TEST_COOLDOWN_MS });
+
+app.post('/config-test', async (req, res) => {
+  const parsed = parseConfigTestRequest(req.query);
+  if (parsed.error) return res.json({ ...parsed.error, path: parsed.path });
+  const { configPath, agentViewId } = parsed;
+  const result = await runConfigTest(
+    { path: configPath, agentViewId },
+    { namedTests: configTestRegistry, limiter: configTestLimiter },
   );
-
-  const checks = [];
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      checks.push(...result.value);
-    } else {
-      checks.push({ tool: 'unknown', status: 'fail', error: result.reason?.message || 'unknown error' });
-    }
-  }
-  return checks;
-}
+  logToolboxRest('config-test', result.status === 'ok' ? 'OK' : 'ERROR',
+    `${configPath} -> ${result.status} [${result.code}]`);
+  res.json(result);
+});
 
 app.get('/health', async (req, res) => {
   const agentViewId = req.query.agent_view_id ? parseInt(req.query.agent_view_id, 10) : null;
   const runTests = req.query.test === 'true';
 
-  const { tools, healthchecks } = await createHealthRegistration(agentViewId, context);
+  const { tools, healthchecks, obscureValues } = await createHealthRegistration(agentViewId, context);
 
   // Docker HEALTHCHECK uses this endpoint to decide container liveness — it cares
   // about the HTTP status code only. A dead Playwright subsystem leaves the body
@@ -208,7 +223,7 @@ app.get('/health', async (req, res) => {
     return res.json(response);
   }
 
-  const checks = await runHealthchecks(healthchecks);
+  const checks = await runHealthchecks(healthchecks, obscureValues);
   const hasFail = checks.some(c => c.status === 'fail');
   const response = {
     status: hasFail ? 'degraded' : 'ok',
@@ -224,10 +239,20 @@ app.get('/health', async (req, res) => {
 Promise.allSettled([
   registerModuleRestApis(context)
     .then(() => logToolboxRest('startup', 'OK', 'Module REST APIs registered')),
+  registerConfigTests()
+    .then((registry) => {
+      configTestRegistry = registry;
+      logToolboxRest('startup', 'OK', `Registered ${registry.size} config test(s)`);
+    }),
   playwright.initPlaywright(),
-]).then(([restResult, playwrightResult]) => {
+]).then(([restResult, configTestResult, playwrightResult]) => {
   if (restResult.status === 'rejected') {
     logToolboxRest('startup', 'ERROR', `Module REST API registration failed: ${restResult.reason?.message}`);
+  }
+  if (configTestResult.status === 'rejected') {
+    // The registry stays an empty Map, so a declared named tester answers
+    // UNKNOWN_TESTER instead of the route disappearing.
+    logToolboxRest('startup', 'ERROR', `Config test registration failed: ${configTestResult.reason?.message}`);
   }
   if (playwrightResult.status === 'rejected') {
     logToolboxRest('playwright', 'ERROR', `Failed to start Playwright MCP: ${playwrightResult.reason?.message}. Auto-restart loop will retry up to MAX_ATTEMPTS.`);

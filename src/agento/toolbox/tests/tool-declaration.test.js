@@ -61,6 +61,7 @@ const SUPPORT_FILES = new Set([
   'jira/api-handlers.js',
   'jira/jira-proxy.js',
   'outlook/api-handlers.js',
+  'outlook/credentials.js',
   'outlook/graph-auth.js',
 ]);
 

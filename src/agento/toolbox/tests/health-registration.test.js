@@ -9,6 +9,9 @@ describe('health registration scope isolation', () => {
     const registerTools = vi.fn(async (_server, _context, agentViewId) => ({
       toolNames: [agentViewId ? `scoped_${agentViewId}` : 'default_tool'],
       healthchecks: [agentViewId ? 'scoped_check' : 'default_check'],
+      // Omitted for the default scope on purpose: that is what proves the
+      // `|| []` fallback rather than assuming it.
+      ...(agentViewId ? { obscureValues: ['hunter2xyz'] } : {}),
     }));
     const loadScopedDbOverrides = vi.fn().mockResolvedValue({
       overrides: { scoped: true },
@@ -23,8 +26,12 @@ describe('health registration scope isolation', () => {
     const scoped = await createHealthRegistration(7, context);
     const defaultScope = await createHealthRegistration(null, context);
 
-    expect(scoped).toEqual({ tools: ['scoped_7'], healthchecks: ['scoped_check'] });
-    expect(defaultScope).toEqual({ tools: ['default_tool'], healthchecks: ['default_check'] });
+    expect(scoped).toEqual({
+      tools: ['scoped_7'], healthchecks: ['scoped_check'], obscureValues: ['hunter2xyz'],
+    });
+    expect(defaultScope).toEqual({
+      tools: ['default_tool'], healthchecks: ['default_check'], obscureValues: [],
+    });
     // /health is a REST/ops path and never invokes tools, so it must NOT swap in the MCP
     // logger — both scoped and default registrations keep the caller's (REST) context.log,
     // keeping toolbox_mcp.log free of health-probe registration noise.

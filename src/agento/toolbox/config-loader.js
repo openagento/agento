@@ -47,7 +47,7 @@ export function scanModules() {
 /**
  * Read config.json defaults for a module.
  */
-function readConfigDefaults(modulePath) {
+export function readConfigDefaults(modulePath) {
   const configPath = path.join(modulePath, 'config.json');
   if (!fs.existsSync(configPath)) return {};
 
@@ -63,7 +63,7 @@ function readConfigDefaults(modulePath) {
  * Load all core_config_data overrides from DB into a map.
  * Returns { 'path': { value, encrypted } }
  */
-async function loadDbOverrides() {
+export async function loadDbOverrides() {
   const overrides = {};
   try {
     const pool = getCronPool();
@@ -76,6 +76,54 @@ async function loadDbOverrides() {
   } catch (err) {
     console.warn(`[config-loader] Failed to load core_config_data: ${err.message}`);
   }
+  return overrides;
+}
+
+/**
+ * Scoped overrides for a caller that must not be lied to.
+ *
+ * `loadDbOverrides` / `loadScopedDbOverrides` are deliberately lenient: an MCP
+ * session with a degraded DB is better than no session, so a failed query warns
+ * and the agent runs on whatever config was readable. A CONFIG TEST cannot
+ * inherit that. Its whole purpose is to answer "is the credential at THIS scope
+ * good", and a silently-dropped scoped query answers it about a different
+ * credential — `ok` for a view whose own override was never read. Same class as
+ * the incident this feature exists to end, one layer down.
+ *
+ * So this variant THROWS where the lenient pair warns: a DB error, or an
+ * agent_view id that does not exist. `runConfigTest` turns that into
+ * `error [CONFIG_UNAVAILABLE]` — "could not check", never a verdict.
+ */
+export async function loadStrictScopedOverrides(agentViewId) {
+  const pool = getCronPool();
+  const overrides = {};
+  const layer = async (sql, params) => {
+    const [rows] = await pool.query(sql, params);
+    for (const row of rows) {
+      overrides[row.path] = { value: row.value, encrypted: !!row.encrypted };
+    }
+  };
+
+  await layer("SELECT path, value, encrypted FROM core_config_data WHERE scope = 'default' AND scope_id = 0");
+  if (!agentViewId) return overrides;
+
+  const [avRows] = await pool.query(
+    'SELECT id, workspace_id FROM agent_view WHERE id = ?',
+    [agentViewId]
+  );
+  if (avRows.length === 0) {
+    const e = new Error(`agent_view_id=${agentViewId} does not exist`);
+    e.name = 'UnknownAgentView';
+    throw e;
+  }
+  await layer(
+    "SELECT path, value, encrypted FROM core_config_data WHERE scope = 'workspace' AND scope_id = ?",
+    [avRows[0].workspace_id]
+  );
+  await layer(
+    "SELECT path, value, encrypted FROM core_config_data WHERE scope = 'agent_view' AND scope_id = ?",
+    [agentViewId]
+  );
   return overrides;
 }
 
@@ -225,44 +273,55 @@ export function isToolEnabled(toolName, dbOverrides, configDefaults = {}) {
 }
 
 /**
- * Resolve a module-level field using 3-level fallback:
+ * Resolve one field and say WHY it is empty.
+ *
+ * `resolveModuleField` returns `null` for "unset" and for "stored but
+ * undecryptable" alike, which is the JS twin of the Python defect this feature
+ * exists to catch: a value that is there and unreadable must not report as
+ * absent. A config test is a diagnostic, so it needs the two apart.
+ *
  * 1. ENV var: CONFIG__{MODULE}__{FIELD}
  * 2. DB: core_config_data at path {module}/{field}
  * 3. config.json defaults (top-level)
  */
-export function resolveModuleField(moduleName, fieldName, configDefaults, dbOverrides) {
-  // 1. ENV var (highest priority)
+export function resolveModuleFieldStrict(moduleName, fieldName, configDefaults, dbOverrides) {
+  // `/` -> `__`, matching `config_resolver.py:130` and the documented
+  // `CONFIG__APP_MONITOR__ALERTS__SMTP_PASSWORD`. The lenient resolver omitted
+  // this, so a NESTED field (every app_monitor SMTP field is `alerts/…`) built
+  // an env name containing a slash and could never match.
   const envKey = `CONFIG__${moduleName}__${fieldName}`
     .toUpperCase()
-    .replace(/-/g, '_');
+    .replace(/-/g, '_')
+    .replace(/\//g, '__');
   if (process.env[envKey] !== undefined) {
-    return process.env[envKey];
+    return { value: process.env[envKey], state: 'set' };
   }
 
-  // 2. DB override
   const dbPath = `${moduleName}/${fieldName}`.replace(/-/g, '_');
   const override = dbOverrides[dbPath];
   if (override) {
-    if (override.encrypted) {
-      if (!hasEncryptionKey()) {
-        console.warn(`[config-loader] Cannot decrypt ${dbPath}: AGENTO_ENCRYPTION_KEY not set`);
-        return null;
-      }
-      try {
-        return decrypt(override.value);
-      } catch (err) {
-        console.error(`[config-loader] Failed to decrypt ${dbPath}: ${err.message}`);
-        return null;
-      }
+    if (!override.encrypted) return { value: override.value, state: 'set' };
+    if (!hasEncryptionKey()) return { value: null, state: 'undecryptable' };
+    try {
+      return { value: decrypt(override.value), state: 'set' };
+    } catch {
+      return { value: null, state: 'undecryptable' };
     }
-    return override.value;
   }
 
-  // 3. config.json default (top-level, not nested under tools)
   const defaultValue = configDefaults?.[fieldName];
-  if (defaultValue !== undefined) return defaultValue;
+  if (defaultValue !== undefined) return { value: defaultValue, state: 'set' };
+  return { value: null, state: 'unset' };
+}
 
-  return null;
+export function resolveModuleField(moduleName, fieldName, configDefaults, dbOverrides) {
+  const { value, state } = resolveModuleFieldStrict(moduleName, fieldName, configDefaults, dbOverrides);
+  if (state === 'undecryptable') {
+    // The lenient callers rely on this being visible somewhere, and they still
+    // receive `null`.
+    console.error(`[config-loader] Failed to decrypt ${moduleName}/${fieldName}`);
+  }
+  return value;
 }
 
 /**
@@ -365,7 +424,7 @@ export function getModuleToolTypes() {
  * Discover toolbox/*.js files in a module directory.
  * Convention-based: any .js file in toolbox/ is auto-discovered.
  */
-function discoverToolboxFiles(modulePath) {
+export function discoverToolboxFiles(modulePath) {
   const toolboxDir = path.join(modulePath, 'toolbox');
   if (!fs.existsSync(toolboxDir)) return [];
 
@@ -383,6 +442,54 @@ function discoverToolboxFiles(modulePath) {
  * @param {object} context - Shared context { app, log, db, playwright }
  * @returns {string[]} All registered tool names (adapter tools only; module tools are self-registering)
  */
+/**
+ * Every resolved config value whose schema type is `obscure`.
+ *
+ * The toolbox is the only process holding these, so it is the only process that
+ * can redact them. Values are masked at ANY length — a one-character secret
+ * garbling a message is the correct trade: the alternative is printing it.
+ *
+ * One caller: `/health`, whose fan-out can return a message from any registered
+ * healthcheck and which already holds the process-wide `moduleConfigs`.
+ * `/config-test` deliberately does NOT use this — it masks only the values its
+ * own declaration resolved, which is the complete set one probe can have seen
+ * (Step 6). Resolving every module's obscure fields per request would widen
+ * exposure for nothing.
+ */
+export function collectObscureValues(moduleConfigs = null, modules = scanModules()) {
+  const out = new Set();
+  for (const mod of modules) {
+    const systemPath = path.join(mod._path, 'system.json');
+    if (!fs.existsSync(systemPath)) continue;
+    let system;
+    try {
+      system = JSON.parse(fs.readFileSync(systemPath, 'utf-8'));
+    } catch {
+      continue;
+    }
+    if (!system || typeof system !== 'object' || Array.isArray(system)) continue;
+
+    const resolved = moduleConfigs?.[mod.name] || {};
+    for (const [field, schema] of Object.entries(system)) {
+      if (schema?.type !== 'obscure') continue;
+      const value = resolved[field];
+      if (typeof value === 'string' && value.length > 0) out.add(value);
+    }
+  }
+  return [...out];
+}
+
+/** Replace every known secret in `text` with `***`. Longest-first, so a secret
+ *  containing another is masked whole. */
+export function redactSecrets(text, secrets) {
+  if (typeof text !== 'string' || !text) return text;
+  let out = text;
+  for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
+    if (secret) out = out.split(secret).join('***');
+  }
+  return out;
+}
+
 /**
  * Resolve module-level config for all modules that have system.json.
  * Returns { moduleName: { field: resolvedValue } }
@@ -644,5 +751,8 @@ export async function registerTools(server, context, agentViewId = null, preload
       `invisible in the admin Tools screen and in tool:list. Add it to that module's tools[].`);
   }
 
-  return { toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames };
+  return {
+    toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames,
+    obscureValues: collectObscureValues(moduleConfigs),
+  };
 }

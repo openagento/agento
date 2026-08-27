@@ -13,5 +13,9 @@ export async function createHealthRegistration(agentViewId, context) {
   }
 
   const result = await registerTools(server, context, agentViewId, overrides);
-  return { tools: result.toolNames, healthchecks: result.healthchecks };
+  return {
+    tools: result.toolNames,
+    healthchecks: result.healthchecks,
+    obscureValues: result.obscureValues || [],
+  };
 }

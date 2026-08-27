@@ -221,6 +221,7 @@ describe('config-loader', () => {
 
 describe('resolveModuleField', () => {
   let resolveModuleField;
+  let resolveModuleFieldStrict;
   let tmpDir;
   const savedEnv = {};
 
@@ -247,6 +248,7 @@ describe('resolveModuleField', () => {
     vi.resetModules();
     const mod = await import('../config-loader.js');
     resolveModuleField = mod.resolveModuleField;
+    resolveModuleFieldStrict = mod.resolveModuleFieldStrict;
   });
 
   afterEach(() => {
@@ -261,6 +263,26 @@ describe('resolveModuleField', () => {
 
     fs.rmSync(tmpDir, { recursive: true, force: true });
     vi.resetModules();
+  });
+
+  it('encodes a NESTED field the way the docs and the Python resolver do', () => {
+    // `config_resolver.py:130` does .replace("/", "__"); the JS twin never did,
+    // so `CONFIG__APP_MONITOR__ALERTS__SMTP_PASSWORD` — the documented name, and
+    // the only way to configure alerting from ENV — could not be read at all.
+    process.env.CONFIG__APP_MONITOR__ALERTS__SMTP_PASSWORD = 'from-env';
+    expect(
+      resolveModuleFieldStrict('app_monitor', 'alerts/smtp_password', {}, {}).value,
+    ).toBe('from-env');
+  });
+
+  it('tells "stored but undecryptable" apart from "unset"', () => {
+    expect(resolveModuleFieldStrict('core', 'smtp_pass', {}, {}))
+      .toEqual({ value: null, state: 'unset' });
+    // No AGENTO_ENCRYPTION_KEY in the test env, so an encrypted override cannot
+    // be read — and must NOT come back looking absent.
+    expect(resolveModuleFieldStrict('core', 'smtp_pass', {}, {
+      'core/smtp_pass': { value: 'ciphertext', encrypted: true },
+    })).toEqual({ value: null, state: 'undecryptable' });
   });
 
   it('returns null when no source and no config.json default', () => {
@@ -1107,5 +1129,54 @@ describe('registerTools integration', () => {
     const captured = JSON.parse(fs.readFileSync(capturePath, 'utf-8'));
     expect(captured.enabled).toBe(false);
     expect(toolNames).not.toContain('slack_notify');
+  });
+});
+
+describe('loadStrictScopedOverrides', () => {
+  // The lenient loaders keep an MCP session alive on a degraded DB. A config
+  // test must not inherit that: "tested the global credential and called it ok"
+  // is the same misdiagnosis class the feature exists to end.
+  const mockPool = async (queryMock) => {
+    vi.doMock('../db.js', () => ({ getCronPool: () => ({ query: queryMock }) }));
+    vi.doMock('../log.js', () => ({
+      logToolboxMcp: vi.fn(), logToolboxRest: vi.fn(),
+      logPublisher: vi.fn(), createScopedLogger: vi.fn(),
+    }));
+    vi.resetModules();
+    return import('../config-loader.js');
+  };
+
+  it('layers global, workspace and agent_view like the lenient loader', async () => {
+    const queryMock = vi.fn()
+      .mockResolvedValueOnce([[{ path: 'core/timeout', value: '30', encrypted: 0 }]])
+      .mockResolvedValueOnce([[{ id: 5, workspace_id: 2 }]])
+      .mockResolvedValueOnce([[{ path: 'jira/jira_host', value: 'ws', encrypted: 0 }]])
+      .mockResolvedValueOnce([[{ path: 'jira/jira_host', value: 'av', encrypted: 0 }]]);
+    const mod = await mockPool(queryMock);
+    const overrides = await mod.loadStrictScopedOverrides(5);
+    expect(overrides['jira/jira_host'].value).toBe('av');
+    expect(overrides['core/timeout'].value).toBe('30');
+  });
+
+  it('throws on an agent_view that does not exist instead of using global config', async () => {
+    const queryMock = vi.fn()
+      .mockResolvedValueOnce([[{ path: 'core/timeout', value: '30', encrypted: 0 }]])
+      .mockResolvedValueOnce([[]]);
+    const mod = await mockPool(queryMock);
+    await expect(mod.loadStrictScopedOverrides(5)).rejects.toThrow(/does not exist/);
+  });
+
+  it('throws when a scoped query fails instead of returning a partial read', async () => {
+    const queryMock = vi.fn()
+      .mockResolvedValueOnce([[{ path: 'core/timeout', value: '30', encrypted: 0 }]])
+      .mockResolvedValueOnce([[{ id: 5, workspace_id: 2 }]])
+      .mockRejectedValueOnce(new Error('server has gone away'));
+    const mod = await mockPool(queryMock);
+    await expect(mod.loadStrictScopedOverrides(5)).rejects.toThrow(/gone away/);
+  });
+
+  it('throws when the default-scope query itself fails', async () => {
+    const mod = await mockPool(vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED')));
+    await expect(mod.loadStrictScopedOverrides(null)).rejects.toThrow(/ECONNREFUSED/);
   });
 });
