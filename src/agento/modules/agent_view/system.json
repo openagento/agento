@@ -45,14 +45,22 @@
     "label": "SSH private key (id_rsa, encrypted at rest)",
     "showInDefault": true,
     "showInWorkspace": true,
-    "showInAgentView": true
+    "showInAgentView": true,
+    "tester": {
+      "kind": "local",
+      "class": "src.testers.ssh_identity.SshIdentityTester"
+    }
   },
   "identity/ssh_public_key": {
     "type": "textarea",
     "label": "SSH public key (id_rsa.pub)",
     "showInDefault": true,
     "showInWorkspace": true,
-    "showInAgentView": true
+    "showInAgentView": true,
+    "tester": {
+      "kind": "local",
+      "class": "src.testers.ssh_identity.SshIdentityTester"
+    }
   },
   "identity/ssh_config": {
     "type": "textarea",

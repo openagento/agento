@@ -26,6 +26,7 @@ from agento.framework.git_identity import (
 )
 from agento.framework.persistent_home import ensure_state_dir as _ensure_state_dir
 from agento.framework.persistent_home import link_persistent_paths
+from agento.framework.ssh_keys import EncryptedKeyError, derive_public_key
 from agento.framework.workspace_paths import BUILD_DIR, THEME_DIR
 
 _DEFAULT_MAX_BUILDS = 10
@@ -384,6 +385,34 @@ def materialize_ssh_identity(
 
     if private:
         target = ssh_dir / "id_rsa"
+        # Parse, do not eyeball. A structural check on the BEGIN/END envelope and a
+        # plausible length lets through a key that is the right shape and the
+        # wrong bytes — a paste that lost a middle line, a CRLF-mangled body — passes it
+        # and still yields "Permission denied (publickey)". `derive_public_key` is a
+        # single in-process parse against a key of a few hundred bytes, which is nothing
+        # beside building a workspace, and it is the same call `identity:check` makes, so
+        # the build warning and the CLI agree by construction.
+        #
+        # Last line of defence: config:set and the admin TUI both reject an unparsable
+        # key now, but a row written before that guard existed (or by a direct DB edit)
+        # would still land here and fail with nothing in the logs.
+        try:
+            derive_public_key(private)
+        except EncryptedKeyError:
+            logger.warning(
+                "materialize_ssh_identity: %s is passphrase-protected; the agent "
+                "cannot use it and git over SSH will fail. Store an unencrypted key.",
+                _SSH_PRIVATE_KEY_PATH,
+            )
+        except ValueError:
+            # Byte count only — never the key, and never the exception text, which
+            # some backends echo key material into.
+            logger.warning(
+                "materialize_ssh_identity: %s does not parse as an SSH private key "
+                "(%d bytes); git over SSH will fail. Run "
+                "`agento agent_view:identity:check <code>`.",
+                _SSH_PRIVATE_KEY_PATH, len(private),
+            )
         target.write_text(private if private.endswith("\n") else private + "\n")
         os.chmod(target, 0o600)
 

@@ -142,6 +142,9 @@ def _validate_config_value(
     if not isinstance(field_def, dict):
         return True
 
+    if _is_private_key_field(field_name, field_def):
+        return _validate_private_key(field_name, value)
+
     field_type = field_def.get("type")
     if field_type not in ("select", "multiselect"):
         return True
@@ -164,6 +167,49 @@ def _validate_config_value(
         print(f"  Allowed values: {', '.join(allowed)}")
         return False
 
+    return True
+
+
+def _is_private_key_field(field_name: str, field_def: dict) -> bool:
+    """An ``obscure`` field whose name ends in ``ssh_private_key``.
+
+    Name-suffix matching, not a hardcoded ``agent_view/…`` path, so the
+    framework stays module-agnostic and a third-party module that follows the
+    same naming gets the same protection.
+    """
+    return (
+        field_def.get("type") == "obscure"
+        and field_name.rsplit("/", 1)[-1] == "ssh_private_key"
+    )
+
+
+def _validate_private_key(field_name: str, value: str) -> bool:
+    """Reject a private-key value that cannot parse.
+
+    A corrupted interactive paste once stored a 36-byte value (the BEGIN header
+    alone), which `identity:show` happily fingerprinted and `workspace_build`
+    materialized — four silent builds of `Permission denied (publickey)`.
+    Nothing legitimate fails this check: `config:set … < id_rsa` always yields a
+    parsable key. Never echoes the value.
+    """
+    from ..ssh_keys import EncryptedKeyError, derive_public_key
+
+    if not value.strip():
+        return True  # clearing the field stays possible
+    try:
+        derive_public_key(value)
+    except EncryptedKeyError:
+        print(
+            f"Error: value for '{field_name}' is a passphrase-protected private "
+            f"key. The agent runs unattended and cannot unlock it — store an "
+            f"unencrypted key."
+        )
+        return False
+    except ValueError as e:
+        print(f"Error: value for '{field_name}' does not parse as an SSH private key: {e}")
+        print("  Set it from a file rather than an interactive paste:")
+        print("    agento config:set <path> --agent-view <code> < id_rsa")
+        return False
     return True
 
 

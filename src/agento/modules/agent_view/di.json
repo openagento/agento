@@ -4,6 +4,7 @@
     {"name": "tool:enable", "class": "src.commands.tool_enable.ToolEnableCommand"},
     {"name": "tool:disable", "class": "src.commands.tool_disable.ToolDisableCommand"},
     {"name": "agent_view:identity:show", "class": "src.commands.identity_show.IdentityShowCommand"},
+    {"name": "agent_view:identity:check", "class": "src.commands.identity_check.IdentityCheckCommand"},
     {"name": "agent_view:runtime", "class": "src.commands.runtime_show.AgentViewRuntimeCommand"},
     {"name": "agent_view:prepare-run", "class": "src.commands.prepare_run.AgentViewPrepareRunCommand"}
   ]

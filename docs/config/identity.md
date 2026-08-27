@@ -24,14 +24,41 @@ agento config:set agent_view/identity/ssh_private_key --agent-view dev_01
 agento config:set agent_view/identity/ssh_public_key --agent-view dev_01
 # <paste the .pub line, Ctrl+D>
 
-# 4. Verify
+# 4. Verify — show prints the fingerprint, check proves the key parses and pairs
 agento agent_view:identity:show dev_01
+agento agent_view:identity:check dev_01
 
 # 5. Materialize the workspace build template
 agento workspace:build --agent-view dev_01
 ```
 
 Everything below explains the mechanism.
+
+### Verifying the key
+
+`agent_view:identity:show` prints a real OpenSSH SHA256 fingerprint derived from the key material,
+and `agent_view:identity:check` goes further: it parses the stored private key, derives its public
+key, and compares that with the stored `ssh_public_key`. It **never prints the private key**. The
+same check runs on `config:set agent_view/identity/ssh_private_key`, which now refuses a value that
+does not parse.
+
+| Result | Meaning |
+|---|---|
+| `OK` | the private key parses and its derived public key matches `ssh_public_key` |
+| `NOT_SET` | no private key is stored for this scope |
+| `INVALID_KEY` | a value is stored but it does not parse as a private key — the incident's shape |
+| `ENCRYPTED_KEY` | the key is passphrase-protected, so the build cannot use it unattended |
+| `NO_PUBLIC_KEY` | the private key is fine, but no `ssh_public_key` is stored to compare it with |
+| `PAIR_MISMATCH` | both are stored and they are not a pair — a stale `.pub` from an older key |
+| `DECRYPT_FAILED` | a row exists and did not decrypt: `AGENTO_ENCRYPTION_KEY` is not the one it was stored with (reported by `identity:check`, which reads the stored row) |
+| `CHECK_FAILED` | the stored identity could not be READ at all — the DB is down, a manifest is broken. Says nothing about the key; the exception type is printed, never the value (`identity:check` only) |
+
+`DECRYPT_FAILED` is the one result that says nothing about the key itself — fix the encryption key
+before regenerating anything.
+
+This exists because a truncated paste used to be stored silently: the pre-0.16 fingerprint was a
+hash of the raw stored text, so it printed happily for a 36-byte fragment and four workspace builds
+failed with `Permission denied (publickey)` before anyone connected the two.
 
 ## Why DB, Not Filesystem
 
