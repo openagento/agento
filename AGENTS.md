@@ -33,6 +33,14 @@ Automates Jira tasks using AI agents (Claude Code, OpenAI Codex, Pi) in Docker c
   proven safe — is rejected by `module:validate` and again at registration, and a violation
   fails the boot. See [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
 - **Config:** 3-level fallback: ENV (`CONFIG__MODULE__PATH`) → DB (`core_config_data`) → `config.json`. Per-agent_view scoped config via `scope='agent_view'` in DB.
+- **Config testers:** a `system.json` field may declare a `tester` — `{"kind": "smtp"|"http", …}`
+  with `{module/path}` interpolation, a named probe the module exports from `toolbox/`
+  (`configTests`), or `{"kind": "local", "class": …}` for a module-local Python class. Surfaced as
+  `config:test <path>` and `t` in the admin TUI. **The probe runs where the credential already
+  lives** — the toolbox for network credentials, the declaring module for the SSH keypair — so the
+  framework never decrypts a secret in order to test one, and a tester needs no `di.json` entry.
+  Four states, and `error` ("could not check") is never rendered as `fail`. Own-module paths only.
+  See [docs/config/testers.md](docs/config/testers.md).
 - **Concurrent execution:** `AGENTO_CONSUMER_MAX_WORKERS` env var (default 10). Per-run isolation makes concurrent runs safe.
 - **Consumer hot-reload:** every `AGENTO_CONSUMER_POLL_INTERVAL` (5s default) the consumer re-runs `bootstrap()` when idle — `mo:en/mo:di`, `config:set`, and `app/code/` edits apply live without restart. Caveat: edits to core module Python code (`src/agento/modules/`) still require a process restart due to `sys.modules` caching.
 - **Cron container env contract:** Any env var the cron/consumer needs from `docker-compose` must use the `AGENTO_*` prefix (e.g. `AGENTO_CONSUMER_MAX_WORKERS`). The entrypoint whitelist only persists `AGENTO_*`, `MYSQL_*`, `CONFIG__*`, `TZ`, `PYTHONPATH`, `PROVIDER`, `DISABLE_LLM`, and `DISABLE_AUTOUPDATER` across the `su - agent` env wipe — non-prefixed framework knobs are silently dropped. See [docs/architecture/cron-env-contract.md](docs/architecture/cron-env-contract.md).
@@ -46,6 +54,15 @@ Automates Jira tasks using AI agents (Claude Code, OpenAI Codex, Pi) in Docker c
 - **Events:** Naming convention: `{subject}_{verb}_{before|after}` — e.g. `job_claim_after`, `module_register_before`, `workspace_build_complete_after`. Third-party: `{vendor}_{module}_{subject}_{verb}_{before|after}`. Prefer `_after` events; use `_before` only when observers need pre-action state. See [docs/architecture/events.md](docs/architecture/events.md).
 - **Interactive prompts:** Always use `terminal.select()` (arrow-key selection) for user choices. Never use Y/n text prompts. For text input (paths, port numbers), use `input()` with defaults shown in brackets.
 - **Logs:** consumer → JSON structured, publisher/sync → text. Never delete while consumer runs.
+- **Module logger output:** `get_logger(name, log_file)` also attaches its handlers to every logger
+  named in `log.ATTACHED_NAMESPACES`, so those modules' `logging.getLogger(__name__)` records reach
+  the same file — a swallowed warning in a module is the defect class that hid a dead alert path for
+  weeks. The tuple holds `agento.modules.app_monitor` only: the rest of the `agento` tree, and every
+  non-`agento` logger, stay untouched. A namespace joins it only after its `exc_info=True` sites have
+  been audited for credentials (`log._Formatter` writes the whole traceback verbatim, and a third-party
+  client's message routinely quotes the credential it just used), because attachment makes those
+  records **persistent**. Log the exception class and a sanitized message — see `app_monitor`'s
+  `_log_alert_failure` — and see ROADMAP.md for the deferred widening.
 - **Code via volume mounts (Magento-like distribution)** — every project owns a `pyproject.toml` (composer.json equivalent) pinned to `agento-core==X.Y.Z` and a per-project `.venv/` (`vendor/` equivalent). Containers bind-mount `<project>/.venv/lib/python3.12/site-packages/agento` (read-only) into `/opt/agento-src/agento`, so editing source on the host + restarting the container = instant effect (no rebuild). Native deps (cryptography, etc.) live in a container-side venv built from the project's `uv.lock`. Customer images are built locally by `agento install`/`upgrade` from the in-package context at `src/agento/framework/docker/` — no GHCR pulls. Dev compose (`docker/docker-compose.dev.yml`) uses the same thin Dockerfiles with a different build context (repo root). After source changes: `cd docker && docker compose -f docker-compose.dev.yml restart cron` (Python) or `… restart toolbox` (JS). Rebuild only for dependency changes (`pyproject.toml` / `package.json`).
 - **Docker Compose split** — `docker/docker-compose.yml` is managed (regenerated on `install`/`upgrade`/`module:enable`, DO NOT EDIT). `docker/docker-compose.override.yml` is user-owned — Docker Compose auto-merges both. See [docs/deployment/docker-compose-override.md](docs/deployment/docker-compose-override.md).
 - **Upgrade:** `agento upgrade` upgrades the CLI package, bumps `agento-core` in the project's `pyproject.toml`, runs `uv sync`, refreshes `.agento/docker/` build context + `docker-compose.yml`, and rebuilds local Docker images. Use `agento upgrade --version X.Y.Z` to pin a specific version, `--no-build` to skip image rebuild (CI), `--no-restart` to skip `up -d`.

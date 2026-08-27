@@ -4,10 +4,10 @@
     "label": "Send SMTP alert when an rc=0 job had zero toolbox calls OR the CLI reported the toolbox MCP server as not connected / absent (an indeterminate 'pending' init never alerts)"
   },
   "alerts/email_to": {"type": "string", "label": "Alert email recipient (empty = alerts disabled)"},
-  "alerts/smtp_host": {"type": "string", "label": "SMTP host (empty = alerts disabled)"},
-  "alerts/smtp_port": {"type": "integer", "label": "SMTP port"},
-  "alerts/smtp_user": {"type": "string", "label": "SMTP user (empty = no auth)"},
-  "alerts/smtp_password": {"type": "obscure", "label": "SMTP password"},
+  "alerts/smtp_host": {"type": "string", "label": "SMTP host (empty = alerts disabled)", "tester": {"kind": "smtp", "host": "{app_monitor/alerts/smtp_host}", "port": "{app_monitor/alerts/smtp_port}", "user": "{app_monitor/alerts/smtp_user}", "pass": "{app_monitor/alerts/smtp_password}", "starttls": "{app_monitor/alerts/smtp_tls}"}},
+  "alerts/smtp_port": {"type": "integer", "label": "SMTP port", "tester": {"kind": "smtp", "host": "{app_monitor/alerts/smtp_host}", "port": "{app_monitor/alerts/smtp_port}", "user": "{app_monitor/alerts/smtp_user}", "pass": "{app_monitor/alerts/smtp_password}", "starttls": "{app_monitor/alerts/smtp_tls}"}},
+  "alerts/smtp_user": {"type": "string", "label": "SMTP user (empty = no auth)", "tester": {"kind": "smtp", "host": "{app_monitor/alerts/smtp_host}", "port": "{app_monitor/alerts/smtp_port}", "user": "{app_monitor/alerts/smtp_user}", "pass": "{app_monitor/alerts/smtp_password}", "starttls": "{app_monitor/alerts/smtp_tls}"}},
+  "alerts/smtp_password": {"type": "obscure", "label": "SMTP password", "tester": {"kind": "smtp", "host": "{app_monitor/alerts/smtp_host}", "port": "{app_monitor/alerts/smtp_port}", "user": "{app_monitor/alerts/smtp_user}", "pass": "{app_monitor/alerts/smtp_password}", "starttls": "{app_monitor/alerts/smtp_tls}"}},
   "alerts/smtp_from": {"type": "string", "label": "SMTP From address"},
-  "alerts/smtp_tls": {"type": "boolean", "label": "Use STARTTLS"}
+  "alerts/smtp_tls": {"type": "boolean", "label": "Use STARTTLS", "tester": {"kind": "smtp", "host": "{app_monitor/alerts/smtp_host}", "port": "{app_monitor/alerts/smtp_port}", "user": "{app_monitor/alerts/smtp_user}", "pass": "{app_monitor/alerts/smtp_password}", "starttls": "{app_monitor/alerts/smtp_tls}"}}
 }

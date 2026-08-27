@@ -283,6 +283,13 @@ Technical architecture without developer experience is useless for open-source. 
 
 4. **Contributing guide** — module development workflow, testing standards, PR checklist, contract versioning policy
 
+5. **Log-safety audit before widening `ATTACHED_NAMESPACES`.** `framework/log.py` attaches the file
+  handlers to `agento.modules.app_monitor` only. Every other module keeps writing its
+  `exc_info=True` records to `logging.lastResort`. Widening to the `agento` tree needs each
+  subtree's exception-carrying sites audited for credentials first (`rg -n "exc_info=True|logger\.exception\(" src/agento -g '*.py'`
+  lists them), or a central redaction filter on the handler so the audit is
+  not per-site. `app_monitor`'s audited subtree is the worked example.
+
 ### Acceptance Criteria
 
 - [x] `agento make:module slack` produces a skeleton that passes `module:validate`

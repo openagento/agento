@@ -1,11 +1,11 @@
 {
   "enabled": {"type": "boolean", "label": "Enable Outlook channel"},
-  "outlook_tenant_id": {"type": "string", "label": "Azure tenant ID"},
-  "outlook_client_id": {"type": "string", "label": "Azure app (client) ID"},
-  "outlook_client_secret": {"type": "obscure", "label": "Azure app client secret"},
-  "outlook_cert_pem": {"type": "obscure", "label": "Azure app certificate PEM contents (cert + private key; alternative to client secret)"},
-  "outlook_cert_password": {"type": "obscure", "label": "Passphrase for the certificate PEM (leave empty if unencrypted)"},
-  "outlook_mailbox_user_id": {"type": "string", "label": "Mailbox UPN to monitor (e.g. agent@example.com)"},
+  "outlook_tenant_id": {"type": "string", "label": "Azure tenant ID", "tester": "graph_credentials"},
+  "outlook_client_id": {"type": "string", "label": "Azure app (client) ID", "tester": "graph_credentials"},
+  "outlook_client_secret": {"type": "obscure", "label": "Azure app client secret", "tester": "graph_credentials"},
+  "outlook_cert_pem": {"type": "obscure", "label": "Azure app certificate PEM contents (cert + private key; alternative to client secret)", "tester": "graph_credentials"},
+  "outlook_cert_password": {"type": "obscure", "label": "Passphrase for the certificate PEM (leave empty if unencrypted)", "tester": "graph_credentials"},
+  "outlook_mailbox_user_id": {"type": "string", "label": "Mailbox UPN to monitor (e.g. agent@example.com)", "tester": "graph_credentials"},
   "allowed_senders": {
     "type": "string",
     "label": "Allowed senders (comma-separated; supports glob wildcards e.g. *@mycompany.com; empty blocks all)",

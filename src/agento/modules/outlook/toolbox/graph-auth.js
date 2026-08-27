@@ -44,7 +44,10 @@ export function createGraphAuth(cfg = {}, deps = {}) {
     return credential;
   }
 
-  async function getToken() {
+  // `options` reaches @azure/identity unchanged; the config-test probe passes
+  // `{ abortSignal }` so a probe that times out also STOPS authenticating,
+  // instead of finishing its login after the caller already gave up.
+  async function getToken(options = {}) {
     if (!isConfigured()) {
       throw new Error(
         'Graph not configured: set outlook_tenant_id, outlook_client_id, outlook_mailbox_user_id and EITHER outlook_cert_pem OR outlook_client_secret'
@@ -55,7 +58,7 @@ export function createGraphAuth(cfg = {}, deps = {}) {
 
     let result;
     try {
-      result = await getCredential().getToken(GRAPH_SCOPE);
+      result = await getCredential().getToken(GRAPH_SCOPE, options);
     } catch (err) {
       // Do NOT surface the raw provider/credential error (it can carry secret/cert detail). A generic
       // message plus the error code is enough to diagnose without leaking material.

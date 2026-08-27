@@ -98,11 +98,15 @@ def _save_mcp_telemetry(job_id: int, calls: int | None, connected: bool | None) 
             conn.commit()
         finally:
             conn.close()
-    except Exception:
+    except Exception as e:
+        # Type name, not the traceback: `framework/log.py` now attaches file
+        # handlers to this namespace, so `exc_info=True` would persist whatever
+        # a DB driver put in the message — a DSN with a password among the
+        # possibilities. The exception TYPE is what diagnoses a failed UPDATE.
         logger.warning(
             "Failed to persist MCP telemetry (calls=%r, connected=%r) for "
-            "job_id=%s (best-effort)",
-            calls, connected, job_id, exc_info=True,
+            "job_id=%s: %s (best-effort)",
+            calls, connected, job_id, type(e).__name__,
         )
 
 
@@ -149,11 +153,15 @@ class McpHealthTelemetryObserver:
             self._maybe_alert(
                 job, harness, session_id, toolbox_calls, toolbox_connected, toolbox_status,
             )
-        except Exception:
+        except Exception as e:
+            # Type name only — see `_persist_mcp_telemetry`: this namespace's
+            # records reach a log file now, and this handler wraps everything
+            # including the alert path, whose exception text can quote an SMTP
+            # credential back at us.
             logger.warning(
-                "McpHealthTelemetryObserver: unexpected error (best-effort, "
-                "job_id=%s)", getattr(getattr(event, "job", None), "id", "?"),
-                exc_info=True,
+                "McpHealthTelemetryObserver: unexpected %s (best-effort, "
+                "job_id=%s)", type(e).__name__,
+                getattr(getattr(event, "job", None), "id", "?"),
             )
         # event.verdict is intentionally never touched — telemetry only.
 
@@ -178,11 +186,15 @@ class McpHealthTelemetryObserver:
             summary = reader.parse(session_id)
         except FileNotFoundError:
             return None  # transcript missing — count unknown
-        except Exception:
-            logger.exception(
-                "McpHealthTelemetryObserver: error reading transcript for "
+        except Exception as e:
+            # `logger.exception` writes the traceback into the file now. A
+            # transcript reader parses agent output, which is the least
+            # predictable text in the system — the type name is enough to tell a
+            # malformed transcript from a missing one.
+            logger.warning(
+                "McpHealthTelemetryObserver: %s reading transcript for "
                 "harness=%s session_id=%s — toolbox count unknown",
-                harness, session_id,
+                type(e).__name__, harness, session_id,
             )
             return None
 
@@ -300,11 +312,34 @@ class McpHealthTelemetryObserver:
         ])
         try:
             send_alert(smtp, to, subject, body)
-        except Exception:
-            logger.warning(
-                "McpHealthTelemetryObserver: SMTP send failed (job_id=%s)",
-                job_id, exc_info=True,
+        except Exception as e:
+            _log_alert_failure(
+                logger, smtp, e, f"McpHealthTelemetryObserver job_id={job_id}"
             )
+
+
+def _log_alert_failure(logger, smtp: SmtpConfig | None, err: Exception, context: str) -> None:
+    """Log a failed alert send without the traceback text.
+
+    ``sanitize`` is framework code (``config_test``), so this needs no ``sequence``
+    entry. The exception message is the one string here that quotes what the
+    client just sent, and after Task 12 it is written to ``logs/consumer.log``
+    permanently.
+
+    ``smtp`` is the ``SmtpConfig`` dataclass ``_smtp_config()`` returns — read the
+    password with ``getattr``, never ``.get``: this runs inside an ``except``
+    block, where an ``AttributeError`` would replace a swallowed send failure
+    with a crash in the observer.
+    """
+    from agento.framework.config_test import sanitize
+
+    values = {"app_monitor/alerts/smtp_password": getattr(smtp, "password", None)}
+    logger.warning(
+        "SMTP send failed (%s): %s: %s",
+        context,
+        type(err).__name__,
+        sanitize(str(err), values, ("app_monitor/alerts/smtp_password",)),
+    )
 
 
 def _smtp_config() -> SmtpConfig | None:
@@ -362,11 +397,10 @@ class AlertEmailObserver:
         subject, body = _format_body(event)
         try:
             send_alert(smtp, to, subject, body)
-        except Exception:
-            logger.warning(
-                "AlertEmailObserver: SMTP send failed (job_id=%s)",
-                getattr(event.job, "id", "?"),
-                exc_info=True,
+        except Exception as e:
+            _log_alert_failure(
+                logger, smtp, e,
+                f"AlertEmailObserver job_id={getattr(event.job, 'id', '?')}",
             )
 
 
@@ -396,10 +430,9 @@ class SecurityBreachAlertObserver:
         ])
         try:
             send_alert(smtp, to, subject, body)
-        except Exception:
-            logger.warning(
-                "SecurityBreachAlertObserver: SMTP send failed (channel=%s)",
-                channel, exc_info=True,
+        except Exception as e:
+            _log_alert_failure(
+                logger, smtp, e, f"SecurityBreachAlertObserver channel={channel}"
             )
 
 
@@ -445,8 +478,8 @@ class MailboxStalledAlertObserver:
         ])
         try:
             send_alert(smtp, to, subject, body)
-        except Exception:
-            logger.warning(
-                "MailboxStalledAlertObserver: SMTP send failed (channel=%s mailbox=%s)",
-                channel, mailbox, exc_info=True,
+        except Exception as e:
+            _log_alert_failure(
+                logger, smtp, e,
+                f"MailboxStalledAlertObserver channel={channel} mailbox={mailbox}",
             )
