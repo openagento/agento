@@ -513,3 +513,30 @@ def count_credentials_for_scope(
         )
         healthy = cur.fetchone()["c"]
     return int(total), int(healthy)
+
+
+def earliest_throttle_reset_for_scope(
+    conn: pymysql.Connection,
+    scope: str,
+) -> datetime | None:
+    """Return the earliest future ``throttled_until`` for an otherwise-selectable token
+    in ``scope`` — i.e. when the pool next recovers a usable credential purely by a
+    throttle expiring — or ``None`` when nothing is throttled into the future.
+
+    Mirrors ``select_credential``'s eligibility except for the throttle clause: the row
+    must be enabled, ``status='ok'`` and unexpired, so a permanently errored or expired
+    token is never mistaken for one that will heal on its own. Used by the consumer to
+    reschedule (rather than dead-letter) a usage-limited job when the whole pool is
+    currently throttled."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MIN(throttled_until) AS reset FROM credential
+             WHERE scope = %s AND enabled = TRUE AND status = 'ok'
+               AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
+               AND throttled_until IS NOT NULL AND throttled_until > UTC_TIMESTAMP()
+            """,
+            (scope,),
+        )
+        row = cur.fetchone()
+    return row["reset"] if row else None
