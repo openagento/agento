@@ -288,3 +288,32 @@ class TestReadConfigDefaults:
         cfg.write_text(json.dumps({"host": "b"}))
         os.utime(cfg, (cfg.stat().st_atime + 10, cfg.stat().st_mtime + 10))
         assert read_config_defaults(tmp_path) == {"host": "b"}
+
+
+def test_a_decrypt_failure_is_not_reported_as_unset():
+    """The lenient default falls back to config.json — which is why a corrupt
+    encrypted key looked like an absent one. strict=True separates them."""
+    # This test file imports neither `pytest` nor `patch` today (its header is
+    # `import json` + dataclass/Path + names from config_resolver), so import
+    # them here rather than assuming a module-level import that does not exist.
+    from unittest.mock import patch
+
+    import pytest
+
+    from agento.framework.config_resolver import DecryptError, ScopedConfigService
+
+    svc = ScopedConfigService.__new__(ScopedConfigService)
+    svc._overrides = {"m/secret": ("not-a-ciphertext", True)}
+    svc._scope_overrides = {}
+    svc._conn = None
+    svc._scope, svc._scope_id = "default", 0
+
+    with patch("agento.framework.config_resolver.get_encryptor") as enc:
+        enc.return_value.decrypt.side_effect = ValueError("bad token")
+        assert svc.get("m/secret") is None            # today's behaviour, kept
+        with pytest.raises(DecryptError) as excinfo:
+            svc.get("m/secret", strict=True)
+
+    # The exception must name the path and nothing else.
+    assert "m/secret" in str(excinfo.value)
+    assert "not-a-ciphertext" not in str(excinfo.value)

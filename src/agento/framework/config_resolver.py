@@ -178,11 +178,30 @@ def _db_path_tool(module_name: str, tool_name: str, field_name: str) -> str:
     return f"{module_name}/tools/{tool_name}/{field_name}".replace("-", "_")
 
 
+class DecryptError(Exception):
+    """A DB override exists but could not be decrypted.
+
+    Carries the config PATH only — never the ciphertext and never the partially
+    decrypted value, both of which would end up in a log line or a traceback.
+    """
+
+    def __init__(self, path: str):
+        super().__init__(f"could not decrypt the stored value for {path!r}")
+        self.path = path
+
+
 def _resolve_from_db(
     db_path: str,
     db_overrides: dict[str, tuple[str, bool]],
+    strict: bool = False,
 ) -> tuple[str | None, bool]:
-    """Look up a DB override. Returns (value_or_None, found)."""
+    """Look up a DB override. Returns (value_or_None, found).
+
+    ``strict`` raises ``DecryptError`` instead of reporting "not found" when a
+    row exists and cannot be decrypted. A caller that is *diagnosing* stored
+    config needs the two cases distinguished; a caller that is merely *reading*
+    config wants the lenient fallback, which is why this is opt-in.
+    """
     override = db_overrides.get(db_path)
     if override is None:
         return None, False
@@ -192,6 +211,8 @@ def _resolve_from_db(
             return get_encryptor().decrypt(value), True
         except Exception:
             logger.error("Failed to decrypt %s", db_path, exc_info=True)
+            if strict:
+                raise DecryptError(db_path) from None
             return None, False
     return value, True
 
@@ -368,13 +389,20 @@ class ScopedConfigService:
         """The raw merged DB overrides ({path: (value, encrypted)})."""
         return self._overrides
 
-    def get(self, path: str) -> str | None:
-        """Resolve a raw string value: ENV -> merged DB -> config.json (no type coercion)."""
+    def get(self, path: str, *, strict: bool = False) -> str | None:
+        """Resolve a raw string value: ENV -> merged DB -> config.json (no type coercion).
+
+        ``strict=True`` raises ``DecryptError`` when a DB row for ``path`` exists
+        and cannot be decrypted, instead of falling through to ``config.json``.
+        Use it wherever the answer "not set" would be a misdiagnosis.
+        """
         env_val = os.environ.get(path_to_env_key(path))
         if env_val is not None:
             return env_val
 
-        db_val, found = _resolve_from_db(path.replace("-", "_"), self._overrides)
+        db_val, found = _resolve_from_db(
+            path.replace("-", "_"), self._overrides, strict=strict
+        )
         if found and db_val is not None:
             return db_val
 

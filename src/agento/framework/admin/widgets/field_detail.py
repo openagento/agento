@@ -7,6 +7,20 @@ class FieldDetailPanel(Static):
 
     def __init__(self, **kwargs) -> None:
         super().__init__("Select a field to view details", **kwargs)
+        # (path, scope, scope_id) -> "LABEL — message". Keyed by SCOPE as well as
+        # path: the same field holds a different credential per scope, so showing
+        # a default-scope result under an agent_view is a wrong answer, not a
+        # stale one.
+        self._results: dict[tuple[str, str, int], str] = {}
+        self._scope: tuple[str, int] = ("default", 0)
+
+    def set_scope(self, scope: str, scope_id: int) -> None:
+        """The scope the panel is currently rendering for."""
+        self._scope = (scope, scope_id)
+
+    def set_test_result(self, path: str, line: str, scope: str, scope_id: int) -> None:
+        """Record a test outcome so it survives the toast fading."""
+        self._results[(path, scope, scope_id)] = line
 
     def update_field(self, field) -> None:
         if field is None:
@@ -37,5 +51,12 @@ class FieldDetailPanel(Static):
         elif field.source == "db:inherited":
             lines.append("")
             lines.append("This value is inherited from a parent scope")
+
+        if getattr(field, "tester", ""):
+            lines.append("")
+            lines.append(f"Test:   press 't' to run the {field.tester} test")
+            last = self._results.get((field.path, *self._scope))
+            if last:
+                lines.append(f"Last:   {last}")
 
         self.update("\n".join(lines))

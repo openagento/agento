@@ -17,12 +17,27 @@ from ..widgets.field_detail import FieldDetailPanel
 from ..widgets.scope_selector import ModeChanged, ScopeChanged, ScopeSelector
 from ..widgets.sidebar import Sidebar
 
+_RESULT_LABEL = {
+    "ok": ("OK", "information"),
+    "fail": ("FAIL", "error"),
+    "error": ("ERROR", "error"),
+    "not_configured": ("NOT_CONFIGURED", "warning"),
+}
+
+
+def _format_result(result) -> tuple[str, str]:
+    """(line, notify severity) for one TestResult."""
+    label, severity = _RESULT_LABEL.get(result.status, (result.status.upper(), "warning"))
+    code = f" [{result.code}]" if result.code and result.code != label else ""
+    return f"{label}{code} — {result.message}", severity
+
 
 class ConfigScreen(Screen):
 
     BINDINGS = [  # noqa: RUF012
         Binding("e", "edit_field", "e Edit", show=True, priority=True),
         Binding("d", "delete_entry", "d Delete", show=True, priority=True),
+        Binding("t", "test_field", "t Test", show=True, priority=True),
         Binding("m", "toggle_mode", "m Mode", show=True),
         Binding("slash", "focus_search", "/ Search", show=True),
     ]
@@ -158,7 +173,11 @@ class ConfigScreen(Screen):
             return
         path = str(event.row_key.value)
         field = self._find_field(path)
-        self.query_one(FieldDetailPanel).update_field(field)
+        panel = self.query_one(FieldDetailPanel)
+        # The panel shows the "Last:" line for THIS scope only, so it has to be
+        # told which scope it is rendering before it renders.
+        panel.set_scope(self._current_scope, self._current_scope_id)
+        panel.update_field(field)
 
     def _find_field(self, path: str) -> ResolvedField | None:
         for f in self._fields:
@@ -203,6 +222,61 @@ class ConfigScreen(Screen):
     def _on_editor_dismiss(self, saved: bool | None) -> None:
         if saved:
             self._load_fields()
+
+    def action_test_field(self) -> None:
+        field = self._get_selected_field()
+        if field is None:
+            self.notify("No field selected", severity="warning")
+            return
+        if not getattr(field, "tester", ""):
+            self.notify("This field has no test action", severity="warning")
+            return
+        self.notify(f"Testing {field.path}…")
+        self._do_test(field, self._current_scope, self._current_scope_id)
+
+    @work(thread=True)
+    def _do_test(self, field, scope: str, scope_id: int) -> None:
+        """Run the tester off the UI thread — a network probe takes seconds.
+
+        Nothing here touches a Textual object directly, the DOM query included:
+        `query_one` is a method call on a Textual object, and Textual documents
+        those as having unpredictable results off the UI thread. The scope is
+        passed in rather than read from `self` for the same reason. Everything
+        that touches the UI lives in `_show_test_result`, which
+        `call_from_thread` runs back on the UI thread.
+        """
+        from agento.framework.config_test import run_config_test
+
+        conn = self.app.conn
+        if conn is None:
+            self.app.call_from_thread(
+                self.notify, "No database connection", severity="error"
+            )
+            return
+        result = run_config_test(conn, field.path, scope=scope, scope_id=scope_id)
+        line, severity = _format_result(result)
+        self.app.call_from_thread(
+            self._show_test_result, field, line, severity, scope, scope_id,
+        )
+
+    def _show_test_result(self, field, line: str, severity: str, scope, scope_id) -> None:
+        """UI-thread half of `_do_test`: one query, the updates, no network.
+
+        A probe takes seconds, and the operator can move on while it runs. The
+        result is filed under the scope it was measured at, and the panel is only
+        re-rendered when the selection AND the scope still match — otherwise a
+        default-scope verdict would land on whatever field is now selected, at
+        whatever scope is now chosen.
+        """
+        panel = self.query_one(FieldDetailPanel)
+        panel.set_test_result(field.path, line, scope, scope_id)
+        self.notify(f"{field.path}: {line}", severity=severity)
+        current = self._get_selected_field()
+        if (self._current_scope, self._current_scope_id) != (scope, scope_id):
+            return
+        if current is None or current.path != field.path:
+            return
+        panel.update_field(current)
 
     def action_delete_entry(self) -> None:
         field = self._get_selected_field()
@@ -341,6 +415,21 @@ class ConfigFieldEditorScreen(ModalScreen[bool]):
         return self.query_one("#editor-input", Input).value
 
     def _validate(self, value: str) -> str | None:
+        # The incident came through `config:set`, but this screen writes the same
+        # field and had no validation at all. Same parse, same rule as
+        # _is_private_key_field in framework/cli/config.py: an obscure field whose
+        # name ends in ssh_private_key.
+        if self._field.field_type == "obscure" and self._field.field_name.rsplit(
+            "/", 1
+        )[-1] == "ssh_private_key" and value.strip():
+            from agento.framework.ssh_keys import EncryptedKeyError, derive_public_key
+
+            try:
+                derive_public_key(value)
+            except EncryptedKeyError:
+                return "Passphrase-protected keys cannot be used by the agent"
+            except ValueError:
+                return "Not a valid SSH private key (truncated paste?)"
         if self._field.field_type == "integer":
             try:
                 int(value)

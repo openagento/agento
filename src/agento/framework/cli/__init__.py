@@ -111,6 +111,7 @@ def _register_framework_commands() -> None:
         ConfigSchemaCommand,
         ConfigSetCommand,
     )
+    from .config_test_cmd import ConfigTestCommand
     from .credential import (
         CredentialDeregisterCommand,
         CredentialListCommand,
@@ -149,6 +150,7 @@ def _register_framework_commands() -> None:
         DoctorCommand, InstallCommand, UpgradeCommand,
         MakeModuleCommand, ModuleEnableCommand, ModuleDisableCommand, ModuleListCommand, ModuleValidateCommand,
         ConfigSetCommand, ConfigGetCommand, ConfigListCommand, ConfigRemoveCommand, ConfigSchemaCommand, ConfigResolveCommand,
+        ConfigTestCommand,
         ConsumerCommand, SetupUpgradeCommand, ReplayCommand, PauseCommand, ResumeCommand, JobListCommand, E2eCommand,
         RunCommand,
         CredentialRegisterCommand, CredentialRefreshCommand, CredentialListCommand,

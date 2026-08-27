@@ -28,6 +28,7 @@
 | `config:get <path\|module>` | Get config value (exact path or module tree view) |
 | `config:list [prefix]` | List config values (all scopes) |
 | `config:remove <path> [--scope=S] [--scope-id=N]` | Remove config override from DB |
+| `config:test <path> \| --all [--agent-view CODE]` | Test a field's live credential or connection — four states, exit 1 on failure ([details](config.md#configtest)) |
 | **Credentials** (LRU pool per scope — no sticky primary; `token:*` are deprecated aliases) | |
 | `credential:register <scope> <label>` | Register OAuth credential interactively ([details](credentials.md)) |
 | `credential:register <scope> <label> --with-api-key` | Register API-key credential; secret read from stdin/getpass ([details](credentials.md)) |
@@ -43,6 +44,9 @@
 | `ingress:bind <type> <value> <agent_view> [--priority N]` | Bind inbound identity to agent_view. For regex identity types (e.g. `outlook_sender`), `<value>` is a case-insensitive `fullmatch` regex and `--priority` selects the winner (higher wins; ties between different views are ambiguous). |
 | `ingress:list [--type <type>] [--json]` | List all identity bindings |
 | `ingress:unbind <type> <value>` | Remove identity binding |
+| **Agent view identity** | |
+| `agent_view:identity:show <code>` | Show the stored SSH identity (public key + fingerprint; never the private key) |
+| `agent_view:identity:check <code>` | Verify the stored SSH private key parses and pairs with the stored public key (never prints the key) |
 | **Tools** | |
 | `tool:list [--agent-view <code>]` | List registered tools with enabled/disabled status ([details](tools.md)) |
 | `tool:enable <name> [--agent-view <code>]` | Enable a tool at given scope ([details](tools.md)) |

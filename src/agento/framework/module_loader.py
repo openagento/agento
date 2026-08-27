@@ -110,6 +110,25 @@ def _try_package_import(module_dir: Path, module_dotted: str, class_name: str) -
         return None
 
 
+def is_confined_class_path(module_dir: Path, class_path: str) -> bool:
+    """True when every segment is an identifier AND the file stays under the module.
+
+    Both halves are needed. The identifier check rejects `src/t.T` and `src.t-2.T`
+    before they reach the filesystem; the `relative_to` check is what stops
+    `..src.t.T` and a symlink pointing out of the module — hence `resolve()` on
+    both sides.
+    """
+    parts = class_path.split(".")
+    if len(parts) < 2 or not all(part.isidentifier() for part in parts):
+        return False
+    try:
+        target = (module_dir / (".".join(parts[:-1]).replace(".", "/") + ".py")).resolve()
+        target.relative_to(module_dir.resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
 def import_class(module_dir: Path, class_path: str) -> type:
     """Import a class from a module directory.
 
@@ -126,11 +145,11 @@ def import_class(module_dir: Path, class_path: str) -> type:
         import_class(Path("/modules/jira"), "src.channel.JiraChannel")
         # loads /modules/jira/src/channel.py and returns the JiraChannel class
     """
-    parts = class_path.rsplit(".", 1)
-    if len(parts) != 2:
+    if not is_confined_class_path(module_dir, class_path):
         raise ValueError(
-            f"class_path must be 'module.path.ClassName', got: {class_path!r}"
+            f"class_path must be a dotted path inside the module, got: {class_path!r}"
         )
+    parts = class_path.rsplit(".", 1)
     module_dotted, class_name = parts
 
     # Convert dotted module path to file path

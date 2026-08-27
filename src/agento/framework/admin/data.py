@@ -16,6 +16,7 @@ from agento.framework.config_resolver import (
 )
 from agento.framework.config_schema import allowed_scopes as get_allowed_scopes
 from agento.framework.config_schema import is_scope_allowed
+from agento.framework.config_test.manifest import tester_label
 from agento.framework.scoped_config import Scope
 
 
@@ -56,6 +57,7 @@ class ResolvedField:
     editable_at_scope: bool = True
     allowed_scopes: list[str] = field(default_factory=lambda: list(_ALL_SCOPES))
     description: str = ""
+    tester: str = ""   # display label of the tester declared on this field, if any
 
 
 def _count_modules() -> int:
@@ -392,6 +394,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
         field_type = field_schema.get("type", "string")
         label = field_schema.get("label", field_name)
         description = field_schema.get("description", "")
+        tester = tester_label(module, target.module_path, field_schema)
         obscure = field_type == "obscure"
         db_path = _db_path(module, field_name)
         env_key = _env_key(module, field_name)
@@ -431,6 +434,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
             editable_at_scope=editable,
             allowed_scopes=scopes_list,
             description=description,
+            tester=tester,
         ))
 
     # Tool fields
@@ -482,6 +486,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
                 editable_at_scope=editable,
                 allowed_scopes=scopes_list,
                 description=description,
+                tester="",   # tool fields are gated by is_enabled, never tested
             ))
 
     return results

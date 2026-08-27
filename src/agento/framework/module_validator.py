@@ -6,6 +6,13 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
+# `is_confined_class_path` is the single source of truth for "inside the module" —
+# the validator reports at setup time what the loader refuses at boot.
+from .module_loader import is_confined_class_path
+
+# `{module/field}` — the same shape the toolbox interpolates (config-tests.js).
+_PLACEHOLDER_RE = re.compile(r"\{([a-z0-9_]+(?:/[a-z0-9_/-]+)+)\}", re.IGNORECASE)
+
 REQUIRED_MANIFEST_FIELDS = {"name", "version", "description"}
 # Full-access adapter types must carry their capability in the tool NAME. Tool enablement is
 # keyed by name (`tools/<name>/is_enabled`) and records nothing about capability, so promoting
@@ -228,12 +235,114 @@ def _resolve_class_path(module_dir: Path, class_path: str) -> bool:
     Class path format: 'src.commands.hello.HelloCommand'
     -> check if {module_dir}/src/commands/hello.py exists.
     """
+    if not is_confined_class_path(module_dir, class_path):
+        return False
     parts = class_path.rsplit(".", 1)
     if len(parts) < 2:
         return False
     module_path = parts[0]
     file_path = module_dir / (module_path.replace(".", "/") + ".py")
     return file_path.is_file()
+
+
+def _placeholders_in(node) -> set[str]:
+    """Every `{module/field}` anywhere in a declaration, including nested ones."""
+    if isinstance(node, str):
+        return set(_PLACEHOLDER_RE.findall(node))
+    if isinstance(node, list):
+        return set().union(*(_placeholders_in(v) for v in node)) if node else set()
+    if isinstance(node, dict):
+        return set().union(*(_placeholders_in(v) for v in node.values())) if node else set()
+    return set()
+
+
+def _validate_field_tester(
+    module_dir: Path,
+    module_name: str,
+    field_name: str,
+    raw,
+    system_fields: set[str],
+) -> list[str]:
+    """Validate one field's ``tester`` declaration. Reports, never raises.
+
+    A bare string names a probe the module exports from its ``toolbox/``
+    directory; that export lives in JavaScript, so it is checked by
+    ``src/agento/toolbox/tests/config-test-declaration.test.js`` and refused at
+    run time (``UNKNOWN_TESTER``) rather than guessed at here.
+    """
+    from .config_test.protocols import (
+        BUILTIN_TOOLBOX_KINDS,
+        KIND_LOCAL,
+        KIND_TOOLBOX,
+        REQUIRED_SPEC_FIELDS,
+    )
+
+    where = f"system.json: field '{field_name}'"
+    known = ", ".join(sorted((*BUILTIN_TOOLBOX_KINDS, KIND_LOCAL, KIND_TOOLBOX)))
+
+    # `bool` before `str`: `True` is not a name, and `isinstance(True, int)`
+    # makes a naive numeric check miss it.
+    if isinstance(raw, bool) or not isinstance(raw, (str, dict)):
+        return [f"{where} 'tester' must be a probe name or an object with a 'kind'"]
+    if isinstance(raw, str):
+        return [] if raw.strip() else [f"{where} 'tester' must not be empty"]
+
+    kind = raw.get("kind")
+    if not isinstance(kind, str) or not kind.strip():
+        return [f"{where} 'tester' object needs a non-empty 'kind' (one of: {known})"]
+
+    errors: list[str] = []
+    if kind == KIND_LOCAL:
+        class_path = raw.get("class")
+        if not isinstance(class_path, str) or not class_path:
+            errors.append(f"{where} tester kind 'local' needs a 'class'")
+        elif not is_confined_class_path(module_dir, class_path):
+            # Checked, not trusted: `_resolve_class_path` joins the dotted path
+            # onto module_dir with a plain replace, so a segment like `..` or an
+            # empty one ("..src.t.T") resolves OUTSIDE the module — which is the
+            # opposite of what "the class must live in the declaring module"
+            # promises. This is the only declaration form that names Python to
+            # import, so it is the only one that needs the check.
+            errors.append(
+                f"{where} tester class '{class_path}' must be a dotted path to a "
+                f"module inside '{module_dir.name}' and end in a class name"
+            )
+        elif not _resolve_class_path(module_dir, class_path):
+            errors.append(
+                f"{where} tester class '{class_path}' does not resolve to a .py file"
+            )
+    elif kind == KIND_TOOLBOX:
+        # The explicit form of the bare-string sugar: `"tester": "graph_credentials"`
+        # and `{"kind": "toolbox", "name": "graph_credentials"}` are one
+        # declaration, and the toolbox runs both. Rejecting the explicit one here
+        # let `module:validate` fail a declaration the runtime accepts.
+        name = raw.get("name")
+        if not isinstance(name, str) or not name.strip():
+            errors.append(f"{where} tester kind 'toolbox' needs a non-empty 'name'")
+    elif kind in BUILTIN_TOOLBOX_KINDS:
+        for required in REQUIRED_SPEC_FIELDS.get(kind, ()):
+            value = raw.get(required)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"{where} tester kind '{kind}' needs '{required}'")
+    else:
+        errors.append(f"{where} unknown tester kind '{kind}' (known kinds: {known})")
+
+    prefix = f"{module_name}/"
+    for path in sorted(_placeholders_in(raw)):
+        if not path.startswith(prefix):
+            errors.append(
+                f"{where} tester references '{path}', which is not in this module — "
+                f"a tester may only read its own module's config"
+            )
+            continue
+        # `system_fields` is empty when system.json could not be read; that is
+        # reported by its own block, and guessing here would double-report.
+        if system_fields and path[len(prefix):] not in system_fields:
+            errors.append(
+                f"{where} tester references '{path[len(prefix):]}', which is not a "
+                f"field in this system.json"
+            )
+    return errors
 
 
 def validate_module(module_dir: Path) -> list[str]:
@@ -528,6 +637,11 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                             f"'{provider_option}' is declared by no provider of any "
                             f"installed harness — the field would never be shown"
                         )
+                if "tester" in field_def:
+                    errors.extend(_validate_field_tester(
+                        module_dir, module_dir.name.replace("-", "_"),
+                        field_name, field_def["tester"], set(system.keys()),
+                    ))
                 if has_options and not is_select:
                     errors.append(
                         f"system.json: field '{field_name}' has 'options' but type is '{field_type}' (only select/multiselect support options)"
@@ -548,6 +662,22 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                                 errors.append(
                                     f"system.json: field '{field_name}' options[{i}] must have 'value' and 'label'"
                                 )
+
+            # Tool fields are nested under `tools`, so the loop above never sees
+            # them. `tester_for_field` returns None for a tool path, so a tester
+            # declared there would be a silently dead button.
+            tool_fields = system.get("tools")
+            if isinstance(tool_fields, dict):
+                for tool_name, tool_def in tool_fields.items():
+                    if not isinstance(tool_def, dict):
+                        continue
+                    for tf_name, tf_def in tool_def.items():
+                        if isinstance(tf_def, dict) and "tester" in tf_def:
+                            errors.append(
+                                f"system.json: tool field '{tool_name}/{tf_name}' declares a "
+                                f"'tester'; tool fields are gated by is_enabled and are "
+                                f"never tested"
+                            )
 
     return errors, manifest
 

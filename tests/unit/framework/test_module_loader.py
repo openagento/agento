@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from agento.framework.module_loader import import_class, scan_modules
+from agento.framework.module_loader import import_class, is_confined_class_path, scan_modules
 
 
 class TestScanModules:
@@ -148,3 +148,33 @@ class TestImportClass:
         )
         cls = import_class(tmp_path, "src.workflows.cron.CronWorkflow")
         assert cls.kind == "cron"
+
+
+@pytest.mark.parametrize("class_path", [
+    "..src.t.T",           # empty leading segment -> parent directory
+    "src..t.T",            # empty middle segment
+    "src/t.T",             # a path separator, not a dotted path
+    "src.t-2.T",           # not an identifier
+    "T",                   # no module part at all
+])
+def test_a_class_path_that_escapes_the_module_is_refused(tmp_path, class_path):
+    """The loader's contract is 'relative to module_dir'; nothing enforced it."""
+    assert is_confined_class_path(tmp_path, class_path) is False
+    with pytest.raises(ValueError, match="inside"):
+        import_class(tmp_path, class_path)
+
+
+def test_a_normal_declaration_still_loads(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "chan.py").write_text("class C:\n    pass\n")
+    assert is_confined_class_path(tmp_path, "src.chan.C") is True
+    assert import_class(tmp_path, "src.chan.C").__name__ == "C"
+
+
+def test_a_symlink_out_of_the_module_is_refused(tmp_path):
+    # `resolve()` before comparing, or a symlinked file defeats the check.
+    outside = tmp_path.parent / "outside_mod.py"
+    outside.write_text("class C:\n    pass\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "chan.py").symlink_to(outside)
+    assert is_confined_class_path(tmp_path, "src.chan.C") is False

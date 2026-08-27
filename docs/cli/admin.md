@@ -131,6 +131,7 @@ Schema-driven configuration editor. Shows **all** fields declared in every modul
 | `e` or double-click | Edit selected field (opens editor popup) |
 | `d` | Delete DB override (field falls back to parent scope, with confirmation) |
 | `m` | Toggle mode: Browse All / Overrides Only |
+| `t` | Test the selected field's credential or connection (fields that declare a tester) |
 
 **Source tags** on each field:
 
@@ -141,6 +142,11 @@ Schema-driven configuration editor. Shows **all** fields declared in every modul
 | `[db:inherited]` | Set in a parent scope |
 | `[json]` | Default from module's `config.json` |
 | `[-]` | No value set anywhere |
+
+**Testing a field.** Fields that declare a tester show a `Test:` line in the detail panel; `t` runs
+it. The probe runs off the UI thread (a network probe takes seconds) and the outcome stays in the
+detail panel as `Last:` after the toast fades. A result of `ERROR` means the check could not be
+performed — an unreachable toolbox, a timeout — and is not a verdict on the credential.
 
 **Field editor** provides type-specific inputs:
 

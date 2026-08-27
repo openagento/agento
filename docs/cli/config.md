@@ -111,6 +111,59 @@ Output:
   my_ecommerce/tools/mysql_ecom_prod/pass = **** [encrypted]
 ```
 
+## config:test
+
+Run the tester declared on a config field.
+
+```bash
+# One field
+agento config:test core/smtp_pass
+
+# At an agent_view's scope
+agento config:test agent_view/identity/ssh_private_key --agent-view dev_01
+
+# Every field that declares a tester — a post-deploy smoke check
+agento config:test --all
+```
+
+Output is one line per field:
+
+```
+OK  core/smtp_pass: 250 login accepted (412 ms)
+FAIL [AUTH_FAILED]  app_monitor/alerts/smtp_password: 535 5.7.8 authentication failed
+NOT_CONFIGURED  outlook/outlook_client_secret: no credentials are configured
+ERROR [TOOLBOX_UNREACHABLE]  jira/jira_token: toolbox unreachable at http://toolbox:3001
+```
+
+Exit codes: `0` = every run was `ok` or `not_configured`; `1` = any `fail` or `error`; `2` = usage
+(no path given, or the field declares no tester).
+
+`ERROR` is not `FAIL`. `FAIL` means the system answered and rejected the credential; `ERROR` means
+the check did not happen. Do not rotate a credential on an `ERROR`.
+
+### Scopes
+
+`--agent-view CODE` runs the test against that view's resolved values. Which scopes a field supports
+depends on where its probe runs:
+
+| Tester | Runs in | Scopes |
+|---|---|---|
+| `smtp`, `http`, a named module probe | the toolbox | `default` and `agent_view` |
+| `local` (e.g. the SSH keypair) | the framework | every scope, including `workspace` |
+
+A network credential is probed inside the toolbox because that is the only container holding
+secrets, and the toolbox's scoped reader for tests (`loadStrictScopedOverrides`) resolves an
+`agent_view`. There is no workspace chain there, so `--scope workspace --scope-id N` on a
+toolbox-tested field returns `ERROR [SCOPE_UNSUPPORTED]` rather than silently answering about the
+default scope — an answer about credentials you did not name is worse than no answer. That loader is
+strict on purpose: unlike the lenient one every MCP session uses, a failed query or an unknown
+agent_view is `ERROR [CONFIG_UNAVAILABLE]`, never a quiet fall back to global config.
+
+`--scope`/`--scope-id` are checked before either arm runs: `default` takes no id, `workspace` and
+`agent_view` need a positive one, and anything else is `ERROR [SCOPE_UNSUPPORTED]`.
+
+Which fields are testable, and how a module declares one: [config/testers.md](../config/testers.md).
+
 ## ENV Var Override
 
 ENV vars have the highest priority and override both DB and config.json:

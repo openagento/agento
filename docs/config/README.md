@@ -116,8 +116,20 @@ Rules:
 - Enforcement is in CLI (`config:set`) and in the admin TUI (edit blocked with a `[readonly]` badge). No DB constraint is applied.
 - Applies equally to module-level fields (`module/field`) and tool fields (`module/tools/tool/field`).
 
+## Testing a stored value
+
+A field may declare a **tester** — a probe that answers "does this credential actually work?",
+reachable as `agento config:test <path>` and as `t` in the admin TUI. The probe runs in the process
+that already holds the credential (the toolbox for network credentials, the declaring module for the
+SSH keypair), so the framework never decrypts a secret in order to test one. Results are four-state:
+`ok`, `fail`, `not_configured`, `error` — `error` means "could not check", which is not the same
+claim as "your credential is wrong".
+
+See [Config Testers](testers.md).
+
 ## Further Reading
 
 - [ENV Variables](env-vars.md) — naming convention and examples
 - [core_config_data](core-config-data.md) — DB table and CLI
 - [Encryption](encryption.md) — obscure fields and AES-256-CBC
+- [Config Testers](testers.md) — declaring a "Test connection" for a field
