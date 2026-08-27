@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import signal
 import threading
 import time
@@ -16,6 +17,7 @@ from .agent_manager.credential_resolver import (
 from .agent_manager.credential_store import (
     clear_auto_credential_error,
     count_credentials_for_scope,
+    earliest_throttle_reset_for_scope,
     lease_owner_for_job,
     mark_credential_error,
     release_credential_lease,
@@ -78,6 +80,13 @@ _DEFAULT_LIMIT_THROTTLE = timedelta(hours=1)
 # refresh capture. 15 min outlasts the 60s/300s retry backoffs, so attempts 2 and 3
 # are guaranteed to land on a different token, while still auto-recovering fast.
 _DEFAULT_TRANSIENT_AUTH_THROTTLE = timedelta(minutes=15)
+
+# When the WHOLE pool is throttled by usage limits, a usage-limited job is rescheduled
+# for just after the earliest throttle reset rather than dead-lettered. The extra
+# randomised gap (a) clears the ``throttled_until`` boundary so the token is actually
+# selectable again, and (b) spreads a thundering herd of waiting jobs so they don't all
+# wake and re-hit the limit in the same instant.
+_POOL_RETRY_JITTER_SECONDS = (60, 300)
 
 
 def _should_resume(
@@ -902,6 +911,15 @@ class Consumer:
                 # token if a healthy one remains for this provider.
                 _total, healthy = count_credentials_for_scope(conn, scope)
                 exc.retry_with_other_token = healthy > 0
+                # Whole pool throttled (no healthy token, no failover): don't
+                # dead-letter — a usage limit is temporary. Tell ``_finalize_job``
+                # when the pool next recovers so it reschedules the job for that time
+                # instead. ``earliest_throttle_reset_for_scope`` sees the throttle we
+                # just committed, so it is at worst this credential's own reset.
+                if healthy == 0:
+                    exc.pool_retry_at = (
+                        earliest_throttle_reset_for_scope(conn, scope) or until
+                    )
             finally:
                 conn.close()
         except Exception:
@@ -1080,6 +1098,12 @@ class Consumer:
                             )
                         session_id = None
 
+                    # Usage limit with the WHOLE pool throttled: wait for quota instead
+                    # of dead-lettering. ``_handle_usage_limit`` set ``pool_retry_at`` to
+                    # when the pool next recovers; a plain non-retryable failure leaves it
+                    # unset and falls through to DEAD below.
+                    pool_retry_at = getattr(error, "pool_retry_at", None)
+
                     if decision.should_retry:
                         scheduled_after = datetime.now(UTC) + timedelta(seconds=decision.delay_seconds)
                         with conn.cursor() as cur:
@@ -1114,6 +1138,56 @@ class Consumer:
                                 job=job,
                                 error=error,
                                 delay_seconds=decision.delay_seconds,
+                                elapsed_ms=elapsed_ms,
+                            ),
+                        )
+                    elif pool_retry_at is not None:
+                        # Reschedule for just after the earliest throttle reset, plus a
+                        # randomised gap to clear the boundary and de-sync waiting jobs.
+                        # ``pool_retry_at`` is naive UTC (from ``throttled_until``); the DB
+                        # session is UTC so it compares correctly against ``NOW()``.
+                        jitter = random.randint(*_POOL_RETRY_JITTER_SECONDS)
+                        scheduled_after = pool_retry_at + timedelta(seconds=jitter)
+                        # Refund the attempt spent on this run: a quota wait is not a real
+                        # failure, so it must not march the job toward ``max_attempts`` and
+                        # reintroduce the dead-letter this fix removes.
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                UPDATE job
+                                SET status = 'TODO', finished_at = NOW(),
+                                    attempt = GREATEST(attempt - 1, 0),
+                                    error_message = %s, error_class = %s,
+                                    output = COALESCE(%s, output),
+                                    session_id = COALESCE(%s, session_id),
+                                    scheduled_after = %s, updated_at = NOW()
+                                WHERE id = %s AND status = 'RUNNING'
+                                """,
+                                (
+                                    error_msg, error_class, agent_output,
+                                    session_id, scheduled_after, job.id,
+                                ),
+                            )
+                        conn.commit()
+                        self.logger.info(
+                            "Job waiting for usage-limit reset: whole pool throttled, "
+                            f"rescheduled for {scheduled_after} (UTC)",
+                            extra={
+                                "job_id": job.id,
+                                "reference_id": job.reference_id,
+                                "status": "TODO",
+                                "duration_ms": elapsed_ms,
+                            },
+                        )
+                        em.dispatch(
+                            "job_retry_after",
+                            JobRetryingEvent(
+                                job=job,
+                                error=error,
+                                delay_seconds=max(
+                                    int((scheduled_after - datetime.now(UTC).replace(tzinfo=None)).total_seconds()),
+                                    0,
+                                ),
                                 elapsed_ms=elapsed_ms,
                             ),
                         )

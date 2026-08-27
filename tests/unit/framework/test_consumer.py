@@ -764,6 +764,48 @@ class TestFinalize:
 
     @patch("agento.framework.consumer.evaluate_retry")
     @patch("agento.framework.consumer.get_connection")
+    def test_finalize_usage_limit_pool_exhausted_reschedules_not_dead(
+        self, mock_get_conn, mock_eval, sample_config, sample_db_config, sample_consumer_config
+    ):
+        """AG-46: a usage limit with the whole pool throttled reschedules the job to
+        TODO (waiting for quota) instead of dead-lettering it, and refunds the attempt."""
+        from datetime import UTC, datetime, timedelta
+
+        from agento.framework.agent_manager.errors import UsageLimitError
+        from agento.framework.retry_policy import RetryDecision
+
+        # No failover left, so the retry policy says don't retry — the pool-wait branch
+        # must take over from the DEAD branch.
+        mock_eval.return_value = RetryDecision(
+            should_retry=False, delay_seconds=0, reason="Non-retryable error: UsageLimitError"
+        )
+        mock_conn, mock_cursor = _mock_connection(row=("RUNNING",))
+        mock_get_conn.return_value = mock_conn
+
+        consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
+        job = _make_job(attempt=3, max_attempts=3)
+
+        reset = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)
+        error = UsageLimitError("usage limit reached")
+        error.pool_retry_at = reset  # set by _handle_usage_limit when the pool is dry
+
+        consumer._finalize_job(job, error=error, job_result=None, elapsed_ms=100)
+
+        sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
+        assert "DEAD" not in sql_arg
+        assert "TODO" in sql_arg
+        assert "scheduled_after" in sql_arg
+        # Attempt is refunded so quota waits never march the job toward max_attempts.
+        assert "attempt = GREATEST(attempt - 1, 0)" in sql_arg
+        # scheduled_after lands after the reset (reset + jitter of 60-300s).
+        params = mock_cursor.execute.call_args_list[-1][0][1]
+        scheduled_after = params[4]
+        assert scheduled_after > reset
+        assert scheduled_after <= reset + timedelta(seconds=300)
+        mock_conn.commit.assert_called_once()
+
+    @patch("agento.framework.consumer.evaluate_retry")
+    @patch("agento.framework.consumer.get_connection")
     def test_finalize_error_message_truncated(self, mock_get_conn, mock_eval, sample_config, sample_db_config, sample_consumer_config):
         from agento.framework.retry_policy import RetryDecision
 

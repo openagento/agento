@@ -11,6 +11,7 @@ from agento.framework.agent_manager.credential_store import (
     clear_credential_error,
     count_credentials_for_scope,
     deregister_credential,
+    earliest_throttle_reset_for_scope,
     get_credential,
     list_credentials,
     mark_credential_error,
@@ -538,6 +539,27 @@ class TestCountTokensForProvider:
 
         assert total == 0
         assert healthy == 0
+
+
+class TestEarliestThrottleResetForScope:
+    def test_returns_min_throttled_until(self):
+        reset = datetime(2026, 8, 27, 15, 0, 0)
+        conn, cursor = _mock_conn(fetchone_return={"reset": reset})
+
+        got = earliest_throttle_reset_for_scope(conn, "claude")
+
+        assert got == reset
+        sql = cursor.execute.call_args_list[-1][0][0]
+        # Only tokens that heal on their own: enabled, ok, unexpired, and throttled
+        # into the future — never a poisoned or expired row.
+        assert "MIN(throttled_until)" in sql
+        assert "status = 'ok'" in sql
+        assert "throttled_until > UTC_TIMESTAMP()" in sql
+
+    def test_returns_none_when_nothing_throttled(self):
+        conn, _cursor = _mock_conn(fetchone_return={"reset": None})
+
+        assert earliest_throttle_reset_for_scope(conn, "codex") is None
 
 
 class TestCredentialStatusMapping:

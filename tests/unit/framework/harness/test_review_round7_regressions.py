@@ -89,8 +89,8 @@ class TestNoAgentContentInLogsOrErrorMessage:
 
         source = Path(consumer.__file__).read_text()
         assert 'agent_output = getattr(error, "agent_output", None)' in source
-        # Both failure branches (retry and dead-letter) must store it.
-        assert source.count("output = COALESCE(%s, output)") == 2
+        # All failure branches (retry, usage-limit pool-wait, and dead-letter) must store it.
+        assert source.count("output = COALESCE(%s, output)") == 3
 
 
 class TestCredentialErrorLogsCarryNoContent:

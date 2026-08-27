@@ -50,6 +50,13 @@ class UsageLimitError(RuntimeError):
         # healthy alternative remains in the pool, so the job retries onto it.
         # ``retry_policy.evaluate`` reads this flag (mirrors AuthenticationError).
         self.retry_with_other_token = False
+        # Set by the consumer when the WHOLE pool is throttled (no healthy token
+        # AND no failover): the naive-UTC time the pool next recovers (earliest
+        # ``throttled_until`` across the scope). ``_finalize_job`` reads it to
+        # reschedule the job for that time instead of dead-lettering it — a
+        # usage-limited job should wait for quota, not die. ``None`` when a token
+        # is still available or the pool has no recoverable throttle.
+        self.pool_retry_at = None
 
 
 class TransientAuthError(RuntimeError):
