@@ -806,6 +806,85 @@ class TestFinalize:
 
     @patch("agento.framework.consumer.evaluate_retry")
     @patch("agento.framework.consumer.get_connection")
+    def test_finalize_pool_retry_at_wins_over_backoff_retry(
+        self, mock_get_conn, mock_eval, sample_config, sample_db_config, sample_consumer_config
+    ):
+        """AG-46 (busy pool): a CredentialsBusyError is a retryable RuntimeError, so the
+        retry policy says retry — but a known pool-recovery time must win over blind
+        backoff. The job waits for the lease to free (reschedule + refund), not a fixed
+        delay, and never dead-letters."""
+        from datetime import UTC, datetime, timedelta
+
+        from agento.framework.agent_manager.errors import CredentialsBusyError
+        from agento.framework.retry_policy import RetryDecision
+
+        # Retryable per policy (RuntimeError subclass) — the pool-wait branch must still
+        # take priority because we know exactly when the pool recovers.
+        mock_eval.return_value = RetryDecision(
+            should_retry=True, delay_seconds=60, reason="Retry 2/3 after 60s"
+        )
+        mock_conn, mock_cursor = _mock_connection(row=("RUNNING",))
+        mock_get_conn.return_value = mock_conn
+
+        consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
+        job = _make_job(attempt=1)
+
+        lease_expiry = datetime.now(UTC).replace(tzinfo=None) + timedelta(minutes=5)
+        error = CredentialsBusyError("all healthy tokens leased", pool_retry_at=lease_expiry)
+
+        consumer._finalize_job(job, error=error, job_result=None, elapsed_ms=2000)
+
+        sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
+        assert "DEAD" not in sql_arg
+        assert "TODO" in sql_arg
+        # Refunded: waiting for a leased token is not a real failure.
+        assert "attempt = GREATEST(attempt - 1, 0)" in sql_arg
+        params = mock_cursor.execute.call_args_list[-1][0][1]
+        scheduled_after = params[4]
+        # Rescheduled for after the lease frees (lease_expiry + 60-300s jitter), NOT the
+        # 60s backoff the retry policy proposed.
+        assert scheduled_after > lease_expiry
+        assert scheduled_after <= lease_expiry + timedelta(seconds=300)
+        mock_conn.commit.assert_called_once()
+
+    @patch("agento.framework.consumer.evaluate_retry")
+    @patch("agento.framework.consumer.get_connection")
+    def test_finalize_busy_pool_without_recovery_time_uses_backoff(
+        self, mock_get_conn, mock_eval, sample_config, sample_db_config, sample_consumer_config
+    ):
+        """Pure row-lock contention leaves ``pool_retry_at`` None: the job falls back to
+        the ordinary backoff retry (no attempt refund), preserving prior behaviour rather
+        than dead-lettering."""
+        from datetime import UTC, datetime, timedelta
+
+        from agento.framework.agent_manager.errors import CredentialsBusyError
+        from agento.framework.retry_policy import RetryDecision
+
+        mock_eval.return_value = RetryDecision(
+            should_retry=True, delay_seconds=60, reason="Retry 2/3 after 60s"
+        )
+        mock_conn, mock_cursor = _mock_connection(row=("RUNNING",))
+        mock_get_conn.return_value = mock_conn
+
+        consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
+        job = _make_job(attempt=1)
+
+        error = CredentialsBusyError("all healthy tokens locked", pool_retry_at=None)
+        consumer._finalize_job(job, error=error, job_result=None, elapsed_ms=2000)
+
+        sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
+        assert "TODO" in sql_arg
+        assert "DEAD" not in sql_arg
+        # Ordinary backoff retry, so no attempt refund.
+        assert "GREATEST(attempt - 1, 0)" not in sql_arg
+        params = mock_cursor.execute.call_args_list[-1][0][1]
+        scheduled_after = params[4]
+        # ~60s backoff from now, not a lease-derived wait.
+        assert scheduled_after <= datetime.now(UTC) + timedelta(seconds=120)
+        mock_conn.commit.assert_called_once()
+
+    @patch("agento.framework.consumer.evaluate_retry")
+    @patch("agento.framework.consumer.get_connection")
     def test_finalize_error_message_truncated(self, mock_get_conn, mock_eval, sample_config, sample_db_config, sample_consumer_config):
         from agento.framework.retry_policy import RetryDecision
 

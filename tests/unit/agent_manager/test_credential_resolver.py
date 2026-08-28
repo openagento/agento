@@ -94,6 +94,71 @@ class TestCredentialResolver:
         ):
             CredentialResolver().resolve(MagicMock(), "claude")
 
+    def test_busy_pool_carries_lease_expiry_as_pool_retry_at(self):
+        """AG-46: when every healthy token is busy/leased, resolve raises
+        CredentialsBusyError carrying the earliest lease expiry so the consumer waits for
+        the pool to free up instead of dead-lettering the job."""
+        from datetime import datetime
+
+        from agento.framework.agent_manager.errors import CredentialsBusyError
+
+        lease_expiry = datetime(2026, 8, 28, 12, 5, 0)
+        with (
+            patch(
+                "agento.framework.agent_manager.credential_resolver.select_credential",
+                return_value=None,
+            ),
+            patch(
+                "agento.framework.agent_manager.credential_resolver.count_credentials_for_scope",
+                return_value=(1, 1),
+            ),
+            patch(
+                "agento.framework.agent_manager.credential_resolver.earliest_lease_expiry_for_scope",
+                return_value=lease_expiry,
+            ),
+            patch("agento.framework.agent_manager.credential_resolver.time.sleep"),
+            patch(
+                "agento.framework.agent_manager.credential_resolver."
+                "_POOL_CONTENTION_BUDGET_SECONDS",
+                0.0,
+            ),pytest.raises(CredentialsBusyError) as exc_info
+        ):
+            CredentialResolver().resolve(MagicMock(), "claude")
+
+        exc = exc_info.value
+        assert exc.pool_retry_at == lease_expiry
+        # The whole pool is busy — there is no other token to fail over to.
+        assert exc.retry_with_other_token is False
+
+    def test_busy_pool_pool_retry_at_none_for_pure_row_lock(self):
+        """Pure row-lock contention carries no ``leased_until``; ``pool_retry_at`` stays
+        None so the consumer falls back to ordinary backoff rather than a lease wait."""
+        from agento.framework.agent_manager.errors import CredentialsBusyError
+
+        with (
+            patch(
+                "agento.framework.agent_manager.credential_resolver.select_credential",
+                return_value=None,
+            ),
+            patch(
+                "agento.framework.agent_manager.credential_resolver.count_credentials_for_scope",
+                return_value=(2, 2),
+            ),
+            patch(
+                "agento.framework.agent_manager.credential_resolver.earliest_lease_expiry_for_scope",
+                return_value=None,
+            ),
+            patch("agento.framework.agent_manager.credential_resolver.time.sleep"),
+            patch(
+                "agento.framework.agent_manager.credential_resolver."
+                "_POOL_CONTENTION_BUDGET_SECONDS",
+                0.0,
+            ),pytest.raises(CredentialsBusyError) as exc_info
+        ):
+            CredentialResolver().resolve(MagicMock(), "claude")
+
+        assert exc_info.value.pool_retry_at is None
+
     def test_resolve_outlasts_contention_longer_than_a_fixed_attempt_cap(self):
         """Regression: the retry budget must be wall-clock, not a fixed count.
 

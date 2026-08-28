@@ -540,3 +540,32 @@ def earliest_throttle_reset_for_scope(
         )
         row = cur.fetchone()
     return row["reset"] if row else None
+
+
+def earliest_lease_expiry_for_scope(
+    conn: pymysql.Connection,
+    scope: str,
+) -> datetime | None:
+    """Return the earliest future ``leased_until`` for an otherwise-selectable token in
+    ``scope`` — i.e. when the pool next frees a usable credential purely by a refresh
+    lease expiring — or ``None`` when no healthy token is currently leased into the
+    future.
+
+    Mirrors ``select_credential``'s eligibility except for the lease clause: the row must
+    be enabled, ``status='ok'`` and unexpired. Used by the resolver to tell the consumer
+    when to retry a job that found every healthy token held by a refresh lease, so it
+    waits for the rotation to finish instead of dead-lettering. Returns ``None`` when the
+    contention is pure row-lock (a concurrent worker's claim, which carries no
+    ``leased_until``); the consumer then falls back to ordinary backoff."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MIN(leased_until) AS reset FROM credential
+             WHERE scope = %s AND enabled = TRUE AND status = 'ok'
+               AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
+               AND leased_until IS NOT NULL AND leased_until > UTC_TIMESTAMP()
+            """,
+            (scope,),
+        )
+        row = cur.fetchone()
+    return row["reset"] if row else None

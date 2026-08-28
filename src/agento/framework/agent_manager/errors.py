@@ -81,6 +81,32 @@ class TransientAuthError(RuntimeError):
         self.retry_with_other_token = False
 
 
+class CredentialsBusyError(RuntimeError):
+    """Raised by ``CredentialResolver.resolve`` when every credential in a scope is
+    *healthy* but none is currently *selectable* — each one is locked by a concurrent
+    worker or held by a refresh lease (a run rotating a near-expiry token). This is a
+    TRANSIENT contention state, not an exhausted or poisoned pool: the tokens heal on
+    their own the moment the holder commits or the lease expires.
+
+    Handled like the whole-pool-throttled branch of ``UsageLimitError``: the consumer
+    should wait for the pool to free up, not dead-letter the job. ``pool_retry_at`` is the
+    naive-UTC time the earliest refresh lease expires (``MIN(leased_until)`` across the
+    scope's healthy tokens), or ``None`` when the contention is pure row-lock (no active
+    lease) and there is no timestamp to wait on — in which case ``_finalize_job`` falls
+    back to the ordinary backoff retry rather than dead-lettering. ``retry_with_other_token``
+    stays ``False`` (there is no other token to fail over to; the whole pool is busy).
+
+    A plain ``RuntimeError`` subclass so ``retry_policy`` keeps treating it as retryable;
+    the reschedule is driven by ``pool_retry_at`` in ``_finalize_job``, not by the error
+    name.
+    """
+
+    def __init__(self, message: str, *, pool_retry_at=None) -> None:
+        super().__init__(message)
+        self.pool_retry_at = pool_retry_at
+        self.retry_with_other_token = False
+
+
 class CredentialLeasedError(RuntimeError):
     """Raised when a write would replace the payload of a credential that a running
     job currently holds a refresh lease on.

@@ -81,11 +81,12 @@ _DEFAULT_LIMIT_THROTTLE = timedelta(hours=1)
 # are guaranteed to land on a different token, while still auto-recovering fast.
 _DEFAULT_TRANSIENT_AUTH_THROTTLE = timedelta(minutes=15)
 
-# When the WHOLE pool is throttled by usage limits, a usage-limited job is rescheduled
-# for just after the earliest throttle reset rather than dead-lettered. The extra
-# randomised gap (a) clears the ``throttled_until`` boundary so the token is actually
+# When the WHOLE pool is temporarily unavailable — every token throttled by a usage
+# limit, or every healthy token busy/held by a refresh lease — the job is rescheduled for
+# just after the pool recovers rather than dead-lettered. The extra randomised gap
+# (a) clears the ``throttled_until`` / ``leased_until`` boundary so a token is actually
 # selectable again, and (b) spreads a thundering herd of waiting jobs so they don't all
-# wake and re-hit the limit in the same instant.
+# wake and re-hit the same wall in the same instant.
 _POOL_RETRY_JITTER_SECONDS = (60, 300)
 
 
@@ -1098,13 +1099,69 @@ class Consumer:
                             )
                         session_id = None
 
-                    # Usage limit with the WHOLE pool throttled: wait for quota instead
-                    # of dead-lettering. ``_handle_usage_limit`` set ``pool_retry_at`` to
-                    # when the pool next recovers; a plain non-retryable failure leaves it
-                    # unset and falls through to DEAD below.
+                    # The WHOLE pool is temporarily unavailable — either every token is
+                    # usage-limited (``_handle_usage_limit``) or every healthy token is
+                    # transiently busy/leased (``CredentialsBusyError`` from ``resolve``).
+                    # Both set ``pool_retry_at`` to the naive-UTC time the pool next
+                    # recovers. Wait for that instead of dead-lettering: a pool that heals
+                    # on its own is not a real failure. Checked BEFORE ``should_retry`` so a
+                    # known recovery time wins over blind backoff; ``None`` (no recovery
+                    # time, e.g. pure row-lock contention) falls through to ordinary retry.
                     pool_retry_at = getattr(error, "pool_retry_at", None)
 
-                    if decision.should_retry:
+                    if pool_retry_at is not None:
+                        # The whole pool is temporarily unavailable (all tokens throttled,
+                        # or all healthy tokens busy/leased). Reschedule for just after the
+                        # pool recovers, plus a randomised gap to clear the boundary and
+                        # de-sync waiting jobs. ``pool_retry_at`` is naive UTC (from
+                        # ``throttled_until`` or ``leased_until``); the DB session is UTC so
+                        # it compares correctly against ``NOW()``.
+                        jitter = random.randint(*_POOL_RETRY_JITTER_SECONDS)
+                        scheduled_after = pool_retry_at + timedelta(seconds=jitter)
+                        # Refund the attempt spent on this run: waiting for the pool is not a
+                        # real failure, so it must not march the job toward ``max_attempts``
+                        # and reintroduce the dead-letter this fix removes.
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                UPDATE job
+                                SET status = 'TODO', finished_at = NOW(),
+                                    attempt = GREATEST(attempt - 1, 0),
+                                    error_message = %s, error_class = %s,
+                                    output = COALESCE(%s, output),
+                                    session_id = COALESCE(%s, session_id),
+                                    scheduled_after = %s, updated_at = NOW()
+                                WHERE id = %s AND status = 'RUNNING'
+                                """,
+                                (
+                                    error_msg, error_class, agent_output,
+                                    session_id, scheduled_after, job.id,
+                                ),
+                            )
+                        conn.commit()
+                        self.logger.info(
+                            "Job waiting for pool to recover: whole pool throttled or "
+                            f"busy, rescheduled for {scheduled_after} (UTC)",
+                            extra={
+                                "job_id": job.id,
+                                "reference_id": job.reference_id,
+                                "status": "TODO",
+                                "duration_ms": elapsed_ms,
+                            },
+                        )
+                        em.dispatch(
+                            "job_retry_after",
+                            JobRetryingEvent(
+                                job=job,
+                                error=error,
+                                delay_seconds=max(
+                                    int((scheduled_after - datetime.now(UTC).replace(tzinfo=None)).total_seconds()),
+                                    0,
+                                ),
+                                elapsed_ms=elapsed_ms,
+                            ),
+                        )
+                    elif decision.should_retry:
                         scheduled_after = datetime.now(UTC) + timedelta(seconds=decision.delay_seconds)
                         with conn.cursor() as cur:
                             cur.execute(
@@ -1138,56 +1195,6 @@ class Consumer:
                                 job=job,
                                 error=error,
                                 delay_seconds=decision.delay_seconds,
-                                elapsed_ms=elapsed_ms,
-                            ),
-                        )
-                    elif pool_retry_at is not None:
-                        # Reschedule for just after the earliest throttle reset, plus a
-                        # randomised gap to clear the boundary and de-sync waiting jobs.
-                        # ``pool_retry_at`` is naive UTC (from ``throttled_until``); the DB
-                        # session is UTC so it compares correctly against ``NOW()``.
-                        jitter = random.randint(*_POOL_RETRY_JITTER_SECONDS)
-                        scheduled_after = pool_retry_at + timedelta(seconds=jitter)
-                        # Refund the attempt spent on this run: a quota wait is not a real
-                        # failure, so it must not march the job toward ``max_attempts`` and
-                        # reintroduce the dead-letter this fix removes.
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                """
-                                UPDATE job
-                                SET status = 'TODO', finished_at = NOW(),
-                                    attempt = GREATEST(attempt - 1, 0),
-                                    error_message = %s, error_class = %s,
-                                    output = COALESCE(%s, output),
-                                    session_id = COALESCE(%s, session_id),
-                                    scheduled_after = %s, updated_at = NOW()
-                                WHERE id = %s AND status = 'RUNNING'
-                                """,
-                                (
-                                    error_msg, error_class, agent_output,
-                                    session_id, scheduled_after, job.id,
-                                ),
-                            )
-                        conn.commit()
-                        self.logger.info(
-                            "Job waiting for usage-limit reset: whole pool throttled, "
-                            f"rescheduled for {scheduled_after} (UTC)",
-                            extra={
-                                "job_id": job.id,
-                                "reference_id": job.reference_id,
-                                "status": "TODO",
-                                "duration_ms": elapsed_ms,
-                            },
-                        )
-                        em.dispatch(
-                            "job_retry_after",
-                            JobRetryingEvent(
-                                job=job,
-                                error=error,
-                                delay_seconds=max(
-                                    int((scheduled_after - datetime.now(UTC).replace(tzinfo=None)).total_seconds()),
-                                    0,
-                                ),
                                 elapsed_ms=elapsed_ms,
                             ),
                         )
