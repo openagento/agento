@@ -6,7 +6,13 @@ import time
 import pymysql
 
 from .config import AgentManagerConfig
-from .credential_store import RefreshLease, count_credentials_for_scope, select_credential
+from .credential_store import (
+    RefreshLease,
+    count_credentials_for_scope,
+    earliest_lease_expiry_for_scope,
+    select_credential,
+)
+from .errors import CredentialsBusyError
 from .models import CredentialRecord
 
 # Contention retry budget, expressed as a wall-clock deadline rather than a
@@ -112,7 +118,10 @@ class CredentialResolver:
         Raises ``RuntimeError`` with an actionable message when no healthy
         credential is available (distinguishes "none registered" vs
         "all errored/expired" so the operator knows whether to ``credential:register``,
-        ``credential:refresh``, or ``credential:reset``).
+        ``credential:refresh``, or ``credential:reset``). When credentials ARE healthy but
+        every one is transiently busy (locked by a concurrent worker or held by a refresh
+        lease), raises ``CredentialsBusyError`` carrying ``pool_retry_at`` so the consumer
+        waits for the pool to free up instead of dead-lettering the job.
         """
         lease = (
             RefreshLease(
@@ -161,10 +170,17 @@ class CredentialResolver:
                 f"Register one: bin/agento credential:register {scope} <label>"
             )
         if healthy > 0:
-            raise RuntimeError(
+            # Healthy tokens exist but all are transiently busy — a concurrent worker's
+            # row lock or, in a single-token pool, the run rotating that token holding an
+            # exclusive refresh lease. Don't dead-letter: tell the consumer when the
+            # earliest lease frees the pool so it reschedules the job for after that
+            # (``pool_retry_at``). ``None`` when the contention carries no lease (pure row
+            # lock), leaving the consumer to fall back to ordinary backoff retry.
+            raise CredentialsBusyError(
                 f"All {healthy} healthy credentials for scope={scope} are "
                 "currently locked by concurrent workers or held by a refresh lease "
-                "(a run is rotating a near-expiry credential); retry shortly."
+                "(a run is rotating a near-expiry credential); retry shortly.",
+                pool_retry_at=earliest_lease_expiry_for_scope(conn, scope),
             )
         raise RuntimeError(
             f"All {total} enabled credentials for scope={scope} are "

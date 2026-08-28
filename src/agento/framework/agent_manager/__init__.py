@@ -25,7 +25,12 @@ from .credential_store import (
     set_credential_priority,
     throttle_credential,
 )
-from .errors import AuthenticationError, CredentialLeasedError, UsageLimitError
+from .errors import (
+    AuthenticationError,
+    CredentialLeasedError,
+    CredentialsBusyError,
+    UsageLimitError,
+)
 from .models import (
     CredentiallessUsage,
     CredentialRecord,
@@ -48,6 +53,7 @@ __all__ = [
     "CredentialResolver",
     "CredentialStatus",
     "CredentiallessUsage",
+    "CredentialsBusyError",
     "RefreshLease",
     "UsageLimitError",
     "UsageSummary",

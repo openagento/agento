@@ -11,6 +11,7 @@ from agento.framework.agent_manager.credential_store import (
     clear_credential_error,
     count_credentials_for_scope,
     deregister_credential,
+    earliest_lease_expiry_for_scope,
     earliest_throttle_reset_for_scope,
     get_credential,
     list_credentials,
@@ -560,6 +561,27 @@ class TestEarliestThrottleResetForScope:
         conn, _cursor = _mock_conn(fetchone_return={"reset": None})
 
         assert earliest_throttle_reset_for_scope(conn, "codex") is None
+
+
+class TestEarliestLeaseExpiryForScope:
+    def test_returns_min_leased_until(self):
+        expiry = datetime(2026, 8, 28, 12, 5, 0)
+        conn, cursor = _mock_conn(fetchone_return={"reset": expiry})
+
+        got = earliest_lease_expiry_for_scope(conn, "claude")
+
+        assert got == expiry
+        sql = cursor.execute.call_args_list[-1][0][0]
+        # Only healthy tokens whose lease frees them on its own: enabled, ok, unexpired,
+        # and leased into the future — never a poisoned or expired row.
+        assert "MIN(leased_until)" in sql
+        assert "status = 'ok'" in sql
+        assert "leased_until > UTC_TIMESTAMP()" in sql
+
+    def test_returns_none_when_nothing_leased(self):
+        conn, _cursor = _mock_conn(fetchone_return={"reset": None})
+
+        assert earliest_lease_expiry_for_scope(conn, "codex") is None
 
 
 class TestCredentialStatusMapping:
