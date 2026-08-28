@@ -20,4 +20,8 @@ class AdminCommand:
     def execute(self, args) -> None:
         from .app import AdminApp
 
-        AdminApp().run()
+        try:
+            AdminApp().run()
+        finally:
+            # Textual can leave SGR mouse reporting on if shutdown is cut short.
+            print("\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1015l", end="", flush=True)
