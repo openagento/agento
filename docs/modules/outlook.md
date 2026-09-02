@@ -16,7 +16,7 @@ manifests.
 > `outlook/allowed_senders` + DMARC remain the inbound **security** gate in both modes. In **direct**
 > mode a message is gated by the view's own `allowed_senders` + DMARC. In **routed** mode the gate is
 > split around routing (actual execution order): **union-of-per-view-`allowed_senders` pre-filter →
-> DMARC (global) → mailbox-level activation** (all pre-route) **→ route by `outlook_sender` binding →
+> auto-reply drop → DMARC (global) → mailbox-level activation** (all pre-route) **→ route by `outlook_sender` binding →
 > per-view `allowed_senders` refinement against the routed-to view → publish**. So members may hold
 > **different** `allowed_senders` (each persona's own safety-net); the SECURITY_BREACH alert stays
 > scoped to union-trusted senders. The legacy `ingress:bind email` type is inert for Outlook.
@@ -36,7 +36,9 @@ manifests.
 > **Security model in one line:** an inbound email creates a job **only** if its `From` is on the
 > `outlook/allowed_senders` allow-list **and** the message passes DMARC. DMARC is **always required**
 > (not configurable) — an allow-listed sender whose domain publishes a DMARC policy and fails it is
-> treated as a spoof: no job, a `SECURITY_BREACH` log, and an ops alert event.
+> treated as a spoof: no job, a `SECURITY_BREACH` log, and an ops alert event. An **automatic reply**
+> (RFC 3834 `Auto-Submitted`, e.g. an out-of-office notice) is dropped **before** the DMARC gate — it
+> is never a task and never a spoof: no job, no breach alert, just an audit `INFO` line.
 
 ## Architecture
 

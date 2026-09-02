@@ -27,6 +27,29 @@ export function parseDmarcVerdict(headers) {
   return m ? m[1].toLowerCase() : null;
 }
 
+/**
+ * True when the message announces itself as machine-generated (RFC 3834 + common vendor headers).
+ * `Auto-Submitted` is the load-bearing signal: Exchange stamps OOF replies `auto-replied`.
+ *
+ * Deliberately NOT included: `X-Auto-Response-Suppress`. It means "do not auto-respond TO me" and is
+ * stamped on plenty of ordinary system mail; treating it as an auto-reply marker would silently drop
+ * far more than intended. Fail-open: absent / non-array headers → false (never drop mail on missing
+ * headers).
+ *
+ * @param {Array<{name:string,value:string}>} headers internetMessageHeaders from Graph
+ * @returns {boolean} true iff the message is an automatic reply / machine-generated
+ */
+export function isAutoReply(headers) {
+  if (!Array.isArray(headers)) return false;
+  const get = (n) => headers.find((h) => h && typeof h.name === 'string'
+    && h.name.toLowerCase() === n && typeof h.value === 'string')?.value?.trim().toLowerCase();
+  const autoSubmitted = get('auto-submitted');
+  if (autoSubmitted && autoSubmitted !== 'no') return true;          // auto-replied | auto-generated | …
+  if (get('x-autoreply') === 'yes' || get('x-autorespond')) return true;
+  if (get('precedence') === 'auto_reply') return true;
+  return false;
+}
+
 // Mirror the Python `OutlookConfig._as_bool` truthiness: a config value is "enabled" unless it is one of
 // the recognised falsy forms. 3-level config (ENV/DB) returns STRINGS, so a bare boolean check would read
 // "0"/"false" as true; a missing/blank value (null/undefined/"") is treated as NOT enabled (default off).
@@ -262,6 +285,7 @@ export function createDeltaHandler(configResolver, log, authFactory = createGrap
           conversationId: m.conversationId,
           dmarc: parseDmarcVerdict(headers),
           agent_authored: isAgentSender(m.from?.emailAddress?.address, agentMailboxes),
+          auto_reply: isAutoReply(headers),
         });
       }
       log('api/outlook/delta', 'OK', `agent_view_id=${agentViewId ?? '?'} ${messages.length} changed resynced=${resynced}`);

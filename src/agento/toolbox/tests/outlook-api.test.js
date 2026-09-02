@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import { createDeltaHandler, parseDmarcVerdict } from '../../modules/outlook/toolbox/api-handlers.js';
+import { createDeltaHandler, parseDmarcVerdict, isAutoReply } from '../../modules/outlook/toolbox/api-handlers.js';
 
 // Inject a fake auth so token acquisition needs no real @azure/identity; the only global fetch the
 // handler makes is the Graph messages call. isConfigured mirrors graph-auth's real rule.
@@ -61,6 +61,44 @@ describe('parseDmarcVerdict (first Authentication-Results header wins — anti-s
       value: 'smtp.helo=dmarc=pass.attacker.com; spf=fail; dmarc=fail' }])).toBe('fail');
     expect(parseDmarcVerdict([{ name: 'Authentication-Results',
       value: 'x-dmarc=pass; dmarc=fail' }])).toBe('fail');
+  });
+});
+
+describe('isAutoReply (RFC 3834 Auto-Submitted + common vendor headers)', () => {
+  const h = (name, value) => [{ name, value }];
+
+  it('Auto-Submitted: auto-replied / auto-generated → true', () => {
+    expect(isAutoReply(h('Auto-Submitted', 'auto-replied'))).toBe(true);
+    expect(isAutoReply(h('Auto-Submitted', 'auto-generated'))).toBe(true);
+    expect(isAutoReply(h('auto-submitted', 'Auto-Replied'))).toBe(true); // case-insensitive name + value
+  });
+
+  it('Auto-Submitted: no → false', () => {
+    expect(isAutoReply(h('Auto-Submitted', 'no'))).toBe(false);
+    expect(isAutoReply(h('Auto-Submitted', ' No '))).toBe(false); // trimmed + lowered
+  });
+
+  it('no Auto-Submitted, X-Autoreply: yes → true; X-Autorespond present → true', () => {
+    expect(isAutoReply(h('X-Autoreply', 'yes'))).toBe(true);
+    expect(isAutoReply(h('X-Autorespond', 'anything'))).toBe(true);
+    expect(isAutoReply(h('X-Autoreply', 'no'))).toBe(false); // only "yes" counts for X-Autoreply
+  });
+
+  it('Precedence: auto_reply → true', () => {
+    expect(isAutoReply(h('Precedence', 'auto_reply'))).toBe(true);
+    expect(isAutoReply(h('Precedence', 'bulk'))).toBe(false);
+  });
+
+  it('X-Auto-Response-Suppress alone → false (deliberately NOT a marker)', () => {
+    // It means "do not auto-respond TO me" and rides on ordinary system mail — must not drop it.
+    expect(isAutoReply(h('X-Auto-Response-Suppress', 'All'))).toBe(false);
+  });
+
+  it('fail-open: absent / non-array / no marker → false (never drop mail on missing headers)', () => {
+    expect(isAutoReply([])).toBe(false);
+    expect(isAutoReply(undefined)).toBe(false);
+    expect(isAutoReply(null)).toBe(false);
+    expect(isAutoReply(h('Received', 'from mail.x.com'))).toBe(false);
   });
 });
 
@@ -395,5 +433,38 @@ describe('agent_authored (fleet-mailbox loop detection) in the delta map', () =>
   it('resolver omits fleetMailboxes entirely → treated as empty (agent_authored false)', async () => {
     const res = await runWith(undefined, 'peer-bot@example.com');
     expect(res.body.messages[0].agent_authored).toBe(false);
+  });
+});
+
+describe('auto_reply (RFC 3834 drop signal) in the delta map', () => {
+  beforeEach(() => vi.unstubAllGlobals());
+
+  const runWith = async (headerValue) => {
+    queueFetch([
+      jsonRes({
+        value: [{
+          id: 'm1', from: { emailAddress: { address: 'oof@example.com' } },
+          internetMessageHeaders: [
+            { name: 'Authentication-Results', value: 'dmarc=fail' },
+            { name: 'Auto-Submitted', value: headerValue },
+          ],
+        }],
+        '@odata.deltaLink': AGENT_DELTA('D'),
+      }),
+    ]);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const res = mockRes();
+    await handler({ body: { cursors: {} } }, res);
+    return res;
+  };
+
+  it('an out-of-office auto-reply carries auto_reply: true (alongside its dmarc verdict)', async () => {
+    const res = await runWith('auto-replied');
+    expect(res.body.messages[0]).toMatchObject({ dmarc: 'fail', auto_reply: true });
+  });
+
+  it('an ordinary human reply carries auto_reply: false', async () => {
+    const res = await runWith('no');
+    expect(res.body.messages[0].auto_reply).toBe(false);
   });
 });

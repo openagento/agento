@@ -519,3 +519,72 @@ def test_breach_alert_scoped_to_union_trusted_senders():
                             allowed_senders=["*@ops.com"], logger=log_out) is None
     log_out.error.assert_not_called()
     em_out.return_value.dispatch.assert_not_called()
+
+
+# ---- AUTO-REPLY GATE: a machine-generated reply is never a task and never a spoof ----
+
+
+def test_auto_reply_dmarc_fail_whitelisted_drops_without_breach_or_event():
+    # THE PRODUCTION INCIDENT: a whitelisted OOF stamped dmarc=fail must NOT be classified as a spoof.
+    # Ordered before the DMARC gate ⇒ returns None, NO SECURITY_BREACH log, NO ops event, NO job.
+    p = OutlookPublisher()
+    logger = MagicMock()
+    with patch("agento.modules.outlook.src.channel.publish") as mock_publish, \
+         patch("agento.modules.outlook.src.channel.get_event_manager") as mock_em:
+        admission = p.admit_mail(
+            "AAMk-oof-message-id", sender_email="ops@mycompany.com", dmarc="fail",
+            allowed_senders=WHITELIST, auto_reply=True, logger=logger,
+        )
+    assert admission is None
+    mock_publish.assert_not_called()
+    for call in logger.error.call_args_list:
+        assert "SECURITY_BREACH" not in str(call)
+    mock_em.return_value.dispatch.assert_not_called()
+    logger.info.assert_called()
+
+
+def test_auto_reply_dmarc_pass_direct_activation_drops_no_job():
+    # An OOF that PASSES DMARC would otherwise pass the gate + direct activation and create a job.
+    # The auto-reply gate stops it: returns None, no publish.
+    p = OutlookPublisher()
+    with patch("agento.modules.outlook.src.channel.publish") as mock_publish:
+        result = p.publish_mail(
+            object(), "m-oof-pass", agent_view_id=1,
+            sender_email="ops@mycompany.com", dmarc="pass",
+            allowed_senders=WHITELIST, auto_reply=True, logger=MagicMock(),
+        )
+    assert result is False
+    mock_publish.assert_not_called()
+
+
+def test_auto_reply_false_dmarc_fail_still_alerts_unchanged():
+    # Regression guard: a NON-auto-reply whitelisted dmarc=fail is unchanged — breach log + event.
+    p = OutlookPublisher()
+    logger = MagicMock()
+    with patch("agento.modules.outlook.src.channel.publish") as mock_publish, \
+         patch("agento.modules.outlook.src.channel.get_event_manager") as mock_em:
+        admission = p.admit_mail(
+            "m-spoof", sender_email="ops@mycompany.com", dmarc="fail",
+            allowed_senders=WHITELIST, auto_reply=False, logger=logger,
+        )
+    assert admission is None
+    mock_publish.assert_not_called()
+    logger.error.assert_called_once()
+    assert "SECURITY_BREACH" in logger.error.call_args.args[0]
+    mock_em.return_value.dispatch.assert_called_once()
+
+
+def test_auto_reply_off_allowlist_still_evaluated_first():
+    # The allow-list gate runs BEFORE the auto-reply gate: an off-allow-list auto-reply is dropped as
+    # ordinary non-routing mail (info, domain only), never reaching auto-reply/DMARC classification.
+    p = OutlookPublisher()
+    logger = MagicMock()
+    with patch("agento.modules.outlook.src.channel.publish") as mock_publish:
+        admission = p.admit_mail(
+            "m-stranger", sender_email="stranger@elsewhere.com", dmarc="fail",
+            allowed_senders=WHITELIST, auto_reply=True, logger=logger,
+        )
+    assert admission is None
+    mock_publish.assert_not_called()
+    for call in logger.error.call_args_list:
+        assert "SECURITY_BREACH" not in str(call)

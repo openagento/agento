@@ -97,6 +97,7 @@ def _publish_view_messages(publisher, db_config, av, cfg, messages, priority, lo
                 to=msg.get("to"), cc=msg.get("cc"),
                 body_preview=msg.get("bodyPreview"),
                 agent_authored=bool(msg.get("agent_authored")),
+                auto_reply=bool(msg.get("auto_reply")),
                 mailbox=mailbox, aliases=aliases, cfg=cfg,
                 logger=logger,
             ):
@@ -145,6 +146,7 @@ def _publish_group_routed(publisher, db_config, conn, group_views, cfg, view_cfg
             to=msg.get("to"), cc=msg.get("cc"),
             body_preview=msg.get("bodyPreview"),
             agent_authored=bool(msg.get("agent_authored")),
+            auto_reply=bool(msg.get("auto_reply")),
             mailbox=mailbox, aliases=aliases, cfg=cfg, logger=logger,
         )
         if admission is None:
