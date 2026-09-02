@@ -123,6 +123,27 @@ def test_subject_is_forwarded_to_publish_mail(MockClient, MockPub, mock_gaav, mo
 @patch(f"{P}.get_active_agent_views")
 @patch(f"{P}.OutlookPublisher")
 @patch(f"{P}.OutlookToolboxClient")
+def test_auto_reply_flag_is_forwarded_to_publish_mail(MockClient, MockPub, mock_gaav, mock_prio, mock_load, mock_save):
+    # Direct mode: the toolbox-derived auto_reply boolean must reach admit_mail via publish_mail.
+    mock_gaav.return_value = _views((1, "dev"))
+    resp = {"mailbox": "dev@x.com", "deltaLink": "L", "messages": [
+        {"id": "d1", "from": {"address": "sklep@x.com"}, "dmarc": "fail", "auto_reply": True}]}
+    client, pub = _patch_env({1: _cfg(mailbox="dev@x.com")}, lambda top, *, agent_view_id, cursors: resp)
+    MockClient.return_value = client
+    MockPub.return_value = pub
+
+    publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    assert pub.publish_mail.call_args.kwargs["auto_reply"] is True
+
+
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50)
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
 def test_disabled_view_is_skipped_and_not_polled(MockClient, MockPub, mock_gaav, mock_prio, mock_load, mock_save):
     mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
     client, pub = _patch_env({1: _cfg(enabled=False), 2: _cfg(enabled=True, mailbox="ops@x.com")},
@@ -870,6 +891,43 @@ def test_routed_admit_receives_exact_sorted_union(
     publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
 
     assert seen and all(a == ["*@dev.com", "*@ops.com", "b@ops.com"] for a in seen)
+
+
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.get_active_identities_for_type", return_value=[object()])
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50 + av_id)
+@patch(f"{P}.resolve_agent_view")
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_routed_admit_receives_auto_reply_flag(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save,
+):
+    # Routed mode: the toolbox-derived auto_reply boolean must reach admit_mail.
+    mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    shared = {"mailbox": "shared@x.com", "deltaLink": "L", "messages": [
+        {"id": "s1", "from": {"address": "a@dev.com"}, "dmarc": "fail", "auto_reply": True}]}
+    client, pub = _patch_env(
+        {1: _cfg(mailbox="shared@x.com", allowed="*@dev.com"),
+         2: _cfg(mailbox="shared@x.com", allowed="*@ops.com")},
+        lambda top, *, agent_view_id, cursors: shared,
+    )
+    seen = []
+
+    def _admit(mid, **kw):
+        seen.append(kw.get("auto_reply"))
+        return _admit_union(mid, **kw)
+
+    pub.admit_mail.side_effect = _admit
+    mock_resolve.side_effect = lambda conn, ctx, **kw: _decision(1)
+    MockClient.return_value = client
+    MockPub.return_value = pub
+
+    publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    assert seen == [True]
 
 
 @patch(f"{P}.save_cursor")

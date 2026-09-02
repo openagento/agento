@@ -162,12 +162,13 @@ class OutlookPublisher:
         dmarc: str | None = None, allowed_senders: list[str] | None = None,
         subject: str | None = None,
         to=None, cc=None, body_preview: str | None = None,
-        agent_authored: bool = False, mailbox: str | None = None, aliases=None, cfg=None,
+        agent_authored: bool = False, auto_reply: bool = False,
+        mailbox: str | None = None, aliases=None, cfg=None,
         logger: logging.Logger | None = None,
     ) -> OutlookAdmission | None:
-        """Run the inbound security gate (allowed_senders -> DMARC -> activation) and return an
-        ``OutlookAdmission`` carrying the normalized sender, or ``None`` on any reject. NO job is
-        created here — publishing is a separate step (``publish_admitted_mail``)."""
+        """Run the inbound security gate (allowed_senders -> auto-reply -> DMARC -> activation) and
+        return an ``OutlookAdmission`` carrying the normalized sender, or ``None`` on any reject. NO
+        job is created here — publishing is a separate step (``publish_admitted_mail``)."""
         # 1. Normalize the claimed From address.
         sender = (sender_email or "").strip().lower()
 
@@ -179,6 +180,22 @@ class OutlookPublisher:
                 sender_domain = sender.split("@")[-1] if "@" in sender else "?"
                 logger.info(
                     "Outlook sender not in allowed_senders; leaving unread",
+                    extra={"message_id": message_id[:40], "sender_domain": sender_domain},
+                )
+            return None
+
+        # 2b. AUTO-REPLY GATE. A machine-generated reply (RFC 3834 Auto-Submitted) is never a task and
+        #     never a spoof. Terminal + deterministic ⇒ advance the cursor, no job, no breach alert.
+        #     Ordered BEFORE the DMARC gate so a legitimate out-of-office autoresponder (which Exchange
+        #     Online Protection often stamps dmarc=fail on an internal-but-not-aligned path) never
+        #     reaches the spoof classification and floods ops with false-positive breach alerts. A
+        #     spoofer who forges Auto-Submitted only suppresses their OWN breach alert; the message is
+        #     still never admitted and creates no job, so admission security is unchanged.
+        if auto_reply:
+            if logger:
+                sender_domain = sender.split("@")[-1] if "@" in sender else "?"
+                logger.info(
+                    "Outlook auto-reply dropped (not a task, not a spoof)",
                     extra={"message_id": message_id[:40], "sender_domain": sender_domain},
                 )
             return None
@@ -272,7 +289,8 @@ class OutlookPublisher:
         dmarc: str | None = None, allowed_senders: list[str] | None = None,
         subject: str | None = None,
         to=None, cc=None, body_preview: str | None = None,
-        agent_authored: bool = False, mailbox: str | None = None, aliases=None, cfg=None,
+        agent_authored: bool = False, auto_reply: bool = False,
+        mailbox: str | None = None, aliases=None, cfg=None,
         logger: logging.Logger | None = None,
     ) -> bool:
         """Thin admit->publish wrapper (direct/single-view polling): admit the message through the
@@ -280,7 +298,8 @@ class OutlookPublisher:
         admission = self.admit_mail(
             message_id, sender_email=sender_email, dmarc=dmarc, allowed_senders=allowed_senders,
             subject=subject, to=to, cc=cc, body_preview=body_preview,
-            agent_authored=agent_authored, mailbox=mailbox, aliases=aliases, cfg=cfg, logger=logger,
+            agent_authored=agent_authored, auto_reply=auto_reply,
+            mailbox=mailbox, aliases=aliases, cfg=cfg, logger=logger,
         )
         if admission is None:
             return False
