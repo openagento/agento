@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 
-from agento.framework.log import JsonFormatter, get_logger
+from agento.framework.log import JsonFormatter, _Formatter, get_logger
 
 
 def _make_record(msg="test message", level=logging.INFO, **extras):
@@ -78,6 +78,61 @@ def test_json_formatter_missing_extras_omitted():
     assert "reference_id" not in data
     assert "type" not in data
     assert "duration_ms" not in data
+
+
+def test_json_formatter_emits_arbitrary_extras():
+    # Extras outside the historical priority tuple must survive, not be silently dropped.
+    fmt = JsonFormatter()
+    record = _make_record(
+        "sender not in allowed_senders",
+        message_id="AAMkAG...trunc",
+        sender_domain="example.com",
+    )
+    data = json.loads(fmt.format(record))
+    assert data["message_id"] == "AAMkAG...trunc"
+    assert data["sender_domain"] == "example.com"
+
+
+def test_json_formatter_priority_fields_ordered_first():
+    fmt = JsonFormatter()
+    record = _make_record("policy", allowed_senders_count=3, job_id=7)
+    data = json.loads(fmt.format(record))
+    keys = list(data.keys())
+    # job_id (a priority field) precedes the ad-hoc extra regardless of set order.
+    assert keys.index("job_id") < keys.index("allowed_senders_count")
+
+
+def test_text_formatter_emits_arbitrary_extras():
+    fmt = _Formatter()
+    record = _make_record(
+        "Effective outlook policy",
+        agent_view="av1",
+        mailbox="ops",
+        mode="poll",
+        allowed_senders_count=4,
+    )
+    out = fmt.format(record)
+    assert "agent_view=av1" in out
+    assert "mailbox=ops" in out
+    assert "mode=poll" in out
+    assert "allowed_senders_count=4" in out
+
+
+def test_text_formatter_no_extras_has_no_separator():
+    fmt = _Formatter()
+    record = _make_record("plain message")
+    out = fmt.format(record)
+    assert " | " not in out
+
+
+def test_extras_ignore_reserved_record_attributes():
+    # Standard LogRecord attributes must never leak into the extras section.
+    fmt = _Formatter()
+    record = _make_record("hello")
+    out = fmt.format(record)
+    assert "process=" not in out
+    assert "levelname=" not in out
+    assert "funcName=" not in out
 
 
 def test_get_logger_no_stderr(tmp_path):

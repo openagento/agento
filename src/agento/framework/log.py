@@ -7,13 +7,38 @@ from pathlib import Path
 
 LOG_DIR = "/app/logs"
 
+# Fields printed first, in this order, when present — keeps the historical log layout stable.
+# Any further caller-supplied extras follow, in the order they were passed. This is only an
+# ordering hint, not an allow-list: every non-reserved record attribute is emitted (see
+# _record_extras), so a new module's extra= key is never silently dropped.
 _JSON_EXTRA_FIELDS = ("job_id", "reference_id", "type", "attempt", "status", "duration_ms", "result_summary")
+
+# Attributes present on a bare LogRecord (plus the ones the stdlib sets during formatting).
+# Anything on a record outside this set was supplied by the caller via extra=.
+_RESERVED_ATTRS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
+    "message",
+    "asctime",
+    "taskName",
+}
+
+
+def _record_extras(record: logging.LogRecord) -> dict:
+    """Return caller-supplied extras on the record, priority fields first."""
+    extras = {
+        k: v for k, v in record.__dict__.items() if k not in _RESERVED_ATTRS and not k.startswith("_") and v is not None
+    }
+    ordered: dict = {}
+    for key in _JSON_EXTRA_FIELDS:
+        if key in extras:
+            ordered[key] = extras.pop(key)
+    ordered.update(extras)
+    return ordered
 
 
 class _Formatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         msg = f"[{self.formatTime(record, '%Y-%m-%d %H:%M:%S')}] [{record.levelname}] {record.getMessage()}"
-        extras = {k: getattr(record, k) for k in _JSON_EXTRA_FIELDS if getattr(record, k, None) is not None}
+        extras = _record_extras(record)
         if extras:
             pairs = " ".join(f"{k}={v}" for k, v in extras.items())
             msg = f"{msg} | {pairs}"
@@ -32,10 +57,7 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
         }
-        for key in _JSON_EXTRA_FIELDS:
-            val = getattr(record, key, None)
-            if val is not None:
-                entry[key] = val
+        entry.update(_record_extras(record))
         if record.exc_info and record.exc_info[1]:
             entry["error"] = str(record.exc_info[1])
             entry["error_class"] = record.exc_info[1].__class__.__name__
