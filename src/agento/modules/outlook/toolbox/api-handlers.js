@@ -137,7 +137,15 @@ function deltaLinkForMailbox(u, mailbox) {
   }
   if (p.protocol !== 'https:' || p.hostname.toLowerCase() !== 'graph.microsoft.com' || p.username || p.password) return false;
   if (!p.searchParams.get('$deltatoken')) return false;
-  const m = p.pathname.match(/^\/v1\.0\/users\/([^/]+)\/mailfolders\/[^/]+\/messages\/(?:microsoft\.graph\.)?delta$/i);
+  // The folder is left unconstrained on IDENTITY (the mailbox-equality check on m[1] is the real guard),
+  // but its SHAPE must match one of the two forms Graph actually uses. baseDeltaUrl() emits a path
+  // segment (…/mailFolders/Inbox/messages/delta), while Graph's @odata.deltaLink comes back in the
+  // quoted-key form (…/mailFolders('Inbox')/messages/delta), optionally %-encoded (…/mailFolders(%27Inbox%27)/…).
+  // Accept all three; excluding `/` and the quote char inside the quoted key keeps path traversal out and
+  // guarantees the pathname still has exactly the users/…/mailFolders/…/messages/delta structure.
+  const m = p.pathname.match(
+    /^\/v1\.0\/users\/([^/]+)\/mailfolders(?:\/[^/]+|\('[^'/]*'\)|\(%27[^%/]*%27\))\/messages\/(?:microsoft\.graph\.)?delta$/i
+  );
   if (!m) return false;
   let seg;
   try {
