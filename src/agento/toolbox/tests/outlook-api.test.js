@@ -166,6 +166,52 @@ describe('POST /api/outlook/delta handler', () => {
     expect(calls[0]).toBe(AGENT_DELTA('PREV')); // applied verbatim, per Graph's contract
   });
 
+  // REGRESSION (AG-40): Graph's @odata.deltaLink comes back in the quoted-key folder form
+  // (…/mailFolders('Inbox')/messages/delta), NOT the path-segment form baseDeltaUrl() emits. The old
+  // validator regex only accepted the path segment, so every stored cursor was rejected → resynced=true
+  // full re-enum on every poll, forever. These assert the quoted-key form (raw and %-encoded) is accepted
+  // and replayed verbatim.
+  it('AG-40: applies a stored deltaLink in Graph\'s quoted-key folder form as-is (no forced re-enum)', async () => {
+    const quoted = "https://graph.microsoft.com/v1.0/users/agent@example.com/mailFolders('Inbox')/messages/delta?$deltatoken=Q";
+    const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D2') })]);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const res = mockRes();
+    await handler({ body: { cursors: { 'agent@example.com': quoted } } }, res);
+    expect(calls[0]).toBe(quoted); // applied verbatim, not discarded
+    expect(res.body.resynced).toBe(false); // the bug's tell: this used to be true on every poll
+  });
+
+  it('AG-40: applies a stored deltaLink in the %-encoded quoted-key folder form as-is', async () => {
+    const enc = 'https://graph.microsoft.com/v1.0/users/agent@example.com/mailFolders(%27Inbox%27)/messages/delta?$deltatoken=E';
+    const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D2') })]);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const res = mockRes();
+    await handler({ body: { cursors: { 'agent@example.com': enc } } }, res);
+    expect(calls[0]).toBe(enc);
+    expect(res.body.resynced).toBe(false);
+  });
+
+  it('AG-40: a quoted-key cursor for a FOREIGN mailbox is still rejected → full base enum', async () => {
+    const foreign = "https://graph.microsoft.com/v1.0/users/victim@example.com/mailFolders('Inbox')/messages/delta?$deltatoken=V";
+    const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') })]);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    const res = mockRes();
+    await handler({ body: { cursors: { 'agent@example.com': foreign } } }, res);
+    expect(calls[0]).not.toContain('victim'); // mailbox-equality guard survives the widened folder shape
+    expect(calls[0]).toContain('/users/agent%40example.com/mailFolders/Inbox/messages/delta');
+    expect(res.body.resynced).toBe(true);
+  });
+
+  it('AG-40: a quoted key that smuggles a path separator is rejected → full base enum (no traversal)', async () => {
+    // The quoted-key alternatives exclude `/` and the quote char, so an injected extra path segment
+    // cannot slip a foreign structure past the shape check.
+    const traversal = "https://graph.microsoft.com/v1.0/users/agent@example.com/mailFolders('a')/x/messages/delta?$deltatoken=T";
+    const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') })]);
+    const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
+    await handler({ body: { cursors: { 'agent@example.com': traversal } } }, mockRes());
+    expect(calls[0]).toContain('/users/agent%40example.com/mailFolders/Inbox/messages/delta'); // base URL, cursor discarded
+  });
+
   it('SSRF/cross-mailbox: discards a cursor whose user segment is NOT the resolved mailbox → full base enum', async () => {
     const { calls } = queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('D') })]);
     const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory);
