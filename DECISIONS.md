@@ -35,6 +35,74 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-06 — VersionedFolders: Git as the storage engine, invoked only from the toolbox
+
+- **Decision:** back versioned folders with the real `git` binary, added to the toolbox image, over a
+  dedicated `storage/versioned-folders` volume.
+- **Alternative rejected — `isomorphic-git`.** It has no linked-worktree API, and a draft in PRD §6 *is*
+  a linked worktree: several editable checkouts of one repository, isolated from each other. Emulating
+  that with copies would lose the atomic ref operations the whole design rests on.
+- **Why it is safe:** the agent never receives a generic `git(command)` for this store (PRD §32), and the
+  store is not mounted in its container at all. Every invocation is built by the module with fixed
+  `-c core.hooksPath=/dev/null -c core.symlinks=false` flags and a scrubbed environment (no `HOME`, no
+  global/system config, no credential helper, `GIT_ALLOW_PROTOCOL=none`), so repository content can
+  never execute and no remote can ever be reached.
+
+## 2026-09-06 — VersionedFolders: the store is toolbox-only
+
+- **Decision:** mount `storage/versioned-folders` into the toolbox and nowhere else — not cron, not the
+  sandbox.
+- **Why:** the toolbox is the only container with secrets and the only one that validates requests. A
+  mount in the sandbox would let the agent read and write versioned content directly, bypassing the
+  `is_enabled` gate, the per-`agent_view` folder allowlist, the size limits, the locking and the audit
+  trail in one step.
+
+## 2026-09-06 — VersionedFolders: folder creation is a host command, not an HTTP route
+
+- **Decision:** `versioned-folder:init` runs on the host and pipes a payload into
+  `docker compose exec -T toolbox node …/cli.js`.
+- **Alternative rejected — an Express route on the toolbox.** The toolbox authenticates no caller, so
+  every route it serves is reachable by the agent. Folder creation is administrative (PRD §10), and a
+  route would also have meant handing the toolbox an arbitrary host path to read.
+- **Consequence:** the command must not be proxied into cron (which sees neither the host source nor the
+  storage volume), but it is still a *module* command, so it lives in `_LOCAL_MODULE_COMMANDS` — that
+  stops the proxy while leaving the module bootstrap that registers it with argparse intact.
+
+## 2026-09-06 — VersionedFolders: no runtime stale-lock breaking
+
+- **Decision:** a held lock is simply held. Abandoned locks are cleared by a sweep at toolbox startup,
+  never by a waiter.
+- **Why:** `mkdir` gives atomic *acquire*, not atomic *break*. Breaking is a read-then-delete pair, and a
+  third process can acquire in the window between them — so a waiter that deletes an aged lock can
+  destroy a lock someone else is actively holding. An ownership token makes *release* safe; it cannot
+  make breaking safe.
+- **Cost, accepted:** an abandoned lock returns `DRAFT_LOCKED` until the next toolbox start. A stuck
+  draft is recoverable by an administrator; two interleaved mutations on one worktree are silent
+  corruption. If this bites in practice the fix is a kernel-backed lock, not a shorter stale timeout.
+
+## 2026-09-06 — VersionedFolders: one toolbox instance per `storage_root`
+
+- **Decision:** a given store may be used by exactly one toolbox instance. Recorded in `system.json`
+  field help, the developer doc, and here.
+- **Why:** acquire is safe across processes, but the startup sweep is a check-then-delete pair with no
+  concurrent acquirer *by assumption*. A second toolbox on the same volume can take a lock inside that
+  window and have it deleted underneath a live mutation.
+- **Alternative rejected — a longer stale timeout.** It narrows the window and looks like a fix; it does
+  not close it. Supporting multiple instances needs a real distributed lock, which PRD §28 explicitly
+  scopes out ("one storage/VPS").
+
+## 2026-09-06 — VersionedFolders: a version carries no description
+
+- **Decision:** `versioned_folder_list_versions` returns `{version_id, revision}` only. The label passed
+  to `finalize` is persisted in `versioned_folder_audit.description`.
+- **Why:** a version is a ref pointing at a commit and cannot hold a message of its own. Returning the
+  draft's last change message under the name `description` would hand the caller a field that looks like
+  the label they supplied and is not — the worse of the two failure modes. Inventing a field the PRD
+  does not define is the other.
+- **Forward path:** an annotated tag object per version, whose subject is a real version label.
+
+---
+
 ## 2026-08-18 — Job dedupe by SELECT-then-INSERT, not `INSERT IGNORE` (AG-22)
 
 - **`INSERT IGNORE` burns an auto_increment id on every rejected duplicate.** MySQL/InnoDB allocates the
