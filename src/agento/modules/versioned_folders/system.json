@@ -1,0 +1,10 @@
+{
+  "enabled": {"type": "boolean", "label": "Enable VersionedFolders"},
+  "storage_root": {"type": "string", "label": "Storage root (absolute path inside the toolbox; exactly ONE toolbox instance may use a given store — a second instance sharing it is unsupported and needs a real distributed lock)"},
+  "allowed_folders": {"type": "string", "label": "Folders this scope may use (comma-separated folder codes; empty denies everything)", "scope": "agent_view"},
+  "limits/max_file_size": {"type": "integer", "label": "Max bytes per file"},
+  "limits/max_total_size": {"type": "integer", "label": "Max total bytes per folder"},
+  "limits/max_files": {"type": "integer", "label": "Max files per folder"},
+  "limits/max_diff_bytes": {"type": "integer", "label": "Max diff bytes returned to the agent"},
+  "security/allow_symlinks": {"type": "boolean", "label": "Allow symbolic links (only false is supported)"}
+}

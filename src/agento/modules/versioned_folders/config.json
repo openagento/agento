@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "storage_root": "/srv/versioned-folders",
+  "allowed_folders": "",
+  "limits/max_file_size": 5242880,
+  "limits/max_total_size": 104857600,
+  "limits/max_files": 2000,
+  "limits/max_diff_bytes": 1048576,
+  "security/allow_symlinks": false,
+  "tools/versioned_folders/is_enabled": "0",
+  "tools/versioned_folder_get_current/is_enabled": "0",
+  "tools/versioned_folder_create_draft/is_enabled": "0",
+  "tools/versioned_folder_list_files/is_enabled": "0",
+  "tools/versioned_folder_read_file/is_enabled": "0",
+  "tools/versioned_folder_apply_changes/is_enabled": "0",
+  "tools/versioned_folder_diff/is_enabled": "0",
+  "tools/versioned_folder_finalize/is_enabled": "0",
+  "tools/versioned_folder_publish/is_enabled": "0",
+  "tools/versioned_folder_list_versions/is_enabled": "0",
+  "tools/versioned_folder_discard_draft/is_enabled": "0"
+}
