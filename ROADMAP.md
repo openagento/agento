@@ -52,6 +52,19 @@ Inbound Outlook, Teams, and API traffic maps deterministically to the right agen
 
 CLI-managed control over what each agent_view can do: `tool:enable`/`tool:disable`, a skills module (`skill:sync/list/enable/disable`) backed by a registry, and pre-built materialized workspaces per agent_view (`workspace:build`) so the consumer copies a ready build instead of regenerating identical files on every run. Three independent deliverables, each disableable without breaking the system.
 
+### ✅ Versioned folders
+
+Generic versioned file/directory trees: mutable **drafts**, immutable **versions**, and an atomic
+**current** pointer, backed by local Git that never surfaces in the public contract. Shipped as the
+core module `versioned_folders` (ten opt-in MCP tools plus the admin-only `versioned-folder:init`),
+with a toolbox-only storage volume, per-`agent_view` folder allowlist, filesystem locking, crash
+recovery and a `versioned_folder_audit` trail. See
+[docs/modules/versioned-folders.md](docs/modules/versioned-folders.md). Deferred: garbage collection
+and retention (immutable versions and `audit-fallback.log` both grow without bound), HTTP/Artifact
+serving of a version, human-in-the-loop publication approval, an annotated tag object per version so
+a version carries its own label, and multiple toolbox instances per `storage_root` — which needs a
+real distributed lock, see DECISIONS.md.
+
 ### 🟡 Developer experience & open-source polish
 
 Getting a contributor from "I want to add a Slack integration" to a working module in under 30 minutes. The unified Python CLI, `doctor`, `init`, `make:module`, and `module:validate` are shipped; what remains is per-capability extension docs, architecture tests that enforce module boundaries in CI, and a log-safety audit before widening logging namespaces.

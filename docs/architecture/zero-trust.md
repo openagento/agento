@@ -95,3 +95,16 @@ CONFIG__* ENV overrides take precedence over core_config_data (plaintext)
 - SSH key — written into its per-run HOME, for cloning git repositories
 - MCP tools — through toolbox, which validates and executes requests
 - Filesystem — workspace/, modules/ (read-only)
+
+## What the Agent CANNOT Access, by Mount
+
+The `versioned_folders` store (`storage/versioned-folders/` → `/srv/versioned-folders`) is
+mounted into the **toolbox only**, so the agent container cannot reach it at all. The agent does
+have `git` — it commits its own workspace with it, see
+[identity.md](../config/identity.md) — and that is beside the point: the store is not
+there to operate on, and no generic `git` operation on it is ever exposed to the agent
+(PRD §32). Versioned file trees are therefore reachable only through the opt-in
+`versioned_folder_*` tools, each additionally bounded by a per-`agent_view` folder
+allowlist. Folder *creation* is not a tool at all — it is a host CLI command over
+`docker compose exec`, because the toolbox authenticates no caller and any HTTP route on
+that listener would be agent-callable.

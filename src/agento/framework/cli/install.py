@@ -84,6 +84,7 @@ def _scaffold(project_dir: Path, project_name: str, config: dict[str, str]) -> N
         "logs",
         "tokens",
         "storage",
+        "storage/versioned-folders",
         "docker",
         "docker/sql",
     ]
