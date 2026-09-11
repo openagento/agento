@@ -53,6 +53,12 @@ Discovered by convention from `<module>/toolbox/*.js` files. Each file exports a
 |------|-------------|
 | `outlook_get_message`, `outlook_get_attachment`, `outlook_reply`, `outlook_send_mail`, `outlook_mark_processed` | Microsoft 365 / Graph email channel (opt-in; sender/recipient allow-listed; reads bound to the triggering message). See [outlook.md](../modules/outlook.md). |
 
+**Versioned folders module** (`src/agento/modules/versioned_folders/toolbox/`):
+
+| Tool | Description |
+|------|-------------|
+| `versioned_folder_get_current`, `versioned_folder_create_draft`, `versioned_folder_list_files`, `versioned_folder_read_file`, `versioned_folder_apply_changes`, `versioned_folder_diff`, `versioned_folder_finalize`, `versioned_folder_publish`, `versioned_folder_list_versions`, `versioned_folder_discard_draft` | Versioned file trees (opt-in; per-scope folder allowlist; folder creation is admin-only via CLI). See [versioned-folders.md](../modules/versioned-folders.md). |
+
 **User modules** (`app/code/<name>/toolbox/`):
 
 Custom JS tools for your deployment — same convention.

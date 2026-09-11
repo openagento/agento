@@ -41,6 +41,15 @@ _MAYBE_INTERACTIVE_COMMANDS = frozenset({
 })
 
 
+# Host-local commands that are nevertheless provided by a MODULE, so they still
+# need bootstrap() to register them with argparse. Without this split, a module
+# command added to _LOCAL_COMMANDS would skip module registration entirely and
+# argparse would report it as unknown.
+_LOCAL_MODULE_COMMANDS = frozenset({
+    "versioned-folder:init", "vf:init",
+})
+
+
 def _get_command(argv: list[str]) -> str | None:
     """Extract command name from argv (first non-flag arg)."""
     parts = [a for a in argv if not a.startswith("-")]
@@ -56,7 +65,7 @@ def _should_proxy(argv: list[str]) -> bool:
     if "--local" in argv:
         return False  # Escape hatch
     cmd = _get_command(argv)
-    return cmd is not None and cmd not in _LOCAL_COMMANDS
+    return cmd is not None and cmd not in (_LOCAL_COMMANDS | _LOCAL_MODULE_COMMANDS)
 
 
 def _proxy_to_docker(argv: list[str]) -> None:

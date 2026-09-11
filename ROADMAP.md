@@ -975,6 +975,27 @@ Tokens are currently selected per-provider via `TokenResolver`. For multi-tenant
 
 ---
 
+## Phase 16: Versioned Folders — DONE
+
+Generic versioned file/directory trees: mutable **drafts**, immutable **versions**, and an atomic
+**current** pointer, backed by local Git that never surfaces in the public contract. Shipped as the
+core module `versioned_folders` (ten opt-in MCP tools plus the admin-only `versioned-folder:init`),
+with a toolbox-only storage volume, per-`agent_view` folder allowlist, filesystem locking, crash
+recovery and a `versioned_folder_audit` trail. See
+[docs/modules/versioned-folders.md](docs/modules/versioned-folders.md).
+
+Deferred from this phase:
+- **Garbage collection and retention.** Draft checkouts are reclaimed (finalize and discard both
+  remove their own worktree), but two things do grow without bound and have no retention policy:
+  immutable versions, which accumulate forever by design, and `audit-fallback.log`, which keeps
+  growing for as long as the database is unavailable.
+- **HTTP / Artifact serving of a version.** A version's content is reachable only through the tools.
+- **Human-in-the-loop publication approval** beyond the agent-facing instruction not to publish unasked.
+- **An annotated tag object per version**, so a version can carry its own human label instead of the
+  label living only in `versioned_folder_audit.description`.
+- **Multiple toolbox instances per `storage_root`**, which needs a real distributed lock — see
+  DECISIONS.md.
+
 ## Phase 15: Distribution & Installation Model
 
 ### Business Need
