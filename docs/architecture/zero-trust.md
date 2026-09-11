@@ -119,3 +119,16 @@ socket. (The consumer's heap **is** barred since 2026-08-25 — see `framework/p
 This is a large reduction in exposure, **not** an
 authorization boundary between agent_views. The complete channel list with lifetimes, the waiver, and
 the tracked follow-up (per-view OS uids) are in [DECISIONS.md](../../DECISIONS.md) (D-SSH-1).
+
+## What the Agent CANNOT Access, by Mount
+
+The `versioned_folders` store (`storage/versioned-folders/` → `/srv/versioned-folders`) is
+mounted into the **toolbox only**, so the agent container cannot reach it at all. The agent does
+have `git` — it commits its own workspace with it, see
+[identity.md](../config/identity.md) — and that is beside the point: the store is not
+there to operate on, and no generic `git` operation on it is ever exposed to the agent
+(PRD §32). Versioned file trees are therefore reachable only through the opt-in
+`versioned_folder_*` tools, each additionally bounded by a per-`agent_view` folder
+allowlist. Folder *creation* is not a tool at all — it is a host CLI command over
+`docker compose exec`, because the toolbox authenticates no caller and any HTTP route on
+that listener would be agent-callable.

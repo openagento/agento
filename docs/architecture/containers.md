@@ -20,6 +20,12 @@ Four containers on the `agento-net` bridge network.
 | `modules/` | cron, toolbox, sandbox | read-only | Module manifests + config.json |
 | `logs/` | cron, toolbox | read-write | Structured JSON logs |
 
+### Toolbox-Only
+
+| Mount | Access | Purpose |
+|-------|--------|---------|
+| `storage/versioned-folders/` → `/srv/versioned-folders` | read-write | `versioned_folders` store (bare repos + draft checkouts). Mounted into **toolbox only** — the sandbox and cron never see it, so the agent reaches versioned content exclusively through gated MCP tools. |
+
 ### Agent-Only (cron + sandbox)
 
 | Mount | Purpose |

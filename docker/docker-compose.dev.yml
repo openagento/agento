@@ -58,6 +58,7 @@ services:
       - ../app/code:/app/modules/user:ro
       - ../logs:/app/logs
       - ../workspace/artifacts:/workspace/artifacts
+      - ../storage/versioned-folders:/srv/versioned-folders
     security_opt:
       - no-new-privileges:true
     networks:
