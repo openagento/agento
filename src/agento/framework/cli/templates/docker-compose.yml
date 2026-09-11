@@ -56,6 +56,7 @@ services:
       - ../workspace/artifacts:/workspace/artifacts
       - ../.venv/lib/python{{ python_version }}/site-packages/agento/toolbox:/opt/agento-toolbox-src:ro
       - ../.venv/lib/python{{ python_version }}/site-packages/agento/modules:/app/modules/core:ro
+      - ../storage/versioned-folders:/srv/versioned-folders
     security_opt:
       - no-new-privileges:true
     networks:
