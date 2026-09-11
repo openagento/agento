@@ -1,0 +1,5 @@
+{
+  "commands": [
+    {"name": "versioned-folder:init", "class": "src.commands.init.VersionedFolderInitCommand"}
+  ]
+}
