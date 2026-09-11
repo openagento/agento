@@ -71,7 +71,7 @@ Agento runs three Docker containers on a shared network:
 
 Agento uses a Magento-inspired modular architecture. Each module is a self-contained package.
 
-**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view).
+**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view, versioned_folders).
 
 **User modules** live in `app/code/` and are deployment-specific (gitignored by default).
 
