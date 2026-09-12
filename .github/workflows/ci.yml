@@ -55,4 +55,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      # The versioned_artifacts desk tests run against the REAL mount point
+      # (`ARTIFACTS_ROOT = /workspace/artifacts`) rather than an injected test root, so
+      # that containment is proven on the path production uses. A clean runner has no
+      # /workspace; without this step they fail with EACCES instead of running, and the
+      # non-root run here is the one the root container cannot give us.
+      - run: sudo mkdir -p /workspace/artifacts && sudo chown -R "$(id -u):$(id -g)" /workspace
       - run: cd src/agento/toolbox && npm ci && npm test

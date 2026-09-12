@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import httpx
 import pytest
 import respx
@@ -95,3 +97,9 @@ def test_jira_request_toolbox_error():
         client.jira_request("GET", "/rest/api/3/myself")
 
     assert exc_info.value.status_code == 500
+
+
+def test_jira_request_has_no_host_override():
+    """The proxy decides the host from config; the client must not offer a knob for it."""
+    params = inspect.signature(ToolboxClient.jira_request).parameters
+    assert "jira_host" not in params

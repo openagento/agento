@@ -177,6 +177,10 @@ class TestUpgradeCommand:
         # Provisioning helpers were invoked
         mock_materialize.assert_called_once()
         mock_regen.assert_called_once()
+        # An existing project that predates the store split gets both roots, or
+        # the toolbox bind lands on a directory that is missing `store`.
+        assert (tmp_path / "storage" / "versioned-artifacts" / "store").is_dir()
+        assert (tmp_path / "storage" / "versioned-artifacts" / "published").is_dir()
 
     @patch("agento.framework.cli.upgrade.regenerate_compose")
     @patch("agento.framework.cli.upgrade.materialize_docker_context")

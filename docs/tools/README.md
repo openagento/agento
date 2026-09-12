@@ -53,11 +53,11 @@ Discovered by convention from `<module>/toolbox/*.js` files. Each file exports a
 |------|-------------|
 | `outlook_get_message`, `outlook_get_attachment`, `outlook_reply`, `outlook_send_mail`, `outlook_mark_processed`, `outlook_list_thread` (opt-in) | Microsoft 365 / Graph email channel (opt-in; sender/recipient allow-listed; reads bound to the triggering message, or — when `outlook_list_thread` is enabled — to the trigger's own conversation). See [outlook.md](../modules/outlook.md). |
 
-**Versioned folders module** (`src/agento/modules/versioned_folders/toolbox/`):
+**Versioned artifacts module** (`src/agento/modules/versioned_artifacts/toolbox/`):
 
 | Tool | Description |
 |------|-------------|
-| `versioned_folder_get_current`, `versioned_folder_create_draft`, `versioned_folder_list_files`, `versioned_folder_read_file`, `versioned_folder_apply_changes`, `versioned_folder_diff`, `versioned_folder_finalize`, `versioned_folder_publish`, `versioned_folder_list_versions`, `versioned_folder_discard_draft` | Versioned file trees (opt-in; per-scope folder allowlist; folder creation is admin-only via CLI). See [versioned-folders.md](../modules/versioned-folders.md). |
+| `versioned_artifact_list`, `versioned_artifact_get_current`, `versioned_artifact_list_versions`, `versioned_artifact_create_draft`, `versioned_artifact_materialize`, `versioned_artifact_save_version`, `versioned_artifact_diff`, `versioned_artifact_publish`, `versioned_artifact_discard_draft` | Versioned file trees (opt-in; per-scope artifact allowlist; artifact creation is admin-only via CLI). See [versioned-artifacts.md](../modules/versioned-artifacts.md). |
 
 **User modules** (`app/code/<name>/toolbox/`):
 
