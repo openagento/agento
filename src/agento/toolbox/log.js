@@ -4,9 +4,29 @@ const MCP_LOG_FILE = process.env.MCP_LOG_FILE || '/app/logs/toolbox_mcp.log';
 const REST_LOG_FILE = process.env.REST_LOG_FILE || '/app/logs/toolbox_rest.log';
 const PUBLISHER_LOG_FILE = process.env.PUBLISHER_LOG_FILE || '/app/logs/publisher.log';
 
+// ONE bounded line, applied by every sink to the caller-supplied `details`.
+// A record is newline-delimited, so an unsanitized detail lets any caller write a
+// SECOND record an operator cannot tell from a genuine one. Sanitizing here rather
+// than at the ~200 call sites is what makes that impossible by construction.
+//   - whitespace collapse: nothing becomes several records.
+//   - control-character strip: `\s` does not match NUL, and a NUL or an ESC
+//     sequence in a log file is a record nobody can read or grep.
+//   - final slice: bounds a flooded detail.
+// This is the SHAPE half only. It does not decide WHICH values may appear — a
+// bounded secret is still a leaked secret; that call belongs at each sink.
+const MAX_DETAILS = 2000;
+
+export function boundedDetails(text) {
+  return String(text ?? '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_DETAILS);
+}
+
 function _write(file, tool, status, details = '') {
   const ts = new Date().toISOString();
-  const line = `[${ts}] [${tool}] ${status} ${details}`;
+  const line = `[${ts}] [${tool}] ${status} ${boundedDetails(details)}`;
   console.log(line);
   try {
     appendFileSync(file, line + '\n');
@@ -48,7 +68,7 @@ export function createScopedLogger(agentViewMeta) {
     const prefix = agentViewMeta
       ? `[${agentViewMeta.label} (id: ${agentViewMeta.id})] `
       : '';
-    const line = `[${ts}] ${prefix}[${tool}] ${status} ${details}`;
+    const line = `[${ts}] ${prefix}[${tool}] ${status} ${boundedDetails(details)}`;
     console.log(line);
     try {
       appendFileSync(MCP_LOG_FILE, line + '\n');

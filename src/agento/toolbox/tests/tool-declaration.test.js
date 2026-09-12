@@ -25,7 +25,7 @@ import { register as registerSchedule } from '../../modules/core/toolbox/schedul
 import { register as registerGitHub } from '../../modules/github/toolbox/github.js';
 import { register as registerJira } from '../../modules/jira/toolbox/jira.js';
 import { register as registerOutlook } from '../../modules/outlook/toolbox/outlook.js';
-import { register as registerVersionedFolders } from '../../modules/versioned_folders/toolbox/versioned-folders.js';
+import { register as registerVersionedArtifacts } from '../../modules/versioned_artifacts/toolbox/versioned-artifacts.js';
 
 // Keyed by the exact toolbox FILE each registrar comes from, so the coverage guard below can
 // compare against what is on disk — a module-level comparison would let a new
@@ -36,7 +36,7 @@ const REGISTRARS = {
   github: { 'github.js': registerGitHub },
   jira: { 'jira.js': registerJira },
   outlook: { 'outlook.js': registerOutlook },
-  versioned_folders: { 'versioned-folders.js': registerVersionedFolders },
+  versioned_artifacts: { 'versioned-artifacts.js': registerVersionedArtifacts },
 };
 
 // Route-only files: they mount Express routes and register ZERO tools. Asserted below rather
@@ -65,14 +65,16 @@ const SUPPORT_FILES = new Set([
   'outlook/api-handlers.js',
   'outlook/credentials.js',
   'outlook/graph-auth.js',
-  'versioned_folders/audit.js',
-  'versioned_folders/cli.js',
-  'versioned_folders/errors.js',
-  'versioned_folders/git-backend.js',
-  'versioned_folders/git-exec.js',
-  'versioned_folders/locking.js',
-  'versioned_folders/paths.js',
-  'versioned_folders/service.js',
+  'versioned_artifacts/audit.js',
+  'versioned_artifacts/cli.js',
+  'versioned_artifacts/desk-io.js',
+  'versioned_artifacts/errors.js',
+  'versioned_artifacts/git-backend.js',
+  'versioned_artifacts/git-exec.js',
+  'versioned_artifacts/locking.js',
+  'versioned_artifacts/paths.js',
+  'versioned_artifacts/published-tree.js',
+  'versioned_artifacts/service.js',
 ]);
 
 // The AUTHORITATIVE "every tool is declared" check for shipped modules.
@@ -120,8 +122,9 @@ function stubContext(upstreamTools = []) {
       // this module's ten tools as undeclared — naming a manifest problem the
       // manifest does not have. storage_root is a path no toolbox can hold, and
       // no `app` is present, so the sweep never runs here.
-      versioned_folders: {
-        storage_root: '/nonexistent/vf-test-root', allowed_folders: 'site',
+      versioned_artifacts: {
+        storage_root: '/nonexistent/vf-test-root',
+        published_root: '/nonexistent/vf-test-published', allowed_artifacts: 'site',
         'limits/max_files': 2000, 'limits/max_file_size': 5242880,
         'limits/max_total_size': 104857600, 'limits/max_diff_bytes': 1048576,
         'security/allow_symlinks': false,
@@ -201,6 +204,11 @@ describe('every registered tool is declared in module.json', () => {
   it.each(Object.keys(REGISTRARS))('%s registers nothing it does not declare', async (name) => {
     const declared = declaredNames(path.join(MODULES, name));
     const registered = await registeredNames(name, []);
+    // A registrar whose setup throws registers NOTHING and passes the undeclared check
+    // vacuously — measured: a config fixture missing one new required field silently
+    // turned this exhaustive gate into an assertion about an empty set. The gate only
+    // proves something while every registrar actually runs.
+    expect(registered.length).toBeGreaterThan(0);
     const undeclared = [...new Set(registered)].filter(n => !declared.has(n));
     expect(undeclared).toEqual([]);
   });
