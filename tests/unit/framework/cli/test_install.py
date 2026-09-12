@@ -112,6 +112,10 @@ class TestScaffold:
         assert (tmp_path / "logs").is_dir()
         assert (tmp_path / "tokens").is_dir()
         assert (tmp_path / "storage").is_dir()
+        # Created from the host CLI so they inherit the invoking user (HOST_UID),
+        # which is `agent` inside the toolbox.
+        assert (tmp_path / "storage" / "versioned-artifacts" / "store").is_dir()
+        assert (tmp_path / "storage" / "versioned-artifacts" / "published").is_dir()
         assert (tmp_path / "docker").is_dir()
         assert (tmp_path / ".gitignore").is_file()
         assert (tmp_path / "secrets.env.example").is_file()
