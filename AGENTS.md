@@ -34,15 +34,29 @@ Ranked. When two goals conflict, the higher goal wins.
 - **Agent view config:** Scoped DB paths `agent_view/harness`, `agent_view/provider`, `agent_view/model`, `agent_view/scheduling/priority`, `agent_view/instructions/agents_md`, `agent_view/instructions/soul_md` — resolved with agent_view → workspace → global fallback. `harness`/`provider` are `select` fields whose options come from the enabled modules' `agent_harnesses` declarations (`options_source`), not from a hardcoded list. Pre-0.15 configs that set only `agent_view/provider` (which then held the harness id) still work — see [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
 - **Security:** target model — the toolbox holds tool credentials; the agent holds no tool credential, only its own harness credential in its per-run HOME. Today's gaps (a headless agent inherits the cron env) are listed in [docs/architecture/zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt). Tools and skills are opt-in: available only when `is_enabled` resolves to `1` for the scope (agent_view > workspace > default). See [docs/tools/adding-a-tool.md](docs/tools/adding-a-tool.md).
 - **DB tables:** `credential` (ex-`oauth_token`) is keyed by `scope` — one credential pool per `(harness, provider)` pair that needs one.
-- **Versioned folders:** the `versioned_folders` module stores file trees as drafts / immutable
+- **Versioned artifacts:** the `versioned_artifacts` module stores file trees as drafts / immutable
   versions / an atomic `current` pointer. Git is the storage engine and **must never leak into the
   public contract** — no `repository`, `branch`, `commit`, `merge`, `rebase`, `checkout`, `worktree`
   or `ref` in a tool name, parameter, response field or error message. The store is mounted into the
   **toolbox only** (the agent container has no path to it, and no generic `git` operation on the
-  store is exposed to the agent — it never receives `git(command)`), folder creation is the admin CLI
-  `versioned-folder:init` rather than a tool, and only `service.js` may reach the Git backend — an
-  import-layering test enforces that boundary. See
-  [docs/modules/versioned-folders.md](docs/modules/versioned-folders.md).
+  store is exposed to the agent — it never receives `git(command)`), artifact creation is the admin CLI
+  `artifact:init` rather than a tool, and only `service.js` may reach the Git backend — an
+  import-layering test enforces that boundary. The agent edits a **copy**: `create_draft` /
+  `materialize` write the tree onto its own workspace (the *desk*) and `save_version` copies it back,
+  so no tool takes a filesystem path and there is no file-level tool on the store. A fourth
+  compose service, **`artifacts`**, serves the published tree over plain `node:http` from
+  `server/` (never `toolbox/`, which `config-loader.js` imports wholesale into the secrets
+  container). It declares **no `networks:` key** — Compose leaves it alone on the project
+  `default` network while every other service names `agento-net` — carries no
+  `env_file:`/`environment:`, mounts
+  `storage/versioned-artifacts/published` and `app/etc` read-only, and publishes on
+  `127.0.0.1` only — one `networks:` line added for consistency would let every agent in every
+  agent_view read every artifact over HTTP with `allowed_artifacts` bypassed and no audit row.
+  Disabling the module must stop the serving: the server re-reads `app/etc/modules.json` per
+  request and answers **503** everywhere when `versioned_artifacts` is `false`, while an absent
+  file, absent key or unparseable file mean **serve** — that mirrors module enablement, not the
+  `is_enabled` tool gate, which is the one that fails closed. See
+  [docs/modules/versioned-artifacts.md](docs/modules/versioned-artifacts.md).
 - **Setup:** `setup:upgrade` on deploy — **validates enabled module manifests first** (aborts before any DB change if a manifest is invalid, e.g. a tool missing `toolset`), then applies schema migrations, data patches, installs crontab, runs module onboarding (strict: complete, disable+dependents, or quit). Use `--skip-onboarding` for CI/CD. `bin/test` runs the same `module:validate` check. Manual alternative: pre-set config values via `config:set`. See [docs/cli/onboarding.md](docs/cli/onboarding.md).
 - **Module setup files:** `sql/*.sql` (schema migrations), `data_patch.json` (data patches), `cron.json` (cron jobs), `di.json` onboarding (interactive external system setup)
 - **Migration tracking:** `schema_migration` table (with `module` column), `data_patch` table
