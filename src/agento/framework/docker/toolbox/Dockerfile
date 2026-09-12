@@ -27,8 +27,8 @@ RUN npx playwright install --with-deps chromium
 
 # poppler-utils for PDF-to-text conversion (pdftotext CLI).
 # gosu for entrypoint user-switching (mirrors sandbox/cron pattern).
-# git backs the versioned_folders storage engine (bare repos + linked worktrees
-# under /srv/versioned-folders). Toolbox only — the store is never mounted into the
+# git backs the versioned_artifacts storage engine (bare repos + linked worktrees
+# under /srv/versioned-artifacts). Toolbox only — the store is never mounted into the
 # agent container, and no generic git operation on it is exposed to the agent.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends poppler-utils gosu git && \

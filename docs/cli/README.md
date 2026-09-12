@@ -59,8 +59,10 @@
 | **Workspace** | |
 | `workspace:build --agent-view <code> \| --all` | Build materialized workspace ([details](workspace-build.md)) |
 | `workspace:build-status [--agent-view <code>]` | Show workspace build history ([details](workspace-build.md)) |
-| **Versioned folders** | |
-| `versioned-folder:init <folder_code> [--source <dir>]` | Create a versioned folder ([details](versioned-folder-init.md)) |
+| **Versioned artifacts** | |
+| `artifact:init <artifact_code> [--source <dir>]` | Create a versioned artifact ([details](artifact-init.md)) |
+| `artifact:list` | List the artifacts the store holds ([details](artifact-list.md)) |
+| `artifact:publish <artifact_code> <version_id> --expected <version_id>` | Point an artifact's current at a version ([details](artifact-publish.md)) |
 | **Admin** | |
 | `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |
