@@ -4,10 +4,52 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
-## 2026-09-06 — VersionedFolders: Git as the storage engine, invoked only from the toolbox
+## 2026-09-12 — VersionedArtifacts: the `artifacts` container ships unconditionally, and a disabled module answers 503
 
-- **Decision:** back versioned folders with the real `git` binary, added to the toolbox image, over a
-  dedicated `storage/versioned-folders` volume.
+- **Decision:** the serving container is written into every rendered `docker-compose.yml` with no
+  per-module condition, and `app/etc/modules.json` is bind-mounted read-only so the server itself
+  refuses to serve when `versioned_artifacts` is disabled.
+- **Why unconditional:** `regenerate_compose` has no per-module service mechanism — `render_compose`
+  (`framework/cli/_provisioning.py`) is placeholder substitution, and "modules declare compose services"
+  is a framework feature this ticket is not buying. The precedent is the existing unconditional
+  `storage/versioned-artifacts` bind mount on the toolbox.
+- **Why the gate exists anyway:** without it, `mo:di versioned_artifacts` removes the tools and leaves
+  every previously published version still answering on loopback, which breaks CLAUDE.md's "every module
+  must be safely disableable". An earlier wording of this deviation claimed a disabled deployment serves
+  "an empty tree" — that is only true before anything is published.
+- **The gate mirrors module enablement, not the `is_enabled` tool gate.** Absent file, absent key or
+  unparseable file all mean SERVE, because `app/etc/modules.json` lists only explicitly toggled modules,
+  so absence is "enabled". The `is_enabled` gate is the one that fails closed; do not conflate them.
+- **Severity, stated honestly:** the port is loopback-only, so the content was reachable only by someone
+  who already has a shell on the host and could read the published tree directly. The gate buys correct
+  disablement semantics and an operator expectation that holds, not a new privilege boundary.
+- **No `networks:`, no `env_file:`, no `environment:` — deliberate, and a comment above the service says
+  so in both compose files.** One `networks:` line added for consistency puts every artifact on
+  `agento-net`, where every agent in every agent_view can read every artifact over plain HTTP with
+  `allowed_artifacts` bypassed for reads, silently and with no audit row.
+
+## 2026-09-12 — VersionedArtifacts: the serving container is `node:http`, not Express
+
+- **Decision:** `server/artifacts-server.js` uses `node:http` plus a small extension→MIME map instead of
+  `express.static`, although `express` is already a toolbox dependency.
+- **Why:** `express` does not resolve under vitest — vite maps the bare specifier to a phantom path at
+  the vitest root and the package's own `require('./lib/express')` then fails (`Cannot find module
+  './lib/express'`). An Express version of this file could carry no test at all, and the plan's test
+  list — symlink refused, dotfile refused, 503 gate, `EINVAL` retry — *is* the security story.
+- **Alternative rejected — a test-only `resolve.alias` in a new `vitest.config.js`.** It works
+  (measured), but it changes module resolution for the whole suite to paper over one quirk, and it would
+  leave the tested path different from the production path.
+- **What Express would have bought is small:** the containment check is ours either way — `send` does
+  zero `lstat`/`realpath` and served a file through a symlink pointing outside the root. What is
+  genuinely absent is `Range`, `ETag` and conditional requests; acceptable for an artifact preview, and
+  recorded here rather than discovered later.
+- **Consequence:** the server has no npm dependency at all, so `/app/modules/core` is a consistency
+  choice, not a module-resolution requirement.
+
+## 2026-09-06 — VersionedArtifacts: Git as the storage engine, invoked only from the toolbox
+
+- **Decision:** back versioned artifacts with the real `git` binary, added to the toolbox image, over a
+  dedicated `storage/versioned-artifacts` volume.
 - **Alternative rejected — `isomorphic-git`.** It has no linked-worktree API, and a draft in PRD §6 *is*
   a linked worktree: several editable checkouts of one repository, isolated from each other. Emulating
   that with copies would lose the atomic ref operations the whole design rests on.
@@ -17,27 +59,27 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   global/system config, no credential helper, `GIT_ALLOW_PROTOCOL=none`), so repository content can
   never execute and no remote can ever be reached.
 
-## 2026-09-06 — VersionedFolders: the store is toolbox-only
+## 2026-09-06 — VersionedArtifacts: the store is toolbox-only
 
-- **Decision:** mount `storage/versioned-folders` into the toolbox and nowhere else — not cron, not the
+- **Decision:** mount `storage/versioned-artifacts` into the toolbox and nowhere else — not cron, not the
   sandbox.
 - **Why:** the toolbox is the only container with secrets and the only one that validates requests. A
   mount in the sandbox would let the agent read and write versioned content directly, bypassing the
-  `is_enabled` gate, the per-`agent_view` folder allowlist, the size limits, the locking and the audit
+  `is_enabled` gate, the per-`agent_view` artifact allowlist, the size limits, the locking and the audit
   trail in one step.
 
-## 2026-09-06 — VersionedFolders: folder creation is a host command, not an HTTP route
+## 2026-09-06 — VersionedArtifacts: artifact creation is a host command, not an HTTP route
 
-- **Decision:** `versioned-folder:init` runs on the host and pipes a payload into
+- **Decision:** `artifact:init` runs on the host and pipes a payload into
   `docker compose exec -T toolbox node …/cli.js`.
 - **Alternative rejected — an Express route on the toolbox.** The toolbox authenticates no caller, so
-  every route it serves is reachable by the agent. Folder creation is administrative (PRD §10), and a
+  every route it serves is reachable by the agent. Artifact creation is administrative (PRD §10), and a
   route would also have meant handing the toolbox an arbitrary host path to read.
 - **Consequence:** the command must not be proxied into cron (which sees neither the host source nor the
   storage volume), but it is still a *module* command, so it lives in `_LOCAL_MODULE_COMMANDS` — that
   stops the proxy while leaving the module bootstrap that registers it with argparse intact.
 
-## 2026-09-06 — VersionedFolders: no runtime stale-lock breaking
+## 2026-09-06 — VersionedArtifacts: no runtime stale-lock breaking
 
 - **Decision:** a held lock is simply held. Abandoned locks are cleared by a sweep at toolbox startup,
   never by a waiter.
@@ -49,7 +91,7 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   draft is recoverable by an administrator; two interleaved mutations on one worktree are silent
   corruption. If this bites in practice the fix is a kernel-backed lock, not a shorter stale timeout.
 
-## 2026-09-06 — VersionedFolders: one toolbox instance per `storage_root`
+## 2026-09-06 — VersionedArtifacts: one toolbox instance per `storage_root`
 
 - **Decision:** a given store may be used by exactly one toolbox instance. Recorded in `system.json`
   field help, the developer doc, and here.
@@ -60,10 +102,13 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   not close it. Supporting multiple instances needs a real distributed lock, which PRD §28 explicitly
   scopes out ("one storage/VPS").
 
-## 2026-09-06 — VersionedFolders: a version carries no description
+## 2026-09-06 — VersionedArtifacts: a version carries no description
 
-- **Decision:** `versioned_folder_list_versions` returns `{version_id, revision}` only. The label passed
-  to `finalize` is persisted in `versioned_folder_audit.description`.
+- **Decision:** `versioned_artifact_list_versions` returns `{version_id, revision}` only. The label passed
+  to `save_version` is persisted in `versioned_artifact_audit.description`.
+- **Superseded 2026-09-12:** the tool now returns `{version_id, revision, preview_path}` — a third field
+  that says where the version is served, not a label. The decision above still stands for the *label*:
+  no version carries a description of its own.
 - **Why:** a version is a ref pointing at a commit and cannot hold a message of its own. Returning the
   draft's last change message under the name `description` would hand the caller a field that looks like
   the label they supplied and is not — the worse of the two failure modes. Inventing a field the PRD
