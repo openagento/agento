@@ -136,7 +136,7 @@ describe('createJiraProxyHandler', () => {
 
     expect(log).toHaveBeenCalledWith(
       'api/jira/request', 'ERROR',
-      expect.stringContaining('Invalid method'),
+      expect.stringContaining('invalid method rejected'),
     );
   });
 
@@ -163,5 +163,75 @@ describe('createJiraProxyHandler', () => {
     expect(res.status).toHaveBeenCalledTimes(1);
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.json).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a request-supplied jira_host and uses the configured host', async () => {
+    const handler = createJiraProxyHandler(() => validConfig, log);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      text: () => Promise.resolve('{}'),
+    }));
+
+    const { req, res } = mockReqRes({
+      method: 'GET', path: '/rest/api/3/myself', jira_host: 'https://evil.example',
+    });
+    await handler(req, res);
+
+    const [url] = vi.mocked(globalThis.fetch).mock.calls[0];
+    expect(url).toBe('https://test.atlassian.net/rest/api/3/myself');
+  });
+
+  it('logs a WARN when jira_host is supplied and ignored', async () => {
+    const handler = createJiraProxyHandler(() => validConfig, log);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, status: 200,
+      text: () => Promise.resolve('{}'),
+    }));
+
+    const { req, res } = mockReqRes({
+      method: 'GET', path: '/rest/api/3/myself', jira_host: 'https://evil.example',
+    });
+    await handler(req, res);
+
+    expect(log).toHaveBeenCalledWith(
+      'api/jira/request', 'WARN',
+      expect.stringContaining('jira_host'),
+    );
+  });
+
+  it.each([
+    ['@evil.example/rest/api/3/myself', 'authority via userinfo'],
+    ['//evil.example/x', 'protocol-relative'],
+    ['rest/api/3/myself', 'no leading slash'],
+    [42, 'not a string'],
+  ])('rejects path %s (%s) without sending the credential', async (path) => {
+    const handler = createJiraProxyHandler(() => validConfig, log);
+    vi.stubGlobal('fetch', vi.fn());
+
+    const { req, res } = mockReqRes({ method: 'GET', path });
+    await handler(req, res);
+
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.stringContaining('host-relative') }),
+    );
+  });
+
+  // The 400 response already tells the caller what was wrong, so the operator log
+  // never has to carry the caller's own string — a fixed reason cannot disclose it.
+  it.each([
+    ['path', { method: 'GET', path: '@evil.example/x' }, 'path rejected'],
+    ['method', { method: 'SNITCH evil.example', path: '/rest/api/3/myself' }, 'invalid method'],
+  ])('does not put the rejected %s into the operator log', async (_field, payload, reason) => {
+    const handler = createJiraProxyHandler(() => validConfig, log);
+    vi.stubGlobal('fetch', vi.fn());
+
+    const { req, res } = mockReqRes(payload);
+    await handler(req, res);
+
+    const details = log.mock.calls.map((c) => c[2]).join(' | ');
+    expect(details).not.toContain('evil.example');
+    expect(details.toLowerCase()).toContain(reason);
   });
 });

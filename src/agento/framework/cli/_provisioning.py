@@ -44,6 +44,20 @@ _LOCK_REGISTRY_LINE = re.compile(r'^source = \{ registry = "([^"]+)" \}', re.MUL
 _SEMVER_FLOOR = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
+# The versioned_artifacts store root, bind-mounted into the toolbox as
+# /srv/versioned-artifacts. Created from the HOST CLI on purpose: the directories
+# then inherit the invoking user, which is HOST_UID, which is `agent` in the
+# container — the entrypoint's chown is only the braces for the dev-compose path
+# where nobody ran the CLI.
+_STORAGE_DIRS = ("storage/versioned-artifacts/store", "storage/versioned-artifacts/published")
+
+
+def ensure_storage_dirs(project_dir: Path) -> None:
+    """Create the versioned-artifacts store and published roots (idempotent)."""
+    for d in _STORAGE_DIRS:
+        (project_dir / d).mkdir(parents=True, exist_ok=True)
+
+
 def parse_semver_floor(value: str) -> tuple[int, int, int] | None:
     """Extract (major, minor, patch) from a semver string or range.
 
