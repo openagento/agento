@@ -12,6 +12,7 @@ from agento.framework.cli._provisioning import (
     build_base_images,
     bump_agento_version,
     detect_python_version,
+    ensure_storage_dirs,
     enumerate_enabled_extensions,
     enumerate_sandbox_packages,
     localize_lockfile_for_container,
@@ -21,6 +22,23 @@ from agento.framework.cli._provisioning import (
     render_compose,
     write_project_pyproject,
 )
+
+
+def _service_block(content: str, name: str) -> str:
+    """The lines of one compose service, up to the next top-level service key.
+
+    pyyaml is not a project dependency and adding one for a handful of
+    assertions is not worth it; the template is generated from a fixed
+    indentation, so slicing on it is exact.
+    """
+    lines = content.splitlines()
+    start = lines.index(f"  {name}:")
+    out: list[str] = []
+    for line in lines[start + 1:]:
+        if line.strip() and line.startswith("  ") and not line.startswith("   "):
+            break
+        out.append(line)
+    return "\n".join(out)
 
 
 class TestWriteProjectPyproject:
@@ -902,3 +920,165 @@ class TestNewAgentRegistersWithoutFrameworkEdit:
             template, python_version="3.12", extensions=[], sandbox_packages=pkgs,
         )
         assert "HERMES_VERSION: ${HERMES_VERSION:-~1.0.0}" in rendered
+
+
+class TestEnsureStorageDirs:
+    def test_creates_the_store_and_published_roots(self, tmp_path: Path):
+        ensure_storage_dirs(tmp_path)
+
+        assert (tmp_path / "storage" / "versioned-artifacts" / "store").is_dir()
+        assert (tmp_path / "storage" / "versioned-artifacts" / "published").is_dir()
+
+    def test_is_idempotent(self, tmp_path: Path):
+        ensure_storage_dirs(tmp_path)
+        marker = tmp_path / "storage" / "versioned-artifacts" / "store" / "keep"
+        marker.mkdir()
+
+        ensure_storage_dirs(tmp_path)
+
+        assert marker.is_dir()
+
+
+class TestToolboxStorageBind:
+    def test_toolbox_mounts_the_store_root(self, tmp_path: Path):
+        proj = tmp_path
+        (proj / "docker").mkdir()
+        (proj / "app" / "etc").mkdir(parents=True)
+        venv = proj / ".venv"
+        venv.mkdir()
+        (venv / "pyvenv.cfg").write_text("version_info = 3.12.7\n")
+
+        regenerate_compose(proj)
+
+        # Exact, so a botched rename that leaves a second store bind behind fails
+        # here rather than silently mounting two roots. Scoped to the toolbox service:
+        # the artifacts service has its own, deliberately narrower, /srv/ bind.
+        content = (proj / "docker" / "docker-compose.yml").read_text()
+        block = _service_block(content, "toolbox")
+        binds = [ln.strip() for ln in block.splitlines() if "/srv/" in ln]
+        assert binds == ["- ../storage/versioned-artifacts:/srv/versioned-artifacts"]
+
+
+class TestArtifactsService:
+    """The serving container, rendered from the shipped template.
+
+    Its isolation is the whole security story: no `networks:` means no agent can
+    reach it, no `env_file:`/`environment:` means it holds no secret, and the
+    published-tree mount means it cannot see the store even if it wanted to.
+    """
+
+    def _block(self) -> str:
+        from agento.framework.cli._templates import get_template
+
+        rendered = render_compose(
+            get_template("docker-compose.yml"),
+            python_version="3.12",
+            extensions=[],
+            sandbox_packages=[],
+        )
+        return _service_block(rendered, "artifacts")
+
+    def test_joins_no_network_and_reads_no_secret(self):
+        block = self._block()
+        # One `networks:` line added for consistency would put every artifact on
+        # agento-net, readable by every agent in every agent_view over plain HTTP.
+        assert "networks:" not in block
+        assert "env_file:" not in block
+        assert "environment:" not in block
+
+    def test_publishes_on_loopback_only(self):
+        block = self._block()
+        assert '- "127.0.0.1:${AGENTO_ARTIFACTS_PORT:-8080}:8080"' in block
+        assert "0.0.0.0" not in block
+
+    def test_has_no_build_block_and_reuses_the_toolbox_image(self):
+        # `build_base_images` has a hardcoded three-entry specs list and would
+        # never build a tag of its own.
+        block = self._block()
+        assert "build:" not in block
+        assert "image: agento-toolbox:" in block
+
+    def test_carries_its_own_healthcheck(self):
+        # The baked HEALTHCHECK probes 3001 and reports this container unhealthy
+        # while it serves fine.
+        block = self._block()
+        assert "healthcheck:" in block
+        assert "127.0.0.1:8080/" in block
+
+    def test_mounts_the_published_tree_exactly_and_read_only(self):
+        block = self._block()
+        mounts = [ln.strip()[2:] for ln in block.splitlines() if ln.strip().startswith("- ../")]
+        store = [m for m in mounts if "versioned-artifacts" in m]
+        assert len(store) == 1
+        source, _, rest = store[0].partition(":")
+        assert source.endswith("/published")
+        assert rest.endswith(":ro")
+        assert all(m.endswith(":ro") for m in mounts)
+
+    def test_is_hardened_and_restarts(self):
+        block = self._block()
+        assert "no-new-privileges:true" in block
+        assert "restart: unless-stopped" in block
+
+    def test_the_dev_compose_carries_the_same_service(self):
+        """The provisioning path renders only the template, so the dev file is the
+        copy that silently drifts. Skips cleanly outside the repo."""
+        dev_compose = (
+            Path(__file__).resolve().parents[4] / "docker" / "docker-compose.dev.yml"
+        )
+        if not dev_compose.is_file():
+            return
+
+        def norm(block: str) -> str:
+            return (
+                block.replace(
+                    "../.venv/lib/python3.12/site-packages/agento/modules", "MODULES"
+                )
+                .replace("../src/agento/modules", "MODULES")
+                .replace("agento-toolbox:${AGENTO_VERSION:-latest}", "agento-toolbox:TAG")
+                .replace("agento-toolbox:latest", "agento-toolbox:TAG")
+            )
+
+        dev = _service_block(dev_compose.read_text(), "artifacts")
+        assert norm(dev) == norm(self._block()), (
+            "docker/docker-compose.dev.yml artifacts service has drifted from "
+            "templates/docker-compose.yml (only the modules mount and the image "
+            "tag may differ)"
+        )
+
+
+class TestDocumentedContainerInventory:
+    """A service is added to compose and the prose that counts containers stays behind —
+    that is the defect class, and it has now cost two review rounds. Compare the
+    architecture doc's table against the rendered template instead of grepping for a
+    number, so the next new service fails here rather than in a review."""
+
+    def test_the_services_table_lists_exactly_the_rendered_services(self):
+        import re
+
+        from agento.framework.cli._templates import get_template
+
+        doc = (
+            Path(__file__).resolve().parents[4]
+            / "docs" / "architecture" / "containers.md"
+        )
+        if not doc.is_file():
+            return
+
+        rendered = render_compose(
+            get_template("docker-compose.yml"),
+            python_version="3.12",
+            extensions=[],
+            sandbox_packages=[],
+        )
+        # Only the block under `services:` — a 2-space key elsewhere is a network name.
+        body = rendered.split("\nservices:\n", 1)[1]
+        body = re.split(r"\n(?=\S)", body, maxsplit=1)[0]
+        services = set(re.findall(r"^  ([a-z][a-z0-9_-]*):\s*$", body, re.M))
+        documented = set(re.findall(r"^\| \*\*([a-z][a-z0-9_-]*)\*\* \|", doc.read_text(), re.M))
+
+        assert services, "no services parsed out of the rendered template"
+        assert documented == services, (
+            f"docs/architecture/containers.md lists {sorted(documented)}, "
+            f"compose renders {sorted(services)}"
+        )
