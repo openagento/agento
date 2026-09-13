@@ -104,10 +104,14 @@ have `git` — it commits its own workspace with it, see
 [identity.md](../config/identity.md) — and that is beside the point: the store is not
 there to operate on, and no generic `git` operation on it is ever exposed to the agent
 (PRD §32). Versioned file trees are therefore reachable only through the opt-in
-`versioned_artifact_*` tools, each additionally bounded by a per-`agent_view` artifact
-allowlist. Artifact *creation* is not a tool at all — it is a host CLI command over
-`docker compose exec`, because the toolbox authenticates no caller and any HTTP route on
-that listener would be agent-callable.
+`versioned_artifact_*` tools, each additionally bounded to the artifacts that scope may use —
+its own `av<agent_view_id>-` namespace plus its `allowed_artifacts` grant. Creation is one of
+those tools: the agent owns the whole lifecycle, and what is withheld from it is the host
+*path*, not the operation. `versioned_artifact_init` names a code and nothing else, while the
+`artifact:init` CLI keeps `--source` — a host directory read is not something the toolbox may
+be asked for over a listener that authenticates no caller. Note that the `agent_view_id` those
+per-scope gates read is asserted by the caller, so they scope cooperating views rather than
+authorize them; see ROADMAP.md.
 
 The published half of that volume (`storage/versioned-artifacts/published`) is mounted
 read-only into one more container, `artifacts`, which serves it over HTTP. That container

@@ -86,7 +86,7 @@ class VersionedArtifactInitCommand:
 
     @property
     def help(self) -> str:
-        return "Create a versioned artifact (administrative; not an agent tool)"
+        return "Create a versioned artifact from a host directory (operator equivalent of versioned_artifact_init)"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("artifact_code", help="Artifact code, e.g. openagento-website")
