@@ -19,7 +19,7 @@ class VersionedArtifactPublishCommand:
 
     @property
     def help(self) -> str:
-        return "Publish a version of an artifact (administrative; not an agent tool)"
+        return "Publish a version of an artifact (operator equivalent of versioned_artifact_publish)"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("artifact_code", help="Artifact code, e.g. openagento-website")

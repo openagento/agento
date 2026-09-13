@@ -65,6 +65,15 @@ describe('routing', () => {
     expect(await res.text()).toBe(`<h1>${V1}</h1>`);
   });
 
+  it('declares the content type as final on every body it serves', async () => {
+    // The tree is agent-authored: an unknown extension is served as
+    // application/octet-stream, and a sniffing browser would re-read that as HTML.
+    await start();
+    for (const url of ['/', '/site/']) {
+      expect((await get(url)).headers.get('x-content-type-options')).toBe('nosniff');
+    }
+  });
+
   it('lists the artifact codes at /', async () => {
     await mkdir(path.join(root, 'other'), { recursive: true });
     await start();
