@@ -53,9 +53,18 @@ Automates Jira tasks using AI agents (Claude Code, OpenAI Codex, Pi) in Docker c
   public contract** — no `repository`, `branch`, `commit`, `merge`, `rebase`, `checkout`, `worktree`
   or `ref` in a tool name, parameter, response field or error message. The store is mounted into the
   **toolbox only** (the agent container has no path to it, and no generic `git` operation on the
-  store is exposed to the agent — it never receives `git(command)`), artifact creation is the admin CLI
-  `artifact:init` rather than a tool, and only `service.js` may reach the Git backend — an
-  import-layering test enforces that boundary. The agent edits a **copy**: `create_draft` /
+  store is exposed to the agent — it never receives `git(command)`), and only `service.js` may reach
+  the Git backend — an import-layering test enforces that boundary. The agent owns the **whole
+  lifecycle** — init → draft → version → publish → next draft — with no operator step in it:
+  `artifact:init` / `artifact:list` / `artifact:publish` stay as equivalent operator interfaces.
+  Creation is scoped, not withheld: an agent may create `av<agent_view_id>-*` (derived, never
+  configured) plus whatever `allowed_artifacts` grants it — which is also how one agent_view is
+  handed another's artifact — bounded by `limits/max_agent_artifacts` counted over the artifacts
+  that caller may **use**, never over the store (a store-wide count is a cross-view cardinality
+  oracle, and with no delete anywhere a one-way lockout of every other view). `agent_view_id` is
+  asserted by the caller on the SSE URL, so the namespace **scopes**, it does not authorize — see
+  ROADMAP.md. Note `save_version`, not `publish`, is the HTTP exposure boundary: every saved version
+  is materialized under `published/<code>/v/<id>/` and served; `publish` only moves `current`. The agent edits a **copy**: `create_draft` /
   `materialize` write the tree onto its own workspace (the *desk*) and `save_version` copies it back,
   so no tool takes a filesystem path and there is no file-level tool on the store. A fourth
   compose service, **`artifacts`**, serves the published tree over plain `node:http` from

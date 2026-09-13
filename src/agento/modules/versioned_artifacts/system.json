@@ -4,10 +4,11 @@
   "published_root": {"type": "string", "label": "Published tree root (absolute path inside the toolbox; the artifacts server reads it read-only)"},
   "serving/keep_versions": {"type": "integer", "label": "Materialized version previews to keep per artifact (0 keeps every version; the current one is never pruned)"},
   "serving/public_base_url": {"type": "string", "label": "Public base URL of the artifacts server, used to build the preview link"},
-  "allowed_artifacts": {"type": "string", "label": "Artifacts this scope may use (comma-separated artifact codes; empty denies everything)", "scope": "agent_view"},
+  "allowed_artifacts": {"type": "string", "label": "Artifacts this scope may use on top of the ones it created itself (comma-separated artifact codes; also how one agent_view is granted another's artifact)", "scope": "agent_view"},
   "limits/max_file_size": {"type": "integer", "label": "Max bytes per file"},
   "limits/max_total_size": {"type": "integer", "label": "Max total bytes per artifact"},
   "limits/max_files": {"type": "integer", "label": "Max files per artifact"},
   "limits/max_diff_bytes": {"type": "integer", "label": "Max diff bytes returned to the agent"},
+  "limits/max_agent_artifacts": {"type": "integer", "label": "Max artifacts one agent_view may create (the administrative CLI is exempt)"},
   "security/allow_symlinks": {"type": "boolean", "label": "Allow symbolic links (only false is supported)"}
 }
