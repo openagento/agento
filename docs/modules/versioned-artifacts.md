@@ -22,10 +22,11 @@ A version is created by `save_version` and is immutable from that moment. `publi
 the artifact's `current` pointer with a compare-and-swap against the version the caller
 believed was live; rollback is publishing an older version.
 
-## The nine tools
+## The ten tools
 
 | Tool | Purpose |
 |---|---|
+| `versioned_artifact_init` | Create a new EMPTY artifact, scoped to this agent_view (see Scoping below) |
 | `versioned_artifact_list` | The artifacts this scope may use, with `current_version` and open drafts |
 | `versioned_artifact_get_current` | Which version the artifact publishes |
 | `versioned_artifact_list_versions` | Versions, newest first, plus `current_version` |
@@ -36,7 +37,7 @@ believed was live; rollback is publishing an older version.
 | `versioned_artifact_publish` | Move `current` (CAS on `expected_current_version`) |
 | `versioned_artifact_discard_draft` | Throw a draft away |
 
-Ten names are declared in `module.json`: these nine plus the `versioned_artifact` master
+Eleven names are declared in `module.json`: these ten plus the `versioned_artifact` master
 switch each of them `requires`.
 
 **The agent edits files, not the store.** `create_draft` and `materialize` copy a tree
@@ -45,8 +46,48 @@ ordinary file tools, and `save_version` copies the desk back. There is no file-l
 the store has no `list_files`, `read_file` or `apply_changes`, so no agent-supplied
 filesystem path ever reaches it. `tools.test.js` asserts that no tool schema takes one.
 
-Artifact creation is **not** a tool — see [artifact:init](../cli/artifact-init.md).
-`get_draft_path` is internal and is never exposed.
+The agent owns the **whole lifecycle** — init → draft → version → hand the code to a
+sub-agent → iterate → publish → next draft — with no operator step in it. `get_draft_path`
+is internal and is never exposed.
+
+`versioned_artifact_init` takes `artifact_code` and an optional `title`, and nothing else: no
+file payload and no path, so the agent fills version 1 through a draft on its desk like any
+other change. The CLI keeps the host-directory import — see
+[artifact:init](../cli/artifact-init.md).
+
+## Scoping: which artifacts an agent may create and use
+
+A caller may use an artifact when **either** holds:
+
+- its code starts with `av<agent_view_id>-` — the namespace it creates in, DERIVED from the
+  session, never configured and never stored; or
+- the code is listed in that scope's `allowed_artifacts`.
+
+The second is the operator's grant, and it is also the **handoff**: one
+`config:set versioned_artifacts/allowed_artifacts av7-report --scope agent_view --scope-id 9`
+gives view 9 the artifact view 7 created. It is equally the "pretty URL" path — pre-grant
+`marketing-site` and the agent can `init` it under that exact code.
+
+`limits/max_agent_artifacts` caps creation, counted over the artifacts **that caller may
+use** — never over the store. A store-wide count would answer "how many artifacts does every
+other agent_view hold", and with no delete on any path it would let one view lock creation
+out for everyone. The administrative CLI is exempt from the namespace and from the cap.
+
+> **Known limit — this SCOPES, it does not authorize.** `agent_view_id` is asserted by the
+> caller (`?agent_view_id=` on the toolbox SSE URL), so a forged one reaches another view's
+> namespace. It is the ceiling on every per-agent_view gate here, `allowed_artifacts`
+> included. The fix is session-bound identity in the framework, not a check in this module —
+> see ROADMAP.md.
+
+> **`save_version`, not `publish`, is the HTTP exposure boundary.** Every saved version is
+> materialized under `published/<code>/v/<id>/` and is served from that moment; `publish` only
+> moves `current`. Enabling `versioned_artifact_save_version` is therefore the decision to let
+> that agent_view put bytes on the artifacts port.
+
+> **There is no delete.** No tool and no command removes an artifact, so the cap is a one-way
+> ratchet. The remedy is manual and is two roots plus a row: `rm -rf <storage_root>/<code>`,
+> `rm -rf <published_root>/<code>`, then `DELETE FROM versioned_artifact WHERE artifact_code=…`.
+> Missing the second leaves the old bytes served under a code someone can re-create.
 
 ## Error codes
 
@@ -56,7 +97,8 @@ never is.
 | Code | Meaning |
 |---|---|
 | `ARTIFACT_NOT_FOUND` | No such artifact in the store |
-| `ARTIFACT_ACCESS_DENIED` | The artifact is not in this scope's `allowed_artifacts` |
+| `ARTIFACT_ACCESS_DENIED` | The artifact is neither in this scope's namespace nor in its `allowed_artifacts` |
+| `ARTIFACT_LIMIT_REACHED` | This scope is at `limits/max_agent_artifacts` |
 | `DRAFT_NOT_FOUND` | Unknown, finished, or half-torn-down draft |
 | `DRAFT_LOCKED` | Another operation holds this draft's lock |
 | `VERSION_NOT_FOUND` | No such version |
@@ -126,11 +168,12 @@ agent replaces with a symlink between the check and the write cannot redirect it
 | `versioned_artifacts/published_root` | `/srv/versioned-artifacts/published` | Absolute; the tree the artifacts server reads |
 | `versioned_artifacts/serving/keep_versions` | `0` | Preview directories kept per artifact. `0` keeps every one; the current target is never pruned |
 | `versioned_artifacts/serving/public_base_url` | `http://localhost:8080` | Used to build `preview_url`. Must match the host port the `artifacts` service publishes (`AGENTO_ARTIFACTS_PORT`, default 8080). Never set it through `CONFIG__` — ENV beats DB and would kill `config:set` |
-| `versioned_artifacts/allowed_artifacts` | *(empty)* | Comma-separated; empty denies everything. Scopable to `agent_view` |
+| `versioned_artifacts/allowed_artifacts` | *(empty)* | Comma-separated, **on top of** the `av<id>-` namespace the scope creates in. Scopable to `agent_view`; this is how one view is granted another's artifact |
 | `versioned_artifacts/limits/max_file_size` | 5 MiB | |
 | `versioned_artifacts/limits/max_total_size` | 100 MiB | |
 | `versioned_artifacts/limits/max_files` | 2000 | |
 | `versioned_artifacts/limits/max_diff_bytes` | 1 MiB | Diffs past this are truncated, not refused |
+| `versioned_artifacts/limits/max_agent_artifacts` | 50 | Artifacts one agent_view may create. Bounds namespaces, **not disk** — versions are unbounded and `keep_versions: 0` prunes nothing |
 | `versioned_artifacts/security/allow_symlinks` | `false` | Only `false` is supported; `true` is rejected at construction |
 
 `artifact:init` reads the three import limits from the running toolbox before it
@@ -155,13 +198,17 @@ creates it; `restart` cannot, because the service did not exist before. If port 
 taken on that host, set `AGENTO_ARTIFACTS_PORT` in `docker/.env` and point
 `serving/public_base_url` at the same port.
 
-Tools are opt-in. The master switch alone leaves all nine children disabled — each is
+Tools are opt-in. The master switch alone leaves all ten children disabled — each is
 gated on its own key and merely `requires` the master.
+
+An agent that gets `versioned_artifact_init` needs no artifact created for it and no
+`allowed_artifacts` entry — it creates in its own `av<agent_view_id>-` namespace. The two
+lines below are for the other case: an operator-seeded artifact under a code of their choosing.
 
 ```bash
 uv run bin/agento artifact:init demo-site --source ./some/dir
 uv run bin/agento config:set versioned_artifacts/allowed_artifacts demo-site
-for t in versioned_artifact versioned_artifact_list versioned_artifact_get_current \
+for t in versioned_artifact versioned_artifact_init versioned_artifact_list versioned_artifact_get_current \
          versioned_artifact_list_versions versioned_artifact_create_draft \
          versioned_artifact_materialize versioned_artifact_save_version \
          versioned_artifact_diff versioned_artifact_publish \

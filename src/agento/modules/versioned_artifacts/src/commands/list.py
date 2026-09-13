@@ -21,7 +21,7 @@ class VersionedArtifactListCommand:
 
     @property
     def help(self) -> str:
-        return "List versioned artifacts (administrative; not an agent tool)"
+        return "List versioned artifacts across every scope (operator equivalent of versioned_artifact_list)"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--actor", default="admin", help="Who is running this command")
