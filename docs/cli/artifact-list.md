@@ -13,11 +13,11 @@ container serves the artifact's current version — reachable on the host at
 
 ## Why it sees every artifact
 
-`versioned_artifacts/allowed_artifacts` is `agent_view`-scoped and empty by default — it
-decides which artifacts an **agent** may reach. This command runs as an administrator, so
-it uses the same allowlist exemption `artifact:init` has always had: the store, not a
-scope, is what it lists. That exemption is set only by the toolbox CLI; the MCP tool layer
-never passes it, so nothing about the agent's access changes.
+An agent reaches an artifact through its own `av<agent_view_id>-` namespace or through
+`versioned_artifacts/allowed_artifacts`, which is `agent_view`-scoped and empty by default.
+This command runs as an administrator and is exempt from both, so the store — not a scope —
+is what it lists. That exemption is set only by the toolbox CLI; the MCP tool layer never
+passes it, so nothing about the agent's access changes.
 
 The `versioned_artifact` table only decorates the listing. The store is the authority on
 what exists, so a table that cannot be read costs a title, never an artifact.

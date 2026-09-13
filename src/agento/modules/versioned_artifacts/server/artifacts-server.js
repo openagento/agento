@@ -84,7 +84,8 @@ export function createArtifactsServer({ root, etcDir, fs = fsp, openRead = creat
     const codes = names.filter((n) => ARTIFACT_CODE_RE.test(n)).sort();
     const body = `<!doctype html><meta charset="utf-8"><title>Artifacts</title><ul>${
       codes.map((c) => `<li><a href="/${c}/">${c}</a></li>`).join('')}</ul>\n`;
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(body) });
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(body),
+      'x-content-type-options': 'nosniff' });
     res.end(headOnly ? undefined : body);
   }
 
@@ -112,6 +113,10 @@ export function createArtifactsServer({ root, etcDir, fs = fsp, openRead = creat
     res.writeHead(200, {
       'content-type': MIME[path.extname(real).toLowerCase()] ?? 'application/octet-stream',
       'content-length': st.size,
+      // The tree is agent-authored and an extension this map does not know falls back to
+      // `application/octet-stream` — which a sniffing browser will happily re-read as HTML
+      // and run. The declared type is the whole type.
+      'x-content-type-options': 'nosniff',
     });
     if (ctx.headOnly) return res.end();
     // `pipe` does not forward a read error, so an unhandled 'error' event took the whole

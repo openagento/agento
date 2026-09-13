@@ -37,6 +37,7 @@ const CONFIG = {
   allowed_artifacts: 'site', 'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080',
   'limits/max_files': 2000, 'limits/max_file_size': 5242880,
   'limits/max_total_size': 104857600, 'limits/max_diff_bytes': 1048576,
+  'limits/max_agent_artifacts': 50,
   'security/allow_symlinks': false,
 };
 const baseCtx = (over = {}) => ({
@@ -46,17 +47,18 @@ const baseCtx = (over = {}) => ({
 });
 
 const ALL = [
+  'versioned_artifact_init',
   'versioned_artifact_list', 'versioned_artifact_get_current', 'versioned_artifact_list_versions',
   'versioned_artifact_create_draft', 'versioned_artifact_materialize', 'versioned_artifact_save_version',
   'versioned_artifact_diff', 'versioned_artifact_publish', 'versioned_artifact_discard_draft',
 ];
 
-it('registers all nine tools in the stub pass', async () => {
+it('registers all ten tools in the stub pass', async () => {
   const s = fakeServer(); await register(s, baseCtx());
   expect([...s.tools.keys()].sort()).toEqual([...ALL].sort());
 });
 
-it('declares exactly ten names — the toolset switch and the nine tools it gates', async () => {
+it('declares exactly eleven names — the toolset switch and the ten tools it gates', async () => {
   // The manifest is the allow-list the framework denies against, so a tool that lost
   // its declaration is denied at runtime and one that kept it after deletion is a
   // name nothing can ever enable. Both are only visible from here.
@@ -105,7 +107,7 @@ it('registers every tool even when the store does not exist yet', async () => {
   const log = vi.fn();
   const s = fakeServer();
   await register(s, baseCtx({ app: {}, log, config: { storage_root: '/nonexistent/vf-other-root' } }));
-  expect(s.tools.size).toBe(9);
+  expect(s.tools.size).toBe(10);
   expect(log).not.toHaveBeenCalledWith('versioned_artifacts', 'ERROR', expect.anything());
 });
 
@@ -139,10 +141,19 @@ it('takes no user and no filesystem path in any schema', async () => {
   }
 });
 
-it('exposes no tool for the admin-only or internal operations', async () => {
+it('exposes no tool for the internal operations', async () => {
   const s = fakeServer(); await register(s, baseCtx());
-  expect(s.tools.has('versioned_artifact_init')).toBe(false);
   expect(s.tools.has('versioned_artifact_get_draft_path')).toBe(false);
+});
+
+it('lets init name an artifact and title it, and nothing else', async () => {
+  // The tool layer is where agent input enters, so it is where the CLI-only
+  // parameters are absent: `files` would be arbitrary content the model wrote into
+  // version 1 behind the desk, `owner` would be a free-text authorization marker,
+  // and a source directory would be the host path every other tool refuses.
+  const s = fakeServer(); await register(s, baseCtx());
+  expect(Object.keys(s.tools.get('versioned_artifact_init').schema).sort())
+    .toEqual(['artifact_code', 'title']);
 });
 
 it('requires expected_current_version on publish', async () => {
@@ -180,7 +191,7 @@ it('registers nothing and logs when the configuration is invalid', async () => {
 // Scoped inside a describe: a file-level beforeEach would build a Git store for
 // every registration test above, which needs none of it.
 describe('against a real store', () => {
-let root, src, session;
+let root, pub, src, session;
 let seq = 0;
 // A unique <ws>/<av>/<job> under the REAL mount point, so the desk-taking tools run
 // against the production constant rather than an injected test root.
@@ -193,16 +204,20 @@ const newSession = () => {
 beforeEach(async () => {
   session = linux ? newSession() : '/workspace/artifacts/ws/av/1';
   root = await mkdtemp(path.join(tmpdir(), 'vf-tools-'));
+  // A REAL published root: `publish` materializes the target tree before it moves
+  // `current`, so a root that cannot be written fails the publish itself.
+  pub = await mkdtemp(path.join(tmpdir(), 'vf-tools-pub-'));
   src = await mkdtemp(path.join(tmpdir(), 'vf-tools-src-'));
   await writeFile(path.join(src, 'index.html'), '<h1>v1</h1>\n');
   // Built through the service, not the backend: tools.test.js must not import
   // git-backend.js — that is exactly the edge Task 9's layering guard forbids.
-  const admin = createService({ config: { ...CONFIG, storage_root: root }, db: null,
+  const admin = createService({ config: { ...CONFIG, storage_root: root, published_root: pub }, db: null,
     log: vi.fn(), actor: 'admin' });
   await admin.init('site', { files: await readSource(src) });
 });
 afterEach(async () => {
   await rm(root, {recursive:true,force:true});
+  await rm(pub, {recursive:true,force:true});
   await rm(src, {recursive:true,force:true});
   if (linux) await rm(path.dirname(path.dirname(session)), {recursive:true,force:true});
 });
@@ -210,7 +225,7 @@ afterEach(async () => {
 const payload = (res) => JSON.parse(res.content[0].text);
 const liveTools = async (over = {}) => {
   const s = fakeServer();
-  await register(s, baseCtx({ config: { storage_root: root }, artifactsDir: session, ...over }));
+  await register(s, baseCtx({ config: { storage_root: root, published_root: pub }, artifactsDir: session, ...over }));
   return s.tools;
 };
 
@@ -264,6 +279,25 @@ it('denies every artifact to the tools when the scope allowlist is empty', async
   expect(payload(res).error_code).toBe('ARTIFACT_ACCESS_DENIED');
   const listed = payload(await s.tools.get('versioned_artifact_list').handler({}));
   expect(listed.artifacts).toEqual([]);
+});
+
+it('creates only inside the caller\'s own namespace, and lists what it created', async () => {
+  // No operator grant anywhere: `allowed_artifacts` is empty and the artifact is
+  // reachable purely because the caller's agent_view created it.
+  const over = { config: { storage_root: root, allowed_artifacts: '' }, agentViewId: 7 };
+  const s = fakeServer();
+  await register(s, baseCtx({ ...over, artifactsDir: session }));
+  const made = payload(await s.tools.get('versioned_artifact_init')
+    .handler({ artifact_code: 'av7-notes' }));
+  expect(made.artifact_code).toBe('av7-notes');
+
+  const foreign = payload(await s.tools.get('versioned_artifact_init')
+    .handler({ artifact_code: 'av9-notes' }));
+  expect(foreign.error_code).toBe('ARTIFACT_ACCESS_DENIED');
+  expect(foreign.message).toContain('av7-');
+
+  const listed = payload(await s.tools.get('versioned_artifact_list').handler({}));
+  expect(listed.artifacts.map(a => a.artifact_code)).toEqual(['av7-notes']);
 });
 
 // The reclamation half of startupSweep: it needs a store an orphan can exist
@@ -390,7 +424,35 @@ describe.skipIf(!linux)('the desk the tools hand the agent', () => {
       const sv = await tools.get('versioned_artifact_save_version')
         .handler({ artifact_code: 'site', draft_id: 'd-abcdef', description: 'x' });
       expect(JSON.stringify(sv)).toContain('WORKSPACE_UNAVAILABLE');
+      // init too: an artifact created by a session that can hold no desk can never
+      // be filled, and `_fallback` is where an unknown agent_view_id lands — so a
+      // forged one must not be able to plant a namespace it will later "own".
+      const ini = await tools.get('versioned_artifact_init')
+        .handler({ artifact_code: 'site', title: 'x' });
+      expect(JSON.stringify(ini)).toContain('WORKSPACE_UNAVAILABLE');
     }
+  });
+
+  it('creates an empty artifact, fills it through a draft, and publishes it', async () => {
+    // The lifecycle the agent now owns, end to end. Nothing else covers a draft taken
+    // from an EMPTY version 1, which is the only shape `init` can produce.
+    const tools = await liveTools({ agentViewId: 7 });
+    const made = payload(await tools.get('versioned_artifact_init')
+      .handler({ artifact_code: 'av7-report', title: 'Report' }));
+    expect(made.current_version).toMatch(/^v-\d{8}-\d{6}-[a-z0-9]{4}$/);
+    expect(made.preview_url).toBe('http://localhost:8080/av7-report/');
+
+    const d = payload(await tools.get('versioned_artifact_create_draft')
+      .handler({ artifact_code: 'av7-report', base_version: 'current', description: 'first' }));
+    expect(await readdir(d.path)).toEqual([]);
+    await writeFile(path.join(d.path, 'index.html'), '<h1>report</h1>\n');
+
+    const saved = payload(await tools.get('versioned_artifact_save_version')
+      .handler({ artifact_code: 'av7-report', draft_id: d.draft_id, description: 'first' }));
+    const done = payload(await tools.get('versioned_artifact_publish')
+      .handler({ artifact_code: 'av7-report', version_id: saved.version_id,
+        expected_current_version: made.current_version }));
+    expect(done.current_version).toBe(saved.version_id);
   });
 });
 

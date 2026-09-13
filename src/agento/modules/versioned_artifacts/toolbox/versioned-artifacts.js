@@ -82,6 +82,22 @@ export async function register(server, context) {
       return deskPath(artifactsDir, artifactCode, id);
     });
 
+  if (enabled('versioned_artifact_init')) {
+    server.tool('versioned_artifact_init',
+      'Create a new empty artifact; fill it by creating a draft and saving a version',
+      { ...artifactArg, title: z.string().max(255).optional().describe('Human-readable title') },
+      (args) => run(async () => {
+        // Before the store is touched, for the same reason `create_draft` does it: an
+        // artifact created by a session that can hold no desk can never be filled.
+        requireSession(artifactsDir);
+        // No `files` and no path: the agent's content reaches version 1 through its
+        // desk, which is the boundary every other write tool already goes through.
+        const r = await service.init(args.artifact_code, { title: args.title ?? null });
+        return { artifact_code: r.artifact_code, current_version: r.current_version,
+          preview_url: r.preview_url };
+      }));
+  }
+
   if (enabled('versioned_artifact_list')) {
     server.tool('versioned_artifact_list',
       'List the artifacts you can work on, with their current version and open drafts',
