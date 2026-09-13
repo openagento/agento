@@ -66,6 +66,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
     max_total_size: asPosInt(config['limits/max_total_size'], 'max_total_size'),
     max_files: asPosInt(config['limits/max_files'], 'max_files'),
     max_diff_bytes: asPosInt(config['limits/max_diff_bytes'], 'max_diff_bytes'),
+    max_agent_artifacts: asPosInt(config['limits/max_agent_artifacts'], 'max_agent_artifacts'),
   };
   const allowSymlinks = asBool(config['security/allow_symlinks'], 'security/allow_symlinks');
   if (allowSymlinks) {
@@ -74,18 +75,38 @@ export function createService({ config = {}, db = null, log = null, jobId = null
   const allowedArtifacts = String(config.allowed_artifacts ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const be = backend || createBackend();
 
-  // The SAME exemption `init` has always carried, widened to the other two operations
-  // the admin CLI performs. `allowed_artifacts` is agent_view-scoped and empty by
-  // default, while the CLI resolves DEFAULT scope — so without this `artifact:list`
-  // would print nothing and `artifact:publish` would be denied on every deployment.
-  // Set ONLY by `cli.js`, never derived from the `actor` string, and never reachable
-  // from the tool layer. It is not a second allow-list: an agent's path is unchanged.
+  /** The namespace an agent_view creates and works in. DERIVED, never configured and
+   *  never stored: there is no marker file to half-write and no pre-existing artifact
+   *  to migrate. The empty string means "owns nothing" — a caller that sends
+   *  `?agent_view_id=abc` parses to NaN and one that sends `0` parses to 0, and an empty
+   *  prefix would make `startsWith` true for every code in the store.
+   *
+   *  It SCOPES, it does not authorize: `agent_view_id` is asserted by the caller on the
+   *  SSE URL, so a forged one reaches another view's namespace. See ROADMAP.md — the fix
+   *  is session-bound identity in the framework, not a check here. */
+  const ownNamespace = Number.isSafeInteger(agentViewId) && agentViewId > 0 ? `av${agentViewId}-` : '';
+
+  /** The ONE rule for "may this caller touch that artifact", used by the gate below and
+   *  by the listing, which used to spell it out a second time and could drift from it.
+   *
+   *  `admin` is the SAME exemption `init` has always carried, widened to the other
+   *  operations the admin CLI performs: `allowed_artifacts` is agent_view-scoped and
+   *  empty by default, while the CLI resolves DEFAULT scope — so without it
+   *  `artifact:list` would print nothing and `artifact:publish` would be denied on every
+   *  deployment. Set ONLY by `cli.js`, never derived from the `actor` string, and never
+   *  reachable from the tool layer.
+   *
+   *  `allowed_artifacts` is the operator's grant, and it is what hands an artifact from
+   *  one agent_view to another — one `config:set`, no new mechanism. It is not a second
+   *  allow-list beside `is_enabled`: `is_enabled` decides whether the tool exists at all,
+   *  this decides which artifacts it may name. */
+  const mayUse = (artifactCode) => admin
+    || allowedArtifacts.includes(artifactCode)
+    || (ownNamespace !== '' && artifactCode.startsWith(ownNamespace));
+
   function assertArtifactAllowed(artifactCode) {
     validateArtifactCode(artifactCode);
-    if (admin) return;
-    // An empty or unset allowlist denies everything — fail closed, consistent
-    // with the is_enabled gate.
-    if (!allowedArtifacts.includes(artifactCode)) {
+    if (!mayUse(artifactCode)) {
       throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, `artifact '${artifactCode}' is not available`);
     }
   }
@@ -186,13 +207,44 @@ export function createService({ config = {}, db = null, log = null, jobId = null
     }
 
     return {
-      // ------------------------------------------------------------ admin
+      // --------------------------------------------------------- lifecycle
+      /** Creation, for the agent as much as for the administrator: the agent owns the
+       *  whole loop — init, draft, version, publish, next draft — and an operator is
+       *  needed to bootstrap none of it.
+       *
+       *  An agent creates inside its own `ownNamespace`, or on a code an operator
+       *  pre-granted through `allowed_artifacts` (that is the "pretty URL" path, and the
+       *  cross-view handoff, with no new mechanism). `files` is CLI-only — the tool
+       *  schema declares no such parameter, and an agent fills version 1 through a draft
+       *  on its desk, so no agent-supplied tree ever enters here. */
       async init(artifactCode, { files = [], title = null, owner = null } = {}) {
+        // The ONLY check above the audit boundary, and it must stay there: an invalid
+        // code audited is up to 64 bytes of arbitrary caller text written into
+        // `versioned_artifact_audit` and into audit-fallback.log, on demand.
         validateArtifactCode(artifactCode);
-        // Exempt from the allowlist (it runs as an administrator, before any entry
-        // could exist) but NOT from the lock or the audit row.
+        // Every POLICY refusal below is INSIDE it — a denied creation is an attempt on
+        // the store and the row's `error_code` column exists to record exactly that.
         return audited(OPS.init, { artifactCode }, async () => {
+          if (!mayUse(artifactCode)) {
+            // Naming the prefix is what lets the agent retry without an operator.
+            throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, ownNamespace
+              ? `an artifact you create must start with '${ownNamespace}'`
+              : 'this session may not create artifacts');
+          }
           const created = await withLock(initLock(artifactCode), async () => {
+            // Counted over what this caller may USE, not over the store. A count of the
+            // whole store answers "how many artifacts does every other agent_view hold"
+            // — and, with no delete on any path, lets one view lock creation out for all
+            // of them. It bounds namespaces, NOT disk: versions are unbounded and
+            // `serving/keep_versions` prunes nothing at its default of 0.
+            // ponytail: the lock is per-code, so N concurrent inits can overshoot by N-1.
+            if (!admin) {
+              const held = (await be.listArtifacts(storageRoot)).filter(mayUse).length;
+              if (held >= limits.max_agent_artifacts) {
+                throw new ArtifactError(ERROR_CODES.ARTIFACT_LIMIT_REACHED,
+                  `this scope already holds ${held} artifacts`);
+              }
+            }
             const made = await be.init(storageRoot, artifactCode, { files, allowSymlinks, limits });
             // The store is the authority on what exists and the row only DECORATES
             // it, so a failed INSERT costs a title, never the artifact — the same way
@@ -221,7 +273,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             log?.('versioned_artifacts', 'ERROR',
               `preview unavailable for '${artifactCode}' ${created.current_version}: ${errorFacts(err) ?? 'unknown'}`);
           }
-          return created;
+          return { ...created, preview_url: published.previewUrl(publicBaseUrl, artifactCode) };
         }, (r) => ({ versionId: r.current_version }));
       },
 
@@ -260,7 +312,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
        *  `versioned_artifact` table only DECORATES that — the store is the authority on
        *  what exists, so a table that cannot be read costs a title, never an artifact. */
       async listArtifacts() {
-        const codes = (await be.listArtifacts(storageRoot)).filter((c) => admin || allowedArtifacts.includes(c));
+        const codes = (await be.listArtifacts(storageRoot)).filter((c) => mayUse(c));
         let meta = new Map();
         const db2 = pool();
         if (db2) {
@@ -275,15 +327,23 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         const out = [];
         for (const artifact_code of codes) {
           const row = meta.get(artifact_code);
-          out.push({
-            artifact_code,
-            title: row?.title ?? null,
-            owner: row?.owner ?? null,
-            created_at: row?.created_at ?? null,
-            ...(await be.getCurrent(storageRoot, artifact_code)),
-            preview_url: published.previewUrl(publicBaseUrl, artifact_code),
-            open_drafts: await be.listOpenDrafts(storageRoot, artifact_code),
-          });
+          try {
+            out.push({
+              artifact_code,
+              title: row?.title ?? null,
+              owner: row?.owner ?? null,
+              created_at: row?.created_at ?? null,
+              ...(await be.getCurrent(storageRoot, artifact_code)),
+              preview_url: published.previewUrl(publicBaseUrl, artifact_code),
+              open_drafts: await be.listOpenDrafts(storageRoot, artifact_code),
+            });
+          } catch (err) {
+            // ONE damaged artifact must not hide every healthy one: this is the tool an
+            // agent uses to find out what it can still work on, and an agent that can
+            // create artifacts is what makes a half-created one reachable here.
+            log?.('versioned_artifacts', 'ERROR',
+              `artifact '${artifact_code}' not listable: ${errorFacts(err) ?? 'unknown'}`);
+          }
         }
         return out;
       },

@@ -21,11 +21,24 @@ Version 1 is also written into the published tree and `current` is pointed at it
 current. That step is never fatal either — if the published tree cannot be written, the
 artifact exists and the next `artifact:publish` rebuilds it.
 
-## Why this is not an MCP tool
+## The tool beside it
 
-Creating an artifact is administrative. The agent must be able to work inside artifacts an
-administrator granted it, never to create new ones (PRD §10). Exposing creation as a
-tool would also mean exposing an arbitrary host path to the model.
+`versioned_artifact_init` does the same thing for the agent, so an agent can run the whole
+lifecycle — init → draft → version → publish → next draft — unattended. This command is the
+operator's equivalent, and it keeps the one capability the tool deliberately lacks: importing a
+host directory as version 1.
+
+The tool takes **`artifact_code` and an optional `title`, and nothing else**. No `--source`,
+because a path parameter would hand an arbitrary host path to the model — the objection that
+kept creation off the tool layer in the first place, and the only half of it that still holds.
+An agent fills version 1 the way it changes any other version: `create_draft`, write on the
+desk, `save_version`. No `--owner` either: a free-text owner cannot authorize anything, because
+a failed metadata INSERT leaves the artifact standing.
+
+The tool may create `av<agent_view_id>-*` — derived from the session, never configured — plus
+any code `allowed_artifacts` grants that scope, up to `limits/max_agent_artifacts`. This command
+is exempt from both. See [the module guide](../modules/versioned-artifacts.md) for the scoping
+rules and their known limit.
 
 ## How it runs
 
