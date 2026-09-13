@@ -68,13 +68,39 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   `is_enabled` gate, the per-`agent_view` artifact allowlist, the size limits, the locking and the audit
   trail in one step.
 
+## 2026-09-13 — VersionedArtifacts: the agent owns the whole lifecycle, scoped by a derived namespace
+
+- **Supersedes** the creation half of the 2026-09-06 entry below: creation is no longer withheld from
+  the agent. Artifacts are a collaboration mechanism between agents, and a lifecycle that needs an
+  operator to bootstrap or finalize it is not one — an agent must be able to init, iterate, hand the
+  code to a sub-agent, and publish, unattended.
+- **Decision:** `versioned_artifact_init` is a tool, gated on its own `is_enabled` key like every
+  other. An agent may create `av<agent_view_id>-*` — DERIVED from the session, never configured and
+  never stored — plus anything `allowed_artifacts` grants it, capped by `limits/max_agent_artifacts`.
+- **Why a derived prefix and not an owner column.** The `owner` column decorates the store (a failed
+  INSERT keeps the artifact), so it cannot carry authorization. A marker file can be half-written and
+  needs a migration; a prefix cannot and does not.
+- **Why the cap counts `filter(mayUse)` and not the store.** A store-wide count answers "how many
+  artifacts does every other agent_view hold" in at most `cap` calls, and — with no delete on any path
+  — lets one view lock creation out for all of them. One word of filtering removes both.
+- **Alternative rejected — a `publish/agent_owned` switch.** `save_version` already materializes every
+  saved version into the served tree; `publish` only moves `current`. A switch there would guard an
+  open wall, block the loop this entry exists to enable, and be a second allow-list beside
+  `is_enabled`, which CLAUDE.md forbids. The operator's opt-in is the `is_enabled` pair.
+- **Known limit, deliberate:** `agent_view_id` is asserted by the caller (`?agent_view_id=` on the SSE
+  URL), so the namespace SCOPES cooperating views rather than authorizing them. The fix is
+  session-bound identity in the framework, not a module-local check — see ROADMAP.md.
+- **Cost, accepted:** no `artifact:delete` exists anywhere, so the cap is a one-way ratchet. Its remedy
+  is manual: remove `<storage_root>/<code>` AND `<published_root>/<code>`, then the table row.
+
 ## 2026-09-06 — VersionedArtifacts: artifact creation is a host command, not an HTTP route
 
 - **Decision:** `artifact:init` runs on the host and pipes a payload into
-  `docker compose exec -T toolbox node …/cli.js`.
+  `docker compose exec -T toolbox node …/cli.js`. It stays the operator's equivalent of the tool —
+  it is the only path that can import a host directory as version 1.
 - **Alternative rejected — an Express route on the toolbox.** The toolbox authenticates no caller, so
-  every route it serves is reachable by the agent. Artifact creation is administrative (PRD §10), and a
-  route would also have meant handing the toolbox an arbitrary host path to read.
+  every route it serves is reachable by the agent. A route would have meant handing the toolbox an
+  arbitrary host path to read — which is also why the TOOL takes no `--source` (see the entry above).
 - **Consequence:** the command must not be proxied into cron (which sees neither the host source nor the
   storage volume), but it is still a *module* command, so it lives in `_LOCAL_MODULE_COMMANDS` — that
   stops the proxy while leaving the module bootstrap that registers it with argparse intact.

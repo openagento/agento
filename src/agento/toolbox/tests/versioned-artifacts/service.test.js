@@ -20,6 +20,7 @@ const opened = [];
 const cfg = (over = {}) => ({ storage_root: root, published_root: pub, allowed_artifacts: 'site',
   'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', 'limits/max_files': 2000,
   'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600, 'limits/max_diff_bytes': 1048576,
+  'limits/max_agent_artifacts': 50,
   'security/allow_symlinks': false, ...over });
 
 beforeEach(async () => {
@@ -267,7 +268,10 @@ describe('listing the artifacts a scope may use', () => {
   });
 
   it('lists the allowed artifacts that the store actually holds, and nothing else', async () => {
-    await svc.init('other', { files: await readSource(src) });   // in the store, not in the allowlist
+    // In the store, not in THIS scope's allowlist — so it takes a service the
+    // operator granted it, the way the admin CLI would have created it.
+    await createService({ config: cfg({ allowed_artifacts: 'other' }), db: null, log: vi.fn() })
+      .init('other', { files: await readSource(src) });
     const s = withMeta([], { allowed_artifacts: 'site,never-created' });
     expect((await s.listArtifacts()).map(a => a.artifact_code)).toEqual(['site']);
   });
@@ -311,4 +315,70 @@ it('never returns a host path or a raw git error', async () => {
   const s = createService({ config: cfg({ storage_root: '/nonexistent/vf-other-root' }), db: null, log: vi.fn() });
   const err = await s.getCurrent('site').catch(e => e);
   expect(String(err.detail ?? err.message)).not.toMatch(/vf-other-root|fatal:|node:internal/);
+});
+
+describe('the artifacts an agent_view may create', () => {
+  // `agent_view_id` is SELF-ASSERTED by the caller, so this namespace SCOPES artifacts
+  // between cooperating agent_views — it is not an authorization boundary. The tests
+  // below pin the scoping rules; ROADMAP.md carries the identity gap.
+  const view = (id, over = {}) => createService({
+    config: cfg({ allowed_artifacts: '', ...over }), db: null, log: vi.fn(), agentViewId: id,
+  });
+
+  it('creates inside its own namespace with no operator grant at all', async () => {
+    const s = view(7);
+    expect((await s.init('av7-report')).artifact_code).toBe('av7-report');
+    expect((await s.listArtifacts()).map(a => a.artifact_code)).toEqual(['av7-report']);
+  });
+
+  it('refuses a code outside the namespace and names the prefix so the caller can retry', async () => {
+    const err = await view(7).init('av9-report').catch(e => e);
+    expect(err.code).toBe('ARTIFACT_ACCESS_DENIED');
+    expect(err.detail).toContain('av7-');
+  });
+
+  it('owns nothing when the agent_view id is not a positive integer', async () => {
+    // `?agent_view_id=abc` parses to NaN and `?agent_view_id=0` to 0. An empty prefix
+    // would make `startsWith` true for every code — every artifact in the store owned
+    // by every session that sends a malformed id.
+    for (const id of [Number.NaN, null, 0, -1, 1.5]) {
+      const s = view(id);
+      await expect(s.init('anything')).rejects.toThrow(/ARTIFACT_ACCESS_DENIED/);
+      expect(await s.listArtifacts()).toEqual([]);
+    }
+  });
+
+  it('records an audit row for a refused creation', async () => {
+    const audited = [];
+    const s = createService({ config: cfg({ allowed_artifacts: '' }), agentViewId: 7, log: vi.fn(),
+      db: { getCronPool: () => ({ execute: async (_q, p) => audited.push(p) }) } });
+    await expect(s.init('av9-report')).rejects.toThrow(/ARTIFACT_ACCESS_DENIED/);
+    expect(audited.at(-1)).toContain('ARTIFACT_ACCESS_DENIED');
+  });
+
+  it('creates an artifact an operator pre-granted, even outside the namespace', async () => {
+    // The answer to "I want a pretty URL": one `config:set allowed_artifacts`, and the
+    // agent does the rest. The same grant is how one agent_view hands an artifact to another.
+    const s = view(7, { allowed_artifacts: 'marketing-site' });
+    expect((await s.init('marketing-site')).artifact_code).toBe('marketing-site');
+  });
+
+  it('stops at the cap, and counts only what the caller may use', async () => {
+    // A cap counted over the WHOLE store would be a cross-view cardinality oracle and,
+    // with no delete anywhere, a one-way lockout of every other agent_view.
+    const seven = view(7, { 'limits/max_agent_artifacts': 2 });
+    await seven.init('av7-a');
+    await seven.init('av7-b');
+    const err = await seven.init('av7-c').catch(e => e);
+    expect(err.code).toBe('ARTIFACT_LIMIT_REACHED');
+    expect((await view(9, { 'limits/max_agent_artifacts': 2 }).init('av9-a')).artifact_code).toBe('av9-a');
+  });
+
+  it('exempts the administrator from the namespace and the cap', async () => {
+    // `admin: true` is set by cli.js alone: `artifact:init` must keep creating any code.
+    const admin = createService({ config: cfg({ allowed_artifacts: '', 'limits/max_agent_artifacts': 1 }),
+      db: null, log: vi.fn(), admin: true });
+    await admin.init('operator-one');
+    expect((await admin.init('operator-two')).artifact_code).toBe('operator-two');
+  });
 });

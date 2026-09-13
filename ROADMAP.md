@@ -979,7 +979,8 @@ Tokens are currently selected per-provider via `TokenResolver`. For multi-tenant
 
 Generic versioned file/directory trees: mutable **drafts**, immutable **versions**, and an atomic
 **current** pointer, backed by local Git that never surfaces in the public contract. Shipped as the
-core module `versioned_artifacts` (ten opt-in MCP tools plus the admin-only `artifact:init`),
+core module `versioned_artifacts` (eleven opt-in MCP tools covering the whole lifecycle, with
+`artifact:init` / `artifact:list` / `artifact:publish` as equivalent operator commands),
 with a toolbox-only storage volume, per-`agent_view` artifact allowlist, filesystem locking, crash
 recovery and a `versioned_artifact_audit` trail. See
 [docs/modules/versioned-artifacts.md](docs/modules/versioned-artifacts.md).
@@ -1243,3 +1244,29 @@ parameter supplied by a config file that lives in the job's own writable artifac
 directory. That makes it the ceiling on every per-agent_view gate, `allowed_artifacts`
 included: a job that edits its own config can present any agent_view it likes. The fix is
 session-bound identity in the framework, never a module-local caller check.
+
+**Widened by the AG-50 follow-up** that gives the agent the whole artifact lifecycle: the
+`av<agent_view_id>-` namespace an agent creates in is derived from that same self-asserted
+value, so it SCOPES cooperating views and does not authorize them — a forged id reaches
+another view's namespace and its per-view creation quota. Shipping it this way was the
+deliberate choice (the alternative markers are all forgeable through the same parameter);
+what closes it is the session-bound identity above, and nothing below it.
+
+Two more gaps the same change makes reachable without an operator, neither of them new:
+- **Nothing bounds disk.** `limits/max_agent_artifacts` bounds namespaces. Versions are
+  unbounded, every save materializes a full copy into the published tree, and
+  `serving/keep_versions` defaults to `0`, which prunes nothing. A positive default is the
+  one-line fix; it belongs with the GC deferral in Phase 16.
+- **No `artifact:delete` exists**, so the creation cap is a one-way ratchet and the remedy is
+  a manual `rm -rf` of two roots plus the table row. A cap without a delete is a fuse.
+
+Also unclosed on the serving side: `artifacts-server.js` answers `/` with an index of every
+artifact code, and agent-authored HTML now reaches that port with no operator step. Same-origin
+script in one artifact can therefore enumerate and read every other artifact in the operator's
+browser, and `navigator.sendBeacon` carries it out — the operator's browser is the one route
+off that container. `X-Content-Type-Options: nosniff` shipped with the lifecycle change; the
+same-origin read did not. A `sandbox allow-scripts; default-src 'self'` CSP is the cheap fix
+(an opaque origin cannot read a sibling artifact, and the page keeps its own JS), but it must
+be confirmed against a real static site first — that use case is why the lifecycle change
+exists. Restricting the `/` index instead needs per-caller identity the server deliberately
+does not have.
