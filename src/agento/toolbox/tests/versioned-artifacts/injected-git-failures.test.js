@@ -59,7 +59,7 @@ beforeEach(async () => {
     config: { storage_root: root, published_root: pub, allowed_artifacts: 'site',
       'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', 'limits/max_files': 2000,
       'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600,
-      'limits/max_diff_bytes': 1048576, 'security/allow_symlinks': false },
+      'limits/max_diff_bytes': 1048576, 'limits/max_agent_artifacts': 50, 'security/allow_symlinks': false },
     db: null, log: vi.fn(), actor: 'admin',
   });
   await svc.init('site', { files: await readSource(src) });
