@@ -6,6 +6,7 @@
   "order": 100,
   "tools": [
     {"type": "mcp", "name": "versioned_artifact", "description": "VersionedArtifacts toolset master switch — every versioned_artifact_* tool additionally requires its own key", "toolset": "versioned_artifacts"},
+    {"type": "mcp", "name": "versioned_artifact_init", "description": "Create a new empty artifact; fill it by creating a draft and saving a version", "toolset": "versioned_artifacts", "requires": "versioned_artifact"},
     {"type": "mcp", "name": "versioned_artifact_list", "description": "List the artifacts you can work on, with their current version and open drafts", "toolset": "versioned_artifacts", "requires": "versioned_artifact"},
     {"type": "mcp", "name": "versioned_artifact_get_current", "description": "Read which version an artifact currently publishes", "toolset": "versioned_artifacts", "requires": "versioned_artifact"},
     {"type": "mcp", "name": "versioned_artifact_list_versions", "description": "List an artifact's versions", "toolset": "versioned_artifacts", "requires": "versioned_artifact"},

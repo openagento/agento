@@ -2,8 +2,12 @@
 
 A **artifact** is a named tree of files that publishes exactly one **version** at a time.
 You never edit an artifact directly. You open a **draft**, edit its files in your own
-workspace with the normal file tools, save the draft as an immutable version, and — only
-when asked — **publish** that version.
+workspace with the normal file tools, save the draft as an immutable version, and
+**publish** that version.
+
+You own the whole loop and need nobody to start it for you: create an artifact, draft it,
+save versions, hand the `artifact_code` and a `version_id` to another agent to review or
+extend, publish, draft again.
 
 What you save is what you publish: a version never changes after it is created.
 
@@ -18,10 +22,26 @@ What you save is what you publish: a version never changes after it is created.
 | `revision` | A short opaque id for one saved change inside a draft |
 | `path` | The directory in YOUR workspace where a draft or version is copied |
 
+## Creating one
+
+`versioned_artifact_init` makes a new, **empty** artifact. It takes an `artifact_code` and
+an optional `title`, and nothing else — you fill version 1 the same way you make any other
+change: `create_draft`, write files, `save_version`.
+
+**The code you choose must start with your own prefix.** If you get
+`ARTIFACT_ACCESS_DENIED`, the message names the prefix; retry with it, for example
+`av7-quarterly-report`. The prefix is also in the URL, so pick the rest of the name for a
+reader. A code an administrator granted you is the exception — you may create that one
+under its own name.
+
+`ARTIFACT_LIMIT_REACHED` means you already hold as many artifacts as you may. Nothing
+deletes an artifact, so reuse one you made earlier — a new version, not a new artifact, is
+how work moves forward.
+
 ## The flow
 
 ```
-get_current -> create_draft -> edit files under the returned `path` (repeat)
+init (once) -> get_current -> create_draft -> edit files under the returned `path` (repeat)
             -> save_version -> diff -> publish(version_id, expected_current_version=<from get_current>)
             -> discard_draft
 ```
@@ -45,8 +65,8 @@ get_current -> create_draft -> edit files under the returned `path` (repeat)
 use it to read an older version, or to recover after a failed step. It **replaces**
 whatever is in that directory, so save first if you have unsaved edits.
 
-`versioned_artifact_list` shows the artifacts you may use, their current version and
-their open drafts. `versioned_artifact_list_versions` lists versions, newest first, and
+`versioned_artifact_list` shows the artifacts you may use — the ones you created and the
+ones you were granted — with their current version and their open drafts. `versioned_artifact_list_versions` lists versions, newest first, and
 tells you which one is current.
 
 ## Saving twice changes nothing
@@ -56,8 +76,15 @@ one. A retry after a failure is safe.
 
 ## Publishing is a separate decision
 
-**Do not publish unless the user explicitly asked you to publish.** Saving is safe —
-it only records your work. Publishing changes what everyone sees.
+**An artifact you created yourself is yours to publish** — that is the normal end of the
+loop, and you do not need to ask.
+
+**An artifact someone granted you is not.** Do not publish one unless the user explicitly
+asked you to. Publishing changes what everyone already reading it sees.
+
+Either way, know what saving does: **a saved version is already readable over HTTP** at its
+own `preview_path`. Publishing only decides which version the artifact's main address shows.
+Do not save anything to an artifact you would not want read.
 
 `publish` requires `expected_current_version`: the version you believe is live, taken
 from `versioned_artifact_get_current`. If the artifact moved on since you read it, publish
@@ -96,7 +123,8 @@ Every failure gives you an `error_code`. The ones you will act on:
 | `DRAFT_NOT_FOUND` | The draft was discarded; create a new one |
 | `DESK_MISSING` | The draft's directory is gone from your workspace; `materialize` it again |
 | `WORKSPACE_UNAVAILABLE` | This session has no workspace; you cannot use drafts here |
-| `ARTIFACT_ACCESS_DENIED` | You may not use this artifact; ask the user |
+| `ARTIFACT_ACCESS_DENIED` | On `init`: the code is outside your prefix — the message names it, retry. Otherwise: you may not use this artifact; ask the user |
+| `ARTIFACT_LIMIT_REACHED` | You hold as many artifacts as you may; save a new version of one you already have |
 | `INVALID_PATH` / `PATH_OUTSIDE_ARTIFACT` | A file in the directory is not a plain relative path inside it |
 | `SYMLINK_NOT_ALLOWED` | Remove the symlink; save copies regular files only |
 | `FILE_TOO_LARGE` / `ARTIFACT_TOO_LARGE` / `TOO_MANY_FILES` | The change exceeds a limit |
