@@ -65,8 +65,9 @@ A caller may use an artifact when **either** holds:
 
 The second is the operator's grant, and it is also the **handoff**: one
 `config:set versioned_artifacts/allowed_artifacts av7-report --scope agent_view --scope-id 9`
-gives view 9 the artifact view 7 created. It is equally the "pretty URL" path — pre-grant
-`marketing-site` and the agent can `init` it under that exact code.
+gives view 9 the artifact view 7 created. The value **replaces** that scope's list, so a
+second handoff must repeat the earlier codes in the comma-separated value. It is equally the
+"pretty URL" path — pre-grant `marketing-site` and the agent can `init` it under that exact code.
 
 `limits/max_agent_artifacts` caps creation, counted over the artifacts **that caller may
 use** — never over the store. A store-wide count would answer "how many artifacts does every
