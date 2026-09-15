@@ -3,7 +3,7 @@
 Every one of these commands runs on the HOST (they are in `_LOCAL_MODULE_COMMANDS`),
 resolves the compose file itself, and execs into the toolbox, which is the only
 container that can reach the store. They therefore share one reply contract, and
-duplicating it per command is how three commands end up with three different ideas
+duplicating it per command is how each command ends up with its own idea
 of what a malformed reply means.
 """
 from __future__ import annotations

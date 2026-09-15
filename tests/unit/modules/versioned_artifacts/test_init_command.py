@@ -39,14 +39,25 @@ def test_collect_source_enforces_max_file_size(tmp_path):
         raise AssertionError("expected ValueError")
 
 
-def test_command_is_local_but_still_bootstrapped():
+def test_every_declared_command_is_local_but_still_bootstrapped():
+    """The whole class, not one name: every command this module declares must stay on the
+    host, and a fourth one added without its `_LOCAL_MODULE_COMMANDS` entry is silently
+    proxied into cron, which has no docker socket."""
+    import json
+    from pathlib import Path
+
     from agento.framework.cli import _LOCAL_COMMANDS, _LOCAL_MODULE_COMMANDS, _should_proxy
-    # Not proxied into cron (which cannot read a host source path)...
-    assert not _should_proxy(["artifact:init", "site"])
-    # ...but NOT in _LOCAL_COMMANDS, or bootstrap() would be skipped and the
-    # module command would never be registered with argparse.
-    assert "artifact:init" in _LOCAL_MODULE_COMMANDS
-    assert "artifact:init" not in _LOCAL_COMMANDS
+
+    di = json.loads(
+        (Path(__file__).parents[4] / "src/agento/modules/versioned_artifacts/di.json").read_text()
+    )
+    for name in (c["name"] for c in di["commands"]):
+        # Not proxied into cron (which cannot read a host source path)...
+        assert not _should_proxy([name, "site"])
+        # ...but NOT in _LOCAL_COMMANDS, or bootstrap() would be skipped and the
+        # module command would never be registered with argparse.
+        assert name in _LOCAL_MODULE_COMMANDS
+        assert name not in _LOCAL_COMMANDS
 
 
 def test_every_invocation_of_this_command_stays_on_the_host():
