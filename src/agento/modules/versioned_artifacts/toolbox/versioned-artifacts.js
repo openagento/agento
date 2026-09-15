@@ -6,8 +6,14 @@ import { ArtifactError, ERROR_CODES, toToolError, errorFacts } from './errors.js
 
 const ok = (payload) => ({ content: [{ type: 'text', text: JSON.stringify(payload) }] });
 
+// The shape is spelled out, not left to the regex: a caller that guesses wrong sees only
+// a pattern in a validation error, which is not enough to repair the call.
 const artifactArg = {
-  artifact_code: z.string().regex(ARTIFACT_CODE_RE).describe('Stable artifact identifier'),
+  artifact_code: z.string().regex(ARTIFACT_CODE_RE).describe(
+    'Stable artifact identifier: lowercase letters, digits and hyphens only '
+    + '(no uppercase, no underscore), e.g. "launch-plan". On init this is the code you '
+    + 'WANT; everywhere else it is the code init answered with',
+  ),
 };
 
 // Bounded at the schema, not only in the service: an identifier that is refused
@@ -84,7 +90,9 @@ export async function register(server, context) {
 
   if (enabled('versioned_artifact_init')) {
     server.tool('versioned_artifact_init',
-      'Create a new empty artifact; fill it by creating a draft and saving a version',
+      'Create a new empty artifact; fill it by creating a draft and saving a version. '
+      + 'Answers the artifact_code it actually got — the same one you asked for unless that '
+      + 'name is taken, then the next free "-N". Use the answer, not your request, from then on',
       { ...artifactArg, title: z.string().max(255).optional().describe('Human-readable title') },
       (args) => run(async () => {
         // Before the store is touched, for the same reason `create_draft` does it: an
