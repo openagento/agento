@@ -155,3 +155,11 @@ it('never writes a stack when the direct executor fails (round 3)', async () => 
   expect(JSON.parse(stdout.trim())).toEqual({ error_code: 'STORAGE_OPERATION_FAILED', message: 'the toolbox command failed' });
   expect(stderr).not.toMatch(/node:internal|at |file:\/\/|\^/);
 });
+
+it('routes --op remove to the service and then reports the artifact gone', async () => {
+  await main({ actor: 'admin' }, { artifact_code: 'site', files: FILES }, deps());
+  const r = await main({ actor: 'admin', op: 'remove' }, { artifact_code: 'site' }, deps());
+  expect(r).toMatchObject({ artifact_code: 'site', removed_store: true, removed_published: true });
+  const again = await main({ actor: 'admin', op: 'remove' }, { artifact_code: 'site' }, deps());
+  expect(again.error_code).toBe('ARTIFACT_NOT_FOUND');
+});

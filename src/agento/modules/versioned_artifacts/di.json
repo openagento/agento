@@ -9,6 +9,10 @@
       "class": "src.commands.list.VersionedArtifactListCommand"
     },
     {
+      "name": "artifact:delete",
+      "class": "src.commands.delete.VersionedArtifactDeleteCommand"
+    },
+    {
       "name": "artifact:publish",
       "class": "src.commands.publish.VersionedArtifactPublishCommand"
     }
