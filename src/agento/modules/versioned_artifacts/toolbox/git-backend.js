@@ -65,6 +65,11 @@ const draftBranch = (id) => `refs/heads/agento-drafts/${id}`;
 const baseRef = (id) => `refs/agento/draft-bases/${id}`;
 const discardingRef = (id) => `refs/agento/discarding/${id}`;
 
+// The owner marker inside an artifact root. A plain name, next to `repo.git`,
+// `worktrees/` and `locks/`; an artifact_code cannot collide with it because the
+// marker lives INSIDE the artifact, not beside it.
+const OWNER_FILE = 'owner';
+
 const MAX_ID_RETRIES = 5;
 const DEFAULT_MAX_OUTPUT = 64 * 1024 * 1024;
 const DEFAULT_MAX_DIFF_BYTES = 256 * 1024;
@@ -356,10 +361,10 @@ export function createBackend({ newVersionId = defaultVersionId, hooks = {} } = 
 
   // ------------------------------------------------------------------- init
 
-  async function init(storageRoot, artifactCode, { files = [], allowSymlinks = false, limits = {} } = {}) {
+  async function init(storageRoot, artifactCode, { files = [], allowSymlinks = false, limits = {}, owningView = null } = {}) {
     validateArtifactCode(artifactCode);
     const root = artifactRoot(storageRoot, artifactCode);
-    if (await exists(root)) throw new ArtifactError(ERROR_CODES.STORAGE_OPERATION_FAILED, 'artifact already exists');
+    if (await exists(root)) throw new ArtifactError(ERROR_CODES.ARTIFACT_ALREADY_EXISTS, 'artifact already exists');
 
     // Validate the WHOLE payload before creating anything: a half-created artifact
     // would make every retry report "already exists".
@@ -424,11 +429,28 @@ export function createBackend({ newVersionId = defaultVersionId, hooks = {} } = 
       }
       if (!versionId) throw lastErr;
       await gitBare(repo, ['update-ref', REF_CURRENT, commit, '']);
+      // WHO may use this artifact, recorded in the store because nothing else carries
+      // it: the code is a plain name, so it says nothing about ownership. Written
+      // inside the guarded block, so the `rm -rf` below is what makes it atomic — the
+      // artifact exists with its owner, or it does not exist. An artifact with no
+      // marker is owned by nobody and is reachable only through `allowed_artifacts`,
+      // which is exactly how a store predating this file behaves.
+      if (owningView !== null) await writeFile(path.join(root, OWNER_FILE), `${owningView}\n`);
       return { artifact_code: artifactCode, current_version: versionId };
     } catch (err) {
       await rm(root, { recursive: true, force: true });
       throw err;
     }
+  }
+
+  /** The agent_view that created this artifact, or `null` for one that records none.
+   *  Unreadable is `null` too: a membership check must not grant on a failed read. */
+  async function readOwningView(storageRoot, artifactCode) {
+    try {
+      const raw = await readFile(path.join(artifactRoot(storageRoot, artifactCode), OWNER_FILE), 'utf8');
+      const value = raw.trim();
+      return value === '' ? null : value;
+    } catch { return null; }
   }
 
   // ------------------------------------------------------- current, versions
@@ -752,5 +774,6 @@ export function createBackend({ newVersionId = defaultVersionId, hooks = {} } = 
     init, getCurrent, listVersions, publish, materialize, materializePublished, sweepScratch,
     createDraft, commitDraft, saveVersion, diff, discardDraft,
     recoverDraft, draftState, reconcileDrafts, listOpenDrafts, listArtifacts, getDraftPath,
+    readOwningView,
   };
 }

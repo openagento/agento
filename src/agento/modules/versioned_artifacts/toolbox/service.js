@@ -55,6 +55,25 @@ const OPS = {
   publish: 'versioned_artifact.version.published',
 };
 
+/** How many names to try before giving up. The per-caller creation quota
+ *  (`limits/max_agent_artifacts`) bounds how many an agent can hold at all, so this only
+ *  has to exceed the largest sensible quota — it is a stop, not a policy. */
+const MAX_NAME_ATTEMPTS = 200;
+
+/** `name` → `name-2`, `name-3`, … The suffix is APPENDED, never spliced over a number
+ *  the caller's own name ends with: stripping a trailing `-\d+` first would turn a
+ *  taken `plan-2024` into `plan-2` and silently discard the year. A caller who really
+ *  did ask for `report-2` and lost it gets `report-2-2`, which is ugly and truthful.
+ *  The result is validated by `be.init`, which refuses a code the regex rejects — a base
+ *  long enough that the suffix pushes it past 64 characters fails loudly rather than
+ *  being truncated into a different artifact. */
+const suffixed = (base, n) => `${base}-${n}`;
+
+/** Did this creation fail because the NAME is taken, as opposed to the store failing?
+ *  Matched on the backend's own sentinel rather than on message text. */
+const isNameTaken = (err) => err instanceof ArtifactError
+  && err.code === ERROR_CODES.ARTIFACT_ALREADY_EXISTS;
+
 export function createService({ config = {}, db = null, log = null, jobId = null, agentViewId = null,
   actor = null, backend = null, admin = false } = {}) {
   const storageRoot = asStorageRoot(config.storage_root);
@@ -75,16 +94,19 @@ export function createService({ config = {}, db = null, log = null, jobId = null
   const allowedArtifacts = String(config.allowed_artifacts ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const be = backend || createBackend();
 
-  /** The namespace an agent_view creates and works in. DERIVED, never configured and
-   *  never stored: there is no marker file to half-write and no pre-existing artifact
-   *  to migrate. The empty string means "owns nothing" — a caller that sends
-   *  `?agent_view_id=abc` parses to NaN and one that sends `0` parses to 0, and an empty
-   *  prefix would make `startsWith` true for every code in the store.
+  /** The agent_view this session acts as, as the store spells it. `null` means "owns
+   *  nothing" — a caller that sends `?agent_view_id=abc` parses to NaN and one that
+   *  sends `0` parses to 0, and neither may own an artifact.
    *
    *  It SCOPES, it does not authorize: `agent_view_id` is asserted by the caller on the
-   *  SSE URL, so a forged one reaches another view's namespace. See ROADMAP.md — the fix
-   *  is session-bound identity in the framework, not a check here. */
-  const ownNamespace = Number.isSafeInteger(agentViewId) && agentViewId > 0 ? `av${agentViewId}-` : '';
+   *  SSE URL, so a forged one reaches another view's artifacts. See ROADMAP.md — the fix
+   *  is session-bound identity in the framework, not a check here.
+   *
+   *  This replaced an `av<id>-` code PREFIX. The prefix carried ownership in the NAME,
+   *  which meant the agent had to know and type it, and every artifact wore an operator
+   *  concern in its URL. Ownership now lives in the artifact, where the store is already
+   *  the authority on what exists, and the name is free to be a name. */
+  const ownView = Number.isSafeInteger(agentViewId) && agentViewId > 0 ? String(agentViewId) : null;
 
   /** The ONE rule for "may this caller touch that artifact", used by the gate below and
    *  by the listing, which used to spell it out a second time and could drift from it.
@@ -100,13 +122,24 @@ export function createService({ config = {}, db = null, log = null, jobId = null
    *  one agent_view to another — one `config:set`, no new mechanism. It is not a second
    *  allow-list beside `is_enabled`: `is_enabled` decides whether the tool exists at all,
    *  this decides which artifacts it may name. */
-  const mayUse = (artifactCode) => admin
-    || allowedArtifacts.includes(artifactCode)
-    || (ownNamespace !== '' && artifactCode.startsWith(ownNamespace));
+  const mayUse = async (artifactCode) => {
+    if (admin || allowedArtifacts.includes(artifactCode)) return true;
+    if (ownView === null) return false;
+    return (await be.readOwningView(storageRoot, artifactCode)) === ownView;
+  };
 
-  function assertArtifactAllowed(artifactCode) {
+  /** The owner read costs one small file per artifact, so a listing pays it per entry.
+   *  Sequential on purpose: a store with thousands of artifacts would otherwise open
+   *  thousands of descriptors at once, and the listing is not on any hot path. */
+  const filterUsable = async (codes) => {
+    const usable = [];
+    for (const code of codes) if (await mayUse(code)) usable.push(code);
+    return usable;
+  };
+
+  async function assertArtifactAllowed(artifactCode) {
     validateArtifactCode(artifactCode);
-    if (!mayUse(artifactCode)) {
+    if (!(await mayUse(artifactCode))) {
       throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, `artifact '${artifactCode}' is not available`);
     }
   }
@@ -212,11 +245,12 @@ export function createService({ config = {}, db = null, log = null, jobId = null
        *  whole loop — init, draft, version, publish, next draft — and an operator is
        *  needed to bootstrap none of it.
        *
-       *  An agent creates inside its own `ownNamespace`, or on a code an operator
-       *  pre-granted through `allowed_artifacts` (that is the "pretty URL" path, and the
-       *  cross-view handoff, with no new mechanism). `files` is CLI-only — the tool
-       *  schema declares no such parameter, and an agent fills version 1 through a draft
-       *  on its desk, so no agent-supplied tree ever enters here. */
+       *  An agent creates under any free name and OWNS what it created; an operator
+       *  hands one view another's artifact through `allowed_artifacts`, with no new
+       *  mechanism. The name asked for is a wish — the answer carries the real one.
+       *  `files` is CLI-only — the tool schema declares no such parameter, and an agent
+       *  fills version 1 through a draft on its desk, so no agent-supplied tree ever
+       *  enters here. */
       async init(artifactCode, { files = [], title = null, owner = null } = {}) {
         // The ONLY check above the audit boundary, and it must stay there: an invalid
         // code audited is up to 64 bytes of arbitrary caller text written into
@@ -225,66 +259,97 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         // Every POLICY refusal below is INSIDE it — a denied creation is an attempt on
         // the store and the row's `error_code` column exists to record exactly that.
         return audited(OPS.init, { artifactCode }, async () => {
-          if (!mayUse(artifactCode)) {
-            // Naming the prefix is what lets the agent retry without an operator.
-            throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, ownNamespace
-              ? `an artifact you create must start with '${ownNamespace}'`
-              : 'this session may not create artifacts');
+          // A name the OPERATOR chose — the admin CLI, or a code pre-granted through
+          // `allowed_artifacts`. Such a name is taken literally: it is created exactly as
+          // spelled and a collision is an error, because the operator picked that address
+          // on purpose (the "pretty URL" path) and quietly publishing at a different one
+          // is not a service. Everything else is an agent naming its own work, where the
+          // name is a wish and the next free number is a better answer than a refusal.
+          const namedByOperator = admin || allowedArtifacts.includes(artifactCode);
+          if (!namedByOperator && ownView === null) {
+            throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, 'this session may not create artifacts');
           }
-          const created = await withLock(initLock(artifactCode), async () => {
-            // Counted over what this caller may USE, not over the store. A count of the
-            // whole store answers "how many artifacts does every other agent_view hold"
-            // — and, with no delete on any path, lets one view lock creation out for all
-            // of them. It bounds namespaces, NOT disk: versions are unbounded and
-            // `serving/keep_versions` prunes nothing at its default of 0.
-            // ponytail: the lock is per-code, so N concurrent inits can overshoot by N-1.
-            if (!admin) {
-              const held = (await be.listArtifacts(storageRoot)).filter(mayUse).length;
-              if (held >= limits.max_agent_artifacts) {
-                throw new ArtifactError(ERROR_CODES.ARTIFACT_LIMIT_REACHED,
-                  `this scope already holds ${held} artifacts`);
-              }
+          // Counted over what this caller may USE, not over the store. A count of the
+          // whole store answers "how many artifacts does every other agent_view hold"
+          // — and, with no delete on any path, lets one view lock creation out for all
+          // of them. It bounds ownership, NOT disk: versions are unbounded and
+          // `serving/keep_versions` prunes nothing at its default of 0.
+          // Hoisted out of the retry below: the count does not change between attempts.
+          if (!admin) {
+            const held = (await filterUsable(await be.listArtifacts(storageRoot))).length;
+            if (held >= limits.max_agent_artifacts) {
+              throw new ArtifactError(ERROR_CODES.ARTIFACT_LIMIT_REACHED,
+                `this scope already holds ${held} artifacts`);
             }
-            const made = await be.init(storageRoot, artifactCode, { files, allowSymlinks, limits });
-            // The store is the authority on what exists and the row only DECORATES
-            // it, so a failed INSERT costs a title, never the artifact — the same way
-            // `recordAudit` degrades. Failing the init here would leave an artifact
-            // that exists in the store and reports "creation failed" on every retry.
-            const db2 = pool();
-            if (db2) {
-              try {
-                await db2.execute(
-                  'INSERT INTO versioned_artifact (artifact_code, title, owner) VALUES (?, ?, ?)',
-                  [artifactCode, title, owner]);
-              } catch (err) {
-                log?.('versioned_artifacts', 'ERROR',
-                  `artifact metadata not recorded for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
-              }
+          }
+          // The name the caller ASKED for is a wish, not the identity: the identity is
+          // what comes back. A taken name is answered with `-2`, `-3`, … rather than an
+          // error, because the caller has no way to see what another agent_view already
+          // took — the store is shared and the listing is not. The ADMIN path keeps the
+          // error: an operator names a code deliberately (a pretty URL), and silently
+          // renaming it would publish something at an address they did not choose.
+          let created = null;
+          let finalCode = artifactCode;
+          for (let attempt = 1; created === null; attempt += 1) {
+            const candidate = attempt === 1 ? artifactCode : suffixed(artifactCode, attempt);
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              created = await withLock(initLock(candidate), async () => {
+                const made = await be.init(storageRoot, candidate, {
+                  files, allowSymlinks, limits, owningView: admin ? null : ownView,
+                });
+                // The store is the authority on what exists and the row only DECORATES
+                // it, so a failed INSERT costs a title, never the artifact — the same way
+                // `recordAudit` degrades. Failing the init here would leave an artifact
+                // that exists in the store and reports "creation failed" on every retry.
+                const db2 = pool();
+                if (db2) {
+                  try {
+                    await db2.execute(
+                      'INSERT INTO versioned_artifact (artifact_code, title, owner) VALUES (?, ?, ?)',
+                      [candidate, title, owner]);
+                  } catch (err) {
+                    log?.('versioned_artifacts', 'ERROR',
+                      `artifact metadata not recorded for '${candidate}': ${errorFacts(err) ?? 'unknown'}`);
+                  }
+                }
+                return made;
+              });
+              finalCode = candidate;
+            } catch (err) {
+              // Racing on `be.init` rather than checking existence first is what makes
+              // this safe under concurrency: two sessions asking for the same name both
+              // lose to the same check, and the loser simply takes the next number.
+              if (!isNameTaken(err) || namedByOperator || attempt >= MAX_NAME_ATTEMPTS) throw err;
             }
-            return made;
-          });
+          }
+          // Everything below names the artifact that EXISTS, never the one that was
+          // asked for: they differ whenever the wished-for name was taken.
           // AFTER the lock, the way `save_version` publishes: `init` already answers a
           // preview URL, so version 1 must be on disk and `current` must point at it
           // before anyone follows that URL. Never fatal — the artifact exists in the
           // store either way, and `publish` rebuilds the tree.
           try {
-            await publishVersionTree(artifactCode, created.current_version, { swap: true });
+            await publishVersionTree(finalCode, created.current_version, { swap: true });
           } catch (err) {
             log?.('versioned_artifacts', 'ERROR',
-              `preview unavailable for '${artifactCode}' ${created.current_version}: ${errorFacts(err) ?? 'unknown'}`);
+              `preview unavailable for '${finalCode}' ${created.current_version}: ${errorFacts(err) ?? 'unknown'}`);
           }
-          return { ...created, preview_url: published.previewUrl(publicBaseUrl, artifactCode) };
-        }, (r) => ({ versionId: r.current_version }));
+          return { ...created, preview_url: published.previewUrl(publicBaseUrl, finalCode) };
+          // The audit row records what was CREATED. On the error path `describe` is not
+          // called and the row keeps the requested name, which is the right record of a
+          // creation that never happened.
+        }, (r) => ({ artifactCode: r.artifact_code, versionId: r.current_version }));
       },
 
       // ------------------------------------------------------------- reads
       async getCurrent(artifactCode) {
-        assertArtifactAllowed(artifactCode);
+        await assertArtifactAllowed(artifactCode);
         const current = await be.getCurrent(storageRoot, artifactCode);
         return { ...current, preview_url: published.previewUrl(publicBaseUrl, artifactCode) };
       },
       async listVersions(artifactCode, opts = {}) {
-        assertArtifactAllowed(artifactCode);
+        await assertArtifactAllowed(artifactCode);
         const rows = await be.listVersions(storageRoot, artifactCode, opts);
         // Relative, and null once retention pruned the directory — the version itself
         // is still materializable, only the browser preview is gone.
@@ -300,7 +365,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
        *  the store changes. */
       async materialize(artifactCode, selector, deskFd) {
         validateArtifactCode(artifactCode);
-        assertArtifactAllowed(artifactCode);
+        await assertArtifactAllowed(artifactCode);
         // Before the lock: its NAME is the id the selector gives, so a selector naming
         // two sources or none must be refused first.
         const id = selectorSourceId(selector);
@@ -312,7 +377,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
        *  `versioned_artifact` table only DECORATES that — the store is the authority on
        *  what exists, so a table that cannot be read costs a title, never an artifact. */
       async listArtifacts() {
-        const codes = (await be.listArtifacts(storageRoot)).filter((c) => mayUse(c));
+        const codes = await filterUsable(await be.listArtifacts(storageRoot));
         let meta = new Map();
         const db2 = pool();
         if (db2) {
@@ -348,7 +413,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         return out;
       },
       async diff(artifactCode, draftId, against = 'base') {
-        assertArtifactAllowed(artifactCode);
+        await assertArtifactAllowed(artifactCode);
         return be.diff(storageRoot, artifactCode, draftId, against, { maxDiffBytes: limits.max_diff_bytes });
       },
 
@@ -365,7 +430,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
       async createDraft(artifactCode, baseVersion, description) {
         validateArtifactCode(artifactCode);
         return audited(OPS.createDraft, { artifactCode, description }, async () => {
-          assertArtifactAllowed(artifactCode);
+          await assertArtifactAllowed(artifactCode);
           return withLock(artifactLock(artifactCode), async () => {
             // Opportunistic cleanup of garbage this call did not create: its failure
             // is logged by the layer that owns a logger, and the valid creation
@@ -388,7 +453,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         validateArtifactCode(artifactCode);
         validateDraftId(draftId);
         return audited(OPS.saveVersion, { artifactCode, draftId, description }, async () => {
-          assertArtifactAllowed(artifactCode);
+          await assertArtifactAllowed(artifactCode);
           const saved = await withLock(draftLock(artifactCode, draftId), async () => {
             await prepareDraft(artifactCode, draftId);
             return be.saveVersion(storageRoot, artifactCode, draftId, deskFd,
@@ -416,7 +481,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         validateArtifactCode(artifactCode);
         validateDraftId(draftId);
         return audited(OPS.discardDraft, { artifactCode, draftId }, async () => {
-          assertArtifactAllowed(artifactCode);
+          await assertArtifactAllowed(artifactCode);
           return withLock(draftLock(artifactCode, draftId), async () => {
             await prepareDraft(artifactCode, draftId, { allowMarkers: true });
             return be.discardDraft(storageRoot, artifactCode, draftId);
@@ -433,7 +498,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         validateVersionId(versionId);
         validateVersionId(expectedCurrentVersion);
         return audited(OPS.publish, { artifactCode, versionId }, async () => {
-          assertArtifactAllowed(artifactCode);
+          await assertArtifactAllowed(artifactCode);
           return withLock(artifactLock(artifactCode), async () => {
             // ORDER MATTERS, and the CAS goes second. The store's `current` ref is
             // authoritative: once it moves, a failure after it leaves the store saying
@@ -481,8 +546,8 @@ export function createService({ config = {}, db = null, log = null, jobId = null
       },
 
       // ---------------------------------------------------------- internal
-      internalDraftPath(artifactCode, draftId) {
-        assertArtifactAllowed(artifactCode);
+      async internalDraftPath(artifactCode, draftId) {
+        await assertArtifactAllowed(artifactCode);
         return be.getDraftPath(storageRoot, artifactCode, draftId);   // PRD §38 — never a tool
       },
 

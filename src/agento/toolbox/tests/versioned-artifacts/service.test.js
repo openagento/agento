@@ -233,7 +233,7 @@ describe('concurrency', () => {
 
   it.skipIf(!linux)('does not run recovery on a read path', async () => {
     const d = await svc.createDraft('site', 'current', 'x');
-    const wt = svc.internalDraftPath('site', d.draft_id);
+    const wt = await svc.internalDraftPath('site', d.draft_id);
     await writeFile(path.join(wt, 'in-flight.txt'), 'a concurrent write in progress');
     await svc.materialize('site', { draftId: d.draft_id }, deskFd);
     // Recovery on a read would delete another operation's in-progress work — and the
@@ -318,29 +318,58 @@ it('never returns a host path or a raw git error', async () => {
 });
 
 describe('the artifacts an agent_view may create', () => {
-  // `agent_view_id` is SELF-ASSERTED by the caller, so this namespace SCOPES artifacts
+  // `agent_view_id` is SELF-ASSERTED by the caller, so ownership SCOPES artifacts
   // between cooperating agent_views — it is not an authorization boundary. The tests
   // below pin the scoping rules; ROADMAP.md carries the identity gap.
+  //
+  // Ownership used to live in an `av<id>-` code PREFIX. It now lives in the artifact,
+  // recorded by the store at creation, so a code is a plain name: the agent neither
+  // types the prefix nor wears it in the published URL.
   const view = (id, over = {}) => createService({
     config: cfg({ allowed_artifacts: '', ...over }), db: null, log: vi.fn(), agentViewId: id,
   });
 
-  it('creates inside its own namespace with no operator grant at all', async () => {
+  it('creates under a plain name with no operator grant at all', async () => {
     const s = view(7);
-    expect((await s.init('av7-report')).artifact_code).toBe('av7-report');
-    expect((await s.listArtifacts()).map(a => a.artifact_code)).toEqual(['av7-report']);
+    expect((await s.init('report')).artifact_code).toBe('report');
   });
 
-  it('refuses a code outside the namespace and names the prefix so the caller can retry', async () => {
-    const err = await view(7).init('av9-report').catch(e => e);
-    expect(err.code).toBe('ARTIFACT_ACCESS_DENIED');
-    expect(err.detail).toContain('av7-');
+  it('lists what it created and nothing another view owns', async () => {
+    await view(7).init('report');
+    await view(9).init('other');
+    expect((await view(9).listArtifacts()).map(a => a.artifact_code)).toEqual(['other']);
+  });
+
+  it('answers a taken name with the next free number instead of an error', async () => {
+    // The caller cannot see what another agent_view already took — the store is shared
+    // and the listing is not — so a refusal would be advice it has no way to act on.
+    await view(7).init('report');
+    expect((await view(9).init('report')).artifact_code).toBe('report-2');
+    expect((await view(9).init('report')).artifact_code).toBe('report-3');
+  });
+
+  it('appends rather than splicing over a number the name already ends with', async () => {
+    // Stripping a trailing `-N` first would turn a taken `plan-2024` into `plan-2` and
+    // silently discard the year. Ugly and truthful beats tidy and wrong.
+    await view(7).init('plan-2024');
+    expect((await view(9).init('plan-2024')).artifact_code).toBe('plan-2024-2');
+  });
+
+  it('names the artifact that EXISTS in its answer, including the preview url', async () => {
+    await view(7).init('report');
+    const r = await view(9).init('report');
+    expect(r.artifact_code).toBe('report-2');
+    expect(r.preview_url).toContain('/report-2/');
+  });
+
+  it('does not reach an artifact another view created under a name it also asked for', async () => {
+    await view(7).init('report');
+    await expect(view(9).getCurrent('report')).rejects.toMatchObject({ code: 'ARTIFACT_ACCESS_DENIED' });
   });
 
   it('owns nothing when the agent_view id is not a positive integer', async () => {
-    // `?agent_view_id=abc` parses to NaN and `?agent_view_id=0` to 0. An empty prefix
-    // would make `startsWith` true for every code — every artifact in the store owned
-    // by every session that sends a malformed id.
+    // `?agent_view_id=abc` parses to NaN and `?agent_view_id=0` to 0. Neither may own
+    // an artifact, so neither may create one without an operator grant.
     for (const id of [Number.NaN, null, 0, -1, 1.5]) {
       const s = view(id);
       await expect(s.init('anything')).rejects.toThrow(/ARTIFACT_ACCESS_DENIED/);
@@ -350,28 +379,39 @@ describe('the artifacts an agent_view may create', () => {
 
   it('records an audit row for a refused creation', async () => {
     const audited = [];
-    const s = createService({ config: cfg({ allowed_artifacts: '' }), agentViewId: 7, log: vi.fn(),
+    const s = createService({ config: cfg({ allowed_artifacts: '' }), agentViewId: 0, log: vi.fn(),
       db: { getCronPool: () => ({ execute: async (_q, p) => audited.push(p) }) } });
-    await expect(s.init('av9-report')).rejects.toThrow(/ARTIFACT_ACCESS_DENIED/);
+    await expect(s.init('report')).rejects.toThrow(/ARTIFACT_ACCESS_DENIED/);
     expect(audited.at(-1)).toContain('ARTIFACT_ACCESS_DENIED');
   });
 
-  it('creates an artifact an operator pre-granted, even outside the namespace', async () => {
-    // The answer to "I want a pretty URL": one `config:set allowed_artifacts`, and the
+  it('creates an artifact an operator pre-granted', async () => {
+    // The answer to "I want a specific URL": one `config:set allowed_artifacts`, and the
     // agent does the rest. The same grant is how one agent_view hands an artifact to another.
     const s = view(7, { allowed_artifacts: 'marketing-site' });
     expect((await s.init('marketing-site')).artifact_code).toBe('marketing-site');
   });
 
+  it('never renames a name the OPERATOR chose', async () => {
+    // The whole point of a grant is that address. Quietly publishing at `-2` instead
+    // would answer a request nobody made.
+    const s = view(7, { allowed_artifacts: 'marketing-site' });
+    await s.init('marketing-site');
+    await expect(view(9, { allowed_artifacts: 'marketing-site' }).init('marketing-site'))
+      .rejects.toMatchObject({ code: 'ARTIFACT_ALREADY_EXISTS' });
+  });
+
   it('stops at the cap, and counts only what the caller may use', async () => {
     // A cap counted over the WHOLE store would be a cross-view cardinality oracle and,
     // with no delete anywhere, a one-way lockout of every other agent_view.
-    const seven = view(7, { 'limits/max_agent_artifacts': 2 });
-    await seven.init('av7-a');
-    await seven.init('av7-b');
-    const err = await seven.init('av7-c').catch(e => e);
+    // A view of its own: the suite's `beforeEach` already created `site` as view 7,
+    // which now OWNS it and so would start one artifact into the cap.
+    const eleven = view(11, { 'limits/max_agent_artifacts': 2 });
+    await eleven.init('a');
+    await eleven.init('b');
+    const err = await eleven.init('c').catch(e => e);
     expect(err.code).toBe('ARTIFACT_LIMIT_REACHED');
-    expect((await view(9, { 'limits/max_agent_artifacts': 2 }).init('av9-a')).artifact_code).toBe('av9-a');
+    expect((await view(9, { 'limits/max_agent_artifacts': 2 }).init('d')).artifact_code).toBe('d');
   });
 
   it('exempts the administrator from the namespace and the cap', async () => {

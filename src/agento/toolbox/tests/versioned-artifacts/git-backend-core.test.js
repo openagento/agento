@@ -52,10 +52,13 @@ describe('init', () => {
     expect((await be.init(root, 'empty', {})).current_version).toMatch(/^v-/);
   });
 
-  it('refuses to re-init an existing artifact with STORAGE_OPERATION_FAILED', async () => {
+  it('refuses to re-init an existing artifact with ARTIFACT_ALREADY_EXISTS', async () => {
+    // Its OWN code, not the generic storage failure: the service retries under the next
+    // number on this one alone, so matching it on message text would make the retry fire
+    // on a disk-full or permission error too.
     await be.init(root, 'site', { files: await readSource(src) });
     const err = await be.init(root, 'site', { files: await readSource(src) }).catch(e => e);
-    expect(err.code).toBe('STORAGE_OPERATION_FAILED');
+    expect(err.code).toBe('ARTIFACT_ALREADY_EXISTS');
     expect(err.detail).toMatch(/already exists/);
   });
 
