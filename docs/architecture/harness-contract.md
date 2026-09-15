@@ -322,24 +322,32 @@ Stating the current state precisely, because the protocol table alone reads as t
 hook were already load-bearing:
 
 A workspace build is materialized once per **agent_view**, while the Toolbox URL a run must
-call carries per-job scoping (`?agent_view_id=…&job_id=…`). Two methods divide that work:
+call carries per-run scoping (`?agent_view_id=…&job_id=…`, or `…&run_id=…` for a run with no
+job). Two methods divide that work:
 
 1. `prepare_workspace(...)` writes the build-time configuration. **Today every shipped
    adapter writes its Toolbox wiring directly here** — they do not route it through
    `serialize_toolbox_connection`.
 2. `inject_runtime_params(artifacts_dir, job_id=…)` rewrites that configuration inside the
-   per-run directory, adding the job id. Without this step a run has no job scope at
+   per-run directory, adding the run's scope. Without this step a run has no scope at
    all — its tool calls simply are not attributed to a job (there is no misattribution to
-   another job, since no job builds the agent_view workspace).
+   another job, since no job builds the agent_view workspace), and the toolbox can give it
+   no per-run directory of its own: it falls back to `/workspace/artifacts/_fallback`,
+   which every unscoped session shares, so the `versioned_artifacts` desk tools refuse it
+   with `WORKSPACE_UNAVAILABLE`.
 
    `job_id` is `int | None`: `None` means the run has no job scope, which is what a
-   string-id `agento run` has. An adapter MAY also accept `effective_model` /
+   string-id `agento run` has. Such a run names itself with the optional `run_id` keyword
+   instead — its own unique id, already the last segment of its artifacts dir. Build the
+   scope with `agento.framework.harness.run_scope.scope_toolbox_url(url, job_id, run_id)`
+   rather than formatting the query by hand; it rejects anything that is not one plain path
+   segment, and `_fallback` itself. An adapter MAY also accept `effective_model` /
    `effective_provider` — the per-run values, where a `--model` override beats build-time
    config. Each is passed to any adapter that can receive it, whether by a named parameter
    or by `**kwargs`.
-   **The two rules interact:** `job_id=None` is passed *only* to an adapter declaring a
-   **named** `effective_model` or `effective_provider` matching the override supplied,
-   because otherwise the call has nothing to do. `**kwargs` does not qualify — it is a
+   **The rules interact:** `job_id=None` is passed *only* to an adapter declaring a
+   **named** `run_id`, `effective_model` or `effective_provider` matching what is actually
+   supplied, because otherwise the call has nothing to do. `**kwargs` does not qualify — it is a
    forward-compatibility idiom, and an adapter carrying it may still declare `job_id: int`.
    So an adapter that names an override parameter must also widen `job_id` to `int | None`.
    Both shipped siblings accept `int | None` and return early on `None`.

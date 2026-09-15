@@ -41,9 +41,12 @@ it('creates an artifact from an inline files[] payload', async () => {
 });
 
 it('refuses a second init of the same artifact code', async () => {
+  // The OPERATOR path never gets the `-N` an agent gets: `artifact:init` names a code
+  // deliberately, and publishing at a different address than the one asked for would
+  // answer a request nobody made.
   await main({ actor: 'admin' }, { artifact_code: 'site', files: FILES }, deps());
   const r = await main({ actor: 'admin' }, { artifact_code: 'site', files: FILES }, deps());
-  expect(r.error_code).toBe('STORAGE_OPERATION_FAILED');
+  expect(r.error_code).toBe('ARTIFACT_ALREADY_EXISTS');
   expect(r.message).toMatch(/already exists/);
 });
 
