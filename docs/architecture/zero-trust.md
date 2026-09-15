@@ -105,7 +105,7 @@ have `git` — it commits its own workspace with it, see
 there to operate on, and no generic `git` operation on it is ever exposed to the agent
 (PRD §32). Versioned file trees are therefore reachable only through the opt-in
 `versioned_artifact_*` tools, each additionally bounded to the artifacts that scope may use —
-its own `av<agent_view_id>-` namespace plus its `allowed_artifacts` grant. Creation is one of
+the artifacts it created itself plus its `allowed_artifacts` grant. Creation is one of
 those tools: the agent owns the whole lifecycle, and what is withheld from it is the host
 *path*, not the operation. `versioned_artifact_init` names a code and nothing else, while the
 `artifact:init` CLI keeps `--source` — a host directory read is not something the toolbox may
