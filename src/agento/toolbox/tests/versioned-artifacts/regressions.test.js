@@ -192,11 +192,13 @@ describe('startup reclamation is maintenance, not authorization (round 3)', () =
   it('reclaims an orphan in an artifact no allowlist names', async () => {
     const orphan = path.join(root, 'site', 'worktrees', 'd-deadbe');
     await mkdir(orphan, { recursive: true });
-    const closed = build({ allowed_artifacts: '' });
+    // A DIFFERENT agent_view: the suite creates `site` as view 2, which now OWNS it,
+    // so view 2 reaching it afterwards would prove nothing about the sweep.
+    const closed = build({ allowed_artifacts: '' }, { agentViewId: 9 });
     expect(await closed.startupSweep()).toMatchObject({ drafts: 1 });
     await expect(readFile(path.join(orphan, '.git'), 'utf8')).rejects.toThrow();
 
-    // And the allowlist still denies the caller — reclamation added no second way in.
+    // And the caller is still denied — reclamation added no second way in.
     await expect(closed.getCurrent('site')).rejects.toMatchObject({ code: 'ARTIFACT_ACCESS_DENIED' });
   });
 

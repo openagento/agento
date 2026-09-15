@@ -18,6 +18,7 @@ from pathlib import Path
 
 from agento.framework.agent_manager.models import CredentialRecord
 from agento.framework.harness import ToolboxConnectionSpec
+from agento.framework.harness.run_scope import scope_toolbox_url
 
 from .auth import CREDENTIAL_TYPE
 
@@ -186,6 +187,7 @@ class PiWorkspaceAdapter:
         artifacts_dir: Path,
         *,
         job_id: int | None,
+        run_id: str | None = None,
         effective_model: str | None = None,
         effective_provider: str | None = None,
     ) -> None:
@@ -193,10 +195,12 @@ class PiWorkspaceAdapter:
 
         Two things are per-run rather than per-build:
 
-        * ``job_id`` — parity with claude's ``.mcp.json`` injection. Without it a run has
-          no job scope and its Toolbox calls are unattributable. ``None`` is legal and
-          means "no job scope": ``agento run`` identifies its run by a STRING id, and
-          skipping the whole call for those runs is what used to lose the override below.
+        * the run scope — ``job_id``, parity with claude's ``.mcp.json`` injection.
+          Without it a run has no scope and its Toolbox calls are unattributable, and the
+          toolbox can give it no desk of its own. ``None`` is legal and means "no job
+          scope": ``agento run`` identifies its run by a STRING id, which ``run_id``
+          carries instead, and skipping the whole call for those runs is what used to
+          lose the override below.
         * the model/provider expectations. ``prepare_workspace`` writes them from the
           agent_view config at BUILD time, but both the consumer and ``agento run``
           support a per-run override (``--model``). A legitimate override would otherwise
@@ -217,9 +221,8 @@ class PiWorkspaceAdapter:
         if not isinstance(payload, dict):
             return
         url = payload.get("url")
-        if job_id is not None and isinstance(url, str) and url:
-            sep = "&" if "?" in url else "?"
-            payload["url"] = f"{url}{sep}job_id={job_id}"
+        if isinstance(url, str) and url:
+            payload["url"] = scope_toolbox_url(url, job_id, run_id)
         if effective_model and effective_model.strip():
             payload["expected_model"] = effective_model.strip()
         if effective_provider and effective_provider.strip():

@@ -281,23 +281,46 @@ it('denies every artifact to the tools when the scope allowlist is empty', async
   expect(listed.artifacts).toEqual([]);
 });
 
-it('creates only inside the caller\'s own namespace, and lists what it created', async () => {
+it('creates under a plain name it owns, and lists what it created', async () => {
   // No operator grant anywhere: `allowed_artifacts` is empty and the artifact is
-  // reachable purely because the caller's agent_view created it.
+  // reachable purely because the caller's agent_view created it. The code carries no
+  // ownership marking — the store records the owner, so the name stays a name.
   const over = { config: { storage_root: root, allowed_artifacts: '' }, agentViewId: 7 };
   const s = fakeServer();
   await register(s, baseCtx({ ...over, artifactsDir: session }));
   const made = payload(await s.tools.get('versioned_artifact_init')
-    .handler({ artifact_code: 'av7-notes' }));
-  expect(made.artifact_code).toBe('av7-notes');
-
-  const foreign = payload(await s.tools.get('versioned_artifact_init')
-    .handler({ artifact_code: 'av9-notes' }));
-  expect(foreign.error_code).toBe('ARTIFACT_ACCESS_DENIED');
-  expect(foreign.message).toContain('av7-');
+    .handler({ artifact_code: 'notes' }));
+  expect(made.artifact_code).toBe('notes');
 
   const listed = payload(await s.tools.get('versioned_artifact_list').handler({}));
-  expect(listed.artifacts.map(a => a.artifact_code)).toEqual(['av7-notes']);
+  expect(listed.artifacts.map(a => a.artifact_code)).toEqual(['notes']);
+});
+
+it('answers a taken name with the next free one, and the answer is what exists', async () => {
+  // The tool's CONTRACT after the prefix went away: the code is a wish, the response
+  // carries the identity. An agent that echoes its own wish back would address the
+  // wrong artifact on every following call.
+  const seven = fakeServer();
+  await register(seven, baseCtx({
+    config: { storage_root: root, allowed_artifacts: '' }, agentViewId: 7, artifactsDir: session,
+  }));
+  expect(payload(await seven.tools.get('versioned_artifact_init')
+    .handler({ artifact_code: 'notes' })).artifact_code).toBe('notes');
+
+  const nine = fakeServer();
+  await register(nine, baseCtx({
+    config: { storage_root: root, allowed_artifacts: '' }, agentViewId: 9, artifactsDir: session,
+  }));
+  const second = payload(await nine.tools.get('versioned_artifact_init')
+    .handler({ artifact_code: 'notes' }));
+  expect(second.artifact_code).toBe('notes-2');
+  expect(second.error_code).toBeUndefined();
+
+  // And view 9 reaches only the one it actually got.
+  expect(payload(await nine.tools.get('versioned_artifact_get_current')
+    .handler({ artifact_code: 'notes' })).error_code).toBe('ARTIFACT_ACCESS_DENIED');
+  expect(payload(await nine.tools.get('versioned_artifact_get_current')
+    .handler({ artifact_code: 'notes-2' })).current_version).toBeDefined();
 });
 
 // The reclamation half of startupSweep: it needs a store an orphan can exist
