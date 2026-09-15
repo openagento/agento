@@ -741,9 +741,23 @@ class TestWriteInstructionFiles:
         assert (tmp_path / "SOUL.md").read_text() == "# Soul content"
         assert (tmp_path / "CLAUDE.md").exists()
 
-    def test_always_writes_claude_md(self, tmp_path):
+    def test_writes_claude_md_when_a_theme_supplied_the_agents_md(self, tmp_path):
+        """The check is the FILE, not the config value — the theme is copied first."""
+        (tmp_path / "AGENTS.md").write_text("# From theme")
         _write_instruction_files(tmp_path, {})
         assert "AGENTS.md" in (tmp_path / "CLAUDE.md").read_text()
+
+    def test_writes_no_claude_md_without_an_agents_md(self, tmp_path):
+        """The regression: CLAUDE.md only says "read AGENTS.md", so writing it with no
+        AGENTS.md gave the agent a dead end as its ONLY entry point — no instructions, and
+        no pointer to any module's guide under `modules/`."""
+        _write_instruction_files(tmp_path, {})
+        assert not (tmp_path / "CLAUDE.md").exists()
+
+    def test_removes_a_stale_claude_md_when_the_agents_md_is_gone(self, tmp_path):
+        (tmp_path / "CLAUDE.md").write_text("# stale pointer")
+        _write_instruction_files(tmp_path, {})
+        assert not (tmp_path / "CLAUDE.md").exists()
 
     def test_skips_empty_override_value(self, tmp_path):
         _write_instruction_files(tmp_path, {"agent_view/instructions/agents_md": ""})
@@ -794,6 +808,7 @@ class TestWriteInstructionFiles:
 
         build_dir = tmp_path / "build"
         build_dir.mkdir()
+        (build_dir / "AGENTS.md").write_text("# From theme")
         (build_dir / "CLAUDE.md").symlink_to(source_file)
 
         _write_instruction_files(build_dir, {})

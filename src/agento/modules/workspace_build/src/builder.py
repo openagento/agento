@@ -52,7 +52,10 @@ CLAUDE_MD_CONTENT = "# Instructions\n\nPlease read and follow [AGENTS.md](AGENTS
 
 # Bump when the on-disk build layout changes in a backwards-incompatible way;
 # mixed into the checksum so existing builds invalidate automatically on upgrade.
-_SKILLS_LAYOUT_VERSION = "dir_v1"
+# `dir_v2`: CLAUDE.md is no longer written without an AGENTS.md to point at, and an
+# existing build would otherwise keep its dangling pointer until something else
+# invalidated it.
+_SKILLS_LAYOUT_VERSION = "dir_v2"
 
 # Recursive manifest descent cap — dirs colliding past this depth collapse to latest-wins.
 _MAX_MANIFEST_DEPTH = 10
@@ -113,9 +116,16 @@ def _write_instruction_files(
             target = build_dir / filename
             target.unlink(missing_ok=True)
             target.write_text(value)
+    # CLAUDE.md is a POINTER, not instructions: its whole content is "read AGENTS.md".
+    # Written unconditionally it sent the agent to a file that need not exist — an
+    # agent_view with no `instructions/agents_md` and an empty theme got a dead end as its
+    # only entry point, and then had nothing but one-line tool descriptions to work from.
+    # The theme is copied BEFORE this step, so the check sees a theme-supplied AGENTS.md
+    # too; it is the file on disk that decides, never the config value alone.
     claude_target = build_dir / "CLAUDE.md"
     claude_target.unlink(missing_ok=True)
-    claude_target.write_text(CLAUDE_MD_CONTENT)
+    if (build_dir / "AGENTS.md").is_file():
+        claude_target.write_text(CLAUDE_MD_CONTENT)
 
 
 def _resolve_skills_dir() -> Path:

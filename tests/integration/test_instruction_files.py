@@ -163,7 +163,8 @@ class TestInstructionFilesFromScopedConfig:
         job_id = _insert_job_with_agent_view(av_id, reference_id="AI-2")
 
         # No scoped config AND workspace_dir points to tmp_path (no files there)
-        # → AGENTS.md/SOUL.md should be absent, only CLAUDE.md written
+        # → all three absent: CLAUDE.md only points at AGENTS.md, so with nothing to
+        # point at it would hand the agent a dead end as its only entry point.
 
         captured_files = {}
 
@@ -191,8 +192,8 @@ class TestInstructionFilesFromScopedConfig:
         row = fetch_job(job_id)
         assert row["status"] == "SUCCESS"
 
-        # CLAUDE.md always written
-        assert "CLAUDE.md" in captured_files
+        # Nothing to point at, so no pointer either
+        assert "CLAUDE.md" not in captured_files
         # AGENTS.md/SOUL.md not present (no config, no workspace file at test path)
         assert "AGENTS.md" not in captured_files
         assert "SOUL.md" not in captured_files

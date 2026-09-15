@@ -35,7 +35,7 @@ An agent fills version 1 the way it changes any other version: `create_draft`, w
 desk, `save_version`. No `--owner` either: a free-text owner cannot authorize anything, because
 a failed metadata INSERT leaves the artifact standing.
 
-The tool may create `av<agent_view_id>-*` — derived from the session, never configured — plus
+The tool may create any free name, becoming its owner, plus
 any code `allowed_artifacts` grants that scope, up to `limits/max_agent_artifacts`. This command
 is exempt from both. See [the module guide](../modules/versioned-artifacts.md) for the scoping
 rules and their known limit.

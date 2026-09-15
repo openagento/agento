@@ -60,10 +60,10 @@ def materialize_run_workspace(
 
     ``run_id`` is the job id (``int``) for the consumer or a unique string for
     ``agento run``. An ``int`` id scopes the run to a job via
-    ``inject_runtime_params``. A ``str`` id has no job scope, so nothing is scoped —
-    but injection still runs when a per-run override has to reach the harness's config,
-    and only for an adapter that names an ``effective_*`` keyword. Without an override a
-    ``str`` id is not injected at all and the build's baked config is used as-is.
+    ``inject_runtime_params``; a ``str`` id scopes it to the run itself, so the toolbox
+    can still give it a desk of its own. Injection also runs when a per-run override has
+    to reach the harness's config. Each is passed only to an adapter that names the
+    keyword, so an adapter predating either keeps the build's baked config as-is.
 
     Returns ``(None, None)`` when ``runtime`` carries no agent_view/workspace
     (blank jobs), mirroring the consumer guard.
@@ -94,11 +94,14 @@ def materialize_run_workspace(
     state_build_root: Path | None = None
     if current_build is not None:
         # int job ids scope the run to a job; a str run id (`agento run`) has no job
-        # scope, but still needs the per-run override applied.
+        # scope, so it scopes by its own run id instead — the same unique segment this
+        # run's artifacts dir already ends with — and still needs the override applied.
         inject_id = run_id if isinstance(run_id, int) else None
+        inject_run = run_id if isinstance(run_id, str) else None
         copy_build_to_artifacts_dir(
             current_build, artifacts_dir,
             job_id=inject_id,
+            run_id=inject_run,
             harness=runtime.harness,
             effective_model=effective_model,
             effective_provider=getattr(runtime, "provider", None),
