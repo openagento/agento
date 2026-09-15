@@ -2,7 +2,7 @@
   "enabled": true,
   "storage_root": "/srv/versioned-artifacts/store",
   "published_root": "/srv/versioned-artifacts/published",
-  "serving/keep_versions": 0,
+  "serving/keep_versions": 10,
   "serving/public_base_url": "http://localhost:8080",
   "allowed_artifacts": "",
   "limits/max_file_size": 5242880,

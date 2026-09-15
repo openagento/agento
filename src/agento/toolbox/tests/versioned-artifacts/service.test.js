@@ -422,3 +422,43 @@ describe('the artifacts an agent_view may create', () => {
     expect((await admin.init('operator-two')).artifact_code).toBe('operator-two');
   });
 });
+
+describe('remove', () => {
+  // Admin-only, and refused INSIDE the audit boundary so the attempt leaves a row.
+  it('refuses a non-admin caller', async () => {
+    await expect(svc.remove('site')).rejects.toMatchObject({ code: 'ARTIFACT_ACCESS_DENIED' });
+  });
+
+  it('removes the published tree, the store and the row', async () => {
+    const deleted = [];
+    const pool = { execute: async (sql, params) => { deleted.push([sql, params]); } };
+    const admin = createService({ config: cfg(), db: { getCronPool: () => pool }, log: vi.fn(),
+      actor: 'admin', admin: true });
+    const r = await admin.remove('site');
+    expect(r).toMatchObject({ artifact_code: 'site', removed_store: true, removed_published: true });
+    await expect(stat(path.join(root, 'site'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(path.join(pub, 'site'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(deleted.some(([sql, params]) => /DELETE FROM versioned_artifact\b/.test(sql) && params[0] === 'site'))
+      .toBe(true);
+  });
+
+  // The half-cleaned state is exactly what an operator reaches for this command to
+  // repair: the store gone, the pages still being served.
+  it('repairs a half-removed artifact', async () => {
+    await rm(path.join(root, 'site'), { recursive: true, force: true });
+    const admin = createService({ config: cfg(), db: null, log: vi.fn(), actor: 'admin', admin: true });
+    const r = await admin.remove('site');
+    expect(r).toMatchObject({ removed_store: false, removed_published: true });
+    await expect(stat(path.join(pub, 'site'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reports not found when neither root holds it', async () => {
+    const admin = createService({ config: cfg(), db: null, log: vi.fn(), actor: 'admin', admin: true });
+    await expect(admin.remove('absent')).rejects.toMatchObject({ code: 'ARTIFACT_NOT_FOUND' });
+  });
+
+  it('rejects an invalid code above the audit boundary', async () => {
+    const admin = createService({ config: cfg(), db: null, log: vi.fn(), actor: 'admin', admin: true });
+    await expect(admin.remove('../escape')).rejects.toMatchObject({ code: 'INVALID_PATH' });
+  });
+});
