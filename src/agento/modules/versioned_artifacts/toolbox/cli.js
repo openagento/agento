@@ -53,6 +53,8 @@ export async function main(argv, payload, deps) {
       case 'publish':
         return await service.publish(
           payload.artifact_code, payload.version_id, payload.expected_current_version);
+      case 'remove':
+        return await service.remove(payload.artifact_code);
       default:
         // The same `{error_code, message}` contract as every other failure: an
         // operator's typo must not reach the outer catch and print the generic line.
