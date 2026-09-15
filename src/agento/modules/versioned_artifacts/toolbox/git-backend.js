@@ -770,10 +770,21 @@ export function createBackend({ newVersionId = defaultVersionId, hooks = {} } = 
     return { draft_id: draftId, discarded: true };
   }
 
+  /** The whole artifact directory — the bare repo, every open worktree, the locks and
+   *  the `owner` marker with them. Reports whether it was there, for the same reason the
+   *  published-tree twin does. No Git step: a bare repo is a directory, and asking Git
+   *  to unmake one only adds a way for the removal to half-succeed. */
+  async function removeArtifact(storageRoot, artifactCode) {
+    const root = artifactRoot(storageRoot, artifactCode);
+    if (!(await exists(root))) return false;
+    await rm(root, { recursive: true, force: true });
+    return true;
+  }
+
   return {
     init, getCurrent, listVersions, publish, materialize, materializePublished, sweepScratch,
     createDraft, commitDraft, saveVersion, diff, discardDraft,
     recoverDraft, draftState, reconcileDrafts, listOpenDrafts, listArtifacts, getDraftPath,
-    readOwningView,
+    readOwningView, removeArtifact,
   };
 }

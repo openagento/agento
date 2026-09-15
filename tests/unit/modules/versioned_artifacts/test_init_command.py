@@ -67,6 +67,9 @@ def test_the_di_declaration_holds_exactly_the_module_commands():
     import json
     from pathlib import Path
 
+    from agento.modules.versioned_artifacts.src.commands.delete import (
+        VersionedArtifactDeleteCommand,
+    )
     from agento.modules.versioned_artifacts.src.commands.init import VersionedArtifactInitCommand
     from agento.modules.versioned_artifacts.src.commands.list import VersionedArtifactListCommand
     from agento.modules.versioned_artifacts.src.commands.publish import VersionedArtifactPublishCommand
@@ -78,6 +81,7 @@ def test_the_di_declaration_holds_exactly_the_module_commands():
         VersionedArtifactInitCommand().name,
         VersionedArtifactListCommand().name,
         VersionedArtifactPublishCommand().name,
+        VersionedArtifactDeleteCommand().name,
     }
     assert {c["name"] for c in di["commands"]} == implemented
 
