@@ -30,7 +30,7 @@ const asPosInt = (v, field) => {
 };
 
 // Rejects NaN, negatives, floats and "5MB" but ACCEPTS 0 — `serving/keep_versions`
-// defaults to 0, which means "keep every preview", so `asPosInt` cannot validate it.
+// reads 0 as "keep every preview", so `asPosInt` cannot validate it.
 const asNonNegInt = (v, field) => {
   const n = typeof v === 'number' ? v : Number(String(v ?? '').trim());
   if (!Number.isSafeInteger(n) || n < 0) {
