@@ -66,8 +66,11 @@ Automates Jira tasks using AI agents (Claude Code, OpenAI Codex, Pi) in Docker c
   identity — an operator-named code (`allowed_artifacts` or the CLI) is exempt and gets
   `ARTIFACT_ALREADY_EXISTS` instead, because renaming it would publish at an address nobody chose.
   Bounded by `limits/max_agent_artifacts` counted over the artifacts that caller may **use**, never
-  over the store (a store-wide count is a cross-view cardinality oracle, and with no delete anywhere
-  a one-way lockout of every other view). `agent_view_id` is asserted by the caller on the SSE URL,
+  over the store (a store-wide count is a cross-view cardinality oracle, and, with delete reachable
+  only by an operator, a lockout of every other view until a human intervenes). Destruction is the
+  one lifecycle step the agent does NOT own: `artifact:delete` removes the published tree, the store
+  and the row, under the init lock and with an audit row, and there is no tool equivalent.
+  `agent_view_id` is asserted by the caller on the SSE URL,
   so ownership **scopes**, it does not authorize — see ROADMAP.md. Note `save_version`, not `publish`, is the HTTP exposure boundary: every saved version
   is materialized under `published/<code>/v/<id>/` and served; `publish` only moves `current`. The agent edits a **copy**: `create_draft` /
   `materialize` write the tree onto its own workspace (the *desk*) and `save_version` copies it back,

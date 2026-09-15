@@ -77,12 +77,16 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 - **Decision:** `versioned_artifact_init` is a tool, gated on its own `is_enabled` key like every
   other. An agent may create `av<agent_view_id>-*` — DERIVED from the session, never configured and
   never stored — plus anything `allowed_artifacts` grants it, capped by `limits/max_agent_artifacts`.
-- **Why a derived prefix and not an owner column.** The `owner` column decorates the store (a failed
-  INSERT keeps the artifact), so it cannot carry authorization. A marker file can be half-written and
-  needs a migration; a prefix cannot and does not.
+- **Why an `owner` marker beside the artifact and not the `owner` column.** The column decorates the
+  store (a failed INSERT keeps the artifact), so it cannot carry authorization. The marker is written
+  inside `init`'s own compensating `try`, so a half-written one takes the artifact with it, and an
+  artifact with no marker is reachable only through `allowed_artifacts` — which is what makes the
+  change need no migration. This replaced an `av<id>-` code PREFIX: the prefix carried ownership in
+  the NAME, so the agent had to know and type it and every artifact wore an operator concern in its
+  URL.
 - **Why the cap counts `filter(mayUse)` and not the store.** A store-wide count answers "how many
-  artifacts does every other agent_view hold" in at most `cap` calls, and — with no delete on any path
-  — lets one view lock creation out for all of them. One word of filtering removes both.
+  artifacts does every other agent_view hold" in at most `cap` calls, and — with delete reachable only
+  by an operator — lets one view lock creation out for all of them until a human intervenes. One word of filtering removes both.
 - **Alternative rejected — a `publish/agent_owned` switch.** `save_version` already materializes every
   saved version into the served tree; `publish` only moves `current`. A switch there would guard an
   open wall, block the loop this entry exists to enable, and be a second allow-list beside
@@ -90,8 +94,9 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 - **Known limit, deliberate:** `agent_view_id` is asserted by the caller (`?agent_view_id=` on the SSE
   URL), so the namespace SCOPES cooperating views rather than authorizing them. The fix is
   session-bound identity in the framework, not a module-local check — see ROADMAP.md.
-- **Cost, accepted:** no `artifact:delete` exists anywhere, so the cap is a one-way ratchet. Its remedy
-  is manual: remove `<storage_root>/<code>` AND `<published_root>/<code>`, then the table row.
+- **Cost, accepted:** `artifact:delete` is the operator's alone — destroying an immutable history is
+  not something a self-asserted identity may do — so for an agent the cap is still a one-way ratchet
+  and a human is what resets it.
 
 ## 2026-09-06 — VersionedArtifacts: artifact creation is a host command, not an HTTP route
 
