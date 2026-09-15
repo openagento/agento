@@ -244,8 +244,9 @@ what closes it is the session-bound identity above, and nothing below it.
 Two more gaps the same change makes reachable without an operator, neither of them new:
 - **Nothing bounds disk.** `limits/max_agent_artifacts` bounds artifact count. Versions are
   unbounded, every save materializes a full copy into the published tree, and
-  `serving/keep_versions` defaults to `0`, which prunes nothing. A positive default is the
-  one-line fix; it belongs with the GC deferral in Phase 16.
+  `serving/keep_versions` now defaults to `10`, which bounds the previews per artifact but not
+  the store: immutable versions still accumulate forever. The rest belongs with the GC deferral
+  in Phase 16.
 - **No `artifact:delete` exists**, so the creation cap is a one-way ratchet and the remedy is
   a manual `rm -rf` of two roots plus the table row. A cap without a delete is a fuse.
 
