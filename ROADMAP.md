@@ -980,15 +980,16 @@ Tokens are currently selected per-provider via `TokenResolver`. For multi-tenant
 Generic versioned file/directory trees: mutable **drafts**, immutable **versions**, and an atomic
 **current** pointer, backed by local Git that never surfaces in the public contract. Shipped as the
 core module `versioned_artifacts` (eleven opt-in MCP tools covering the whole lifecycle, with
-`artifact:init` / `artifact:list` / `artifact:publish` as equivalent operator commands),
+`artifact:init` / `artifact:list` / `artifact:publish` as equivalent operator commands and
+`artifact:delete` as an operator-only one),
 with a toolbox-only storage volume, per-`agent_view` artifact allowlist, filesystem locking, crash
 recovery and a `versioned_artifact_audit` trail. See
 [docs/modules/versioned-artifacts.md](docs/modules/versioned-artifacts.md).
 
 Deferred from this phase:
 - **Garbage collection of Git objects.** Draft checkouts are reclaimed (a discard removes its own
-  worktree; a save keeps the draft open) and materialized *previews* have an opt-in retention policy
-  (`serving/keep_versions`), but two things still grow without bound: immutable versions in the store,
+  worktree; a save keeps the draft open) and materialized *previews* have a retention policy that is
+  on by default (`serving/keep_versions`, `10`), but two things still grow without bound: immutable versions in the store,
   which accumulate forever by design, and `audit-fallback.log`, which keeps growing for as long as the
   database is unavailable.
 - ~~**HTTP / Artifact serving of a version.**~~ **Shipped 2026-09-12** — the `artifacts` container
@@ -1258,16 +1259,39 @@ Two more gaps the same change makes reachable without an operator, neither of th
   `serving/keep_versions` now defaults to `10`, which bounds the previews per artifact but not
   the store: immutable versions still accumulate forever. The rest belongs with the GC deferral
   in Phase 16.
-- **No `artifact:delete` exists**, so the creation cap is a one-way ratchet and the remedy is
-  a manual `rm -rf` of two roots plus the table row. A cap without a delete is a fuse.
+- ~~**No `artifact:delete` exists**, so the creation cap is a one-way ratchet.~~ **Shipped
+  2026-09-15** — `artifact:delete` removes both roots and the row under the init lock, CLI only.
+  The cap is still a lockout of every other view until an operator runs it.
 
 Also unclosed on the serving side: `artifacts-server.js` answers `/` with an index of every
 artifact code, and agent-authored HTML now reaches that port with no operator step. Same-origin
 script in one artifact can therefore enumerate and read every other artifact in the operator's
 browser, and `navigator.sendBeacon` carries it out — the operator's browser is the one route
 off that container. `X-Content-Type-Options: nosniff` shipped with the lifecycle change; the
-same-origin read did not. A `sandbox allow-scripts; default-src 'self'` CSP is the cheap fix
-(an opaque origin cannot read a sibling artifact, and the page keeps its own JS), but it must
-be confirmed against a real static site first — that use case is why the lifecycle change
-exists. Restricting the `/` index instead needs per-caller identity the server deliberately
-does not have.
+same-origin read did not. Restricting the `/` index instead needs per-caller identity the
+server deliberately does not have, and the compose healthcheck fetches `/` and expects it to
+answer.
+
+**Analysed 2026-09-15, deliberately not shipped.** A `Content-Security-Policy: sandbox
+allow-scripts` header does close the sibling read — the page gets an opaque origin, so the
+`/` index tells it nothing it can then fetch. It has two costs that make it the wrong default:
+
+- `<script type="module">` and `@font-face url()` are **CORS-mode** fetches. From an opaque
+  origin they need an `access-control-allow-origin` the server does not send, so they fail
+  **silently** — a blank page and nothing in the terminal. Every Vite build and every
+  self-hosted-font site breaks that way, which is the use case the lifecycle change exists
+  for. Classic `<script src>`, `<link rel=stylesheet>` and `<img>` are `no-cors` and still
+  load, so a plain static site is fine. Adding `access-control-allow-origin: *` fixes the
+  module scripts and reopens the sibling reads — on one origin, same-origin data and sibling
+  data are one capability.
+- `sandbox` does not stop top-level self-navigation: `location = attacker + dump` still runs.
+  The win is only that `dump` cannot hold a sibling artifact.
+
+There was also no place to put the switch: the `artifacts` container carries no `env_file:`,
+no `environment:` and no database by design, so a `serving/csp` config key is unreachable
+there. The header would have to be hardcoded.
+
+The fix that costs nothing at runtime is **one origin per artifact** — route by `Host`
+(`<code>.localhost:8080`), so each artifact keeps full same-origin capability and the browser
+itself denies the cross-artifact read. It changes `preview_url`, and Safari does not resolve
+`*.localhost` while Chrome and Firefox do. Decide before the port ever leaves loopback.
