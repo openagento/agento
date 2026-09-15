@@ -48,6 +48,46 @@ Automates Jira tasks using AI agents (Claude Code, OpenAI Codex, Pi) in Docker c
 - **Agent view config:** Scoped DB paths `agent_view/harness`, `agent_view/provider`, `agent_view/model`, `agent_view/scheduling/priority`, `agent_view/instructions/agents_md`, `agent_view/instructions/soul_md` — resolved with agent_view → workspace → global fallback. `harness`/`provider` are `select` fields whose options come from the enabled modules' `agent_harnesses` declarations (`options_source`), not from a hardcoded list. Pre-0.15 configs that set only `agent_view/provider` (which then held the harness id) still work — see [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
 - **Security:** Toolbox = only container with secrets. Agent has NO credentials. Tools and skills are **opt-in** (disabled by default) — least privilege: a tool/skill is available only when `is_enabled` resolves to `1` for the scope (agent_view > workspace > default). Adding a module or syncing a skill grants no access until explicitly enabled. Every tool a module can register — including one proxied from an upstream MCP server under a computed name — must be declared in that module's `module.json` `tools[]`; `module:validate` reports an undeclared *literal* `server.tool('x', …)` on a best-effort basis (it skips a source line containing a bare `/`, since division and a regex are indistinguishable without a JS parser — it can miss, never raise a false error), and it strictly enforces globally unique tool names and that a `config.json` `tools/<name>/is_enabled` default belongs to a tool the module declares. The exhaustive check is `src/agento/toolbox/tests/tool-declaration.test.js`, which executes `register()`. A name the gate does not find declared is denied at runtime, and `registerTools` logs a `drift WARN` for anything a module registers without declaring (the backstop for names computed at runtime, e.g. upstream MCP passthrough). By convention (not checkable by the validator) gate each registration on its **own** `tools/<name>/is_enabled` key, and **never** gate on an `is_enabled` key at module level — declare a shared switch and point each member at it with `requires`, so the framework applies it per tool and admin can show a blocked child. Never add a second allow-list mechanism beside `is_enabled`. See [docs/tools/adding-a-tool.md](docs/tools/adding-a-tool.md).
 - **DB tables:** singular names (e.g., `job`, `schedule`, `credential`). Exception: `core_config_data` (Magento convention). `credential` (ex-`oauth_token`) is keyed by `scope` — one credential pool per `(harness, provider)` pair that needs one.
+- **Versioned artifacts:** the `versioned_artifacts` module stores file trees as drafts / immutable
+  versions / an atomic `current` pointer. Git is the storage engine and **must never leak into the
+  public contract** — no `repository`, `branch`, `commit`, `merge`, `rebase`, `checkout`, `worktree`
+  or `ref` in a tool name, parameter, response field or error message. The store is mounted into the
+  **toolbox only** (the agent container has no path to it, and no generic `git` operation on the
+  store is exposed to the agent — it never receives `git(command)`), and only `service.js` may reach
+  the Git backend — an import-layering test enforces that boundary. The agent owns the **whole
+  lifecycle** — init → draft → version → publish → next draft — with no operator step in it:
+  `artifact:init` / `artifact:list` / `artifact:publish` stay as equivalent operator interfaces.
+  Creation is free, and ownership is **in the store**, not in the name: `init` writes the calling
+  `agent_view_id` into an `owner` marker beside the artifact, and a caller may use what it owns plus
+  whatever `allowed_artifacts` grants it — which is how one agent_view is handed another's artifact.
+  An artifact with no marker is usable **only** through `allowed_artifacts`, which is what makes the
+  change need no migration. The code an agent asks for is a **wish**: a taken name is answered with
+  the next free `-N` (appended, never spliced over a trailing number) and the returned code is the
+  identity — an operator-named code (`allowed_artifacts` or the CLI) is exempt and gets
+  `ARTIFACT_ALREADY_EXISTS` instead, because renaming it would publish at an address nobody chose.
+  Bounded by `limits/max_agent_artifacts` counted over the artifacts that caller may **use**, never
+  over the store (a store-wide count is a cross-view cardinality oracle, and, with delete reachable
+  only by an operator, a lockout of every other view until a human intervenes). Destruction is the
+  one lifecycle step the agent does NOT own: `artifact:delete` removes the published tree, the store
+  and the row, under the init lock and with an audit row, and there is no tool equivalent.
+  `agent_view_id` is asserted by the caller on the SSE URL,
+  so ownership **scopes**, it does not authorize — see ROADMAP.md. Note `save_version`, not `publish`, is the HTTP exposure boundary: every saved version
+  is materialized under `published/<code>/v/<id>/` and served; `publish` only moves `current`. The agent edits a **copy**: `create_draft` /
+  `materialize` write the tree onto its own workspace (the *desk*) and `save_version` copies it back,
+  so no tool takes a filesystem path and there is no file-level tool on the store. A fourth
+  compose service, **`artifacts`**, serves the published tree over plain `node:http` from
+  `server/` (never `toolbox/`, which `config-loader.js` imports wholesale into the secrets
+  container). It declares **no `networks:` key** — Compose leaves it alone on the project
+  `default` network while every other service names `agento-net` — carries no
+  `env_file:`/`environment:`, mounts
+  `storage/versioned-artifacts/published` and `app/etc` read-only, and publishes on
+  `127.0.0.1` only — one `networks:` line added for consistency would let every agent in every
+  agent_view read every artifact over HTTP with `allowed_artifacts` bypassed and no audit row.
+  Disabling the module must stop the serving: the server re-reads `app/etc/modules.json` per
+  request and answers **503** everywhere when `versioned_artifacts` is `false`, while an absent
+  file, absent key or unparseable file mean **serve** — that mirrors module enablement, not the
+  `is_enabled` tool gate, which is the one that fails closed. See
+  [docs/modules/versioned-artifacts.md](docs/modules/versioned-artifacts.md).
 - **Setup:** `setup:upgrade` on deploy — **validates enabled module manifests first** (aborts before any DB change if a manifest is invalid, e.g. a tool missing `toolset`), then applies schema migrations, data patches, installs crontab, runs module onboarding (strict: complete, disable+dependents, or quit). Use `--skip-onboarding` for CI/CD. `bin/test` runs the same `module:validate` check. Manual alternative: pre-set config values via `config:set`. See [docs/cli/onboarding.md](docs/cli/onboarding.md).
 - **Module setup files:** `sql/*.sql` (schema migrations), `data_patch.json` (data patches), `cron.json` (cron jobs), `di.json` onboarding (interactive external system setup)
 - **Migration tracking:** `schema_migration` table (with `module` column), `data_patch` table

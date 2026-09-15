@@ -53,6 +53,12 @@ Discovered by convention from `<module>/toolbox/*.js` files. Each file exports a
 |------|-------------|
 | `outlook_get_message`, `outlook_get_attachment`, `outlook_reply`, `outlook_send_mail`, `outlook_mark_processed` | Microsoft 365 / Graph email channel (opt-in; sender/recipient allow-listed; reads bound to the triggering message). See [outlook.md](../modules/outlook.md). |
 
+**Versioned artifacts module** (`src/agento/modules/versioned_artifacts/toolbox/`):
+
+| Tool | Description |
+|------|-------------|
+| `versioned_artifact_init`, `versioned_artifact_list`, `versioned_artifact_get_current`, `versioned_artifact_list_versions`, `versioned_artifact_create_draft`, `versioned_artifact_materialize`, `versioned_artifact_save_version`, `versioned_artifact_diff`, `versioned_artifact_publish`, `versioned_artifact_discard_draft` | Versioned file trees — the whole lifecycle (opt-in; each scope owns what it creates and additionally uses whatever `allowed_artifacts` grants it). See [versioned-artifacts.md](../modules/versioned-artifacts.md). |
+
 **User modules** (`app/code/<name>/toolbox/`):
 
 Custom JS tools for your deployment — same convention.

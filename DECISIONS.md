@@ -4,6 +4,148 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-12 — VersionedArtifacts: the `artifacts` container ships unconditionally, and a disabled module answers 503
+
+- **Decision:** the serving container is written into every rendered `docker-compose.yml` with no
+  per-module condition, and `app/etc/modules.json` is bind-mounted read-only so the server itself
+  refuses to serve when `versioned_artifacts` is disabled.
+- **Why unconditional:** `regenerate_compose` has no per-module service mechanism — `render_compose`
+  (`framework/cli/_provisioning.py`) is placeholder substitution, and "modules declare compose services"
+  is a framework feature this ticket is not buying. The precedent is the existing unconditional
+  `storage/versioned-artifacts` bind mount on the toolbox.
+- **Why the gate exists anyway:** without it, `mo:di versioned_artifacts` removes the tools and leaves
+  every previously published version still answering on loopback, which breaks CLAUDE.md's "every module
+  must be safely disableable". An earlier wording of this deviation claimed a disabled deployment serves
+  "an empty tree" — that is only true before anything is published.
+- **The gate mirrors module enablement, not the `is_enabled` tool gate.** Absent file, absent key or
+  unparseable file all mean SERVE, because `app/etc/modules.json` lists only explicitly toggled modules,
+  so absence is "enabled". The `is_enabled` gate is the one that fails closed; do not conflate them.
+- **Severity, stated honestly:** the port is loopback-only, so the content was reachable only by someone
+  who already has a shell on the host and could read the published tree directly. The gate buys correct
+  disablement semantics and an operator expectation that holds, not a new privilege boundary.
+- **No `networks:`, no `env_file:`, no `environment:` — deliberate, and a comment above the service says
+  so in both compose files.** One `networks:` line added for consistency puts every artifact on
+  `agento-net`, where every agent in every agent_view can read every artifact over plain HTTP with
+  `allowed_artifacts` bypassed for reads, silently and with no audit row.
+
+## 2026-09-12 — VersionedArtifacts: the serving container is `node:http`, not Express
+
+- **Decision:** `server/artifacts-server.js` uses `node:http` plus a small extension→MIME map instead of
+  `express.static`, although `express` is already a toolbox dependency.
+- **Why:** `express` does not resolve under vitest — vite maps the bare specifier to a phantom path at
+  the vitest root and the package's own `require('./lib/express')` then fails (`Cannot find module
+  './lib/express'`). An Express version of this file could carry no test at all, and the plan's test
+  list — symlink refused, dotfile refused, 503 gate, `EINVAL` retry — *is* the security story.
+- **Alternative rejected — a test-only `resolve.alias` in a new `vitest.config.js`.** It works
+  (measured), but it changes module resolution for the whole suite to paper over one quirk, and it would
+  leave the tested path different from the production path.
+- **What Express would have bought is small:** the containment check is ours either way — `send` does
+  zero `lstat`/`realpath` and served a file through a symlink pointing outside the root. What is
+  genuinely absent is `Range`, `ETag` and conditional requests; acceptable for an artifact preview, and
+  recorded here rather than discovered later.
+- **Consequence:** the server has no npm dependency at all, so `/app/modules/core` is a consistency
+  choice, not a module-resolution requirement.
+
+## 2026-09-06 — VersionedArtifacts: Git as the storage engine, invoked only from the toolbox
+
+- **Decision:** back versioned artifacts with the real `git` binary, added to the toolbox image, over a
+  dedicated `storage/versioned-artifacts` volume.
+- **Alternative rejected — `isomorphic-git`.** It has no linked-worktree API, and a draft in PRD §6 *is*
+  a linked worktree: several editable checkouts of one repository, isolated from each other. Emulating
+  that with copies would lose the atomic ref operations the whole design rests on.
+- **Why it is safe:** the agent never receives a generic `git(command)` for this store (PRD §32), and the
+  store is not mounted in its container at all. Every invocation is built by the module with fixed
+  `-c core.hooksPath=/dev/null -c core.symlinks=false` flags and a scrubbed environment (no `HOME`, no
+  global/system config, no credential helper, `GIT_ALLOW_PROTOCOL=none`), so repository content can
+  never execute and no remote can ever be reached.
+
+## 2026-09-06 — VersionedArtifacts: the store is toolbox-only
+
+- **Decision:** mount `storage/versioned-artifacts` into the toolbox and nowhere else — not cron, not the
+  sandbox.
+- **Why:** the toolbox is the only container with secrets and the only one that validates requests. A
+  mount in the sandbox would let the agent read and write versioned content directly, bypassing the
+  `is_enabled` gate, the per-`agent_view` artifact allowlist, the size limits, the locking and the audit
+  trail in one step.
+
+## 2026-09-13 — VersionedArtifacts: the agent owns the whole lifecycle, scoped by a derived namespace
+
+- **Supersedes** the creation half of the 2026-09-06 entry below: creation is no longer withheld from
+  the agent. Artifacts are a collaboration mechanism between agents, and a lifecycle that needs an
+  operator to bootstrap or finalize it is not one — an agent must be able to init, iterate, hand the
+  code to a sub-agent, and publish, unattended.
+- **Decision:** `versioned_artifact_init` is a tool, gated on its own `is_enabled` key like every
+  other. An agent may create `av<agent_view_id>-*` — DERIVED from the session, never configured and
+  never stored — plus anything `allowed_artifacts` grants it, capped by `limits/max_agent_artifacts`.
+- **Why an `owner` marker beside the artifact and not the `owner` column.** The column decorates the
+  store (a failed INSERT keeps the artifact), so it cannot carry authorization. The marker is written
+  inside `init`'s own compensating `try`, so a half-written one takes the artifact with it, and an
+  artifact with no marker is reachable only through `allowed_artifacts` — which is what makes the
+  change need no migration. This replaced an `av<id>-` code PREFIX: the prefix carried ownership in
+  the NAME, so the agent had to know and type it and every artifact wore an operator concern in its
+  URL.
+- **Why the cap counts `filter(mayUse)` and not the store.** A store-wide count answers "how many
+  artifacts does every other agent_view hold" in at most `cap` calls, and — with delete reachable only
+  by an operator — lets one view lock creation out for all of them until a human intervenes. One word of filtering removes both.
+- **Alternative rejected — a `publish/agent_owned` switch.** `save_version` already materializes every
+  saved version into the served tree; `publish` only moves `current`. A switch there would guard an
+  open wall, block the loop this entry exists to enable, and be a second allow-list beside
+  `is_enabled`, which CLAUDE.md forbids. The operator's opt-in is the `is_enabled` pair.
+- **Known limit, deliberate:** `agent_view_id` is asserted by the caller (`?agent_view_id=` on the SSE
+  URL), so the namespace SCOPES cooperating views rather than authorizing them. The fix is
+  session-bound identity in the framework, not a module-local check — see ROADMAP.md.
+- **Cost, accepted:** `artifact:delete` is the operator's alone — destroying an immutable history is
+  not something a self-asserted identity may do — so for an agent the cap is still a one-way ratchet
+  and a human is what resets it.
+
+## 2026-09-06 — VersionedArtifacts: artifact creation is a host command, not an HTTP route
+
+- **Decision:** `artifact:init` runs on the host and pipes a payload into
+  `docker compose exec -T toolbox node …/cli.js`. It stays the operator's equivalent of the tool —
+  it is the only path that can import a host directory as version 1.
+- **Alternative rejected — an Express route on the toolbox.** The toolbox authenticates no caller, so
+  every route it serves is reachable by the agent. A route would have meant handing the toolbox an
+  arbitrary host path to read — which is also why the TOOL takes no `--source` (see the entry above).
+- **Consequence:** the command must not be proxied into cron (which sees neither the host source nor the
+  storage volume), but it is still a *module* command, so it lives in `_LOCAL_MODULE_COMMANDS` — that
+  stops the proxy while leaving the module bootstrap that registers it with argparse intact.
+
+## 2026-09-06 — VersionedArtifacts: no runtime stale-lock breaking
+
+- **Decision:** a held lock is simply held. Abandoned locks are cleared by a sweep at toolbox startup,
+  never by a waiter.
+- **Why:** `mkdir` gives atomic *acquire*, not atomic *break*. Breaking is a read-then-delete pair, and a
+  third process can acquire in the window between them — so a waiter that deletes an aged lock can
+  destroy a lock someone else is actively holding. An ownership token makes *release* safe; it cannot
+  make breaking safe.
+- **Cost, accepted:** an abandoned lock returns `DRAFT_LOCKED` until the next toolbox start. A stuck
+  draft is recoverable by an administrator; two interleaved mutations on one worktree are silent
+  corruption. If this bites in practice the fix is a kernel-backed lock, not a shorter stale timeout.
+
+## 2026-09-06 — VersionedArtifacts: one toolbox instance per `storage_root`
+
+- **Decision:** a given store may be used by exactly one toolbox instance. Recorded in `system.json`
+  field help, the developer doc, and here.
+- **Why:** acquire is safe across processes, but the startup sweep is a check-then-delete pair with no
+  concurrent acquirer *by assumption*. A second toolbox on the same volume can take a lock inside that
+  window and have it deleted underneath a live mutation.
+- **Alternative rejected — a longer stale timeout.** It narrows the window and looks like a fix; it does
+  not close it. Supporting multiple instances needs a real distributed lock, which PRD §28 explicitly
+  scopes out ("one storage/VPS").
+
+## 2026-09-06 — VersionedArtifacts: a version carries no description
+
+- **Decision:** `versioned_artifact_list_versions` returns `{version_id, revision}` only. The label passed
+  to `save_version` is persisted in `versioned_artifact_audit.description`.
+- **Superseded 2026-09-12:** the tool now returns `{version_id, revision, preview_path}` — a third field
+  that says where the version is served, not a label. The decision above still stands for the *label*:
+  no version carries a description of its own.
+- **Why:** a version is a ref pointing at a commit and cannot hold a message of its own. Returning the
+  draft's last change message under the name `description` would hand the caller a field that looks like
+  the label they supplied and is not — the worse of the two failure modes. Inventing a field the PRD
+  does not define is the other.
+- **Forward path:** an annotated tag object per version, whose subject is a real version label.
+
 ## 2026-08-18 — Job dedupe by SELECT-then-INSERT, not `INSERT IGNORE` (AG-22)
 
 - **`INSERT IGNORE` burns an auto_increment id on every rejected duplicate.** MySQL/InnoDB allocates the

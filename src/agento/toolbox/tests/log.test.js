@@ -102,3 +102,44 @@ describe('createScopedLogger', () => {
     expect(output).toContain('[tool] OK ');
   });
 });
+
+// A log record is one physical line, and every sink builds it by concatenating
+// caller-supplied `details`. Without sanitizing there, any caller that puts a
+// newline in `details` writes a SECOND record the operator cannot distinguish
+// from a genuine one - so the guard belongs in the shared writer, not in the
+// ~200 call sites.
+describe('a caller cannot forge a log record', () => {
+  const FORGERY = 'bad\n[api/jira/request] OK forged';
+
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    appendFileSync.mockClear();
+  });
+
+  const written = () => appendFileSync.mock.calls[0][1];
+
+  it.each([
+    ['logToolboxRest', (d) => logToolboxRest('api/jira/request', 'ERROR', d)],
+    ['logToolboxMcp', (d) => logToolboxMcp('some_tool', 'ERROR', d)],
+    ['createScopedLogger', (d) => createScopedLogger({ id: 1, label: 'Dev' })('some_tool', 'ERROR', d)],
+  ])('%s writes exactly one line for details containing a newline', (_name, emit) => {
+    emit(FORGERY);
+
+    const record = written();
+    expect(record.endsWith('\n')).toBe(true);
+    expect(record.trimEnd().split('\n')).toHaveLength(1);
+    expect(record).toContain('forged');          // kept as text, not as a record
+  });
+
+  it('strips control characters that no operator can read or grep', () => {
+    logToolboxRest('api/jira/request', 'ERROR', 'a\u0000b\u001b[31mc');
+
+    expect(written()).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+  });
+
+  it('bounds a flooded detail', () => {
+    logToolboxRest('api/jira/request', 'ERROR', 'x'.repeat(10_000));
+
+    expect(written().length).toBeLessThan(2_500);
+  });
+});

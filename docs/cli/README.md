@@ -59,6 +59,11 @@
 | **Workspace** | |
 | `workspace:build --agent-view <code> \| --all` | Build materialized workspace ([details](workspace-build.md)) |
 | `workspace:build-status [--agent-view <code>]` | Show workspace build history ([details](workspace-build.md)) |
+| **Versioned artifacts** | |
+| `artifact:init <artifact_code> [--source <dir>]` | Create a versioned artifact from a host directory; operator equivalent of `versioned_artifact_init` ([details](artifact-init.md)) |
+| `artifact:list` | List the artifacts the store holds ([details](artifact-list.md)) |
+| `artifact:delete <artifact_code>` | Remove an artifact, its versions and its served pages; asks first, and has no tool equivalent ([details](artifact-delete.md)) |
+| `artifact:publish <artifact_code> <version_id> --expected <version_id>` | Point an artifact's current at a version ([details](artifact-publish.md)) |
 | **Admin** | |
 | `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |

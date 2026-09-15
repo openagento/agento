@@ -64,15 +64,18 @@ class TestFallbackToWorkspace:
 
 
 class TestClaudeMd:
-    def test_always_writes_claude_md(self, tmp_path):
+    def test_writes_claude_md_when_an_agents_md_was_written(self, tmp_path):
         artifacts_dir = tmp_path / "run"
         artifacts_dir.mkdir()
+        overrides = {"agent_view/instructions/agents_md": ("# Custom AGENTS", False)}
 
-        write_instruction_files(artifacts_dir, {})
+        write_instruction_files(artifacts_dir, overrides)
 
         assert (artifacts_dir / "CLAUDE.md").read_text() == CLAUDE_MD_CONTENT
 
-    def test_claude_md_written_even_without_agents(self, tmp_path):
+    def test_writes_no_claude_md_without_an_agents_md(self, tmp_path):
+        """The regression: CLAUDE.md only says "read AGENTS.md", so writing it with no
+        AGENTS.md gave the agent a dead end as its ONLY entry point."""
         artifacts_dir = tmp_path / "run"
         artifacts_dir.mkdir()
         ws_dir = tmp_path / "empty"
@@ -80,8 +83,20 @@ class TestClaudeMd:
 
         write_instruction_files(artifacts_dir, {}, workspace_dir=ws_dir)
 
-        assert (artifacts_dir / "CLAUDE.md").exists()
+        assert not (artifacts_dir / "CLAUDE.md").exists()
         assert not (artifacts_dir / "AGENTS.md").exists()
+
+    def test_removes_a_claude_md_copied_from_a_build_with_no_agents_md(self, tmp_path):
+        """The run dir is a COPY of the build, so a stale pointer arrives by copy."""
+        artifacts_dir = tmp_path / "run"
+        artifacts_dir.mkdir()
+        (artifacts_dir / "CLAUDE.md").write_text(CLAUDE_MD_CONTENT)
+        ws_dir = tmp_path / "empty"
+        ws_dir.mkdir()
+
+        write_instruction_files(artifacts_dir, {}, workspace_dir=ws_dir)
+
+        assert not (artifacts_dir / "CLAUDE.md").exists()
 
 
 class TestEmptyConfigValue:

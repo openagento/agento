@@ -79,3 +79,36 @@ secrets.env (host filesystem)
 - SSH key — for cloning git repositories
 - MCP tools — through toolbox, which validates and executes requests
 - Filesystem — workspace/, modules/ (read-only)
+
+## What the Agent CANNOT Access, by Mount
+
+The `versioned_artifacts` store (`storage/versioned-artifacts/` → `/srv/versioned-artifacts`) is
+mounted into the **toolbox only**, so the agent container cannot reach it at all. The agent does
+have `git` — it commits its own workspace with it, see
+[identity.md](../config/identity.md) — and that is beside the point: the store is not
+there to operate on, and no generic `git` operation on it is ever exposed to the agent
+(PRD §32). Versioned file trees are therefore reachable only through the opt-in
+`versioned_artifact_*` tools, each additionally bounded to the artifacts that scope may use —
+the artifacts it created itself plus its `allowed_artifacts` grant. Creation is one of
+those tools: the agent owns the whole lifecycle, and what is withheld from it is the host
+*path*, not the operation. `versioned_artifact_init` names a code and nothing else, while the
+`artifact:init` CLI keeps `--source` — a host directory read is not something the toolbox may
+be asked for over a listener that authenticates no caller. Note that the `agent_view_id` those
+per-scope gates read is asserted by the caller, so they scope cooperating views rather than
+authorize them; see ROADMAP.md.
+
+The published half of that volume (`storage/versioned-artifacts/published`) is mounted
+read-only into one more container, `artifacts`, which serves it over HTTP. That container
+declares no `networks:` key, so Compose leaves it alone on the project `default` network
+while every other service names `agento-net` — the agent cannot resolve its name, let
+alone read an artifact it was never granted. It is published on `127.0.0.1` only. Putting
+it on `agento-net` "for consistency" would make every artifact readable by every agent in
+every agent_view over plain HTTP, with the `allowed_artifacts` allowlist bypassed and no
+audit row written. It also holds no `env_file:` and no `environment:`, so the second
+container touching artifact content still holds no secret.
+
+The agent still edits with ordinary file tools, on a **copy**: `create_draft` and
+`materialize` write the tree onto the agent's own workspace (its *desk*, under
+`/workspace/artifacts/…`) and `save_version` copies it back. So the trust boundary is the
+copy, not a shared mount — the store keeps the limits, the allowlist, the locking and the
+audit trail, and the desk holds nothing the agent could not already read.

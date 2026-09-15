@@ -18,6 +18,7 @@ from ._output import cyan, log_error, log_info, log_warn
 from ._project import compose_file_flags, resolve_host_ids, update_dotenv_value
 from ._provisioning import (
     build_base_images,
+    ensure_storage_dirs,
     enumerate_sandbox_packages,
     find_links_for_local_install,
     materialize_docker_context,
@@ -89,6 +90,7 @@ def _scaffold(project_dir: Path, project_name: str, config: dict[str, str]) -> N
     ]
     for d in dirs:
         (project_dir / d).mkdir(parents=True, exist_ok=True)
+    ensure_storage_dirs(project_dir)
 
     # Write project.json
     project_meta = {

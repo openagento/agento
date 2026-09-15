@@ -1,6 +1,7 @@
 # Docker Containers
 
-Four containers on the `agento-net` bridge network.
+Five containers. Four share the `agento-net` bridge network; `artifacts` declares no
+`networks:` key and deliberately joins none of it.
 
 ## Services
 
@@ -10,6 +11,7 @@ Four containers on the `agento-net` bridge network.
 | **toolbox** | agento-toolbox | MCP server — credential broker, tool execution | Node.js |
 | **mysql** | mysql:8.0 | Job queue DB (`cron_agent`) | — |
 | **sandbox** | agento-sandbox | Interactive agent execution (ad-hoc) | Python |
+| **artifacts** | agento-toolbox | Static HTTP for the `versioned_artifacts` published tree | Node.js |
 
 ## Volume Mounts
 
@@ -19,6 +21,26 @@ Four containers on the `agento-net` bridge network.
 |-------|-----------|--------|---------|
 | `modules/` | cron, toolbox, sandbox | read-only | Module manifests + config.json |
 | `logs/` | cron, toolbox | read-write | Structured JSON logs |
+
+### Toolbox-Only
+
+| Mount | Access | Purpose |
+|-------|--------|---------|
+| `storage/versioned-artifacts/` → `/srv/versioned-artifacts` | read-write | `versioned_artifacts` store (bare repos + draft checkouts) and its published tree (materialized versions plus the `current` symlink). Mounted into **toolbox only** — the sandbox and cron never see it, so the agent reaches versioned content exclusively through gated MCP tools. |
+
+### Artifacts-Only
+
+| Mount | Access | Purpose |
+|-------|--------|---------|
+| `storage/versioned-artifacts/published` → `/srv/published` | read-only | The published tree, and nothing else — never the store root. |
+| `app/etc` → `/app/etc` | read-only | `modules.json` only, so `mo:di versioned_artifacts` makes every route answer 503 without a restart. |
+
+The `artifacts` service declares **no `networks:` key** and carries no `env_file:` or
+`environment:`. Compose therefore leaves it alone on the project's `default` network while
+every other service names `agento-net` — measured: the sandbox cannot resolve the name
+`artifacts`. It is published on `127.0.0.1:${AGENTO_ARTIFACTS_PORT:-8080}` on the host and
+reachable from no other container. Putting it on `agento-net` would let every agent in every
+agent_view read every artifact over plain HTTP, bypassing `allowed_artifacts` with no audit row.
 
 ### Agent-Only (cron + sandbox)
 
@@ -52,7 +74,7 @@ Four containers on the `agento-net` bridge network.
 
 ## Network
 
-All containers communicate on `agento-net` (bridge). DNS names match service names: `toolbox`, `mysql`.
+All containers **except `artifacts`** communicate on `agento-net` (bridge). DNS names match service names: `toolbox`, `mysql`. `artifacts` declares no `networks:` key, so Compose leaves it alone on the project `default` network and no other container can even resolve its name.
 
 Agent connects to Toolbox via MCP. Claude and Codex use streamable HTTP at `http://toolbox:3001/mcp` — Claude via `.mcp.json` (`{"type": "http", "url": …}`; the `type` discriminator is mandatory, a typeless entry is dropped at validation), Codex via `.codex/config.toml`. Claude's toolbox entry also carries `"alwaysLoad": true`: Claude connects MCP servers non-blocking by default, so without it `system/init` always reports the toolbox as `pending` (and `job.toolbox_mcp_connected` can never be `TRUE`). `alwaysLoad` makes the CLI await that one handshake before emitting init, bounded by `MCP_CONNECT_TIMEOUT_MS` (default 5 s), after which it proceeds with the connect continuing in the background. Agento injects `alwaysLoad` **only** into the auto-injected toolbox entry: operator servers from `agent_view/mcp/servers` are preserved wholesale, so they stay non-blocking unless the operator explicitly opts in by setting `"alwaysLoad": true` themselves — and an operator entry that shadows `toolbox` replaces ours, opting out of the injected one. Each harness's `WorkspaceAdapter` constructs the URL from the shared `core/toolbox/url` base value (via `serialize_toolbox_connection`, which is deliberately unconstrained — a harness that consumes the Toolbox as CLI flags or env vars rather than MCP JSON is equally valid). The deprecated SSE transport at `/sse` is still served for operator-pinned `type: sse` entries.
 
