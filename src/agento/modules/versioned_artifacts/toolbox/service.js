@@ -53,6 +53,7 @@ const OPS = {
   discardDraft: 'versioned_artifact.draft.discarded',
   saveVersion: 'versioned_artifact.version.saved',
   publish: 'versioned_artifact.version.published',
+  remove: 'versioned_artifact.artifact.removed',
 };
 
 /** How many names to try before giving up. The per-caller creation quota
@@ -271,9 +272,9 @@ export function createService({ config = {}, db = null, log = null, jobId = null
           }
           // Counted over what this caller may USE, not over the store. A count of the
           // whole store answers "how many artifacts does every other agent_view hold"
-          // — and, with no delete on any path, lets one view lock creation out for all
-          // of them. It bounds ownership, NOT disk: versions are unbounded and
-          // `serving/keep_versions` prunes nothing at its default of 0.
+          // — and, with `artifact:delete` reachable only by an operator, lets one view
+          // lock creation out for all of them until a human intervenes. It bounds ownership, NOT disk: versions are unbounded and
+          // `serving/keep_versions` bounds the previews per artifact, never the store.
           // Hoisted out of the retry below: the count does not change between attempts.
           if (!admin) {
             const held = (await filterUsable(await be.listArtifacts(storageRoot))).length;
@@ -340,6 +341,51 @@ export function createService({ config = {}, db = null, log = null, jobId = null
           // called and the row keeps the requested name, which is the right record of a
           // creation that never happened.
         }, (r) => ({ artifactCode: r.artifact_code, versionId: r.current_version }));
+      },
+
+      /** Destruction, and the ONE lifecycle step the agent does not own: it is reachable
+       *  from `artifact:delete` only, never from a tool. `agent_view_id` is asserted by
+       *  the caller, so ownership scopes rather than authorizes — a self-asserted identity
+       *  must not be able to unmake an immutable history.
+       *
+       *  The published tree goes FIRST: it is the only root anyone can read over HTTP, so
+       *  a removal that dies halfway has stopped serving rather than left a live preview
+       *  of an artifact the store no longer holds. Existence is checked on BOTH roots, not
+       *  through `requireArtifact`, because the half-cleaned store is exactly the state an
+       *  operator runs this to repair.
+       *
+       *  ponytail: takes the init lock, which excludes a concurrent creation of the same
+       *  code but NOT a draft operation already inside the artifact — that one simply
+       *  fails on files that are gone. Per-artifact exclusion needs the artifact lock,
+       *  which lives inside the directory being removed. */
+      async remove(artifactCode) {
+        // Above the audit boundary for the same reason as `init`: an invalid code audited
+        // is arbitrary caller text written into the audit table and the fallback log.
+        validateArtifactCode(artifactCode);
+        return audited(OPS.remove, { artifactCode }, async () => {
+          if (!admin) {
+            throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, 'this session may not delete artifacts');
+          }
+          return withLock(initLock(artifactCode), async () => {
+            const removedPublished = await published.removeArtifact(publishedRoot, artifactCode);
+            const removedStore = await be.removeArtifact(storageRoot, artifactCode);
+            if (!removedPublished && !removedStore) {
+              throw new ArtifactError(ERROR_CODES.ARTIFACT_NOT_FOUND, 'artifact not found');
+            }
+            // The row only DECORATES the store, so a failed DELETE costs a stale title,
+            // never the removal — the same degradation `init`'s INSERT has.
+            const db2 = pool();
+            if (db2) {
+              try {
+                await db2.execute('DELETE FROM versioned_artifact WHERE artifact_code = ?', [artifactCode]);
+              } catch (err) {
+                log?.('versioned_artifacts', 'ERROR',
+                  `artifact metadata not removed for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
+              }
+            }
+            return { artifact_code: artifactCode, removed_store: removedStore, removed_published: removedPublished };
+          });
+        });
       },
 
       // ------------------------------------------------------------- reads
