@@ -1246,14 +1246,14 @@ included: a job that edits its own config can present any agent_view it likes. T
 session-bound identity in the framework, never a module-local caller check.
 
 **Widened by the AG-50 follow-up** that gives the agent the whole artifact lifecycle: the
-`av<agent_view_id>-` namespace an agent creates in is derived from that same self-asserted
+`owner` marker `init` writes beside each artifact records that same self-asserted
 value, so it SCOPES cooperating views and does not authorize them — a forged id reaches
-another view's namespace and its per-view creation quota. Shipping it this way was the
+another view's artifacts and its per-view creation quota. Shipping it this way was the
 deliberate choice (the alternative markers are all forgeable through the same parameter);
 what closes it is the session-bound identity above, and nothing below it.
 
 Two more gaps the same change makes reachable without an operator, neither of them new:
-- **Nothing bounds disk.** `limits/max_agent_artifacts` bounds namespaces. Versions are
+- **Nothing bounds disk.** `limits/max_agent_artifacts` bounds artifact count. Versions are
   unbounded, every save materializes a full copy into the published tree, and
   `serving/keep_versions` defaults to `0`, which prunes nothing. A positive default is the
   one-line fix; it belongs with the GC deferral in Phase 16.

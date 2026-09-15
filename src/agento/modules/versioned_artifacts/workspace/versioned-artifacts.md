@@ -15,7 +15,7 @@ What you save is what you publish: a version never changes after it is created.
 
 | Term | Meaning |
 |---|---|
-| `artifact_code` | The stable name of an artifact, e.g. `openagento-website` |
+| `artifact_code` | The stable name of an artifact, e.g. `openagento-website`. Lowercase letters, digits and hyphens only — no uppercase, no underscore. `init` may hand back a different one; that one is the artifact |
 | `draft_id` | A private, editable copy you are working in, e.g. `d-a83f21` |
 | `version_id` | An immutable snapshot, e.g. `v-20260905-154012-a3f2` |
 | `current` | The one version the artifact publishes right now |
@@ -28,11 +28,17 @@ What you save is what you publish: a version never changes after it is created.
 an optional `title`, and nothing else — you fill version 1 the same way you make any other
 change: `create_draft`, write files, `save_version`.
 
-**The code you choose must start with your own prefix.** If you get
-`ARTIFACT_ACCESS_DENIED`, the message names the prefix; retry with it, for example
-`av7-quarterly-report`. The prefix is also in the URL, so pick the rest of the name for a
-reader. A code an administrator granted you is the exception — you may create that one
-under its own name.
+The code is lowercase letters, digits and hyphens: `quarterly-report`, never
+`QUARTERLY_REPORT`. Every tool here takes the same shape. The code is also the URL, so
+pick it for a reader.
+
+**Use the code the answer gives back, not the one you asked for.** The name you send is a
+wish. If another agent already took it you get the next free one — you ask for
+`quarterly-report` and may get `quarterly-report-2`. Everything after that call — drafts,
+versions, publishing, the URL you tell anyone — uses the code in the response. There is no
+error to handle here; there is a name to read.
+
+You own what you create, so no administrator has to grant you anything first.
 
 `ARTIFACT_LIMIT_REACHED` means you already hold as many artifacts as you may. Nothing
 deletes an artifact, so reuse one you made earlier — a new version, not a new artifact, is
@@ -122,8 +128,8 @@ Every failure gives you an `error_code`. The ones you will act on:
 | `DRAFT_LOCKED` | Another operation on the same draft is running; wait and retry |
 | `DRAFT_NOT_FOUND` | The draft was discarded; create a new one |
 | `DESK_MISSING` | The draft's directory is gone from your workspace; `materialize` it again |
-| `WORKSPACE_UNAVAILABLE` | This session has no workspace; you cannot use drafts here |
-| `ARTIFACT_ACCESS_DENIED` | On `init`: the code is outside your prefix — the message names it, retry. Otherwise: you may not use this artifact; ask the user |
+| `WORKSPACE_UNAVAILABLE` | This session names no run, so it has no workspace of its own; you cannot use drafts here |
+| `ARTIFACT_ACCESS_DENIED` | You may not use this artifact — it belongs to someone else. Ask the user |
 | `ARTIFACT_LIMIT_REACHED` | You hold as many artifacts as you may; save a new version of one you already have |
 | `INVALID_PATH` / `PATH_OUTSIDE_ARTIFACT` | A file in the directory is not a plain relative path inside it |
 | `SYMLINK_NOT_ALLOWED` | Remove the symlink; save copies regular files only |
