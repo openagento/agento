@@ -59,24 +59,45 @@ other change. The CLI keeps the host-directory import — see
 
 A caller may use an artifact when **either** holds:
 
-- its code starts with `av<agent_view_id>-` — the namespace it creates in, DERIVED from the
-  session, never configured and never stored; or
+- the store records that caller's agent_view as its **owner** — written when the artifact
+  was created, inside the artifact, by the same guarded step that creates it (an artifact
+  exists with its owner, or it does not exist); or
 - the code is listed in that scope's `allowed_artifacts`.
 
+An artifact with **no** owner recorded — every one created before this, and every one the
+administrative CLI creates — is reachable only through `allowed_artifacts`. That is the same
+rule such artifacts already followed, so nothing needs migrating.
+
 The second is the operator's grant, and it is also the **handoff**: one
-`config:set versioned_artifacts/allowed_artifacts av7-report --scope agent_view --scope-id 9`
+`config:set versioned_artifacts/allowed_artifacts report --scope agent_view --scope-id 9`
 gives view 9 the artifact view 7 created. The value **replaces** that scope's list, so a
 second handoff must repeat the earlier codes in the comma-separated value. It is equally the
-"pretty URL" path — pre-grant `marketing-site` and the agent can `init` it under that exact code.
+"specific URL" path — pre-grant `marketing-site` and the agent can `init` it under that exact code.
+
+### The code is a wish; the answer is the identity
+
+`versioned_artifact_init` takes the code the caller **wants** and returns the code it
+**got**. They differ when the name is already taken: the answer is `name-2`, then `name-3`.
+A caller cannot see what another agent_view took — the store is shared and the listing is
+not — so a refusal would be advice it has no way to act on. The suffix is appended, never
+spliced over a number the name already ends with, so a taken `plan-2024` becomes
+`plan-2024-2` and never `plan-2`.
+
+Two callers are exempt and get `ARTIFACT_ALREADY_EXISTS` instead: the administrative CLI,
+and any `init` on a code the operator pre-granted. Both name an address on purpose, and
+publishing at a different one would answer a request nobody made.
+
+**Always use the returned code.** Echoing back the requested one addresses the wrong
+artifact on every following call.
 
 `limits/max_agent_artifacts` caps creation, counted over the artifacts **that caller may
 use** — never over the store. A store-wide count would answer "how many artifacts does every
 other agent_view hold", and with no delete on any path it would let one view lock creation
-out for everyone. The administrative CLI is exempt from the namespace and from the cap.
+out for everyone. The administrative CLI is exempt from ownership and from the cap.
 
 > **Known limit — this SCOPES, it does not authorize.** `agent_view_id` is asserted by the
 > caller (`?agent_view_id=` on the toolbox SSE URL), so a forged one reaches another view's
-> namespace. It is the ceiling on every per-agent_view gate here, `allowed_artifacts`
+> artifacts. It is the ceiling on every per-agent_view gate here, `allowed_artifacts`
 > included. The fix is session-bound identity in the framework, not a check in this module —
 > see ROADMAP.md.
 
@@ -98,7 +119,7 @@ never is.
 | Code | Meaning |
 |---|---|
 | `ARTIFACT_NOT_FOUND` | No such artifact in the store |
-| `ARTIFACT_ACCESS_DENIED` | The artifact is neither in this scope's namespace nor in its `allowed_artifacts` |
+| `ARTIFACT_ACCESS_DENIED` | This scope neither owns the artifact nor has it in `allowed_artifacts` |
 | `ARTIFACT_LIMIT_REACHED` | This scope is at `limits/max_agent_artifacts` |
 | `DRAFT_NOT_FOUND` | Unknown, finished, or half-torn-down draft |
 | `DRAFT_LOCKED` | Another operation holds this draft's lock |
@@ -153,11 +174,16 @@ The agent's **desk** is the other half, and it is on the agent's own workspace, 
 the store:
 
 ```
-/workspace/artifacts/<workspace>/<agent_view>/<job_id>/versioned-artifacts/<artifact_code>/<draft_id|version_id>/
+/workspace/artifacts/<workspace>/<agent_view>/<run>/versioned-artifacts/<artifact_code>/<draft_id|version_id>/
 ```
 
-A session with no workspace gets `WORKSPACE_UNAVAILABLE` before the store is touched, so
-it cannot open a draft it has no way to reach. Every desk write is anchored to a
+`<run>` is whatever the MCP URL names: `job_id` for a queued job, `run_id` for an
+interactive `agento run`. Both are unique per run, which is the whole requirement — a
+shared segment would let two runs write the same desk files, and `save_version` mirrors
+the desk, so one run would mint a version from another's bytes and report success. A
+session that names neither lands on `/workspace/artifacts/_fallback`, which every such
+session shares, and gets `WORKSPACE_UNAVAILABLE` before the store is touched, so it cannot
+open a draft it has no way to reach safely. Every desk write is anchored to a
 directory **descriptor** opened once, not re-derived from a path, so a directory the
 agent replaces with a symlink between the check and the write cannot redirect it.
 
@@ -169,12 +195,12 @@ agent replaces with a symlink between the check and the write cannot redirect it
 | `versioned_artifacts/published_root` | `/srv/versioned-artifacts/published` | Absolute; the tree the artifacts server reads |
 | `versioned_artifacts/serving/keep_versions` | `0` | Preview directories kept per artifact. `0` keeps every one; the current target is never pruned |
 | `versioned_artifacts/serving/public_base_url` | `http://localhost:8080` | Used to build `preview_url`. Must match the host port the `artifacts` service publishes (`AGENTO_ARTIFACTS_PORT`, default 8080). Never set it through `CONFIG__` — ENV beats DB and would kill `config:set` |
-| `versioned_artifacts/allowed_artifacts` | *(empty)* | Comma-separated, **on top of** the `av<id>-` namespace the scope creates in. Scopable to `agent_view`; this is how one view is granted another's artifact |
+| `versioned_artifacts/allowed_artifacts` | *(empty)* | Comma-separated, **on top of** what the scope owns. Scopable to `agent_view`; this is how one view is granted another's artifact |
 | `versioned_artifacts/limits/max_file_size` | 5 MiB | |
 | `versioned_artifacts/limits/max_total_size` | 100 MiB | |
 | `versioned_artifacts/limits/max_files` | 2000 | |
 | `versioned_artifacts/limits/max_diff_bytes` | 1 MiB | Diffs past this are truncated, not refused |
-| `versioned_artifacts/limits/max_agent_artifacts` | 50 | Artifacts one agent_view may create. Bounds namespaces, **not disk** — versions are unbounded and `keep_versions: 0` prunes nothing |
+| `versioned_artifacts/limits/max_agent_artifacts` | 50 | Artifacts one agent_view may create. Bounds ownership, **not disk** — versions are unbounded and `keep_versions: 0` prunes nothing |
 | `versioned_artifacts/security/allow_symlinks` | `false` | Only `false` is supported; `true` is rejected at construction |
 
 `artifact:init` reads the three import limits from the running toolbox before it
@@ -203,7 +229,7 @@ Tools are opt-in. The master switch alone leaves all ten children disabled — e
 gated on its own key and merely `requires` the master.
 
 An agent that gets `versioned_artifact_init` needs no artifact created for it and no
-`allowed_artifacts` entry — it creates in its own `av<agent_view_id>-` namespace. The two
+`allowed_artifacts` entry — it creates under any free name and owns what it created. The two
 lines below are for the other case: an operator-seeded artifact under a code of their choosing.
 
 ```bash

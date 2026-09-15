@@ -14,6 +14,7 @@ import {
 } from './config-tests.js';
 import * as db from './db.js';
 import * as playwright from './playwright-client.js';
+import { buildArtifactsDir, FALLBACK_ARTIFACTS_DIR } from './artifacts-dir.js';
 
 const PORT = process.env.PORT || 3001;
 
@@ -41,18 +42,7 @@ const context = {
   },
 };
 
-function buildArtifactsDir(agentViewMeta, jobId) {
-  if (!agentViewMeta || !jobId) return '/workspace/artifacts/_fallback';
-  const safeWs = String(agentViewMeta.workspaceCode || '').replace(/[^a-zA-Z0-9_-]/g, '');
-  const safeAv = String(agentViewMeta.agentViewCode || '').replace(/[^a-zA-Z0-9_-]/g, '');
-  const safeJobId = String(jobId).replace(/[^0-9]/g, '');
-  if (safeWs && safeAv && safeJobId) {
-    return `/workspace/artifacts/${safeWs}/${safeAv}/${safeJobId}`;
-  }
-  return '/workspace/artifacts/_fallback';
-}
-
-async function createServer(agentViewId = null, jobId = null) {
+async function createServer(agentViewId = null, jobId = null, runId = null) {
   const server = new McpServer({
     name: 'toolbox',
     version: '1.0.0',
@@ -60,7 +50,7 @@ async function createServer(agentViewId = null, jobId = null) {
 
   // Build scoped context with agent_view-aware logger before registering tools,
   // so adapters use the scoped log from the start.
-  let artifactsDir = '/workspace/artifacts/_fallback';
+  let artifactsDir = FALLBACK_ARTIFACTS_DIR;
   // jobId (from req.query.job_id, null for interactive runs / tool-list) flows to every tool's
   // register() via registerTools -> enrichedContext; schedule_followup uses it to inherit the
   // current job's channel/reference/scope.
@@ -73,7 +63,7 @@ async function createServer(agentViewId = null, jobId = null) {
     const { overrides, agentViewMeta } = await loadScopedDbOverrides(agentViewId);
     preloadedOverrides = overrides;
     if (agentViewMeta) {
-      artifactsDir = buildArtifactsDir(agentViewMeta, jobId);
+      artifactsDir = buildArtifactsDir(agentViewMeta, jobId, runId);
       invocationLog = createScopedLogger(agentViewMeta);
       sessionContext = { ...sessionContext, artifactsDir };
     }
@@ -93,10 +83,11 @@ async function createServer(agentViewId = null, jobId = null) {
 app.get('/sse', async (req, res) => {
   const agentViewId = req.query.agent_view_id ? parseInt(req.query.agent_view_id, 10) : null;
   const jobId = req.query.job_id ? parseInt(req.query.job_id, 10) : null;
+  const runId = req.query.run_id ? String(req.query.run_id) : null;
   const transport = new SSEServerTransport('/messages', res);
   sessions.set(transport.sessionId, transport);
 
-  const { server } = await createServer(agentViewId, jobId);
+  const { server } = await createServer(agentViewId, jobId, runId);
 
   res.on('close', () => {
     sessions.delete(transport.sessionId);
@@ -142,10 +133,11 @@ app.all('/mcp', async (req, res) => {
 
   const agentViewId = req.query.agent_view_id ? parseInt(req.query.agent_view_id, 10) : null;
   const jobId = req.query.job_id ? parseInt(req.query.job_id, 10) : null;
+  const runId = req.query.run_id ? String(req.query.run_id) : null;
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
   });
-  const { server } = await createServer(agentViewId, jobId);
+  const { server } = await createServer(agentViewId, jobId, runId);
 
   let closing = false;
   transport.onclose = () => {

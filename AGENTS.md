@@ -43,13 +43,18 @@ Ranked. When two goals conflict, the higher goal wins.
   the Git backend — an import-layering test enforces that boundary. The agent owns the **whole
   lifecycle** — init → draft → version → publish → next draft — with no operator step in it:
   `artifact:init` / `artifact:list` / `artifact:publish` stay as equivalent operator interfaces.
-  Creation is scoped, not withheld: an agent may create `av<agent_view_id>-*` (derived, never
-  configured) plus whatever `allowed_artifacts` grants it — which is also how one agent_view is
-  handed another's artifact — bounded by `limits/max_agent_artifacts` counted over the artifacts
-  that caller may **use**, never over the store (a store-wide count is a cross-view cardinality
-  oracle, and with no delete anywhere a one-way lockout of every other view). `agent_view_id` is
-  asserted by the caller on the SSE URL, so the namespace **scopes**, it does not authorize — see
-  ROADMAP.md. Note `save_version`, not `publish`, is the HTTP exposure boundary: every saved version
+  Creation is free, and ownership is **in the store**, not in the name: `init` writes the calling
+  `agent_view_id` into an `owner` marker beside the artifact, and a caller may use what it owns plus
+  whatever `allowed_artifacts` grants it — which is how one agent_view is handed another's artifact.
+  An artifact with no marker is usable **only** through `allowed_artifacts`, which is what makes the
+  change need no migration. The code an agent asks for is a **wish**: a taken name is answered with
+  the next free `-N` (appended, never spliced over a trailing number) and the returned code is the
+  identity — an operator-named code (`allowed_artifacts` or the CLI) is exempt and gets
+  `ARTIFACT_ALREADY_EXISTS` instead, because renaming it would publish at an address nobody chose.
+  Bounded by `limits/max_agent_artifacts` counted over the artifacts that caller may **use**, never
+  over the store (a store-wide count is a cross-view cardinality oracle, and with no delete anywhere
+  a one-way lockout of every other view). `agent_view_id` is asserted by the caller on the SSE URL,
+  so ownership **scopes**, it does not authorize — see ROADMAP.md. Note `save_version`, not `publish`, is the HTTP exposure boundary: every saved version
   is materialized under `published/<code>/v/<id>/` and served; `publish` only moves `current`. The agent edits a **copy**: `create_draft` /
   `materialize` write the tree onto its own workspace (the *desk*) and `save_version` copies it back,
   so no tool takes a filesystem path and there is no file-level tool on the store. A fourth

@@ -13,7 +13,7 @@ container serves the artifact's current version — reachable on the host at
 
 ## Why it sees every artifact
 
-An agent reaches an artifact through its own `av<agent_view_id>-` namespace or through
+An agent reaches an artifact it created itself (the store records the owning agent_view) or through
 `versioned_artifacts/allowed_artifacts`, which is `agent_view`-scoped and empty by default.
 This command runs as an administrator and is exempt from both, so the store — not a scope —
 is what it lists. That exemption is set only by the toolbox CLI; the MCP tool layer never

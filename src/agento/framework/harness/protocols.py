@@ -144,12 +144,21 @@ class WorkspaceAdapter(Protocol):
         """
         ...
 
-    def inject_runtime_params(self, artifacts_dir: Path, *, job_id: int | None) -> None:
+    def inject_runtime_params(
+        self, artifacts_dir: Path, *, job_id: int | None, run_id: str | None = None,
+    ) -> None:
         """Apply per-run facts to the copied build in ``artifacts_dir``.
 
         ``job_id`` is the job scope, or ``None`` for a run that has no job — ``agento run``
         identifies its run by a string id. An adapter that only scopes by job id may
         return early on ``None``.
+
+        An adapter MAY additionally accept a ``run_id`` keyword: the string id of a
+        job-less run, ``None`` when the run has a job id (which already names it) or when
+        it cannot be named. It exists because the toolbox derives the run's desk from what
+        the URL names — a URL naming neither id lands on the shared ``_fallback`` desk and
+        gets no desk at all. Build the scope with
+        ``agento.framework.harness.run_scope.scope_toolbox_url`` rather than by hand.
 
         An adapter MAY additionally accept ``effective_model`` / ``effective_provider``
         keyword arguments — the per-run values, where a ``--model`` override wins over
