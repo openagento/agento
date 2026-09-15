@@ -59,8 +59,7 @@ export async function resolveCurrentTarget(publishedRoot, code) {
   return path.dirname(target) === 'v' && VERSION_ID_RE.test(id) ? id : null;
 }
 
-/** `keep === 0` prunes nothing — retention is OPT-IN, so a deployment that never sets
- *  it keeps every preview.
+/** `keep === 0` prunes nothing — a deployment that sets it to zero keeps every preview.
  *
  *  The exclusion is read from `current` here rather than taken as a parameter. After a
  *  FAILED swap `current` still points at the OLD version, so excluding the version the
@@ -78,6 +77,16 @@ export async function pruneVersions(publishedRoot, code, keep) {
   const doomed = newest.slice(keep).filter((n) => n !== current);
   for (const n of doomed) await rm(path.join(dir, n), { recursive: true, force: true });
   return doomed;
+}
+
+/** Everything served for one artifact — the version directories and the `current` link.
+ *  Reports whether it was there, so a caller can tell a removal from a no-op and repair
+ *  a store that lost one root but not the other. */
+export async function removeArtifact(publishedRoot, code) {
+  const dir = artifactDir(publishedRoot, code);
+  try { await stat(dir); } catch (err) { if (isMissing(err)) return false; throw err; }
+  await rm(dir, { recursive: true, force: true });
+  return true;
 }
 
 /** Relative, and `null` once retention has pruned the directory. A pruned version stays

@@ -92,8 +92,8 @@ artifact on every following call.
 
 `limits/max_agent_artifacts` caps creation, counted over the artifacts **that caller may
 use** — never over the store. A store-wide count would answer "how many artifacts does every
-other agent_view hold", and with no delete on any path it would let one view lock creation
-out for everyone. The administrative CLI is exempt from ownership and from the cap.
+other agent_view hold", and — with `artifact:delete` reachable only by an operator — it would
+let one view lock creation out for everyone until a human intervened. The administrative CLI is exempt from ownership and from the cap.
 
 > **Known limit — this SCOPES, it does not authorize.** `agent_view_id` is asserted by the
 > caller (`?agent_view_id=` on the toolbox SSE URL), so a forged one reaches another view's
@@ -106,10 +106,11 @@ out for everyone. The administrative CLI is exempt from ownership and from the c
 > moves `current`. Enabling `versioned_artifact_save_version` is therefore the decision to let
 > that agent_view put bytes on the artifacts port.
 
-> **There is no delete.** No tool and no command removes an artifact, so the cap is a one-way
-> ratchet. The remedy is manual and is two roots plus a row: `rm -rf <storage_root>/<code>`,
-> `rm -rf <published_root>/<code>`, then `DELETE FROM versioned_artifact WHERE artifact_code=…`.
-> Missing the second leaves the old bytes served under a code someone can re-create.
+> **Delete is the operator's, and only the operator's.** `artifact:delete` removes all three
+> places in one step — see [docs/cli/artifact-delete.md](../cli/artifact-delete.md). There is no
+> tool equivalent: ownership scopes rather than authorizes, so a self-asserted identity must not
+> be able to unmake an immutable history. For an agent the creation cap is therefore still a
+> one-way ratchet, and a human is what resets it.
 
 ## Error codes
 
@@ -193,14 +194,14 @@ agent replaces with a symlink between the check and the write cannot redirect it
 |---|---|---|
 | `versioned_artifacts/storage_root` | `/srv/versioned-artifacts/store` | Absolute; see the single-instance rule below |
 | `versioned_artifacts/published_root` | `/srv/versioned-artifacts/published` | Absolute; the tree the artifacts server reads |
-| `versioned_artifacts/serving/keep_versions` | `0` | Preview directories kept per artifact. `0` keeps every one; the current target is never pruned |
+| `versioned_artifacts/serving/keep_versions` | `10` | Preview directories kept per artifact. `0` keeps every one; the current target is never pruned |
 | `versioned_artifacts/serving/public_base_url` | `http://localhost:8080` | Used to build `preview_url`. Must match the host port the `artifacts` service publishes (`AGENTO_ARTIFACTS_PORT`, default 8080). Never set it through `CONFIG__` — ENV beats DB and would kill `config:set` |
 | `versioned_artifacts/allowed_artifacts` | *(empty)* | Comma-separated, **on top of** what the scope owns. Scopable to `agent_view`; this is how one view is granted another's artifact |
 | `versioned_artifacts/limits/max_file_size` | 5 MiB | |
 | `versioned_artifacts/limits/max_total_size` | 100 MiB | |
 | `versioned_artifacts/limits/max_files` | 2000 | |
 | `versioned_artifacts/limits/max_diff_bytes` | 1 MiB | Diffs past this are truncated, not refused |
-| `versioned_artifacts/limits/max_agent_artifacts` | 50 | Artifacts one agent_view may create. Bounds ownership, **not disk** — versions are unbounded and `keep_versions: 0` prunes nothing |
+| `versioned_artifacts/limits/max_agent_artifacts` | 50 | Artifacts one agent_view may create. Bounds ownership, **not disk** — the store keeps every version, and `keep_versions` bounds only the previews |
 | `versioned_artifacts/security/allow_symlinks` | `false` | Only `false` is supported; `true` is rejected at construction |
 
 `artifact:init` reads the three import limits from the running toolbox before it
@@ -323,8 +324,8 @@ which is the divergence this ordering exists to close. A failed swap returns suc
 the store change with `preview_stale: true` and a logged warning naming this call — never
 a bare success, and never a thrown error that would invite a retry the CAS must refuse.
 
-**Retention** is opt-in. With `serving/keep_versions` at its default `0` nothing is ever
-pruned. With a positive value the newest N preview directories survive, plus whatever
+**Retention** keeps the newest `serving/keep_versions` preview directories per artifact —
+`10` by default. Set it to `0` to keep every one. With a positive value the newest N survive, plus whatever
 `current` actually resolves to — read from the link itself, never from what a caller
 believed it had just installed. A pruned version is still fully readable through
 `versioned_artifact_materialize`; only the browser preview is gone, and
