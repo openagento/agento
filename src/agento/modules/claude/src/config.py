@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
 from agento.framework.harness import ToolboxConnectionSpec
+from agento.framework.harness.run_scope import scope_toolbox_url
 
 if TYPE_CHECKING:
     import pymysql
@@ -299,16 +300,16 @@ class ClaudeWorkspaceAdapter:
         artifacts_dir: Path,
         *,
         job_id: int | None,
+        run_id: str | None = None,
     ) -> None:
-        """Scope the copied config to one job.
+        """Scope the copied config to one run.
 
-        ``job_id=None`` means the run has no job scope (a string-id ``agento run``). There
-        is nothing to scope then, so return early rather than render the literal "None"
-        into the config. The framework does not currently make this call for this adapter —
-        it only passes ``None`` to adapters that name an ``effective_*`` override keyword —
-        but the Protocol permits it, so honouring it here keeps the declared type true.
+        ``job_id=None`` means the run has no job scope (a string-id ``agento run``); its
+        ``run_id`` scopes it instead, so the toolbox can still give it a desk of its own.
+        With neither there is nothing to scope, so return early rather than render the
+        literal "None" into the config.
         """
-        if job_id is None:
+        if job_id is None and not run_id:
             return
         mcp_path = artifacts_dir / ".mcp.json"
         if not mcp_path.is_file():
@@ -323,8 +324,7 @@ class ClaudeWorkspaceAdapter:
                 continue
             url = server_cfg.get("url")
             if isinstance(url, str) and ("/sse" in url or "/mcp" in url):
-                sep = "&" if "?" in url else "?"
-                server_cfg["url"] = f"{url}{sep}job_id={job_id}"
+                server_cfg["url"] = scope_toolbox_url(url, job_id, run_id)
         mcp_path.write_text(json.dumps(data, indent=2))
 
     def credential_ttl_seconds(self, credential: CredentialRecord) -> int | None:
