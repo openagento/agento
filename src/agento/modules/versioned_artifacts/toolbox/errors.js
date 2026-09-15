@@ -1,5 +1,9 @@
 export const ERROR_CODES = Object.freeze({
   ARTIFACT_NOT_FOUND: 'ARTIFACT_NOT_FOUND', ARTIFACT_ACCESS_DENIED: 'ARTIFACT_ACCESS_DENIED',
+  // A NAME collision, distinct from a store failure: `init` retries under the next
+  // number for an agent, and only the admin CLI ever sees it — an operator names a code
+  // deliberately, so renaming theirs would publish at an address they did not choose.
+  ARTIFACT_ALREADY_EXISTS: 'ARTIFACT_ALREADY_EXISTS',
   DRAFT_NOT_FOUND: 'DRAFT_NOT_FOUND', DRAFT_LOCKED: 'DRAFT_LOCKED',
   VERSION_NOT_FOUND: 'VERSION_NOT_FOUND', VERSION_ALREADY_EXISTS: 'VERSION_ALREADY_EXISTS',
   INVALID_PATH: 'INVALID_PATH', PATH_OUTSIDE_ARTIFACT: 'PATH_OUTSIDE_ARTIFACT',

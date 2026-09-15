@@ -28,7 +28,8 @@ def write_instruction_files(
     """Write AGENTS.md, SOUL.md, and CLAUDE.md into an artifacts directory.
 
     For each file: use DB config value if present, otherwise copy from workspace_dir.
-    CLAUDE.md is always written (points Claude Code to AGENTS.md).
+    CLAUDE.md only POINTS at AGENTS.md, so it is written only when AGENTS.md is there to
+    point at — see the note at the write below.
     """
     rd = Path(artifacts_dir)
     wd = Path(workspace_dir) if workspace_dir else Path(THEME_DIR)
@@ -48,5 +49,13 @@ def write_instruction_files(
             shutil.copy2(workspace_file, rd / filename)
             logger.debug("Copied %s from workspace", filename)
 
-    # CLAUDE.md always written — Claude Code reads it from cwd
-    (rd / "CLAUDE.md").write_text(CLAUDE_MD_CONTENT)
+    # CLAUDE.md is a POINTER, not instructions: its whole content is "read AGENTS.md".
+    # Written unconditionally it sent the agent to a file that need not exist — an
+    # agent_view with no `instructions/agents_md` and an empty theme got a dead end as its
+    # only entry point, and then had nothing but one-line tool descriptions to work from.
+    # A stale one is removed for the same reason: it would outlive the AGENTS.md it names.
+    claude_md = rd / "CLAUDE.md"
+    if (rd / "AGENTS.md").is_file():
+        claude_md.write_text(CLAUDE_MD_CONTENT)
+    else:
+        claude_md.unlink(missing_ok=True)
