@@ -152,6 +152,33 @@ Full developer documentation is available in [docs/](docs/):
 - [Config System](docs/config/) -- 3-level fallback, encryption, ENV vars
 - [Architecture](docs/architecture/) -- Containers, zero-trust, job queue
 
+## Roadmap
+
+One module = one integration = a complete package. The framework provides the mechanics, Core defines meaning, and Modules deliver features — every milestone stays backward-compatible and keeps the Python/Node.js security boundary intact.
+
+- ✅ Magento-style module system (manifests, 3-level config, dynamic tool loading)
+- ✅ Core contracts & module-driven registries (channels, workflows, runtimes)
+- ✅ Framework kernel & scoped configuration (per-module config, deterministic load order)
+- ✅ Event–observer system (`events.json`, cross-module composition)
+- ✅ Core module refactoring (framework has zero module imports)
+- ✅ Module setup system (`setup:upgrade` — migrations, data patches, cron)
+- ✅ Workspace & agent-view hierarchy (scoped config, generated CLI configs)
+- ✅ Concurrent agent-view execution pool (parallel profiles, priority scheduling)
+- ✅ Ingress identities & agent resolution (deterministic, module-extensible routing)
+- 🟡 Developer experience & open-source polish (docs, CI boundary tests)
+- 🟡 Event coverage & naming convention (`agento_<area>_<action>`, 25 events)
+- ⚪ Composable workspace, skills & tools (CLI-managed tool/skill control)
+- ⚪ Composable workspace automation (auto-rebuild, GC, scheduled sync)
+- ⚪ Admin API & Agent Studio (control plane for workspaces & agent views)
+- ⚪ Credential broker / key vault (broker-owned secrets, reference-based config)
+- ⚪ Response locale policy (per-scope output language)
+- ⚪ OAuth token pools (capacity-based rotation, per-agent-view assignment)
+- ⚪ Distribution & installation model (pre-built images, no local build)
+- ⚪ Areas / selective module loading (parked)
+- ⚪ Declarative schema `db_schema.json` (deferred)
+
+Legend: ✅ shipped · 🟡 in progress · ⚪ planned. This is the short preview — see the full roadmap in [ROADMAP.md](ROADMAP.md).
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on setting up a development environment, running tests, and submitting pull requests.
