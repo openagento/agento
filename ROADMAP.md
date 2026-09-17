@@ -48,6 +48,10 @@ A bounded worker pool runs many jobs in parallel, mixing different agent_view pr
 
 Inbound Outlook, Teams, and API traffic maps deterministically to the right agent_view through a module-extensible router registry. Routing is debuggable — matched router, candidates, chosen agent_view, and reasoning are logged and emitted as events — and ambiguity is always surfaced explicitly, never resolved silently.
 
+### ✅ Composable workspace, skills & tools
+
+CLI-managed control over what each agent_view can do: `tool:enable`/`tool:disable`, a skills module (`skill:sync/list/enable/disable`) backed by a registry, and pre-built materialized workspaces per agent_view (`workspace:build`) so the consumer copies a ready build instead of regenerating identical files on every run. Three independent deliverables, each disableable without breaking the system.
+
 ### 🟡 Developer experience & open-source polish
 
 Getting a contributor from "I want to add a Slack integration" to a working module in under 30 minutes. The unified Python CLI, `doctor`, `init`, `make:module`, and `module:validate` are shipped; what remains is per-capability extension docs, architecture tests that enforce module boundaries in CI, and a log-safety audit before widening logging namespaces.
@@ -56,13 +60,9 @@ Getting a contributor from "I want to add a Slack integration" to a working modu
 
 The `agento_<area>_<action>` naming convention is established, with 25 event classes covering job, consumer, worker, agent_view, routing, config, setup, and migration lifecycles. Remaining events are added incrementally as later milestones introduce the features they describe (for example, tool-binding change events).
 
-### ⚪ Composable workspace, skills & tools
+### 🟡 Composable workspace automation
 
-CLI-managed control over what each agent_view can do: `tool:enable`/`tool:disable`, a new skills module (`skill:sync/list/enable/disable`) backed by a registry, and pre-built materialized workspaces per agent_view so the consumer copies a ready build instead of regenerating identical files on every run. Three independent deliverables, each disableable without breaking the system.
-
-### ⚪ Composable workspace automation
-
-Makes composable workspaces production-ready: builds mark themselves dirty and rebuild when workspace-affecting config changes, old builds and runtime directories are garbage-collected on a retention policy, and `skill:sync` plus `workspace:build --all` run on a schedule so agents always execute on fresh config.
+Makes composable workspaces production-ready. Shipped: builds detect config drift and rebuild themselves at job-claim time (a checksum freshness check that supersedes the original dirty-flag design), and old builds are garbage-collected under a retention policy. Still pending: runtime-directory GC and a periodic `skill:sync` + `workspace:build --all` cron so skill-content changes are picked up on a schedule.
 
 ### ⚪ Admin API & Agent Studio
 
