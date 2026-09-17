@@ -51,6 +51,7 @@ class RestoreCrontabOnSetupObserver:
         from agento.framework.database_config import DatabaseConfig
         from agento.framework.db import get_connection
         from agento.framework.lock import FileLock, LockHeld
+        from agento.framework.workspace import get_active_agent_views
 
         periodic_config = get_module_config("jira_periodic_tasks")
         freq_labels = _reverse_frequency_map(
@@ -59,7 +60,8 @@ class RestoreCrontabOnSetupObserver:
 
         conn = get_connection(DatabaseConfig.from_env())
         try:
-            entries = _load_entries(conn, freq_labels)
+            active_view_ids = [av.id for av in get_active_agent_views(conn)]
+            entries = _load_entries(conn, freq_labels, active_view_ids)
         finally:
             conn.close()
 
@@ -114,18 +116,45 @@ def _reverse_frequency_map(frequency_map: dict[str, str]) -> dict[str, str]:
     return reversed_map
 
 
-def _load_entries(conn, freq_labels: dict[str, str]) -> list[CronEntry]:
-    """Read enabled recurring schedules into crontab entries (DictCursor rows)."""
+def _load_entries(
+    conn, freq_labels: dict[str, str], active_view_ids: list[int]
+) -> list[CronEntry]:
+    """Read enabled recurring schedules into crontab entries (DictCursor rows).
+
+    Scoped exactly like the hourly ``jira:periodic:sync`` so the restored block
+    equals what the sync would emit: per-view rows for the currently *active*
+    agent_views, or global (``agent_view_id IS NULL``) rows when none is active
+    (``commands/sync.py``). This deliberately excludes rows the sync would never
+    put in the crontab — stale global rows left over from a single-view→multi-view
+    migration (the sync's disable-sweep never touches global rows once views
+    exist) and rows for a now-inactive view. Restoring those would resurrect
+    obsolete schedules that could fire in the gap before the next sync removes them
+    again.
+    """
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT s.issue_key, s.summary, s.cron_expr, av.code AS agent_view_code
-            FROM schedule s
-            LEFT JOIN agent_view av ON av.id = s.agent_view_id
-            WHERE s.agent_type = 'cron' AND s.enabled = TRUE
-            ORDER BY s.agent_view_id IS NULL DESC, s.agent_view_id, s.issue_key
-            """
-        )
+        if active_view_ids:
+            placeholders = ",".join(["%s"] * len(active_view_ids))
+            cur.execute(
+                f"""
+                SELECT s.issue_key, s.summary, s.cron_expr, av.code AS agent_view_code
+                FROM schedule s
+                JOIN agent_view av ON av.id = s.agent_view_id
+                WHERE s.agent_type = 'cron' AND s.enabled = TRUE
+                  AND s.agent_view_id IN ({placeholders})
+                ORDER BY s.agent_view_id, s.issue_key
+                """,
+                active_view_ids,
+            )
+        else:
+            cur.execute(
+                """
+                SELECT s.issue_key, s.summary, s.cron_expr, '' AS agent_view_code
+                FROM schedule s
+                WHERE s.agent_type = 'cron' AND s.enabled = TRUE
+                  AND s.agent_view_id IS NULL
+                ORDER BY s.issue_key
+                """
+            )
         rows = cur.fetchall()
 
     entries: list[CronEntry] = []

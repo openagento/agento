@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from agento.modules.jira_periodic_tasks.src.crontab import MARKER_BEGIN, MARKER_END
 from agento.modules.jira_periodic_tasks.src.observers import (
     RestoreCrontabOnSetupObserver,
+    _load_entries,
     _reverse_frequency_map,
 )
 
@@ -34,11 +36,14 @@ def _conn_returning(rows):
     return conn
 
 
-def _run_observer(rows, current_crontab, *, freq_map=FREQ_MAP):
+def _run_observer(rows, current_crontab, *, freq_map=FREQ_MAP, active_view_ids=()):
     """Execute the observer with a real CrontabManager over a faked ``crontab``.
 
-    Returns (written_crontab_or_None, caplog_records) — ``written`` is the text
-    handed to ``crontab -`` or None if the crontab was left unchanged.
+    ``active_view_ids`` fakes ``get_active_agent_views`` (empty → global scope).
+    The mock connection returns ``rows`` verbatim for the schedule query, so
+    ``rows`` should be the schedule rows the (patched) scope would select.
+
+    Returns the text handed to ``crontab -`` or None if the crontab was unchanged.
     """
     written: dict[str, str] = {}
 
@@ -52,6 +57,7 @@ def _run_observer(rows, current_crontab, *, freq_map=FREQ_MAP):
 
     cfg = MagicMock()
     cfg.frequency_map = freq_map
+    views = [SimpleNamespace(id=vid) for vid in active_view_ids]
 
     with patch(
         "agento.modules.jira_periodic_tasks.src.crontab.subprocess.run",
@@ -62,6 +68,8 @@ def _run_observer(rows, current_crontab, *, freq_map=FREQ_MAP):
         "agento.framework.database_config.DatabaseConfig.from_env"
     ), patch(
         "agento.framework.db.get_connection", return_value=_conn_returning(rows)
+    ), patch(
+        "agento.framework.workspace.get_active_agent_views", return_value=views
     ), patch(
         "agento.framework.lock.FileLock"
     ):
@@ -119,7 +127,7 @@ def test_agent_view_arg_included_for_scoped_schedule():
         {"issue_key": "AG-11", "summary": "View task", "cron_expr": "*/5 * * * *",
          "agent_view_code": "mieszko"},
     ]
-    written = _run_observer(rows, CRONTAB_AFTER_SETUP)
+    written = _run_observer(rows, CRONTAB_AFTER_SETUP, active_view_ids=[1])
     assert "publish jira-cron AG-11 --agent-view mieszko" in written
     assert "# AG-11: View task (Every 5min)" in written
 
@@ -178,6 +186,8 @@ def test_lock_held_is_skipped_without_write():
     ), patch(
         "agento.framework.db.get_connection", return_value=_conn_returning(rows)
     ), patch(
+        "agento.framework.workspace.get_active_agent_views", return_value=[]
+    ), patch(
         "agento.framework.lock.FileLock", lock_cm
     ):
         # get_current (for had_block) runs before the lock; the apply path must not.
@@ -196,6 +206,51 @@ def test_db_error_is_non_fatal():
     ):
         # Must not raise — setup:upgrade continues.
         RestoreCrontabOnSetupObserver().execute(FakeSetupCompleteEvent(dry_run=False))
+
+
+def _recording_conn(rows):
+    """Mock connection whose cursor records the executed SQL + params."""
+    calls: list[tuple] = []
+
+    def execute(sql, params=None):
+        calls.append((" ".join(sql.split()), params))
+
+    cur = MagicMock()
+    cur.execute.side_effect = execute
+    cur.fetchall.return_value = rows
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cur
+    return conn, calls
+
+
+def test_load_entries_global_scope_when_no_active_views():
+    """No active agent_views → select global (agent_view_id IS NULL) rows only."""
+    conn, calls = _recording_conn(
+        [{"issue_key": "AG-10", "summary": "R", "cron_expr": "0 8 * * *",
+          "agent_view_code": ""}]
+    )
+    entries = _load_entries(conn, {"0 8 * * *": "Daily at 8:00"}, active_view_ids=[])
+
+    sql, params = calls[0]
+    assert "s.agent_view_id IS NULL" in sql
+    assert "IN (" not in sql
+    assert params is None  # no bound view ids
+    assert [e.agent_view_code for e in entries] == [""]
+
+
+def test_load_entries_restricts_to_active_views():
+    """Active agent_views → restrict to those ids, excluding stale/global rows."""
+    conn, calls = _recording_conn(
+        [{"issue_key": "AG-11", "summary": "V", "cron_expr": "*/5 * * * *",
+          "agent_view_code": "mieszko"}]
+    )
+    entries = _load_entries(conn, {"*/5 * * * *": "Every 5min"}, active_view_ids=[3, 7])
+
+    sql, params = calls[0]
+    assert "s.agent_view_id IN (%s,%s)" in sql
+    assert "IS NULL" not in sql
+    assert params == [3, 7]
+    assert entries[0].agent_view_code == "mieszko"
 
 
 def test_reverse_frequency_map_first_label_wins():
