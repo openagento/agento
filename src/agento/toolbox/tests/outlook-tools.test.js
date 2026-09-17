@@ -700,6 +700,200 @@ describe('tools fail closed when Graph is not configured', () => {
   }
 });
 
+describe('outlook thread read (allow_thread_read) — read scope follows the thread, actions stay bound', () => {
+  // Context: headless job whose trigger message is TRIG, feature ON. The binding row resolves the
+  // trigger message id from reference_id, exactly like the current-job binding tests above.
+  function threadCtx(outlookOverrides = {}) {
+    return {
+      log: vi.fn(),
+      moduleConfigs: {
+        outlook: { ...cfg, allowed_senders: 'sklep@mycompanystudio.com, *@mycompany.com', allow_thread_read: true, ...outlookOverrides },
+        core: { email_whitelist: 'sklep@mycompanystudio.com, *@mycompany.com' },
+      },
+      isToolEnabled: () => true,
+      graphAuthFactory, // mailbox agent@example.com
+      db: { getCronPool: () => ({ query: qRows([{ reference_id: 'slug::TRIG' }]) }) },
+      jobId: 10,
+      agentViewId: 5,
+      artifactsDir: '/workspace/artifacts/ws/av/10',
+    };
+  }
+
+  // Same conversation as TRIG. IN1 (allowed inbound) + OUT1 (trusted Sent-Items outbound) are authorized;
+  // INEVIL (sender off allow-list), SPOOF (allow-listed From but DMARC fail) and FORGE (From == agent
+  // mailbox but NOT in Sent Items) are all rejected.
+  const CONV_LIST = [
+    { id: 'IN1', conversationId: 'CONV1', subject: 'Audyt', from: { emailAddress: { address: 'sklep@mycompanystudio.com' } }, receivedDateTime: '2026-09-15T11:07:00Z', hasAttachments: false, parentFolderId: 'INBOX', internetMessageHeaders: PASS_DMARC },
+    { id: 'OUT1', conversationId: 'CONV1', subject: 'Re: Audyt', from: { emailAddress: { address: 'agent@example.com' } }, receivedDateTime: '2026-09-15T11:19:00Z', hasAttachments: true, parentFolderId: 'SENT', internetMessageHeaders: [] },
+    { id: 'INEVIL', conversationId: 'CONV1', subject: 'x', from: { emailAddress: { address: 'stranger@evil.com' } }, receivedDateTime: '2026-09-15T11:30:00Z', hasAttachments: false, parentFolderId: 'INBOX', internetMessageHeaders: PASS_DMARC },
+    { id: 'SPOOF', conversationId: 'CONV1', subject: 'x', from: { emailAddress: { address: 'sklep@mycompanystudio.com' } }, receivedDateTime: '2026-09-15T11:40:00Z', hasAttachments: false, parentFolderId: 'INBOX', internetMessageHeaders: FAIL_DMARC },
+    { id: 'FORGE', conversationId: 'CONV1', subject: 'x', from: { emailAddress: { address: 'agent@example.com' } }, receivedDateTime: '2026-09-15T11:50:00Z', hasAttachments: false, parentFolderId: 'INBOX', internetMessageHeaders: [] },
+  ];
+  const CONV_ATT = { OUT1: [{ id: 'ATT1', name: 'r.csv', contentType: 'text/csv', size: 3 }] };
+
+  // URL-routing Graph mock (the thread flow branches, so ordered mockResolvedValueOnce is unwieldy).
+  function makeThreadFetch({ conversationId = 'CONV1', sentId = 'SENT', list = CONV_LIST, attachments = CONV_ATT, fullMessages = {}, nextLink = false } = {}) {
+    return vi.fn(async (url) => {
+      const u = String(url);
+      if (/\/messages\/TRIG\?\$select=id,conversationId/.test(u)) return jsonRes(conversationId ? { id: 'TRIG', conversationId } : { id: 'TRIG' });
+      if (/\/mailFolders\/sentitems/.test(u)) return jsonRes({ id: sentId });
+      if (/\/messages\?\$filter=/.test(u)) return jsonRes({ value: list, ...(nextLink ? { '@odata.nextLink': 'https://graph/next' } : {}) });
+      if (/\/attachments\/[^/]+\/\$value/.test(u)) return { ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer, headers: { get: () => null }, text: async () => '' };
+      let m = u.match(/\/messages\/([^/]+)\/attachments\/([^/?]+)\?\$select=id,name/);
+      if (m) return jsonRes({ id: decodeURIComponent(m[2]), name: 'r.csv', contentType: 'text/csv', size: 3, '@odata.type': '#microsoft.graph.fileAttachment' });
+      m = u.match(/\/messages\/([^/]+)\/attachments\?\$select=id,name/);
+      if (m) return jsonRes({ value: attachments[decodeURIComponent(m[1])] || [] });
+      m = u.match(/\/messages\/([^/?]+)\?\$select=subject/);
+      if (m) return jsonRes(fullMessages[decodeURIComponent(m[1])] || { subject: 'S', from: { emailAddress: { address: 'sklep@mycompanystudio.com' } }, internetMessageHeaders: PASS_DMARC });
+      return jsonRes({});
+    });
+  }
+
+  it('T1: feature OFF → outlook_list_thread is NOT registered', () => {
+    const s = makeServer();
+    register(s, threadCtx({ allow_thread_read: false }));
+    expect(s.tools.outlook_list_thread).toBeUndefined();
+  });
+
+  it('feature ON → outlook_list_thread IS registered', () => {
+    const s = makeServer();
+    register(s, threadCtx());
+    expect(s.tools.outlook_list_thread).toBeDefined();
+  });
+
+  it('list_thread returns ONLY authorized messages, oldest→newest, metadata only (no bodies/bytes)', async () => {
+    vi.stubGlobal('fetch', makeThreadFetch());
+    const s = makeServer();
+    register(s, threadCtx());
+    const r = await s.tools.outlook_list_thread.handler({});
+    expect(r.isError).toBeUndefined();
+    const out = JSON.parse(r.content[0].text);
+    // INEVIL (T4), SPOOF (T5), FORGE (T7) all filtered out; order oldest→newest.
+    expect(out.messages.map((m) => m.message_id)).toEqual(['IN1', 'OUT1']);
+    expect(out.messages[0].direction).toBe('inbound');
+    expect(out.messages[1].direction).toBe('outbound'); // T6: trusted Sent-Items outbound
+    expect(out.messages[1].attachments).toEqual([{ attachment_id: 'ATT1', name: 'r.csv', content_type: 'text/csv', size: 3 }]); // T12
+    expect(out.truncated).toBe(false);
+    expect(r.content[0].text).not.toContain('contentBytes');
+    expect(r.content[0].text).not.toContain('conversationId'); // conversation id never exposed to the agent
+  });
+
+  it('T11: conversation exceeds the limit → truncated=true', async () => {
+    vi.stubGlobal('fetch', makeThreadFetch({ nextLink: true }));
+    const s = makeServer();
+    register(s, threadCtx());
+    const out = JSON.parse((await s.tools.outlook_list_thread.handler({})).content[0].text);
+    expect(out.truncated).toBe(true);
+  });
+
+  it('T2: get_message on the trigger still works (surface gate applies)', async () => {
+    vi.stubGlobal('fetch', makeThreadFetch());
+    const s = makeServer();
+    register(s, threadCtx());
+    const r = await s.tools.outlook_get_message.handler({ message_id: 'TRIG' });
+    expect(r.isError).toBeUndefined();
+  });
+
+  it('T3: get_message on an allowed inbound thread message works', async () => {
+    vi.stubGlobal('fetch', makeThreadFetch());
+    const s = makeServer();
+    register(s, threadCtx());
+    const r = await s.tools.outlook_get_message.handler({ message_id: 'IN1' });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toContain('sklep@mycompanystudio.com');
+  });
+
+  it('T6: get_message on a trusted OUTBOUND thread message works even though From == agent mailbox (surface gate skipped for authorized thread messages)', async () => {
+    // A full GET of OUT1 returns the agent mailbox + no DMARC — surfaceAllowed would BLOCK it; the thread
+    // binding already authorized it (physically in Sent Items), so the read is allowed.
+    const fullMessages = { OUT1: { subject: 'Re: Audyt', from: { emailAddress: { address: 'agent@example.com' } }, hasAttachments: true, internetMessageHeaders: [] } };
+    vi.stubGlobal('fetch', makeThreadFetch({ fullMessages }));
+    const s = makeServer();
+    register(s, threadCtx());
+    const r = await s.tools.outlook_get_message.handler({ message_id: 'OUT1' });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toContain('agent@example.com');
+  });
+
+  it('T6: get_attachment on the trusted outbound message skips the surface gate GET and proceeds to download', async () => {
+    const fetchMock = makeThreadFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, threadCtx());
+    const r = await s.tools.outlook_get_attachment.handler({ message_id: 'OUT1', attachment_id: 'ATT1' });
+    expect(r.content[0].text).not.toBe('Error: message is not available for this task.');
+    // The from,internetMessageHeaders gate GET is never issued for an authorized thread message.
+    expect(fetchMock.mock.calls.every((c) => !/\?\$select=from,internetMessageHeaders/.test(String(c[0])))).toBe(true);
+  });
+
+  it('T4/T5: a rejected thread message is NOT readable through its direct id (same generic denial)', async () => {
+    const fetchMock = makeThreadFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, threadCtx());
+    for (const hidden of ['INEVIL', 'SPOOF', 'FORGE']) {
+      const r = await s.tools.outlook_get_message.handler({ message_id: hidden });
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe('Error: message is not available for this task.');
+    }
+  });
+
+  it('T8: a foreign opaque id is denied WITHOUT a Graph GET of that id (no leak of its conversation)', async () => {
+    const fetchMock = makeThreadFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, threadCtx());
+    const r = await s.tools.outlook_get_message.handler({ message_id: 'FOREIGN' });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('Error: message is not available for this task.');
+    expect(fetchMock.mock.calls.every((c) => !String(c[0]).includes('FOREIGN'))).toBe(true);
+  });
+
+  it('T9: outlook_reply on an earlier thread message is denied (action scope not widened)', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, threadCtx());
+    const r = await s.tools.outlook_reply.handler({ message_id: 'IN1', body: 'hi' });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('Error: message is not available for this task.');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('T10: outlook_mark_processed on an earlier thread message is denied', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, threadCtx());
+    const r = await s.tools.outlook_mark_processed.handler({ message_id: 'OUT1' });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('Error: message is not available for this task.');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('T13: trigger message has no conversationId → fail closed (list_thread errors, thread ids denied)', async () => {
+    vi.stubGlobal('fetch', makeThreadFetch({ conversationId: '' }));
+    const s = makeServer();
+    register(s, threadCtx());
+    const r = await s.tools.outlook_list_thread.handler({});
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('Error: thread is not available for this task.');
+    const r2 = await s.tools.outlook_get_message.handler({ message_id: 'IN1' });
+    expect(r2.isError).toBe(true);
+  });
+
+  it('with the feature OFF, an earlier thread id is still denied (read scope unchanged)', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, threadCtx({ allow_thread_read: false }));
+    const r = await s.tools.outlook_get_message.handler({ message_id: 'IN1' });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe('Error: message is not available for this task.');
+    expect(fetchMock).not.toHaveBeenCalled(); // denied before any Graph call, no thread enumeration
+  });
+});
+
 describe('a getToken rejection surfaced through a tool stays sanitized', () => {
   it('outlook_get_message returns isError without raw credential detail (and makes no Graph call)', async () => {
     const auth = () => ({

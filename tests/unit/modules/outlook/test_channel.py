@@ -113,6 +113,21 @@ def test_followup_fragments_carry_instructions():
     assert "HTML" in f.respond  # follow-up replies must also be HTML
 
 
+def test_prompt_fragments_thread_hint_absent_when_feature_off():
+    # allow_thread_read off (or unset) → no thread-history instruction leaks into the prompt.
+    with patch("agento.framework.bootstrap.get_module_config", return_value={"allow_thread_read": False}):
+        f = OutlookChannel().get_prompt_fragments("AAMkAG=")
+    assert "outlook_list_thread" not in f.read_context
+
+
+def test_prompt_fragments_thread_hint_present_when_feature_on():
+    with patch("agento.framework.bootstrap.get_module_config", return_value={"allow_thread_read": True}):
+        f = OutlookChannel().get_prompt_fragments("AAMkAG=")
+        g = OutlookChannel().get_followup_fragments("AAMkAG=", "sprawdź raport")
+    assert "outlook_list_thread" in f.read_context
+    assert "outlook_list_thread" in g.read_context
+
+
 def test_prompt_fragments_provide_short_email_task_intro():
     # The opening prompt line should not repeat the (long, compound) reference_id — the channel
     # supplies a short fixed intro instead; the bare message_id still arrives via read_context.
