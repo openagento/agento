@@ -177,8 +177,6 @@ One module = one integration = a complete package. The framework provides the me
 - ⚪ Areas / selective module loading (parked)
 - ⚪ Declarative schema `db_schema.json` (deferred)
 
-**Near-term focus:** more channels (Teams, Gmail), Outlook threading, rule-based harness/model/effort routing, shared thread workspaces and runnable artifacts, evals & observability, and closing the toolbox/secret gaps. The full, per-item backlog with live status lives in [ROADMAP.md](ROADMAP.md#tracked-backlog-from-jira).
-
 Legend: ✅ shipped · 🟡 in progress · ⚪ planned. This is the short preview — see the full roadmap in [ROADMAP.md](ROADMAP.md).
 
 ## Contributing
