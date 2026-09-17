@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..channels.base import Channel
+from ..channels.base import Channel, accepts_config
 from ..harness import RunResult
 from ..job_models import Job
 from .base import JobContext, Workflow
@@ -34,7 +34,12 @@ class TodoWorkflow(Workflow):
     def build_prompt(
         self, channel: Channel, reference_id: str, **kwargs: object
     ) -> str:
-        f = channel.get_prompt_fragments(reference_id, config=kwargs.get("config"))
+        # Forward config only to channels that declare it — a third-party channel on the
+        # pre-config interface would otherwise raise TypeError during prompt construction.
+        if accepts_config(channel.get_prompt_fragments):
+            f = channel.get_prompt_fragments(reference_id, config=kwargs.get("config"))
+        else:
+            f = channel.get_prompt_fragments(reference_id)
         step = 0
 
         intro = f.task_intro or f"Wykonaj zadanie ({channel.name}) {reference_id}."

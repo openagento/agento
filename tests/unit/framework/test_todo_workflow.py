@@ -53,3 +53,35 @@ def test_build_prompt_uses_channel_task_intro_instead_of_reference_id():
     first_line = prompt.splitlines()[0]
     assert first_line == "Wykonaj zadanie z wiadomości email. Postępuj krok po kroku:"
     assert "slug::LONGBASE64ID" not in first_line
+
+
+def test_build_prompt_legacy_channel_without_config_param():
+    # A third-party channel on the pre-config interface (get_prompt_fragments takes only
+    # reference_id) must not receive config= — it would raise TypeError. The workflow probes
+    # the signature and calls it positionally instead.
+    class LegacyChannel:
+        name = "legacy"
+
+        def get_prompt_fragments(self, reference_id):  # no config param
+            return PromptFragments(read_context=f"READ {reference_id}", respond="RESPOND")
+
+    wf = TodoWorkflow(runner=None, logger=None)
+    prompt = wf.build_prompt(LegacyChannel(), "REF-1", config={"anything": True})
+    assert "READ REF-1" in prompt
+    assert "RESPOND" in prompt
+
+
+def test_build_prompt_new_channel_receives_config():
+    # A channel that declares config gets the job's config forwarded.
+    seen = {}
+
+    class NewChannel:
+        name = "new"
+
+        def get_prompt_fragments(self, reference_id, config=None):
+            seen["config"] = config
+            return PromptFragments(read_context="READ", respond="RESPOND")
+
+    wf = TodoWorkflow(runner=None, logger=None)
+    wf.build_prompt(NewChannel(), "REF-1", config={"allow_thread_read": True})
+    assert seen["config"] == {"allow_thread_read": True}

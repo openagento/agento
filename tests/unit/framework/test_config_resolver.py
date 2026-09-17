@@ -317,3 +317,63 @@ def test_a_decrypt_failure_is_not_reported_as_unset():
     # The exception must name the path and nothing else.
     assert "m/secret" in str(excinfo.value)
     assert "not-a-ciphertext" not in str(excinfo.value)
+
+
+def _svc_with(overrides):
+    from agento.framework.config_resolver import ScopedConfigService
+
+    svc = ScopedConfigService.__new__(ScopedConfigService)
+    svc._overrides = overrides
+    svc._scope_overrides = {}
+    svc._conn = None
+    svc._scope, svc._scope_id = "default", 0
+    return svc
+
+
+@dataclass
+class _SecretManifest:
+    name: str = "secretmod"
+    config: dict = field(default_factory=dict)
+    path: Path = field(default_factory=lambda: Path("/fake"))
+    provides: dict = field(default_factory=dict)
+
+
+def test_get_module_include_obscure_false_skips_decryption():
+    """``include_obscure=False`` must leave secret fields None and NEVER call the encryptor,
+    so a caller that only needs non-secret fields (the consumer building a prompt) does not
+    decrypt scoped credentials in a process outside the toolbox boundary."""
+    from unittest.mock import patch
+
+    manifest = _SecretManifest(
+        config={"flag": {"type": "boolean"}, "token": {"type": "obscure"}},
+    )
+    svc = _svc_with(
+        {"secretmod/flag": ("true", False), "secretmod/token": ("ciphertext", True)}
+    )
+
+    with patch("agento.framework.config_resolver.get_encryptor") as enc, patch(
+        "agento.framework.bootstrap.get_manifests", return_value=[manifest]
+    ), patch("agento.framework.config_resolver.read_config_defaults", return_value={}):
+        cfg = svc.get_module("secretmod", include_obscure=False)
+        enc.return_value.decrypt.assert_not_called()
+
+    assert cfg["flag"] is True   # non-secret still resolved
+    assert cfg["token"] is None  # secret skipped, not decrypted
+
+
+def test_get_module_default_still_decrypts_secrets():
+    """The default (include_obscure=True) is unchanged: secret fields resolve normally, so the
+    fix does not regress callers that legitimately need credentials (jira/publish, builder)."""
+    from unittest.mock import patch
+
+    manifest = _SecretManifest(config={"token": {"type": "obscure"}})
+    svc = _svc_with({"secretmod/token": ("ciphertext", True)})
+
+    with patch("agento.framework.config_resolver.get_encryptor") as enc, patch(
+        "agento.framework.bootstrap.get_manifests", return_value=[manifest]
+    ), patch("agento.framework.config_resolver.read_config_defaults", return_value={}):
+        enc.return_value.decrypt.return_value = "plaintext-secret"
+        cfg = svc.get_module("secretmod")
+        enc.return_value.decrypt.assert_called_once()
+
+    assert cfg["token"] == "plaintext-secret"

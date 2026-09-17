@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 
 from agento.framework.channels.base import Channel, PromptFragments
 from agento.framework.job_models import RequesterTrust
-from agento.modules.outlook.src.config import OutlookConfig
 from agento.modules.outlook.src.channel import (
     OutlookAdmission,
     OutlookChannel,
@@ -12,6 +11,7 @@ from agento.modules.outlook.src.channel import (
     _build_reference_id,
     _slugify,
 )
+from agento.modules.outlook.src.config import OutlookConfig
 
 WHITELIST = ["sklep@mycompanystudio.com", "ops@mycompany.com", "*@partner.com"]
 

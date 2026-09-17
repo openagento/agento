@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
@@ -56,6 +57,25 @@ class Channel(Protocol):
     def get_followup_fragments(
         self, reference_id: str, instructions: str, config: object | None = None
     ) -> PromptFragments: ...
+
+
+def accepts_config(method: object) -> bool:
+    """True when ``method`` accepts the ``config`` keyword argument.
+
+    ``config`` was added to ``get_prompt_fragments`` / ``get_followup_fragments``
+    after the first channels shipped. A third-party channel implementing the older
+    signature (no ``config``) would raise ``TypeError`` if a workflow passed it, so
+    workflows probe with this first and only forward ``config`` to channels that
+    declare it (or accept ``**kwargs``). Un-introspectable callables fail closed
+    (treated as the old interface) so an odd extension is never broken.
+    """
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return False
+    if "config" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 @runtime_checkable
