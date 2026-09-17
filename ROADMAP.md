@@ -10,6 +10,8 @@ Contributions are welcome. Bugs, docs, polish, and tightly scoped improvements a
 
 Status legend: ✅ shipped &nbsp;·&nbsp; 🟡 in progress &nbsp;·&nbsp; ⚪ planned
 
+The **Milestones** below are the strategic arc. The **[Tracked backlog](#tracked-backlog-from-jira)** that follows is the concrete work behind and ahead of them, mirrored from the internal issue tracker — `AG-###` tags are tracker references and each status drifts as work moves.
+
 ## Milestones
 
 ### ✅ Magento-style module system
@@ -91,6 +93,68 @@ Explicitly parked. There is no current justification for selective module loadin
 ### ⚪ Declarative schema (`db_schema.json`) — deferred
 
 A future declarative alternative to imperative SQL migrations: a module declares its desired tables, columns, and indexes, and `setup:upgrade` converges the actual schema to match (Magento's `db_schema.xml` equivalent). Deferred until hand-writing sequential migrations becomes a maintenance burden, or third-party modules need schema portability across database versions.
+
+---
+
+## Tracked backlog (from Jira)
+
+The milestones above are the strategic view. This section is the concrete, tracked work behind and ahead of them, grouped by area and mirrored from the internal issue tracker. `AG-###` tags are tracker references; `⚪` items marked *ready for dev* are scoped and queued, and *idea* items are directions we intend to explore but have not committed to a design. Status drifts as work moves — the tracker is the source of truth.
+
+### Channels & inbound integration
+
+- ✅ Outlook channel hardening — security review (AG-3), privacy (AG-4), autoresponder loop fix (AG-49)
+- ✅ GitHub channel (AG-5); one mailbox → many users → many agents (AG-24)
+- 🟡 Outlook conversation threading (AG-52) and Graph delta-cursor persistence (AG-40)
+- ⚪ Microsoft Teams channel (AG-12, *idea*) and Gmail channel (AG-20, *idea*)
+- ⚪ Bitbucket comments lane fix — `/pullrequests/{id}/commits` returns HTTP 400 on the `page` param (AG-25)
+
+### Harness, models & routing
+
+- ✅ Third harness — Pi.dev (AG-35); `agento run --pretty` (AG-37); run environment no longer prepared as root (AG-38)
+- ⚪ Dynamic harness / model / effort routing driven by rules (AG-51, *ready for dev*)
+- ⚪ Upgrade Claude Code & Codex to enable newer models (AG-1, *idea*)
+- ⚪ Per-`agent_view` config texture, including gating `WebSearch` / `WebFetch` (AG-27)
+- ⚪ Provide `python3` inside the agent sandbox (AG-33)
+
+### Jobs, concurrency & shared workspaces
+
+- ✅ One subscription, 10–100 workers (AG-18); token-limit + concurrency fixes (AG-30, AG-23); usage-limit keeps a job in TODO instead of DEAD (AG-46); job key auto-increment dedup (AG-22); duplicate OAuth-credential guard (AG-45)
+- 🟡 VersionedFolders (AG-50)
+- ⚪ Group jobs into threads → shared workspace & artifacts (AG-13, *ready for dev*)
+- ⚪ Runnable artifacts (AG-43, *ready for dev*)
+- ⚪ Per-agent file isolation — agents should not see each other's files (AG-42, *idea*)
+- ⚪ Job prompt/output size limits in MySQL (AG-32)
+
+### Security & secrets
+
+- 🟡 Don't materialize the private SSH key on disk (AG-8)
+- 🟡 Require toolbox auth — close anonymous MCP access (AG-16)
+
+These feed the **Credential broker / key vault** milestone; the deeper, pre-existing items live in the [Security hardening backlog](#security-hardening-backlog) below.
+
+### Evaluation & observability
+
+- ✅ `app_monitor` (AG-31)
+- ⚪ Add evals (AG-9, *idea*); OpenTelemetry → LangSmith evals (AG-14, *idea*)
+
+### Agent capabilities
+
+- ⚪ Agento workflows (AG-34, *idea*)
+- ⚪ Agento sub-agents via MCP (AG-41)
+- ⚪ Human-in-the-loop / HITL (AG-15, *idea*)
+- ⚪ Auto-compaction after a context threshold (AG-11, *idea*)
+
+### Developer experience, control plane & tooling
+
+- ✅ MCP config `type` fix so agents boot with tools (AG-26); surface all tools in the Tools section (AG-36); "Test connection" button (AG-29)
+- 🟡 Emit all module-supplied log extras (AG-39); event reason codes (AG-53)
+- ⚪ Auto toolset discovery (AG-10)
+- ⚪ Admin `agent_view` (AG-47, *idea*) — part of the **Admin API & Agent Studio** milestone
+
+### Platform & data
+
+- ✅ MySQL tool pool (AG-17)
+- ⚪ Migrate to PostgreSQL (AG-48, *idea*)
 
 ---
 
