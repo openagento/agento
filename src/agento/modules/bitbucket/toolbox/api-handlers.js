@@ -32,10 +32,15 @@ function clampTop(top, pollTop) {
 
 // Follow `page`-based pagination up to bounded caps (never an unbounded crawl). Returns collected
 // `values`. Throws a sanitized Error (status only) on a non-2xx page.
-async function collectPages(auth, segments, baseQuery, { maxItems = Infinity, maxPages = 5 } = {}) {
+//
+// `noPageParam`: omit the `page` key entirely. Bitbucket Cloud's PR /commits endpoint rejects
+// page-number pagination with HTTP 400 {"error":{"message":"Invalid page"}} — it accepts only
+// `pagelen` and exposes a `next` cursor. Callers hitting such endpoints pass this and cap maxPages:1.
+async function collectPages(auth, segments, baseQuery, { maxItems = Infinity, maxPages = 5, noPageParam = false } = {}) {
   const out = [];
   for (let page = 1; page <= maxPages; page += 1) {
-    const res = await auth.bbFetch(segments, { query: { ...baseQuery, page, pagelen: 50 } });
+    const query = noPageParam ? { ...baseQuery, pagelen: 50 } : { ...baseQuery, page, pagelen: 50 };
+    const res = await auth.bbFetch(segments, { query });
     if (!res.ok) {
       await res.text().catch(() => ''); // drain, discard (never surface provider body)
       throw new Error(`HTTP ${res.status}`);
@@ -173,7 +178,7 @@ async function buildCommentsRecord(auth, workspace, repo, prId) {
     auth,
     ['repositories', workspace, repo, 'pullrequests', prId, 'commits'],
     {},
-    { maxPages: 1, maxItems: 50 },
+    { maxPages: 1, maxItems: 50, noPageParam: true }, // /commits rejects `page` with HTTP 400
   );
   const commits = rawCommits.map((cm) => ({ date: cm.date }));
   return { comments, commits };

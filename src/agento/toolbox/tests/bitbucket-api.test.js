@@ -136,6 +136,31 @@ describe('POST /api/bitbucket/open-prs', () => {
     expect(auth.bbFetch.mock.calls.some((c) => c[0].includes('secret'))).toBe(false);
   });
 
+  it('comments lane: the /commits request carries NO `page` param (Bitbucket Cloud returns HTTP 400 otherwise)', async () => {
+    const auth = fakeAuth({
+      'repositories/acme/api/pullrequests': () => jsonRes({ values: [{ id: 42, title: 'X', updated_on: 'T' }] }),
+      'repositories/acme/api/pullrequests/42/comments': () => jsonRes({ values: [] }),
+      // Emulate Bitbucket Cloud: /commits rejects a page-number query with HTTP 400 "Invalid page".
+      'repositories/acme/api/pullrequests/42/commits': (_segments, opts) => (
+        'page' in (opts.query || {})
+          ? jsonRes({ error: { message: 'Invalid page' } }, 400)
+          : jsonRes({ values: [{ date: 'T1' }] })
+      ),
+    });
+    const handler = createOpenPrsHandler(deps(), vi.fn(), () => auth);
+    const res = mockRes();
+    await handler({ body: { agent_view_id: 7, lane: 'comments' } }, res);
+
+    const commitsCall = auth.bbFetch.mock.calls.find(
+      (c) => c[0].join('/') === 'repositories/acme/api/pullrequests/42/commits',
+    );
+    expect(commitsCall[1].query).not.toHaveProperty('page'); // the regression guard
+    expect(commitsCall[1].query.pagelen).toBe(50);
+    // and the record still publishes (no per-repo drop from a 400)
+    expect(res.body.errors).toHaveLength(0);
+    expect(res.body.pull_requests[0].commits).toEqual([{ date: 'T1' }]);
+  });
+
   it('isolates a per-repo failure: one repo 500 ⇒ errors[] while the other repo still returns', async () => {
     const auth = fakeAuth({
       'repositories/acme/bad/pullrequests': () => jsonRes({}, 500),
