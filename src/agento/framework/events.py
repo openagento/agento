@@ -81,6 +81,20 @@ class JobDeadEvent:
     elapsed_ms: int = 0
 
 
+@dataclass
+class JobBlockedEvent:
+    """Dispatched when a job is halted by a *blocked* verification verdict
+    (status → BLOCKED) — a deterministic configuration/infrastructure fault
+    (e.g. a missing MCP credential) that will not heal on retry. Distinct from
+    ``JobDeadEvent`` on purpose: the cause is the deployment, not the agent, so
+    ops gets an actionable alert instead of a dead-letter that reads as an agent
+    failure. ``error`` is the ``JobVerificationFailed`` carrying the verdict."""
+
+    job: Job
+    error: Exception
+    elapsed_ms: int = 0
+
+
 class VerifyReason(StrEnum):
     """Canonical core reasons for a verification veto on a successful-looking job.
 
@@ -91,6 +105,7 @@ class VerifyReason(StrEnum):
     NO_MCP_CALLS = "no_mcp_calls"
     TRANSCRIPT_MISSING = "transcript_missing"
     TRANSCRIPT_PARSE_FAILED = "transcript_parse_failed"
+    MISCONFIGURED = "misconfigured"
 
 
 @dataclass
@@ -105,12 +120,20 @@ class Verdict:
     core reasons, but a module vetoing for a domain-specific reason may supply
     its own ``StrEnum`` member instead of misclassifying the veto as a core one.
     Consumers only read ``reason.value`` (the string), so any ``StrEnum`` works.
+
+    ``blocked`` marks a deterministic configuration/infrastructure fault the
+    world state cannot heal between attempts — a missing MCP credential, a
+    broken tool config. It overrides ``retryable``: the retry policy stops
+    after the first attempt (no wasted LLM re-runs) and the consumer routes
+    the job to ``BLOCKED`` with an admin alert instead of retrying it three
+    times and dead-lettering it with a message that blames the agent.
     """
 
     retryable: bool
     reason: VerifyReason | StrEnum
     fresh_start: bool = False
     detail: str | None = None
+    blocked: bool = False
 
 
 @dataclass

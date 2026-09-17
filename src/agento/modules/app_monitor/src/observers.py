@@ -21,6 +21,10 @@
   on DEAD transitions when both ``alerts/email_to`` and ``alerts/smtp_host``
   are configured. Silent no-op if either is empty; SMTP failures are logged
   but never propagated.
+- ``JobBlockedAlertObserver`` (``job_blocked_after``) — send a plain-text SMTP
+  alert when a job is BLOCKED by a deterministic configuration/infrastructure
+  fault (a blocked verification verdict). Framed as a deployment fault, not an
+  agent failure. Same fail-quiet contract as ``AlertEmailObserver``.
 - ``SecurityBreachAlertObserver`` (``security_breach_after``) — send a
   plain-text SMTP alert when an inbound channel reports a probable security
   breach (e.g. a spoofed sender). Same fail-quiet contract as
@@ -401,6 +405,63 @@ class AlertEmailObserver:
             _log_alert_failure(
                 logger, smtp, e,
                 f"AlertEmailObserver job_id={getattr(event.job, 'id', '?')}",
+            )
+
+
+def _format_blocked_body(event) -> tuple[str, str]:
+    """Compose the subject/body for a BLOCKED alert.
+
+    A blocked job is halted by a deterministic configuration/infrastructure
+    fault (e.g. a missing MCP credential), not an agent failure. The alert says
+    so explicitly and surfaces ``verdict.reason``/``verdict.detail`` so ops can
+    fix the deployment rather than re-run the job.
+    """
+    job = event.job
+    err = event.error
+    err_class = err.__class__.__name__
+    subject = f"[agento] Job {job.id} BLOCKED — configuration/infrastructure fault"
+    lines = [
+        "This job was halted WITHOUT retry by a blocked verification verdict.",
+        "The cause is a deterministic configuration or infrastructure fault "
+        "(it will not heal on its own) — NOT an agent failure.",
+        "",
+        f"Job id:       {job.id}",
+        f"Reference id: {getattr(job, 'reference_id', '?')}",
+        f"Source:       {getattr(job, 'source', '?')}",
+        f"Attempt:      {getattr(job, 'attempt', '?')}/{getattr(job, 'max_attempts', '?')}",
+        f"Error class:  {err_class}",
+        f"Error:        {str(err)[:1000]}",
+        f"Elapsed ms:   {event.elapsed_ms}",
+    ]
+    if isinstance(err, JobVerificationFailed):
+        lines.append(f"Verdict reason: {err.verdict.reason.value}")
+        if err.verdict.detail:
+            lines.append(f"Verdict detail: {err.verdict.detail}")
+    return subject, "\n".join(lines)
+
+
+class JobBlockedAlertObserver:
+    """Send a plain-text alert when a job is BLOCKED by a configuration or
+    infrastructure fault (a blocked verification verdict) — NOT an agent fault.
+
+    Same fail-quiet contract as ``AlertEmailObserver``: silent no-op unless both
+    ``alerts/email_to`` and ``alerts/smtp_host`` are configured; SMTP failures are
+    logged but never propagated (the dispatcher also swallows observer errors).
+    """
+
+    def execute(self, event) -> None:
+        cfg = _config()
+        to = (cfg.get(CFG_ALERT_EMAIL_TO) or "").strip()
+        smtp = _smtp_config()
+        if not to or smtp is None:
+            return  # not configured — silent no-op
+        subject, body = _format_blocked_body(event)
+        try:
+            send_alert(smtp, to, subject, body)
+        except Exception as e:
+            _log_alert_failure(
+                logger, smtp, e,
+                f"JobBlockedAlertObserver job_id={getattr(event.job, 'id', '?')}",
             )
 
 

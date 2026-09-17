@@ -53,6 +53,13 @@ class _DeadEvent:
     elapsed_ms: int = 0
 
 
+@dataclass
+class _BlockedEvent:
+    job: _Job
+    error: Exception
+    elapsed_ms: int = 0
+
+
 def _harness_with(reader):
     """A RegisteredHarness-shaped stub — the observer reads the transcript reader off
     the registered harness's adapter, not off ``find_harness`` directly."""
@@ -621,6 +628,65 @@ class TestAlertEmailObserver:
         monkeypatch.setattr(obs, "send_alert", _boom)
         obs.AlertEmailObserver().execute(
             _DeadEvent(job=_Job(), error=RuntimeError("x")),
+        )
+
+
+class TestJobBlockedAlertObserver:
+    def test_noop_when_no_email_to(self, monkeypatch):
+        _patch_config(monkeypatch, **{
+            CFG_ALERT_EMAIL_TO: "",
+            CFG_ALERT_SMTP_HOST: "smtp.example.com",
+        })
+        sender = MagicMock()
+        monkeypatch.setattr(obs, "send_alert", sender)
+        obs.JobBlockedAlertObserver().execute(_BlockedEvent(job=_Job(), error=RuntimeError("x")))
+        sender.assert_not_called()
+
+    def test_noop_when_no_smtp_host(self, monkeypatch):
+        _patch_config(monkeypatch, **{
+            CFG_ALERT_EMAIL_TO: "ops@example.com",
+            CFG_ALERT_SMTP_HOST: "",
+        })
+        sender = MagicMock()
+        monkeypatch.setattr(obs, "send_alert", sender)
+        obs.JobBlockedAlertObserver().execute(_BlockedEvent(job=_Job(), error=RuntimeError("x")))
+        sender.assert_not_called()
+
+    def test_sends_config_framed_alert_with_verdict(self, monkeypatch):
+        """The alert must name the job, frame the cause as configuration/
+        infrastructure (not agent), and surface verdict reason + detail."""
+        _patch_config(monkeypatch, **_SMTP)
+        sender = MagicMock()
+        monkeypatch.setattr(obs, "send_alert", sender)
+
+        verdict = Verdict(
+            retryable=True,
+            reason=VerifyReason.MISCONFIGURED,
+            blocked=True,
+            detail="toolbox MCP credential missing",
+        )
+        event = _BlockedEvent(
+            job=_Job(id=585254, reference_id="AI-70"),
+            error=JobVerificationFailed(verdict),
+        )
+        obs.JobBlockedAlertObserver().execute(event)
+
+        sender.assert_called_once()
+        _, to, subject, body = sender.call_args.args
+        assert to == "ops@example.com"
+        assert "585254" in subject
+        assert "BLOCKED" in subject
+        assert "NOT an agent failure" in body
+        assert "misconfigured" in body
+        assert "toolbox MCP credential missing" in body
+
+    def test_smtp_failure_is_swallowed(self, monkeypatch):
+        _patch_config(monkeypatch, **_SMTP)
+        def _boom(*_a, **_kw):
+            raise OSError("network down")
+        monkeypatch.setattr(obs, "send_alert", _boom)
+        obs.JobBlockedAlertObserver().execute(
+            _BlockedEvent(job=_Job(), error=RuntimeError("x")),
         )
 
 

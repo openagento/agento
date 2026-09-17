@@ -4,6 +4,33 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-17 — `blocked` verdict category + `BLOCKED` job status (AG-55)
+
+- **Problem: a deterministic config fault was retried 3× and dead-lettered as an agent failure.** A
+  domain observer vetoes a superficially-successful job with `Verdict(retryable=True)` when a business
+  result is missing. When the *root cause* is infrastructure — a missing MCP tool credential — the world
+  state does not change between attempts, so the full LLM run repeats identically three times (~0.49 USD
+  and ~2.5 min of worker per job, guaranteed to fail) before dead-lettering with a message that blames
+  the agent. The observer only sees "no business result", not *why*, so `retryable` cannot express this.
+- **Fix: a distinct verdict category, not a fourth `retryable` meaning.** `Verdict` gains
+  `blocked: bool = False`. It is orthogonal to `retryable` and **overrides** it: `retry_policy.evaluate`
+  short-circuits a blocked verdict to `should_retry=False` on the first attempt regardless of
+  `retryable` or the error class. Keeping `retryable` a pure "would another identical attempt help?"
+  boolean and adding `blocked` for "the deployment is broken" avoids overloading one flag with two axes.
+- **A blocked job goes to `BLOCKED`, not `DEAD`.** `DEAD` means "the agent exhausted its retries";
+  reusing it would keep blaming the agent. The consumer routes a blocked verdict to a new terminal
+  status `BLOCKED` (migration `035`, mirrors how `PAUSED` was added in `018`) and dispatches
+  `job_blocked_after` instead of `job_dead_after`. `app_monitor` grows a `JobBlockedAlertObserver` that
+  emails ops an alert framed as a configuration/infrastructure fault — the "alert instead of dead-letter"
+  the report asked for. `BLOCKED` is terminal, so it is excluded from the active-job dedupe set and the
+  dequeue query for free; it is added to `job:list --status` and the admin filter cycle so ops can find it.
+- **The framework defines the mechanism; the domain observer opts in.** The observer that knows the veto
+  cause is a missing credential (it lives per-deployment in `app/code/`, out of this repo) sets
+  `blocked=True`. The framework only honors the contract — no `if provider == …` coupling, no framework
+  knowledge of any specific tool.
+
+---
+
 ## 2026-08-18 — Job dedupe by SELECT-then-INSERT, not `INSERT IGNORE` (AG-22)
 
 - **`INSERT IGNORE` burns an auto_increment id on every rejected duplicate.** MySQL/InnoDB allocates the

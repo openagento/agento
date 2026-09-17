@@ -43,6 +43,15 @@ def evaluate(
     """
     verdict = getattr(error_obj, "verdict", None)
     if verdict is not None:
+        if getattr(verdict, "blocked", False):
+            # Deterministic config/infra fault — the world state won't change
+            # between attempts. Stop after the first try (no wasted LLM re-runs);
+            # the consumer routes this to BLOCKED + admin alert, not dead-letter.
+            return RetryDecision(
+                should_retry=False,
+                delay_seconds=0,
+                reason=f"Verification veto (blocked — configuration/infrastructure, no retry): {verdict.reason}",
+            )
         if not verdict.retryable:
             return RetryDecision(
                 should_retry=False,
