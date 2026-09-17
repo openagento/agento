@@ -174,6 +174,9 @@ One module = one integration = a complete package. The framework provides the me
 - ⚪ Response locale policy (per-scope output language)
 - ⚪ OAuth token pools (capacity-based rotation, per-agent-view assignment)
 - ⚪ Distribution & installation model (pre-built images, no local build)
+- ⚪ Observability, telemetry & evals (OpenTelemetry traces, eval datasets, regression gates)
+- ⚪ Dynamic harness/model/effort routing (rule-based pre-execution task assessment)
+- ⚪ Job threads, handoffs & shared artifacts (grouped jobs, agent-to-agent handoff packages)
 - ⚪ Areas / selective module loading (parked)
 - ⚪ Declarative schema `db_schema.json` (deferred)
 
