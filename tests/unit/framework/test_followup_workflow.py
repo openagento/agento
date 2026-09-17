@@ -11,7 +11,7 @@ def test_build_prompt_includes_instructions_context():
     class FakeChannel:
         name = "fake"
 
-        def get_followup_fragments(self, reference_id, instructions):
+        def get_followup_fragments(self, reference_id, instructions, config=None):
             return PromptFragments(
                 read_context=f"READ {reference_id}",
                 respond="RESPOND",
@@ -28,7 +28,7 @@ def test_build_prompt_opening_falls_back_to_channel_and_reference_id():
     class FakeChannel:
         name = "fake"
 
-        def get_followup_fragments(self, reference_id, instructions):
+        def get_followup_fragments(self, reference_id, instructions, config=None):
             return PromptFragments(read_context="READ", respond="RESPOND", extra="X")
 
     wf = FollowupWorkflow(runner=None, logger=None)
@@ -40,7 +40,7 @@ def test_build_prompt_uses_channel_followup_intro_instead_of_reference_id():
     class FakeChannel:
         name = "fake"
 
-        def get_followup_fragments(self, reference_id, instructions):
+        def get_followup_fragments(self, reference_id, instructions, config=None):
             return PromptFragments(
                 read_context=f"READ {reference_id}", respond="RESPOND", extra="X",
                 followup_intro="Kontynuuj zadanie z wiadomości email.",

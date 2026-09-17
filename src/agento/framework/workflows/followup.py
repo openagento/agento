@@ -14,13 +14,17 @@ class FollowupWorkflow(Workflow):
             raise ValueError(f"Followup job {job.id} has no reference_id")
         if not job.context:
             raise ValueError(f"Followup job {job.id} has no context")
-        return self.execute(channel, job.reference_id, instructions=job.context)
+        return self.execute(
+            channel, job.reference_id, instructions=job.context, config=context.config
+        )
 
     def build_prompt(
         self, channel: Channel, reference_id: str, **kwargs: object
     ) -> str:
         instructions = kwargs["instructions"]
-        f = channel.get_followup_fragments(reference_id, str(instructions))
+        f = channel.get_followup_fragments(
+            reference_id, str(instructions), config=kwargs.get("config")
+        )
 
         intro = f.followup_intro or f"Kontynuacja zadania ({channel.name}) {reference_id}."
         lines = [

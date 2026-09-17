@@ -29,7 +29,7 @@ class JiraPromptChannel:
     def name(self) -> str:
         return "jira"
 
-    def get_prompt_fragments(self, reference_id: str) -> PromptFragments:
+    def get_prompt_fragments(self, reference_id: str, config: object | None = None) -> PromptFragments:
         return PromptFragments(
             read_context=(
                 f"Użyj jira_get_issue aby pobrać szczegóły i komentarze {reference_id}.\n"
@@ -54,7 +54,7 @@ class JiraPromptChannel:
         )
 
     def get_followup_fragments(
-        self, reference_id: str, instructions: str
+        self, reference_id: str, instructions: str, config: object | None = None
     ) -> PromptFragments:
         return PromptFragments(
             read_context=(

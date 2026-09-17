@@ -49,10 +49,12 @@ class Channel(Protocol):
     @property
     def name(self) -> str: ...
 
-    def get_prompt_fragments(self, reference_id: str) -> PromptFragments: ...
+    def get_prompt_fragments(
+        self, reference_id: str, config: object | None = None
+    ) -> PromptFragments: ...
 
     def get_followup_fragments(
-        self, reference_id: str, instructions: str
+        self, reference_id: str, instructions: str, config: object | None = None
     ) -> PromptFragments: ...
 
 

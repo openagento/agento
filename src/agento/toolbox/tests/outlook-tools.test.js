@@ -892,6 +892,84 @@ describe('outlook thread read (allow_thread_read) — read scope follows the thr
     expect(r.content[0].text).toBe('Error: message is not available for this task.');
     expect(fetchMock).not.toHaveBeenCalled(); // denied before any Graph call, no thread enumeration
   });
+
+  it('P2: a thread message whose list row OMITS internetMessageHeaders is hydrated, not silently dropped', async () => {
+    // Graph collection responses sometimes drop internetMessageHeaders even when $select asks for it. The
+    // per-message header response passes DMARC, so the allow-listed message must be surfaced — exactly the
+    // hydration fallback the delta poller uses.
+    const listNoHeaders = [
+      { id: 'IN2', conversationId: 'CONV1', subject: 'Audyt', from: { emailAddress: { address: 'sklep@mycompanystudio.com' } }, receivedDateTime: '2026-09-15T11:07:00Z', hasAttachments: false, parentFolderId: 'INBOX' },
+    ];
+    const fetchMock = vi.fn(async (url) => {
+      const u = String(url);
+      if (/\/messages\/TRIG\?\$select=id,conversationId/.test(u)) return jsonRes({ id: 'TRIG', conversationId: 'CONV1' });
+      if (/\/mailFolders\/sentitems/.test(u)) return jsonRes({ id: 'SENT' });
+      if (/\/messages\?\$filter=/.test(u)) return jsonRes({ value: listNoHeaders });
+      if (/\/messages\/IN2\?\$select=internetMessageHeaders/.test(u)) return jsonRes({ internetMessageHeaders: PASS_DMARC });
+      return jsonRes({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, threadCtx());
+    const out = JSON.parse((await s.tools.outlook_list_thread.handler({})).content[0].text);
+    expect(out.messages.map((m) => m.message_id)).toEqual(['IN2']); // surfaced, not dropped
+    expect(out.incomplete).toBe(false);
+    expect(fetchMock.mock.calls.some((c) => /\/messages\/IN2\?\$select=internetMessageHeaders/.test(String(c[0])))).toBe(true);
+  });
+
+  it('P2: a header hydration failure fails closed for that message and marks the result incomplete', async () => {
+    const listNoHeaders = [
+      { id: 'IN2', conversationId: 'CONV1', subject: 'Audyt', from: { emailAddress: { address: 'sklep@mycompanystudio.com' } }, receivedDateTime: '2026-09-15T11:07:00Z', hasAttachments: false, parentFolderId: 'INBOX' },
+    ];
+    const fetchMock = vi.fn(async (url) => {
+      const u = String(url);
+      if (/\/messages\/TRIG\?\$select=id,conversationId/.test(u)) return jsonRes({ id: 'TRIG', conversationId: 'CONV1' });
+      if (/\/mailFolders\/sentitems/.test(u)) return jsonRes({ id: 'SENT' });
+      if (/\/messages\?\$filter=/.test(u)) return jsonRes({ value: listNoHeaders });
+      if (/\/messages\/IN2\?\$select=internetMessageHeaders/.test(u)) return { ok: false, status: 503, text: () => Promise.resolve('Service Unavailable') };
+      return jsonRes({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, threadCtx());
+    const out = JSON.parse((await s.tools.outlook_list_thread.handler({})).content[0].text);
+    expect(out.messages).toEqual([]); // fail closed — not surfaced without a verifiable DMARC pass
+    expect(out.incomplete).toBe(true);
+  });
+
+  it('P3: a transient attachment-metadata error is reported incomplete and NOT cached (a retry recovers)', async () => {
+    // OUT1 is trusted-outbound (physically in Sent Items) so it is authorized; only its attachment
+    // metadata GET fails the first time. That failure must not freeze into the session cache as an empty
+    // list — a second call, after Graph recovers, returns the real metadata.
+    let attempt = 0;
+    const list = [
+      { id: 'OUT1', conversationId: 'CONV1', subject: 'Re: Audyt', from: { emailAddress: { address: 'agent@example.com' } }, receivedDateTime: '2026-09-15T11:19:00Z', hasAttachments: true, parentFolderId: 'SENT', internetMessageHeaders: [] },
+    ];
+    const fetchMock = vi.fn(async (url) => {
+      const u = String(url);
+      if (/\/messages\/TRIG\?\$select=id,conversationId/.test(u)) return jsonRes({ id: 'TRIG', conversationId: 'CONV1' });
+      if (/\/mailFolders\/sentitems/.test(u)) return jsonRes({ id: 'SENT' });
+      if (/\/messages\?\$filter=/.test(u)) return jsonRes({ value: list });
+      if (/\/messages\/OUT1\/attachments\?\$select=id,name/.test(u)) {
+        attempt += 1;
+        if (attempt === 1) return { ok: false, status: 503, text: () => Promise.resolve('Service Unavailable') };
+        return jsonRes({ value: [{ id: 'ATT1', name: 'r.csv', contentType: 'text/csv', size: 3 }] });
+      }
+      return jsonRes({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, threadCtx());
+    const out1 = JSON.parse((await s.tools.outlook_list_thread.handler({})).content[0].text);
+    expect(out1.incomplete).toBe(true);
+    expect(out1.messages[0].attachments).toEqual([]);
+    expect(out1.messages[0].attachments_incomplete).toBe(true);
+    // Not cached: the second call re-enumerates and now gets the metadata Graph withheld before.
+    const out2 = JSON.parse((await s.tools.outlook_list_thread.handler({})).content[0].text);
+    expect(out2.incomplete).toBe(false);
+    expect(out2.messages[0].attachments).toEqual([{ attachment_id: 'ATT1', name: 'r.csv', content_type: 'text/csv', size: 3 }]);
+    expect(out2.messages[0].attachments_incomplete).toBeUndefined();
+  });
 });
 
 describe('a getToken rejection surfaced through a tool stays sanitized', () => {

@@ -286,9 +286,13 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
   // Fail-closed: no binding, no conversationId, or any Graph error ⇒ empty (bound:false).
   let threadBindingPromise;
   const emptyThread = () => ({ bound: false, allowedMessageIds: new Set(), messages: [], truncated: false });
+  // A transient-failure variant: the same fail-closed empty view, but flagged `incomplete` so
+  // resolveThreadBinding does NOT keep it in the session cache — the next call re-enumerates against Graph
+  // instead of replaying the failure forever.
+  const failedThread = () => ({ ...emptyThread(), incomplete: true });
   const resolveThreadBinding = () => {
     if (!threadBindingPromise) {
-      threadBindingPromise = (async () => {
+      const pending = (async () => {
         const b = await resolveBinding();
         if (!b.bound) return emptyThread();
         const mailbox = auth.getMailboxUserId();
@@ -302,7 +306,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
           conversationId = (await tRes.json())?.conversationId;
         } catch (err) {
           log('outlook_list_thread', 'ERROR', `mailbox=${mailbox} thread root resolution failed: ${err.message}`);
-          return emptyThread();
+          return failedThread();
         }
         if (!conversationId) {
           log('outlook_list_thread', 'ERROR', `mailbox=${mailbox} trigger message has no conversationId`);
@@ -318,7 +322,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
           listed = await graphListConversation(mailbox, conversationId, threadReadMax);
         } catch (err) {
           log('outlook_list_thread', 'ERROR', `mailbox=${mailbox} thread enumeration failed: ${err.message}`);
-          return emptyThread();
+          return failedThread();
         }
         // 3. Authorize each message; keep only allowed ones. Chronological oldest→newest for the agent.
         const chronological = [...listed.messages].sort(
@@ -326,22 +330,52 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
             new Date(m1.receivedDateTime || m1.sentDateTime || 0) -
             new Date(m2.receivedDateTime || m2.sentDateTime || 0)
         );
+        // `incomplete` turns true on any transient Graph error below (header hydration / attachment
+        // metadata). It is surfaced to the agent AND keeps the result out of the session cache, so a retry
+        // can recover the full picture instead of serving a stale, silently-lossy view.
+        let incomplete = false;
         let rejected = 0;
         const allowed = [];
         for (const m of chronological) {
           const trustedOutbound = Boolean(sentItemsId) && m.parentFolderId === sentItemsId;
-          if (trustedOutbound || surfaceAllowed(m.from?.emailAddress?.address, m.internetMessageHeaders)) {
-            allowed.push({ m, outbound: trustedOutbound });
+          if (trustedOutbound) {
+            allowed.push({ m, outbound: true });
+            continue;
+          }
+          // Inbound → the same gate as surfaceAllowed. Graph's collection response sometimes OMITS
+          // internetMessageHeaders even when $select asks for it; hydrate them per-message before deciding
+          // (exactly like the delta poller in api-handlers.js), or a valid allow-listed message whose header
+          // response passes DMARC would be silently dropped. A hydration failure is transient: fail closed
+          // for THIS message AND flag the whole result incomplete so it is not cached.
+          let headers = m.internetMessageHeaders;
+          if (!Array.isArray(headers)) {
+            try {
+              const hr = await graphFetch(
+                `/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(m.id)}?$select=internetMessageHeaders`
+              );
+              await ensureOk(hr);
+              headers = (await hr.json())?.internetMessageHeaders;
+            } catch (err) {
+              log('outlook_list_thread', 'WARN', `mailbox=${mailbox} header hydration failed for a thread message: ${err.message}`);
+              headers = undefined;
+              incomplete = true;
+            }
+          }
+          if (surfaceAllowed(m.from?.emailAddress?.address, headers)) {
+            allowed.push({ m, outbound: false });
           } else {
             rejected += 1;
           }
         }
         // 4. Attachment METADATA only, and ONLY for allowed messages that have attachments (never for a
-        //    rejected message; never contentBytes). A transient metadata error degrades to [] for that
-        //    message, not a whole-thread failure.
+        //    rejected message; never contentBytes). A transient metadata error must NOT be frozen into the
+        //    session cache as an empty list (the agent could never recover the file): mark THIS message
+        //    attachments_incomplete and flag the whole result incomplete so it is not cached and a later
+        //    call can fetch the real metadata once Graph is available again.
         const messages = [];
         for (const { m, outbound } of allowed) {
           let attachments = [];
+          let attachmentsIncomplete = false;
           if (m.hasAttachments) {
             try {
               const ar = await graphFetch(
@@ -358,6 +392,8 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
             } catch (err) {
               log('outlook_list_thread', 'WARN', `mailbox=${mailbox} attachment metadata fetch failed: ${err.message}`);
               attachments = [];
+              attachmentsIncomplete = true;
+              incomplete = true;
             }
           }
           messages.push({
@@ -369,12 +405,13 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
             preview: m.bodyPreview,
             has_attachments: Boolean(m.hasAttachments),
             attachments,
+            ...(attachmentsIncomplete ? { attachments_incomplete: true } : {}),
           });
         }
         log(
           'outlook_list_thread',
           'OK',
-          `mailbox=${mailbox} discovered=${listed.messages.length} allowed=${allowed.length} rejected=${rejected} truncated=${listed.truncated}`
+          `mailbox=${mailbox} discovered=${listed.messages.length} allowed=${allowed.length} rejected=${rejected} truncated=${listed.truncated} incomplete=${incomplete}`
         );
         return {
           bound: true,
@@ -382,8 +419,18 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
           allowedMessageIds: new Set(allowed.map(({ m }) => m.id)),
           messages,
           truncated: listed.truncated,
+          incomplete,
         };
       })();
+      // Cache only DEFINITIVE results. A result flagged `incomplete` (a transient Graph error while
+      // enumerating, hydrating headers, or listing attachment metadata) — or an outright rejection — is
+      // dropped from the cache so a later call can recover instead of serving the failure forever. A bound
+      // thread, or a real "no conversation" deny, stays cached (enumerated at most once per session).
+      pending.then(
+        (t) => { if (threadBindingPromise === pending && (!t || t.incomplete)) threadBindingPromise = undefined; },
+        () => { if (threadBindingPromise === pending) threadBindingPromise = undefined; }
+      );
+      threadBindingPromise = pending;
     }
     return threadBindingPromise;
   };
@@ -629,7 +676,9 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
         'metadata (attachment_id, name, content_type, size) — NOT the bodies or file contents. Use it before',
         'asking the sender to re-send an earlier file: fetch the full message with outlook_get_message or a',
         'file with outlook_get_attachment using a message_id from this index. Reading only — you cannot reply',
-        'to or mark an earlier message.',
+        'to or mark an earlier message. The result also carries "truncated" (older messages beyond the cap',
+        'were omitted) and "incomplete" (a transient Graph error left some attachment metadata unresolved —',
+        'a per-message "attachments_incomplete" flag marks which; simply call again to recover it).',
       ].join('\n'),
       {},
       async () => {
@@ -642,7 +691,14 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
           }
           return {
             content: [
-              { type: 'text', text: JSON.stringify({ messages: thread.messages, truncated: thread.truncated }, null, 2) },
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  { messages: thread.messages, truncated: thread.truncated, incomplete: Boolean(thread.incomplete) },
+                  null,
+                  2
+                ),
+              },
             ],
           };
         } catch (err) {
@@ -745,9 +801,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
       'outlook_get_attachment',
       [
         'Download one file attachment from an email to the job artifacts directory.',
-        'Re-applies the SAME read-gate as the read tools (sender allow-listed + DMARC pass) before any',
-        'download, rejects non-file attachments and anything over 25 MB, and returns { path, name,',
-        'contentType, size }. The saved path can then be attached to a reply or a new email.',
+        'For the triggering message (or an inbound thread message) it re-applies the SAME read-gate as the',
+        'read tools (sender allow-listed + DMARC pass) before any download; a message already authorized by',
+        'the thread binding — including a trusted outbound one the agent itself sent from Sent Items — is not',
+        're-gated (so you can recover your own earlier attachment). Rejects non-file attachments and anything',
+        'over 25 MB, and returns { path, name, contentType, size }. The saved path can then be attached to a',
+        'reply or a new email.',
       ].join('\n'),
       {
         message_id: z.string().describe('Graph message ID the attachment belongs to'),

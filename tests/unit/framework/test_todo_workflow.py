@@ -11,7 +11,7 @@ def test_build_prompt_uses_channel_fragments():
     class FakeChannel:
         name = "fake"
 
-        def get_prompt_fragments(self, reference_id):
+        def get_prompt_fragments(self, reference_id, config=None):
             return PromptFragments(
                 read_context=f"READ {reference_id}", respond="RESPOND"
             )
@@ -28,7 +28,7 @@ def test_build_prompt_opening_falls_back_to_channel_and_reference_id():
     class FakeChannel:
         name = "fake"
 
-        def get_prompt_fragments(self, reference_id):
+        def get_prompt_fragments(self, reference_id, config=None):
             return PromptFragments(read_context="READ", respond="RESPOND")
 
     wf = TodoWorkflow(runner=None, logger=None)
@@ -42,7 +42,7 @@ def test_build_prompt_uses_channel_task_intro_instead_of_reference_id():
     class FakeChannel:
         name = "fake"
 
-        def get_prompt_fragments(self, reference_id):
+        def get_prompt_fragments(self, reference_id, config=None):
             return PromptFragments(
                 read_context=f"READ {reference_id}", respond="RESPOND",
                 task_intro="Wykonaj zadanie z wiadomości email.",

@@ -45,7 +45,7 @@ class GitHubPromptChannel:
     def name(self) -> str:
         return self._source
 
-    def get_prompt_fragments(self, reference_id: str) -> PromptFragments:
+    def get_prompt_fragments(self, reference_id: str, config: object | None = None) -> PromptFragments:
         return PromptFragments(
             read_context=(
                 f"Zadanie code-review dla pull requesta {reference_id} ({self._intro}).\n"
@@ -72,7 +72,9 @@ class GitHubPromptChannel:
             ),
         )
 
-    def get_followup_fragments(self, reference_id: str, instructions: str) -> PromptFragments:
+    def get_followup_fragments(
+        self, reference_id: str, instructions: str, config: object | None = None
+    ) -> PromptFragments:
         return PromptFragments(
             read_context=(
                 f"Wczytaj pull request {reference_id} (github_get_pr) — sprawdź obecny stan i czy nadal "
