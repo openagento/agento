@@ -82,7 +82,11 @@ class JobDeadEvent:
 
 
 class VerifyReason(StrEnum):
-    """Reason for a verification veto on a successful-looking job."""
+    """Canonical core reasons for a verification veto on a successful-looking job.
+
+    Modules that veto for a domain-specific reason may define their own
+    ``StrEnum`` and set it as ``Verdict.reason`` — see the annotation there.
+    """
 
     NO_MCP_CALLS = "no_mcp_calls"
     TRANSCRIPT_MISSING = "transcript_missing"
@@ -96,10 +100,15 @@ class Verdict:
     Observers set this on the dispatched ``JobFinalizeEvent`` to veto a
     superficially successful job (rc=0) when channel-agnostic invariants
     are violated (e.g. the agent made zero ``mcp__toolbox__*`` tool calls).
+
+    ``reason`` accepts any ``StrEnum``: ``VerifyReason`` is the canonical set of
+    core reasons, but a module vetoing for a domain-specific reason may supply
+    its own ``StrEnum`` member instead of misclassifying the veto as a core one.
+    Consumers only read ``reason.value`` (the string), so any ``StrEnum`` works.
     """
 
     retryable: bool
-    reason: VerifyReason
+    reason: VerifyReason | StrEnum
     fresh_start: bool = False
     detail: str | None = None
 
