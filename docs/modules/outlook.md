@@ -68,7 +68,9 @@ Set via `agento config:set outlook/<key> <value>` (or `CONFIG__OUTLOOK__<KEY>` e
 | `outlook/outlook_mailbox_user_id` | string | Mailbox UPN to poll — **per agent_view**. A UPN owned by exactly one view is **direct mode** (the mailbox identifies the view); a UPN **shared by ≥2 views** is **routed mode** (the message sender selects the view via `outlook_sender` bindings — see [routing](../architecture/routing.md)). Set at the view's scope for multi-view; `default` works for a single-view deployment (resolved via fallback). |
 | `outlook/allowed_senders` | string | **Comma-separated allow-list** of `From` addresses, resolved **per view**. Supports **glob wildcards** (`*@mycompany.com` matches any local part at that domain; `*` never crosses the `@`) and exact addresses. **Empty = block all.** |
 | `outlook/poll_top` | int | Delta **page size** per poll, resolved per view, clamped 1..50 (default `10`). The poll pages `@odata.nextLink` to the end, so this caps the per-page size, not the total fetched. |
-| `outlook/restrict_read_to_allowed_senders` | bool | **Default `true`.** When on, the agent read tools (`outlook_get_message` / `outlook_get_attachment`) only surface mail that passes the **same gate as the publisher** — sender on `allowed_senders` **and** a DMARC `pass` (the `From` header is forgeable; DMARC is the proof). Verdict undeterminable ⇒ not surfaced (fail-closed); empty `allowed_senders` ⇒ block all reads. Disabling it (`false`) lets the agent read **any** message in the mailbox, including spoofed / non-allow-listed / DMARC-failed mail — a documented **security risk**. (Reads are *additionally* bound to the triggering job's own message — see [Stateless activation & loop safety](#stateless-activation--loop-safety).) |
+| `outlook/restrict_read_to_allowed_senders` | bool | **Default `true`.** When on, the agent read tools (`outlook_get_message` / `outlook_get_attachment`) only surface mail that passes the **same gate as the publisher** — sender on `allowed_senders` **and** a DMARC `pass` (the `From` header is forgeable; DMARC is the proof). Verdict undeterminable ⇒ not surfaced (fail-closed); empty `allowed_senders` ⇒ block all reads. Disabling it (`false`) lets the agent read **any** message in the mailbox, including spoofed / non-allow-listed / DMARC-failed mail — a documented **security risk**. (Reads are *additionally* bound to the triggering job's own message, or its conversation when `allow_thread_read` is on — see [Reads and thread actions are bound to the triggering message](#reads-and-thread-actions-are-bound-to-the-triggering-message).) |
+| `outlook/allow_thread_read` | bool | **Default `false`.** Opt-in. When on, the READ scope follows the trigger's **own conversation** (not just the single triggering message): the toolbox registers `outlook_list_thread` and lets `outlook_get_message` / `outlook_get_attachment` reach any message the binding authorized. The conversation is derived from the **trusted trigger** (never an agent-supplied id); each message is authorized independently — inbound via the same `allowed_senders` + DMARC-`pass` gate as above, outbound only when it physically lives in this mailbox's **Sent Items** (a forged `From` is not enough). ACTIONS (`outlook_reply` / `outlook_mark_processed`) are **unchanged** — still bound to the trigger. When off, the tool is not registered and read scope is unchanged. |
+| `outlook/thread_read_max_messages` | int | **Default `50`** (floor 1, cap 200). Newest-N cap on the conversation enumeration for `allow_thread_read`; older messages beyond the cap are dropped and the result carries `truncated: true`. |
 
 A DMARC pass is **always required** for allow-listed senders — it is not a config option (see the security gate below).
 
@@ -334,8 +336,9 @@ behind it.
 
 ## Tools are opt-in
 
-All five tools (`outlook_get_message`, `outlook_get_attachment`, `outlook_reply`, `outlook_send_mail`,
-`outlook_mark_processed`) ship **disabled**. Enable only what the agent needs:
+The tools (`outlook_get_message`, `outlook_get_attachment`, `outlook_reply`, `outlook_send_mail`,
+`outlook_mark_processed`, and — only when `outlook/allow_thread_read` is on — `outlook_list_thread`) ship
+**disabled**. Enable only what the agent needs:
 
 ```bash
 agento tool:enable outlook_get_message    --agent-view <code>
@@ -343,10 +346,14 @@ agento tool:enable outlook_reply          --agent-view <code>
 agento tool:enable outlook_mark_processed --agent-view <code>
 ```
 
-> **No enumeration tools.** The former `outlook_search_messages` / `outlook_get_new_messages` list tools
-> were removed: in a shared mailbox they leaked other people's subjects, senders, and message ids. Message
-> discovery is now impossible by construction — see [Reads are bound to the triggering
-> message](#reads-are-bound-to-the-triggering-message).
+> **No mailbox-wide enumeration.** The former `outlook_search_messages` / `outlook_get_new_messages` list
+> tools were removed: in a shared mailbox they leaked other people's subjects, senders, and message ids.
+> Arbitrary discovery is impossible by construction — see [Reads and thread actions are bound to the
+> triggering message](#reads-and-thread-actions-are-bound-to-the-triggering-message). The **opt-in**
+> `outlook_list_thread` (registered only when `outlook/allow_thread_read` is on) is **not** an enumeration
+> tool: it takes no parameters and lists only the **already-authorized** messages of the trigger's own
+> conversation (attachment metadata only — never bodies or bytes, and the `conversationId` is never
+> exposed).
 
 `outlook_send_mail` and `outlook_reply` send external email, so **every** recipient is checked against
 `core/email_whitelist` — independent of the inbound allow-list, and only whitelisted addresses ever
@@ -366,6 +373,28 @@ generic error and does nothing (no read, no reply-all into another thread, no ma
 Combined with the removal of the enumeration tools, the agent cannot reach a conversation it is not part of,
 with no ACL and no new tables. (Email is self-quoting, so the triggering message usually carries the prior
 thread inline.)
+
+**Thread read (opt-in — `outlook/allow_thread_read`, default off).** When on, the **READ** scope widens
+from the single triggering message to the trigger's **own conversation** — enough for the agent to recover
+an earlier attachment it (or the sender) sent in a previous round instead of asking the human to re-send it.
+The action binding is **unchanged**: `outlook_reply` / `outlook_mark_processed` may still only target the
+trigger. Load-bearing properties:
+
+- **Conversation derived from the trusted trigger, never the agent.** The toolbox reads the trigger's own
+  `conversationId` (from the job-bound message id), enumerates that conversation, authorizes each message,
+  and caches an `allowedMessageIds` set per session. The agent never supplies a `conversationId` or a
+  foreign message id.
+- **A foreign opaque id is refused *before* any Graph GET of it** — membership is tested against
+  `allowedMessageIds`, so an unauthorized id's content and conversation are never fetched.
+- **Per-message authorization.** Inbound messages pass the same `surfaceAllowed` gate as above
+  (`allowed_senders` + DMARC `pass`); a message is trusted as **outbound** only when it physically lives in
+  this mailbox's **Sent Items** (`parentFolderId`), not by a forgeable `From`. If a collection row omits
+  `internetMessageHeaders`, the toolbox **hydrates** them per-message before deciding (so a valid message is
+  never silently dropped) — a hydration failure fails closed for that message and flags the result
+  `incomplete`.
+- **Fail closed.** A missing binding, no `conversationId`, or any Graph error yields an empty result; a
+  *transient* error (enumeration / header hydration / attachment metadata) additionally flags the result
+  `incomplete` and is **not** cached, so a later call can recover instead of replaying an empty view.
 
 **Operator escape hatch:** an interactive `agento run` has no triggering job (`jobId` is null), so this
 binding is not applied — the operator is trusted at a console. The by-construction guarantee applies to
@@ -404,8 +433,10 @@ publisher** — a message is surfaced only if its sender is on `outlook/allowed_
 a DMARC `pass`. The `From` header is forgeable, so the allow-list alone is not enough; without the DMARC
 check a spoofed allow-listed sender on a DMARC-failing email would be readable (a prompt-injection
 vector). A single-message GET reliably returns `internetMessageHeaders`, so the verdict is parsed
-directly (the removed enumeration tools once needed per-message hydration for message collections; with
-them gone, no collection is ever surfaced). An undeterminable verdict ⇒
+directly. The one place a **collection** is read — the opt-in `outlook_list_thread` enumerating the
+trigger's conversation — restores the poller's per-message **header hydration**: a row that omits
+`internetMessageHeaders` is re-fetched before the gate decides, so a valid message is not dropped and a
+spoofed one is still rejected (fail-closed on a hydration error). An undeterminable verdict ⇒
 not surfaced (fail-closed); empty `allowed_senders` ⇒ no readable mail. So an enabled read tool can't
 expose mail the channel would never have turned into a job (incl. spoofed / DMARC-failed mail sharing the
 mailbox). Disabling the flag bypasses **both** checks — a documented security risk.

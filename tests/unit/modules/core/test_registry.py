@@ -31,10 +31,10 @@ class TestRegistry:
             def name(self) -> str:
                 return "fake"
 
-            def get_prompt_fragments(self, reference_id):
+            def get_prompt_fragments(self, reference_id, config=None):
                 pass
 
-            def get_followup_fragments(self, reference_id, instructions):
+            def get_followup_fragments(self, reference_id, instructions, config=None):
                 pass
 
         fake = FakeChannel()
