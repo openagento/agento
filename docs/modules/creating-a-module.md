@@ -161,7 +161,14 @@ class CrmChannel:
     def name(self) -> str:
         return "crm"
 
-    def get_prompt_fragments(self, reference_id: str) -> PromptFragments:
+    def get_prompt_fragments(
+        self, reference_id: str, config: object | None = None
+    ) -> PromptFragments:
+        # ``config`` is this job's agent_view-scoped module config (or None for a
+        # legacy caller) — accept and ignore it if you don't need per-view prompt
+        # tuning. Declaring the parameter keeps you on the current interface; a
+        # channel that omits it stays compatible (the workflow probes the signature
+        # and only forwards config to channels that accept it).
         return PromptFragments(
             read_context=f"Read CRM ticket {reference_id}.",
             respond="Post the result as a comment.",

@@ -437,8 +437,15 @@ class ScopedConfigService:
             paths.update(f"{m.name}/{field}" for field in m.config)
         return {p: v for p in paths if (v := self.get(p)) is not None}
 
-    def get_module(self, module_name: str):
-        """Resolve a module's full config (coerced); typed dataclass if declared."""
+    def get_module(self, module_name: str, *, include_obscure: bool = True):
+        """Resolve a module's full config (coerced); typed dataclass if declared.
+
+        ``include_obscure=False`` skips ``obscure`` (secret) fields entirely — they
+        are left ``None`` and their encrypted DB value is never decrypted. A caller
+        that only needs the non-secret fields (e.g. the consumer resolving config for
+        prompt generation, outside the toolbox boundary) uses this so scoped
+        credentials are not decrypted in a process that has no business holding them.
+        """
         from .bootstrap import get_manifests
         from .module_loader import import_class
 
@@ -448,9 +455,13 @@ class ScopedConfigService:
 
         config_defaults = read_config_defaults(manifest.path)
         resolved = {
-            field_name: resolve_field(
-                module_name, field_name, field_schema, config_defaults, self._overrides
-            ).value
+            field_name: (
+                None
+                if not include_obscure and field_schema.get("type") == "obscure"
+                else resolve_field(
+                    module_name, field_name, field_schema, config_defaults, self._overrides
+                ).value
+            )
             for field_name, field_schema in manifest.config.items()
         }
 

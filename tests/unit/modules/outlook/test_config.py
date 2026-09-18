@@ -55,6 +55,21 @@ def test_allowed_senders_list_empty_for_blank():
     assert OutlookConfig.from_dict({}).allowed_senders_list == []
 
 
+def test_allow_thread_read_defaults_off_and_parses_stringy_values():
+    assert OutlookConfig.from_dict({}).allow_thread_read is False
+    for v in ("0", "false", "False", 0, False):
+        assert OutlookConfig.from_dict({"allow_thread_read": v}).allow_thread_read is False
+    for v in ("1", "true", True):
+        assert OutlookConfig.from_dict({"allow_thread_read": v}).allow_thread_read is True
+
+
+def test_thread_read_max_messages_is_defensive_and_clamped():
+    assert OutlookConfig.from_dict({}).thread_read_max_messages == 50        # default
+    assert OutlookConfig.from_dict({"thread_read_max_messages": "999"}).thread_read_max_messages == 200  # clamp high
+    assert OutlookConfig.from_dict({"thread_read_max_messages": 0}).thread_read_max_messages == 1        # clamp low
+    assert OutlookConfig.from_dict({"thread_read_max_messages": "abc"}).thread_read_max_messages == 50   # garbage -> default
+
+
 def test_toolbox_url_reads_core_config_when_dict():
     with patch("agento.framework.bootstrap.get_module_config", return_value={"toolbox/url": "http://tb:3001"}):
         assert OutlookConfig.from_dict({}).toolbox_url == "http://tb:3001"

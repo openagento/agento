@@ -26,6 +26,8 @@ class OutlookConfig:
     direct_requires_sole_recipient: bool = True
     mailbox_aliases: str = ""
     allow_bot_collaboration: bool = False
+    allow_thread_read: bool = False
+    thread_read_max_messages: int = 50
 
     @staticmethod
     def _as_bool(value: object, default: bool) -> bool:
@@ -52,6 +54,15 @@ class OutlookConfig:
         activation_modes = data.get("activation_modes") or "direct,mention"
         summon_token = data.get("summon_token") or "@agento"
         mailbox_aliases = data.get("mailbox_aliases") or ""
+        # thread_read_max_messages: parse defensively (str/int/garbage), default 50, floor 1, cap 200.
+        max_raw = data.get("thread_read_max_messages", 50)
+        if max_raw is None:
+            max_raw = 50
+        try:
+            thread_read_max_messages = int(max_raw)
+        except (TypeError, ValueError):
+            thread_read_max_messages = 50
+        thread_read_max_messages = min(max(thread_read_max_messages, 1), 200)
         # NOTE: tenant/client/secret/cert/mailbox keys in `data` are intentionally ignored here — they
         # are the toolbox's concern. Do not add them as fields. Loop detection is likewise toolbox-side:
         # the toolbox auto-derives the fleet mailbox set from the agent_views (every OTHER outlook-enabled
@@ -66,6 +77,8 @@ class OutlookConfig:
             direct_requires_sole_recipient=cls._as_bool(data.get("direct_requires_sole_recipient"), True),
             mailbox_aliases=mailbox_aliases,
             allow_bot_collaboration=cls._as_bool(data.get("allow_bot_collaboration"), False),
+            allow_thread_read=cls._as_bool(data.get("allow_thread_read"), False),
+            thread_read_max_messages=thread_read_max_messages,
         )
 
     @property

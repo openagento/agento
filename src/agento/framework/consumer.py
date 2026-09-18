@@ -667,7 +667,22 @@ class Consumer:
 
                 workflow = get_workflow_class(job.type)(runner, self.logger)
 
-                module_config = get_module_config(job.source) if job.source != "blank" else {}
+                # Resolve the module config at THIS job's agent_view scope (agent_view -> workspace ->
+                # default), not the deployment-wide bootstrap registry, so per-view/per-workspace overrides
+                # reach the workflow. Without this a channel prompt (e.g. Outlook's thread-read hint) would
+                # read the global value while the toolbox gates the tool per view — the two would disagree.
+                # ``include_obscure=False``: prompt generation needs only non-secret fields, so obscure
+                # credentials (Graph/GitHub/Jira/Bitbucket secrets) are NOT decrypted here — they stay
+                # behind the toolbox boundary and never materialize in the consumer process.
+                # Falls back to the bootstrap registry when there is no agent_view (e.g. `agento run`).
+                if job.source == "blank":
+                    module_config = {}
+                else:
+                    module_config = (
+                        agent_config_svc.get_module(job.source, include_obscure=False)
+                        if agent_config_svc is not None
+                        else None
+                    ) or get_module_config(job.source)
                 context = JobContext(
                     config=module_config,
                     logger=self.logger,
