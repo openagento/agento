@@ -438,10 +438,10 @@ class JobListCommand:
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
             "--status",
-            choices=["TODO", "RUNNING", "SUCCESS", "FAILED", "DEAD", "PAUSED", "BLOCKED"],
+            choices=["TODO", "RUNNING", "SUCCESS", "FAILED", "DEAD", "PAUSED"],
             default=None,
             help="Filter by job status (e.g. DEAD for dead-lettered failures, "
-                 "BLOCKED for configuration/infrastructure faults)",
+                 "FAILED for configuration/infrastructure faults halted without retry)",
         )
         parser.add_argument("--source", default=None, help="Filter by job source (e.g. outlook, jira)")
         parser.add_argument("--agent-view", dest="agent_view", default=None,
@@ -489,7 +489,7 @@ class JobListCommand:
                 f"{(r.get('type') or ''):<8}  {(r.get('agent_view_code') or '-'):<14}  "
                 f"{str(r.get('reference_id') or '-')[:20]:<20}  {created_s}"
             )
-            if (r.get("status") or "").upper() in ("FAILED", "DEAD", "BLOCKED"):
+            if (r.get("status") or "").upper() in ("FAILED", "DEAD"):
                 ec = r.get("error_class") or ""
                 em = (r.get("error_message") or "").replace("\n", " ")
                 if len(em) > 100:

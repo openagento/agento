@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS job (
     requester_email VARCHAR(320) NULL,
     requester_trust VARCHAR(32) NOT NULL DEFAULT 'claimed',
     requester_meta  JSON NULL,
-    status          ENUM('TODO', 'RUNNING', 'SUCCESS', 'FAILED', 'DEAD', 'PAUSED', 'BLOCKED') NOT NULL DEFAULT 'TODO',
+    status          ENUM('TODO', 'RUNNING', 'SUCCESS', 'FAILED', 'DEAD', 'PAUSED') NOT NULL DEFAULT 'TODO',
     attempt         TINYINT UNSIGNED NOT NULL DEFAULT 0,
     max_attempts    TINYINT UNSIGNED NOT NULL DEFAULT 3,
     scheduled_after TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -228,5 +228,4 @@ INSERT INTO schema_migration (version) VALUES
     ('031_job_provider'),
     ('032_credential_label_unique_per_scope'),
     ('033_drop_historical_credential_indexes'),
-    ('034_credential_error_source_and_refresh_lease'),
-    ('035_job_blocked_status');
+    ('034_credential_error_source_and_refresh_lease');

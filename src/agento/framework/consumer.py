@@ -1094,8 +1094,9 @@ class Consumer:
                     )
                     # A ``blocked`` verdict is a deterministic config/infra fault:
                     # the retry policy already refused a retry, but it must NOT
-                    # dead-letter as an agent failure — it goes to BLOCKED with a
-                    # dedicated admin alert.
+                    # dead-letter as an agent failure — it lands in the (otherwise
+                    # unused) FAILED terminal status with a dedicated admin alert,
+                    # keeping DEAD to mean "the agent exhausted its retries".
                     blocked = (
                         isinstance(error, JobVerificationFailed)
                         and error.verdict.blocked
@@ -1212,7 +1213,7 @@ class Consumer:
                             cur.execute(
                                 """
                                 UPDATE job
-                                SET status = 'BLOCKED', finished_at = NOW(),
+                                SET status = 'FAILED', finished_at = NOW(),
                                     error_message = %s, error_class = %s,
                                     output = COALESCE(%s, output),
                                     session_id = COALESCE(%s, session_id),
@@ -1227,7 +1228,7 @@ class Consumer:
                             extra={
                                 "job_id": job.id,
                                 "reference_id": job.reference_id,
-                                "status": "BLOCKED",
+                                "status": "FAILED",
                                 "duration_ms": elapsed_ms,
                             },
                         )

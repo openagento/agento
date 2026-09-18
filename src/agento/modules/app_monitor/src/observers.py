@@ -22,9 +22,10 @@
   are configured. Silent no-op if either is empty; SMTP failures are logged
   but never propagated.
 - ``JobBlockedAlertObserver`` (``job_blocked_after``) — send a plain-text SMTP
-  alert when a job is BLOCKED by a deterministic configuration/infrastructure
-  fault (a blocked verification verdict). Framed as a deployment fault, not an
-  agent failure. Same fail-quiet contract as ``AlertEmailObserver``.
+  alert when a job is halted (terminal status ``FAILED``) by a deterministic
+  configuration/infrastructure fault (a blocked verification verdict). Framed as
+  a deployment fault, not an agent failure. Same fail-quiet contract as
+  ``AlertEmailObserver``.
 - ``SecurityBreachAlertObserver`` (``security_breach_after``) — send a
   plain-text SMTP alert when an inbound channel reports a probable security
   breach (e.g. a spoofed sender). Same fail-quiet contract as
@@ -409,17 +410,18 @@ class AlertEmailObserver:
 
 
 def _format_blocked_body(event) -> tuple[str, str]:
-    """Compose the subject/body for a BLOCKED alert.
+    """Compose the subject/body for a blocked-verdict alert.
 
-    A blocked job is halted by a deterministic configuration/infrastructure
-    fault (e.g. a missing MCP credential), not an agent failure. The alert says
-    so explicitly and surfaces ``verdict.reason``/``verdict.detail`` so ops can
-    fix the deployment rather than re-run the job.
+    A blocked job is halted (terminal status ``FAILED``) by a deterministic
+    configuration/infrastructure fault (e.g. a missing MCP credential), not an
+    agent failure. The alert says so explicitly and surfaces
+    ``verdict.reason``/``verdict.detail`` so ops can fix the deployment rather
+    than re-run the job.
     """
     job = event.job
     err = event.error
     err_class = err.__class__.__name__
-    subject = f"[agento] Job {job.id} BLOCKED — configuration/infrastructure fault"
+    subject = f"[agento] Job {job.id} halted — configuration/infrastructure fault (no retry)"
     lines = [
         "This job was halted WITHOUT retry by a blocked verification verdict.",
         "The cause is a deterministic configuration or infrastructure fault "
@@ -441,7 +443,7 @@ def _format_blocked_body(event) -> tuple[str, str]:
 
 
 class JobBlockedAlertObserver:
-    """Send a plain-text alert when a job is BLOCKED by a configuration or
+    """Send a plain-text alert when a job is halted by a configuration or
     infrastructure fault (a blocked verification verdict) — NOT an agent fault.
 
     Same fail-quiet contract as ``AlertEmailObserver``: silent no-op unless both

@@ -239,10 +239,11 @@ class TestJobFinalizeEvents:
         assert finalize_after.verdict.reason == VerifyReason.TRANSCRIPT_MISSING
 
     @patch("agento.framework.consumer.get_connection")
-    def test_veto_blocked_routes_to_blocked_not_dead(self, mock_conn):
+    def test_veto_blocked_routes_to_failed_not_dead(self, mock_conn):
         """A blocked verdict (config/infra fault) must halt WITHOUT retry and
-        route to BLOCKED + job_blocked_after — never DEAD, never a retry — even
-        though the verdict is also marked ``retryable``."""
+        route to FAILED + job_blocked_after — never DEAD, never a retry — even
+        though the verdict is also marked ``retryable``. FAILED (the otherwise
+        unused status) keeps DEAD reserved for genuine agent exhaustion."""
         _conn = MagicMock()
         _conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("RUNNING",)
         mock_conn.return_value = _conn
@@ -273,12 +274,12 @@ class TestJobFinalizeEvents:
         assert JobDeadEvent not in types
         assert JobRetryingEvent not in types
 
-        # The terminal UPDATE writes status = 'BLOCKED', not 'DEAD'.
+        # The terminal UPDATE writes status = 'FAILED', not 'DEAD'.
         executed_sql = [
             call.args[0]
             for call in _conn.cursor.return_value.__enter__.return_value.execute.call_args_list
         ]
-        assert any("status = 'BLOCKED'" in sql for sql in executed_sql)
+        assert any("status = 'FAILED'" in sql for sql in executed_sql)
         assert not any("status = 'DEAD'" in sql for sql in executed_sql)
 
 

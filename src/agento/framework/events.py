@@ -84,11 +84,13 @@ class JobDeadEvent:
 @dataclass
 class JobBlockedEvent:
     """Dispatched when a job is halted by a *blocked* verification verdict
-    (status → BLOCKED) — a deterministic configuration/infrastructure fault
+    (status → FAILED) — a deterministic configuration/infrastructure fault
     (e.g. a missing MCP credential) that will not heal on retry. Distinct from
     ``JobDeadEvent`` on purpose: the cause is the deployment, not the agent, so
     ops gets an actionable alert instead of a dead-letter that reads as an agent
-    failure. ``error`` is the ``JobVerificationFailed`` carrying the verdict."""
+    failure. The terminal status reuses the otherwise-unused ``FAILED`` member
+    (``DEAD`` stays reserved for "the agent exhausted its retries").
+    ``error`` is the ``JobVerificationFailed`` carrying the verdict."""
 
     job: Job
     error: Exception
@@ -125,8 +127,9 @@ class Verdict:
     world state cannot heal between attempts — a missing MCP credential, a
     broken tool config. It overrides ``retryable``: the retry policy stops
     after the first attempt (no wasted LLM re-runs) and the consumer routes
-    the job to ``BLOCKED`` with an admin alert instead of retrying it three
-    times and dead-lettering it with a message that blames the agent.
+    the job to the ``FAILED`` terminal status with an admin alert instead of
+    retrying it three times and dead-lettering it (``DEAD``) with a message
+    that blames the agent.
     """
 
     retryable: bool

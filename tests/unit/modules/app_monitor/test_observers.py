@@ -675,7 +675,7 @@ class TestJobBlockedAlertObserver:
         _, to, subject, body = sender.call_args.args
         assert to == "ops@example.com"
         assert "585254" in subject
-        assert "BLOCKED" in subject
+        assert "configuration/infrastructure fault" in subject
         assert "NOT an agent failure" in body
         assert "misconfigured" in body
         assert "toolbox MCP credential missing" in body

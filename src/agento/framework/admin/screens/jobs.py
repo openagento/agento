@@ -12,7 +12,7 @@ from textual.widgets import DataTable, Footer, Input, Static
 from ..widgets.confirm import ConfirmScreen
 from ..widgets.sidebar import Sidebar
 
-_STATUS_CYCLE = [None, "TODO", "RUNNING", "SUCCESS", "FAILED", "DEAD", "BLOCKED"]
+_STATUS_CYCLE = [None, "TODO", "RUNNING", "SUCCESS", "FAILED", "DEAD"]
 
 
 def _format_duration(started_at, finished_at) -> str:

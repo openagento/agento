@@ -1,7 +1,7 @@
 {
   "name": "app_monitor",
   "version": "0.1.0",
-  "description": "Application health monitoring. Currently: post-execution job verification (MCP usage check, fresh-start hint on retry, email alerts on DEAD and on BLOCKED configuration/infrastructure faults). Future: consumer liveness probes, toolbox connectivity checks.",
+  "description": "Application health monitoring. Currently: post-execution job verification (MCP usage check, fresh-start hint on retry, email alerts on DEAD and on blocked-verdict configuration/infrastructure faults). Future: consumer liveness probes, toolbox connectivity checks.",
   "sequence": [],
   "order": 200
 }
