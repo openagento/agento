@@ -4,6 +4,37 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-17 — `blocked` verdict category, halts to `FAILED` (AG-55)
+
+- **Problem: a deterministic config fault was retried 3× and dead-lettered as an agent failure.** A
+  domain observer vetoes a superficially-successful job with `Verdict(retryable=True)` when a business
+  result is missing. When the *root cause* is infrastructure — a missing MCP tool credential — the world
+  state does not change between attempts, so the full LLM run repeats identically three times (~0.49 USD
+  and ~2.5 min of worker per job, guaranteed to fail) before dead-lettering with a message that blames
+  the agent. The observer only sees "no business result", not *why*, so `retryable` cannot express this.
+- **Fix: a distinct verdict category, not a fourth `retryable` meaning.** `Verdict` gains
+  `blocked: bool = False`. It is orthogonal to `retryable` and **overrides** it: `retry_policy.evaluate`
+  short-circuits a blocked verdict to `should_retry=False` on the first attempt regardless of
+  `retryable` or the error class. Keeping `retryable` a pure "would another identical attempt help?"
+  boolean and adding `blocked` for "the deployment is broken" avoids overloading one flag with two axes.
+- **A blocked job goes to `FAILED`, not `DEAD` — reusing the dead enum value, not adding one.** `DEAD`
+  means "the agent exhausted its retries"; reusing it would keep blaming the agent. The `job.status` enum
+  already carries a `FAILED` member that the current consumer never writes (retries go to `TODO`, terminal
+  agent failures go to `DEAD`), so rather than add a *new* `BLOCKED` status — and leave `FAILED` as dead
+  code — the consumer repurposes `FAILED` as "halted by a blocked verdict" and dispatches
+  `job_blocked_after` instead of `job_dead_after`. No migration and no schema change are needed; `DEAD`
+  stays reserved for agent exhaustion, so `job:list --status FAILED` isolates config faults from it.
+  `app_monitor` grows a `JobBlockedAlertObserver` that emails ops an alert framed as a
+  configuration/infrastructure fault — the "alert instead of dead-letter" the report asked for. `FAILED`
+  is terminal, so it is excluded from the active-job dedupe set and the dequeue query for free.
+  (Reviewer AG-55: prefer reusing the unused `FAILED` value over introducing a parallel `BLOCKED` status.)
+- **The framework defines the mechanism; the domain observer opts in.** The observer that knows the veto
+  cause is a missing credential (it lives per-deployment in `app/code/`, out of this repo) sets
+  `blocked=True`. The framework only honors the contract — no `if provider == …` coupling, no framework
+  knowledge of any specific tool.
+
+---
+
 ## 2026-08-18 — Job dedupe by SELECT-then-INSERT, not `INSERT IGNORE` (AG-22)
 
 - **`INSERT IGNORE` burns an auto_increment id on every rejected duplicate.** MySQL/InnoDB allocates the
