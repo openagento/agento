@@ -440,7 +440,8 @@ class JobListCommand:
             "--status",
             choices=["TODO", "RUNNING", "SUCCESS", "FAILED", "DEAD", "PAUSED"],
             default=None,
-            help="Filter by job status (e.g. DEAD for dead-lettered failures)",
+            help="Filter by job status (e.g. DEAD for dead-lettered failures, "
+                 "FAILED for configuration/infrastructure faults halted without retry)",
         )
         parser.add_argument("--source", default=None, help="Filter by job source (e.g. outlook, jira)")
         parser.add_argument("--agent-view", dest="agent_view", default=None,

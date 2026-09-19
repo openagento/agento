@@ -41,6 +41,7 @@ from .events import (
     CredentialAuthFailedEvent,
     CredentialAuthThrottledEvent,
     CredentialUsageLimitedEvent,
+    JobBlockedEvent,
     JobClaimedEvent,
     JobDeadEvent,
     JobFailedEvent,
@@ -1106,6 +1107,15 @@ class Consumer:
                         isinstance(error, JobVerificationFailed)
                         and error.verdict.fresh_start
                     )
+                    # A ``blocked`` verdict is a deterministic config/infra fault:
+                    # the retry policy already refused a retry, but it must NOT
+                    # dead-letter as an agent failure — it lands in the (otherwise
+                    # unused) FAILED terminal status with a dedicated admin alert,
+                    # keeping DEAD to mean "the agent exhausted its retries".
+                    blocked = (
+                        isinstance(error, JobVerificationFailed)
+                        and error.verdict.blocked
+                    )
                     if fresh_start:
                         with conn.cursor() as cur:
                             cur.execute(
@@ -1212,6 +1222,34 @@ class Consumer:
                                 delay_seconds=decision.delay_seconds,
                                 elapsed_ms=elapsed_ms,
                             ),
+                        )
+                    elif blocked:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                UPDATE job
+                                SET status = 'FAILED', finished_at = NOW(),
+                                    error_message = %s, error_class = %s,
+                                    output = COALESCE(%s, output),
+                                    session_id = COALESCE(%s, session_id),
+                                    updated_at = NOW()
+                                WHERE id = %s AND status = 'RUNNING'
+                                """,
+                                (error_msg, error_class, agent_output, session_id, job.id),
+                            )
+                        conn.commit()
+                        self.logger.warning(
+                            f"Job blocked (configuration/infrastructure fault, no retry): {decision.reason}",
+                            extra={
+                                "job_id": job.id,
+                                "reference_id": job.reference_id,
+                                "status": "FAILED",
+                                "duration_ms": elapsed_ms,
+                            },
+                        )
+                        em.dispatch(
+                            "job_blocked_after",
+                            JobBlockedEvent(job=job, error=error, elapsed_ms=elapsed_ms),
                         )
                     else:
                         with conn.cursor() as cur:

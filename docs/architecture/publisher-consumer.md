@@ -51,13 +51,15 @@ TODO → RUNNING → SUCCESS
 | `TODO` | Queued, waiting for consumer |
 | `RUNNING` | Claimed by consumer, executing |
 | `SUCCESS` | Completed successfully |
-| `DEAD` | Failed after max retries (3) |
+| `DEAD` | Failed after max retries (3) — the agent exhausted its attempts |
+| `FAILED` | Halted by a *blocked* verification verdict — a deterministic configuration/infrastructure fault (e.g. a missing MCP credential) that cannot heal on retry. No retry, no dead-letter; an admin alert fires instead (`job_blocked_after`). Reuses the otherwise-unused `FAILED` status so `DEAD` stays reserved for agent exhaustion. |
 
 ## Retry Policy
 
 - **Max attempts:** 3
 - **Backoff:** exponential (1 min → 5 min → 30 min)
 - **Non-retryable errors** → immediately DEAD (e.g., invalid issue key)
+- **Blocked verdict** → immediately `FAILED` (no retry), with an admin alert instead of a dead-letter. A verification observer sets `Verdict(blocked=True)` when the veto cause is a deterministic config/infra fault (a missing tool credential, a broken MCP config): retrying re-runs the full LLM against an unchanged world for the same result, so it stops after the first attempt and the failure is framed as a deployment fault, not an agent fault. It lands in `FAILED` (not `DEAD`) so ops can tell a config fault apart from genuine agent exhaustion.
 
 ## Concurrency & Per-Run Isolation (Phase 9.5)
 
