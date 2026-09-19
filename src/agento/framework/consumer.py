@@ -41,6 +41,7 @@ from .events import (
     CredentialAuthFailedEvent,
     CredentialAuthThrottledEvent,
     CredentialUsageLimitedEvent,
+    JobBlockedEvent,
     JobClaimedEvent,
     JobDeadEvent,
     JobFailedEvent,
@@ -667,7 +668,22 @@ class Consumer:
 
                 workflow = get_workflow_class(job.type)(runner, self.logger)
 
-                module_config = get_module_config(job.source) if job.source != "blank" else {}
+                # Resolve the module config at THIS job's agent_view scope (agent_view -> workspace ->
+                # default), not the deployment-wide bootstrap registry, so per-view/per-workspace overrides
+                # reach the workflow. Without this a channel prompt (e.g. Outlook's thread-read hint) would
+                # read the global value while the toolbox gates the tool per view — the two would disagree.
+                # ``include_obscure=False``: prompt generation needs only non-secret fields, so obscure
+                # credentials (Graph/GitHub/Jira/Bitbucket secrets) are NOT decrypted here — they stay
+                # behind the toolbox boundary and never materialize in the consumer process.
+                # Falls back to the bootstrap registry when there is no agent_view (e.g. `agento run`).
+                if job.source == "blank":
+                    module_config = {}
+                else:
+                    module_config = (
+                        agent_config_svc.get_module(job.source, include_obscure=False)
+                        if agent_config_svc is not None
+                        else None
+                    ) or get_module_config(job.source)
                 context = JobContext(
                     config=module_config,
                     logger=self.logger,
@@ -1091,6 +1107,15 @@ class Consumer:
                         isinstance(error, JobVerificationFailed)
                         and error.verdict.fresh_start
                     )
+                    # A ``blocked`` verdict is a deterministic config/infra fault:
+                    # the retry policy already refused a retry, but it must NOT
+                    # dead-letter as an agent failure — it lands in the (otherwise
+                    # unused) FAILED terminal status with a dedicated admin alert,
+                    # keeping DEAD to mean "the agent exhausted its retries".
+                    blocked = (
+                        isinstance(error, JobVerificationFailed)
+                        and error.verdict.blocked
+                    )
                     if fresh_start:
                         with conn.cursor() as cur:
                             cur.execute(
@@ -1197,6 +1222,34 @@ class Consumer:
                                 delay_seconds=decision.delay_seconds,
                                 elapsed_ms=elapsed_ms,
                             ),
+                        )
+                    elif blocked:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                """
+                                UPDATE job
+                                SET status = 'FAILED', finished_at = NOW(),
+                                    error_message = %s, error_class = %s,
+                                    output = COALESCE(%s, output),
+                                    session_id = COALESCE(%s, session_id),
+                                    updated_at = NOW()
+                                WHERE id = %s AND status = 'RUNNING'
+                                """,
+                                (error_msg, error_class, agent_output, session_id, job.id),
+                            )
+                        conn.commit()
+                        self.logger.warning(
+                            f"Job blocked (configuration/infrastructure fault, no retry): {decision.reason}",
+                            extra={
+                                "job_id": job.id,
+                                "reference_id": job.reference_id,
+                                "status": "FAILED",
+                                "duration_ms": elapsed_ms,
+                            },
+                        )
+                        em.dispatch(
+                            "job_blocked_after",
+                            JobBlockedEvent(job=job, error=error, elapsed_ms=elapsed_ms),
                         )
                     else:
                         with conn.cursor() as cur:

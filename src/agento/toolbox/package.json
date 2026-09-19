@@ -14,7 +14,7 @@
     "@playwright/mcp": "^0.0.68",
     "express": "^4.21.0",
     "mssql": "^11.0.0",
-    "mysql2": "^3.11.0",
+    "mysql2": "^3.23.1",
     "nodemailer": "^8.0.7",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^3.23.0"

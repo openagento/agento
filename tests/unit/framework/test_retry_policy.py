@@ -22,6 +22,17 @@ def _veto(retryable: bool, reason: VerifyReason = VerifyReason.NO_MCP_CALLS) -> 
     ))
 
 
+def _blocked(retryable: bool = True) -> JobVerificationFailed:
+    """A blocked verdict: a deterministic config/infra fault. ``retryable`` is
+    set to prove ``blocked`` overrides it — the observer that flags a missing
+    credential may still report the business-result as normally retryable."""
+    return JobVerificationFailed(Verdict(
+        retryable=retryable,
+        reason=VerifyReason.MISCONFIGURED,
+        blocked=True,
+    ))
+
+
 def test_retryable_error_attempt_1():
     decision = evaluate("RuntimeError", attempt=1, max_attempts=3)
     assert decision.should_retry is True
@@ -121,6 +132,34 @@ def test_verification_veto_backoff_caps_at_last_delay():
     decision = evaluate("JobVerificationFailed", attempt=10, max_attempts=20, error_obj=exc)
     assert decision.should_retry is True
     assert decision.delay_seconds == BACKOFF_DELAYS[-1]
+
+
+# -- blocked verdict (config/infra fault) --------------------------------------
+# A ``blocked`` verdict is a deterministic configuration/infrastructure fault
+# (e.g. a missing MCP credential) that cannot heal between attempts. It stops
+# after the first try and overrides ``retryable`` — no wasted LLM re-runs.
+
+def test_blocked_verdict_short_circuits_on_first_attempt():
+    exc = _blocked()
+    decision = evaluate("JobVerificationFailed", attempt=1, max_attempts=3, error_obj=exc)
+    assert decision.should_retry is False
+    assert decision.delay_seconds == 0
+    assert "blocked" in decision.reason
+
+
+def test_blocked_verdict_overrides_retryable_true():
+    """``blocked`` wins even when the same verdict is marked ``retryable``."""
+    exc = _blocked(retryable=True)
+    decision = evaluate("JobVerificationFailed", attempt=1, max_attempts=3, error_obj=exc)
+    assert decision.should_retry is False
+
+
+def test_blocked_verdict_overrides_retryable_error_class():
+    """A normally-retryable error class must not resurrect a blocked verdict."""
+    exc = _blocked()
+    decision = evaluate("RuntimeError", attempt=1, max_attempts=3, error_obj=exc)
+    assert decision.should_retry is False
+    assert "blocked" in decision.reason
 
 
 # -- AuthenticationError pool-aware retry --------------------------------------

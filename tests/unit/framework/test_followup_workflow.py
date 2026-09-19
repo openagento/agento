@@ -11,7 +11,7 @@ def test_build_prompt_includes_instructions_context():
     class FakeChannel:
         name = "fake"
 
-        def get_followup_fragments(self, reference_id, instructions):
+        def get_followup_fragments(self, reference_id, instructions, config=None):
             return PromptFragments(
                 read_context=f"READ {reference_id}",
                 respond="RESPOND",
@@ -28,7 +28,7 @@ def test_build_prompt_opening_falls_back_to_channel_and_reference_id():
     class FakeChannel:
         name = "fake"
 
-        def get_followup_fragments(self, reference_id, instructions):
+        def get_followup_fragments(self, reference_id, instructions, config=None):
             return PromptFragments(read_context="READ", respond="RESPOND", extra="X")
 
     wf = FollowupWorkflow(runner=None, logger=None)
@@ -40,7 +40,7 @@ def test_build_prompt_uses_channel_followup_intro_instead_of_reference_id():
     class FakeChannel:
         name = "fake"
 
-        def get_followup_fragments(self, reference_id, instructions):
+        def get_followup_fragments(self, reference_id, instructions, config=None):
             return PromptFragments(
                 read_context=f"READ {reference_id}", respond="RESPOND", extra="X",
                 followup_intro="Kontynuuj zadanie z wiadomości email.",
@@ -51,3 +51,22 @@ def test_build_prompt_uses_channel_followup_intro_instead_of_reference_id():
     first_line = prompt.splitlines()[0]
     assert first_line == "Kontynuuj zadanie z wiadomości email. To jest zaplanowany follow-up."
     assert "slug::LONGBASE64ID" not in first_line
+
+
+def test_build_prompt_legacy_channel_without_config_param():
+    # Pre-config interface: get_followup_fragments takes only (reference_id, instructions). The
+    # workflow must not pass config= or it raises TypeError on a third-party channel.
+    class LegacyChannel:
+        name = "legacy"
+
+        def get_followup_fragments(self, reference_id, instructions):  # no config param
+            return PromptFragments(
+                read_context=f"READ {reference_id}", respond="RESPOND", extra=instructions
+            )
+
+    wf = FollowupWorkflow(runner=None, logger=None)
+    prompt = wf.build_prompt(
+        LegacyChannel(), "REF-1", instructions="do it", config={"anything": True}
+    )
+    assert "READ REF-1" in prompt
+    assert "do it" in prompt

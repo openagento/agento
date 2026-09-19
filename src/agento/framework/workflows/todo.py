@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..channels.base import Channel
+from ..channels.base import Channel, accepts_config
 from ..harness import RunResult
 from ..job_models import Job
 from .base import JobContext, Workflow
@@ -11,7 +11,7 @@ class TodoWorkflow(Workflow):
 
     def execute_job(self, channel: Channel, job: Job, context: JobContext) -> RunResult:
         if job.reference_id:
-            return self.execute(channel, job.reference_id)
+            return self.execute(channel, job.reference_id, config=context.config)
 
         # Work discovery (no reference_id — find next task via channel)
         if not hasattr(channel, "discover_work"):
@@ -29,12 +29,17 @@ class TodoWorkflow(Workflow):
         item = items[0]
         self.logger.info(f"Dispatching: {item.reference_id} - {item.title}")
         context.update_reference_id(job.id, item.reference_id)
-        return self.execute(channel, item.reference_id)
+        return self.execute(channel, item.reference_id, config=context.config)
 
     def build_prompt(
         self, channel: Channel, reference_id: str, **kwargs: object
     ) -> str:
-        f = channel.get_prompt_fragments(reference_id)
+        # Forward config only to channels that declare it — a third-party channel on the
+        # pre-config interface would otherwise raise TypeError during prompt construction.
+        if accepts_config(channel.get_prompt_fragments):
+            f = channel.get_prompt_fragments(reference_id, config=kwargs.get("config"))
+        else:
+            f = channel.get_prompt_fragments(reference_id)
         step = 0
 
         intro = f.task_intro or f"Wykonaj zadanie ({channel.name}) {reference_id}."

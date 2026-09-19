@@ -8,5 +8,7 @@
   "direct_requires_sole_recipient": true,
   "mailbox_aliases": "",
   "allow_bot_collaboration": false,
-  "reply_policy": "remove"
+  "reply_policy": "remove",
+  "allow_thread_read": false,
+  "thread_read_max_messages": 50
 }

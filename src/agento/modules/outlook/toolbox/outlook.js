@@ -235,6 +235,16 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
   const surfaceAllowed = (addr, headers) =>
     !restrictRead || (matchesWhitelist(addr || '', allowedSenders) && parseDmarcVerdict(headers) === 'pass');
 
+  // THREAD READ (opt-in, DEFAULT OFF): let a headless job READ earlier messages/attachments of the SAME
+  // Outlook conversation that triggered it. Extends the READ scope only — ACTIONS (reply/mark_processed)
+  // stay bound to the triggering message. The conversation is always derived from the trusted trigger
+  // message; the agent never supplies a conversationId or a foreign message id (see resolveThreadBinding).
+  const allowThreadRead = parseBool(cfg.allow_thread_read, false);
+  const threadReadMax = (() => {
+    const n = parseInt(cfg.thread_read_max_messages, 10);
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 200) : 50;
+  })();
+
   // CURRENT-JOB READ BINDING: privacy-by-construction for headless email jobs. With no enumeration tool,
   // the only remaining read vector is a leaked opaque message id; bind get_message/get_attachment to the
   // id that TRIGGERED this job so a foreign id cannot be read. Resolved once per session (this promise is
@@ -260,11 +270,185 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
     }
     return bindingPromise;
   };
-  // True iff `requestedId` may be read under the current-job binding. jobId null → allow (interactive).
-  const jobBindingAllows = async (requestedId) => {
+  // ACTION binding — governs outlook_reply / outlook_mark_processed. UNCHANGED by thread read: an action
+  // may only ever target the triggering message. jobId null → allow (interactive escape hatch).
+  const jobActionBindingAllows = async (requestedId) => {
     if (jobId === null || jobId === undefined) return true;
     const b = await resolveBinding();
     return b.bound && b.messageId === requestedId;
+  };
+
+  // THREAD BINDING — an authorized, sanitized view of the trigger message's conversation, built ONLY from
+  // the trusted trigger (never from an agent-supplied id). resolveBinding → trigger message → its
+  // conversationId → enumerate that conversation → authorize EACH message (trusted Sent-Items outbound, or
+  // the same inbound gate as surfaceAllowed) → allowedMessageIds. Cached per session (register()-scoped
+  // promise, NEVER module scope) so list_thread/get_message/get_attachment enumerate Graph at most once.
+  // Fail-closed: no binding, no conversationId, or any Graph error ⇒ empty (bound:false).
+  let threadBindingPromise;
+  const emptyThread = () => ({ bound: false, allowedMessageIds: new Set(), messages: [], truncated: false });
+  // A transient-failure variant: the same fail-closed empty view, but flagged `incomplete` so
+  // resolveThreadBinding does NOT keep it in the session cache — the next call re-enumerates against Graph
+  // instead of replaying the failure forever.
+  const failedThread = () => ({ ...emptyThread(), incomplete: true });
+  const resolveThreadBinding = () => {
+    if (!threadBindingPromise) {
+      const pending = (async () => {
+        const b = await resolveBinding();
+        if (!b.bound) return emptyThread();
+        const mailbox = auth.getMailboxUserId();
+        // 1. Trusted root: the trigger message's OWN conversationId (never an agent-supplied id).
+        let conversationId;
+        try {
+          const tRes = await graphFetch(
+            `/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(b.messageId)}?$select=id,conversationId`
+          );
+          await ensureOk(tRes);
+          conversationId = (await tRes.json())?.conversationId;
+        } catch (err) {
+          log('outlook_list_thread', 'ERROR', `mailbox=${mailbox} thread root resolution failed: ${err.message}`);
+          return failedThread();
+        }
+        if (!conversationId) {
+          log('outlook_list_thread', 'ERROR', `mailbox=${mailbox} trigger message has no conversationId`);
+          return emptyThread();
+        }
+        // 2. Enumerate the conversation (newest-first by Graph default; $top caps to the newest N) and
+        //    resolve the Sent Items folder id (proves a message physically lives in Sent — the outbound
+        //    trust signal; a forged From alone is NOT enough).
+        let listed;
+        let sentItemsId = null;
+        try {
+          sentItemsId = await graphGetSentItemsId(mailbox);
+          listed = await graphListConversation(mailbox, conversationId, threadReadMax);
+        } catch (err) {
+          log('outlook_list_thread', 'ERROR', `mailbox=${mailbox} thread enumeration failed: ${err.message}`);
+          return failedThread();
+        }
+        // 3. Authorize each message; keep only allowed ones. Chronological oldest→newest for the agent.
+        const chronological = [...listed.messages].sort(
+          (m1, m2) =>
+            new Date(m1.receivedDateTime || m1.sentDateTime || 0) -
+            new Date(m2.receivedDateTime || m2.sentDateTime || 0)
+        );
+        // `incomplete` turns true on any transient Graph error below (header hydration / attachment
+        // metadata). It is surfaced to the agent AND keeps the result out of the session cache, so a retry
+        // can recover the full picture instead of serving a stale, silently-lossy view.
+        let incomplete = false;
+        let rejected = 0;
+        const allowed = [];
+        for (const m of chronological) {
+          const trustedOutbound = Boolean(sentItemsId) && m.parentFolderId === sentItemsId;
+          if (trustedOutbound) {
+            allowed.push({ m, outbound: true });
+            continue;
+          }
+          // Inbound → the same gate as surfaceAllowed. Graph's collection response sometimes OMITS
+          // internetMessageHeaders even when $select asks for it; hydrate them per-message before deciding
+          // (exactly like the delta poller in api-handlers.js), or a valid allow-listed message whose header
+          // response passes DMARC would be silently dropped. A hydration failure is transient: fail closed
+          // for THIS message AND flag the whole result incomplete so it is not cached.
+          let headers = m.internetMessageHeaders;
+          if (!Array.isArray(headers)) {
+            try {
+              const hr = await graphFetch(
+                `/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(m.id)}?$select=internetMessageHeaders`
+              );
+              await ensureOk(hr);
+              headers = (await hr.json())?.internetMessageHeaders;
+            } catch (err) {
+              log('outlook_list_thread', 'WARN', `mailbox=${mailbox} header hydration failed for a thread message: ${err.message}`);
+              headers = undefined;
+              incomplete = true;
+            }
+          }
+          if (surfaceAllowed(m.from?.emailAddress?.address, headers)) {
+            allowed.push({ m, outbound: false });
+          } else {
+            rejected += 1;
+          }
+        }
+        // 4. Attachment METADATA only, and ONLY for allowed messages that have attachments (never for a
+        //    rejected message; never contentBytes). A transient metadata error must NOT be frozen into the
+        //    session cache as an empty list (the agent could never recover the file): mark THIS message
+        //    attachments_incomplete and flag the whole result incomplete so it is not cached and a later
+        //    call can fetch the real metadata once Graph is available again.
+        const messages = [];
+        for (const { m, outbound } of allowed) {
+          let attachments = [];
+          let attachmentsIncomplete = false;
+          if (m.hasAttachments) {
+            try {
+              const ar = await graphFetch(
+                `/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(m.id)}/attachments?$select=id,name,contentType,size`
+              );
+              await ensureOk(ar);
+              const ad = await ar.json();
+              attachments = (ad.value || []).map((a) => ({
+                attachment_id: a.id,
+                name: a.name,
+                content_type: a.contentType,
+                size: a.size,
+              }));
+            } catch (err) {
+              log('outlook_list_thread', 'WARN', `mailbox=${mailbox} attachment metadata fetch failed: ${err.message}`);
+              attachments = [];
+              attachmentsIncomplete = true;
+              incomplete = true;
+            }
+          }
+          messages.push({
+            message_id: m.id,
+            direction: outbound ? 'outbound' : 'inbound',
+            from: m.from?.emailAddress?.address || null,
+            received_at: m.receivedDateTime || m.sentDateTime || null,
+            subject: m.subject,
+            preview: m.bodyPreview,
+            has_attachments: Boolean(m.hasAttachments),
+            attachments,
+            ...(attachmentsIncomplete ? { attachments_incomplete: true } : {}),
+          });
+        }
+        log(
+          'outlook_list_thread',
+          'OK',
+          `mailbox=${mailbox} discovered=${listed.messages.length} allowed=${allowed.length} rejected=${rejected} truncated=${listed.truncated} incomplete=${incomplete}`
+        );
+        return {
+          bound: true,
+          conversationId,
+          allowedMessageIds: new Set(allowed.map(({ m }) => m.id)),
+          messages,
+          truncated: listed.truncated,
+          incomplete,
+        };
+      })();
+      // Cache only DEFINITIVE results. A result flagged `incomplete` (a transient Graph error while
+      // enumerating, hydrating headers, or listing attachment metadata) — or an outright rejection — is
+      // dropped from the cache so a later call can recover instead of serving the failure forever. A bound
+      // thread, or a real "no conversation" deny, stays cached (enumerated at most once per session).
+      pending.then(
+        (t) => { if (threadBindingPromise === pending && (!t || t.incomplete)) threadBindingPromise = undefined; },
+        () => { if (threadBindingPromise === pending) threadBindingPromise = undefined; }
+      );
+      threadBindingPromise = pending;
+    }
+    return threadBindingPromise;
+  };
+
+  // READ classification — governs outlook_get_message / outlook_get_attachment. Returns the reason a read
+  // is allowed so the caller can decide whether to re-run the inbound surface gate: a 'thread' message was
+  // ALREADY authorized while building the binding (including trusted outbound, which surfaceAllowed would
+  // wrongly reject), so it must NOT be re-gated. SECURITY: membership is tested against allowedMessageIds
+  // WITHOUT a Graph GET of `requestedId` — a foreign opaque id is refused before its content is fetched.
+  const classifyRead = async (requestedId) => {
+    if (jobId === null || jobId === undefined) return { allowed: true, source: 'interactive' };
+    const b = await resolveBinding();
+    if (!b.bound) return { allowed: false, source: null };
+    if (b.messageId === requestedId) return { allowed: true, source: 'trigger' };
+    if (!allowThreadRead) return { allowed: false, source: null };
+    const thread = await resolveThreadBinding();
+    if (thread.bound && thread.allowedMessageIds.has(requestedId)) return { allowed: true, source: 'thread' };
+    return { allowed: false, source: null };
   };
 
   // Per-tool opt-in gate. At startup (registerModuleRestApis) isToolEnabled is undefined and the server
@@ -277,6 +461,32 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
       ...options,
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...options.headers },
     });
+  }
+
+  // Resolve the mailbox's Sent Items folder id — the proof-of-origin for outbound thread messages (a
+  // message physically in Sent Items was really sent by this mailbox; a forged `From` is not enough).
+  async function graphGetSentItemsId(mailbox) {
+    const res = await graphFetch(`/users/${encodeURIComponent(mailbox)}/mailFolders/sentitems?$select=id`);
+    await ensureOk(res);
+    return (await res.json())?.id || null;
+  }
+
+  // Enumerate the messages of ONE conversation (the trusted conversationId). Graph returns /messages
+  // newest-first by default, so $top=max yields the newest `max`; an @odata.nextLink means older messages
+  // were dropped (truncated). Only lightweight metadata is selected — never body/contentBytes. The
+  // conversationId comes from the trigger message, never from the agent; single quotes are still doubled
+  // for OData-literal safety.
+  async function graphListConversation(mailbox, conversationId, max) {
+    const literal = String(conversationId).replace(/'/g, "''");
+    const filter = encodeURIComponent(`conversationId eq '${literal}'`);
+    const select =
+      'id,conversationId,subject,from,receivedDateTime,sentDateTime,hasAttachments,bodyPreview,parentFolderId,internetMessageHeaders';
+    const res = await graphFetch(
+      `/users/${encodeURIComponent(mailbox)}/messages?$filter=${filter}&$select=${select}&$top=${max}`
+    );
+    await ensureOk(res);
+    const data = await res.json();
+    return { messages: data.value || [], truncated: Boolean(data['@odata.nextLink']) };
   }
 
   // Attach validated files to a draft and send it. Defined INSIDE register() so it closes over the
@@ -451,6 +661,54 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
     };
   }
 
+  // --- outlook_list_thread (opt-in via outlook/allow_thread_read; NOT registered when off) ---
+  // Takes NO parameters: the conversation is derived from THIS job's trigger message, so the agent can
+  // never choose which conversation it lists. Returns a lightweight, chronological (oldest→newest) index
+  // of the authorized messages in that conversation with attachment METADATA only — the agent then uses
+  // outlook_get_message / outlook_get_attachment (already extended to the thread) to fetch what it needs.
+  if (allowThreadRead && enabled('outlook_list_thread')) {
+    server.tool(
+      'outlook_list_thread',
+      [
+        "List the earlier messages of THIS email task's own Outlook thread (same conversation as the",
+        'triggering message). Takes no parameters. Returns a chronological index (oldest→newest) with, per',
+        'message: message_id, direction, from, received_at, subject, preview, has_attachments and attachment',
+        'metadata (attachment_id, name, content_type, size) — NOT the bodies or file contents. Use it before',
+        'asking the sender to re-send an earlier file: fetch the full message with outlook_get_message or a',
+        'file with outlook_get_attachment using a message_id from this index. Reading only — you cannot reply',
+        'to or mark an earlier message. The result also carries "truncated" (older messages beyond the cap',
+        'were omitted) and "incomplete" (a transient Graph error left some attachment metadata unresolved —',
+        'a per-message "attachments_incomplete" flag marks which; simply call again to recover it).',
+      ].join('\n'),
+      {},
+      async () => {
+        if (!auth.isConfigured()) return notConfigured('outlook_list_thread');
+        try {
+          const thread = await resolveThreadBinding();
+          if (!thread.bound) {
+            log('outlook_list_thread', 'BLOCKED', 'thread not available for this task');
+            return { content: [{ type: 'text', text: 'Error: thread is not available for this task.' }], isError: true };
+          }
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  { messages: thread.messages, truncated: thread.truncated, incomplete: Boolean(thread.incomplete) },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+        } catch (err) {
+          log('outlook_list_thread', 'ERROR', `${err.message}`);
+          return { content: [{ type: 'text', text: 'Error: thread is not available for this task.' }], isError: true };
+        }
+      }
+    );
+  }
+
   // --- outlook_get_message ---
   if (enabled('outlook_get_message')) {
     server.tool(
@@ -464,10 +722,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
       { message_id: z.string().describe('Graph message ID') },
       async ({ message_id }) => {
         if (!auth.isConfigured()) return notConfigured('outlook_get_message');
-        // Current-job binding: a headless job may read ONLY its own triggering message. A foreign id
-        // (leaked/guessed) is refused with a generic error that leaks nothing about why. Runs before any
-        // Graph call.
-        if (!(await jobBindingAllows(message_id))) {
+        // Current-job READ binding: a headless job may read its own triggering message, plus (when
+        // allow_thread_read is on) an already-authorized message of the same conversation. A foreign id
+        // (leaked/guessed) is refused with a generic error that leaks nothing about why, before any Graph
+        // call — and WITHOUT a Graph GET of that id to discover its conversation.
+        const read = await classifyRead(message_id);
+        if (!read.allowed) {
           log('outlook_get_message', 'BLOCKED', 'message id not bound to the current job');
           return { content: [{ type: 'text', text: 'Error: message is not available for this task.' }], isError: true };
         }
@@ -490,8 +750,10 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
             conversationId: msg.conversationId,
             hasAttachments: msg.hasAttachments,
           };
-          // Gate stays FIRST: a blocked message lists nothing (no attachment fetch happens).
-          if (!surfaceAllowed(result.from.address, msg.internetMessageHeaders)) {
+          // Gate stays FIRST: a blocked message lists nothing (no attachment fetch happens). A 'thread'
+          // message was already authorized while building the thread binding (including trusted outbound,
+          // which surfaceAllowed would wrongly reject), so it is not re-gated here.
+          if (read.source !== 'thread' && !surfaceAllowed(result.from.address, msg.internetMessageHeaders)) {
             log('outlook_get_message', 'BLOCKED', `mailbox=${mailbox} sender not allow-listed or DMARC not pass (read restricted)`);
             return {
               content: [{ type: 'text', text: 'Error: message sender is not in allowed_senders or did not pass DMARC; reading is restricted (set outlook/restrict_read_to_allowed_senders=false to allow — security risk).' }],
@@ -539,9 +801,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
       'outlook_get_attachment',
       [
         'Download one file attachment from an email to the job artifacts directory.',
-        'Re-applies the SAME read-gate as the read tools (sender allow-listed + DMARC pass) before any',
-        'download, rejects non-file attachments and anything over 25 MB, and returns { path, name,',
-        'contentType, size }. The saved path can then be attached to a reply or a new email.',
+        'For the triggering message (or an inbound thread message) it re-applies the SAME read-gate as the',
+        'read tools (sender allow-listed + DMARC pass) before any download; a message already authorized by',
+        'the thread binding — including a trusted outbound one the agent itself sent from Sent Items — is not',
+        're-gated (so you can recover your own earlier attachment). Rejects non-file attachments and anything',
+        'over 25 MB, and returns { path, name, contentType, size }. The saved path can then be attached to a',
+        'reply or a new email.',
       ].join('\n'),
       {
         message_id: z.string().describe('Graph message ID the attachment belongs to'),
@@ -549,27 +814,34 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
       },
       async ({ message_id, attachment_id }) => {
         if (!auth.isConfigured()) return notConfigured('outlook_get_attachment');
-        // Current-job binding: attachments may be downloaded ONLY from this job's own triggering message.
-        // A foreign message id is refused generically (no leak) before any Graph call.
-        if (!(await jobBindingAllows(message_id))) {
+        // Current-job READ binding: attachments may be downloaded from this job's triggering message, plus
+        // (when allow_thread_read is on) an already-authorized message of the same conversation. A foreign
+        // message id is refused generically (no leak) before any Graph call — and without a Graph GET of
+        // that id to discover its conversation.
+        const read = await classifyRead(message_id);
+        if (!read.allowed) {
           log('outlook_get_attachment', 'BLOCKED', 'message id not bound to the current job');
           return { content: [{ type: 'text', text: 'Error: message is not available for this task.' }], isError: true };
         }
         const mailbox = auth.getMailboxUserId();
         try {
           // 1. Re-apply the read gate BEFORE any download. Same message GET shape the read tools use
-          //    (from + internetMessageHeaders). Blocked ⇒ isError, NO $value GET issued.
-          const gateRes = await graphFetch(
-            `/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(message_id)}?$select=from,internetMessageHeaders`
-          );
-          await ensureOk(gateRes);
-          const gateMsg = await gateRes.json();
-          if (!surfaceAllowed(gateMsg.from?.emailAddress?.address, gateMsg.internetMessageHeaders)) {
-            log('outlook_get_attachment', 'BLOCKED', `mailbox=${mailbox} sender not allow-listed or DMARC not pass (read restricted)`);
-            return {
-              content: [{ type: 'text', text: 'Error: message sender is not in allowed_senders or did not pass DMARC; downloading is restricted (set outlook/restrict_read_to_allowed_senders=false to allow — security risk).' }],
-              isError: true,
-            };
+          //    (from + internetMessageHeaders). Blocked ⇒ isError, NO $value GET issued. A 'thread' message
+          //    was already authorized while building the binding (incl. trusted outbound), so it is not
+          //    re-gated — that also avoids blocking the agent's own Sent-Items attachment.
+          if (read.source !== 'thread') {
+            const gateRes = await graphFetch(
+              `/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(message_id)}?$select=from,internetMessageHeaders`
+            );
+            await ensureOk(gateRes);
+            const gateMsg = await gateRes.json();
+            if (!surfaceAllowed(gateMsg.from?.emailAddress?.address, gateMsg.internetMessageHeaders)) {
+              log('outlook_get_attachment', 'BLOCKED', `mailbox=${mailbox} sender not allow-listed or DMARC not pass (read restricted)`);
+              return {
+                content: [{ type: 'text', text: 'Error: message sender is not in allowed_senders or did not pass DMARC; downloading is restricted (set outlook/restrict_read_to_allowed_senders=false to allow — security risk).' }],
+                isError: true,
+              };
+            }
           }
 
           // 2. Metadata + type/size guard. Read @odata.type from the RESPONSE (not $select). Fail closed:
@@ -692,8 +964,9 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
       async ({ message_id, body, attachments }) => {
         if (!auth.isConfigured()) return notConfigured('outlook_reply');
         // Bind to the current job's triggering message: a leaked id must not let the agent reply-all into
-        // (or fetch recipient metadata from) another conversation. Runs before ANY Graph call.
-        if (!(await jobBindingAllows(message_id))) {
+        // (or fetch recipient metadata from) another conversation. Thread read does NOT widen this — an
+        // action always targets the trigger. Runs before ANY Graph call.
+        if (!(await jobActionBindingAllows(message_id))) {
           log('outlook_reply', 'BLOCKED', 'message id not bound to the current job');
           return { content: [{ type: 'text', text: 'Error: message is not available for this task.' }], isError: true };
         }
@@ -856,8 +1129,9 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
       async ({ message_id }) => {
         if (!auth.isConfigured()) return notConfigured('outlook_mark_processed');
         // Bind to the current job's triggering message: a leaked id must not let the agent flip isRead on
-        // another conversation's mail. Runs before any Graph call.
-        if (!(await jobBindingAllows(message_id))) {
+        // another conversation's mail. Thread read does NOT widen this — an action always targets the
+        // trigger. Runs before any Graph call.
+        if (!(await jobActionBindingAllows(message_id))) {
           log('outlook_mark_processed', 'BLOCKED', 'message id not bound to the current job');
           return { content: [{ type: 'text', text: 'Error: message is not available for this task.' }], isError: true };
         }

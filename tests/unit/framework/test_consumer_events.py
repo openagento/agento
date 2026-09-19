@@ -11,6 +11,7 @@ from agento.framework.consumer import Consumer, _JobResult
 from agento.framework.event_manager import ObserverEntry, get_event_manager
 from agento.framework.event_manager import clear as clear_event_manager
 from agento.framework.events import (
+    JobBlockedEvent,
     JobClaimedEvent,
     JobDeadEvent,
     JobFailedEvent,
@@ -236,6 +237,50 @@ class TestJobFinalizeEvents:
         finalize_after = next(e for e in _EventCollector.events if isinstance(e, JobFinalizeEvent))
         assert finalize_after.verdict is not None
         assert finalize_after.verdict.reason == VerifyReason.TRANSCRIPT_MISSING
+
+    @patch("agento.framework.consumer.get_connection")
+    def test_veto_blocked_routes_to_failed_not_dead(self, mock_conn):
+        """A blocked verdict (config/infra fault) must halt WITHOUT retry and
+        route to FAILED + job_blocked_after — never DEAD, never a retry — even
+        though the verdict is also marked ``retryable``. FAILED (the otherwise
+        unused status) keeps DEAD reserved for genuine agent exhaustion."""
+        _conn = MagicMock()
+        _conn.cursor.return_value.__enter__.return_value.fetchone.return_value = ("RUNNING",)
+        mock_conn.return_value = _conn
+
+        class _Vetoer:
+            def execute(self, event):
+                event.verdict = Verdict(
+                    retryable=True,
+                    reason=VerifyReason.MISCONFIGURED,
+                    blocked=True,
+                    detail="toolbox MCP credential missing",
+                )
+
+        em = get_event_manager()
+        em.register("job_finalize_before", ObserverEntry(name="v", observer_class=_Vetoer))
+        em.register("job_finalize_after", ObserverEntry(name="a", observer_class=_EventCollector))
+        em.register("job_blocked_after", ObserverEntry(name="b", observer_class=_EventCollector))
+        em.register("job_dead_after", ObserverEntry(name="d", observer_class=_EventCollector))
+        em.register("job_retry_after", ObserverEntry(name="r", observer_class=_EventCollector))
+
+        consumer = self._make_consumer()
+        job = _make_job(attempt=1, max_attempts=3)
+
+        consumer._finalize_job(job, None, _JobResult(summary="x"), 50)
+
+        types = [type(e) for e in _EventCollector.events]
+        assert JobBlockedEvent in types
+        assert JobDeadEvent not in types
+        assert JobRetryingEvent not in types
+
+        # The terminal UPDATE writes status = 'FAILED', not 'DEAD'.
+        executed_sql = [
+            call.args[0]
+            for call in _conn.cursor.return_value.__enter__.return_value.execute.call_args_list
+        ]
+        assert any("status = 'FAILED'" in sql for sql in executed_sql)
+        assert not any("status = 'DEAD'" in sql for sql in executed_sql)
 
 
 class TestDequeueEvents:
