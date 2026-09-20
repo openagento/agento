@@ -48,7 +48,7 @@ it('never breaks a stale lock at runtime', async () => {
 });
 
 it('a heartbeat keeps a live holder\'s lock fresh so the sweep spares it', async () => {
-  const lock = path.join(dir, 'site', 'locks', 'e.lock');   // the REAL layout: <root>/<artifact_code>/locks/
+  const lock = path.join(dir, '.locks', 'site', 'e.lock');   // the REAL layout: <root>/.locks/<artifact_code>/
   const held = withLock(lock, async () => { await new Promise(r => setTimeout(r, 400)); return 'done'; },
     { heartbeatMs: 50 });
   await new Promise(r => setTimeout(r, 250));
@@ -58,7 +58,7 @@ it('a heartbeat keeps a live holder\'s lock fresh so the sweep spares it', async
 });
 
 it('sweepStaleLocks clears an abandoned lock and leaves it acquirable', async () => {
-  const lock = path.join(dir, 'site', 'locks', 'g.lock');
+  const lock = path.join(dir, '.locks', 'site', 'g.lock');
   await mkdir(path.dirname(lock), { recursive: true });
   await mkdir(lock); await writeFile(path.join(lock, 'owner'), 'dead-process');
   const old = new Date(Date.now() - 600_000);
