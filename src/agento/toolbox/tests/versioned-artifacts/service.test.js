@@ -213,9 +213,9 @@ describe('concurrency', () => {
   it.skipIf(!linux)('holds the lock a save takes while it replaces that draft\'s desk', async () => {
     // `materialize` empties the desk a save reads from, so the two must serialize on ONE
     // lock. Asserted by the acquire primitive itself: `withLock` takes the lock with
-    // `mkdir`, so a `mkdir` of the save's lock path must fail with EEXIST mid-copy.
+    // `mkdir`, so a `mkdir` of the lifecycle lock path must fail with EEXIST mid-copy.
     const d = await svc.createDraft('site', 'current', 'x');
-    const saveLock = path.join(root, 'site', 'locks', `${d.draft_id}.lock`);
+    const saveLock = path.join(root, '.locks', 'site', 'lifecycle.lock');
     const real = createBackend();
     let held = null;
     const watched = { ...real, materialize: async (...args) => {
@@ -414,6 +414,17 @@ describe('the artifacts an agent_view may create', () => {
     expect((await view(9, { 'limits/max_agent_artifacts': 2 }).init('d')).artifact_code).toBe('d');
   });
 
+  it('serializes one owner\'s concurrent creations so the cap cannot be raced', async () => {
+    // Two inits of DIFFERENT names by the same owner: without the owner lock both read
+    // the same pre-create count and both slip past a cap of one. Exactly one must win.
+    const v = view(13, { 'limits/max_agent_artifacts': 1 });
+    const results = await Promise.allSettled([v.init('a'), v.init('b')]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    const capped = results.filter(r => r.status === 'rejected');
+    expect(capped).toHaveLength(1);
+    expect(String(capped[0].reason)).toMatch(/ARTIFACT_LIMIT_REACHED/);
+  });
+
   it('exempts the administrator from the namespace and the cap', async () => {
     // `admin: true` is set by cli.js alone: `artifact:init` must keep creating any code.
     const admin = createService({ config: cfg({ allowed_artifacts: '', 'limits/max_agent_artifacts': 1 }),
@@ -460,5 +471,49 @@ describe('remove', () => {
   it('rejects an invalid code above the audit boundary', async () => {
     const admin = createService({ config: cfg(), db: null, log: vi.fn(), actor: 'admin', admin: true });
     await expect(admin.remove('../escape')).rejects.toMatchObject({ code: 'INVALID_PATH' });
+  });
+});
+
+describe('delete is excluded by an active mutation on the same artifact', () => {
+  // remove and every mutation take the ONE lifecycle lock, which lives outside the
+  // removed root, so a delete never runs beside an in-flight draft, save or publish.
+  // Each case pauses the mutation inside the backend and asserts remove cannot proceed
+  // until the mutation releases the lock.
+  const runsAfter = async (method, drive) => {
+    let open; const gate = new Promise((r) => { open = r; });
+    const real = createBackend();
+    const order = [];
+    const watched = { ...real, [method]: async (...a) => {
+      order.push('mut'); await gate; return real[method](...a);
+    } };
+    const actor = createService({ config: cfg(), db: null, log: vi.fn(), agentViewId: 7, backend: watched });
+    const admin = createService({ config: cfg(), db: null, log: vi.fn(), actor: 'admin', admin: true, backend: real });
+    const mutating = drive(actor);
+    await new Promise((r) => setTimeout(r, 40));           // the mutation enters and holds the lock
+    const removing = admin.remove('site').then(() => order.push('remove'));
+    await new Promise((r) => setTimeout(r, 40));           // remove must be BLOCKED on the lock
+    expect(order).toEqual(['mut']);
+    open();
+    await Promise.allSettled([mutating, removing]);
+    expect(order).toEqual(['mut', 'remove']);              // remove ran only after release
+  };
+
+  it('waits for an in-flight create_draft', () => runsAfter('createDraft',
+    (s) => s.createDraft('site', 'current', 'x')));
+
+  it.skipIf(!linux)('waits for an in-flight save_version', async () => {
+    const d = await svc.createDraft('site', 'current', 'x');
+    await svc.materialize('site', { draftId: d.draft_id }, deskFd);
+    await writeFile(path.join(desk, 'p.txt'), '1');
+    await runsAfter('saveVersion', (s) => s.saveVersion('site', d.draft_id, deskFd, 'one'));
+  });
+
+  it.skipIf(!linux)('waits for an in-flight publish', async () => {
+    const d = await svc.createDraft('site', 'current', 'x');
+    await svc.materialize('site', { draftId: d.draft_id }, deskFd);
+    await writeFile(path.join(desk, 'p.txt'), '1');
+    const { version_id } = await svc.saveVersion('site', d.draft_id, deskFd, 'v2');
+    const { current_version } = await svc.getCurrent('site');
+    await runsAfter('publish', (s) => s.publish('site', version_id, current_version));
   });
 });
