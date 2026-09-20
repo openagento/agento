@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { ArtifactError, GitFailure, ERROR_CODES, errorFacts } from './errors.js';
-import { validateArtifactCode, validateDraftId, validateVersionId, artifactRoot,
+import { validateArtifactCode, validateDraftId, validateVersionId,
   selectorSourceId } from './paths.js';
 import { withLock, sweepStaleLocks } from './locking.js';
 import { createBackend } from './git-backend.js';
@@ -150,17 +150,16 @@ export function createService({ config = {}, db = null, log = null, jobId = null
   // pool as a failed INSERT, so the event is logged AND appended to
   // audit-fallback.log. The row survives; nothing reports a success it did not have.
   const pool = () => { try { return db?.getCronPool?.() ?? null; } catch { return null; } };
-  const lockFile = (artifactCode, name) =>
-    path.join(artifactRoot(storageRoot, artifactCode), 'locks', `${name}.lock`);
-  const draftLock = (artifactCode, draftId) => lockFile(artifactCode, validateDraftId(draftId));
-  const artifactLock = (artifactCode) =>
-    path.join(artifactRoot(storageRoot, artifactCode), 'locks', 'artifact.lock');
-  // The init lock cannot live inside the artifact: init's first act is to assert the
-  // artifact does NOT exist, and creating the lock parent would make the backend
-  // reject it as already present. `.locks` starts with a dot and an artifact_code
-  // cannot, so the two can never collide.
-  const initLock = (artifactCode) =>
-    path.join(storageRoot, '.locks', `${validateArtifactCode(artifactCode)}.lock`);
+  // ONE lock per artifact, taken by every mutation AND by `remove`, so a delete never
+  // runs beside a draft, save or publish on the same artifact. It lives under `.locks`,
+  // OUTSIDE the artifact root that `remove` deletes — so the holder's lock survives the
+  // removal — and `.locks` cannot collide with an artifact_code, which must start [a-z0-9].
+  const lifecycleLock = (artifactCode) =>
+    path.join(storageRoot, '.locks', validateArtifactCode(artifactCode), 'lifecycle.lock');
+  // Serializes one owner's creations, so its cap check and its create are atomic. The
+  // lifecycle lock is per-name and cannot: two inits of DIFFERENT names would both read
+  // the same count and both slip past the cap.
+  const ownerLock = () => path.join(storageRoot, '.locks', `owner-${ownView ?? 'anon'}.lock`);
 
   function build(currentActor) {
     const audit = (operation, row) => recordAudit(pool(), log, storageRoot, {
@@ -215,7 +214,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
      *  relative preview path. Used by `save_version`; `publish` runs the same two steps
      *  around its CAS and cannot share this. */
     async function publishVersionTree(artifactCode, versionId, { swap = false } = {}) {
-      return withLock(artifactLock(artifactCode), async () => {
+      return withLock(lifecycleLock(artifactCode), async () => {
         await be.materializePublished(storageRoot, artifactCode, versionId, {
           destDir: published.publishedVersionDir(publishedRoot, artifactCode, versionId),
           scratchDir: published.scratchRoot(publishedRoot),
@@ -270,60 +269,61 @@ export function createService({ config = {}, db = null, log = null, jobId = null
           if (!namedByOperator && ownView === null) {
             throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, 'this session may not create artifacts');
           }
-          // Counted over what this caller may USE, not over the store. A count of the
-          // whole store answers "how many artifacts does every other agent_view hold"
-          // — and, with `artifact:delete` reachable only by an operator, lets one view
-          // lock creation out for all of them until a human intervenes. It bounds ownership, NOT disk: versions are unbounded and
-          // `serving/keep_versions` bounds the previews per artifact, never the store.
-          // Hoisted out of the retry below: the count does not change between attempts.
-          if (!admin) {
-            const held = (await filterUsable(await be.listArtifacts(storageRoot))).length;
-            if (held >= limits.max_agent_artifacts) {
-              throw new ArtifactError(ERROR_CODES.ARTIFACT_LIMIT_REACHED,
-                `this scope already holds ${held} artifacts`);
+          // The cap counts what this caller may USE, not the store: a store-wide count
+          // is a cross-view cardinality oracle and, with delete operator-only, a one-way
+          // lockout. It bounds ownership, NOT disk. Cap check and create run TOGETHER
+          // under the owner lock — without it two inits of different names both read the
+          // same count and both slip past the cap.
+          const createUnderCap = async () => {
+            if (!admin) {
+              const held = (await filterUsable(await be.listArtifacts(storageRoot))).length;
+              if (held >= limits.max_agent_artifacts) {
+                throw new ArtifactError(ERROR_CODES.ARTIFACT_LIMIT_REACHED,
+                  `this scope already holds ${held} artifacts`);
+              }
             }
-          }
-          // The name the caller ASKED for is a wish, not the identity: the identity is
-          // what comes back. A taken name is answered with `-2`, `-3`, … rather than an
-          // error, because the caller has no way to see what another agent_view already
-          // took — the store is shared and the listing is not. The ADMIN path keeps the
-          // error: an operator names a code deliberately (a pretty URL), and silently
-          // renaming it would publish something at an address they did not choose.
-          let created = null;
-          let finalCode = artifactCode;
-          for (let attempt = 1; created === null; attempt += 1) {
-            const candidate = attempt === 1 ? artifactCode : suffixed(artifactCode, attempt);
-            try {
-              // eslint-disable-next-line no-await-in-loop
-              created = await withLock(initLock(candidate), async () => {
-                const made = await be.init(storageRoot, candidate, {
-                  files, allowSymlinks, limits, owningView: admin ? null : ownView,
-                });
-                // The store is the authority on what exists and the row only DECORATES
-                // it, so a failed INSERT costs a title, never the artifact — the same way
-                // `recordAudit` degrades. Failing the init here would leave an artifact
-                // that exists in the store and reports "creation failed" on every retry.
-                const db2 = pool();
-                if (db2) {
-                  try {
-                    await db2.execute(
-                      'INSERT INTO versioned_artifact (artifact_code, title, owner) VALUES (?, ?, ?)',
-                      [candidate, title, owner]);
-                  } catch (err) {
-                    log?.('versioned_artifacts', 'ERROR',
-                      `artifact metadata not recorded for '${candidate}': ${errorFacts(err) ?? 'unknown'}`);
+            // The name the caller ASKED for is a wish, not the identity: a taken name is
+            // answered with `-2`, `-3`, … because the caller cannot see what another
+            // agent_view already took. The ADMIN path keeps the error: an operator names
+            // a code deliberately, and renaming it would publish at an address nobody chose.
+            let created = null;
+            let finalCode = artifactCode;
+            for (let attempt = 1; created === null; attempt += 1) {
+              const candidate = attempt === 1 ? artifactCode : suffixed(artifactCode, attempt);
+              try {
+                // eslint-disable-next-line no-await-in-loop
+                created = await withLock(lifecycleLock(candidate), async () => {
+                  const made = await be.init(storageRoot, candidate, {
+                    files, allowSymlinks, limits, owningView: admin ? null : ownView,
+                  });
+                  // The row only DECORATES the store, so a failed INSERT costs a title,
+                  // never the artifact — the same degradation `recordAudit` has.
+                  const db2 = pool();
+                  if (db2) {
+                    try {
+                      await db2.execute(
+                        'INSERT INTO versioned_artifact (artifact_code, title, owner) VALUES (?, ?, ?)',
+                        [candidate, title, owner]);
+                    } catch (err) {
+                      log?.('versioned_artifacts', 'ERROR',
+                        `artifact metadata not recorded for '${candidate}': ${errorFacts(err) ?? 'unknown'}`);
+                    }
                   }
-                }
-                return made;
-              });
-              finalCode = candidate;
-            } catch (err) {
-              // Racing on `be.init` rather than checking existence first is what makes
-              // this safe under concurrency: two sessions asking for the same name both
-              // lose to the same check, and the loser simply takes the next number.
-              if (!isNameTaken(err) || namedByOperator || attempt >= MAX_NAME_ATTEMPTS) throw err;
+                  return made;
+                });
+                finalCode = candidate;
+              } catch (err) {
+                // Racing on `be.init` rather than checking existence first is what makes
+                // the wish safe: two sessions asking one name lose to the same check, and
+                // the loser takes the next number.
+                if (!isNameTaken(err) || namedByOperator || attempt >= MAX_NAME_ATTEMPTS) throw err;
+              }
             }
-          }
+            return { created, finalCode };
+          };
+          const { created, finalCode } = admin
+            ? await createUnderCap()
+            : await withLock(ownerLock(), createUnderCap);
           // Everything below names the artifact that EXISTS, never the one that was
           // asked for: they differ whenever the wished-for name was taken.
           // AFTER the lock, the way `save_version` publishes: `init` already answers a
@@ -354,10 +354,9 @@ export function createService({ config = {}, db = null, log = null, jobId = null
        *  through `requireArtifact`, because the half-cleaned store is exactly the state an
        *  operator runs this to repair.
        *
-       *  ponytail: takes the init lock, which excludes a concurrent creation of the same
-       *  code but NOT a draft operation already inside the artifact — that one simply
-       *  fails on files that are gone. Per-artifact exclusion needs the artifact lock,
-       *  which lives inside the directory being removed. */
+       *  Takes the lifecycle lock — the SAME lock every mutation takes, and one that lives
+       *  OUTSIDE the removed root — so a delete never runs beside an in-flight draft, save
+       *  or publish on the same artifact. */
       async remove(artifactCode) {
         // Above the audit boundary for the same reason as `init`: an invalid code audited
         // is arbitrary caller text written into the audit table and the fallback log.
@@ -366,7 +365,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
           if (!admin) {
             throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, 'this session may not delete artifacts');
           }
-          return withLock(initLock(artifactCode), async () => {
+          return withLock(lifecycleLock(artifactCode), async () => {
             const removedPublished = await published.removeArtifact(publishedRoot, artifactCode);
             const removedStore = await be.removeArtifact(storageRoot, artifactCode);
             if (!removedPublished && !removedStore) {
@@ -412,10 +411,8 @@ export function createService({ config = {}, db = null, log = null, jobId = null
       async materialize(artifactCode, selector, deskFd) {
         validateArtifactCode(artifactCode);
         await assertArtifactAllowed(artifactCode);
-        // Before the lock: its NAME is the id the selector gives, so a selector naming
-        // two sources or none must be refused first.
-        const id = selectorSourceId(selector);
-        return withLock(lockFile(artifactCode, id), () =>
+        selectorSourceId(selector);   // reject a selector that names two sources or none
+        return withLock(lifecycleLock(artifactCode), () =>
           be.materialize(storageRoot, artifactCode, selector, deskFd));
       },
       /** What this scope may use ∩ what the store holds, each with the state an agent
@@ -477,7 +474,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         validateArtifactCode(artifactCode);
         return audited(OPS.createDraft, { artifactCode, description }, async () => {
           await assertArtifactAllowed(artifactCode);
-          return withLock(artifactLock(artifactCode), async () => {
+          return withLock(lifecycleLock(artifactCode), async () => {
             // Opportunistic cleanup of garbage this call did not create: its failure
             // is logged by the layer that owns a logger, and the valid creation
             // proceeds.
@@ -500,18 +497,15 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         validateDraftId(draftId);
         return audited(OPS.saveVersion, { artifactCode, draftId, description }, async () => {
           await assertArtifactAllowed(artifactCode);
-          const saved = await withLock(draftLock(artifactCode, draftId), async () => {
+          const saved = await withLock(lifecycleLock(artifactCode), async () => {
             await prepareDraft(artifactCode, draftId);
             return be.saveVersion(storageRoot, artifactCode, draftId, deskFd,
               { description, limits, trailers: { jobId, agentView: agentViewId } });
           });
-          // AFTER the draft lock is released, not inside it: the version already exists,
-          // so the draft lock has done its job and nesting the artifact lock under it
-          // would be the module's only lock ordering. The version is immutable, so
-          // nothing can change it between the two locks.
-          //
-          // A published tree that cannot be written must NEVER fail a save that already
-          // succeeded in the store — the agent's work is safe, only the preview is not.
+          // AFTER the lifecycle lock is released, then re-taken by publishVersionTree —
+          // sequential, never nested. The version is immutable, so nothing can change it
+          // between the two. A published tree that cannot be written must NEVER fail a
+          // save that already succeeded in the store: the work is safe, only the preview.
           let previewPath = null;
           try {
             previewPath = await publishVersionTree(artifactCode, saved.version_id);
@@ -528,7 +522,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         validateDraftId(draftId);
         return audited(OPS.discardDraft, { artifactCode, draftId }, async () => {
           await assertArtifactAllowed(artifactCode);
-          return withLock(draftLock(artifactCode, draftId), async () => {
+          return withLock(lifecycleLock(artifactCode), async () => {
             await prepareDraft(artifactCode, draftId, { allowMarkers: true });
             return be.discardDraft(storageRoot, artifactCode, draftId);
           });
@@ -545,7 +539,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         validateVersionId(expectedCurrentVersion);
         return audited(OPS.publish, { artifactCode, versionId }, async () => {
           await assertArtifactAllowed(artifactCode);
-          return withLock(artifactLock(artifactCode), async () => {
+          return withLock(lifecycleLock(artifactCode), async () => {
             // ORDER MATTERS, and the CAS goes second. The store's `current` ref is
             // authoritative: once it moves, a failure after it leaves the store saying
             // v2 while HTTP serves v1, and a retry with the caller's original

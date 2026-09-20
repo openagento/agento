@@ -2,7 +2,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rm, stat, utimes } from 'node:fs/promises';
 import { ArtifactError, ERROR_CODES } from './errors.js';
-import { validateArtifactCode, listDirOrEmpty } from './paths.js';
+import { listDirOrEmpty } from './paths.js';
 
 const POLL_MS = 25;
 
@@ -63,26 +63,27 @@ export async function withLock(lockPath, fn, { timeoutMs = 10_000, heartbeatMs =
 }
 
 export async function sweepStaleLocks(storageRoot, { staleMs = 300_000 } = {}) {
-  const dirs = [path.join(storageRoot, '.locks')];
-  for (const e of await listDirOrEmpty(storageRoot)) {
-    if (!e.isDirectory() || e.name === '.locks') continue;
-    try { validateArtifactCode(e.name); } catch { continue; }   // ignore anything not an artifact
-    dirs.push(path.join(storageRoot, e.name, 'locks'));
+  // Every lock lives under `.locks`: a per-artifact `<code>/lifecycle.lock` one level
+  // down, plus the flat `owner-<id>.lock`. A lock is a directory whose name ends in
+  // `.lock`; a bare `<code>/` container is descended, never swept.
+  const base = path.join(storageRoot, '.locks');
+  const locks = [];
+  for (const e of await listDirOrEmpty(base)) {
+    if (!e.isDirectory()) continue;
+    const full = path.join(base, e.name);
+    if (e.name.endsWith('.lock')) { locks.push(full); continue; }
+    for (const f of await listDirOrEmpty(full)) {
+      if (f.isDirectory() && f.name.endsWith('.lock')) locks.push(path.join(full, f.name));
+    }
   }
   const removed = [];
-  for (const dir of dirs) {
-    for (const e of await listDirOrEmpty(dir)) {
-      if (!e.isDirectory()) continue;
-      const lock = path.join(dir, e.name);
-      // Same rule as listDirOrEmpty, and it was wrong to exempt this call last
-      // round: an EACCES here reads as "the lock disappeared", so the sweep skips
-      // a lock it cannot inspect and startup logs a clean "swept 0". A reclamation
-      // path that cannot run must say so, not report success.
-      let st;
-      try { st = await stat(lock); }
-      catch (err) { if (err?.code === 'ENOENT') continue; throw err; }
-      if (Date.now() - st.mtimeMs > staleMs) { await rm(lock, { recursive: true, force: true }); removed.push(lock); }
-    }
+  for (const lock of locks) {
+    // An EACCES must NOT read as "the lock disappeared": a reclamation path that cannot
+    // inspect a lock has to say so, not report a clean sweep. Only ENOENT ends it.
+    let st;
+    try { st = await stat(lock); }
+    catch (err) { if (err?.code === 'ENOENT') continue; throw err; }
+    if (Date.now() - st.mtimeMs > staleMs) { await rm(lock, { recursive: true, force: true }); removed.push(lock); }
   }
   return removed;
 }
