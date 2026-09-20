@@ -26,7 +26,6 @@ class OutlookConfig:
     direct_requires_sole_recipient: bool = True
     mailbox_aliases: str = ""
     allow_bot_collaboration: bool = False
-    allow_thread_read: bool = False
     thread_read_max_messages: int = 50
 
     @staticmethod
@@ -77,7 +76,6 @@ class OutlookConfig:
             direct_requires_sole_recipient=cls._as_bool(data.get("direct_requires_sole_recipient"), True),
             mailbox_aliases=mailbox_aliases,
             allow_bot_collaboration=cls._as_bool(data.get("allow_bot_collaboration"), False),
-            allow_thread_read=cls._as_bool(data.get("allow_thread_read"), False),
             thread_read_max_messages=thread_read_max_messages,
         )
 
