@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createService } from '../../../modules/versioned_artifacts/toolbox/service.js';
 import { createBackend } from '../../../modules/versioned_artifacts/toolbox/git-backend.js';
-import { pruneVersions } from '../../../modules/versioned_artifacts/toolbox/published-tree.js';
+import { pruneVersions, swapCurrent } from '../../../modules/versioned_artifacts/toolbox/published-tree.js';
 import { mintVersion, readSource } from './helpers.js';
 
 // `saveVersion` takes a desk, which is fd-anchored and Linux-only. The published tree
@@ -173,25 +173,31 @@ describe('published tree', () => {
 });
 
 describe('publish ordering and recovery', () => {
-  // `init` swaps AFTER its own lock releases, so a publish can win the artifact lock in
-  // between. Reproduced by publishing v2 from inside the backend's `init`, which is the
-  // same window. The store is the authority under that lock.
+  // `init` swaps AFTER its own lock releases, so a publish can complete in between. The
+  // swap then reads the store's current and installs version 1 only if current is still
+  // it — otherwise it leaves the fresher publish standing. Reproduced by moving BOTH the
+  // store ref and the served pointer to v2 from inside the backend's `init`, the same
+  // window; the racing publish is done with backend primitives so it does not re-enter
+  // the one lifecycle lock init already holds.
   it('does not drag the served current back to version 1 when a publish lands during init', async () => {
-    const over = { allowed_artifacts: 'site,site2' };
-    const racer = mk(over);
+    const over = { allowed_artifacts: 'site2' };
     let v2;
     const raced = {
       ...be,
       init: async (...args) => {
         const made = await be.init(...args);
         v2 = await mintVersion(be, root, 'site2', '<h1>v2</h1>');
-        await racer.publish('site2', v2, made.current_version);
+        await be.materializePublished(root, 'site2', v2, {
+          destDir: path.join(pub, 'site2', 'v', v2), scratchDir: path.join(pub, '.tmp'),
+        });
+        await be.publish(root, 'site2', v2, made.current_version);   // moves the store ref
+        await swapCurrent(pub, 'site2', v2);                          // moves the served pointer
         return made;
       },
     };
     await mk(over, raced).init('site2', { files: await readSource(src) });
 
-    expect((await racer.getCurrent('site2')).current_version).toBe(v2);
+    expect((await be.getCurrent(root, 'site2')).current_version).toBe(v2);
     expect(await readlink(path.join(pub, 'site2', 'current'))).toBe(path.join('v', v2));
   });
 
