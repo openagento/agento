@@ -239,7 +239,8 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
   // Outlook conversation that triggered it. Extends the READ scope only — ACTIONS (reply/mark_processed)
   // stay bound to the triggering message. The conversation is always derived from the trusted trigger
   // message; the agent never supplies a conversationId or a foreign message id (see resolveThreadBinding).
-  const allowThreadRead = parseBool(cfg.allow_thread_read, false);
+  // The SINGLE gate is the tool switch `tools/outlook_list_thread/is_enabled` (off by default, like every
+  // tool): it registers the tool AND widens the read scope, so admin has one decision, not two.
   const threadReadMax = (() => {
     const n = parseInt(cfg.thread_read_max_messages, 10);
     return Number.isFinite(n) && n > 0 ? Math.min(n, 200) : 50;
@@ -445,7 +446,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
     const b = await resolveBinding();
     if (!b.bound) return { allowed: false, source: null };
     if (b.messageId === requestedId) return { allowed: true, source: 'trigger' };
-    if (!allowThreadRead) return { allowed: false, source: null };
+    if (!enabled('outlook_list_thread')) return { allowed: false, source: null };
     const thread = await resolveThreadBinding();
     if (thread.bound && thread.allowedMessageIds.has(requestedId)) return { allowed: true, source: 'thread' };
     return { allowed: false, source: null };
@@ -661,12 +662,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
     };
   }
 
-  // --- outlook_list_thread (opt-in via outlook/allow_thread_read; NOT registered when off) ---
+  // --- outlook_list_thread (opt-in via tools/outlook_list_thread/is_enabled; NOT registered when off) ---
   // Takes NO parameters: the conversation is derived from THIS job's trigger message, so the agent can
   // never choose which conversation it lists. Returns a lightweight, chronological (oldest→newest) index
   // of the authorized messages in that conversation with attachment METADATA only — the agent then uses
   // outlook_get_message / outlook_get_attachment (already extended to the thread) to fetch what it needs.
-  if (allowThreadRead && enabled('outlook_list_thread')) {
+  if (enabled('outlook_list_thread')) {
     server.tool(
       'outlook_list_thread',
       [
@@ -723,7 +724,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
       async ({ message_id }) => {
         if (!auth.isConfigured()) return notConfigured('outlook_get_message');
         // Current-job READ binding: a headless job may read its own triggering message, plus (when
-        // allow_thread_read is on) an already-authorized message of the same conversation. A foreign id
+        // outlook_list_thread is enabled) an already-authorized message of the same conversation. A foreign id
         // (leaked/guessed) is refused with a generic error that leaks nothing about why, before any Graph
         // call — and WITHOUT a Graph GET of that id to discover its conversation.
         const read = await classifyRead(message_id);
@@ -815,7 +816,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
       async ({ message_id, attachment_id }) => {
         if (!auth.isConfigured()) return notConfigured('outlook_get_attachment');
         // Current-job READ binding: attachments may be downloaded from this job's triggering message, plus
-        // (when allow_thread_read is on) an already-authorized message of the same conversation. A foreign
+        // (when outlook_list_thread is enabled) an already-authorized message of the same conversation. A foreign
         // message id is refused generically (no leak) before any Graph call — and without a Graph GET of
         // that id to discover its conversation.
         const read = await classifyRead(message_id);

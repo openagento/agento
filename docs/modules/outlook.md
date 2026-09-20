@@ -68,9 +68,8 @@ Set via `agento config:set outlook/<key> <value>` (or `CONFIG__OUTLOOK__<KEY>` e
 | `outlook/outlook_mailbox_user_id` | string | Mailbox UPN to poll — **per agent_view**. A UPN owned by exactly one view is **direct mode** (the mailbox identifies the view); a UPN **shared by ≥2 views** is **routed mode** (the message sender selects the view via `outlook_sender` bindings — see [routing](../architecture/routing.md)). Set at the view's scope for multi-view; `default` works for a single-view deployment (resolved via fallback). |
 | `outlook/allowed_senders` | string | **Comma-separated allow-list** of `From` addresses, resolved **per view**. Supports **glob wildcards** (`*@mycompany.com` matches any local part at that domain; `*` never crosses the `@`) and exact addresses. **Empty = block all.** |
 | `outlook/poll_top` | int | Delta **page size** per poll, resolved per view, clamped 1..50 (default `10`). The poll pages `@odata.nextLink` to the end, so this caps the per-page size, not the total fetched. |
-| `outlook/restrict_read_to_allowed_senders` | bool | **Default `true`.** When on, the agent read tools (`outlook_get_message` / `outlook_get_attachment`) only surface mail that passes the **same gate as the publisher** — sender on `allowed_senders` **and** a DMARC `pass` (the `From` header is forgeable; DMARC is the proof). Verdict undeterminable ⇒ not surfaced (fail-closed); empty `allowed_senders` ⇒ block all reads. Disabling it (`false`) lets the agent read **any** message in the mailbox, including spoofed / non-allow-listed / DMARC-failed mail — a documented **security risk**. (Reads are *additionally* bound to the triggering job's own message, or its conversation when `allow_thread_read` is on — see [Reads and thread actions are bound to the triggering message](#reads-and-thread-actions-are-bound-to-the-triggering-message).) |
-| `outlook/allow_thread_read` | bool | **Default `false`.** Opt-in. When on, the READ scope follows the trigger's **own conversation** (not just the single triggering message): the toolbox registers `outlook_list_thread` and lets `outlook_get_message` / `outlook_get_attachment` reach any message the binding authorized. The conversation is derived from the **trusted trigger** (never an agent-supplied id); each message is authorized independently — inbound via the same `allowed_senders` + DMARC-`pass` gate as above, outbound only when it physically lives in this mailbox's **Sent Items** (a forged `From` is not enough). ACTIONS (`outlook_reply` / `outlook_mark_processed`) are **unchanged** — still bound to the trigger. When off, the tool is not registered and read scope is unchanged. |
-| `outlook/thread_read_max_messages` | int | **Default `50`** (floor 1, cap 200). Newest-N cap on the conversation enumeration for `allow_thread_read`; older messages beyond the cap are dropped and the result carries `truncated: true`. |
+| `outlook/restrict_read_to_allowed_senders` | bool | **Default `true`.** When on, the agent read tools (`outlook_get_message` / `outlook_get_attachment`) only surface mail that passes the **same gate as the publisher** — sender on `allowed_senders` **and** a DMARC `pass` (the `From` header is forgeable; DMARC is the proof). Verdict undeterminable ⇒ not surfaced (fail-closed); empty `allowed_senders` ⇒ block all reads. Disabling it (`false`) lets the agent read **any** message in the mailbox, including spoofed / non-allow-listed / DMARC-failed mail — a documented **security risk**. (Reads are *additionally* bound to the triggering job's own message, or its conversation when `outlook_list_thread` is enabled — see [Reads and thread actions are bound to the triggering message](#reads-and-thread-actions-are-bound-to-the-triggering-message).) |
+| `outlook/thread_read_max_messages` | int | **Default `50`** (floor 1, cap 200). Newest-N cap on the conversation enumeration for `outlook_list_thread`; older messages beyond the cap are dropped and the result carries `truncated: true`. |
 
 A DMARC pass is **always required** for allow-listed senders — it is not a config option (see the security gate below).
 
@@ -337,7 +336,7 @@ behind it.
 ## Tools are opt-in
 
 The tools (`outlook_get_message`, `outlook_get_attachment`, `outlook_reply`, `outlook_send_mail`,
-`outlook_mark_processed`, and — only when `outlook/allow_thread_read` is on — `outlook_list_thread`) ship
+`outlook_mark_processed`, `outlook_list_thread`) ship
 **disabled**. Enable only what the agent needs:
 
 ```bash
@@ -350,7 +349,7 @@ agento tool:enable outlook_mark_processed --agent-view <code>
 > tools were removed: in a shared mailbox they leaked other people's subjects, senders, and message ids.
 > Arbitrary discovery is impossible by construction — see [Reads and thread actions are bound to the
 > triggering message](#reads-and-thread-actions-are-bound-to-the-triggering-message). The **opt-in**
-> `outlook_list_thread` (registered only when `outlook/allow_thread_read` is on) is **not** an enumeration
+> `outlook_list_thread` (registered only when that tool is enabled) is **not** an enumeration
 > tool: it takes no parameters and lists only the **already-authorized** messages of the trigger's own
 > conversation (attachment metadata only — never bodies or bytes, and the `conversationId` is never
 > exposed).
@@ -374,7 +373,8 @@ Combined with the removal of the enumeration tools, the agent cannot reach a con
 with no ACL and no new tables. (Email is self-quoting, so the triggering message usually carries the prior
 thread inline.)
 
-**Thread read (opt-in — `outlook/allow_thread_read`, default off).** When on, the **READ** scope widens
+**Thread read (opt-in — enable the `outlook_list_thread` tool; off by default like every tool).** Enabling
+it is the **single** gate: it registers the tool *and* widens the **READ** scope
 from the single triggering message to the trigger's **own conversation** — enough for the agent to recover
 an earlier attachment it (or the sender) sent in a previous round instead of asking the human to re-send it.
 The action binding is **unchanged**: `outlook_reply` / `outlook_mark_processed` may still only target the

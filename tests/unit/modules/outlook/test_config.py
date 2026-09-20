@@ -55,14 +55,6 @@ def test_allowed_senders_list_empty_for_blank():
     assert OutlookConfig.from_dict({}).allowed_senders_list == []
 
 
-def test_allow_thread_read_defaults_off_and_parses_stringy_values():
-    assert OutlookConfig.from_dict({}).allow_thread_read is False
-    for v in ("0", "false", "False", 0, False):
-        assert OutlookConfig.from_dict({"allow_thread_read": v}).allow_thread_read is False
-    for v in ("1", "true", True):
-        assert OutlookConfig.from_dict({"allow_thread_read": v}).allow_thread_read is True
-
-
 def test_thread_read_max_messages_is_defensive_and_clamped():
     assert OutlookConfig.from_dict({}).thread_read_max_messages == 50        # default
     assert OutlookConfig.from_dict({"thread_read_max_messages": "999"}).thread_read_max_messages == 200  # clamp high

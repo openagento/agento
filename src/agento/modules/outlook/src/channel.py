@@ -75,40 +75,14 @@ def _matches_allowed(sender: str, allowed_senders: list[str] | None) -> bool:
     return False
 
 
-def _thread_read_enabled(config: object | None = None) -> bool:
-    """True when outlook/allow_thread_read is on — gates the thread-history prompt hint.
-
-    ``config`` is the module config resolved for THIS job's agent_view (threaded in by the workflow),
-    so the hint tracks the SAME per-view/per-workspace setting the toolbox uses to gate the tool.
-    Enabling thread read for one view (while the deployment default is off) then adds the hint only
-    there, and vice-versa. When no config is threaded in (e.g. a legacy/direct caller), fall back to
-    the deployment-wide bootstrap registry.
-
-    Reads defensively (dict OR dataclass OR unset), mirroring ``OutlookConfig.toolbox_url``: an
-    uninitialized bootstrap (e.g. a bare unit test) yields False, so the hint never leaks into a
-    deployment that has the feature off.
-    """
-    cfg = config
-    if cfg is None:
-        from agento.framework.bootstrap import get_module_config
-
-        cfg = get_module_config("outlook")
-    if isinstance(cfg, dict):
-        value = cfg.get("allow_thread_read")
-    elif cfg is not None:
-        value = getattr(cfg, "allow_thread_read", None)
-    else:
-        value = None
-    if value is None:
-        return False
-    return value not in (False, 0, "0", "false", "False")
-
-
-# Appended to read_context ONLY when allow_thread_read is on: tells the agent to recover earlier
-# thread files itself instead of asking the human to re-send them (see outlook PRD §24).
+# Always appended to read_context: tells the agent to recover earlier thread files itself instead of
+# asking the human to re-send them (see outlook PRD §24). The hint is UNCONDITIONAL and phrased "if the
+# tool is available" — thread read has exactly one gate, `tools/outlook_list_thread/is_enabled`, which
+# the toolbox resolves; the prompt side cannot see it and must not grow a second gate of its own.
 _THREAD_READ_HINT = (
-    "Jeśli bieżąca wiadomość odwołuje się do wcześniejszej wiadomości, pliku lub ustalenia, którego "
-    "nie ma w tej wiadomości, użyj outlook_list_thread aby przejrzeć historię tego wątku. "
+    "Jeśli narzędzie outlook_list_thread jest dostępne i bieżąca wiadomość odwołuje się do wcześniejszej "
+    "wiadomości, pliku lub ustalenia, którego nie ma w tej wiadomości, użyj go aby przejrzeć historię "
+    "tego wątku. "
     "Zanim poprosisz nadawcę o ponowne przesłanie wcześniejszego załącznika, sprawdź, czy jest on "
     "dostępny w wątku (outlook_get_attachment po message_id z indeksu)."
 )
@@ -127,8 +101,7 @@ class OutlookPromptChannel:
             f"Użyj outlook_get_message aby pobrać treść emaila o message_id: {message_id}.\n"
             "Zapamiętaj: temat, nadawcę, treść, datę otrzymania."
         )
-        if _thread_read_enabled(config):
-            read_context += "\n" + _THREAD_READ_HINT
+        read_context += "\n" + _THREAD_READ_HINT
         return PromptFragments(
             # Short fixed opening — the long compound reference_id (subject-slug::message-id) is not
             # repeated in the prompt; the bare message_id arrives via read_context below.
@@ -156,8 +129,7 @@ class OutlookPromptChannel:
             f"Wczytaj email (outlook_get_message) — sprawdź obecny stan i kontekst. "
             f"Message ID: {message_id}."
         )
-        if _thread_read_enabled(config):
-            read_context += "\n" + _THREAD_READ_HINT
+        read_context += "\n" + _THREAD_READ_HINT
         return PromptFragments(
             # Short fixed opening — the long reference_id is not repeated in the prompt; the bare
             # message_id arrives via read_context below.

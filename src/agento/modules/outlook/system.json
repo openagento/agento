@@ -68,17 +68,9 @@
     "showInWorkspace": true,
     "showInAgentView": true
   },
-  "allow_thread_read": {
-    "type": "boolean",
-    "label": "Allow reading earlier messages of the triggering thread",
-    "description": "When on, exposes outlook_list_thread and lets outlook_get_message / outlook_get_attachment read EARLIER messages and attachments of the SAME conversation that triggered the job (e.g. recover a file the agent itself sent in a previous round). Off by default. The conversation is always derived from the triggering message — the agent cannot choose it and cannot read other conversations. Read scope only; reply/mark-processed stay bound to the triggering message. Each earlier message is authorized individually (inbound: allowed_senders + DMARC pass; outbound: physically in this mailbox's Sent Items).",
-    "showInDefault": true,
-    "showInWorkspace": true,
-    "showInAgentView": true
-  },
   "thread_read_max_messages": {
     "type": "integer",
     "label": "Max thread messages returned by outlook_list_thread",
-    "description": "Upper bound on messages enumerated per conversation (default 50, capped at 200). A larger conversation returns the newest N with truncated=true."
+    "description": "Upper bound on messages enumerated per conversation by outlook_list_thread (default 50, capped at 200). A larger conversation returns the newest N with truncated=true."
   }
 }

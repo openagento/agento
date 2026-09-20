@@ -11,7 +11,6 @@ from agento.modules.outlook.src.channel import (
     _build_reference_id,
     _slugify,
 )
-from agento.modules.outlook.src.config import OutlookConfig
 
 WHITELIST = ["sklep@mycompanystudio.com", "ops@mycompany.com", "*@partner.com"]
 
@@ -114,48 +113,16 @@ def test_followup_fragments_carry_instructions():
     assert "HTML" in f.respond  # follow-up replies must also be HTML
 
 
-def test_prompt_fragments_thread_hint_absent_when_feature_off():
-    # allow_thread_read off (or unset) → no thread-history instruction leaks into the prompt.
-    with patch("agento.framework.bootstrap.get_module_config", return_value={"allow_thread_read": False}):
-        f = OutlookChannel().get_prompt_fragments("AAMkAG=")
-    assert "outlook_list_thread" not in f.read_context
-
-
-def test_prompt_fragments_thread_hint_present_when_feature_on():
-    with patch("agento.framework.bootstrap.get_module_config", return_value={"allow_thread_read": True}):
+def test_prompt_fragments_carry_the_thread_hint_unconditionally():
+    # Thread read has exactly ONE gate — tools/outlook_list_thread/is_enabled, resolved by the toolbox.
+    # The prompt side therefore carries the hint always, phrased "if the tool is available", and must
+    # never consult module config for a second gate of its own.
+    with patch("agento.framework.bootstrap.get_module_config") as gmc:
         f = OutlookChannel().get_prompt_fragments("AAMkAG=")
         g = OutlookChannel().get_followup_fragments("AAMkAG=", "sprawdź raport")
     assert "outlook_list_thread" in f.read_context
     assert "outlook_list_thread" in g.read_context
-
-
-def test_prompt_fragments_thread_hint_follows_per_view_config_not_global():
-    # The per-view config (threaded in by the workflow) wins over the deployment-wide bootstrap
-    # registry: enabling thread read for THIS view adds the hint even when the global default is off,
-    # so the hint tracks the same setting the toolbox uses to gate the tool. get_module_config must
-    # NOT be consulted when an explicit config is supplied.
-    view_cfg = OutlookConfig.from_dict({"allow_thread_read": True})
-    with patch(
-        "agento.framework.bootstrap.get_module_config", return_value={"allow_thread_read": False}
-    ) as gmc:
-        f = OutlookChannel().get_prompt_fragments("AAMkAG=", config=view_cfg)
-        g = OutlookChannel().get_followup_fragments("AAMkAG=", "sprawdź raport", config=view_cfg)
-    assert "outlook_list_thread" in f.read_context
-    assert "outlook_list_thread" in g.read_context
     gmc.assert_not_called()
-
-
-def test_prompt_fragments_thread_hint_absent_when_per_view_config_off_but_global_on():
-    # The mirror case: disabling thread read locally omits the hint even if the deployment default is on
-    # — otherwise the prompt would advertise a tool the toolbox has not registered for this view.
-    view_cfg = OutlookConfig.from_dict({"allow_thread_read": False})
-    with patch(
-        "agento.framework.bootstrap.get_module_config", return_value={"allow_thread_read": True}
-    ):
-        f = OutlookChannel().get_prompt_fragments("AAMkAG=", config=view_cfg)
-        g = OutlookChannel().get_followup_fragments("AAMkAG=", "sprawdź raport", config=view_cfg)
-    assert "outlook_list_thread" not in f.read_context
-    assert "outlook_list_thread" not in g.read_context
 
 
 def test_prompt_fragments_provide_short_email_task_intro():

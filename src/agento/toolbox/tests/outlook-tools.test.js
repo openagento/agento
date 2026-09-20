@@ -69,12 +69,12 @@ const qRows = (rows) => vi.fn(async () => [rows]);
 beforeEach(() => vi.unstubAllGlobals());
 
 describe('outlook tools registration + gating', () => {
-  it('registers the 5 remaining tools when enabled (enumeration tools removed)', () => {
+  it('registers the 6 remaining tools when enabled (enumeration tools removed)', () => {
     const s = makeServer();
     register(s, ctx());
     expect(Object.keys(s.tools).sort()).toEqual([
-      'outlook_get_attachment', 'outlook_get_message', 'outlook_mark_processed',
-      'outlook_reply', 'outlook_send_mail',
+      'outlook_get_attachment', 'outlook_get_message', 'outlook_list_thread',
+      'outlook_mark_processed', 'outlook_reply', 'outlook_send_mail',
     ]);
   });
 
@@ -321,8 +321,16 @@ describe('current-job read binding (privacy-by-construction for headless jobs)',
   const okMsg = (addr, headers = PASS_DMARC) => jsonRes({ subject: 'S', from: { emailAddress: { address: addr } }, internetMessageHeaders: headers });
   const okGate = (addr, headers = PASS_DMARC) => jsonRes({ from: { emailAddress: { address: addr } }, internetMessageHeaders: headers });
 
+  // outlook_list_thread OFF: this block asserts the NARROW binding (trigger message only). Enabling
+  // that tool is what widens READ scope to the thread — covered by its own describe below.
   function ctxJob(jobId, query, agentViewId = 5) {
-    return { ...ctxWithOutlook(), db: { getCronPool: () => ({ query }) }, jobId, agentViewId };
+    return {
+      ...ctxWithOutlook(),
+      isToolEnabled: (n) => n !== 'outlook_list_thread',
+      db: { getCronPool: () => ({ query }) },
+      jobId,
+      agentViewId,
+    };
   }
 
   it('get_message on the job own triggering id is allowed; query is scoped to agent_view + outlook source', async () => {
@@ -700,14 +708,14 @@ describe('tools fail closed when Graph is not configured', () => {
   }
 });
 
-describe('outlook thread read (allow_thread_read) — read scope follows the thread, actions stay bound', () => {
+describe('outlook thread read (tools/outlook_list_thread/is_enabled) — read scope follows the thread, actions stay bound', () => {
   // Context: headless job whose trigger message is TRIG, feature ON. The binding row resolves the
   // trigger message id from reference_id, exactly like the current-job binding tests above.
-  function threadCtx(outlookOverrides = {}) {
+  function threadCtx(ctxOverrides = {}) {
     return {
       log: vi.fn(),
       moduleConfigs: {
-        outlook: { ...cfg, allowed_senders: 'sklep@mycompanystudio.com, *@mycompany.com', allow_thread_read: true, ...outlookOverrides },
+        outlook: { ...cfg, allowed_senders: 'sklep@mycompanystudio.com, *@mycompany.com' },
         core: { email_whitelist: 'sklep@mycompanystudio.com, *@mycompany.com' },
       },
       isToolEnabled: () => true,
@@ -716,8 +724,12 @@ describe('outlook thread read (allow_thread_read) — read scope follows the thr
       jobId: 10,
       agentViewId: 5,
       artifactsDir: '/workspace/artifacts/ws/av/10',
+      ...ctxOverrides,
     };
   }
+
+  // The single gate: the tool switch. OFF = outlook_list_thread not enabled for this scope.
+  const threadOff = { isToolEnabled: (n) => n !== 'outlook_list_thread' };
 
   // Same conversation as TRIG. IN1 (allowed inbound) + OUT1 (trusted Sent-Items outbound) are authorized;
   // INEVIL (sender off allow-list), SPOOF (allow-listed From but DMARC fail) and FORGE (From == agent
@@ -749,13 +761,13 @@ describe('outlook thread read (allow_thread_read) — read scope follows the thr
     });
   }
 
-  it('T1: feature OFF → outlook_list_thread is NOT registered', () => {
+  it('T1: tool disabled → outlook_list_thread is NOT registered', () => {
     const s = makeServer();
-    register(s, threadCtx({ allow_thread_read: false }));
+    register(s, threadCtx(threadOff));
     expect(s.tools.outlook_list_thread).toBeUndefined();
   });
 
-  it('feature ON → outlook_list_thread IS registered', () => {
+  it('tool enabled → outlook_list_thread IS registered', () => {
     const s = makeServer();
     register(s, threadCtx());
     expect(s.tools.outlook_list_thread).toBeDefined();
@@ -882,11 +894,11 @@ describe('outlook thread read (allow_thread_read) — read scope follows the thr
     expect(r2.isError).toBe(true);
   });
 
-  it('with the feature OFF, an earlier thread id is still denied (read scope unchanged)', async () => {
+  it('with the tool disabled, an earlier thread id is still denied (read scope unchanged)', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
     const s = makeServer();
-    register(s, threadCtx({ allow_thread_read: false }));
+    register(s, threadCtx(threadOff));
     const r = await s.tools.outlook_get_message.handler({ message_id: 'IN1' });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toBe('Error: message is not available for this task.');
