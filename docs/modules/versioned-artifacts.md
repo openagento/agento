@@ -203,6 +203,7 @@ agent replaces with a symlink between the check and the write cannot redirect it
 | `versioned_artifacts/limits/max_diff_bytes` | 1 MiB | Diffs past this are truncated, not refused |
 | `versioned_artifacts/limits/max_agent_artifacts` | 50 | Artifacts one agent_view may create. Bounds ownership, **not disk** — the store keeps every version, and `keep_versions` bounds only the previews |
 | `versioned_artifacts/security/allow_symlinks` | `false` | Only `false` is supported; `true` is rejected at construction |
+| `versioned_artifacts/security/basic_auth_default` | `false` | Give newly created artifacts HTTP Basic auth automatically. Off by default; a null is off. Needs `AGENTO_ENCRYPTION_KEY` — see **Basic auth** |
 
 `artifact:init` reads the three import limits from the running toolbox before it
 walks `--source`, so raising one with `config:set` takes effect on the admin path too.
@@ -379,6 +380,33 @@ closed.
 The container is added to the compose file unconditionally — `regenerate_compose` has no
 per-module service mechanism — so a deployment with the module disabled still *runs* the
 container; what the gate guarantees is that it no longer *serves*. See DECISIONS.md.
+
+## Basic auth
+
+An artifact can gate its served pages behind HTTP Basic auth. The password is kept in two
+forms that never meet, because the container that *enforces* auth is the one with no secret:
+
+* the **serving container** reads only a one-way scrypt hash from `published/<code>/.auth`
+  — a sibling of `v/` and `current`, so retention and the `current` swap never touch it, and
+  a dotfile the server refuses to serve. It holds no encryption key and no DB handle, so a
+  hash is the only credential it can be trusted with;
+* the **`versioned_artifact` row** keeps the password AES-encrypted (the same `obscure`
+  mechanism as config), so an operator can read it back or rotate it.
+
+The sidecar is what the server actually enforces, so it is written first; a failed DB
+upsert costs only the recoverable copy, never the protection. A present-but-corrupt `.auth`
+fails **closed** (`401`), never open. `/` stays open so the container healthcheck keeps
+passing — auth covers everything under `/<code>/`.
+
+`security/basic_auth_default` (off by default; a null is off) decides whether a **new**
+artifact is gated automatically. When it is, `versioned_artifact_init` returns the
+credential **once** so the agent can hand it to the user. Enabling it needs
+`AGENTO_ENCRYPTION_KEY`; without it the artifact is still created, just served open.
+
+Setting, rotating, showing or disabling auth is operator-only — the
+[`artifact:auth`](../cli/artifact-auth.md) CLI, with **no tool equivalent**, so a
+self-asserted `agent_view_id` can never change who may read a published tree. Each change
+writes a `versioned_artifact.auth.set` audit row.
 
 ## Deviations from the PRD
 

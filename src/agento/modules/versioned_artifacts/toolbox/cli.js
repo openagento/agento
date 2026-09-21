@@ -11,7 +11,7 @@ import { createService } from './service.js';
 import { toToolError, ERROR_CODES } from './errors.js';
 
 export async function main(argv, payload, deps) {
-  const { loadModuleConfigs, db } = deps;
+  const { loadModuleConfigs, db, crypto = null } = deps;
   const configs = await loadModuleConfigs();
   const config = configs?.versioned_artifacts;
   if (!config) throw new Error('versioned_artifacts: module config unavailable (is the module enabled?)');
@@ -24,7 +24,7 @@ export async function main(argv, payload, deps) {
   // `publish` would be denied on every deployment. It is set HERE and nowhere else; the
   // tool layer never passes it, so an agent's path is unchanged.
   const service = createService({
-    config, db, log, jobId: null, agentViewId: null, actor: argv.actor ?? 'admin', admin: true,
+    config, db, log, jobId: null, agentViewId: null, actor: argv.actor ?? 'admin', admin: true, crypto,
   });
   // ONE error contract: `main` resolves to `{error_code, message}` on a failed
   // operation and never rejects with a ArtifactError or a host stack trace.
@@ -55,6 +55,11 @@ export async function main(argv, payload, deps) {
           payload.artifact_code, payload.version_id, payload.expected_current_version);
       case 'remove':
         return await service.remove(payload.artifact_code);
+      case 'auth':
+        return await service.setAuth(payload.artifact_code, {
+          user: payload.user ?? null, password: payload.password ?? null, disable: !!payload.disable });
+      case 'auth-show':
+        return await service.getAuth(payload.artifact_code);
       default:
         // The same `{error_code, message}` contract as every other failure: an
         // operator's typo must not reach the outer catch and print the generic line.
@@ -87,14 +92,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   // a time. So the child never writes a stack: it writes the same
   // `{error_code, message}` line as the successful path, on stdout, and exits 1.
   try {
-    const [{ loadModuleConfigs }, db] = await Promise.all([
+    const [{ loadModuleConfigs }, db, crypto] = await Promise.all([
       import('/opt/agento-toolbox-src/config-loader.js'),
       import('/opt/agento-toolbox-src/db.js'),
+      import('/opt/agento-toolbox-src/crypto.js'),
     ]);
     const chunks = [];
     for await (const chunk of process.stdin) chunks.push(chunk);
     const payload = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-    const result = await main(parseArgv(process.argv.slice(2)), payload, { loadModuleConfigs, db });
+    const result = await main(parseArgv(process.argv.slice(2)), payload, { loadModuleConfigs, db, crypto });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     // The shell needs a status code, and `main` deliberately does not throw for it.
     process.exit(result?.error_code ? 1 : 0);
