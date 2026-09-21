@@ -156,6 +156,27 @@ it('never writes a stack when the direct executor fails (round 3)', async () => 
   expect(stderr).not.toMatch(/node:internal|at |file:\/\/|\^/);
 });
 
+it('routes --op auth / --op auth-show through the service, and --disable off', async () => {
+  const table = new Map();
+  const pool = {
+    execute: async (sql, params) => {
+      if (/auth_enabled = 1/.test(sql)) table.set(params[0], { auth_enabled: 1, auth_user: params[1], auth_secret_enc: params[2] });
+      else if (/auth_enabled = 0/.test(sql)) table.set(params[0], { auth_enabled: 0, auth_user: null, auth_secret_enc: null });
+    },
+    query: async (sql, params) => (/SELECT auth_enabled/.test(sql) ? [table.get(params[0]) ? [table.get(params[0])] : []] : [[]]),
+  };
+  const crypto = { encrypt: (s) => `enc:${s}`, decrypt: (s) => s.slice(4) };
+  const authDeps = { loadModuleConfigs: async () => ({ versioned_artifacts: CONFIG() }),
+    db: { getCronPool: () => pool }, crypto };
+  await main({ actor: 'admin' }, { artifact_code: 'site', files: FILES }, authDeps);
+  const set = await main({ actor: 'admin', op: 'auth' }, { artifact_code: 'site', user: 'admin', password: 'hunter2' }, authDeps);
+  expect(set).toMatchObject({ auth_enabled: true, auth_user: 'admin', password: 'hunter2' });
+  const show = await main({ actor: 'admin', op: 'auth-show' }, { artifact_code: 'site' }, authDeps);
+  expect(show).toMatchObject({ auth_enabled: true, auth_user: 'admin', password: 'hunter2' });
+  const off = await main({ actor: 'admin', op: 'auth' }, { artifact_code: 'site', disable: true }, authDeps);
+  expect(off).toMatchObject({ auth_enabled: false });
+});
+
 it('routes --op remove to the service and then reports the artifact gone', async () => {
   await main({ actor: 'admin' }, { artifact_code: 'site', files: FILES }, deps());
   const r = await main({ actor: 'admin', op: 'remove' }, { artifact_code: 'site' }, deps());

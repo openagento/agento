@@ -66,6 +66,7 @@ const SUPPORT_FILES = new Set([
   'outlook/credentials.js',
   'outlook/graph-auth.js',
   'versioned_artifacts/audit.js',
+  'versioned_artifacts/auth.js',
   'versioned_artifacts/cli.js',
   'versioned_artifacts/desk-io.js',
   'versioned_artifacts/errors.js',

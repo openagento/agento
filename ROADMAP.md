@@ -58,10 +58,10 @@ Generic versioned file/directory trees: mutable **drafts**, immutable **versions
 **current** pointer, backed by local Git that never surfaces in the public contract. Shipped as the
 core module `versioned_artifacts` (eleven opt-in MCP tools covering the whole lifecycle, with
 `artifact:init` / `artifact:list` / `artifact:publish` as equivalent operator commands and
-`artifact:delete` as an operator-only one), with a
-toolbox-only storage volume, per-`agent_view` artifact allowlist, filesystem locking, crash recovery
-and a `versioned_artifact_audit` trail. A separate `artifacts` container serves the published tree on
-loopback, and disabling the module makes it answer 503. See
+`artifact:delete` as an operator-only one), with a toolbox-only storage volume, per-`agent_view`
+artifact allowlist, filesystem locking, crash recovery and a `versioned_artifact_audit` trail. A
+separate `artifacts` container serves the published tree on loopback, and disabling the module makes
+it answer 503. See
 [docs/modules/versioned-artifacts.md](docs/modules/versioned-artifacts.md). Deferred: garbage
 collection of Git objects (immutable versions and `audit-fallback.log` both grow without bound, though
 materialized previews have a retention policy on by default via `serving/keep_versions`, `10`),
@@ -247,7 +247,7 @@ Two more gaps the same change makes reachable without an operator, neither of th
   unbounded, every save materializes a full copy into the published tree, and
   `serving/keep_versions` now defaults to `10`, which bounds the previews per artifact but not
   the store: immutable versions still accumulate forever. The rest belongs with the GC deferral
-  in Phase 16.
+  in the Versioned artifacts milestone.
 - ~~**No `artifact:delete` exists**, so the creation cap is a one-way ratchet.~~ **Shipped
   2026-09-15** — `artifact:delete` removes both roots and the row under the init lock, CLI only.
   The cap is still a lockout of every other view until an operator runs it.
