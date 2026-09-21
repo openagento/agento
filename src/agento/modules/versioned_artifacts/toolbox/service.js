@@ -6,6 +6,7 @@ import { withLock, sweepStaleLocks } from './locking.js';
 import { createBackend } from './git-backend.js';
 import { recordAudit } from './audit.js';
 import * as published from './published-tree.js';
+import { generatePassword, defaultAuthUser, hashSecret } from './auth.js';
 
 // A resolved value is not typed: resolveModuleFieldStrict returns an ENV string
 // verbatim and a DB override's raw column value; only a config.json default keeps
@@ -54,6 +55,7 @@ const OPS = {
   saveVersion: 'versioned_artifact.version.saved',
   publish: 'versioned_artifact.version.published',
   remove: 'versioned_artifact.artifact.removed',
+  setAuth: 'versioned_artifact.auth.set',
 };
 
 /** How many names to try before giving up. The per-caller creation quota
@@ -76,7 +78,7 @@ const isNameTaken = (err) => err instanceof ArtifactError
   && err.code === ERROR_CODES.ARTIFACT_ALREADY_EXISTS;
 
 export function createService({ config = {}, db = null, log = null, jobId = null, agentViewId = null,
-  actor = null, backend = null, admin = false } = {}) {
+  actor = null, backend = null, admin = false, crypto = null } = {}) {
   const storageRoot = asStorageRoot(config.storage_root);
   const publishedRoot = asStorageRoot(config.published_root, 'published_root');
   const keepVersions = asNonNegInt(config['serving/keep_versions'], 'serving/keep_versions');
@@ -92,6 +94,9 @@ export function createService({ config = {}, db = null, log = null, jobId = null
   if (allowSymlinks) {
     throw new Error('versioned_artifacts: security/allow_symlinks=true is not supported in this release');
   }
+  // Whether a NEW artifact gets Basic auth without anyone asking. Default off, and a null
+  // stays off — an artifact with no auth row is served open until an operator sets one.
+  const basicAuthDefault = asBool(config['security/basic_auth_default'] ?? false, 'security/basic_auth_default');
   const allowedArtifacts = String(config.allowed_artifacts ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   const be = backend || createBackend();
 
@@ -160,6 +165,76 @@ export function createService({ config = {}, db = null, log = null, jobId = null
   // lifecycle lock is per-name and cannot: two inits of DIFFERENT names would both read
   // the same count and both slip past the cap.
   const ownerLock = () => path.join(storageRoot, '.locks', `owner-${ownView ?? 'anon'}.lock`);
+
+  // Basic auth stores the password TWICE, in two forms that never meet: the serving
+  // container gets a one-way scrypt hash in the `.auth` sidecar (it holds no key and no
+  // DB handle, so a reversible secret must never reach it), and the DB keeps the
+  // reversibly-encrypted copy so an operator can read the password back. `crypto` is the
+  // framework's AES helper, INJECTED the same way the CLI injects its DB handle —
+  // `/opt/agento-toolbox-src/` exists only in the container, so a static import would
+  // make this module untestable.
+  const requireCrypto = () => {
+    if (typeof crypto?.encrypt !== 'function' || typeof crypto?.decrypt !== 'function') {
+      throw new ArtifactError(ERROR_CODES.AUTH_UNAVAILABLE, 'artifact authentication is not configured');
+    }
+    return crypto;
+  };
+  // `encrypt` throws when AGENTO_ENCRYPTION_KEY is absent — a misconfiguration, so it is
+  // remapped to a plain AUTH_UNAVAILABLE rather than surfacing as a damaged store.
+  const encryptSecret = (plaintext) => {
+    try { return requireCrypto().encrypt(plaintext); }
+    catch (err) {
+      if (err instanceof ArtifactError) throw err;
+      throw new ArtifactError(ERROR_CODES.AUTH_UNAVAILABLE, 'the encryption key is not configured', { cause: err });
+    }
+  };
+  const decryptSecret = (enc) => {
+    try { return requireCrypto().decrypt(enc); }
+    catch (err) {
+      if (err instanceof ArtifactError) throw err;
+      throw new ArtifactError(ERROR_CODES.AUTH_UNAVAILABLE, 'the stored credential could not be read', { cause: err });
+    }
+  };
+
+  // Both write the sidecar FIRST, because it is what the server actually enforces: a
+  // failure there must abort (encrypt/write throw), never leave a credential in the DB
+  // that nothing checks. The DB row only DECORATES — a failed upsert costs the
+  // recoverable copy, never the enforcement — the same degradation `init`'s INSERT has.
+  // The CALLER holds the lifecycle lock.
+  const applyAuth = async (artifactCode, { user, password }) => {
+    const enc = encryptSecret(password);
+    await published.writeAuthSidecar(publishedRoot, artifactCode, { user, ...hashSecret(password) });
+    const db2 = pool();
+    if (db2) {
+      try {
+        await db2.execute(
+          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc)
+           VALUES (?, 1, ?, ?)
+           ON DUPLICATE KEY UPDATE auth_enabled = 1, auth_user = VALUES(auth_user), auth_secret_enc = VALUES(auth_secret_enc)`,
+          [artifactCode, user, enc]);
+      } catch (err) {
+        log?.('versioned_artifacts', 'ERROR',
+          `auth credential not recorded for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
+      }
+    }
+  };
+  const clearAuth = async (artifactCode) => {
+    const removed = await published.removeAuthSidecar(publishedRoot, artifactCode);
+    const db2 = pool();
+    if (db2) {
+      try {
+        await db2.execute(
+          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc)
+           VALUES (?, 0, NULL, NULL)
+           ON DUPLICATE KEY UPDATE auth_enabled = 0, auth_user = NULL, auth_secret_enc = NULL`,
+          [artifactCode]);
+      } catch (err) {
+        log?.('versioned_artifacts', 'ERROR',
+          `auth state not cleared for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
+      }
+    }
+    return removed;
+  };
 
   function build(currentActor) {
     const audit = (operation, row) => recordAudit(pool(), log, storageRoot, {
@@ -336,7 +411,25 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             log?.('versioned_artifacts', 'ERROR',
               `preview unavailable for '${finalCode}' ${created.current_version}: ${errorFacts(err) ?? 'unknown'}`);
           }
-          return { ...created, preview_url: published.previewUrl(publicBaseUrl, finalCode) };
+          // Auto Basic auth, when the module opts new artifacts in. The credential is
+          // returned ONCE so the agent can hand it to the user. It is NEVER fatal — the
+          // artifact exists either way — and the credential is returned ONLY when the
+          // protection is actually in place, so the agent never announces a password for
+          // a tree that is still served open.
+          let basicAuth = null;
+          if (basicAuthDefault) {
+            const user = defaultAuthUser(finalCode);
+            const password = generatePassword();
+            try {
+              await withLock(lifecycleLock(finalCode), () => applyAuth(finalCode, { user, password }));
+              basicAuth = { user, password };
+            } catch (err) {
+              log?.('versioned_artifacts', 'ERROR',
+                `basic auth not enabled for '${finalCode}': ${errorFacts(err) ?? 'unknown'}`);
+            }
+          }
+          return { ...created, preview_url: published.previewUrl(publicBaseUrl, finalCode),
+            ...(basicAuth ? { basic_auth: basicAuth } : {}) };
           // The audit row records what was CREATED. On the error path `describe` is not
           // called and the row keeps the requested name, which is the right record of a
           // creation that never happened.
@@ -387,6 +480,53 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         });
       },
 
+      /** Set, rotate or disable an artifact's Basic auth. Operator-facing (the
+       *  `artifact:auth` CLI); there is no tool equivalent, so a self-asserted
+       *  `agent_view_id` cannot change who may read a published tree.
+       *
+       *  An empty user or password is FILLED, not rejected: the user defaults to the
+       *  artifact code and the password to a fresh strong one — the "leave both empty"
+       *  contract. The resulting password is returned once so the operator can pass it on. */
+      async setAuth(artifactCode, { user = null, password = null, disable = false } = {}) {
+        validateArtifactCode(artifactCode);
+        return audited(OPS.setAuth, { artifactCode }, async () => {
+          await assertArtifactAllowed(artifactCode);
+          await be.getCurrent(storageRoot, artifactCode);   // the artifact must exist
+          return withLock(lifecycleLock(artifactCode), async () => {
+            if (disable) {
+              await clearAuth(artifactCode);
+              return { artifact_code: artifactCode, auth_enabled: false };
+            }
+            const finalUser = (user && String(user).trim()) || defaultAuthUser(artifactCode);
+            const finalPass = (password && String(password)) || generatePassword();
+            await applyAuth(artifactCode, { user: finalUser, password: finalPass });
+            return { artifact_code: artifactCode, auth_enabled: true, auth_user: finalUser, password: finalPass };
+          });
+        }, (r) => ({ description: r.auth_enabled ? 'enabled' : 'disabled' }));
+      },
+
+      /** Read back the credential an operator set, decrypting the stored copy. A read, so
+       *  no audit row. `auth_enabled: false` and a null password mean the tree is open. */
+      async getAuth(artifactCode) {
+        validateArtifactCode(artifactCode);
+        await assertArtifactAllowed(artifactCode);
+        await be.getCurrent(storageRoot, artifactCode);
+        const db2 = pool();
+        if (!db2) throw new ArtifactError(ERROR_CODES.AUTH_UNAVAILABLE, 'the credential store is unavailable');
+        let row;
+        try {
+          const [rows] = await db2.query(
+            'SELECT auth_enabled, auth_user, auth_secret_enc FROM versioned_artifact WHERE artifact_code = ?',
+            [artifactCode]);
+          row = rows?.[0];
+        } catch (err) {
+          throw new ArtifactError(ERROR_CODES.AUTH_UNAVAILABLE, 'the credential store could not be read', { cause: err });
+        }
+        if (!row || !row.auth_enabled) return { artifact_code: artifactCode, auth_enabled: false };
+        return { artifact_code: artifactCode, auth_enabled: true, auth_user: row.auth_user,
+          password: row.auth_secret_enc ? decryptSecret(row.auth_secret_enc) : null };
+      },
+
       // ------------------------------------------------------------- reads
       async getCurrent(artifactCode) {
         await assertArtifactAllowed(artifactCode);
@@ -426,7 +566,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         if (db2) {
           try {
             const [rows] = await db2.query(
-              'SELECT artifact_code, title, owner, created_at FROM versioned_artifact');
+              'SELECT artifact_code, title, owner, created_at, auth_enabled, auth_user FROM versioned_artifact');
             meta = new Map(rows.map((r) => [r.artifact_code, r]));
           } catch (err) {
             log?.('versioned_artifacts', 'ERROR', `artifact metadata unreadable: ${errorFacts(err) ?? 'unknown'}`);
@@ -441,6 +581,8 @@ export function createService({ config = {}, db = null, log = null, jobId = null
               title: row?.title ?? null,
               owner: row?.owner ?? null,
               created_at: row?.created_at ?? null,
+              auth_enabled: !!row?.auth_enabled,
+              auth_user: row?.auth_user ?? null,
               ...(await be.getCurrent(storageRoot, artifact_code)),
               preview_url: published.previewUrl(publicBaseUrl, artifact_code),
               open_drafts: await be.listOpenDrafts(storageRoot, artifact_code),

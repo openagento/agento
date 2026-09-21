@@ -46,7 +46,7 @@ _MAYBE_INTERACTIVE_COMMANDS = frozenset({
 # command added to _LOCAL_COMMANDS would skip module registration entirely and
 # argparse would report it as unknown.
 _LOCAL_MODULE_COMMANDS = frozenset({
-    "artifact:init", "artifact:list", "artifact:publish", "artifact:delete",
+    "artifact:init", "artifact:list", "artifact:publish", "artifact:delete", "artifact:auth",
 })
 
 
