@@ -10,5 +10,6 @@
   "limits/max_files": {"type": "integer", "label": "Max files per artifact"},
   "limits/max_diff_bytes": {"type": "integer", "label": "Max diff bytes returned to the agent"},
   "limits/max_agent_artifacts": {"type": "integer", "label": "Max artifacts one agent_view may create (the administrative CLI is exempt)"},
-  "security/allow_symlinks": {"type": "boolean", "label": "Allow symbolic links (only false is supported)"}
+  "security/allow_symlinks": {"type": "boolean", "label": "Allow symbolic links (only false is supported)"},
+  "security/basic_auth_default": {"type": "boolean", "label": "Give newly created artifacts HTTP Basic auth automatically (off by default; manage per artifact with artifact:auth)"}
 }

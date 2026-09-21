@@ -15,6 +15,10 @@
     {
       "name": "artifact:publish",
       "class": "src.commands.publish.VersionedArtifactPublishCommand"
+    },
+    {
+      "name": "artifact:auth",
+      "class": "src.commands.auth.VersionedArtifactAuthCommand"
     }
   ]
 }
