@@ -6,6 +6,7 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { ARTIFACT_CODE_RE, VERSION_ID_RE } from '../toolbox/paths.js';
 import { boundedLine } from '../toolbox/errors.js';
+import { verifyCredential } from '../toolbox/auth.js';
 
 // Under `server/`, NOT `toolbox/`: `src/agento/toolbox/config-loader.js` imports every
 // `.js` in a module's `toolbox/` into the secrets container. This process holds no
@@ -48,11 +49,20 @@ const text = (res, code, body) => {
   res.end(body ?? `${code}\n`);
 };
 
+// A sidecar that is present but not a valid scrypt record: `verifyCredential` rejects
+// every credential against it, so a corrupt `.auth` fails CLOSED (401) rather than
+// serving the tree open. Distinct object so a fresh parse is never mistaken for it.
+const INVALID_AUTH = Object.freeze({ algo: 'invalid' });
+
 export function createArtifactsServer({ root, etcDir, fs = fsp, openRead = createReadStream } = {}) {
   let realRoot = null;
   // Re-read per request, stat-cached on mtime+size, so `mo:di` takes effect without a
   // restart: this container has no DB and no env_file and must keep it that way.
   let gate = { key: null, disabled: false };
+  // Per-artifact Basic-auth sidecars, cached on mtime+size exactly like the gate — the
+  // toolbox writes `published/<code>/.auth` and a `config:set` takes effect without a
+  // restart. `null` cached means "checked, no auth".
+  const authCache = new Map();
 
   async function disabled() {
     const file = path.join(etcDir, 'modules.json');
@@ -68,6 +78,46 @@ export function createArtifactsServer({ root, etcDir, fs = fsp, openRead = creat
       gate = { key, disabled: off };
     }
     return gate.disabled;
+  }
+
+  /** The auth sidecar for one artifact, or `null` when the tree is open. A present but
+   *  unreadable/unparseable file returns `INVALID_AUTH`, which denies every credential —
+   *  "auth is configured" must never degrade into "served open". */
+  async function authFor(code) {
+    const file = path.join(root, code, '.auth');
+    let st;
+    try { st = await fs.stat(file); }
+    catch (err) { if (isMissing(err)) { authCache.delete(code); return null; } throw err; }
+    const key = `${st.mtimeMs}:${st.size}`;
+    const hit = authCache.get(code);
+    if (hit && hit.key === key) return hit.sidecar;
+    let sidecar;
+    try { sidecar = JSON.parse(await fs.readFile(file, 'utf8')); }
+    catch { sidecar = INVALID_AUTH; }
+    authCache.set(code, { key, sidecar });
+    return sidecar;
+  }
+
+  // `user:password` from a Basic header, or null. The password may itself contain a
+  // colon, so only the FIRST one splits.
+  function basicCredential(req) {
+    const header = req.headers.authorization;
+    if (typeof header !== 'string' || !/^basic /i.test(header)) return null;
+    let decoded;
+    try { decoded = Buffer.from(header.slice(6).trim(), 'base64').toString('utf8'); }
+    catch { return null; }
+    const i = decoded.indexOf(':');
+    if (i < 0) return null;
+    return { user: decoded.slice(0, i), password: decoded.slice(i + 1) };
+  }
+
+  function challenge(res, headOnly) {
+    res.writeHead(401, {
+      // A fixed realm — no artifact code, so no attacker-chosen text in a header.
+      'www-authenticate': 'Basic realm="artifacts", charset="UTF-8"',
+      'content-type': 'text/plain; charset=utf-8',
+    });
+    res.end(headOnly ? undefined : 'authentication required\n');
   }
 
   async function contained(p) {
@@ -148,8 +198,16 @@ export function createArtifactsServer({ root, etcDir, fs = fsp, openRead = creat
     const segs = pathname.split('/').filter(Boolean);
     // Kills dotfiles and `..` in one predicate, before any of it reaches the filesystem.
     if (segs.some((s) => s.startsWith('.'))) return text(res, 404);
+    // `/` stays open: the container healthcheck probes it and it only lists codes, never
+    // content. Auth is per artifact and covers everything under `/<code>/`.
     if (segs.length === 0) return index(res, headOnly);
     if (!ARTIFACT_CODE_RE.test(segs[0])) return text(res, 404);
+
+    const sidecar = await authFor(segs[0]);
+    if (sidecar) {
+      const cred = basicCredential(req);
+      if (!cred || !verifyCredential(sidecar, cred.user, cred.password)) return challenge(res, headOnly);
+    }
 
     // Built from the RAW url so the redirect target stays encoded exactly as it came in.
     const ctx = {
