@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { mkdir, readdir, readlink, rename, rm, stat, symlink } from 'node:fs/promises';
+import { mkdir, readdir, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { VERSION_ID_RE, validateArtifactCode, validateVersionId } from './paths.js';
 
@@ -101,3 +101,28 @@ export async function previewPath(publishedRoot, code, versionId) {
  *  is worse than no URL, so the version listing stays relative. */
 export const previewUrl = (baseUrl, code) =>
   `${String(baseUrl).replace(/\/+$/, '')}/${validateArtifactCode(code)}/`;
+
+/** The Basic-auth sidecar the serving container reads: a sibling of `v/` and `current`,
+ *  so retention (which prunes under `v/`) and the `current` swap never touch it, and a
+ *  dotfile the server refuses to serve. `removeArtifact` takes it with the rest of the
+ *  tree. It holds only the scrypt hash — see `auth.js`. */
+export const authSidecarPath = (publishedRoot, code) =>
+  path.join(artifactDir(publishedRoot, code), '.auth');
+
+/** Atomic write, so the server never reads a half-written sidecar and mistakes it for a
+ *  corrupt one (which it fails closed on). */
+export async function writeAuthSidecar(publishedRoot, code, sidecar) {
+  const file = authSidecarPath(publishedRoot, code);
+  await mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${randomBytes(6).toString('hex')}`;
+  await writeFile(tmp, JSON.stringify(sidecar));
+  try { await rename(tmp, file); }
+  catch (err) { await rm(tmp, { force: true }); throw err; }
+}
+
+/** Turns auth OFF by removing the file the server gates on. Reports whether it was there
+ *  so a caller can tell a real removal from a no-op. */
+export async function removeAuthSidecar(publishedRoot, code) {
+  try { await rm(authSidecarPath(publishedRoot, code)); return true; }
+  catch (err) { if (isMissing(err)) return false; throw err; }
+}
