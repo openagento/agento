@@ -18,6 +18,10 @@ export const ERROR_CODES = Object.freeze({
   // means the session has no workspace at all and the agent can do nothing, while
   // DESK_MISSING means "materialize it first" and the agent can recover alone.
   WORKSPACE_UNAVAILABLE: 'WORKSPACE_UNAVAILABLE', DESK_MISSING: 'DESK_MISSING',
+  // Basic auth was asked for but the encryption key that stores the credential
+  // reversibly is not configured — a misconfiguration, not a store failure, so it is
+  // reported plainly rather than logged as a damaged store.
+  AUTH_UNAVAILABLE: 'AUTH_UNAVAILABLE',
 });
 
 export class ArtifactError extends Error {
