@@ -36,11 +36,17 @@ export async function register(server, context) {
   // server.tool(...), and a construction failure registers nothing: a bad
   // storage_root or limit surfaces at boot, in the operator's log, with no tool
   // exposed — never as ten identical runtime errors seen only by the model.
+  // The framework's AES helper, resolved the SAME container-only way `cli.js` resolves
+  // its DB handle: `/opt/agento-toolbox-src/` exists only inside the toolbox, so a static
+  // import would break the Vitest suite. A test may inject `context.crypto` instead; when
+  // neither resolves, `crypto` is null and only the auth features refuse (AUTH_UNAVAILABLE).
+  const crypto = context.crypto ?? await import('/opt/agento-toolbox-src/crypto.js').catch(() => null);
+
   let service;
   try {
     service = createService({
       config: moduleConfigs?.versioned_artifacts ?? {},
-      db, log, jobId, agentViewId,
+      db, log, jobId, agentViewId, crypto,
     });
   } catch (err) {
     log?.('versioned_artifacts', 'ERROR', `configuration rejected: ${errorFacts(err) ?? 'unknown'}`);
@@ -101,8 +107,10 @@ export async function register(server, context) {
         // No `files` and no path: the agent's content reaches version 1 through its
         // desk, which is the boundary every other write tool already goes through.
         const r = await service.init(args.artifact_code, { title: args.title ?? null });
+        // `basic_auth` is present only when the module auto-enabled it, and only then does
+        // the plaintext password travel — once — for the agent to pass to the user.
         return { artifact_code: r.artifact_code, current_version: r.current_version,
-          preview_url: r.preview_url };
+          preview_url: r.preview_url, ...(r.basic_auth ? { basic_auth: r.basic_auth } : {}) };
       }));
   }
 
