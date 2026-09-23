@@ -119,7 +119,6 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 | `setup_upgrade_after` | `SetupCompleteEvent` | `result, dry_run` | After `setup:upgrade` finishes all work |
 | `migration_apply_after` | `MigrationAppliedEvent` | `version, module, path` | After a SQL migration is applied |
 | `data_patch_apply_after` | `DataPatchAppliedEvent` | `name, module` | After a data patch is applied |
-| `crontab_install_after` | `CrontabInstalledEvent` | `job_count` | After crontab is updated (not on dry-run) |
 
 ### Worker Pool Lifecycle (Phase 9.5)
 
@@ -208,8 +207,6 @@ No event contract changed — that is the point of the reclassification.
 ### Config & Setup Lifecycle
 
 `config_save_after` fires only from CLI `config:set`, not from internal bootstrap config resolution.
-
-`crontab_install_after` fires only when the crontab actually changed and not during dry-run.
 
 ## Event Data Mutability
 

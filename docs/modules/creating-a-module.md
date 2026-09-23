@@ -369,7 +369,7 @@ cat > modules/my-crm/cron.json << 'EOF'
 EOF
 ```
 
-The `command` references a CLI subcommand contributed via `di.json`. Installed by `setup:upgrade` into the system crontab.
+The `command` references a CLI subcommand contributed via `di.json`. Rendered into the root crontab by `/opt/cron-agent/install-crontab.py` (every minute) and dispatched through `cron:run <module> <command>`.
 
 ## 16. Declare Onboarding (Optional)
 
@@ -409,7 +409,7 @@ class CrmOnboarding:
         print(f"  Saved workspace ID: {workspace_id}")
 ```
 
-Onboarding runs as step 5 of `setup:upgrade` — after migrations, data patches, and cron. It's skipped when already complete, in `--dry-run`, or with `--skip-onboarding` (for CI/CD). The user is prompted before each module's onboarding runs.
+Onboarding runs as the last step of `setup:upgrade` — after migrations and data patches. It's skipped when already complete, in `--dry-run`, or with `--skip-onboarding` (for CI/CD). The user is prompted before each module's onboarding runs.
 
 See [di.json onboarding](module-json.md#onboarding) for the full protocol reference.
 

@@ -15,7 +15,7 @@
 | `logs [service]` | Show container logs |
 | `run <agent_view_code> [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one ([details](run.md)) |
 | **Setup** | |
-| `setup:upgrade [--dry-run] [--skip-onboarding]` | Apply migrations, data patches, install crontab, run onboarding ([onboarding details](onboarding.md)) |
+| `setup:upgrade [--dry-run] [--skip-onboarding]` | Apply migrations, data patches, run onboarding ([onboarding details](onboarding.md)) |
 | **Modules** | |
 | `module:add <name>` | Add a module ([details](modules.md)) |
 | `module:list` | List installed modules |

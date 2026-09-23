@@ -1,12 +1,11 @@
 """Make a framework process unreadable through ``/proc`` to a same-uid peer.
 
-Every framework process started in the cron container gets the credential-store
-environment (``MYSQL_*``, ``AGENTO_ENCRYPTION_KEY``, ``CONFIG__*``) because the
-crontab and the consumer are launched by ``su - agent -c "source
-/opt/cron-agent/env; …"``. That environment reaches the Python process as its
-exec-time environ, so ``/proc/<pid>/environ`` carries the passphrase — and the
-decrypted credentials themselves live in that process's heap, reachable through
-``/proc/<pid>/mem``.
+A framework process in the cron container resolves credentials, so the decrypted
+values live in its heap, reachable through ``/proc/<pid>/mem`` by a same-uid peer.
+(The credential store itself no longer travels in the environment, and no longer
+crosses an ``execve``: ``docker/cron/drop.py`` reads it as root, drops privilege,
+calls this, and only then loads it — see ``framework/store_env.py`` and
+docs/architecture/cron-privileges.md.)
 
 An agent runs as the SAME uid, and a same-uid ptrace-mode read needs only that
 the target is *dumpable*. ``PR_SET_DUMPABLE=0`` withdraws that: the kernel
@@ -19,18 +18,20 @@ What this does and does not do:
 * **Closes** the heap channel — a peer can no longer read a decrypted SSH key or
   provider credential out of a framework process's memory (DECISIONS.md D-SSH-1
   residual channel (4)).
-* **Removes one route** to the credential store: ``/proc/<pid>/environ``.
-* **Does NOT** reduce the store capability itself. ``/opt/cron-agent/env`` is
-  mode 0644 and any agent-uid process can still source it and decrypt every
-  stored credential. That is D-SSH-1 residual channel (6), owner-accepted
-  2026-08-25 until AG-42 (Option B) — closing it needs the env file to go away,
-  which needs a launcher that keeps the secrets out of an agent-readable place.
+* **Closes** ``/proc/<pid>/fd`` and ptrace-mode access to a same-uid peer. In the
+  store-bearing path ``drop.py`` calls this *between* the privilege drop and the
+  load, so the payload is never held by a dumpable process.
+* Does NOT create a boundary between agent_views — one uid, one ``/workspace``.
+  The store capability is withheld by the file's ownership and the launcher
+  (D-SSH-1 residual channel (6), closed 2026-09-23), not by this call.
 
 This is process hardening, not a boundary between agent_views.
 
-Stated limits: ``execve`` resets dumpable to 1, so there is a short window
-between exec and this call; and a parent shell that exported the variables still
-holds them in its own heap (its exec-time environ does not carry them).
+Stated limits: ``execve`` resets dumpable to 1, so a process that execs and then
+calls this has a short window — which is exactly why the store is loaded after the
+drop and never handed across an exec; and a parent shell that exported the
+variables still holds them in its own heap (its exec-time environ does not carry
+them).
 Side effects: no core dumps for framework processes, and the process cannot read
 its own ``/proc/self/fd``, so CPython's descriptor closing falls back from the
 ``/proc`` scan to ``close_range``/a brute-force loop.

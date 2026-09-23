@@ -13,19 +13,16 @@ agent_view's SSH private key — by running ``bin/agento`` or by connecting to t
 database directly. Removing these names from the spawn environment removes that
 capability from the process the model drives.
 
-It is a reduction, not a boundary. Every agent_view runs as one uid (``agent``)
-in one container, so a same-uid process can still read the cron env file
-(``/opt/cron-agent/env``, mode 0644) and decrypt every stored credential from it.
-``/proc/<consumer-pid>/environ`` is no longer a second route —
-:mod:`agento.framework.process_hardening` makes framework processes non-dumpable —
-but that changes nothing about the capability the file grants.
+This module also names the boundary itself: the cron container's entrypoint
+partitions its environment by exactly this predicate. The store shapes go to
+``/opt/cron-agent/env`` (``root:root 0600``), which reaches a framework process
+only through ``docker/cron/drop.py``, which reads it as root and drops privilege before
+loading it (never across an ``execve``); everything else goes to
+``/opt/cron-agent/env.public``, which the launcher imports into the environment.
+Nothing readable at uid ``agent`` grants the store. See
+``docs/architecture/cron-privileges.md``.
 
-Status: DECISIONS.md D-SSH-1 residual channel (6), **accepted by the owner
-2026-08-25 until AG-42 delivers Option B** (a per-view uid, which closes this
-along with the peer-artifact reads). The env file cannot be removed on its own:
-the crontab and the consumer are started by ``su - agent -c "source
-/opt/cron-agent/env; …"``, so the secrets need a root-owned launcher first. See
-``docs/architecture/option-b-per-view-uid.md``.
+Status: DECISIONS.md D-SSH-1 residual channel (6) — **closed 2026-09-23**.
 """
 from __future__ import annotations
 
@@ -40,15 +37,18 @@ CREDENTIAL_STORE_ENV_VARS = frozenset({
 CREDENTIAL_STORE_ENV_PREFIXES = ("MYSQL_", "CONFIG__")
 
 
+def is_credential_store_name(name: str) -> bool:
+    """True if this environment name grants access to the credential store."""
+    return (
+        name in CREDENTIAL_STORE_ENV_VARS
+        or name.startswith(CREDENTIAL_STORE_ENV_PREFIXES)
+    )
+
+
 def without_credential_store_env(env: dict[str, str]) -> dict[str, str]:
     """``env`` minus every name that grants access to the credential store.
 
     The run's OWN credential (the provider API key a harness needs) is not part
     of this: it is merged in afterwards by the runner, deliberately and per run.
     """
-    return {
-        k: v
-        for k, v in env.items()
-        if k not in CREDENTIAL_STORE_ENV_VARS
-        and not k.startswith(CREDENTIAL_STORE_ENV_PREFIXES)
-    }
+    return {k: v for k, v in env.items() if not is_credential_store_name(k)}
