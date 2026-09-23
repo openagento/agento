@@ -492,7 +492,7 @@ No credential from the toolbox store, no direct DB access, no awareness of other
 exception is the per-run git SSH identity, delivered as a signing socket rather than a key file
 (see [DECISIONS.md](../../DECISIONS.md) D-SSH-1).
 
-**Known gap, not closed by this release:** a *scheduled* agent runs as the cron container's own uid, which can read the credential store's environment (the mode-0644 env file the crontab sources) and therefore decrypt any stored credential. Recorded as [D-SSH-1](../../DECISIONS.md) residual channel (6) and **accepted by the owner 2026-08-25 until AG-42 (Option B, per-view uid)** closes it. Framework processes are non-dumpable since 2026-08-25, so `/proc/<pid>/environ` is no longer a route — but the 0644 env file is, so the capability is unchanged.
+**Closed in this release:** the credential store no longer reaches uid `agent` at all. The cron container's store file is `root:root 0600` and is read by a root-owned program that drops privilege in-process before loading it, so it crosses no `execve`; the managed crontab is rendered by root from inputs the agent cannot write. [D-SSH-1](../../DECISIONS.md) residual channel (6), **closed 2026-09-23** — see [cron-privileges.md](cron-privileges.md).
 
 ---
 

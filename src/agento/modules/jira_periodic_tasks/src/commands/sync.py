@@ -1,11 +1,10 @@
-"""CLI command: jira:periodic:sync — Jira recurring tasks to crontab."""
+"""CLI command: jira:periodic:sync — Jira recurring tasks into the ``schedule`` table."""
 from __future__ import annotations
 
 import argparse
 
 from agento.modules.jira.src.toolbox_client import ToolboxClient
-from agento.modules.jira_periodic_tasks.src.crontab import CronEntry, CrontabManager
-from agento.modules.jira_periodic_tasks.src.sync import JiraCronSync
+from agento.modules.jira_periodic_tasks.src.sync import CronEntry, JiraCronSync
 
 
 class SyncCommand:
@@ -19,7 +18,7 @@ class SyncCommand:
 
     @property
     def help(self) -> str:
-        return "Sync Jira recurring tasks to crontab"
+        return "Sync Jira recurring tasks into the schedule table"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--dry-run", action="store_true")
@@ -36,7 +35,6 @@ class SyncCommand:
 
         db_config, _, _ = _load_framework_config()
         logger = get_logger("sync-jira-cron", "/app/logs/sync-jira-cron.log", stderr=False)
-        crontab = CrontabManager()
 
         conn = get_connection(db_config)
         try:
@@ -55,7 +53,7 @@ class SyncCommand:
                         syncer = JiraCronSync(
                             jira_config, periodic_config,
                             ToolboxClient(jira_config.toolbox_url),
-                            crontab, logger, db_config=db_config,
+                            logger, db_config=db_config,
                         )
                         all_entries = syncer.sync_view(dry_run=args.dry_run)
                     else:
@@ -77,7 +75,7 @@ class SyncCommand:
                                 syncer = JiraCronSync(
                                     jira_config, periodic_config,
                                     ToolboxClient(jira_config.toolbox_url),
-                                    crontab, logger, db_config=db_config,
+                                    logger, db_config=db_config,
                                     agent_view_id=av.id, agent_view_code=av.code,
                                 )
                                 all_entries.extend(syncer.sync_view(dry_run=args.dry_run))
@@ -87,10 +85,9 @@ class SyncCommand:
                                 )
                                 continue
 
-                    changed = crontab.apply_managed(all_entries, dry_run=args.dry_run)
                     logger.info(
-                        "Crontab %s (%d total entries across %d view(s))",
-                        "updated" if changed else "unchanged",
+                        "Schedules synced (%d total entries across %d view(s)); "
+                        "the root crontab renderer picks them up within a minute",
                         len(all_entries),
                         max(len(agent_views), 1),
                     )

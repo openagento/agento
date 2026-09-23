@@ -21,7 +21,7 @@ agento upgrade
 agento upgrade --version 0.3.1
 ```
 
-This updates `AGENTO_VERSION` in `docker/.env`, runs `docker compose pull`, and restarts containers. The `setup:upgrade` command runs automatically in the cron container entrypoint, applying any pending schema migrations, data patches, and cron job updates.
+This updates `AGENTO_VERSION` in `docker/.env`, runs `docker compose pull`, and restarts containers. The `setup:upgrade` command runs automatically in the cron container entrypoint, applying any pending schema migrations and data patches. Cron jobs are not its business: the container's root-owned renderer rebuilds the crontab every minute from the installed modules and the `schedule` table (see [cron-privileges.md](../architecture/cron-privileges.md)).
 
 ## Using `agento install` (reinstall)
 
