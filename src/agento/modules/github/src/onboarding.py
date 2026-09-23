@@ -155,12 +155,12 @@ class GitHubOnboarding:
         # Effective resolution is ENV -> DB -> config.json. Only github_owner can still be satisfied by
         # ENV here (the other three are refused outright above), and it is global, so model it as a
         # DEFAULT-scope row — which correctly does NOT satisfy the per-view-scope requirement.
-        import os
 
+        from agento.framework import store_env
         from agento.framework.config_resolver import path_to_env_key
 
         for path in _REQUIRED_PATHS:
-            env_val = os.environ.get(path_to_env_key(path))
+            env_val = store_env.get(path_to_env_key(path))
             if env_val:
                 rows.append({"scope": Scope.DEFAULT, "scope_id": 0, "path": path, "value": env_val})
         return _evaluate_completeness(views, rows)
