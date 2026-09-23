@@ -187,6 +187,12 @@ docker compose restart
   DB-backed capability and not a shared HMAC secret, and why network segmentation alone was rejected)
   is in [DECISIONS.md](DECISIONS.md).
 
+### Deprecation removals due in v0.17 or later
+
+| Shim | Where | Remove when |
+|---|---|---|
+| `workspace:ssh-purge` command (+ its `wo:sp` shortcut) | `workspace_build/src/commands/ssh_purge.py`, `workspace_build/di.json` | every deployment has upgraded past the release that stopped writing `ssh_private_key` to disk and has run the sweep once. Nothing on this code writes a key file, so the command then has nothing to find. Delete the command, its `di.json` entry, its tests, and the doc sections in `docs/cli/workspace-build.md` / `docs/cli/README.md` / `docs/config/identity.md`; keep `find_private_keys` only if `workspace:build`'s own legacy pruning still uses it |
+
 ### Deprecation removals due next release (v0.16)
 
 Introduced by the harness/provider split (see

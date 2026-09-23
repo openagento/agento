@@ -660,6 +660,12 @@ class Consumer:
             finally:
                 conn.close()
 
+            # The four SSH identity values are read ONCE per run: the public files and
+            # the private key must come from the same config snapshot (a rotation between
+            # two reads would pair the old id_rsa.pub with the new key).
+            from .ssh_identity import resolve_ssh_identity, ssh_run_env
+            ssh_identity = resolve_ssh_identity(agent_config_svc)
+
             # The redaction barrier starts HERE, at the mint — not at the run. Everything
             # between the mint and the run handles the raw token (materialization writes it
             # into the harness MCP config), so a failure in that window raises an exception
@@ -680,6 +686,7 @@ class Consumer:
                     # build-time value and a legitimate override could be rejected by its
                     # own model guard.
                     effective_model=model_override,
+                    ssh_identity=ssh_identity,
                 )
             except Exception as exc:
                 redact_exception(exc, capability_token, rest_capability_token)
@@ -711,6 +718,14 @@ class Consumer:
                 if agent_config_svc is not None else {}
             )
 
+            # SSH identity -> env, never a file. The TTL is the job timeout the context
+            # below already carries, so the loaded identity expires WITH the job instead
+            # of outliving it by the wrapper's 12-hour fallback.
+            ssh_env = ssh_run_env(
+                ssh_identity, home_dir,
+                ttl_seconds=self._consumer_config.job_timeout_seconds,
+            )
+
             success = True
             try:
                 ctx = HarnessRunContext(
@@ -722,7 +737,7 @@ class Consumer:
                     timeout_seconds=self._consumer_config.job_timeout_seconds,
                     credential_required=provider_desc.credential_required,
                     credential=credential,
-                    extra_env=git_env or {},
+                    extra_env={**git_env, **ssh_env},
                     harness_config=(
                         get_harness_config(agent_config_svc, harness_entry)
                         if agent_config_svc is not None else {}

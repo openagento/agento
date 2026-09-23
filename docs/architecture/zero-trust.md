@@ -3,7 +3,9 @@
 **Target model:** the toolbox is the only container that holds **tool** credentials (Jira/GitHub
 tokens, the tool DB user, SMTP). The AI agent holds no tool credential, only its own harness
 credential (OAuth) and its run's toolbox capability token, which buys nothing but the toolbox, scoped
-to one agent_view and expiring. **Today the code does not meet this model:** the next section lists every known
+to one agent_view and expiring, with **one documented exception**: the SSH private key used for git,
+delivered per run into a private `ssh-agent` and never written to disk — a dated, scoped waiver of
+`RULES.md:112`, see [DECISIONS.md](../../DECISIONS.md) (D-SSH-1). **Today the code does not meet this model:** the next section lists every known
 gap, including a headless agent that inherits the DB password and the encryption key. Rules:
 `RULES.md` SEC-1, SEC-7, SEC-9.
 
@@ -38,7 +40,8 @@ The sections below show the **target model**. Where the code differs today, the 
 │  Agent (cron/sandbox)              │
 │                                    │
 │  Has: workspace, tokens (OAuth),   │
-│       SSH key, modules (read-only) │
+│       an SSH signing socket (not   │
+│       the key), modules (read-only)│
 │                                    │
 │  Does NOT have: secrets.env,       │
 │  database passwords, API tokens    │
@@ -154,8 +157,8 @@ trusting, and do not rely on view separation as a boundary between mutually host
 
 The Python/Node.js split is **intentional** — the language boundary IS the security boundary:
 
-- **Python (cron):** Runs the LLM, executes the configured harness's CLI, manages the job queue. Holds agent credentials (the `credential` pool, one scope per credential-requiring provider). In the target model it holds no tool credentials; see the table above for what it holds today.
-- **Node.js (toolbox):** Holds all tool credentials, executes database queries, manages Jira API. Never runs LLM code.
+- **Python (cron):** Runs the LLM, executes the configured harness's CLI, manages the job queue. Holds the **harness/provider** credentials (the `credential` pool, one scope per credential-requiring provider) and, because it is the process that reads and decrypts them, the database credentials plus `AGENTO_ENCRYPTION_KEY`. What it does not hold is the **tool** credentials the toolbox brokers (Jira, GitHub, the read-only MySQL tool adapters). An agent process spawned by the consumer no longer inherits the database/encryption environment (`framework/credential_store_env.py`), but one uid still owns the store — see DECISIONS.md D-SSH-1 residual channel (6). It also holds the decrypted **SSH private key** in its own heap for the consumer process's lifetime (CPython cannot zeroize a `str`), as it already did for every provider credential — but since 2026-08-25 a same-uid peer cannot read it: framework processes are non-dumpable (`framework/process_hardening.py`), so `/proc/<pid>/mem` and `/proc/<pid>/environ` are denied.
+- **Node.js (toolbox):** Holds the **tool** credential store (API tokens, the tool database user), executes database queries, manages the Jira API. Never runs LLM code, and no harness/provider credential passes through it.
 
 You cannot accidentally `import secrets` in agent code because it's a different language, different container, different filesystem.
 
@@ -176,7 +179,9 @@ CONFIG__* ENV overrides take precedence over core_config_data (plaintext)
 ## What the Agent CAN Access
 
 - Its own OAuth credential (Claude/Codex/Pi) — written into its per-run HOME from the encrypted `credential` row
-- SSH key — written into its per-run HOME, for cloning git repositories
+- An `SSH_AUTH_SOCK` pointing at a per-run `ssh-agent` that dies with the run (measured 2 ms after it
+  when probed, ≤10 s worst case) —
+  a signing capability for git, **not** the key itself
 - MCP tools — through toolbox, which validates and executes requests
 - Filesystem — workspace/, modules/ (read-only)
 
@@ -212,3 +217,23 @@ The agent still edits with ordinary file tools, on a **copy**: `create_draft` an
 `/workspace/artifacts/…`) and `save_version` copies it back. So the trust boundary is the
 copy, not a shared mount — the store keeps the limits, the allowlist, the locking and the
 audit trail, and the desk holds nothing the agent could not already read.
+
+## The SSH Key Exception
+
+Git-over-SSH is the one place where the agent side handles a credential. How it is confined:
+
+- The key is **never a filesystem object** — not on the shared `/workspace` mount, not in `/tmp`. It
+  travels config → the cron process's memory → the wrapper's environment → an inherited file
+  descriptor → `ssh-add`.
+- The wrapper starts a **per-run `ssh-agent`**, scrubs the key from the environment with `env -u`, and
+  `exec`s the agent command with `SSH_AUTH_SOCK` as its only secret-bearing capability — the
+  non-secret `GIT_SSH_COMMAND`, `AGENTO_SSH_TTL` and `SSH_AGENT_PID` stay set. The agent can sign;
+  it cannot read the key.
+- If the key cannot be delivered safely the wrapper **drops** it — it never falls back to a file.
+
+What this does **not** give you: all agent_views run as the same uid in one container, so a same-uid
+peer is not barred from the wrapper's pre-`exec` environ, the inherited descriptor or the live agent
+socket. (The consumer's heap **is** barred since 2026-08-25 — see `framework/process_hardening.py`.)
+This is a large reduction in exposure, **not** an
+authorization boundary between agent_views. The complete channel list with lifetimes, the waiver, and
+the tracked follow-up (per-view OS uids) are in [DECISIONS.md](../../DECISIONS.md) (D-SSH-1).

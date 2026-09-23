@@ -93,6 +93,51 @@ class TestExtraEnv:
         assert runner.context.extra_env == {}
 
 
+class TestInheritedSshEnvIsNotTrusted:
+    """The env the spawn ACTUALLY gets, taken from `execute()` — not re-derived here.
+
+    A run with no identity contributes no SSH variables at all, so a plain merge over
+    `os.environ` would hand the spawn prelude whatever the consumer process inherited
+    (a compose `environment:` entry, a peer's live agent socket) and it would load a key
+    this agent_view was never granted.
+    """
+
+    def _env_of_one_spawn(self, monkeypatch, extra_env=None) -> dict:
+        monkeypatch.setenv("AGENTO_SSH_PRIVATE_KEY", "ambient-peer-key")
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/peer-agent.sock")
+        monkeypatch.setenv("SSH_AGENT_PID", "4242")
+        monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /peer/id_rsa")
+        monkeypatch.setenv("AGENTO_SSH_TTL", "999999")
+        runner = make_runner(
+            "claude", credential_required=False, extra_env=extra_env or {},
+        )
+        seen = {}
+        with patch.object(
+            type(runner), "_execute_and_parse",
+            lambda self, cmd, env, request: seen.update(env) or MagicMock(),
+        ):
+            runner.execute(RunRequest(prompt="hi"))
+        return seen
+
+    @pytest.mark.parametrize("name", [
+        "AGENTO_SSH_PRIVATE_KEY", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+        "GIT_SSH_COMMAND", "AGENTO_SSH_TTL",
+    ])
+    def test_an_identity_less_run_inherits_no_ssh_variable(self, monkeypatch, name):
+        assert name not in self._env_of_one_spawn(monkeypatch)
+
+    def test_unrelated_inherited_variables_still_reach_the_spawn(self, monkeypatch):
+        monkeypatch.setenv("PATH", "/usr/bin")
+        assert self._env_of_one_spawn(monkeypatch)["PATH"] == "/usr/bin"
+
+    def test_this_run_own_identity_still_wins(self, monkeypatch):
+        env = self._env_of_one_spawn(monkeypatch, extra_env={
+            "AGENTO_SSH_PRIVATE_KEY": "this-run-key", "AGENTO_SSH_TTL": "600",
+        })
+        assert env["AGENTO_SSH_PRIVATE_KEY"] == "this-run-key"
+        assert env["AGENTO_SSH_TTL"] == "600"
+
+
 class TestTokenRunnerDryRun:
     def test_claude_dry_run(self):
         runner = make_runner("claude", dry_run=True, credential_required=False)

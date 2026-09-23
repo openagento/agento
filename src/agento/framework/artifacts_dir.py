@@ -3,8 +3,11 @@
 Each job gets its own artifacts directory under workspace/artifacts/.
 It contains the copied config files + symlinks to build assets, and holds
 any per-job outputs the agent or toolbox drops (screenshots, videos, session
-scratch). Directories are created at job start; on clean completion they are
-removed, but crashed jobs leave their artifacts dir behind for inspection.
+scratch). Directories are created at job start and are **retained** afterwards —
+they hold the run's artifacts for review. `prepare_artifacts_dir` wipes a dir
+before reusing it; periodic cleanup of old run dirs is a ROADMAP item.
+`cleanup_artifacts_dir` below is the retired removal path, kept for callers that
+want it explicitly; nothing in the framework calls it.
 """
 from __future__ import annotations
 
@@ -50,7 +53,11 @@ def prepare_artifacts_dir(artifacts_dir: Path) -> None:
 
 
 def cleanup_artifacts_dir(artifacts_dir: Path) -> None:
-    """Remove the artifacts directory after successful job completion."""
+    """Remove the artifacts directory. NOT called by the framework any more.
+
+    Run dirs are retained for review; a run dir is wiped by
+    ``prepare_artifacts_dir`` when the same run number is reused.
+    """
     try:
         if artifacts_dir.exists():
             shutil.rmtree(artifacts_dir)

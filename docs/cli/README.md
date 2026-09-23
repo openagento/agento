@@ -65,6 +65,7 @@
 | `artifact:delete <artifact_code>` | Remove an artifact, its versions and its served pages; asks first, and has no tool equivalent ([details](artifact-delete.md)) |
 | `artifact:publish <artifact_code> <version_id> --expected <version_id>` | Point an artifact's current at a version ([details](artifact-publish.md)) |
 | `artifact:auth <artifact_code> [--user <u>] [--pass <p>] [--disable] [--show]` | Set, rotate, show or disable an artifact's HTTP Basic auth; has no tool equivalent ([details](artifact-auth.md)) |
+| `workspace:ssh-purge [--dry-run]` | **Deprecated (removal in v0.17+)** — delete SSH private keys left on disk by older versions ([details](workspace-build.md#workspacessh-purge)) |
 | **Admin** | |
 | `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |
