@@ -305,10 +305,13 @@ def _fetch_runtime(
     dict for credentials that require runtime env delivery. Credentials
     materialized into the per-run HOME yield ``env={}``.
     """
+    from ._cron_exec import cron_exec
+
     cmd = [
         "docker", "compose", *compose_flags,
-        "exec", "-T", "-u", "agent", "cron",
-        "/opt/cron-agent/run.sh", "agent_view:prepare-run", agent_view_code,
+        *cron_exec(
+            ["/opt/cron-agent/run.sh", "agent_view:prepare-run", agent_view_code],
+        ),
     ]
     if prompt:
         cmd.extend(["--prompt", prompt])

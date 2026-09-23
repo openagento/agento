@@ -1,4 +1,4 @@
-"""Tests for SyncCommand orchestrator — per-agent_view iteration and crontab aggregation."""
+"""Tests for SyncCommand orchestrator — per-agent_view iteration and schedule aggregation."""
 from __future__ import annotations
 
 import argparse
@@ -6,7 +6,7 @@ import logging
 from unittest.mock import MagicMock, patch
 
 from agento.modules.jira.src.config import JiraConfig
-from agento.modules.jira_periodic_tasks.src.crontab import CronEntry
+from agento.modules.jira_periodic_tasks.src.sync import CronEntry
 
 
 def _args(dry_run: bool = False) -> argparse.Namespace:
@@ -54,9 +54,6 @@ def _patch_orchestrator_deps(stack: list):
             return_value=logging.getLogger("test-orchestrator"),
         ),
         "filelock": patch("agento.framework.lock.FileLock"),
-        "crontab_mgr": patch(
-            "agento.modules.jira_periodic_tasks.src.commands.sync.CrontabManager"
-        ),
         "toolbox": patch(
             "agento.modules.jira_periodic_tasks.src.commands.sync.ToolboxClient"
         ),
@@ -198,10 +195,8 @@ def test_execute_continues_when_first_view_raises():
         second_syncer.sync_view.assert_called_once()
 
 
-def test_execute_writes_single_crontab_with_combined_entries():
-    """The crontab is one shared file. Per-view sync must NOT write its own
-    crontab — the orchestrator aggregates entries and writes once. Otherwise
-    each subsequent view's write erases the previous view's entries."""
+def test_execute_aggregates_entries_from_every_view():
+    """Every view's entries reach the ``schedule`` table; the root renderer reads it."""
     from contextlib import ExitStack
 
     with ExitStack() as stack:
@@ -211,24 +206,35 @@ def test_execute_writes_single_crontab_with_combined_entries():
         m["get_active_avs"].return_value = [av1, av2]
         m["get_scoped_config"].return_value.get_module.return_value = _make_jira_config()
 
-        first_entries = [_make_entry("AI-3", "mieszko")]
-        second_entries = [_make_entry("AI-87", "zyga")]
         syncer = MagicMock()
-        syncer.sync_view.side_effect = [first_entries, second_entries]
+        syncer.sync_view.side_effect = [
+            [_make_entry("AI-3", "mieszko")], [_make_entry("AI-87", "zyga")],
+        ]
         m["syncer_cls"].return_value = syncer
-
-        crontab_mgr = m["crontab_mgr"].return_value
-        crontab_mgr.apply_managed.return_value = True
 
         from agento.modules.jira_periodic_tasks.src.commands.sync import SyncCommand
         SyncCommand().execute(_args())
 
-        # Crontab applied exactly once, regardless of how many views,
-        # with combined entries from both views.
-        assert crontab_mgr.apply_managed.call_count == 1
-        combined_entries = crontab_mgr.apply_managed.call_args[0][0]
-        keys = [e.issue_key for e in combined_entries]
-        assert "AI-3" in keys and "AI-87" in keys
+        assert syncer.sync_view.call_count == 2
+
+
+def test_execute_never_invokes_the_crontab_binary():
+    """The crontab belongs to root now — a sync must not touch it."""
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        m = _patch_orchestrator_deps(stack)
+        m["get_active_avs"].return_value = [_make_agent_view(1, "mieszko")]
+        m["get_scoped_config"].return_value.get_module.return_value = _make_jira_config()
+        syncer = MagicMock()
+        syncer.sync_view.return_value = []
+        m["syncer_cls"].return_value = syncer
+        run = stack.enter_context(patch("subprocess.run"))
+
+        from agento.modules.jira_periodic_tasks.src.commands.sync import SyncCommand
+        SyncCommand().execute(_args())
+
+        assert not any("crontab" in str(c) for c in run.call_args_list)
 
 
 def test_execute_passes_dry_run_through():
@@ -242,11 +248,7 @@ def test_execute_passes_dry_run_through():
         syncer.sync_view.return_value = []
         m["syncer_cls"].return_value = syncer
 
-        crontab_mgr = m["crontab_mgr"].return_value
-        crontab_mgr.apply_managed.return_value = False
-
         from agento.modules.jira_periodic_tasks.src.commands.sync import SyncCommand
         SyncCommand().execute(_args(dry_run=True))
 
         syncer.sync_view.assert_called_once_with(dry_run=True)
-        assert crontab_mgr.apply_managed.call_args.kwargs["dry_run"] is True

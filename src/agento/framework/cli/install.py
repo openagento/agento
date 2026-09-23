@@ -13,6 +13,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ._cron_exec import cron_exec
 from ._env import parse_env_file
 from ._output import cyan, log_error, log_info, log_warn
 from ._project import compose_file_flags, resolve_host_ids, update_dotenv_value
@@ -330,7 +331,7 @@ def _run_post_install(project_dir: Path) -> None:
     log_info("Waiting for initial setup...")
     for _ in range(60):
         check = subprocess.run(
-            [*compose_cmd, "exec", "-u", "agent", "-T", "cron", "test", "-f", "/tmp/.setup-done"],
+            [*compose_cmd, *cron_exec(["test", "-f", "/tmp/.setup-done"], store=False)],
             capture_output=True,
         )
         if check.returncode == 0:
@@ -342,7 +343,7 @@ def _run_post_install(project_dir: Path) -> None:
 
     log_info("Running setup:upgrade...")
     result = subprocess.run(
-        [*compose_cmd, "exec", "-u", "agent", "-it", "cron", "/opt/cron-agent/run.sh", "setup:upgrade"],
+        [*compose_cmd, *cron_exec(["/opt/cron-agent/run.sh", "setup:upgrade"], tty="-it")],
     )
     if result.returncode != 0:
         log_warn("setup:upgrade failed. Run 'agento setup:upgrade' manually.")
@@ -431,9 +432,11 @@ def _setup_agent_harness(compose_cmd: list[str], project_dir: Path | None = None
             return
         log_info(f"Registering {scope} credential ({mode_flag or 'interactive OAuth'})...")
         result = subprocess.run(
-            [*compose_cmd, "exec", "-u", "agent", "-it", "cron",
-             "/opt/cron-agent/run.sh", "credential:register", scope, "default",
-             *([mode_flag] if mode_flag else [])],
+            [*compose_cmd, *cron_exec(
+                ["/opt/cron-agent/run.sh", "credential:register", scope, "default",
+                 *([mode_flag] if mode_flag else [])],
+                tty="-it",
+            )],
         )
         if result.returncode != 0:
             log_warn(
@@ -450,8 +453,9 @@ def _setup_agent_harness(compose_cmd: list[str], project_dir: Path | None = None
         ("agent_view/provider", provider_id),
     ):
         subprocess.run(
-            [*compose_cmd, "exec", "-u", "agent", "-T", "cron",
-             "/opt/cron-agent/run.sh", "config:set", path, value],
+            [*compose_cmd, *cron_exec(
+                ["/opt/cron-agent/run.sh", "config:set", path, value],
+            )],
         )
     log_info(f"Agent harness set to: {harness_id} / {provider_id}")
 

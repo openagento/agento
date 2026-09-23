@@ -461,7 +461,7 @@ agento tool:enable outlook_get_message    --agent-view <agent_view_code>
 agento tool:enable outlook_reply          --agent-view <agent_view_code>
 agento tool:enable outlook_mark_processed --agent-view <agent_view_code>
 
-agento setup:upgrade   # installs the outlook:publish crontab (polls every active view's mailbox every minute)
+agento setup:upgrade   # applies migrations; the cron renderer then picks up outlook:publish (polls every active view's mailbox every minute)
 ```
 
 (Direct mode — one view per mailbox — needs **no** ingress binding; the mailbox identifies the

@@ -7,6 +7,8 @@ run into a private `ssh-agent` and never written to disk — a dated, scoped wai
 (see [DECISIONS.md](../../DECISIONS.md) D-SSH-1). **Today the code does not meet this model:** the next
 section lists every known gap. Rules: `RULES.md` SEC-1, SEC-7, SEC-9.
 
+**Closed in this release:** the credential store no longer reaches uid `agent` at all. The cron container's store file is `root:root 0600` and is read by a root-owned program that drops privilege in-process before loading it, so it crosses no `execve`; the managed crontab is rendered by root from inputs the agent cannot write. [D-SSH-1](../../DECISIONS.md) residual channel (6), **closed 2026-09-23** — see [cron-privileges.md](cron-privileges.md).
+
 ## Known exceptions and debt
 
 This is the one register of security exceptions and gaps. An **accepted** row links a dated
@@ -17,7 +19,6 @@ change adds is a finding (`RULES.md` SEC).
 
 | Item | Where | Status |
 |---|---|---|
-| **A scheduled agent runs in the cron container as its one uid, which can read the mode-`0644` `/opt/cron-agent/env` (`MYSQL_*`, `CONFIG__*`, `AGENTO_ENCRYPTION_KEY`) and so decrypt every stored credential.** The agent subprocess itself no longer inherits these names (`framework/credential_store_env.py`). | `framework/docker/cron/entrypoint.sh` | Accepted until AG-42 — [DECISIONS.md](../../DECISIONS.md) D-SSH-1 residual channel (6), owner 2026-08-25 |
 | `bootstrap()` decrypts all DEFAULT-scope `obscure` config while it resolves module config, so cron, the consumer (each hot-reload), and the CLI hold decrypted secrets for a short time. For toolbox-only secrets (the Outlook Graph secret) the value is not used. | `framework/bootstrap.py` | Debt — fix tracked in [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md) |
 | The `jira` observer decrypts an agent_view's `jira/jira_token` cron-side on each bootstrap until that view's account id is resolved, only to check that it is set. | `modules/jira/src/observers.py` (`module_ready_after`) | Debt |
 | `app_monitor` uses the `obscure` SMTP password **cron-side** to send breach alerts. | `modules/app_monitor/src/observers.py` | Debt — same fix as `bootstrap()` (move to a toolbox transport) |

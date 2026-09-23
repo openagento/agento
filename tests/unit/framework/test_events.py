@@ -9,7 +9,6 @@ from agento.framework.events import (
     ConfigSavedEvent,
     ConsumerStartedEvent,
     ConsumerStoppingEvent,
-    CrontabInstalledEvent,
     DataPatchAppliedEvent,
     JobClaimedEvent,
     JobDeadEvent,
@@ -109,6 +108,3 @@ class TestEventDataClasses:
         names = [f.name for f in fields(DataPatchAppliedEvent)]
         assert set(names) == {"name", "module"}
 
-    def test_crontab_installed_fields(self):
-        names = [f.name for f in fields(CrontabInstalledEvent)]
-        assert set(names) == {"job_count"}

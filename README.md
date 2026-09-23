@@ -15,7 +15,7 @@ Agento is extensible by design. Creating and sharing custom modules is simple. W
 
 ## Why Agento?
 
-- **Secure by architecture** — agents run in an isolated sandbox with no access to the credential store; the one scoped exception is the per-run git SSH identity (see `DECISIONS.md` D-SSH-1). A *scheduled* agent additionally runs as the cron container's own uid, which can still reach that store — D-SSH-1 residual channel (6), accepted until AG-42 closes it with per-view uids.
+- **Secure by architecture** — agents run in an isolated sandbox with no access to the credential store; the one scoped exception is the per-run git SSH identity (see `DECISIONS.md` D-SSH-1). A *scheduled* agent runs as the cron container's own uid, but the store is not reachable from it: it lives in a root-only file that a root-owned program reads before dropping privilege in-process, so it never crosses an `execve` (D-SSH-1 residual channel (6), closed 2026-09-23).
 - **Controlled tool access** — enforce policies for tools like email, browser, and external systems.
 - **Modular by default** — extend behavior through modules, not by patching core code.
 - **Deployment-specific customization** — adapt agents, policies, and workflows per workspace or environment.
@@ -161,7 +161,7 @@ One module = one integration = a complete package. The framework provides the me
 - ✅ Framework kernel & scoped configuration (per-module config, deterministic load order)
 - ✅ Event–observer system (`events.json`, cross-module composition)
 - ✅ Core module refactoring (framework has zero module imports)
-- ✅ Module setup system (`setup:upgrade` — migrations, data patches, cron)
+- ✅ Module setup system (`setup:upgrade` — migrations, data patches; cron is rendered by the container's root installer)
 - ✅ Workspace & agent-view hierarchy (scoped config, generated CLI configs)
 - ✅ Concurrent agent-view execution pool (parallel profiles, priority scheduling)
 - ✅ Ingress identities & agent resolution (deterministic, module-extensible routing)
