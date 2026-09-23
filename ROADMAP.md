@@ -151,6 +151,29 @@ docker compose restart
   properly is a framework change: let `system.json` mark a field toolbox-only and have `resolve_field`
   skip it outside the toolbox. Surfaced by the GitHub PR-review port (2026-08-14) as pre-existing and
   accepted as a residual for that port (owner sign-off 2026-08-13).
+- **A distinct OS uid per agent_view (Option B of D-SSH-1)** — every agent_view runs as the same uid
+  (`agent`) in the same cron/sandbox container on the same `/workspace` mount, so no file mode, path or
+  delivery channel separates two views. Keeping the SSH private key off disk entirely (shipped
+  2026-08-25, `DECISIONS.md` D-SSH-1) removed the persistent key *file* the production incident used,
+  but a same-uid peer can still reach the wrapper's pre-`exec` environ, the inherited descriptor, the
+  live `ssh-agent` socket — the consumer process's heap is closed since 2026-08-25, see
+  `framework/process_hardening.py` — and can still read a peer view's
+  **artifacts**, which the same incident also did (grepping for `ghp_` / `github_pat_`). Option B is
+  what creates the boundary: a per-view user created in the entrypoints, jobs spawned via
+  `setpriv`/`gosu`, run HOME and agent-socket dir 0700 to that uid. It touches the container
+  entrypoints, file ownership across `/workspace`, the artifacts cleanup paths, and every existing
+  deployment's on-disk ownership. **It is the tracked follow-up that removes the need for the
+  `RULES.md:112` waiver recorded in D-SSH-1.** Design notes, verified facts and open questions:
+  [docs/architecture/option-b-per-view-uid.md](docs/architecture/option-b-per-view-uid.md).
+  **Carries residual channel 6 (AG-42 scope, owner decision 2026-08-25).** The cron container hands
+  its credential store to the shared `agent` uid through a mode-0644 env file, so a scheduled agent can
+  decrypt *every* stored credential (D-SSH-1 residual channel 6). The owner accepted that gap until
+  **AG-42** closes it here, rather than shipping V0 as a separate step — so B must take the store away
+  from the shared uid as well as separating the views: a root crontab, a root-owned launcher that drops
+  to `agent` (no agent-readable env file), and the store-touching CLI commands behind a root gateway.
+  The mechanism notes for that part are V0 in the same doc. Already done and not to be redone:
+  `prctl(PR_SET_DUMPABLE, 0)` on every framework process (2026-08-25), which closed the `/proc` route
+  but not the env file.
 - **Internal-caller auth for the toolbox (N5-2)** — `/sse` and `/mcp` take `agent_view_id` from the
   query string with no caller authentication (`src/agento/toolbox/server.js:88,126`), and the `jira`,
   `outlook`, `bitbucket` and `github` REST handlers take it from the request body. The fix is to bind
@@ -158,6 +181,12 @@ docker compose restart
   that `server.js` resolves `agent_view_id` from), applied **once for all four modules** — a
   module-local fix would create a fourth pattern and protect nobody else. Re-confirmed by the GitHub
   PR-review port (2026-08-14), which ships at parity with the other three (owner sign-off 2026-08-13).
+
+### Deprecation removals due in v0.17 or later
+
+| Shim | Where | Remove when |
+|---|---|---|
+| `workspace:ssh-purge` command (+ its `wo:sp` shortcut) | `workspace_build/src/commands/ssh_purge.py`, `workspace_build/di.json` | every deployment has upgraded past the release that stopped writing `ssh_private_key` to disk and has run the sweep once. Nothing on this code writes a key file, so the command then has nothing to find. Delete the command, its `di.json` entry, its tests, and the doc sections in `docs/cli/workspace-build.md` / `docs/cli/README.md` / `docs/config/identity.md`; keep `find_private_keys` only if `workspace:build`'s own legacy pruning still uses it |
 
 ### Deprecation removals due next release (v0.16)
 

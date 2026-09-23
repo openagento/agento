@@ -26,7 +26,11 @@ Four containers on the `agento-net` bridge network.
 |-------|---------|
 | `workspace/` | Agent workspace — AGENTS.md, SOUL.md, systems/, app/, tmp/ |
 | `tokens/` | OAuth credentials (Claude, Codex) |
-| `id_rsa` | SSH key for git operations |
+
+The SSH identity is **not** a mount. The non-secret SSH files (`id_rsa.pub`, `config`, `known_hosts`)
+are written per run into the run HOME under `workspace/artifacts/`; the private key is delivered
+config → env → an inherited file descriptor → a per-run `ssh-agent` and is never a file. See
+[identity docs](../config/identity.md).
 
 ### Toolbox-Only
 

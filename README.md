@@ -15,7 +15,7 @@ Agento is extensible by design. Creating and sharing custom modules is simple. W
 
 ## Why Agento?
 
-- **Secure by architecture** — agents run in an isolated sandbox without direct access to secrets.
+- **Secure by architecture** — agents run in an isolated sandbox with no access to the credential store; the one scoped exception is the per-run git SSH identity (see `DECISIONS.md` D-SSH-1). A *scheduled* agent additionally runs as the cron container's own uid, which can still reach that store — D-SSH-1 residual channel (6), accepted until AG-42 closes it with per-view uids.
 - **Controlled tool access** — enforce policies for tools like email, browser, and external systems.
 - **Modular by default** — extend behavior through modules, not by patching core code.
 - **Deployment-specific customization** — adapt agents, policies, and workflows per workspace or environment.
@@ -65,7 +65,7 @@ Agento runs three Docker containers on a shared network:
 
 - **Cron** (Python) -- Job queue consumer, scheduler, CLI host. Manages the lifecycle of agent jobs, runs migrations, and dispatches events. Connects to MySQL for job state, config, and module metadata.
 - **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over MCP (streamable HTTP `/mcp`, SSE `/sse`). Designed to be the only container that holds tool credentials (known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)).
-- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container for interactive `agento run`. Has no tool credentials and no direct database access. Headless jobs run the agent inside the `cron` container and inherit its env (a known gap, see [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)). Communicates with the toolbox exclusively through MCP tool calls.
+- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container for interactive `agento run`. Holds no tool credential and no database access; it gets only the **harness/provider** API credential its own run needs, delivered per run. One documented exception: the git SSH identity, delivered per run as a signing capability (`SSH_AUTH_SOCK`) from a private `ssh-agent`, never as a key file (`DECISIONS.md` D-SSH-1). Headless jobs run the agent inside the `cron` container (known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)). Communicates with the toolbox exclusively through MCP tool calls.
 
 ## Module System
 

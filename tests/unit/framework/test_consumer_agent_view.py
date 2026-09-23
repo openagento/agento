@@ -562,3 +562,105 @@ class TestPostRunCredentialCapture:
         captured_conn = mock_writer.capture_refreshed_credentials.call_args.args[2]
         captured_conn.commit.assert_called_once()
         captured_conn.close.assert_called_once()
+
+
+_PEM = (
+    "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+    "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQy\n"
+    "-----END OPENSSH PRIVATE KEY-----\n"
+)
+
+
+class _StubSvc:
+    """Stands in for the agent_view-scoped ScopedConfigService, counting `.get()`."""
+
+    def __init__(self, values):
+        self.values = values
+        self.calls = []
+
+    def get(self, path):
+        self.calls.append(path)
+        return self.values.get(path)
+
+    def get_module(self, _name, include_obscure=True):
+        return {}
+
+    def resolve_all(self):
+        return dict(self.values)
+
+
+class TestConsumerSshEnv:
+    """The per-run SSH env reaches HarnessRunContext.extra_env — never a file."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_token_resolver(self):
+        with patch("agento.framework.consumer.CredentialResolver") as MockCls:
+            resolver = MagicMock()
+            resolver.resolve.return_value = MagicMock()
+            MockCls.return_value = resolver
+            yield
+
+    def _run(self, values, sample_db_config, sample_consumer_config):
+        svc = _StubSvc(values)
+        with patch("agento.framework.consumer.get_workflow_class") as mock_get_wf, \
+             patch("agento.framework.consumer.get_channel") as mock_get_ch, \
+             patch("agento.framework.consumer.create_runner") as MockRunner, \
+             patch("agento.framework.consumer.get_connection", return_value=MagicMock()), \
+             patch("agento.framework.harness.persistent_home_paths_for", return_value=[]), \
+             patch("agento.framework.harness.workspace_adapter_for"), \
+             patch("agento.framework.run_preparation.prepare_artifacts_dir"), \
+             patch("agento.framework.run_preparation.build_artifacts_dir",
+                   return_value="/workspace/acme/developer/runs/42"), \
+             patch("agento.framework.consumer.resolve_agent_view_runtime",
+                   return_value=_make_runtime_with_agent_view(agent_view_id=2)), \
+             patch("agento.framework.config_resolver.ScopedConfigService",
+                   return_value=svc):
+            workflow = MagicMock()
+            workflow.execute_job.return_value = _make_claude_result()
+            mock_get_wf.return_value.return_value = workflow
+            mock_get_ch.return_value = MagicMock(name="jira")
+
+            consumer = Consumer(
+                sample_db_config, sample_consumer_config, logging.getLogger("test"),
+            )
+            consumer._run_job(_make_job(agent_view_id=2))
+            _, ctx = MockRunner.call_args.args
+            return ctx, svc
+
+    def test_key_and_ttl_reach_extra_env_beside_git_env(
+        self, sample_db_config, sample_consumer_config,
+    ):
+        ctx, _ = self._run(
+            {
+                "agent_view/identity/ssh_private_key": _PEM,
+                "agent_view/identity/git_author_name": "Bot",
+            },
+            sample_db_config, sample_consumer_config,
+        )
+        assert ctx.extra_env["AGENTO_SSH_PRIVATE_KEY"] == _PEM
+        assert ctx.extra_env["GIT_AUTHOR_NAME"] == "Bot"
+        # The identity expires WITH the job, not after the wrapper's 12-hour fallback.
+        assert ctx.extra_env["AGENTO_SSH_TTL"] == str(
+            sample_consumer_config.job_timeout_seconds
+        )
+        assert ctx.extra_env["AGENTO_SSH_TTL"] != "43200"
+
+    def test_a_view_with_no_key_contributes_nothing(
+        self, sample_db_config, sample_consumer_config,
+    ):
+        ctx, _ = self._run({}, sample_db_config, sample_consumer_config)
+        assert "AGENTO_SSH_PRIVATE_KEY" not in ctx.extra_env
+        assert "AGENTO_SSH_TTL" not in ctx.extra_env
+        assert "GIT_SSH_COMMAND" not in ctx.extra_env
+
+    def test_the_four_identity_values_are_read_exactly_once(
+        self, sample_db_config, sample_consumer_config,
+    ):
+        """Not eight: one resolution per run, shared by the files and the env."""
+        _, svc = self._run(
+            {"agent_view/identity/ssh_private_key": _PEM},
+            sample_db_config, sample_consumer_config,
+        )
+        ssh_calls = [c for c in svc.calls if c.startswith("agent_view/identity/ssh_")]
+        assert len(ssh_calls) == 4
+        assert len(set(ssh_calls)) == 4

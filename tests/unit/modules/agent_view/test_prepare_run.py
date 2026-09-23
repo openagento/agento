@@ -357,3 +357,73 @@ class TestAgentViewPrepareRunCommand:
             tmp_path / "artifacts", tmp_path / "artifacts",
         )
         assert payload["stream_renderer"] is None
+
+
+_PEM = (
+    "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+    "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQy\n"
+    "-----END OPENSSH PRIVATE KEY-----\n"
+)
+
+
+class _SshSvc:
+    def __init__(self, values):
+        self.values = values
+        self.calls = []
+
+    def get(self, path):
+        self.calls.append(path)
+        return self.values.get(path)
+
+    def get_module(self, _name):
+        return {}
+
+
+class TestPrepareRunSshIdentity:
+    """The private key rides the existing name-only `env` channel — never argv, never disk."""
+
+    def _payload(self, values, runtime, token, builder, writer, tmp_path):
+        svc = _SshSvc(values)
+        with patch(
+            "agento.framework.config_resolver.ScopedConfigService", return_value=svc,
+        ):
+            payload = _run_command(
+                _make_args(prompt=["hello"]), runtime, token, builder, writer,
+                tmp_path, tmp_path,
+            )
+        return payload, svc
+
+    def test_key_and_interactive_ttl_are_in_env_and_nowhere_else(
+        self, runtime_stub, token_stub, builder_stub, writer_stub, tmp_path,
+    ):
+        from agento.framework.ssh_identity import SSH_TTL_LOCAL_RUN
+
+        payload, _ = self._payload(
+            {"agent_view/identity/ssh_private_key": _PEM},
+            runtime_stub, token_stub, builder_stub, writer_stub, tmp_path,
+        )
+        assert payload["env"]["AGENTO_SSH_PRIVATE_KEY"] == _PEM
+        # Explicit on this path — an interactive session has no job timeout to borrow.
+        assert payload["env"]["AGENTO_SSH_TTL"] == str(SSH_TTL_LOCAL_RUN)
+        # And nowhere in the command the host puts on the wire.
+        assert "PRIVATE KEY" not in json.dumps(payload["command"])
+
+    def test_a_view_with_no_key_carries_no_ssh_env(
+        self, runtime_stub, token_stub, builder_stub, writer_stub, tmp_path,
+    ):
+        payload, _ = self._payload(
+            {}, runtime_stub, token_stub, builder_stub, writer_stub, tmp_path,
+        )
+        assert "AGENTO_SSH_PRIVATE_KEY" not in payload["env"]
+        assert "AGENTO_SSH_TTL" not in payload["env"]
+
+    def test_the_four_identity_values_are_read_exactly_once(
+        self, runtime_stub, token_stub, builder_stub, writer_stub, tmp_path,
+    ):
+        _, svc = self._payload(
+            {"agent_view/identity/ssh_private_key": _PEM},
+            runtime_stub, token_stub, builder_stub, writer_stub, tmp_path,
+        )
+        ssh_calls = [c for c in svc.calls if c.startswith("agent_view/identity/ssh_")]
+        assert len(ssh_calls) == 4
+        assert len(set(ssh_calls)) == 4

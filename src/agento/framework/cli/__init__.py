@@ -6,6 +6,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ..process_hardening import make_non_dumpable
+
+# At IMPORT time, not in main(): a framework process is launched with the
+# credential-store env (the cron env file, sourced by `su - agent -c …`), so from
+# execve until this call its /proc/<pid>/environ is readable by a same-uid peer.
+# Reaching main() costs another ~200 ms of bootstrap; this module is imported only
+# to run the CLI, so the earliest point in it is the right one.
+make_non_dumpable()
+
 # Commands that always run on the host (no Docker proxy)
 _LOCAL_COMMANDS = frozenset({
     "doctor", "install", "upgrade", "up", "down", "logs",
