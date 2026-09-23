@@ -75,4 +75,4 @@ docker/docker-compose.yml
 .agents/
 .codex/
 
-.mcp
+/.mcp.json

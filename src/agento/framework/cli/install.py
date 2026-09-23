@@ -189,14 +189,13 @@ def _scaffold(project_dir: Path, project_name: str, config: dict[str, str]) -> N
     except TemplateNotFoundError:
         (project_dir / "secrets.env.example").write_text(
             "# Agento secrets — DO NOT commit this file\n"
-            "# Copy to secrets.env and fill in your values\n"
+            "# Copy to secrets.env and fill in the value below.\n"
+            "#\n"
+            "# secrets.env holds ONE secret only: the master encryption key.\n"
+            "# Every other credential is stored encrypted in the database and\n"
+            "# decrypted at runtime with this key — do not put it here.\n"
             "\n"
-            "# Jira credentials (only needed if using Jira module)\n"
-            "JIRA_USER=\n"
-            "JIRA_TOKEN=\n"
-            "JIRA_HOST=\n"
-            "\n"
-            "# Encryption key for config values\n"
+            "# Master encryption key (generate with: openssl rand -hex 32)\n"
             "AGENTO_ENCRYPTION_KEY=\n"
         )
 
