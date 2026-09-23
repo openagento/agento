@@ -143,38 +143,49 @@ their lifetimes:
    Either way it is never a file, never echoed back, and stdout is suppressed on a parse failure so
    the `env` field cannot leak through an error message. Same trust boundary this channel already
    carries provider API keys across.
-6. **The credential store itself, to any process running as the container's one uid.** The cron
-   container holds the database credentials and `AGENTO_ENCRYPTION_KEY` in its environment, and its
-   entrypoint writes them to a mode-0644 file (`/opt/cron-agent/env`) because `su - agent` wipes the
-   environment for the crontab. Every agent_view's run is the same uid, so an agent can source that
-   file, read the `credential`/`core_config_data` tables and decrypt **any** view's key — with
-   `bin/agento agent_view:prepare-run <peer-view>`, which prints the resolved key in its JSON `env`
-   field, or with a database client directly. The spawn environment no longer carries these names
-   (`framework/credential_store_env.py`, stripped in `SubprocessRunner.execute`), which removes the
-   inherited copy but **not** the file and not `/proc/<consumer-pid>/environ`. Lifetime:
-   **persistent — the life of the deployment**, not the run. It is not specific to SSH: the same
-   capability has always covered provider API keys and every other stored credential, and no
-   in-container check can fix it while one uid owns the store — that is **Option B**.
-   **Owner decision, 2026-08-25: accepted as an open gap until AG-42 ("agents see each other's
-   files") delivers Option B, which closes this channel together with the peer-artifact reads.** That
-   is a time-boxed extension of the waiver below, tracked by a ticket rather than left open-ended; V0
-   (root crontab + a root-owned 0600 launcher dropping to `agent`, so no readable env file, plus a root
-   gateway for the store-touching commands — see
-   [option-b-per-view-uid.md](docs/architecture/option-b-per-view-uid.md) §3) is **not** shipped as a
-   separate step; it stays as a design AG-42 can draw from.
-   One of this channel's two routes is now closed: `/proc/<consumer-pid>/environ` is unreadable to the
-   agent uid (residual (4) above). **The capability itself is unchanged** — `/opt/cron-agent/env` is
-   still mode 0644 and still yields `MYSQL_*` plus `AGENTO_ENCRYPTION_KEY` to any agent-uid process, so
-   nothing here should be read as a reduction of (6). The env file cannot simply be removed: the
-   crontab and the consumer are both started by `su - agent -c "source /opt/cron-agent/env; …"`
-   (`docker/cron/entrypoint.sh:87,96`), so the secrets need a launcher that keeps them out of an
-   agent-readable place — AG-42's work, not a config tweak.
+6. **The credential store itself, to any process running as the container's one uid.**
+   **CLOSED 2026-09-23.** The cron container holds the database credentials and
+   `AGENTO_ENCRYPTION_KEY`, and its entrypoint used to write them to a mode-0644 file
+   (`/opt/cron-agent/env`) because `su - agent` wiped the environment for the crontab and the
+   consumer. Every agent_view's run is the same uid, so any agent could source that file and
+   decrypt **any** view's key — with `bin/agento agent_view:prepare-run <peer-view>`, which
+   prints the resolved key in its JSON `env` field, or with a database client directly.
+
+   The mechanism that closes it (**V0**, owner decision 2026-09-23): the container keeps **one**
+   uid and one shared `/workspace` — views seeing each other's files is a wanted property, so
+   **Option B / AG-42 is cancelled, not deferred** — and the *store* is taken away from that uid
+   instead.
+   - `/opt/cron-agent` is `root:root`; nothing under it is agent-writable.
+   - The entrypoint splits the environment by `credential_store_env.is_credential_store_name`:
+     the store shapes go to `/opt/cron-agent/env` (`root:root 0600`), everything else to
+     `/opt/cron-agent/env.public`. Both files are NUL-delimited, so a value containing a
+     newline cannot forge a second assignment.
+   - `su - agent -c …` is replaced by `/opt/cron-agent/launch.sh` (`root:root 0700`), which
+     re-execs through `env -i`, imports `env.public` **without evaluating it**, and drops
+     privilege with `setpriv --reuid agent`. `setpriv` preserves the environment — which is
+     exactly why the launcher builds that environment from empty.
+   - The store never crosses an `execve`: `launch.sh --store` stays root and runs
+     `/opt/cron-agent/drop.py`, which reads the file, drops every id to `agent` in-process,
+     calls `prctl(PR_SET_DUMPABLE, 0)` and only then loads the payload into
+     `framework/store_env.py`'s private mapping and imports the CLI. An exec resets dumpable,
+     and the images carry no yama `ptrace_scope`, so a store handed across one would be
+     readable to a same-uid `PTRACE_ATTACH` for the whole of Python's startup. It never enters
+     `os.environ` either, so no child inherits it.
+   - The managed crontab belongs to **root**, rendered every minute by
+     `/opt/cron-agent/install-crontab.py` from the *installed* module catalog and the `schedule`
+     table — two inputs uid `agent` cannot write. `app/etc/modules.json` is deliberately not
+     read by root; enablement is enforced after the drop by the `cron:run` dispatcher.
+   - Every `docker compose exec` into the `cron` service enters as root and goes through the
+     launcher, so an operator-initiated command has no store in its initial environ either.
+
+   Residual after V0: root itself. See
+   [docs/architecture/cron-privileges.md](docs/architecture/cron-privileges.md).
 
 Four of the six are gone within seconds of the run ending; (4) is closed outright as of 2026-08-25,
-and (6) lasts the life of the deployment until AG-42.
+and (6) as of 2026-09-23.
 **No channel is a file holding the key** — that is what this change buys, and the lifetimes above are
-what it does not. Channel (6) does involve a file, the cron env file, which holds not the key but the
-means to decrypt it; it predates this change and is not part of the waiver. A future change that adds a channel adds it here and to the plan's AC4-residual list; the two
+what it does not. Channel (6) involved a file, the cron env file, which held not the key but the
+means to decrypt it; it predated this change, was not part of the waiver, and is closed. A future change that adds a channel adds it here and to the plan's AC4-residual list; the two
 counts must match.
 
 **Options considered.**
@@ -195,8 +206,10 @@ counts must match.
 `.claude/skills/agento-code-review/RULES.md:112` — "Agent code must never hold, read, or pass
 credentials" — is **explicitly waived for this one credential, at Option A scope**, on these terms: it
 covers only the SSH private key used for git, delivered exactly as described above; no other credential
-and no other delivery channel; and **Option B is the tracked follow-up that removes the need for the
-waiver** ([ROADMAP.md](ROADMAP.md)).
+and no other delivery channel; and the waiver stands until Option C (a toolbox git proxy) replaces it.
+**Option B is cancelled** (2026-09-23): agent_views share one uid and one `/workspace` by
+design, and residual channel (6) — the reason Option B was tracked — is closed by V0 above
+([ROADMAP.md](ROADMAP.md)).
 
 **What this is not.** Option A is a large, real reduction in exposure. It is **not** an authorization
 boundary, and nothing in the code, the docs or a commit message may describe it as isolation between

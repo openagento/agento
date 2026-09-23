@@ -164,7 +164,7 @@ class SetupUpgradeCommand:
 
     @property
     def help(self) -> str:
-        return "Apply schema migrations, data patches, and install crontab"
+        return "Apply schema migrations and data patches"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--dry-run", action="store_true", help="Show pending work without applying")
@@ -207,8 +207,6 @@ class SetupUpgradeCommand:
                     print(f"  Data patches [{mod}] ({len(patches)}):")
                     for p in patches:
                         print(f"    {p}")
-                if result.cron_changed:
-                    print("  Crontab: would be updated")
             else:
                 if not result.has_work:
                     print("Nothing to do.")
@@ -219,8 +217,6 @@ class SetupUpgradeCommand:
                     print(f"Applied {len(versions)} migration(s) for {mod}")
                 for mod, patches in result.data_patches.items():
                     print(f"Applied {len(patches)} data patch(es) for {mod}")
-                if result.cron_changed:
-                    print("Crontab updated")
                 for mod in result.onboardings_run:
                     print(f"Onboarding completed for {mod}")
                 if result.onboardings_disabled:

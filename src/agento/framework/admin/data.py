@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import contextlib
-import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agento.framework import store_env
 from agento.framework.config_resolver import (
     ScopedConfigService,
     _db_path,
@@ -407,7 +407,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
         rv, inherited = svc.resolve_field_with_source(module, field_name, field_schema, config_defaults)
         source = _display_source(rv.source, inherited)
         if source == "env":
-            value = os.environ.get(env_key)
+            value = store_env.get(env_key)
         elif source in ("db", "db:inherited"):
             value = svc.overrides.get(db_path, (None, False))[0]
         elif source == "json":
@@ -460,7 +460,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
             )
             source = _display_source(rv.source, inherited)
             if source == "env":
-                value = os.environ.get(env_key)
+                value = store_env.get(env_key)
             elif source in ("db", "db:inherited"):
                 value = svc.overrides.get(db_path, (None, False))[0]
             elif source == "json":

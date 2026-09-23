@@ -9,6 +9,8 @@ delivered per run into a private `ssh-agent` and never written to disk — a dat
 gap, including a headless agent that inherits the DB password and the encryption key. Rules:
 `RULES.md` SEC-1, SEC-7, SEC-9.
 
+**Closed in this release:** the credential store no longer reaches uid `agent` at all. The cron container's store file is `root:root 0600` and is read by a root-owned program that drops privilege in-process before loading it, so it crosses no `execve`; the managed crontab is rendered by root from inputs the agent cannot write. [D-SSH-1](../../DECISIONS.md) residual channel (6), **closed 2026-09-23** — see [cron-privileges.md](cron-privileges.md).
+
 ## Known exceptions and debt
 
 This is the one register of security exceptions and gaps. An **accepted** row links a dated

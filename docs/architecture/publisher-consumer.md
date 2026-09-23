@@ -81,7 +81,7 @@ Configured via environment variables (set in `docker/.cron.env` or `docker-compo
 | `DISABLE_LLM` | 0 | Dry-run mode (skip actual LLM calls) |
 | `AGENTO_WORKSPACE_DIR` | /workspace | Base directory for per-run directories |
 
-> **Naming:** Framework knobs use the `AGENTO_*` prefix so they survive the cron entrypoint's env-var whitelist (the consumer is launched via `su - agent`, which wipes the parent env). See [cron-env-contract.md](cron-env-contract.md).
+> **Naming:** Framework knobs use the `AGENTO_*` prefix so they survive the cron entrypoint's env-var whitelist (the consumer is launched through the root `launch.sh`, which starts from an empty environment). See [cron-env-contract.md](cron-env-contract.md).
 
 ## Hot-Reload
 

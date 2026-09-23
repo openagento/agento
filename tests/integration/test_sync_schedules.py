@@ -3,25 +3,14 @@ from __future__ import annotations
 
 import copy
 import logging
-from unittest.mock import MagicMock, patch
 
 import httpx
 import respx
 
 from agento.modules.jira.src.toolbox_client import ToolboxClient
-from agento.modules.jira_periodic_tasks.src.crontab import CrontabManager
 from agento.modules.jira_periodic_tasks.src.sync import JiraCronSync
 
 from .conftest import fetch_all_schedules
-
-
-def _mock_crontab_subprocess(cmd, **kwargs):
-    """Stub crontab subprocess calls."""
-    if cmd == ["crontab", "-l"]:
-        return MagicMock(returncode=0, stdout="")
-    if cmd == ["crontab", "-"]:
-        return MagicMock(returncode=0)
-    return MagicMock(returncode=0)
 
 
 class TestSyncScheduleLifecycle:
@@ -39,10 +28,10 @@ class TestSyncScheduleLifecycle:
             return_value=httpx.Response(200, json=jira_cykliczne_fixture)
         )
 
-        with patch("agento.modules.jira_periodic_tasks.src.crontab.subprocess.run", side_effect=_mock_crontab_subprocess):
-            crontab_mgr = CrontabManager()
-            syncer = JiraCronSync(int_config, int_periodic_config, toolbox, crontab_mgr, logger, db_config=int_db_config)
-            crontab_mgr.apply_managed(syncer.sync_view())
+        syncer = JiraCronSync(
+            int_config, int_periodic_config, toolbox, logger, db_config=int_db_config,
+        )
+        syncer.sync_view()
 
         schedules = fetch_all_schedules()
         assert len(schedules) == 2
@@ -60,10 +49,10 @@ class TestSyncScheduleLifecycle:
             return_value=httpx.Response(200, json=fixture_only_ai2)
         )
 
-        with patch("agento.modules.jira_periodic_tasks.src.crontab.subprocess.run", side_effect=_mock_crontab_subprocess):
-            crontab_mgr2 = CrontabManager()
-            syncer2 = JiraCronSync(int_config, int_periodic_config, toolbox, crontab_mgr2, logger, db_config=int_db_config)
-            crontab_mgr2.apply_managed(syncer2.sync_view())
+        syncer2 = JiraCronSync(
+            int_config, int_periodic_config, toolbox, logger, db_config=int_db_config,
+        )
+        syncer2.sync_view()
 
         schedules = fetch_all_schedules()
         by_key = {s["issue_key"]: s for s in schedules}
@@ -90,10 +79,10 @@ class TestSyncScheduleLifecycle:
             return_value=httpx.Response(200, json=fixture_v1)
         )
 
-        with patch("agento.modules.jira_periodic_tasks.src.crontab.subprocess.run", side_effect=_mock_crontab_subprocess):
-            crontab_mgr = CrontabManager()
-            syncer = JiraCronSync(int_config, int_periodic_config, toolbox, crontab_mgr, logger, db_config=int_db_config)
-            crontab_mgr.apply_managed(syncer.sync_view())
+        syncer = JiraCronSync(
+            int_config, int_periodic_config, toolbox, logger, db_config=int_db_config,
+        )
+        syncer.sync_view()
 
         schedules = fetch_all_schedules()
         assert len(schedules) == 1
@@ -107,10 +96,10 @@ class TestSyncScheduleLifecycle:
             return_value=httpx.Response(200, json=fixture_v2)
         )
 
-        with patch("agento.modules.jira_periodic_tasks.src.crontab.subprocess.run", side_effect=_mock_crontab_subprocess):
-            crontab_mgr2 = CrontabManager()
-            syncer2 = JiraCronSync(int_config, int_periodic_config, toolbox, crontab_mgr2, logger, db_config=int_db_config)
-            crontab_mgr2.apply_managed(syncer2.sync_view())
+        syncer2 = JiraCronSync(
+            int_config, int_periodic_config, toolbox, logger, db_config=int_db_config,
+        )
+        syncer2.sync_view()
 
         schedules = fetch_all_schedules()
         assert len(schedules) == 1

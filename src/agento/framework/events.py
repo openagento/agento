@@ -334,13 +334,6 @@ class DataPatchAppliedEvent:
     module: str
 
 
-@dataclass
-class CrontabInstalledEvent:
-    """Dispatched after crontab is updated by setup:upgrade."""
-
-    job_count: int = 0
-
-
 # --- Routing events ---
 
 

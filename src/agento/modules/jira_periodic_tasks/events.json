@@ -1,5 +1,0 @@
-{
-  "setup_upgrade_after": [
-    {"name": "restore_jira_cron_on_setup", "class": "src.observers.RestoreCrontabOnSetupObserver", "order": 100}
-  ]
-}

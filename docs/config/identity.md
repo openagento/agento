@@ -169,9 +169,8 @@ input **sanity bound** on a secret that travels through the process environment 
 ### The `CONFIG__*` ENV scope cannot carry the private key
 
 The 3-level fallback is ENV → DB → `config.json` for every field, with **one refused path**: the
-**cron** entrypoint carries the environment across its `su - agent` boundary through a line-oriented
-file, which cannot hold a multiline PEM — and could not be allowed to, because that file would be the
-key on disk. The **sandbox** entrypoint has no such file (it `exec`s `gosu agent`, so the environment
+**cron** entrypoint writes every `CONFIG__*` value to its credential-store file, so a PEM arriving
+that way would be the key on disk — which is exactly what this release removed. The **sandbox** entrypoint has no such file (it `exec`s `gosu agent`, so the environment
 passes through intact); it refuses the variable for the second reason below, not this one. Both
 entrypoints **refuse to start** when
 `CONFIG__AGENT_VIEW__IDENTITY__SSH_PRIVATE_KEY` is set in the container environment (exit 78) and

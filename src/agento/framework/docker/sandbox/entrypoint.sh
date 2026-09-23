@@ -25,9 +25,9 @@ done
 # value would be inherited by every agent_view's runs, including views that were granted
 # no key at all, which is exactly the cross-view use of one identity this release removes.
 # `CONFIG__AGENT_VIEW__IDENTITY__SSH_PRIVATE_KEY` is refused here for the same reason as the
-# others, and stays refused for consistency with the cron entrypoint, whose `su - agent`
-# boundary carries env through a line-oriented file that cannot hold a multiline PEM (this
-# entrypoint `exec`s gosu and writes no such file). Set it in the DB instead
+# others, and stays refused for consistency with the cron entrypoint, which would write any
+# `CONFIG__*` value to its credential-store file, putting the key on disk (this entrypoint
+# `exec`s gosu and writes no such file). Set it in the DB instead
 # (`cat id_rsa | bin/agento config:set agent_view/identity/ssh_private_key --scope agent_view`).
 for _v in AGENTO_SSH_PRIVATE_KEY AGENTO_SSH_TTL SSH_AUTH_SOCK SSH_AGENT_PID \
           GIT_SSH_COMMAND CONFIG__AGENT_VIEW__IDENTITY__SSH_PRIVATE_KEY; do

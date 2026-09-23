@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from agento.framework.db import get_connection
 from agento.modules.jira.src.toolbox_client import ToolboxClient
 
-from .crontab import CronEntry, CrontabManager
+
+@dataclass
+class CronEntry:
+    """One recurring Jira issue, on its way into the ``schedule`` table.
+
+    The root crontab renderer reads that table; nothing here builds a crontab line.
+    """
+
+    issue_key: str
+    summary: str
+    frequency_label: str
+    cron_expression: str
+    agent_view_code: str = ""
 
 
 class JiraCronSync:
@@ -15,7 +28,6 @@ class JiraCronSync:
         jira_config: object,
         periodic_config: object,
         toolbox: ToolboxClient,
-        crontab: CrontabManager,
         logger: logging.Logger,
         *,
         db_config: object | None = None,
@@ -25,7 +37,6 @@ class JiraCronSync:
         self.jira_config = jira_config
         self.periodic_config = periodic_config
         self.toolbox = toolbox
-        self.crontab = crontab
         self.logger = logger
         self.db_config = db_config
         self.agent_view_id = agent_view_id

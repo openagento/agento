@@ -4,8 +4,10 @@ Runs the full setup sequence in order:
 1. Framework SQL migrations
 2. Module SQL migrations (dependency order)
 3. Data patches (topological order by ``require()``)
-4. Cron installation
-5. Module onboarding (interactive, skippable)
+4. Module onboarding (interactive, skippable)
+
+It does **not** install a crontab: root renders that from the installed module catalog
+and the ``schedule`` table (docs/architecture/cron-privileges.md).
 """
 from __future__ import annotations
 
@@ -17,18 +19,10 @@ from pathlib import Path
 import pymysql
 
 from .bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
-from .crontab import (
-    assemble,
-    build_managed_block,
-    collect_cron_jobs,
-    extract_unmanaged,
-    get_current_crontab,
-    install_crontab,
-)
 from .data_patch import apply_patch, get_all_pending, resolve_patch_order
 from .dependency_resolver import resolve_order, validate_dependencies
 from .event_manager import get_event_manager
-from .events import CrontabInstalledEvent, SetupBeforeEvent, SetupCompleteEvent
+from .events import SetupBeforeEvent, SetupCompleteEvent
 from .migrate import get_pending, migrate
 from .module_discovery import scan_all_modules
 from .module_status import filter_enabled
@@ -39,7 +33,6 @@ from .module_validator import (
 )
 
 FRAMEWORK_SQL_DIR = Path(__file__).parent / "sql"
-FRAMEWORK_CRON_JSON = Path(__file__).parent / "cron.json"
 
 
 @dataclass
@@ -49,7 +42,6 @@ class SetupResult:
     framework_migrations: list[str] = field(default_factory=list)
     module_migrations: dict[str, list[str]] = field(default_factory=dict)
     data_patches: dict[str, list[str]] = field(default_factory=dict)
-    cron_changed: bool = False
     onboardings_run: list[str] = field(default_factory=list)
     onboardings_disabled: list[str] = field(default_factory=list)
 
@@ -59,7 +51,6 @@ class SetupResult:
             self.framework_migrations
             or self.module_migrations
             or self.data_patches
-            or self.cron_changed
             or self.onboardings_run
             or self.onboardings_disabled
         )
@@ -159,20 +150,7 @@ def setup_upgrade(
                 apply_patch(m, p, conn, logger)
                 result.data_patches.setdefault(m.name, []).append(p["name"])
 
-    # 4. Cron installation
-    jobs = collect_cron_jobs(manifests, FRAMEWORK_CRON_JSON)
-    current = get_current_crontab()
-    unmanaged = extract_unmanaged(current)
-    managed = build_managed_block(jobs)
-    new_crontab = assemble(unmanaged, managed)
-    result.cron_changed = install_crontab(new_crontab, dry_run=dry_run)
-    if result.cron_changed and not dry_run:
-        em.dispatch(
-            "crontab_install_after",
-            CrontabInstalledEvent(job_count=len(jobs)),
-        )
-
-    # 5. Module onboarding (interactive, skippable)
+    # 4. Module onboarding (interactive, skippable)
     if not dry_run and not skip_onboarding:
         from .bootstrap import get_module_config  # lazy: avoids circular with bootstrap
         from .cli.terminal import select

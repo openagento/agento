@@ -433,14 +433,14 @@ class TestFetchRuntime:
             _fetch_runtime(["-f", "/x/docker-compose.yml"], "dev_01")
         assert mock_run.call_args.args[0] == [
             "docker", "compose", "-f", "/x/docker-compose.yml",
-            "exec", "-T", "-u", "agent", "cron",
+            "exec", "-u", "root", "-T", "cron",
+            "/opt/cron-agent/launch.sh", "--store", "--",
             "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
         ]
 
     def test_appends_prompt_and_yolo_after_service_args(self):
         """``--prompt``/``--yolo`` are arguments to ``prepare-run``, so they go
-        at the TAIL — they must never displace ``-u agent`` from its position
-        before the service name."""
+        at the TAIL — after the launcher's ``--``, never among the exec flags."""
         from agento.framework.cli.run import _fetch_runtime
 
         fake_result = subprocess.CompletedProcess(
@@ -456,7 +456,8 @@ class TestFetchRuntime:
             )
         assert mock_run.call_args.args[0] == [
             "docker", "compose", "-f", "/x/docker-compose.yml",
-            "exec", "-T", "-u", "agent", "cron",
+            "exec", "-u", "root", "-T", "cron",
+            "/opt/cron-agent/launch.sh", "--store", "--",
             "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
             "--prompt", "hello", "--yolo",
         ]

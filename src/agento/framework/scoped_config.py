@@ -128,11 +128,10 @@ def resolve_with_origin(
     legacy harness/provider fallback need this, so it does per-scope lookups instead
     of rewriting the shared resolver.
     """
-    import os
-
+    from . import store_env
     from .config_resolver import path_to_env_key
 
-    env_value = os.environ.get(path_to_env_key(path))
+    env_value = store_env.get(path_to_env_key(path))
     if env_value is not None:
         return env_value, ORIGIN_ENV
 

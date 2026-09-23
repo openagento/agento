@@ -10,7 +10,7 @@ import pytest
 
 from agento.framework.event_manager import ObserverEntry, get_event_manager
 from agento.framework.event_manager import clear as clear_event_manager
-from agento.framework.events import CrontabInstalledEvent, SetupBeforeEvent, SetupCompleteEvent
+from agento.framework.events import SetupBeforeEvent, SetupCompleteEvent
 from agento.framework.setup import SetupResult, setup_upgrade
 
 
@@ -68,18 +68,13 @@ class TestSetupResult:
     def test_has_work_with_migrations(self):
         assert SetupResult(framework_migrations=["001"]).has_work
 
-    def test_has_work_with_cron(self):
-        assert SetupResult(cron_changed=True).has_work
-
     def test_has_work_with_patches(self):
         assert SetupResult(data_patches={"jira": ["Pop"]}).has_work
 
 
 class TestSetupUpgrade:
-    @patch("agento.framework.setup.install_crontab", return_value=False)
-    @patch("agento.framework.setup.get_current_crontab", return_value="")
     @patch("agento.framework.setup.migrate", return_value=["011_module_migrations"])
-    def test_applies_framework_migrations(self, mock_migrate, mock_crontab, mock_install, tmp_path):
+    def test_applies_framework_migrations(self, mock_migrate, tmp_path):
         conn, _ = _mock_conn()
         core_dir, user_dir = _setup_modules(tmp_path)
         logger = logging.getLogger("test")
@@ -90,10 +85,8 @@ class TestSetupUpgrade:
         mock_migrate.assert_called_once()
         assert mock_migrate.call_args[1]["module"] == "framework"
 
-    @patch("agento.framework.setup.install_crontab", return_value=False)
-    @patch("agento.framework.setup.get_current_crontab", return_value="")
     @patch("agento.framework.setup.migrate")
-    def test_module_migrations_in_dependency_order(self, mock_migrate, mock_crontab, mock_install, tmp_path):
+    def test_module_migrations_in_dependency_order(self, mock_migrate, tmp_path):
         core_dir, user_dir = _setup_modules(tmp_path)
 
         # Create two modules with sql/ dirs
@@ -143,12 +136,9 @@ class TestSetupUpgrade:
         with pytest.raises(ModuleValidationError):
             setup_upgrade(conn, logging.getLogger("test"), core_dir=core_dir, user_dir=user_dir)
         mock_migrate.assert_not_called()  # aborts before any migration
-
-    @patch("agento.framework.setup.install_crontab", return_value=False)
-    @patch("agento.framework.setup.get_current_crontab", return_value="")
     @patch("agento.framework.setup.migrate", return_value=[])
     @patch("agento.framework.setup.get_pending", return_value=[])
-    def test_dry_run_no_mutations(self, mock_pending, mock_migrate, mock_crontab, mock_install, tmp_path):
+    def test_dry_run_no_mutations(self, mock_pending, mock_migrate, tmp_path):
         conn, _ = _mock_conn()
         core_dir, user_dir = _setup_modules(tmp_path)
 
@@ -161,34 +151,19 @@ class TestSetupUpgrade:
         mock_migrate.assert_not_called()
         assert not result.has_work
 
-    @patch("agento.framework.setup.install_crontab", return_value=True)
-    @patch("agento.framework.setup.get_current_crontab", return_value="")
     @patch("agento.framework.setup.migrate", return_value=[])
-    def test_cron_installation(self, mock_migrate, mock_crontab, mock_install, tmp_path):
-        core_dir, user_dir = _setup_modules(tmp_path)
-
-        # Module with cron.json
-        mod = Path(core_dir) / "jira"
-        mod.mkdir()
-        (mod / "module.json").write_text(json.dumps(
-            {"name": "jira", "version": "1.0.0", "description": "jira module"}
-        ))
-        (mod / "cron.json").write_text(json.dumps({
-            "jobs": [{"name": "sync", "schedule": "0 * * * *", "command": "sync"}]
-        }))
-
+    def test_setup_upgrade_installs_no_crontab(self, mock_migrate, tmp_path):
+        """The crontab belongs to root now — setup must not invoke the binary."""
         conn, _ = _mock_conn()
-        result = setup_upgrade(conn, logging.getLogger("test"), core_dir=core_dir, user_dir=user_dir)
-
-        assert result.cron_changed
-        mock_install.assert_called_once()
+        core_dir, user_dir = _setup_modules(tmp_path)
+        with patch("subprocess.run") as run:
+            setup_upgrade(conn, logging.getLogger("test"), core_dir=core_dir, user_dir=user_dir)
+        assert not any("crontab" in str(c) for c in run.call_args_list)
 
 
 class TestSetupEvents:
-    @patch("agento.framework.setup.install_crontab", return_value=False)
-    @patch("agento.framework.setup.get_current_crontab", return_value="")
     @patch("agento.framework.setup.migrate", return_value=[])
-    def test_dispatches_setup_before_and_complete(self, mock_migrate, mock_crontab, mock_install, tmp_path):
+    def test_dispatches_setup_before_and_complete(self, mock_migrate, tmp_path):
         em = get_event_manager()
         em.register("setup_upgrade_before", ObserverEntry(name="b", observer_class=_EventCollector))
         em.register("setup_upgrade_after", ObserverEntry(name="c", observer_class=_EventCollector))
@@ -202,11 +177,8 @@ class TestSetupEvents:
         assert SetupCompleteEvent in types
         # before fires first
         assert types.index(SetupBeforeEvent) < types.index(SetupCompleteEvent)
-
-    @patch("agento.framework.setup.install_crontab", return_value=False)
-    @patch("agento.framework.setup.get_current_crontab", return_value="")
     @patch("agento.framework.setup.migrate", return_value=[])
-    def test_setup_before_carries_dry_run(self, mock_migrate, mock_crontab, mock_install, tmp_path):
+    def test_setup_before_carries_dry_run(self, mock_migrate, tmp_path):
         em = get_event_manager()
         em.register("setup_upgrade_before", ObserverEntry(name="b", observer_class=_EventCollector))
 
@@ -218,34 +190,6 @@ class TestSetupEvents:
         evt = _EventCollector.events[0]
         assert isinstance(evt, SetupBeforeEvent)
         assert evt.dry_run is True
-
-    @patch("agento.framework.setup.install_crontab", return_value=True)
-    @patch("agento.framework.setup.get_current_crontab", return_value="")
-    @patch("agento.framework.setup.migrate", return_value=[])
-    def test_dispatches_crontab_installed_on_change(self, mock_migrate, mock_crontab, mock_install, tmp_path):
-        em = get_event_manager()
-        em.register("crontab_install_after", ObserverEntry(name="ci", observer_class=_EventCollector))
-
-        core_dir, user_dir = _setup_modules(tmp_path)
-        conn, _ = _mock_conn()
-        setup_upgrade(conn, logging.getLogger("test"), core_dir=core_dir, user_dir=user_dir)
-
-        cron_events = [e for e in _EventCollector.events if isinstance(e, CrontabInstalledEvent)]
-        assert len(cron_events) == 1
-
-    @patch("agento.framework.setup.install_crontab", return_value=False)
-    @patch("agento.framework.setup.get_current_crontab", return_value="")
-    @patch("agento.framework.setup.migrate", return_value=[])
-    def test_no_crontab_event_when_unchanged(self, mock_migrate, mock_crontab, mock_install, tmp_path):
-        em = get_event_manager()
-        em.register("crontab_install_after", ObserverEntry(name="ci", observer_class=_EventCollector))
-
-        core_dir, user_dir = _setup_modules(tmp_path)
-        conn, _ = _mock_conn()
-        setup_upgrade(conn, logging.getLogger("test"), core_dir=core_dir, user_dir=user_dir)
-
-        cron_events = [e for e in _EventCollector.events if isinstance(e, CrontabInstalledEvent)]
-        assert len(cron_events) == 0
 
 
 class _FakeOnboarding:
@@ -274,9 +218,7 @@ class TestStrictOnboarding:
         core_dir, user_dir = _setup_modules(tmp_path)
         conn, _ = _mock_conn()
 
-        with patch("agento.framework.setup.install_crontab", return_value=False), \
-             patch("agento.framework.setup.get_current_crontab", return_value=""), \
-             patch("agento.framework.setup.migrate", return_value=[]), \
+        with patch("agento.framework.setup.migrate", return_value=[]), \
              patch("agento.framework.setup.validate_module", return_value=[]), \
              patch("agento.framework.onboarding.get_onboardings", return_value=onboardings), \
              patch("agento.framework.bootstrap.get_module_config", return_value={}), \

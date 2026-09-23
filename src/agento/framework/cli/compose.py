@@ -75,7 +75,7 @@ class UpCommand:
         log_info("Containers started.")
         print()
         print("Next steps:")
-        print("  agento setup:upgrade          Apply migrations and install crontab")
+        print("  agento setup:upgrade          Apply migrations and data patches")
         print("  agento credential:register <scope> <label>   Register an agent credential")
         print("  agento logs                    View container logs")
         print()

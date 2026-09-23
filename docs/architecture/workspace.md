@@ -503,7 +503,11 @@ The agent's world is:
 - **home** = shared CLI session store (globally accessible via symlinks)
 - **Everything else** is reached through MCP tool calls to the toolbox
 
-No awareness of other jobs. The run holds the agent's own harness credential and its own scoped toolbox capability. The target model gives it no tool credentials and no direct DB access; a headless run today inherits the cron env (see [zero-trust.md](zero-trust.md#known-exceptions-and-debt)).
+No credential from the toolbox store, no direct DB access, no awareness of other jobs. The run holds the agent's own harness credential and its own scoped toolbox capability. The one
+exception is the per-run git SSH identity, delivered as a signing socket rather than a key file
+(see [DECISIONS.md](../../DECISIONS.md) D-SSH-1).
+
+**Closed in this release:** the credential store no longer reaches uid `agent` at all. The cron container's store file is `root:root 0600` and is read by a root-owned program that drops privilege in-process before loading it, so it crosses no `execve`; the managed crontab is rendered by root from inputs the agent cannot write. [D-SSH-1](../../DECISIONS.md) residual channel (6), **closed 2026-09-23** — see [cron-privileges.md](cron-privileges.md).
 
 ---
 

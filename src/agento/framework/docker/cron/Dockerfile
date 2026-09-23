@@ -31,14 +31,27 @@ COPY ${PYPROJECT_DIR}/pyproject.toml ${PYPROJECT_DIR}/uv.lock /opt/cron-agent/
 COPY ${PYPROJECT_DIR}/_local_dist/ /opt/cron-agent/_local_dist/
 RUN cd /opt/cron-agent && \
     uv venv .venv && \
-    uv sync --frozen --no-install-project --no-dev && \
-    chown -R agent /opt/cron-agent
+    uv sync --frozen --no-install-project --no-dev
 
 ENV PATH=/opt/cron-agent/.venv/bin:$PATH
 
 COPY ${SCRIPTS_DIR}/run.sh /opt/cron-agent/run.sh
 COPY ${SCRIPTS_DIR}/logrotate-agent.conf /opt/cron-agent/logrotate-agent.conf
+COPY ${SCRIPTS_DIR}/launch.sh /opt/cron-agent/launch.sh
+COPY ${SCRIPTS_DIR}/install-crontab.py /opt/cron-agent/install-crontab.py
+COPY ${SCRIPTS_DIR}/split-env.py /opt/cron-agent/split-env.py
+COPY ${SCRIPTS_DIR}/drop.py /opt/cron-agent/drop.py
 COPY ${SCRIPTS_DIR}/entrypoint.sh /entrypoint.sh
-RUN chmod +x /opt/cron-agent/run.sh /entrypoint.sh
+
+# /opt/cron-agent is root-owned: write permission on the DIRECTORY would let `agent`
+# unlink or replace a root-owned script inside it whatever that file's own mode says.
+# `agent` reads and executes run.sh and the venv, and writes nothing. The three
+# root-only programs are 0700 — the launcher, the renderer, the env splitter and the
+# privilege-dropping store reader.
+RUN chown -R root:root /opt/cron-agent && \
+    chmod -R go-w /opt/cron-agent && \
+    chmod +x /opt/cron-agent/run.sh /entrypoint.sh && \
+    chmod 0700 /opt/cron-agent/launch.sh /opt/cron-agent/install-crontab.py \
+               /opt/cron-agent/split-env.py /opt/cron-agent/drop.py
 
 ENTRYPOINT ["/entrypoint.sh"]

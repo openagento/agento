@@ -164,6 +164,16 @@ docker compose restart
   [docs/security/toolbox-only-secret-boundary.md](docs/security/toolbox-only-secret-boundary.md).
   Surfaced by the Outlook sender-routing review (2026-07-24) as pre-existing and out of scope for
   that feature.
+- ~~**A distinct OS uid per agent_view (Option B of D-SSH-1)**~~ — **cancelled 2026-09-23.**
+  agent_views sharing `/workspace` files is a wanted property (it is how a task is handed from one
+  view to another), so per-view uids are not going to be built. What Option B was carrying —
+  D-SSH-1 residual channel (6), the credential store reachable by any process at uid `agent` — was
+  closed instead by **V0**: the store is taken away from the shared uid (root-owned
+  `/opt/cron-agent`, a `0600` store file delivered on a file descriptor, a root-owned `setpriv`
+  launcher, and a root-rendered crontab). See
+  [docs/architecture/cron-privileges.md](docs/architecture/cron-privileges.md) and `DECISIONS.md`
+  D-SSH-1. The peer-**artifact** reads Option B would also have closed remain open and accepted:
+  one uid, one `/workspace`.
 - **Per-run identity boundary for the sandbox (the segmentation half of the toolbox east-west work)**
   — **OPEN.** Capability tokens stop a caller from *asking* for another view's scope, but every agent
   process the consumer spawns runs as the same `agent` account and the cron container mounts the whole
