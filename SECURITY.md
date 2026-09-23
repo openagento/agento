@@ -40,8 +40,11 @@ The following are considered security vulnerabilities:
 
 Agento uses a zero-trust container architecture:
 
-- The **sandbox** (where AI agents run) has no credentials and no direct database access.
-- The **toolbox** is the only container with secrets, exposed via controlled MCP tool interfaces.
+- The **sandbox** (where AI agents run) holds no tool or database credential and has no database
+  access. It does receive the **harness/provider** API credential its own run needs — that is what
+  runs the model — and one further documented exception: the SSH private key used for git, delivered per run into a private `ssh-agent`
+  and never written to disk (a dated, scoped waiver — see [DECISIONS.md](DECISIONS.md) D-SSH-1).
+- The **toolbox** is the only container holding the credential store (API keys, tokens, DB credentials), exposed via controlled MCP tool interfaces. The SSH exception above is the one credential that does not come from it.
 - Config encryption uses AES-256-CBC for sensitive fields.
 
 See [docs/architecture/](docs/architecture/) for full details.

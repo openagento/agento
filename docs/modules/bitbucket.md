@@ -158,9 +158,10 @@ for t in bitbucket_get_pr bitbucket_get_pr_diff bitbucket_get_pr_comments bitbuc
 done
 ```
 
-**Checkout + push** is **not** a Bitbucket tool — it is the agent's own git identity (the existing
-`workspace_build` SSH identity, config `agent_view/identity/ssh_private_key`). It is "opt-in" by virtue
-of that identity being configured (no identity ⇒ no push). The Bitbucket API token (REST) and the SSH
+**Checkout + push** is **not** a Bitbucket tool — it is the agent's own git identity (config
+`agent_view/identity/ssh_private_key`, loaded into a **per-run `ssh-agent`** — not a file in the
+workspace build; see [identity docs](../config/identity.md)). It is "opt-in" by virtue of that identity
+being configured (no identity ⇒ no push). The Bitbucket API token (REST) and the SSH
 key (git) are different credentials.
 
 ## Security model

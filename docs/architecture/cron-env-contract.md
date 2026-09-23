@@ -37,6 +37,16 @@ So the whitelist is not a security boundary — it's a *parsing* boundary.
 | `AGENTO_*`          | **Framework knobs.** Use this prefix for any new env var the consumer/cron needs. | n/a — this is the canonical extensibility prefix |
 | `MYSQL_*`           | Database driver config (`MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`, `MYSQL_PORT`) | No — driver convention |
 | `CONFIG__*`         | Public 3-level config-fallback contract (ENV → DB → `config.json`) | No — public contract |
+
+**One value the whitelist does not carry, by design.** The env file is line-oriented, so a
+**multiline** `CONFIG__*` value survives only as its first line. For the SSH private key that is
+refused outright rather than truncated: the entrypoints exit 78 when
+`CONFIG__AGENT_VIEW__IDENTITY__SSH_PRIVATE_KEY` (or an ambient `AGENTO_SSH_PRIVATE_KEY`,
+`AGENTO_SSH_TTL`, `SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `GIT_SSH_COMMAND`) is set in the container
+environment — quoting the key into that 0644 file would put it on disk, which is exactly what
+[D-SSH-1](../../DECISIONS.md) removed. Set it in the DB. Other multiline fields (instructions, the
+non-secret SSH files) are truncated silently, not refused; use the DB for those too.
+
 | `TZ`                | libc / cron daemon timezone | No — libc convention |
 | `PYTHONPATH`        | Python module resolution | No — Python convention |
 | `PROVIDER`          | Default agent provider for `agento run` | Could be renamed; not broken today |

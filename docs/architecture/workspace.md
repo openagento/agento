@@ -410,7 +410,7 @@ This symlink is the **only thing the consumer looks at** to find "the active bui
 
 - **Created** at job start. `prepare_artifacts_dir()` wipes any prior content and recreates the dir.
 - **Used** throughout the job as the agent's cwd. The agent CLI writes its own scratch here; toolbox tools drop outputs here (screenshots, videos, Jira attachments, etc.).
-- **Removed on clean completion.** Jobs that crash or are killed leave the dir behind — useful for post-mortem inspection until the next attempt re-runs and wipes it.
+- **Retained after completion** — clean or not. The dir holds the run's artifacts for post-mortem inspection until the same run dir is reused, which wipes it. Periodic cleanup of old run dirs is a ROADMAP item, not current behaviour.
 
 **Why a separate artifacts dir per job:**
 
@@ -488,7 +488,11 @@ The agent's world is:
 - **home** = shared CLI session store (globally accessible via symlinks)
 - **Everything else** is reached through MCP tool calls to the toolbox
 
-No credentials, no direct DB access, no awareness of other jobs.
+No credential from the toolbox store, no direct DB access, no awareness of other jobs. The one
+exception is the per-run git SSH identity, delivered as a signing socket rather than a key file
+(see [DECISIONS.md](../../DECISIONS.md) D-SSH-1).
+
+**Known gap, not closed by this release:** a *scheduled* agent runs as the cron container's own uid, which can read the credential store's environment (the mode-0644 env file the crontab sources) and therefore decrypt any stored credential. Recorded as [D-SSH-1](../../DECISIONS.md) residual channel (6) and **accepted by the owner 2026-08-25 until AG-42 (Option B, per-view uid)** closes it. Framework processes are non-dumpable since 2026-08-25, so `/proc/<pid>/environ` is no longer a route — but the 0644 env file is, so the capability is unchanged.
 
 ---
 

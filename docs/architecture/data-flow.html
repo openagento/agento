@@ -379,8 +379,13 @@
       <div class="card">
         <div class="card-title">Agent invokes MCP tools</div>
         <div class="card-body">
-          Tool calls flow over the MCP connection defined in <code>.mcp.json</code>. The agent has no credentials of its own —
-          every privileged action is delegated to the toolbox.
+          Tool calls flow over the MCP connection defined in <code>.mcp.json</code>. The agent holds no credential from the
+          toolbox store — every privileged action is delegated to the toolbox. One documented exception: the per-run git SSH
+          identity, delivered as a signing socket rather than a key file (see <code>DECISIONS.md</code> D-SSH-1).
+          <strong>Known gap, not closed by this release:</strong> a <em>scheduled</em> agent runs as the cron
+          container's own uid, which can read the credential store's environment (the mode-0644 env file the
+          crontab sources) and therefore decrypt any stored credential — <code>DECISIONS.md</code> D-SSH-1
+          residual channel (6) &mdash; accepted by the owner 2026-08-25 until AG-42 (Option B) closes it.
         </div>
       </div>
       <div class="card callout">
