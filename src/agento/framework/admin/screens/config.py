@@ -415,6 +415,15 @@ class ConfigFieldEditorScreen(ModalScreen[bool]):
         return self.query_one("#editor-input", Input).value
 
     def _validate(self, value: str) -> str | None:
+        # Shared declarative rules (maxLength, ...) — the same helper `config:set` calls,
+        # so a constraint cannot hold at one entry point and not the other.
+        from ...config_validation import validate_field_value
+
+        shared = validate_field_value(
+            {"type": self._field.field_type, "maxLength": self._field.max_length}, value,
+        )
+        if shared is not None:
+            return shared
         # The incident came through `config:set`, but this screen writes the same
         # field and had no validation at all. Same parse, same rule as
         # _is_private_key_field in framework/cli/config.py: an obscure field whose

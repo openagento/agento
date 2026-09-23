@@ -15,7 +15,7 @@ Agento is extensible by design. Creating and sharing custom modules is simple. W
 
 ## Why Agento?
 
-- **Secure by architecture** — agents run in an isolated sandbox without direct access to secrets.
+- **Secure by architecture** — agents run in an isolated sandbox with no access to the credential store; the one scoped exception is the per-run git SSH identity (see `DECISIONS.md` D-SSH-1). A *scheduled* agent additionally runs as the cron container's own uid, which can still reach that store — D-SSH-1 residual channel (6), accepted until AG-42 closes it with per-view uids.
 - **Controlled tool access** — enforce policies for tools like email, browser, and external systems.
 - **Modular by default** — extend behavior through modules, not by patching core code.
 - **Deployment-specific customization** — adapt agents, policies, and workflows per workspace or environment.
@@ -64,8 +64,8 @@ agento install                        # Interactive wizard — scaffolds, starts
 Agento runs three Docker containers on a shared network:
 
 - **Cron** (Python) -- Job queue consumer, scheduler, CLI host. Manages the lifecycle of agent jobs, runs migrations, and dispatches events. Connects to MySQL for job state, config, and module metadata.
-- **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over stdio. The only container with access to secrets.
-- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container where the AI agent executes. Has no credentials, no direct database access. Communicates with the toolbox exclusively through MCP tool calls.
+- **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over stdio. The only container that holds the credential store (API keys, tokens, DB credentials).
+- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container where the AI agent executes. Holds no credential from that store and no database access; the one credential it does get is the **harness/provider** API credential its own run needs, delivered per run; it communicates with the toolbox exclusively through MCP tool calls. One documented exception: the git SSH identity, delivered per run as a signing capability (`SSH_AUTH_SOCK`) from a private `ssh-agent`, never as a key file — a dated, scoped waiver, see `DECISIONS.md` D-SSH-1.
 
 ## Module System
 

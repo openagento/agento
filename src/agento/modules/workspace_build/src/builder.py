@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,16 +25,10 @@ from agento.framework.git_identity import (
 )
 from agento.framework.persistent_home import ensure_state_dir as _ensure_state_dir
 from agento.framework.persistent_home import link_persistent_paths
-from agento.framework.ssh_keys import EncryptedKeyError, derive_public_key
+from agento.framework.ssh_identity import prune_stale_build_keys
 from agento.framework.workspace_paths import BUILD_DIR, THEME_DIR
 
 _DEFAULT_MAX_BUILDS = 10
-
-# Config paths (scoped, from agent_view/workspace/global)
-_SSH_PRIVATE_KEY_PATH = "agent_view/identity/ssh_private_key"
-_SSH_PUBLIC_KEY_PATH = "agent_view/identity/ssh_public_key"
-_SSH_CONFIG_PATH = "agent_view/identity/ssh_config"
-_SSH_KNOWN_HOSTS_PATH = "agent_view/identity/ssh_known_hosts"
 
 logger = logging.getLogger(__name__)
 
@@ -363,71 +356,6 @@ def ensure_state_dir(
     )
 
 
-def materialize_ssh_identity(
-    build_dir: Path,
-    resolved: dict[str, str],
-) -> None:
-    """Write SSH key, config, and known_hosts into ``build_dir/.ssh/`` when present.
-    Values come pre-resolved (ENV->DB->config.json, already decrypted). Private key
-    is written with mode 0600. Missing/empty fields are silently skipped.
-    """
-    private = resolved.get(_SSH_PRIVATE_KEY_PATH)
-    public = resolved.get(_SSH_PUBLIC_KEY_PATH)
-    config = resolved.get(_SSH_CONFIG_PATH)
-    known_hosts = resolved.get(_SSH_KNOWN_HOSTS_PATH)
-
-    if not (private or public or config or known_hosts):
-        return
-
-    ssh_dir = build_dir / ".ssh"
-    ssh_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(ssh_dir, 0o700)
-
-    if private:
-        target = ssh_dir / "id_rsa"
-        # Parse, do not eyeball. A structural check on the BEGIN/END envelope and a
-        # plausible length lets through a key that is the right shape and the
-        # wrong bytes — a paste that lost a middle line, a CRLF-mangled body — passes it
-        # and still yields "Permission denied (publickey)". `derive_public_key` is a
-        # single in-process parse against a key of a few hundred bytes, which is nothing
-        # beside building a workspace, and it is the same call `identity:check` makes, so
-        # the build warning and the CLI agree by construction.
-        #
-        # Last line of defence: config:set and the admin TUI both reject an unparsable
-        # key now, but a row written before that guard existed (or by a direct DB edit)
-        # would still land here and fail with nothing in the logs.
-        try:
-            derive_public_key(private)
-        except EncryptedKeyError:
-            logger.warning(
-                "materialize_ssh_identity: %s is passphrase-protected; the agent "
-                "cannot use it and git over SSH will fail. Store an unencrypted key.",
-                _SSH_PRIVATE_KEY_PATH,
-            )
-        except ValueError:
-            # Byte count only — never the key, and never the exception text, which
-            # some backends echo key material into.
-            logger.warning(
-                "materialize_ssh_identity: %s does not parse as an SSH private key "
-                "(%d bytes); git over SSH will fail. Run "
-                "`agento agent_view:identity:check <code>`.",
-                _SSH_PRIVATE_KEY_PATH, len(private),
-            )
-        target.write_text(private if private.endswith("\n") else private + "\n")
-        os.chmod(target, 0o600)
-
-    if public:
-        (ssh_dir / "id_rsa.pub").write_text(public)
-
-    if config:
-        target = ssh_dir / "config"
-        target.write_text(config)
-        os.chmod(target, 0o600)
-
-    if known_hosts:
-        (ssh_dir / "known_hosts").write_text(known_hosts)
-
-
 def materialize_git_identity(
     build_dir: Path,
     resolved: dict[str, str],
@@ -638,6 +566,18 @@ def execute_build(conn, agent_view_id: int, *, force: bool = False) -> BuildResu
         resolved, skill_checksums, strategies=strategies,
     )
 
+    # Prune legacy private keys from EVERY generation of this view's build tree, BEFORE
+    # the checksum early return below: `build()` returns early when an identical ready
+    # build exists, which is the most common case of all, so pruning at build step 7 would
+    # never run exactly when a pre-fix key is still sitting where the PROD attack found it.
+    base = Path(BUILD_DIR) / workspace_code / agent_view.code / "builds"
+    stale_keys = prune_stale_build_keys(base)
+    if stale_keys:
+        logger.warning(
+            "Removed %d legacy private key(s) from %s builds: %s",
+            len(stale_keys), agent_view.code, ", ".join(str(p) for p in stale_keys),
+        )
+
     # Skip if identical build already exists AND its build_dir is intact on disk.
     # When force=True, look up the prior build to clean it up, then always rebuild.
     with conn.cursor() as cur:
@@ -691,8 +631,7 @@ def execute_build(conn, agent_view_id: int, *, force: bool = False) -> BuildResu
             )
         conn.commit()
 
-    # Insert new build record
-    base = Path(BUILD_DIR) / workspace_code / agent_view.code / "builds"
+    # Insert new build record (`base` computed above, before the checksum early return)
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO workspace_build (agent_view_id, build_dir, checksum, status) "
@@ -757,8 +696,13 @@ def execute_build(conn, agent_view_id: int, *, force: bool = False) -> BuildResu
         # 6. .agents/skills symlink → .claude/skills (Codex compatibility)
         _create_agents_skills_symlink(build_dir)
 
-        # 7. SSH identity (private key, pub, config, known_hosts) from DB
-        materialize_ssh_identity(build_dir, resolved)
+        # 7. SSH identity is NOT materialized into the build. The private key used to be
+        # written here as .ssh/id_rsa (0600), but every agent_view runs as one uid on one
+        # shared /workspace, so that made it readable by every view. The non-secret files
+        # (id_rsa.pub, config, known_hosts) are written per run into the run HOME, and the
+        # private key is delivered in memory to a per-run ssh-agent — see
+        # framework/run_preparation.py and framework/ssh_prelude.py. Stale keys from
+        # pre-fix builds are pruned above, before the checksum early return.
 
         # 7b. Git commit author identity (~/.gitconfig [user]) from DB — so the agent's commits
         # are authored correctly (e.g. linked to the Bitbucket account by verified email).

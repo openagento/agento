@@ -570,6 +570,12 @@ class Consumer:
 
             # Per-job artifacts directory (only when agent_view is set) — extracted
             # so `agento run` exercises the same pipeline (see run_preparation.py).
+            # The four SSH identity values are read ONCE per run: the public files and
+            # the private key must come from the same config snapshot (a rotation between
+            # two reads would pair the old id_rsa.pub with the new key).
+            from .ssh_identity import resolve_ssh_identity, ssh_run_env
+            ssh_identity = resolve_ssh_identity(agent_config_svc)
+
             home_dir, artifacts_dir = materialize_run_workspace(
                 runtime,
                 run_id=job.id,
@@ -582,6 +588,7 @@ class Consumer:
                 # build-time value and a legitimate override could be rejected by its
                 # own model guard.
                 effective_model=model_override,
+                ssh_identity=ssh_identity,
             )
 
             em.dispatch("agent_view_run_start_before", AgentViewRunStartedEvent(
@@ -610,6 +617,14 @@ class Consumer:
                 if agent_config_svc is not None else {}
             )
 
+            # SSH identity -> env, never a file. The TTL is the job timeout the context
+            # below already carries, so the loaded identity expires WITH the job instead
+            # of outliving it by the wrapper's 12-hour fallback.
+            ssh_env = ssh_run_env(
+                ssh_identity, home_dir,
+                ttl_seconds=self._consumer_config.job_timeout_seconds,
+            )
+
             success = True
             try:
                 ctx = HarnessRunContext(
@@ -621,7 +636,7 @@ class Consumer:
                     timeout_seconds=self._consumer_config.job_timeout_seconds,
                     credential_required=provider_desc.credential_required,
                     credential=credential,
-                    extra_env=git_env or {},
+                    extra_env={**git_env, **ssh_env},
                     harness_config=(
                         get_harness_config(agent_config_svc, harness_entry)
                         if agent_config_svc is not None else {}

@@ -142,6 +142,17 @@ def _validate_config_value(
     if not isinstance(field_def, dict):
         return True
 
+    # Declarative rules that apply to any raw value (e.g. maxLength) live in ONE shared
+    # helper, which the admin editor calls too — a rule implemented in only one entry
+    # point is not a rule. They run BEFORE the type-specific checks so an oversized value
+    # is reported as oversized, not as whatever the parse made of its first 16 KB.
+    from ..config_validation import validate_field_value
+
+    generic_error = validate_field_value(field_def, value)
+    if generic_error is not None:
+        print(f"Error: {generic_error} ('{field_name}')")
+        return False
+
     if _is_private_key_field(field_name, field_def):
         return _validate_private_key(field_name, value)
 
