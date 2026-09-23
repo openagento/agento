@@ -591,43 +591,6 @@ export function discoverToolboxFiles(modulePath) {
  * @param {object} context - Shared context { app, log, db, playwright }
  * @returns {string[]} All registered tool names (adapter tools only; module tools are self-registering)
  */
-/**
- * Every resolved config value whose schema type is `obscure`.
- *
- * The toolbox is the only process holding these, so it is the only process that
- * can redact them. Values are masked at ANY length — a one-character secret
- * garbling a message is the correct trade: the alternative is printing it.
- *
- * One caller: `/health`, whose fan-out can return a message from any registered
- * healthcheck and which already holds the process-wide `moduleConfigs`.
- * `/config-test` deliberately does NOT use this — it masks only the values its
- * own declaration resolved, which is the complete set one probe can have seen
- * (Step 6). Resolving every module's obscure fields per request would widen
- * exposure for nothing.
- */
-export function collectObscureValues(moduleConfigs = null, modules = scanModules()) {
-  const out = new Set();
-  for (const mod of modules) {
-    const systemPath = path.join(mod._path, 'system.json');
-    if (!fs.existsSync(systemPath)) continue;
-    let system;
-    try {
-      system = JSON.parse(fs.readFileSync(systemPath, 'utf-8'));
-    } catch {
-      continue;
-    }
-    if (!system || typeof system !== 'object' || Array.isArray(system)) continue;
-
-    const resolved = moduleConfigs?.[mod.name] || {};
-    for (const [field, schema] of Object.entries(system)) {
-      if (schema?.type !== 'obscure') continue;
-      const value = resolved[field];
-      if (typeof value === 'string' && value.length > 0) out.add(value);
-    }
-  }
-  return [...out];
-}
-
 /** Replace every known secret in `text` with `***`. Longest-first, so a secret
  *  containing another is masked whole. */
 export function redactSecrets(text, secrets) {
@@ -912,8 +875,5 @@ export async function registerTools(server, context, agentViewId = null, preload
       `invisible in the admin Tools screen and in tool:list. Add it to that module's tools[].`);
   }
 
-  return {
-    toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames,
-    obscureValues: collectObscureValues(moduleConfigs),
-  };
+  return { toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames };
 }
