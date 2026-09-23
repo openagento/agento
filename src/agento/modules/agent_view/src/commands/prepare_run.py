@@ -141,6 +141,15 @@ class AgentViewPrepareRunCommand:
         # reach it and the run is failed for doing exactly what was asked.
         effective_model = args.model or runtime.model
 
+        # Read the four SSH identity values ONCE: the public files and the private key
+        # must come from one config snapshot (see framework/ssh_identity.py).
+        from agento.framework.ssh_identity import (
+            SSH_TTL_LOCAL_RUN,
+            resolve_ssh_identity,
+            ssh_run_env,
+        )
+        ssh_identity = resolve_ssh_identity(agent_config_svc)
+
         home, working_dir = materialize_run_workspace(
             runtime,
             run_id=_new_run_id(),
@@ -149,6 +158,7 @@ class AgentViewPrepareRunCommand:
             credential=credential,
             purge_credentials=purge_credentials,
             effective_model=effective_model,
+            ssh_identity=ssh_identity,
         )
 
         writer = workspace_adapter_for(runtime.harness)
@@ -167,6 +177,11 @@ class AgentViewPrepareRunCommand:
                 agent_config_svc.get(GIT_AUTHOR_NAME_PATH) or "",
                 agent_config_svc.get(GIT_AUTHOR_EMAIL_PATH) or "",
             ),
+            # The private key rides the SAME name-only `env` channel the host already
+            # forwards for API keys — it is never written to /workspace. A local run
+            # (headless or interactive) is operator-paced and has no job timeout to
+            # borrow, so the ssh-agent TTL is explicit rather than the wrapper's fallback.
+            **ssh_run_env(ssh_identity, home, ttl_seconds=SSH_TTL_LOCAL_RUN),
         }
 
         # Mirror ``agent_view:runtime``: an unregistered harness yields a JSON

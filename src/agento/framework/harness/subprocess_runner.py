@@ -18,6 +18,8 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
+from ..credential_store_env import without_credential_store_env
+from ..ssh_identity import without_run_owned_ssh_env
 from ..ssh_prelude import wrap_with_ssh_prelude
 from .protocols import CommandBuilder
 from .runtime import HarnessRunContext, RunRequest, RunResult
@@ -87,7 +89,20 @@ class SubprocessRunner(ABC):
             )
 
         # extra_env last: GIT_AUTHOR_*/GIT_COMMITTER_* must override inherited git env.
-        env = {**os.environ, **self._credential_env(ctx.credential), **ctx.extra_env}
+        # The SSH names are STRIPPED from the inherited base first: a run with no identity
+        # contributes none of them, so a merge would leave whatever the consumer process
+        # inherited in place and the spawn prelude would load a key this run was never
+        # granted. See ssh_identity.RUN_OWNED_SSH_ENV_VARS.
+        # The consumer's own environment carries the credential store (DB credentials,
+        # the decryption passphrase, CONFIG__* overrides). An agent that inherits it can
+        # decrypt every credential the framework holds, including another agent_view's
+        # SSH private key — so it is stripped BEFORE the run's own credential is merged
+        # in. See credential_store_env: a reduction under one uid, not a boundary.
+        env = {
+            **without_credential_store_env(without_run_owned_ssh_env(dict(os.environ))),
+            **self._credential_env(ctx.credential),
+            **ctx.extra_env,
+        }
         cmd = self.command_builder.headless(ctx, request)
         return self._execute_and_parse(cmd, env, request)
 

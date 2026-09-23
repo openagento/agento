@@ -8,6 +8,7 @@ from pathlib import Path
 
 # `is_confined_class_path` is the single source of truth for "inside the module" —
 # the validator reports at setup time what the loader refuses at boot.
+from .config_validation import MAX_LENGTH_TYPES
 from .module_loader import is_confined_class_path
 
 # `{module/field}` — the same shape the toolbox interpolates (config-tests.js).
@@ -580,6 +581,27 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                     errors.append(
                         f"system.json: field '{field_name}' has invalid type '{field_type}'"
                     )
+                # `maxLength` is a NEW schema constraint the shared value validator
+                # reads, so a typo must fail the manifest gate at setup:upgrade rather
+                # than becoming a run-time TypeError inside that validator.
+                if "maxLength" in field_def:
+                    raw_max = field_def["maxLength"]
+                    if isinstance(raw_max, bool) or not isinstance(raw_max, int):
+                        errors.append(
+                            f"system.json: field '{field_name}' maxLength must be a "
+                            f"positive integer, got {raw_max!r}"
+                        )
+                    elif raw_max <= 0:
+                        errors.append(
+                            f"system.json: field '{field_name}' maxLength must be > 0, "
+                            f"got {raw_max}"
+                        )
+                    if field_type is not None and field_type not in MAX_LENGTH_TYPES:
+                        errors.append(
+                            f"system.json: field '{field_name}' has 'maxLength' but type "
+                            f"is '{field_type}' (only "
+                            f"{'/'.join(sorted(MAX_LENGTH_TYPES))} support a length limit)"
+                        )
                 # Validate options for select/multiselect fields. A select supplies
                 # EXACTLY ONE of literal `options` or a dynamic `options_source`
                 # (harness lists are only known from di.json, not from system.json).

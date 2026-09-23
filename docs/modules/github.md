@@ -192,9 +192,10 @@ for t in github_get_pr github_get_pr_diff github_get_pr_comments github_add_comm
 done
 ```
 
-**Checkout + push** is **not** a GitHub tool — it is the agent's own git identity (the existing
-`workspace_build` SSH identity, config `agent_view/identity/ssh_private_key`). It is "opt-in" by virtue
-of that identity being configured (no identity ⇒ no push). The GitHub PAT (REST/GraphQL) and the SSH
+**Checkout + push** is **not** a GitHub tool — it is the agent's own git identity (config
+`agent_view/identity/ssh_private_key`, loaded into a **per-run `ssh-agent`** — not a file in the
+workspace build; see [identity docs](../config/identity.md)). It is "opt-in" by virtue of that identity
+being configured (no identity ⇒ no push). The GitHub PAT (REST/GraphQL) and the SSH
 key (git) are different credentials.
 
 ## Differences from the Bitbucket channel

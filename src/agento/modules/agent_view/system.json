@@ -43,6 +43,7 @@
   "identity/ssh_private_key": {
     "type": "obscure",
     "label": "SSH private key (id_rsa, encrypted at rest)",
+    "maxLength": 16384,
     "showInDefault": true,
     "showInWorkspace": true,
     "showInAgentView": true,

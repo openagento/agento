@@ -410,7 +410,7 @@ This symlink is the **only thing the consumer looks at** to find "the active bui
 
 - **Created** at job start. `prepare_artifacts_dir()` wipes any prior content and recreates the dir.
 - **Used** throughout the job as the agent's cwd. The agent CLI writes its own scratch here; toolbox tools drop outputs here (screenshots, videos, Jira attachments, etc.).
-- **Removed on clean completion.** Jobs that crash or are killed leave the dir behind — useful for post-mortem inspection until the next attempt re-runs and wipes it.
+- **Retained after completion** — clean or not. The dir holds the run's artifacts for post-mortem inspection until the same run dir is reused, which wipes it. Periodic cleanup of old run dirs is a ROADMAP item, not current behaviour.
 
 **Why a separate artifacts dir per job:**
 
@@ -488,7 +488,10 @@ The agent's world is:
 - **home** = shared CLI session store (globally accessible via symlinks)
 - **Everything else** is reached through MCP tool calls to the toolbox
 
-No awareness of other jobs. The run holds the agent's own harness credential. The target model gives it no tool credentials and no direct DB access; a headless run today inherits the cron env (see [zero-trust.md](zero-trust.md#known-exceptions-and-debt)).
+No awareness of other jobs. The run holds the agent's own harness credential, no credential from the toolbox
+store, and no direct DB access. The one exception is the per-run git SSH identity, delivered as a signing
+socket rather than a key file (see [DECISIONS.md](../../DECISIONS.md) D-SSH-1). Known gaps:
+[zero-trust.md](zero-trust.md#known-exceptions-and-debt).
 
 ---
 
