@@ -75,8 +75,4 @@ docker/docker-compose.yml
 .agents/
 .codex/
 
-# Local Claude Code MCP config for working on this repo (dev convenience only —
-# NOT used by the framework at runtime, which generates its own per-job .mcp.json).
-# Untracked so credential-bearing MCP servers can never be committed by accident.
-# Copy .mcp.json.example to .mcp.json to enable it locally.
 /.mcp.json
