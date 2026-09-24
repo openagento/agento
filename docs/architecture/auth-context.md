@@ -71,10 +71,47 @@ Migration `036_toolbox_capability_auth_context` backfills the rows that existed 
 1. Mint through `issue_capability(conn, kind="user_session"|"miniapp", ...,
    allowed_transports=["http"], subject_id=<user id>, workspace_id=..., source_id=..., app=...,
    tool_ceiling=...)`. You own the session or launch, and you must verify it before you mint.
-2. Supply the source checker once, at toolbox startup:
-   `installAuthSources(createSourceLookup([["session", check]]))`. `check(sourceId,
+2. Export the source checker from your module's `toolbox/` code:
+   `export const authSources = [["session", check]]`. At startup the toolbox collects every
+   enabled module's `authSources`. A kind that two modules claim is dropped with an ERROR, so
+   neither checker runs. `check(sourceId,
    {capability_kind})` returns the live source record `{kind, id, user_id, workspace_id,
    agent_view_id, permitted_tools, created_at, expires_at}` (a launch also has `launch_id`,
    `artifact_code`, `version_id`), or `null` when the source is revoked.
 3. The verifier checks the capability **and** its source on every call. E1 ships no checker,
    so every `user_session` and `miniapp` row is refused until one is installed.
+4. Call a tool with `POST /internal/tools/{name}:invoke`, header `Authorization: Bearer <token>`,
+   body = the tool arguments as JSON. Mint a new capability for each call: the first call
+   consumes a single-use token, and a second call with it gets 403.
+
+## Tool dispatch
+
+`src/agento/toolbox/dispatcher.js` → `executeTool()` answers every tool call: MCP `tools/call` on
+`/mcp` and `/messages`, and the invoke endpoint. For each call it:
+
+1. writes a `tool_invocation` row with outcome `pending` (arguments only as a SHA-256 digest);
+2. consumes a single-use capability (`consumed_at`, one atomic `UPDATE`);
+3. verifies the capability and its source again, by capability id;
+4. finds the tool, then reads its `is_enabled` chain again for the caller's scope;
+5. checks the launch `tool_ceiling` and the user's `permitted_tools`;
+6. validates the arguments strictly (an unknown key is an error);
+7. runs the handler, then writes the final outcome to the audit row.
+
+| outcome             | invoke status |
+|---------------------|---------------|
+| `ok`                | 200           |
+| `invalid_arguments` | 400           |
+| `unauthorized`      | 403           |
+| `not_found`         | 404 (also a disabled tool) |
+| `tool_error`        | 422           |
+| `unavailable`       | 503 (also a failed audit insert: the tool does not run) |
+
+A body that is not JSON gets 400 and no audit row, because no execution started. On MCP the
+same outcomes come back as a `CallToolResult` with `isError: true`.
+
+## Harness placement
+
+`agento.framework.harness.run_scope.toolbox_auth(url, token)` puts the run's token on the
+toolbox MCP entry: an `Authorization: Bearer` header on `/mcp` (URL unchanged), and `?cap=` on
+`/sse`, because an SSE client sends no headers. Issuers mint `["http"]` tokens for `/mcp`; an
+operator who pins `/sse` mints with `capability:mint --transport sse`.
