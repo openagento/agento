@@ -13,6 +13,7 @@ but means "unknown session", which is the one thing a run id must never be.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 
 # The same character class the toolbox accepts for a path segment. No dot, so `..`
 # cannot appear; no separator, so one segment stays one segment.
@@ -37,3 +38,21 @@ def scope_toolbox_url(url: str, job_id: int | None, run_id: str | None) -> str:
         return url
     sep = "&" if "?" in url else "?"
     return f"{url}{sep}{query}"
+
+
+def toolbox_auth(url: str, token: str) -> tuple[str, dict[str, str]]:
+    """Attach the run's capability to a toolbox MCP URL: ``(url, headers)``.
+
+    ``/mcp`` gets ``Authorization: Bearer`` and an unchanged URL — a query token lands in
+    access logs. ``/sse`` keeps ``?cap=``: an SSE client posts to the endpoint the server
+    advertises verbatim and sends no headers. Call it only for a URL that
+    ``is_toolbox_endpoint`` accepted, so the credential never reaches a third party.
+    """
+    try:
+        path = urlsplit(url).path.rstrip("/")
+    except ValueError:
+        path = ""
+    if path.endswith("/sse"):
+        sep = "&" if "?" in url else "?"
+        return f"{url}{sep}cap={token}", {}
+    return url, {"Authorization": f"Bearer {token}"}

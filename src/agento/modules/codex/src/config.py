@@ -17,7 +17,7 @@ from agento.framework.agent_manager.credential_store import update_refreshed_cre
 from agento.framework.agent_manager.errors import AuthenticationError, TransientAuthError
 from agento.framework.credential_store_env import without_credential_store_env
 from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
-from agento.framework.harness.run_scope import scope_toolbox_url
+from agento.framework.harness.run_scope import scope_toolbox_url, toolbox_auth
 from agento.framework.ssh_identity import without_run_owned_ssh_env
 
 if TYPE_CHECKING:
@@ -528,8 +528,9 @@ class CodexWorkspaceAdapter:
                 continue
             url = scope_toolbox_url(url, job_id, run_id)
             if capability_token:
-                sep = "&" if "?" in url else "?"
-                url = f"{url}{sep}cap={capability_token}"
+                url, headers = toolbox_auth(url, capability_token)
+                if headers:
+                    server_cfg["http_headers"] = {**(server_cfg.get("http_headers") or {}), **headers}
             server_cfg["url"] = url
 
         # Re-emit the WHOLE parsed mapping: rebuilding from a few known keys would
