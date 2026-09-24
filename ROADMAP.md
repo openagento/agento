@@ -98,6 +98,10 @@ beside it, outside version control, as:
 
 Order: E1 → E2 → E3–E5 (chat and history) → E6 → E7 (administration).
 
+E1 is built: auth context v1, the `user_session`/`miniapp` profiles (invoke only, refused until E2/E6
+install a source checker), one dispatcher with per-call checks and a `tool_invocation` audit row,
+and header tokens on `/mcp`. See [docs/architecture/auth-context.md](docs/architecture/auth-context.md).
+
 ### ⚪ Per-artifact origins for miniapps
 
 The agreed E0 design puts every miniapp on **one shared apps origin**, separate from the panel

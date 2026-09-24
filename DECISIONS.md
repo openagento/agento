@@ -4,6 +4,22 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-24 — E1 toolbox auth: one dispatcher, per-call checks, TTL config in `core/auth/*`
+
+- **Every tool call goes through one `executeTool()`.** The MCP SDK validates arguments before a
+  per-tool handler runs, so an invalid call would never reach our code and go unaudited. We replace
+  the SDK's `tools/call` handler with the dispatcher; the SDK keeps `tools/list`.
+- **The audit row is written first.** A failed insert answers `unavailable` and runs nothing. The row
+  holds a SHA-256 of the arguments, never their values.
+- **Single use is one `UPDATE … WHERE consumed_at IS NULL`.** The row count decides the winner; no
+  lock and no second store of bearers.
+- **Strict argument validation** (`z.object(...).strict()`): an unknown key is `invalid_arguments`.
+  This is stricter than the SDK default, which drops unknown keys without an error.
+- **TTL bounds live at `core/auth/*`, not `auth/*`** (the PRD's path). A config path starts with its
+  module, and the framework's module is `core`. Hard ceilings are in code; config can only narrow.
+- **`/mcp` gets the token in a header; `/sse` keeps `?cap=`.** An SSE client sends no headers, so the
+  query path stays for it, with a 4 h ceiling for any token that may travel on `sse`.
+
 ## 2026-09-24 — E0 contracts for panel, toolbox and miniapps
 
 E0 fixes the shared semantics so E1–E7 can start without re-deciding them. The detailed PRDs are

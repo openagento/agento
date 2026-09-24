@@ -67,13 +67,20 @@ same way: an `internal_rest` capability, scope from the row. It is the one route
 one. `run_id` on an MCP URL names an interactive run's desk directory only — it grants no scope, and
 a `job_id` on the URL may only agree with the capability's job.
 
-**Three kinds, each with the smallest privilege that works:**
+**Five kinds, each with the smallest privilege that works:**
 
 | Kind | Holder | Reaches | TTL |
 |------|--------|---------|-----|
-| `mcp_job` | a consumer-run job | `/mcp`, `/sse` | the job's lifetime |
-| `mcp_interactive` | one interactive `agento run` | `/mcp`, `/sse` | 12 h |
-| `internal_rest` | Python publishers, channels, onboarding | `/api/*`, scoped `/health` | 120 s |
+| `mcp_job` | a consumer-run job | `/mcp`, `/sse`, `/messages`, invoke | the job's lifetime |
+| `mcp_interactive` | one interactive `agento run` | `/mcp`, `/sse`, `/messages`, invoke | 12 h |
+| `internal_rest` | Python publishers, channels, onboarding | `/api/*`, scoped `/health`, `/config-test` | 120 s |
+| `user_session` | the Web API, for a logged-in user | invoke only | `core/auth/capability_ttl`, single use |
+| `miniapp` | the Web API, for a miniapp launch | invoke only | `core/auth/capability_ttl`, single use |
+
+Invoke is `POST /internal/tools/{name}:invoke`. The two user kinds need a live source (session or
+launch) on every call; E1 ships no source checker, so they are refused until E2/E6 add one. Every
+tool call on every transport goes through one dispatcher that authorizes it per call and writes a
+`tool_invocation` audit row — see [auth-context.md](auth-context.md).
 
 `mcp_job` cannot be minted by hand ([`capability:mint`](../cli/capability.md) refuses it): its
 lifetime is bound to the job's terminal transition, and a hand-minted one would outlive the code that
@@ -106,6 +113,10 @@ status — a failing revoke rolls the status back, leaving the job `RUNNING` for
 **Where tokens come from.** The consumer mints one per job; `agent_view:prepare-run` mints one per
 interactive run; both are injected into the run's own MCP config entry only, matched by origin **and**
 path (`/mcp` or `/sse`), never by substring — an operator's third-party MCP server never receives it.
+On `/mcp` the token goes in an `Authorization: Bearer` header and the URL stays unchanged; only an
+`/sse` entry gets `?cap=`. Every token carries `allowed_transports` (`http` or `sse`), checked per
+endpoint with no default, so a header token cannot be replayed through a query string. See
+[auth-context.md](auth-context.md).
 Operators mint the other two kinds with [`capability:mint`](../cli/capability.md). A minted token is a
 credential: stdout once, onward only through stdin or a mode-0600 file, never argv, a log, or shell
 history. Any capability the framework persists from agent output is replaced with `cap=***` first.
