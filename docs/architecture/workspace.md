@@ -61,7 +61,7 @@ workspace/
 │               ├── .claude.json            #     Copied from build
 │               ├── .claude/                #     Copied from build (agent may write to it)
 │               ├── .codex/                 #     Copied from build
-│               ├── .mcp.json               #     Copied + ?cap=<capability> injected
+│               ├── .mcp.json               #     Copied + capability header injected
 │               ├── AGENTS.md               #     Copied from build
 │               ├── SOUL.md                 #     Copied from build
 │               ├── CLAUDE.md               #     Copied from build
@@ -439,8 +439,11 @@ Before (in build):
   http://toolbox:3001/mcp
 
 After (in artifacts):
-  http://toolbox:3001/mcp?job_id=42&cap=<capability token>
+  http://toolbox:3001/mcp?job_id=42
+  headers: {"Authorization": "Bearer <capability token>"}
 ```
+
+An `/sse` entry cannot send headers, so it gets `?cap=<capability token>` in the URL instead.
 
 The toolbox hashes that token, finds its `toolbox_capability` row, and reads `agent_view_id` and
 `job_id` from **the row** — so the URL can no longer assert a scope, only present a credential. There is
@@ -484,7 +487,7 @@ drwxr-xr-x  ..
 drwxr-xr-x  .claude/     # copied from build
 -rw-r--r--  .claude.json # copied from build
 drwxr-xr-x  .codex/      # copied from build
--rw-r--r--  .mcp.json    # copied + ?cap=<capability> injected
+-rw-r--r--  .mcp.json    # copied + capability header injected
 -rw-r--r--  AGENTS.md
 -rw-r--r--  SOUL.md
 -rw-r--r--  CLAUDE.md
