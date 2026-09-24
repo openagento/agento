@@ -16,6 +16,7 @@ from ..toolbox_capability import (
     KIND_INTERNAL_REST,
     KIND_MCP_INTERACTIVE,
     REST_CAPABILITY_TTL_SECONDS,
+    SSE_CAPABILITY_TTL_SECONDS,
     issue_capability,
     revoke_capability,
 )
@@ -27,6 +28,7 @@ _TTL_LIMITS = {
     KIND_INTERNAL_REST: REST_CAPABILITY_TTL_SECONDS,
     KIND_MCP_INTERACTIVE: INTERACTIVE_CAPABILITY_TTL_SECONDS,
 }
+_TRANSPORTS = {"http": ["http"], "sse": ["sse"], "both": ["sse", "http"]}
 
 
 class CapabilityMintCommand:
@@ -49,6 +51,11 @@ class CapabilityMintCommand:
         )
         parser.add_argument("--agent-view", required=True, dest="agent_view")
         parser.add_argument(
+            "--transport", choices=sorted(_TRANSPORTS), default="http",
+            help="Transport the token may be presented on (default http). A token that "
+                 "may travel on sse (a ?cap= query string) is capped at 4 hours.",
+        )
+        parser.add_argument(
             "--ttl", type=int, default=None,
             help="Lifetime in seconds. Must be > 0 and <= the kind's maximum "
                  "(internal_rest 120, mcp_interactive 43200); the default is that maximum.",
@@ -58,6 +65,8 @@ class CapabilityMintCommand:
         from ..workspace import get_agent_view_by_code
 
         maximum = _TTL_LIMITS[args.kind]
+        if args.transport != "http":
+            maximum = min(maximum, SSE_CAPABILITY_TTL_SECONDS)
         ttl = maximum if args.ttl is None else args.ttl
         # An out-of-range TTL is an ERROR, not a silent clamp: an operator who asked
         # for 24h and received 2min would deploy against the wrong assumption.
@@ -81,6 +90,8 @@ class CapabilityMintCommand:
                 agent_view_id=av.id,
                 job_id=None,
                 ttl_seconds=ttl,
+                allowed_transports=_TRANSPORTS[args.transport],
+                subject_id="service:cli" if args.kind == KIND_INTERNAL_REST else None,
             )
         finally:
             conn.close()

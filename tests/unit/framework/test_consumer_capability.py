@@ -91,6 +91,8 @@ class TestIssueRunCapabilities:
         assert (mcp, rest) == ("mcp", "rest")
         kinds = [c.kwargs["kind"] for c in mint.call_args_list]
         assert kinds == ["mcp_job", "internal_rest"]
+        assert [c.kwargs["allowed_transports"] for c in mint.call_args_list] == [["http"], ["http"]]
+        assert mint.call_args_list[1].kwargs["subject_id"] == "service:consumer"
 
     def test_both_mints_land_in_one_transaction(self, consumer):
         conn, _ = _conn()

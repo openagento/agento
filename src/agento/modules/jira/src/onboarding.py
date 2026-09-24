@@ -92,6 +92,7 @@ class JiraOnboarding:
         toolbox = capability_client(
             lambda token: ToolboxClient(toolbox_url, capability_token=token),
             agent_view_id=owner_view.id,
+            subject_id="service:jira",
         )
         self._configure(conn, logger, toolbox, toolbox_url)
 

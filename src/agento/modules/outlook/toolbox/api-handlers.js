@@ -212,7 +212,7 @@ export function createDeltaHandler(
     // agent_view_id may only AGREE with it — createModuleRouteApp answers 400 for a disagreeing
     // one before this handler runs. A capability naming a view the toolbox cannot resolve is
     // already a 403 from the strict resolver, so there is no "unresolved view" case here.
-    const agentViewId = req.capability.agentViewId;
+    const agentViewId = req.capability.agent_view_id;
     const { cfg, fleetMailboxes } = await configResolver(agentViewId);
     const auth = authFactory(cfg);
     if (!auth.isConfigured()) {

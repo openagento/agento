@@ -181,7 +181,7 @@ class PublishCommand:
 
                 # One short-lived capability per view, minted and revoked around this
                 # view's calls — the toolbox derives the view from it.
-                with rest_capability(agent_view_id=av.id, db_config=db_config) as capability_token:
+                with rest_capability(agent_view_id=av.id, subject_id="service:jira", db_config=db_config) as capability_token:
                     if kind == "jira-todo":
                         self._publish_todo_for_agent_view(
                             args, db_config, jira_config, av.id, priority, logger,

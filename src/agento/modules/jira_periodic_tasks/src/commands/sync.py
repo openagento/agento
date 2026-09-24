@@ -77,7 +77,8 @@ class SyncCommand:
                                     )
                                     continue
                                 with rest_capability(
-                                    agent_view_id=av.id, db_config=db_config
+                                    agent_view_id=av.id, subject_id="service:jira_periodic_tasks",
+                                    db_config=db_config
                                 ) as capability_token, closing(
                                     ToolboxClient(
                                         jira_config.toolbox_url,
