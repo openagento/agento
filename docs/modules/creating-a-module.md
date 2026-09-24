@@ -393,6 +393,29 @@ EOF
 
 The `command` references a CLI subcommand contributed via `di.json`. Rendered into the root crontab by `/opt/cron-agent/install-crontab.py` (every minute) and dispatched through `cron:run <module> <command>`.
 
+### Schedule from config
+
+A `schedule` may hold a `{module/path}` config directive instead of a literal cron
+expression — the same interpolation system.json testers use for `{jira/user}`. The
+directive is resolved (ENV → DB → `config.json`, default scope) each time the root
+crontab renderer (`install-crontab.py`, every minute) writes the crontab, so the schedule becomes admin-tunable without editing `cron.json`:
+
+```json
+{
+    "jobs": [
+        {"name": "crm_sync", "schedule": "{my-crm/sync_schedule}", "command": "crm-sync"}
+    ]
+}
+```
+
+Declare `sync_schedule` in the module's `system.json`/`config.json` (e.g. default
+`"*/15 * * * *"`); an admin then overrides it with `config:set my-crm/sync_schedule "0 * * * *"`.
+The directive must resolve to a non-empty, plain (not encrypted) value that is a valid cron
+expression — otherwise that module's jobs are omitted and the reason is logged to
+`/app/logs/cron-stderr.log`; every other job keeps running. Only `{module/path}`
+directives (with a `/`) are treated as config paths; a literal expression like
+`*/15 * * * *` is written verbatim.
+
 ## 16. Declare Onboarding (Optional)
 
 If your module needs to configure external systems (create API resources, set up custom fields, etc.) before it can work, declare an interactive onboarding flow in `di.json`:

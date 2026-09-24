@@ -19,6 +19,7 @@ See docs/architecture/cron-privileges.md.
 """
 from __future__ import annotations
 
+import functools
 import json
 import shlex
 import subprocess
@@ -28,6 +29,7 @@ from pathlib import Path
 
 from agento.framework import store_env
 from agento.framework.module_discovery import iter_module_dirs, resolve_module_root
+from agento.framework.module_validator import _PLACEHOLDER_RE
 
 ENV_FILE = "/opt/cron-agent/env"
 LAUNCHER = "/opt/cron-agent/launch.sh"
@@ -181,7 +183,7 @@ def _framework_jobs() -> list[Job]:
         argv = shlex.split(raw) if raw else [RUN_SH, *shlex.split(command)]
         jobs.append(Job(
             comment=_comment(entry["name"]),
-            schedule=_validate_schedule(entry["schedule"]),
+            schedule=_validate_schedule(_resolve_schedule(entry["schedule"])),
             argv=_validate_argv(argv),
         ))
     return jobs
@@ -208,7 +210,7 @@ def _module_jobs(module_dir: Path) -> list[Job]:
         argv = [RUN_SH, "cron:run", module_dir.name, *shlex.split(command)]
         jobs.append(Job(
             comment=_comment(f"{module_dir.name}/{entry['name']}"),
-            schedule=_validate_schedule(entry["schedule"]),
+            schedule=_validate_schedule(_resolve_schedule(entry["schedule"])),
             argv=_validate_argv(argv),
         ))
     return jobs
@@ -227,13 +229,12 @@ def _mysql_settings() -> dict[str, str]:
     return {k: v for k, v in parsed.items() if k.startswith("MYSQL_")}
 
 
-def _schedule_jobs() -> list[Job]:
-    """Recurring jira rows, scoped exactly like ``jira:periodic:sync`` writes them."""
+def _connect():
     import pymysql
 
     env = _mysql_settings()
     try:
-        conn = pymysql.connect(
+        return pymysql.connect(
             host=env.get("MYSQL_HOST", "mysql"),
             port=int(env.get("MYSQL_PORT", "3306")),
             user=env.get("MYSQL_USER", "cron_agent"),
@@ -244,6 +245,71 @@ def _schedule_jobs() -> list[Job]:
     except Exception as exc:
         raise OperationalError(f"database unavailable: {exc}") from exc
 
+
+@functools.cache
+def _config_overrides() -> tuple[dict[str, str], dict[str, tuple[str, bool]]]:
+    """``CONFIG__*`` from the env file and default-scope ``core_config_data`` rows.
+
+    Loaded once, and only when a schedule holds a directive. Nothing is decrypted.
+    """
+    try:
+        env = store_env.parse(Path(ENV_FILE).read_bytes())
+    except (OSError, ValueError) as exc:
+        raise OperationalError(f"cannot read {ENV_FILE}: {exc}") from exc
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT path, value, encrypted FROM core_config_data "
+                "WHERE scope = 'default' AND scope_id = 0"
+            )
+            db = {r["path"]: (r["value"], bool(r["encrypted"])) for r in cur.fetchall()}
+    except Exception as exc:
+        raise OperationalError(f"config query failed: {exc}") from exc
+    finally:
+        conn.close()
+    return {k: v for k, v in env.items() if k.startswith("CONFIG__")}, db
+
+
+def _config_value(path: str) -> str | None:
+    """One ``{module/path}`` value: ENV -> DB -> the module's ``config.json``."""
+    env, db = _config_overrides()
+    env_key = "CONFIG__" + path.upper().replace("-", "_").replace("/", "__")
+    if env_key in env:
+        return env[env_key]
+    row = db.get(path.replace("-", "_"))
+    if row is not None:
+        value, encrypted = row
+        if encrypted:
+            raise ValidationError(f"config path '{path}' is encrypted; a schedule must be plain")
+        return value
+    module, _, field = path.partition("/")
+    config_json = next(
+        (d / "config.json" for d in iter_module_dirs(resolve_module_root()) if d.name == module),
+        None,
+    )
+    if config_json is not None and config_json.is_file():
+        value = json.loads(config_json.read_text()).get(field)
+        return None if value is None else str(value)
+    return None
+
+
+def _resolve_schedule(schedule: str) -> str:
+    """Replace ``{module/path}`` directives with config values; a literal is unchanged."""
+    def _sub(match) -> str:
+        value = _config_value(match.group(1))
+        if not value:
+            raise ValidationError(
+                f"cron schedule references config path '{match.group(1)}', which is not set"
+            )
+        return value
+
+    return _PLACEHOLDER_RE.sub(_sub, schedule)
+
+
+def _schedule_jobs() -> list[Job]:
+    """Recurring jira rows, scoped exactly like ``jira:periodic:sync`` writes them."""
+    conn = _connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
