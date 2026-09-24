@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
 from agento.framework.credential_store_env import without_credential_store_env
 from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
-from agento.framework.harness.run_scope import scope_toolbox_url
+from agento.framework.harness.run_scope import scope_toolbox_url, toolbox_auth
 from agento.framework.ssh_identity import without_run_owned_ssh_env
 
 from .output_parser import parse_claude_output
@@ -369,8 +369,9 @@ class ClaudeWorkspaceAdapter:
                 continue
             url = scope_toolbox_url(url, job_id, run_id)
             if capability_token:
-                sep = "&" if "?" in url else "?"
-                url = f"{url}{sep}cap={capability_token}"
+                url, headers = toolbox_auth(url, capability_token)
+                if headers:
+                    server_cfg["headers"] = {**(server_cfg.get("headers") or {}), **headers}
             server_cfg["url"] = url
         mcp_path.write_text(json.dumps(data, indent=2))
 

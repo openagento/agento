@@ -251,7 +251,7 @@ fi
 
 # A separate token: the health guard accepts internal_rest ONLY, and the MCP guard accepts the
 # MCP kinds ONLY, so reusing the phase-2 token here would be a 403.
-MCP_TOKEN=$("$AGENTO" capability:mint --kind mcp_interactive --agent-view "$AGENT_VIEW") || {
+MCP_TOKEN=$("$AGENTO" capability:mint --kind mcp_interactive --transport sse --agent-view "$AGENT_VIEW") || {
   echo -e "  ${RED}✗${NC} capability:mint --kind mcp_interactive failed"
   exit 1
 }
