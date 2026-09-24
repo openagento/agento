@@ -58,6 +58,7 @@ describe('the routes name the endpoints the rules are written for', () => {
       '/sse': 'sse', '/messages': 'messages', '/mcp': 'mcp', '/config-test': 'config_test', '/api': 'api',
     });
     expect(src).toMatch(/const healthGuard = requireCapability\(\{ endpoint: 'health' \}/);
+    expect(src).toMatch(/installInvokeRoute\(app, \{\s*guard: requireCapability\(\{ endpoint: 'invoke' \}/);
   });
 });
 
