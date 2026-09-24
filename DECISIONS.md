@@ -49,7 +49,9 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   effect on the next call. Widening an open session would run `register()` for tools the scope does
   not grant.
 - **Thrown tool errors reach the caller as a fixed `tool failed`.** A thrown message can quote an
-  upstream response body; the log gets only the error class.
+  upstream response body; the log gets only the error class. An `isError` result is the tool's own
+  answer: MCP passes it to the agent as before E1 (the agent needs "issue not found" to recover),
+  and invoke drops it, so a browser or miniapp caller gets only the error code.
 
 ## 2026-09-24 — E0 contracts for panel, toolbox and miniapps
 
