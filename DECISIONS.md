@@ -39,7 +39,17 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 - **TTL bounds live at `core/auth/*`, not `auth/*`** (the PRD's path). A config path starts with its
   module, and the framework's module is `core`. Hard ceilings are in code; config can only narrow.
 - **`/mcp` gets the token in a header; `/sse` keeps `?cap=`.** An SSE client sends no headers, so the
-  query path stays for it, with a 4 h ceiling for any token that may travel on `sse`.
+  query path stays for it, with a 4 h ceiling for any token that may travel on `sse`. New MCP tokens
+  are `["http"]`; the migration backfill gives legacy rows both transports on the same 4 h clock.
+- **Source checkers come from modules.** A module exports `authSources`; the toolbox collects them at
+  startup and drops a kind that two modules claim. E1 ships none, so user kinds fail closed.
+- **`on_behalf_of` is always null** until something verifies delegation; a non-null value is refused.
+- **Invoke builds the tool registry per request.** It costs about 0.5 ms, so there is no cache.
+- **Enabling a tool takes effect in the next MCP session**, not in the open one. Disabling takes
+  effect on the next call. Widening an open session would run `register()` for tools the scope does
+  not grant.
+- **Thrown tool errors reach the caller as a fixed `tool failed`.** A thrown message can quote an
+  upstream response body; the log gets only the error class.
 
 ## 2026-09-24 — E0 contracts for panel, toolbox and miniapps
 

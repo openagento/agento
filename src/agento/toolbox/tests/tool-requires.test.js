@@ -51,6 +51,7 @@ describe('registerTools: requires chain in the tool gate', () => {
         `    if (respect && isToolEnabled && !isToolEnabled(name)) continue;\n` +
         `    server.tool(name, 'desc', {}, async () => ({ content: [] }));\n` +
         `  }\n` +
+        (mod.throwsAfter ? `  throw new Error('boom');\n` : '') +
         `}\n`,
       );
     }
@@ -252,5 +253,14 @@ describe('registerTools: requires chain in the tool gate', () => {
     });
     expect(tools.size).toBe(0);
     expect([...unavailableTools].sort()).toEqual(['jira', 'jira_get_issue', 'jira_search']);
+  });
+
+  it('keeps every tool of a module that registered some and then threw unavailable', async () => {
+    const { unavailableTools, tools } = await runRegisterTools({
+      modules: [{ name: 'jira', tools: MASTERED, registers: ['jira_search'], throwsAfter: true }],
+      dbValues: { 'tools/jira/is_enabled': '1', 'tools/jira_search/is_enabled': '1' },
+    });
+    expect(tools.has('jira_search')).toBe(true);
+    expect(unavailableTools.has('jira_search')).toBe(true);
   });
 });

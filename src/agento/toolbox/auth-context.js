@@ -195,8 +195,8 @@ export function computeAuthTtls({ env = {}, defaultOverrides = {}, workspaceOver
     const text = typeof raw === 'boolean' ? '' : String(raw).trim();
     if (!/^[1-9][0-9]*$/.test(text)) throw new AuthConfigError(`${p} must be a positive integer number of seconds`);
     const value = Number(text);
-    if (value > TTL_CEILINGS[key] && !clampWarned.has(`${key}=${value}`)) {
-      clampWarned.add(`${key}=${value}`);
+    if (value > TTL_CEILINGS[key] && !clampWarned.has(key)) {
+      clampWarned.add(key);  // at most one entry per AUTH_TTL_KEYS name
       console.warn(`[auth] ${p}=${value} exceeds the hard ceiling; clamped to ${TTL_CEILINGS[key]}`);
     }
     caps[key] = Math.min(value, TTL_CEILINGS[key]);
