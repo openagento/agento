@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
 from agento.framework.agent_manager.errors import AuthenticationError
 from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
-from agento.framework.harness.run_scope import scope_toolbox_url
+from agento.framework.harness.run_scope import scope_toolbox_url, toolbox_auth
 
 if TYPE_CHECKING:
     import pymysql
@@ -426,8 +426,9 @@ class CodexWorkspaceAdapter:
                 continue
             url = scope_toolbox_url(url, job_id, run_id)
             if capability_token:
-                sep = "&" if "?" in url else "?"
-                url = f"{url}{sep}cap={capability_token}"
+                url, headers = toolbox_auth(url, capability_token)
+                if headers:
+                    server_cfg["http_headers"] = {**(server_cfg.get("http_headers") or {}), **headers}
             server_cfg["url"] = url
 
         # Re-write the TOML (hand-written, simple structure)
@@ -443,6 +444,12 @@ class CodexWorkspaceAdapter:
             lines.append(f"\n[mcp_servers.{name}]")
             lines.append(f'type = "{server_cfg.get("type", "sse")}"')
             lines.append(f'url = "{server_cfg.get("url", "")}"')
+            if server_cfg.get("http_headers"):
+                inline = ", ".join(
+                    f"{_toml_quote_key(k)} = {_toml_literal(v)}"
+                    for k, v in sorted(server_cfg["http_headers"].items())
+                )
+                lines.append(f"http_headers = {{ {inline} }}")
 
         config_path.write_text("\n".join(lines) + "\n")
 

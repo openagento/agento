@@ -366,7 +366,7 @@ REST_TOKEN=$("$AGENTO" capability:mint --kind internal_rest --agent-view "$AGENT
 if [ -n "$REST_TOKEN" ]; then
   expect "GET /health?test=true with internal_rest" 200 "$(status GET '/health?test=true' "$REST_TOKEN")"
   # An MCP kind must NOT reach the scoped diagnostic, and internal_rest must not reach /mcp.
-  MCP_TOKEN=$("$AGENTO" capability:mint --kind mcp_interactive --agent-view "$AGENT_VIEW") || MCP_TOKEN=""
+  MCP_TOKEN=$("$AGENTO" capability:mint --kind mcp_interactive --transport both --agent-view "$AGENT_VIEW") || MCP_TOKEN=""
   [ -n "$MCP_TOKEN" ] && expect "GET /health?test=true with an MCP kind" 403 "$(status GET '/health?test=true' "$MCP_TOKEN")"
   expect "POST /mcp with internal_rest" 403 "$(status POST /mcp "$REST_TOKEN")"
 fi
@@ -437,7 +437,7 @@ OWN_ID=$(view_id "$AGENT_VIEW")
 if [ -z "$OTHER_VIEW" ] || [ -z "$OTHER_ID" ] || [ -z "$OWN_ID" ]; then
   note "skipped — needs --other-agent-view <code>, and both view ids must resolve"
 else
-  MCP_TOKEN_B=$("$AGENTO" capability:mint --kind mcp_interactive --agent-view "$OTHER_VIEW") || MCP_TOKEN_B=""
+  MCP_TOKEN_B=$("$AGENTO" capability:mint --kind mcp_interactive --transport both --agent-view "$OTHER_VIEW") || MCP_TOKEN_B=""
   # A per-view MARKER so the two concurrent MCP sessions return a DETERMINISTIC, view-specific
   # result instead of only authenticating. `schedule_followup` gates on nothing but its own
   # is_enabled key, and agent_view is the most specific scope, so 1 for one view and 0 for the
