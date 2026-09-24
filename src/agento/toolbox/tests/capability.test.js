@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { tokenHash, extractToken, createVerifier, createRequireCapability, rejectScopeMismatch } from '../capability.js';
+import {
+  tokenHash, extractToken, createVerifier, createRequireCapability, rejectScopeMismatch,
+  createSourceLookup, NO_AUTH_SOURCES, resolveAuthTtls,
+} from '../capability.js';
+import { ENDPOINTS } from '../auth-context.js';
+import { capabilityRow, capabilityContext } from './capability-rows.js';
 
 const hash = (t) => createHash('sha256').update(t).digest('hex');
 const fakeQuery = (rows) => vi.fn(async () => [rows]);
@@ -25,119 +30,182 @@ describe('extractToken', () => {
 });
 
 describe('verifyCapability', () => {
-  const row = { kind: 'mcp_job', agent_view_id: 7, job_id: '42' };
+  const row = capabilityRow('mcp_job');
 
   it('looks the token up by HASH, never by raw value', async () => {
     const query = fakeQuery([row]);
-    await createVerifier(query)('rawtok', { kinds: ['mcp_job'] });
+    await createVerifier(query)('rawtok', { endpoint: 'mcp' });
     const params = query.mock.calls[0][1];
     expect(params).toContain(hash('rawtok'));
     expect(params).not.toContain('rawtok');
   });
 
-  it('returns server-side claims', async () => {
-    expect(await createVerifier(fakeQuery([row]))('t', { kinds: ['mcp_job'] }))
-      .toEqual({ kind: 'mcp_job', agentViewId: 7, jobId: '42' });
+  it('returns the auth context v1 derived from the row', async () => {
+    expect(await createVerifier(fakeQuery([row]))('t', { endpoint: 'mcp' }))
+      .toEqual({ context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null });
   });
 
-  it('rejects an mcp_job row whose job_id is NULL, zero, or malformed', async () => {
-    // Not "returns jobId: null" — REJECTS. A null jobId is Outlook's interactive escape hatch.
-    for (const bad of [null, 0, '0', '-1', 'abc', '', '007']) {
-      const verify = createVerifier(fakeQuery([{ kind: 'mcp_job', agent_view_id: 7, job_id: bad }]));
-      expect(await verify('t', { kinds: ['mcp_job'] })).toBeNull();
-    }
-  });
-
-  it('selects job_id as an exact string in SQL, not as a rounded JS number', async () => {
+  it('selects ids as exact strings in SQL, not as rounded JS numbers', async () => {
     // A fake query returning a string would prove the FAKE, not mysql2 — by then the driver
     // has already rounded a BIGINT past 2^53. The conversion must happen in the database, so
     // assert the CAST is in the statement. The LIVE-driver half (a real row, the real pool, the
-    // real verifier) is step 8 of docker/smoke/toolbox-capability-smoke.sh — this suite has no
-    // database, so it cannot be asserted here.
+    // real verifier) is step 8 of docker/smoke/toolbox-capability-smoke.sh.
     const query = fakeQuery([row]);
-    await createVerifier(query)('t', { kinds: ['mcp_job'] });
-    expect(query.mock.calls[0][0]).toMatch(/CAST\(job_id AS CHAR\) AS job_id/);
+    await createVerifier(query)('t', { endpoint: 'mcp' });
+    expect(query.mock.calls[0][0]).toMatch(/CAST\(c\.job_id AS CHAR\) AS job_id/);
+    expect(query.mock.calls[0][0]).toMatch(/CAST\(c\.id AS CHAR\) AS id/);
   });
 
   it('preserves a job_id above Number.MAX_SAFE_INTEGER exactly', async () => {
     const big = '9007199254740993';
-    const verify = createVerifier(fakeQuery([{ kind: 'mcp_job', agent_view_id: 7, job_id: big }]));
-    expect((await verify('t', { kinds: ['mcp_job'] })).jobId).toBe(big);
+    const verify = createVerifier(fakeQuery([capabilityRow('mcp_job', { job_id: big })]));
+    expect((await verify('t', { endpoint: 'mcp' })).context.job_id).toBe(big);
   });
 
-  it('accepts an internal_rest row with or without a job_id', async () => {
-    // Both are legitimate: job-owned discovery carries the id, a publisher call does not.
-    const withJob = createVerifier(fakeQuery([{ kind: 'internal_rest', agent_view_id: 7, job_id: '42' }]));
-    expect(await withJob('t', { kinds: ['internal_rest'] })).toEqual({ kind: 'internal_rest', agentViewId: 7, jobId: '42' });
-    const without = createVerifier(fakeQuery([{ kind: 'internal_rest', agent_view_id: 7, job_id: null }]));
-    expect(await without('t', { kinds: ['internal_rest'] })).toEqual({ kind: 'internal_rest', agentViewId: 7, jobId: null });
+  it('joins agent_view for the workspace the row must agree with', async () => {
+    const query = fakeQuery([row]);
+    await createVerifier(query)('t', { endpoint: 'mcp' });
+    expect(query.mock.calls[0][0]).toMatch(/LEFT JOIN agent_view av ON av\.id = c\.agent_view_id/);
+    const moved = createVerifier(fakeQuery([{ ...row, agent_view_workspace_id: 4 }]));
+    expect(await moved('t', { endpoint: 'mcp' })).toBeNull();
   });
 
-  it('rejects an internal_rest row whose job_id is malformed', async () => {
-    const verify = createVerifier(fakeQuery([{ kind: 'internal_rest', agent_view_id: 7, job_id: '0' }]));
-    expect(await verify('t', { kinds: ['internal_rest'] })).toBeNull();
+  it('parses JSON columns handed over as text', async () => {
+    const verify = createVerifier(fakeQuery([{ ...row, allowed_transports: '["http"]' }]));
+    expect((await verify('t', { endpoint: 'mcp' })).context.allowed_transports).toEqual(['http']);
+    const broken = createVerifier(fakeQuery([{ ...row, allowed_transports: '["http"' }]));
+    expect(await broken('t', { endpoint: 'mcp' })).toBeNull();
   });
 
-  it('rejects an mcp_interactive row that carries a job_id', async () => {
-    const verify = createVerifier(fakeQuery([{ kind: 'mcp_interactive', agent_view_id: 7, job_id: '42' }]));
-    expect(await verify('t', { kinds: ['mcp_interactive'] })).toBeNull();
+  it('rejects every kind when allowed_transports is missing — there is no default', async () => {
+    for (const kind of ['mcp_job', 'mcp_interactive', 'internal_rest']) {
+      for (const value of [null, undefined, [], '[]']) {
+        const verify = createVerifier(fakeQuery([capabilityRow(kind, { allowed_transports: value })]));
+        for (const endpoint of ENDPOINTS) expect(await verify('t', { endpoint })).toBeNull();
+      }
+    }
   });
 
-  it('accepts an mcp_interactive row without a job_id', async () => {
-    const verify = createVerifier(fakeQuery([{ kind: 'mcp_interactive', agent_view_id: 7, job_id: null }]));
-    expect(await verify('t', { kinds: ['mcp_interactive'] })).toEqual({ kind: 'mcp_interactive', agentViewId: 7, jobId: null });
+  it('rejects a guard that names no endpoint, or an unknown one, without touching the DB', async () => {
+    for (const opts of [undefined, {}, { endpoint: 'admin' }, { kinds: ['mcp_job'] }]) {
+      const query = fakeQuery([row]);
+      expect(await createVerifier(query)('t', opts)).toBeNull();
+      expect(query).not.toHaveBeenCalled();
+    }
   });
 
   it('returns null for an unknown token', async () => {
-    expect(await createVerifier(fakeQuery([]))('t', { kinds: ['mcp_job'] })).toBeNull();
-  });
-
-  it('returns null when the kind is not allowed', async () => {
-    expect(await createVerifier(fakeQuery([row]))('t', { kinds: ['internal_rest'] })).toBeNull();
-  });
-
-  it('returns null when the row carries a non-positive agent_view_id', async () => {
-    const bad = { kind: 'mcp_job', agent_view_id: 0, job_id: '42' };
-    expect(await createVerifier(fakeQuery([bad]))('t', { kinds: ['mcp_job'] })).toBeNull();
-  });
-
-  // A viewless internal_rest row exists only for a default-scope `/config-test`. Every guard
-  // that did not opt in must still refuse it, or it would reach GLOBAL config.
-  it('refuses a viewless row unless the guard allows it', async () => {
-    const viewless = { kind: 'internal_rest', agent_view_id: null, job_id: null };
-    expect(await createVerifier(fakeQuery([viewless]))('t', { kinds: ['internal_rest'] })).toBeNull();
-    expect(await createVerifier(fakeQuery([viewless]))('t', { kinds: ['internal_rest'], allowViewless: true }))
-      .toEqual({ kind: 'internal_rest', agentViewId: null, jobId: null });
-    const withJob = { kind: 'internal_rest', agent_view_id: null, job_id: '42' };
-    expect(await createVerifier(fakeQuery([withJob]))('t', { kinds: ['internal_rest'], allowViewless: true }))
-      .toBeNull();
-  });
-
-  it('allowViewless admits no viewless MCP row', async () => {
-    const viewless = { kind: 'mcp_interactive', agent_view_id: null, job_id: null };
-    const verify = createVerifier(fakeQuery([viewless]));
-    expect(await verify('t', { kinds: ['mcp_interactive'], allowViewless: true })).toBeNull();
-  });
-
-  it('the guard forwards allowViewless to the verifier', async () => {
-    const verify = vi.fn(async () => ({ kind: 'internal_rest', agentViewId: null, jobId: null }));
-    const guard = createRequireCapability(verify, { kinds: ['internal_rest'], allowViewless: true }, vi.fn());
-    await guard({ headers: { authorization: 'Bearer t' }, query: {} }, {}, vi.fn());
-    expect(verify).toHaveBeenCalledWith('t', { kinds: ['internal_rest'], allowViewless: true });
+    expect(await createVerifier(fakeQuery([]))('t', { endpoint: 'mcp' })).toBeNull();
   });
 
   it('returns null for an empty token without touching the DB', async () => {
     const query = fakeQuery([row]);
-    expect(await createVerifier(query)(null, { kinds: ['mcp_job'] })).toBeNull();
+    expect(await createVerifier(query)(null, { endpoint: 'mcp' })).toBeNull();
     expect(query).not.toHaveBeenCalled();
   });
 
   it('excludes expired and revoked rows in SQL', async () => {
     const query = fakeQuery([]);
-    await createVerifier(query)('t', { kinds: ['mcp_job'] });
+    await createVerifier(query)('t', { endpoint: 'mcp' });
     const sql = query.mock.calls[0][0];
     expect(sql).toMatch(/revoked_at IS NULL/);
     expect(sql).toMatch(/expires_at > NOW\(\)/);
+  });
+
+  it('reverify re-reads the same row by id through the same derivation', async () => {
+    const query = fakeQuery([row]);
+    const verify = createVerifier(query);
+    expect((await verify.reverify('1', { endpoint: 'mcp' })).context).toEqual(capabilityContext('mcp_job'));
+    expect(query.mock.calls[0][0]).toMatch(/c\.id = \?/);
+    expect(query.mock.calls[0][1]).toEqual(['1']);
+    for (const bad of [null, '', '0', 'abc', 1]) expect(await verify.reverify(bad, { endpoint: 'mcp' })).toBeNull();
+  });
+});
+
+describe('new-profile rows and their sources', () => {
+  const T0 = 1790000000;
+  const sessionRow = {
+    ...capabilityRow('mcp_job'), id: '201', kind: 'user_session', actor: 'user', subject_id: 'u-9',
+    agent_view_id: null, agent_view_workspace_id: null, workspace_id: 3, job_id: null,
+    source_kind: 'session', source_id: 's-1', created_at: T0 + 100, expires_at: T0 + 130,
+  };
+  const session = {
+    kind: 'session', id: 's-1', user_id: 'u-9', workspace_id: 3, agent_view_id: null,
+    permitted_tools: ['email_send'], created_at: T0, expires_at: T0 + 3600,
+  };
+  const caps = async () => ({ session_max_ttl: 43200, launch_max_ttl: 3600, capability_ttl: 30 });
+
+  it('is refused while no checker is installed for its source kind (E1 ships none)', async () => {
+    const verify = createVerifier(fakeQuery([sessionRow]), { resolveTtls: caps });
+    expect(await verify('t', { endpoint: 'invoke' })).toBeNull();
+  });
+
+  it('asks the checker on every verification and rejects a revoked source', async () => {
+    let live = true;
+    const check = vi.fn(async () => (live ? session : null));
+    const verify = createVerifier(fakeQuery([sessionRow]), {
+      sourceCheckers: createSourceLookup([['session', check]]), resolveTtls: caps,
+    });
+    const first = await verify('t', { endpoint: 'invoke' });
+    expect(first.single_use).toBe(true);
+    expect(first.permitted_tools).toEqual(['email_send']);
+    live = false;
+    expect(await verify('t', { endpoint: 'invoke' })).toBeNull();
+    expect(check).toHaveBeenCalledTimes(2);
+    expect(check).toHaveBeenCalledWith('s-1', { capability_kind: 'user_session' });
+  });
+
+  it('resolves the TTL caps for the row workspace, and a resolver failure propagates (503, not open)', async () => {
+    const resolveTtls = vi.fn(async () => { throw new Error('db down'); });
+    const verify = createVerifier(fakeQuery([sessionRow]), {
+      sourceCheckers: createSourceLookup([['session', async () => session]]), resolveTtls,
+    });
+    await expect(verify('t', { endpoint: 'invoke' })).rejects.toThrow('db down');
+    expect(resolveTtls).toHaveBeenCalledWith(3);
+  });
+
+  it('never consults a checker for a legacy kind', async () => {
+    const check = vi.fn(async () => session);
+    const verify = createVerifier(fakeQuery([capabilityRow('mcp_job')]), {
+      sourceCheckers: createSourceLookup([['session', check]]),
+    });
+    await verify('t', { endpoint: 'mcp' });
+    expect(check).not.toHaveBeenCalled();
+  });
+
+  it('exposes only a lookup: nothing reachable from it or the verifier can add a checker', () => {
+    const lookup = createSourceLookup([]);
+    expect(Object.keys(lookup)).toEqual(['lookup']);
+    expect(() => { lookup.lookup = () => async () => session; }).toThrow();
+    expect(() => { lookup.extra = 1; }).toThrow();
+    expect(lookup.lookup('session')).toBeNull();
+    const verify = createVerifier(fakeQuery([]), { sourceCheckers: lookup });
+    expect(Object.keys(verify)).toEqual(['reverify']);
+    expect(NO_AUTH_SOURCES.lookup('session')).toBeNull();
+    expect(Object.isFrozen(NO_AUTH_SOURCES)).toBe(true);
+  });
+});
+
+describe('resolveAuthTtls', () => {
+  it('reads only default and workspace rows — never agent_view — and clamps', async () => {
+    const query = vi.fn(async (_sql, [scope]) => [scope === 'workspace'
+      ? [{ path: 'core/auth/capability_ttl', value: '900', encrypted: 0 }]
+      : [{ path: 'core/auth/session_max_ttl', value: '600', encrypted: 0 }]]);
+    const caps = await resolveAuthTtls(query, 3);
+    expect(caps.capability_ttl).toBe(300);
+    expect(caps.session_max_ttl).toBe(600);
+    const scopes = query.mock.calls.map(c => c[1]);
+    expect(scopes).toEqual([['default', 0], ['workspace', 3]]);
+    expect(query.mock.calls.every(c => !/agent_view/.test(c[0]))).toBe(true);
+  });
+
+  it('throws on a query failure instead of falling back to the default', async () => {
+    await expect(resolveAuthTtls(async () => { throw new Error('db down'); }, 3)).rejects.toThrow('db down');
+  });
+
+  it('refuses an encrypted row', async () => {
+    const query = async () => [[{ path: 'core/auth/capability_ttl', value: 'x', encrypted: 1 }]];
+    await expect(resolveAuthTtls(query, null)).rejects.toThrow(/encrypted/);
   });
 });
 
@@ -149,26 +217,15 @@ describe('requireCapability', () => {
     return r;
   }
 
-  const VALID_ROWS = [
-    { kind: 'mcp_job', agent_view_id: 7, job_id: '42' },
-    { kind: 'mcp_interactive', agent_view_id: 7, job_id: null },
-    { kind: 'internal_rest', agent_view_id: 7, job_id: null },
-  ];
-
-  it.each([
-    ['missing kinds', undefined],
-    ['empty kinds', []],
-    ['non-array kinds', 'internal_rest'],
-  ])('rejects a VALID token when the guard declares %s', async (_label, kinds) => {
-    // A guard that forgot to declare its kinds must authenticate NOTHING, not everything.
-    for (const row of VALID_ROWS) {
-      const verify = createVerifier(fakeQuery([row]));
-      expect(await verify('token', { kinds })).toBeNull();
-    }
+  it('forwards its endpoint to the verifier', async () => {
+    const verify = vi.fn(async () => ({ context: capabilityContext('internal_rest', { agent_view_id: null }) }));
+    const guard = createRequireCapability(verify, { endpoint: 'config_test' }, vi.fn());
+    await guard({ headers: { authorization: 'Bearer t' }, query: {} }, {}, vi.fn());
+    expect(verify).toHaveBeenCalledWith('t', { endpoint: 'config_test' });
   });
 
   it('401s when no token is present', async () => {
-    const mw = createRequireCapability(async () => null, { kinds: ['mcp_job'] }, () => {});
+    const mw = createRequireCapability(async () => null, { endpoint: 'mcp' }, () => {});
     const r = res(); let nexted = false;
     await mw({ headers: {}, query: {} }, r, () => { nexted = true; });
     expect(r.code).toBe(401);
@@ -176,33 +233,45 @@ describe('requireCapability', () => {
   });
 
   it('403s when a token is present but invalid', async () => {
-    const mw = createRequireCapability(async () => null, { kinds: ['mcp_job'] }, () => {});
+    const mw = createRequireCapability(async () => null, { endpoint: 'mcp' }, () => {});
     const r = res();
     await mw({ headers: { authorization: 'Bearer bad' }, query: {} }, r, () => {});
     expect(r.code).toBe(403);
   });
 
   it('503s when verification itself fails', async () => {
-    const mw = createRequireCapability(async () => { throw new Error('db down'); }, { kinds: ['mcp_job'] }, () => {});
+    const mw = createRequireCapability(async () => { throw new Error('db down'); }, { endpoint: 'mcp' }, () => {});
     const r = res(); let nexted = false;
     await mw({ headers: { authorization: 'Bearer good' }, query: {} }, r, () => { nexted = true; });
     expect(r.code).toBe(503);
     expect(nexted).toBe(false);
   });
 
-  it('attaches claims and calls next on success', async () => {
-    const claims = { kind: 'mcp_job', agentViewId: 7, jobId: '42' };
-    const mw = createRequireCapability(async () => claims, { kinds: ['mcp_job'] }, () => {});
+  it('attaches the context and calls next on success', async () => {
+    const context = capabilityContext('mcp_job');
+    const mw = createRequireCapability(async () => ({ context, single_use: false }), { endpoint: 'mcp' }, () => {});
     const req = { headers: { authorization: 'Bearer good' }, query: {} };
     let nexted = false;
     await mw(req, res(), () => { nexted = true; });
     expect(nexted).toBe(true);
-    expect(req.capability).toEqual(claims);
+    expect(req.capability).toEqual(context);
+  });
+
+  it('refuses a query-string token at invoke outright, even beside a valid header', async () => {
+    const verify = vi.fn(async () => ({ context: capabilityContext('mcp_job') }));
+    const mw = createRequireCapability(verify, { endpoint: 'invoke' }, () => {});
+    for (const query of [{ cap: 'tok' }, { cap: '' }]) {
+      const r = res(); let nexted = false;
+      await mw({ headers: { authorization: 'Bearer tok' }, query }, r, () => { nexted = true; });
+      expect(r.code).toBe(401);
+      expect(nexted).toBe(false);
+    }
+    expect(verify).not.toHaveBeenCalled();
   });
 
   it('never logs the raw token', async () => {
     const lines = [];
-    const mw = createRequireCapability(async () => null, { kinds: ['mcp_job'] }, (...a) => lines.push(a.join(' ')));
+    const mw = createRequireCapability(async () => null, { endpoint: 'mcp' }, (...a) => lines.push(a.join(' ')));
     await mw({ headers: { authorization: 'Bearer s3cret' }, query: {} }, res(), () => {});
     expect(lines.join('\n')).not.toContain('s3cret');
   });
@@ -218,7 +287,7 @@ describe('rejectScopeMismatch', () => {
     r.json = (b) => { r.body = b; return r; };
     return r;
   };
-  const req = (extra) => ({ capability: { agentViewId: 7 }, body: {}, query: {}, ...extra });
+  const req = (extra) => ({ capability: { agent_view_id: 7 }, body: {}, query: {}, ...extra });
 
   it('passes when nothing is supplied', () => {
     const r = res();

@@ -76,10 +76,10 @@ describe('REST auth coverage', () => {
       return r;
     };
     for (const req of [
-      { capability: { agentViewId: 3 }, body: { agent_view_id: 9 } },
-      { capability: { agentViewId: 3 }, query: { agent_view_id: '9' } },
+      { capability: { agent_view_id: 3 }, body: { agent_view_id: 9 } },
+      { capability: { agent_view_id: 3 }, query: { agent_view_id: '9' } },
       // A body that AGREES must not hide a query that disagrees.
-      { capability: { agentViewId: 3 }, body: { agent_view_id: 3 }, query: { agent_view_id: '9' } },
+      { capability: { agent_view_id: 3 }, body: { agent_view_id: 3 }, query: { agent_view_id: '9' } },
     ]) {
       const r = res();
       await routes['/api/x'](req, r, vi.fn());
@@ -89,8 +89,8 @@ describe('REST auth coverage', () => {
 
     // An agreeing claim, and no claim at all, both reach the handler.
     for (const req of [
-      { capability: { agentViewId: 3 }, body: { agent_view_id: 3 } },
-      { capability: { agentViewId: 3 } },
+      { capability: { agent_view_id: 3 }, body: { agent_view_id: 3 } },
+      { capability: { agent_view_id: 3 } },
     ]) {
       const r = res();
       await routes['/api/x'](req, r, vi.fn());
@@ -109,7 +109,7 @@ describe('REST auth coverage', () => {
     createModuleRouteApp(app, vi.fn()).post('/api/x', parser, handler);
     const r = { code: 200, status: (c) => { r.code = c; return r; }, json: () => r };
     // The FIRST handler is the parser: a conflicting claim must pass straight through it.
-    seen[0]({ capability: { agentViewId: 3 }, body: { agent_view_id: 9 } }, r, vi.fn());
+    seen[0]({ capability: { agent_view_id: 3 }, body: { agent_view_id: 9 } }, r, vi.fn());
     expect(r.code).toBe(200);
   });
 

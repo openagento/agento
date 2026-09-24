@@ -217,6 +217,7 @@ class BitbucketOnboarding:
         client_for = capability_client(
             lambda token: BitbucketToolboxClient(toolbox_url, capability_token=token),
             agent_view_id=owner.id,
+            subject_id="service:bitbucket",
         )
         # Verify-before-save loop: nothing is written until a credential set verifies (D-4).
         while True:

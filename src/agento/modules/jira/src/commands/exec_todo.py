@@ -87,7 +87,7 @@ class ExecTodoCommand:
                     # Only the discovery flow reaches the toolbox REST API; a named issue
                     # goes straight to the agent and needs no capability at all.
                     capability_token = stack.enter_context(
-                        rest_capability(agent_view_id=av.id, db_config=db_config)
+                        rest_capability(agent_view_id=av.id, subject_id="service:jira", db_config=db_config)
                     )
 
                 channel = get_channel("jira")

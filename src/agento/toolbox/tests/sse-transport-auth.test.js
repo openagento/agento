@@ -6,6 +6,7 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { createRequireCapability, extractToken, tokenHash } from '../capability.js';
+import { capabilityContext } from './capability-rows.js';
 
 // The `/sse` + `/messages` wiring from server.js, mounted on an ephemeral app with a fake
 // verifier. It uses the REAL SSEServerTransport and the REAL guard, so what this proves about
@@ -17,11 +18,9 @@ import { createRequireCapability, extractToken, tokenHash } from '../capability.
 const TOKEN_A = 'cap-token-a';
 const TOKEN_B = 'cap-token-b';
 const CLAIMS = {
-  [TOKEN_A]: { kind: 'mcp_interactive', agentViewId: 1, jobId: null },
-  [TOKEN_B]: { kind: 'mcp_interactive', agentViewId: 2, jobId: null },
+  [TOKEN_A]: { context: capabilityContext('mcp_interactive', { agent_view_id: 1 }) },
+  [TOKEN_B]: { context: capabilityContext('mcp_interactive', { agent_view_id: 2 }) },
 };
-
-const MCP_KINDS = ['mcp_job', 'mcp_interactive'];
 const noopLog = () => {};
 
 let server;
@@ -33,14 +32,14 @@ beforeAll(async () => {
   const app = express();
   const guard = createRequireCapability(
     async token => CLAIMS[token] || null,
-    { kinds: MCP_KINDS },
+    { endpoint: 'sse' },
     noopLog
   );
 
   app.get('/sse', guard, async (req, res) => {
     const mcp = new McpServer({ name: 'test', version: '1.0.0' });
     mcp.tool('whoami', 'view probe', {}, async () => ({
-      content: [{ type: 'text', text: `view ${req.capability.agentViewId}` }],
+      content: [{ type: 'text', text: `view ${req.capability.agent_view_id}` }],
     }));
     const connectToken = extractToken(req);
     const transport = new SSEServerTransport(

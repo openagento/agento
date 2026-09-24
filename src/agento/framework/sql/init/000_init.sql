@@ -202,9 +202,23 @@ CREATE TABLE toolbox_capability (
     expires_at    DATETIME        NOT NULL,
     revoked_at    DATETIME        NULL,
     created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    actor              VARCHAR(16)     NULL,
+    subject_id         VARCHAR(128)    NULL,
+    on_behalf_of       VARCHAR(128)    NULL,
+    workspace_id       INT UNSIGNED    NULL,
+    execution_id       VARCHAR(64)     NULL,
+    app_artifact_code  VARCHAR(64)     NULL,
+    app_version_id     BIGINT UNSIGNED NULL,
+    app_launch_id      VARCHAR(64)     NULL,
+    tool_ceiling       JSON            NULL,
+    allowed_transports JSON            NULL,
+    source_kind        VARCHAR(32)     NULL,
+    source_id          VARCHAR(64)     NULL,
+    consumed_at        DATETIME        NULL,
     UNIQUE KEY uk_toolbox_capability_hash (token_hash),
     KEY idx_toolbox_capability_job (job_id),
     KEY idx_toolbox_capability_expires (expires_at),
+    KEY idx_toolbox_capability_source (source_kind, source_id),
     -- A deleted agent_view takes its live capabilities with it, so a token can never
     -- outlive the scope it names and land on the strict resolver's error path instead.
     CONSTRAINT fk_toolbox_capability_view FOREIGN KEY (agent_view_id)
@@ -248,4 +262,5 @@ INSERT INTO schema_migration (version) VALUES
     ('032_credential_label_unique_per_scope'),
     ('033_drop_historical_credential_indexes'),
     ('034_credential_error_source_and_refresh_lease'),
-    ('035_toolbox_capability');
+    ('035_toolbox_capability'),
+    ('036_toolbox_capability_auth_context');

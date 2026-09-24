@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createDeltaHandler, parseDmarcVerdict, isAutoReply, parseAllowedSenders, deriveMailboxAllowedSenders,
 } from '../../modules/outlook/toolbox/api-handlers.js';
-import { createRequireCapability } from '../capability.js';
+import { createRequireCapability, createVerifier } from '../capability.js';
+import { capabilityRow } from './capability-rows.js';
 // The real shared matcher, injected the way the framework injects it (config-loader
 // TOOLBOX_HELPERS) — a module cannot import framework code by path.
 import { matchesWhitelist } from '../email-match.js';
@@ -110,7 +111,7 @@ describe('isAutoReply (RFC 3834 Auto-Submitted + common vendor headers)', () => 
 
 const ok = (c) => async () => ({ cfg: c });
 // The /api guard verified this before the handler ran; the handler reads the scope from it.
-const CAP = { kind: 'internal_rest', agentViewId: 42, jobId: null };
+const CAP = { kind: 'internal_rest', agent_view_id: 42, job_id: null };
 const capReq = { capability: CAP };
 // Admit any single-@ address, so tests about paging/mapping are not also tests of the gate.
 // `*` never crosses the `@`, so this is 'anything that looks like an address', not '.*'.
@@ -395,7 +396,7 @@ describe('delta route capability enforcement (guard + handler)', () => {
   // Runs the chain the way Express would: middleware first, handler only if next() is called.
   async function callRoute(verify, req) {
     const res = mockRes();
-    const mw = createRequireCapability(verify, { kinds: ['internal_rest'] }, () => {});
+    const mw = createRequireCapability(verify, { endpoint: 'api' }, () => {});
     const handler = createDeltaHandler(ok(cfg), vi.fn(), fakeAuthFactory, ALLOW_ALL, matchesWhitelist);
     await new Promise((resolve) => {
       const next = () => handler(req, res).then(resolve, resolve);
@@ -424,8 +425,8 @@ describe('delta route capability enforcement (guard + handler)', () => {
   it('403s for an mcp_job capability — an agent cannot start a mailbox sync', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    // The real verifier returns null when the row's kind is outside the guard's `kinds`.
-    const verify = async (t, { kinds }) => (kinds.includes('mcp_job') ? { kind: 'mcp_job', agentViewId: 42, jobId: '9' } : null);
+    // The REAL verifier: an mcp_job row is outside the module-REST endpoint's kinds.
+    const verify = createVerifier(async () => [[capabilityRow('mcp_job', { agent_view_id: 42 })]]);
     const res = await callRoute(verify, { headers: { authorization: 'Bearer agent-held' }, body: {} });
     expect(res.statusCode).toBe(403);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -433,7 +434,7 @@ describe('delta route capability enforcement (guard + handler)', () => {
 
   it('preserves cursor and resync behaviour for a valid capability', async () => {
     queueFetch([jsonRes({ value: [], '@odata.deltaLink': AGENT_DELTA('NEXT') })]);
-    const res = await callRoute(async () => ({ ...CAP }),
+    const res = await callRoute(async () => ({ context: { ...CAP } }),
       { headers: { authorization: 'Bearer good' },
         body: { cursors: { 'agent@example.com': AGENT_DELTA('PREV') } } });
     expect(res.statusCode).toBe(200);
