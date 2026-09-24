@@ -3,8 +3,16 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express from 'express';
-import { registerTools, registerModuleRestApis, loadScopedDbOverridesStrict, ScopeResolutionError } from './config-loader.js';
-import { requireCapability, tokenHash, extractToken, rejectScopeMismatch } from './capability.js';
+import {
+  registerTools, registerModuleRestApis, loadScopedDbOverridesStrict, loadWorkspaceOverridesStrict,
+  discoverAuthSources, ScopeResolutionError,
+} from './config-loader.js';
+import {
+  requireCapability, tokenHash, extractToken, rejectScopeMismatch, reverifyCapability,
+  installAuthSources, createSourceLookup,
+} from './capability.js';
+import { installToolDispatch, createAuditStore, createConsumer } from './dispatcher.js';
+import { installInvokeRoute } from './invoke-route.js';
 import { runHealthchecks } from './health-run.js';
 import { SqlPoolRegistry } from './adapters/sql-pool-registry.js';
 import { createHealthRegistration } from './health-registration.js';
@@ -43,23 +51,20 @@ const context = {
   },
 };
 
-async function createServer(agentViewId = null, jobId = null, runId = null) {
-  const server = new McpServer({
-    name: 'toolbox',
-    version: '1.0.0',
-  });
-
-  // Build scoped context with agent_view-aware logger before registering tools,
-  // so adapters use the scoped log from the start.
+// Registers the tools a capability's scope enables on `server` and returns the dispatcher's
+// registry. Shared by MCP sessions and invoke, so both run the same handlers with the same
+// offload path.
+async function buildRegistration(server, authContext, runId = null) {
+  const { agent_view_id: agentViewId, job_id: jobId } = authContext;
   let artifactsDir = FALLBACK_ARTIFACTS_DIR;
-  // jobId (from the request's capability row, null for interactive runs / tool-list) flows to every tool's
+  // jobId (from the capability row, null for interactive runs / tool-list) flows to every tool's
   // register() via registerTools -> enrichedContext; schedule_followup uses it to inherit the
   // current job's channel/reference/scope.
   // invocationLog is the MCP tool-invocation logger for this session: logToolboxMcp for
   // interactive/tool-list runs, or the agent_view-scoped variant when an agent_view is known.
   let invocationLog = logToolboxMcp;
   let sessionContext = { ...context, artifactsDir, jobId };
-  let preloadedOverrides = null;
+  let preloadedOverrides;
   if (agentViewId) {
     const { overrides, agentViewMeta } = await loadScopedDbOverridesStrict(agentViewId);
     preloadedOverrides = overrides;
@@ -68,6 +73,8 @@ async function createServer(agentViewId = null, jobId = null, runId = null) {
       invocationLog = createScopedLogger(agentViewMeta);
       sessionContext = { ...sessionContext, artifactsDir };
     }
+  } else {
+    preloadedOverrides = await loadWorkspaceOverridesStrict(authContext.workspace_id);
   }
 
   // Registration-time diagnostics that modules emit from register() (e.g. browser SESSION/INIT)
@@ -76,9 +83,33 @@ async function createServer(agentViewId = null, jobId = null, runId = null) {
   // handler can run — so only real invocations reach toolbox_mcp.log.
   const sessionLog = createPhasedLogger(invocationLog);
   sessionContext = { ...sessionContext, log: sessionLog };
-  const { healthchecks } = await registerTools(server, sessionContext, agentViewId, preloadedOverrides);
+  const registration = await registerTools(server, sessionContext, agentViewId, preloadedOverrides);
   sessionLog.toInvocationPhase();
-  return { server, healthchecks };
+  return registration;
+}
+
+const dbQuery = (sql, params) => db.getCronPool().query(sql, params);
+const dispatchDeps = {
+  audit: createAuditStore(dbQuery),
+  consume: createConsumer(dbQuery),
+  reverify: reverifyCapability,
+  // Enablement is re-read on every call, strictly: a disabled tool is refused at its next call.
+  loadOverrides: async (ctx) => (ctx.agent_view_id
+    ? (await loadScopedDbOverridesStrict(ctx.agent_view_id)).overrides
+    : loadWorkspaceOverridesStrict(ctx.workspace_id)),
+  log: logToolboxRest,
+};
+
+// `endpoint` is where the session's tool calls arrive: `messages` for SSE, `mcp` for
+// Streamable HTTP. Each call is re-verified there.
+async function createServer(authContext, endpoint, runId = null) {
+  const server = new McpServer({
+    name: 'toolbox',
+    version: '1.0.0',
+  });
+  const registration = await buildRegistration(server, authContext, runId);
+  installToolDispatch(server, registration, authContext, { ...dispatchDeps, endpoint });
+  return { server, healthchecks: registration.healthchecks };
 }
 
 // `run_id` names an interactive run's desk. The capability row has no run id, so it
@@ -102,10 +133,9 @@ function rejectJobMismatch(req, res) {
 // revoked mid-stream is only enforced at the next connect. /mcp re-verifies every request.
 app.get('/sse', requireCapability({ endpoint: 'sse' }, logToolboxRest), async (req, res) => {
   if (rejectScopeMismatch(req, res, logToolboxRest, 'sse') || rejectJobMismatch(req, res)) return undefined;
-  const { agent_view_id: agentViewId, job_id: jobId } = req.capability;
   let server;
   try {
-    ({ server } = await createServer(agentViewId, jobId, runIdFrom(req)));
+    ({ server } = await createServer(req.capability, 'messages', runIdFrom(req)));
   } catch (err) {
     return sendScopeError(res, err);
   }
@@ -189,13 +219,12 @@ app.all('/mcp', requireCapability({ endpoint: 'mcp' }, logToolboxRest), async (r
   }
 
   if (rejectScopeMismatch(req, res, logToolboxRest, 'mcp') || rejectJobMismatch(req, res)) return undefined;
-  const { agent_view_id: agentViewId, job_id: jobId } = req.capability;
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
   });
   let server;
   try {
-    ({ server } = await createServer(agentViewId, jobId, runIdFrom(req)));
+    ({ server } = await createServer(req.capability, 'mcp', runIdFrom(req)));
   } catch (err) {
     return sendScopeError(res, err);
   }
@@ -220,6 +249,15 @@ app.all('/mcp', requireCapability({ endpoint: 'mcp' }, logToolboxRest), async (r
       capabilityHash: tokenHash(extractToken(req)),
     });
   }
+});
+
+// POST /internal/tools/{name}:invoke — see invoke-route.js. The registry is built per request,
+// inside executeTool, after the pending audit row.
+installInvokeRoute(app, {
+  guard: requireCapability({ endpoint: 'invoke' }, logToolboxRest),
+  deps: dispatchDeps,
+  loadRegistryFor: authContext => () => buildRegistration({ tool: () => {} }, authContext),
+  log: logToolboxRest,
 });
 
 let configTestRegistry = new Map();
@@ -322,7 +360,17 @@ Promise.allSettled([
       logToolboxRest('startup', 'OK', `Registered ${registry.size} config test(s)`);
     }),
   playwright.initPlaywright(),
-]).then(([restResult, configTestResult, playwrightResult]) => {
+  // Discovery is the only writer of the auth-source lookup, and it runs once. Until it
+  // completes the lookup answers nothing, so every user_session/miniapp row is refused.
+  discoverAuthSources()
+    .then((entries) => {
+      installAuthSources(createSourceLookup(entries));
+      logToolboxRest('startup', 'OK', `Registered ${entries.length} auth source(s)`);
+    }),
+]).then(([restResult, configTestResult, playwrightResult, authSourcesResult]) => {
+  if (authSourcesResult.status === 'rejected') {
+    logToolboxRest('startup', 'ERROR', `Auth source discovery failed: ${authSourcesResult.reason?.message}`);
+  }
   if (restResult.status === 'rejected') {
     logToolboxRest('startup', 'ERROR', `Module REST API registration failed: ${restResult.reason?.message}`);
   }
