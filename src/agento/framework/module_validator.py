@@ -12,7 +12,10 @@ from .config_validation import MAX_LENGTH_TYPES
 from .module_loader import is_confined_class_path
 
 # `{module/field}` — the same shape the toolbox interpolates (config-tests.js).
-_PLACEHOLDER_RE = re.compile(r"\{([a-z0-9_]+(?:/[a-z0-9_/-]+)+)\}", re.IGNORECASE)
+# Keep the `/` separator out of the segment class so it matches unambiguously;
+# folding it in gives two ways to consume each `/` and triggers exponential
+# backtracking (CodeQL: inefficient regular expression).
+_PLACEHOLDER_RE = re.compile(r"\{([a-z0-9_]+(?:/[a-z0-9_-]+)+)\}", re.IGNORECASE)
 
 REQUIRED_MANIFEST_FIELDS = {"name", "version", "description"}
 # Full-access adapter types must carry their capability in the tool NAME. Tool enablement is
