@@ -44,6 +44,7 @@ describe('registerTools: requires chain in the tool gate', () => {
       fs.writeFileSync(
         path.join(dir, 'toolbox', 'tools.js'),
         `export function register(server, { isToolEnabled }) {\n` +
+        (mod.throws ? `  throw new Error('boom');\n` : '') +
         `  const names = ${JSON.stringify(mod.registers)};\n` +
         `  const respect = ${respect};\n` +
         `  for (const name of names) {\n` +
@@ -227,5 +228,29 @@ describe('registerTools: requires chain in the tool gate', () => {
       dbValues: { 'tools/a/is_enabled': '1', 'tools/b/is_enabled': '1' },
     });
     expect(registered).not.toContain('a');
+  });
+
+  // The dispatcher's half of the same gate: one predicate, re-run per call against the
+  // overrides read at that call.
+  it('returns the registry and the same requires predicate for per-call dispatch', async () => {
+    const { tools, isEnabled } = await runRegisterTools({
+      modules: [{ name: 'jira', tools: MASTERED, registers: ['jira_search'] }],
+      dbValues: { 'tools/jira/is_enabled': '1', 'tools/jira_search/is_enabled': '1' },
+    });
+    expect([...tools.keys()]).toEqual(['jira_search']);
+    expect(tools.get('jira_search').module).toBe('jira');
+    const on = { 'tools/jira/is_enabled': { value: '1' }, 'tools/jira_search/is_enabled': { value: '1' } };
+    expect(isEnabled('jira_search', on)).toBe(true);
+    expect(isEnabled('jira_search', { ...on, 'tools/jira/is_enabled': { value: '0' } })).toBe(false);
+    expect(isEnabled('undeclared_tool', { 'tools/undeclared_tool/is_enabled': { value: '1' } })).toBe(false);
+  });
+
+  it('reports the tools of a module whose register() threw as unavailable, not unknown', async () => {
+    const { unavailableTools, tools } = await runRegisterTools({
+      modules: [{ name: 'jira', tools: MASTERED, registers: ['jira_search'], throws: true }],
+      dbValues: { 'tools/jira/is_enabled': '1', 'tools/jira_search/is_enabled': '1' },
+    });
+    expect(tools.size).toBe(0);
+    expect([...unavailableTools].sort()).toEqual(['jira', 'jira_get_issue', 'jira_search']);
   });
 });
