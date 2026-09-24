@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agento.framework.harness.run_scope import run_scope_query, scope_toolbox_url
+from agento.framework.harness.run_scope import run_scope_query, scope_toolbox_url, toolbox_auth
 from agento.framework.run_preparation import materialize_run_workspace
 from agento.modules.pi.src.config import BRIDGE_CONFIG_FILENAME, BRIDGE_DIR
 
@@ -56,6 +56,17 @@ class TestRunScopeQuery:
         url = "http://toolbox:3001/mcp?agent_view_id=7"
         assert scope_toolbox_url(url, None, None) == url
 
+
+
+class TestToolboxAuth:
+    def test_mcp_gets_a_bearer_header_and_an_unchanged_url(self):
+        url = "http://toolbox:3001/mcp?job_id=42"
+        assert toolbox_auth(url, "tok") == (url, {"Authorization": "Bearer tok"})
+
+    def test_sse_keeps_the_query_token_and_sends_no_header(self):
+        assert toolbox_auth("http://toolbox:3001/sse", "tok") == ("http://toolbox:3001/sse?cap=tok", {})
+        assert toolbox_auth("http://toolbox:3001/sse?job_id=4", "tok") == (
+            "http://toolbox:3001/sse?job_id=4&cap=tok", {})
 
 @dataclass
 class _AV:
