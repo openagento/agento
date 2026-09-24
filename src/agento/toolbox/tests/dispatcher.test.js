@@ -132,6 +132,8 @@ describe('executeTool', () => {
     const ctx = capabilityContext('mcp_job');
     expect((await run(ctx, 'nope', {}, d)).response.error.code).toBe('not_found');
     expect((await run(ctx, 'broken', {}, d)).response.error.code).toBe('unavailable');
+    const half = deps({ loadRegistry: async () => registryWith({ echo }, { unavailable: ['echo'] }) });
+    expect((await run(ctx, 'echo', { text: 'a' }, half)).response.error.code).toBe('unavailable');
     const failing = deps({ loadRegistry: async () => { throw new Error('import failed'); } });
     const { response, row } = await run(ctx, 'echo', {}, failing);
     expect(response.error.code).toBe('unavailable');
@@ -173,7 +175,10 @@ describe('executeTool', () => {
     const erring = { schema: {}, handler: async () => ({ isError: true, content: [{ type: 'text', text: 'nope' }] }) };
     const d = deps({ loadRegistry: async () => registryWith({ thrower, erring }) });
     const ctx = capabilityContext('mcp_job');
-    expect((await run(ctx, 'thrower', {}, d)).response.error).toEqual({ code: 'tool_error', message: 'upstream 500' });
+    const lines = [];
+    d.log = (...a) => lines.push(a.join(' '));
+    expect((await run(ctx, 'thrower', {}, d)).response.error).toEqual({ code: 'tool_error', message: 'tool failed' });
+    expect(lines.join('\n')).not.toContain('upstream 500');
     const { response } = await run(ctx, 'erring', {}, d);
     expect(response.error.code).toBe('tool_error');
     expect(response.result.isError).toBe(true);
