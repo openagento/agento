@@ -58,6 +58,7 @@ class PeriodicTasksOnboarding:
         client_for = capability_client(
             lambda token: ToolboxClient(toolbox_url, capability_token=token),
             agent_view_id=owner_view.id,
+            subject_id="service:jira_periodic_tasks",
         )
         self._configure(conn, logger, config, client_for, toolbox_url)
 

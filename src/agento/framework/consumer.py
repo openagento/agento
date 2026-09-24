@@ -559,6 +559,7 @@ class Consumer:
             agent_view_id=job.agent_view_id,
             job_id=job.id,
             ttl_seconds=MCP_CAPABILITY_TTL_SECONDS,
+            allowed_transports=["http"],
             commit=False,
         )
         rest_token = None
@@ -571,6 +572,8 @@ class Consumer:
                 agent_view_id=job.agent_view_id,
                 job_id=job.id,
                 ttl_seconds=REST_CAPABILITY_TTL_SECONDS,
+                allowed_transports=["http"],
+                subject_id="service:consumer",
                 commit=False,
             )
         conn.commit()

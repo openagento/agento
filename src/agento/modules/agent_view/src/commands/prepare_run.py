@@ -183,6 +183,7 @@ class AgentViewPrepareRunCommand:
                 agent_view_id=av.id,
                 job_id=None,
                 ttl_seconds=INTERACTIVE_CAPABILITY_TTL_SECONDS,
+                allowed_transports=["http"],
             )
         finally:
             conn.close()

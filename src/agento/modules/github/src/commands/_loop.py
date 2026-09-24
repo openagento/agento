@@ -94,7 +94,7 @@ def run_lane(
             # One capability per view, minted and revoked around this view's calls:
             # the toolbox derives the view from it, so a client shared across views
             # would be a client with the wrong scope for all but one of them.
-            with rest_capability(agent_view_id=av.id, db_config=db_config) as capability_token, closing(
+            with rest_capability(agent_view_id=av.id, subject_id="service:github", db_config=db_config) as capability_token, closing(
                 GitHubToolboxClient(toolbox_url, capability_token=capability_token)
             ) as client:
                 resp = client.open_prs(av.id, lane=lane, top=top_override)

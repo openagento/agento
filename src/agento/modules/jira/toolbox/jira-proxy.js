@@ -7,7 +7,7 @@
  */
 export function createJiraProxyHandler(configResolver, log) {
   return async (req, res) => {
-    const agentViewId = req.capability.agentViewId;
+    const agentViewId = req.capability.agent_view_id;
     const config = await configResolver(agentViewId);
 
     const { method, path } = req.body;
