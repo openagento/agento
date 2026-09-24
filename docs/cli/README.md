@@ -70,7 +70,7 @@
 | `config:schema [module] [--json]` | Show config field definitions from system.json |
 | `config:resolve <module> [--scope=S] [--scope-id=N] [--json]` | Resolve effective config values with source info |
 | **Capabilities** | |
-| `capability:mint --kind K --agent-view C [--ttl N]` | Mint a toolbox capability token; prints it on stdout ([details](capability.md)) |
+| `capability:mint --kind K --agent-view C [--transport T] [--ttl N]` | Mint a toolbox capability token; prints it on stdout ([details](capability.md)) |
 | `capability:revoke` | Revoke a capability — reads the raw token from **stdin** ([details](capability.md)) |
 | **Jobs** | |
 | `job:list [--status S] [--source SRC] [--agent-view C] [--limit N]` | List recent jobs; surfaces failed/dead jobs with their error ([details](job-pause-resume.md)) |
