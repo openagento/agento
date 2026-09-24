@@ -684,7 +684,7 @@ export async function discoverAuthSources() {
       try {
         toolModule = await import(file);
       } catch (err) {
-        logToolboxRest('discovery', 'ERROR', `Failed to load ${file}: ${err.message}`);
+        logToolboxRest('discovery', 'ERROR', `${mod.name}: failed to load ${path.basename(file)}: ${errorCategory(err)}`);
         continue;
       }
       if (!Array.isArray(toolModule.authSources)) continue;
@@ -948,7 +948,7 @@ export async function registerTools(server, context, agentViewId = null, preload
   // `not_found` would report a broken deployment as a caller mistake.
   const unavailableTools = new Set();
   for (const mod of failedModules) {
-    for (const name of declaredByModule.get(mod) || []) if (!tools.has(name)) unavailableTools.add(name);
+    for (const name of declaredByModule.get(mod) || []) unavailableTools.add(name);
   }
   const isEnabled = (toolName, overrides) => toolChainState(toolName, {
     declared: declaredToolNames, requiresByTool, dbOverrides: overrides, configDefaults,

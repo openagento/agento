@@ -77,7 +77,7 @@ function isScopeFailure(err) {
 }
 
 async function authorizeAndRun(authContext, toolName, args, deps) {
-  const { endpoint, consume, reverify, loadRegistry, loadOverrides, extra } = deps;
+  const { endpoint, consume, reverify, loadRegistry, loadOverrides, extra, log = () => {} } = deps;
 
   if (SINGLE_USE_KINDS.includes(authContext.kind) && !(await consume(authContext.capability_id))) {
     return failure('unauthorized', 'capability already used, revoked or expired');
@@ -96,12 +96,11 @@ async function authorizeAndRun(authContext, toolName, args, deps) {
   if (!derived) return failure('unauthorized', 'capability no longer valid');
   const context = derived.context;
 
+  // Checked before the registry: a module that registered some tools and then threw is
+  // half-initialized, and none of its tools may run.
+  if (registry.unavailableTools?.has(toolName)) return failure('unavailable', `tool ${toolName} is unavailable`);
   const entry = registry.tools.get(toolName);
-  if (!entry) {
-    return registry.unavailableTools?.has(toolName)
-      ? failure('unavailable', `tool ${toolName} is unavailable`)
-      : failure('not_found', `unknown tool ${toolName}`);
-  }
+  if (!entry) return failure('not_found', `unknown tool ${toolName}`);
 
   const overrides = await loadOverrides(context);
   // A disabled tool is indistinguishable from an absent one to the caller.
@@ -125,7 +124,9 @@ async function authorizeAndRun(authContext, toolName, args, deps) {
     result = await entry.handler(parsed.data, extra);
   } catch (err) {
     if (isScopeFailure(err)) return failure('unavailable', 'scope resolution unavailable');
-    return failure('tool_error', err?.message || 'tool failed');
+    // A thrown message can quote an upstream response body; the caller gets a fixed text.
+    log('dispatch', 'ERROR', `tool ${toolName} threw: ${errorCategory(err)}`);
+    return failure('tool_error', 'tool failed');
   }
   if (result?.isError) return { ...failure('tool_error', 'tool reported an error'), result };
   return { ok: true, result };

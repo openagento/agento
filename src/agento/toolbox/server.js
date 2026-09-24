@@ -369,7 +369,7 @@ Promise.allSettled([
     }),
 ]).then(([restResult, configTestResult, playwrightResult, authSourcesResult]) => {
   if (authSourcesResult.status === 'rejected') {
-    logToolboxRest('startup', 'ERROR', `Auth source discovery failed: ${authSourcesResult.reason?.message}`);
+    logToolboxRest('startup', 'ERROR', `Auth source discovery failed: ${errorCategory(authSourcesResult.reason)}`);
   }
   if (restResult.status === 'rejected') {
     logToolboxRest('startup', 'ERROR', `Module REST API registration failed: ${restResult.reason?.message}`);

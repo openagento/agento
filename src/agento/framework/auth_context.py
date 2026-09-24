@@ -226,7 +226,7 @@ def derive_auth_context(*, row, agent_view_workspace_id=None, source=None, endpo
 
 AUTH_TTL_KEYS = tuple(TTL_DEFAULTS)
 _POSITIVE_DECIMAL = re.compile(r"^[1-9][0-9]*$")
-_clamp_warned: set[tuple[str, int]] = set()
+_clamp_warned: set[str] = set()  # at most one entry per AUTH_TTL_KEYS name
 
 
 class AuthConfigError(ValueError):
@@ -263,8 +263,8 @@ def compute_auth_ttls(*, env, default_overrides, workspace_overrides, config_def
         if not _POSITIVE_DECIMAL.match(text):
             raise AuthConfigError(f"{path} must be a positive integer number of seconds")
         value = int(text)
-        if value > TTL_CEILINGS[key] and (key, value) not in _clamp_warned:
-            _clamp_warned.add((key, value))
+        if value > TTL_CEILINGS[key] and key not in _clamp_warned:
+            _clamp_warned.add(key)
             logger.warning("%s=%s exceeds the hard ceiling; clamped to %s", path, value, TTL_CEILINGS[key])
         caps[key] = min(value, TTL_CEILINGS[key])
     return caps
