@@ -115,3 +115,48 @@ same outcomes come back as a `CallToolResult` with `isError: true`.
 toolbox MCP entry: an `Authorization: Bearer` header on `/mcp` (URL unchanged), and `?cap=` on
 `/sse`, because an SSE client sends no headers. Issuers mint `["http"]` tokens for `/mcp`; an
 operator who pins `/sse` mints with `capability:mint --transport sse`.
+
+## Transport matrix
+
+| Endpoint | Token in | Rule |
+|---|---|---|
+| `POST /internal/tools/{name}:invoke` | `Authorization: Bearer` only | A `?cap=` gets 401, even beside a valid header |
+| `/mcp`, `/api/*`, `/config-test`, `/health` | `Authorization: Bearer` | The row must allow `http`. The toolbox still reads `?cap=` here until the retirement rule below applies |
+| `/sse` + `/messages` | `?cap=` permitted | The row must allow `sse`. Only for clients that cannot send headers |
+
+**Revocation on SSE.** Every `/messages` POST is verified again, so a revoked token cannot send
+another tool call. Only the open `/sse` GET stream survives: a running call completes, and
+notifications on that stream continue until the client reconnects. `/mcp` verifies every request.
+
+**The query path is not leak-free.** The toolbox redacts `cap` in its own log lines (a test covers
+every guard error path). A reverse-proxy access log also records a query string; that proxy and its
+redaction come with E2. Until E2 ships them, do not describe `?cap=` as safe from logs.
+
+**Retirement rule.** Remove the query path when no supported client needs it. Clients tested in E1:
+
+- claude, codex and pi: their `/mcp` config gets the header (unit tests of each `WorkspaceAdapter`
+  and of the pi bridge). They were not run live against a toolbox in E1.
+- SSE: the MCP SDK `SSEClientTransport` (`src/agento/toolbox/tests/sse-transport-auth.test.js`), which
+  cannot send headers on `/messages`. It is the reason the query path stays.
+
+## Enablement and registration
+
+Every call reads the tool's `is_enabled` chain again, so a disable takes effect on the next call. A tool
+that is **enabled** after an MCP session opened is not in that session's registration: it becomes
+callable in the next session. At invoke the registry is built per request, so it is callable on the
+next call. Building it (`register()` of every module, measured in-process with stub clients) costs
+about 0.5 ms per call, so there is no cache. The two config queries per call come in addition.
+
+## Requirements for E2 (no code in E1)
+
+- The proxy strips every caller-supplied identity header before it forwards a request.
+- The authorization endpoint authenticates the proxy (a shared internal credential, or a listener
+  only the proxy can reach). A test shows that a direct call from the `sandbox` container is denied.
+- The proxy redacts `cap` in its access log, with an acceptance test.
+
+## Deployment restriction
+
+Agents share a UID and the workspace mount, so an agent can read another run's directory, including
+its capability. Until a runtime-isolation task closes that, expose the panel only where every user is
+trusted with every agent_view it can reach. RBAC controls the API surface, not what a process can
+read from a shared mount.
