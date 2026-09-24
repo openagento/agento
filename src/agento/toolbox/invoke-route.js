@@ -23,7 +23,11 @@ export function installInvokeRoute(app, { guard, deps, loadRegistryFor, log }) {
     const response = await executeTool(authContext, req.params[0], req.body, {
       ...deps, endpoint: 'invoke', loadRegistry: loadRegistryFor(authContext),
     });
-    return res.status(response.ok ? 200 : HTTP_STATUS[response.error.code]).json(response);
+    if (response.ok) return res.status(200).json(response);
+    // An isError body can quote an upstream response or an exception; an invoke caller (a browser
+    // or a miniapp) gets only the code. MCP keeps the body: the agent needs it to recover.
+    const { result: _dropped, ...refusal } = response;
+    return res.status(HTTP_STATUS[response.error.code]).json(refusal);
   }
 
   app.post(INVOKE_ROUTE, guard, express.json({ strict: false }), bodyError, invoke);
