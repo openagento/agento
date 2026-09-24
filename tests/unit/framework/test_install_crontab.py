@@ -192,6 +192,76 @@ def test_the_frameworks_own_logrotate_still_renders(modules):
     assert "/usr/sbin/logrotate" in out
 
 
+# --- Schedule from a {module/path} config directive ----------------------------------
+
+def _render_with_config(module_dirs, env=None, db=None):
+    with patch.object(renderer, "_config_overrides", return_value=(env or {}, db or {})):
+        return _render(module_dirs)
+
+
+def test_a_schedule_directive_resolves_from_the_db(modules):
+    m = _module(modules, "crm", [{"name": "sync", "schedule": "{crm/sync_schedule}", "command": "sync"}])
+    out = _render_with_config([m], db={"crm/sync_schedule": ("*/5 * * * *", False)})
+    assert any(line.startswith("*/5 * * * * ") for line in _job_lines(out))
+
+
+def test_env_wins_over_db_for_a_schedule_directive(modules):
+    m = _module(modules, "crm", [{"name": "sync", "schedule": "{crm/sync_schedule}", "command": "sync"}])
+    out = _render_with_config(
+        [m],
+        env={"CONFIG__CRM__SYNC_SCHEDULE": "0 2 * * *"},
+        db={"crm/sync_schedule": ("*/5 * * * *", False)},
+    )
+    assert any(line.startswith("0 2 * * * ") for line in _job_lines(out))
+
+
+def test_a_schedule_directive_falls_back_to_config_json(modules):
+    m = _module(modules, "crm", [{"name": "sync", "schedule": "{crm/sync_schedule}", "command": "sync"}])
+    (m / "config.json").write_text(json.dumps({"sync_schedule": "15 * * * *"}))
+    out = _render_with_config([m])
+    assert any(line.startswith("15 * * * * ") for line in _job_lines(out))
+
+
+def test_a_literal_schedule_never_loads_config(modules):
+    m = _module(modules, "crm", [{"name": "sync", "schedule": "0 * * * *", "command": "sync"}])
+    with patch.object(renderer, "_config_overrides", side_effect=AssertionError("loaded")):
+        out = _render([m])
+    assert any(line.startswith("0 * * * * ") for line in _job_lines(out))
+
+
+@pytest.mark.parametrize("db", [{}, {"crm/sync_schedule": ("", False)}, {"crm/sync_schedule": ("x", True)}])
+def test_an_unset_or_encrypted_directive_omits_only_that_module(modules, db, capsys):
+    bad = _module(modules, "crm", [{"name": "sync", "schedule": "{crm/sync_schedule}", "command": "sync"}])
+    good = _module(modules, "ok", [{"name": "tick", "schedule": "0 * * * *", "command": "tick"}])
+    out = _render_with_config([bad, good], db=db)
+    lines = _job_lines(out)
+    assert not any("crm" in line for line in lines)
+    assert any("cron:run ok tick" in line for line in lines)
+    assert "crm/sync_schedule" in capsys.readouterr().err
+
+
+def test_a_directive_resolving_to_a_bad_expression_is_rejected(modules):
+    m = _module(modules, "crm", [{"name": "sync", "schedule": "{crm/sync_schedule}", "command": "sync"}])
+    out = _render_with_config([m], db={"crm/sync_schedule": ("* * * * * ; rm -rf /", False)})
+    assert not any("crm" in line for line in _job_lines(out))
+
+
+def test_a_config_database_failure_leaves_the_crontab_untouched(modules):
+    renderer._config_overrides.cache_clear()
+    m = _module(modules, "crm", [{"name": "sync", "schedule": "{crm/sync_schedule}", "command": "sync"}])
+    with patch.object(renderer, "iter_module_dirs", return_value=[m]), \
+         patch.object(renderer, "resolve_module_root", return_value=None), \
+         patch.object(renderer, "_schedule_jobs", return_value=[]), \
+         patch.object(renderer, "store_env") as store_env, \
+         patch.object(Path, "read_bytes", return_value=b""), \
+         patch.object(renderer, "_connect", side_effect=renderer.OperationalError("down")), \
+         patch("subprocess.run") as run:
+        store_env.parse.return_value = {}
+        assert renderer.main() == 0
+    renderer._config_overrides.cache_clear()
+    run.assert_not_called()
+
+
 # --- Dynamic rows ---------------------------------------------------------------------
 
 def test_a_schedule_row_renders_through_the_dispatcher(modules):
