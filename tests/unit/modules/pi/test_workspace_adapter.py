@@ -144,7 +144,8 @@ class TestJobScoping:
         adapter.inject_runtime_params(
             tmp_path, job_id=42, capability_token="tok", toolbox_url="http://toolbox:3001",
         )
-        assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp?job_id=42&cap=tok"
+        assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp?job_id=42"
+        assert read_conn(tmp_path)["headers"] == {"Authorization": "Bearer tok"}
 
     def test_the_capability_never_goes_to_another_origin(self, adapter, tmp_path):
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=7, toolbox_url="http://elsewhere:3001")
