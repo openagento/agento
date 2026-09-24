@@ -9,11 +9,11 @@ runs need neither: the consumer mints a capability per job and revokes it on the
 and `agent_view:prepare-run` mints one per interactive run.
 
 **Python callers do not mint by hand either.** A publisher, channel or onboarding flow that needs an
-`internal_rest` token uses the `rest_capability(agent_view_id=…, db_config=…)` contextmanager from
+`internal_rest` token uses the `rest_capability(agent_view_id=…, subject_id=…, db_config=…)` contextmanager from
 `agento.framework.toolbox_capability`, and builds its HTTP client INSIDE the `with`:
 
 ```python
-with rest_capability(agent_view_id=av.id, db_config=db_config) as capability_token, closing(
+with rest_capability(agent_view_id=av.id, subject_id="service:jira", db_config=db_config) as capability_token, closing(
     SomeToolboxClient(toolbox_url, capability_token=capability_token)
 ) as client:
     client.do_work(av.id)
@@ -60,7 +60,7 @@ failed attempt is authorized by a capability of its own.
 ## Usage
 
 ```bash
-agento capability:mint --kind <kind> --agent-view <code> [--ttl <seconds>]
+agento capability:mint --kind <kind> --agent-view <code> [--transport http|sse|both] [--ttl <seconds>]
 agento capability:revoke   # reads the raw token from stdin
 ```
 
@@ -84,6 +84,12 @@ hand-minted one would outlive the code that revokes it.
 `--ttl` must be between `1` and the kind's maximum. A larger value is an **error**, not a silent
 clamp — an operator who asks for 24 h and receives 2 min would deploy against the wrong assumption.
 Omit `--ttl` to get the maximum.
+
+`--transport` sets the token's `allowed_transports` (default `http`). `http` is the
+`Authorization: Bearer` header on `/mcp`, `/api`, `/config-test` and `/health`; `sse` is `/sse` and
+`/messages`, where the token travels as `?cap=`. A token that may travel on `sse` lives at most
+4 hours, because a query string lands in access logs. `internal_rest` is `http` only — the toolbox
+refuses it anywhere else. A token with no `allowed_transports` fails verification at every endpoint.
 
 ## Output
 
