@@ -313,7 +313,7 @@ def publish_all_views(
             # the mailbox from it. Minted and revoked per group, so one client never
             # carries two views' scopes.
             with rest_capability(
-                agent_view_id=poll_owner.id, db_config=db_config
+                agent_view_id=poll_owner.id, subject_id="service:outlook", db_config=db_config
             ) as capability_token, closing(
                 OutlookToolboxClient(toolbox_url, capability_token=capability_token)
             ) as client:

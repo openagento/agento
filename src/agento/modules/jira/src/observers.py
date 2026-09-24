@@ -94,7 +94,7 @@ class ResolveAccountIdObserver:
         # This observer runs OUTSIDE any job: it has no job capability to borrow and no
         # terminal transition to revoke through, so it owns the whole lifetime.
         try:
-            with rest_capability(agent_view_id=av.id, db_config=db_config) as capability_token:
+            with rest_capability(agent_view_id=av.id, subject_id="service:jira", db_config=db_config) as capability_token:
                 account_id = _resolve_account_id(
                     toolbox_url, agent_view_id=av.id, capability_token=capability_token,
                 )

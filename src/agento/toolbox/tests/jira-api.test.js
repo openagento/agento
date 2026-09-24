@@ -28,7 +28,7 @@ describe('jira /api/jira/search handler', () => {
   it('logs ERROR when jql is missing and returns 400', async () => {
     const handler = createSearchHandler(async () => validConfig, log);
     const res = mockRes();
-    await handler({ body: { agent_view_id: 7 }, capability: { kind: 'internal_rest', agentViewId: 7, jobId: null } }, res);
+    await handler({ body: { agent_view_id: 7 }, capability: { kind: 'internal_rest', agent_view_id: 7, job_id: null } }, res);
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(log).toHaveBeenCalledWith(
@@ -41,7 +41,7 @@ describe('jira /api/jira/search handler', () => {
   it('logs ERROR when jira config is missing and returns 500', async () => {
     const handler = createSearchHandler(async () => ({ host: null, user: null, token: null }), log);
     const res = mockRes();
-    await handler({ body: { jql: 'project=AI', agent_view_id: 9 }, capability: { kind: 'internal_rest', agentViewId: 9, jobId: null } }, res);
+    await handler({ body: { jql: 'project=AI', agent_view_id: 9 }, capability: { kind: 'internal_rest', agent_view_id: 9, job_id: null } }, res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(log).toHaveBeenCalledWith(
@@ -55,7 +55,7 @@ describe('jira /api/jira/search handler', () => {
     const handler = createSearchHandler(async () => validConfig, log);
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')));
     const res = mockRes();
-    await handler({ body: { jql: 'project=AI' }, capability: { kind: 'internal_rest', agentViewId: 7, jobId: null } }, res);
+    await handler({ body: { jql: 'project=AI' }, capability: { kind: 'internal_rest', agent_view_id: 7, job_id: null } }, res);
 
     expect(res.status).toHaveBeenCalledTimes(1);
     expect(res.status).toHaveBeenCalledWith(500);
@@ -73,7 +73,7 @@ describe('jira /api/jira/issue/comments handler', () => {
   it('logs ERROR when issue_key is missing and returns 400', async () => {
     const handler = createCommentsHandler(async () => validConfig, log);
     const res = mockRes();
-    await handler({ body: { agent_view_id: 3 }, capability: { kind: 'internal_rest', agentViewId: 3, jobId: null } }, res);
+    await handler({ body: { agent_view_id: 3 }, capability: { kind: 'internal_rest', agent_view_id: 3, job_id: null } }, res);
 
     expect(res.status).toHaveBeenCalledWith(400);
     expect(log).toHaveBeenCalledWith(
@@ -86,7 +86,7 @@ describe('jira /api/jira/issue/comments handler', () => {
   it('logs ERROR when jira config is missing and returns 500', async () => {
     const handler = createCommentsHandler(async () => ({ host: validConfig.host, user: validConfig.user, token: null }), log);
     const res = mockRes();
-    await handler({ body: { issue_key: 'AI-1', agent_view_id: 4 }, capability: { kind: 'internal_rest', agentViewId: 4, jobId: null } }, res);
+    await handler({ body: { issue_key: 'AI-1', agent_view_id: 4 }, capability: { kind: 'internal_rest', agent_view_id: 4, job_id: null } }, res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(log).toHaveBeenCalledWith(
@@ -99,7 +99,7 @@ describe('jira /api/jira/issue/comments handler', () => {
     const handler = createCommentsHandler(async () => validConfig, log);
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('boom')));
     const res = mockRes();
-    await handler({ body: { issue_key: 'AI-1' }, capability: { kind: 'internal_rest', agentViewId: 7, jobId: null } }, res);
+    await handler({ body: { issue_key: 'AI-1' }, capability: { kind: 'internal_rest', agent_view_id: 7, job_id: null } }, res);
 
     expect(res.status).toHaveBeenCalledTimes(1);
     expect(res.status).toHaveBeenCalledWith(500);

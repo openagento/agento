@@ -380,7 +380,7 @@ class OutlookOnboarding:
             _print_next_steps()
             return
         try:
-            with rest_capability(agent_view_id=chosen_av.id) as capability_token, closing(
+            with rest_capability(agent_view_id=chosen_av.id, subject_id="service:outlook") as capability_token, closing(
                 OutlookToolboxClient(toolbox_url, capability_token=capability_token)
             ) as client:
                 client.list_delta(top=1, agent_view_id=chosen_av.id)

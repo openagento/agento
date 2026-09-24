@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRequireCapability, createVerifier, tokenHash } from '../capability.js';
+import { capabilityRow } from './capability-rows.js';
 
 // The plan requires two agent runs to hold MCP sessions at the same time without either
 // seeing the other's scope. Every other capability test drives ONE request at a time, so a
@@ -19,8 +20,8 @@ const request = (token) => ({ headers: { authorization: `Bearer ${token}` }, que
 describe('concurrent capability scopes', () => {
   it('gives each in-flight request its own scope when their lookups interleave', async () => {
     const rows = {
-      'tok-a': { kind: 'mcp_interactive', agent_view_id: 7, job_id: null },
-      'tok-b': { kind: 'mcp_interactive', agent_view_id: 9, job_id: null },
+      'tok-a': capabilityRow('mcp_interactive', { agent_view_id: 7 }),
+      'tok-b': capabilityRow('mcp_interactive', { agent_view_id: 9 }),
     };
     // A's row resolves LAST: if the middleware parked the claims anywhere shared, A would
     // finish holding B's view (9) rather than its own (7).
@@ -32,15 +33,15 @@ describe('concurrent capability scopes', () => {
     });
 
     const guard = createRequireCapability(
-      createVerifier(query), { kinds: ['mcp_interactive'] }, () => {}
+      createVerifier(query), { endpoint: 'mcp' }, () => {}
     );
     const reqA = request('tok-a');
     const reqB = request('tok-b');
     const run = (req) => new Promise((resolve) => guard(req, res(), resolve));
     await Promise.all([run(reqA), run(reqB)]);
 
-    expect(reqA.capability.agentViewId).toBe(7);
-    expect(reqB.capability.agentViewId).toBe(9);
+    expect(reqA.capability.agent_view_id).toBe(7);
+    expect(reqB.capability.agent_view_id).toBe(9);
   });
 });
 

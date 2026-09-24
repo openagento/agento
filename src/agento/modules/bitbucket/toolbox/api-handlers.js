@@ -95,7 +95,7 @@ export function createVerifyHandler(log, authFactory = createBitbucketAuth) {
 export function createOpenPrsHandler({ loadScopedDbOverridesStrict, loadModuleConfigs }, log, authFactory = createBitbucketAuth) {
   return async (req, res) => {
     const { lane, top } = req.body || {};
-    const agentViewId = req.capability.agentViewId;
+    const agentViewId = req.capability.agent_view_id;
 
     // The strict loader THROWS for an unknown view instead of widening to global config.
     const { overrides } = await loadScopedDbOverridesStrict(agentViewId);
