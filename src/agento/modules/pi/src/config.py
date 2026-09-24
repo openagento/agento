@@ -18,7 +18,7 @@ from pathlib import Path
 
 from agento.framework.agent_manager.models import CredentialRecord
 from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
-from agento.framework.harness.run_scope import scope_toolbox_url
+from agento.framework.harness.run_scope import scope_toolbox_url, toolbox_auth
 
 from .auth import CREDENTIAL_TYPE
 
@@ -229,8 +229,9 @@ class PiWorkspaceAdapter:
         if isinstance(url, str) and url:
             url = scope_toolbox_url(url, job_id, run_id)
             if target is not None and is_toolbox_endpoint(url, target):
-                sep = "&" if "?" in url else "?"
-                url = f"{url}{sep}cap={capability_token}"
+                url, headers = toolbox_auth(url, capability_token)
+                if headers:
+                    payload["headers"] = {**(payload.get("headers") or {}), **headers}
             payload["url"] = url
         if effective_model and effective_model.strip():
             payload["expected_model"] = effective_model.strip()

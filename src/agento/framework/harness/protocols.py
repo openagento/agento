@@ -167,8 +167,9 @@ class WorkspaceAdapter(Protocol):
         ``agento.framework.harness.run_scope.scope_toolbox_url`` rather than by hand.
 
         ``capability_token`` is the run's toolbox credential, with the trusted
-        ``toolbox_url`` it belongs to. Append it (``cap=<token>``) ONLY to a server whose
-        URL is our toolbox's MCP endpoint — match with
+        ``toolbox_url`` it belongs to. Attach it with
+        ``agento.framework.harness.run_scope.toolbox_auth`` (a Bearer header on ``/mcp``,
+        ``cap=<token>`` on ``/sse``) ONLY to a server whose URL is our toolbox's MCP endpoint — match with
         ``agento.framework.harness.is_toolbox_endpoint(url, toolbox_origin(toolbox_url))``,
         never a ``"/mcp" in url`` test — so it can never travel to an operator's
         third-party MCP server. An adapter that does not accept it gets no token, and the

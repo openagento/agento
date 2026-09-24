@@ -278,7 +278,8 @@ class TestInjectRuntimeParams:
         writer.inject_runtime_params(work_dir, capability_token="tok5", toolbox_url=self.TOOLBOX)
 
         data = json.loads((work_dir / ".mcp.json").read_text())
-        assert "cap=tok5" in data["mcpServers"]["toolbox"]["url"]
+        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/mcp"
+        assert data["mcpServers"]["toolbox"]["headers"] == {"Authorization": "Bearer tok5"}
 
     def test_preserves_type(self, writer, work_dir):
         mcp = {
@@ -292,7 +293,8 @@ class TestInjectRuntimeParams:
 
         data = json.loads((work_dir / ".mcp.json").read_text())
         assert data["mcpServers"]["toolbox"]["type"] == "http"
-        assert "cap=tok7" in data["mcpServers"]["toolbox"]["url"]
+        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/mcp"
+        assert data["mcpServers"]["toolbox"]["headers"] == {"Authorization": "Bearer tok7"}
 
     def test_tolerates_malformed_entries(self, writer, work_dir):
         mcp = {
@@ -309,7 +311,8 @@ class TestInjectRuntimeParams:
         data = json.loads((work_dir / ".mcp.json").read_text())
         assert data["mcpServers"]["broken"] == "nope"
         assert data["mcpServers"]["numeric"]["url"] == 123
-        assert "cap=tok8" in data["mcpServers"]["toolbox"]["url"]
+        assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/mcp"
+        assert data["mcpServers"]["toolbox"]["headers"] == {"Authorization": "Bearer tok8"}
 
     def test_targets_only_the_toolbox_origin(self, writer, work_dir):
         mcp = {"mcpServers": {
@@ -321,8 +324,9 @@ class TestInjectRuntimeParams:
         writer.inject_runtime_params(work_dir, capability_token="tok123", toolbox_url=self.TOOLBOX)
 
         servers = json.loads((work_dir / ".mcp.json").read_text())["mcpServers"]
-        assert servers["toolbox"]["url"] == "http://toolbox:3001/mcp?cap=tok123"
-        assert servers["vendor"]["url"] == "https://vendor.example.com/mcp"
+        assert servers["toolbox"]["url"] == "http://toolbox:3001/mcp"
+        assert servers["toolbox"]["headers"] == {"Authorization": "Bearer tok123"}
+        assert servers["vendor"] == {"url": "https://vendor.example.com/mcp"}
 
     def test_does_not_leak_to_a_lookalike_host(self, writer, work_dir):
         mcp = {"mcpServers": {"evil": {"url": "http://toolbox.evil.com:3001/mcp"}}}
