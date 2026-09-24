@@ -4,6 +4,87 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-24 — E0 contracts for panel, toolbox and miniapps
+
+E0 fixes the shared semantics so E1–E7 can start without re-deciding them. The detailed PRDs are
+intentionally **not** in this repo (owner decision) — they live beside it, outside version control.
+Each decision below stands on its own.
+
+### Identity and capability
+
+- **`kind` is kept and `actor` is added beside it, not in place of it.** Existing `toolbox_capability`
+  rows migrate without a rewrite. `kind` describes a token's *purpose*; it never stands in for who the
+  caller is.
+- **Per-kind actor invariants, never a default.** A blanket `actor = agent` would label the platform's
+  own viewless `internal_rest` config-test capability an agent. Each legacy kind gets one fail-closed
+  row of required and must-be-null fields; a row whose claims cannot be derived fails verification. A
+  permissive default on an identity field is exactly the failure the field was added to prevent.
+- **Legacy `internal_rest` maps to one reserved subject constant** (`service:legacy-internal-rest`),
+  not a per-row guess and not a rejection. `035_toolbox_capability.sql` stores no component identity,
+  so the row cannot say which service issued it; rejecting breaks live callers and inventing a subject
+  is fabrication. The constant is allowed a fixed endpoint set, no delegation and no app scope, and it
+  retires by TTL expiry — no drain step.
+- **The auth context is verified once and carried in one structure, not re-derived per transport.**
+  MCP and HTTP must not drift on what a caller is allowed to be.
+
+### Transport
+
+- **`?cap=` stays as an MCP-client compatibility path while `Authorization` becomes the runtime path.**
+  The SSE transport hands the client a bare URL which the client posts to verbatim with no headers, so
+  a header-only `/messages` would 401 every legitimate SSE client. Removing the query path first breaks
+  clients that cannot set headers.
+- **Transport is a capability claim, not a property of the request.** A bearer moves freely between a
+  header and a query string, so "query tokens get a shorter TTL" is unenforceable as a request
+  property. Tokens carry an explicit `allowed_transports`, checked per endpoint, with no default —
+  missing or empty fails verification once the migration backfill has run.
+
+### Miniapps, artifacts and origins
+
+- **Miniapps is a separate module over Versioned Artifacts, not a VA feature.** VA stays free of user
+  and RBAC concepts: it owns files, drafts, versions and the `current` pointer; Miniapps owns the
+  manifest, user access, launch and actions.
+- **Miniapp files are authorized by a reverse-proxy subrequest to the Web API**, rather than by moving
+  file serving into Python. That keeps the artifacts service credential-free and keeps a single
+  authorization source. The apps origin serves **only** immutable `/v/<id>/` paths — `current` is resolved once, by
+  authenticated launch creation on the panel origin, and pinned on the launch. Keeping a `current` route on the apps
+  origin would break launch pinning and cannot be repaired by a proxy rewrite: concurrent launches each set their own
+  `Path=/` cookie, so the credential is ambiguous, and it is opaque to the proxy anyway, so the pinned version is not
+  knowable before the authorization subrequest that validates it.
+- **The artifacts service loses its published host port when E6 activates.** An authorization layer
+  with a second, unauthorized path to the same bytes authorizes nothing.
+- **One apps origin shared by all miniapps, separate from the panel origin.** Owner decision, waiving
+  PRD E0 §6 requirement 5 (app↔app isolation). The panel/apps split is what stops agent-generated code
+  from **reading** panel data — responses, DOM, session cookie — and is not negotiable. It is not write
+  protection on its own: sibling subdomains are same-site, so `SameSite` does not stop an apps page
+  causing a credentialed panel request. Writes are blocked by separate CSRF controls, which are part
+  of the same decision, not an optional extra. App↔app isolation is traded for one DNS name
+  and one certificate, and is only valid while every artifact reachable from one session is one that
+  user could open anyway. Upgrade path (per-artifact origins) is in ROADMAP.md.
+- **Artifact codes are path segments, not host labels.** The shared apps origin therefore needs no
+  DNS-safe identifier, no host→artifact mapping and no sanitising step. The VA grammar
+  (`toolbox/paths.js`) allows 64 characters and a trailing hyphen, both illegal in a DNS label — which
+  is also what blocks the per-artifact-origin upgrade.
+- **The Basic-auth share gets its own origin, mandatory for E6.** Browsers attach cached Basic
+  credentials automatically per origin, so sharing an origin with agent-generated scripts would put
+  those credentials inside the miniapp trust domain. This is a credential boundary, and it is not
+  covered by the two-origin decision above. The share origin grants no CORS permission to the panel or
+  apps origins. Shipping without a separate share origin needs a new explicit owner waiver.
+- **Shares need one origin *per share*, not one share origin.** Share content is agent-authored HTML
+  and JavaScript served behind a single fixed Basic realm, and browsers replay cached Basic
+  credentials per origin+realm — so one shared share-origin lets script in one share read another
+  share's DOM and fetch its files with its credentials. The label is an opaque generated **share
+  token**, not the artifact code, so unlike the apps-origin upgrade this is not blocked on the VA
+  code grammar. The single-origin fallback is a separate, explicit waiver.
+
+### Documentation
+
+- **Contracts describe the post-#42 system, with pending items marked.** E0 must unblock E1–E7, all of
+  which land after PR #42.
+- **Historical records are superseded in place, never rewritten.** A decision log that edits its own
+  past stops being evidence. Corrections are appended with a `Superseded by` line.
+
+---
+
 ## 2026-09-17 — `blocked` verdict category, halts to `FAILED` (AG-55)
 
 - **Problem: a deterministic config fault was retried 3× and dead-lettered as an agent failure.** A

@@ -81,6 +81,60 @@ The `agento_<area>_<action>` naming convention is established, with 25 event cla
 
 Makes composable workspaces production-ready. Shipped: builds detect config drift and rebuild themselves at job-claim time (a checksum freshness check that supersedes the original dirty-flag design), and old builds are garbage-collected under a retention policy. Still pending: runtime-directory GC and a periodic `skill:sync` + `workspace:build --all` cron so skill-content changes are picked up on a schedule.
 
+### ⚪ Panel, RBAC and miniapps (E0 contracts agreed)
+
+E0 is the contract round for the user-facing platform: logging in, talking to an agent, running a
+versioned miniapp, and letting that miniapp perform allowed toolbox operations — deterministically,
+with no LLM in the path. The contracts were agreed on 2026-09-24 and the decisions are in
+[DECISIONS.md](DECISIONS.md). The detailed PRDs are deliberately **not** in this repo; they sit
+beside it, outside version control, as:
+
+- `PRD-E1-toolbox-auth-and-tool-execution.md` — auth context v1, per-call authorization, one
+  MCP/HTTP dispatcher (`POST /internal/tools/{name}:invoke`), transport rules, rollout order.
+- `PRD-E2-admin-panel-rbac.md` — Web API, sessions, `admin`/`user` roles, the `web` and `proxy`
+  Compose services, the panel/apps origin split.
+- `PRD-E6-miniapps-va-artifacts.md` — the Miniapps module over Versioned Artifacts, launch pinning,
+  proxy-subrequest file authorization, the SDK bridge, the Basic-auth share origin.
+
+Order: E1 → E2 → E3–E5 (chat and history) → E6 → E7 (administration).
+
+### ⚪ Per-artifact origins for miniapps
+
+The agreed E0 design puts every miniapp on **one shared apps origin**, separate from the panel
+origin. That split is what stops agent-generated code from **reading** panel data — panel API responses, panel DOM, the
+panel session cookie. It is not by itself write protection: sibling subdomains are same-site, so an apps page can still
+*cause* a credentialed panel request. Blocking that needs separate CSRF controls (`Origin`/Fetch-Metadata checks, an
+anti-CSRF token, no credentialed CORS), specified in the E2 PRD. What the split also does not give is isolation
+**between** apps: same-origin script in one miniapp can read another's
+DOM, storage and cached credentials. This is an accepted trade — one DNS name, one certificate —
+and it holds only while every artifact reachable from a session is one that user could open anyway.
+
+The upgrade is one origin per artifact (`<code>.apps.example.com` plus a wildcard certificate). It
+is blocked on artifact codes becoming valid DNS labels: `ARTIFACT_CODE_RE` in
+`src/agento/modules/versioned_artifacts/toolbox/paths.js` allows 64 characters and a trailing
+hyphen, both illegal in a label. Until then app identity is path-derived, not host-derived. This
+supersedes the "one origin per artifact" note at the end of the Versioned artifacts section, which
+proposed the same fix for the sibling-read problem on the artifacts server itself.
+
+### ⚪ Stale internal-caller-auth wording, to sweep when PR #42 merges
+
+PR #42 (`AG-16`, toolbox east-west capability auth) closes the N5-2 gap where the toolbox took
+`agent_view_id` from the caller. Several documents still describe the pre-#42 world. They are
+**deliberately not corrected yet** — this branch does not contain #42's code, and editing them now
+would make the repo describe code that is not here.
+
+When #42 merges, run:
+
+```bash
+rg -i 'internal-caller[- ]auth|N5-2' src/ docs/ *.md
+```
+
+Deliberately no expected hit count: this very section matches the search, so any number written here is wrong as soon
+as the surrounding text is edited. Read the hits. At the time of writing they are confined to `DECISIONS.md`,
+`ROADMAP.md`, `docs/modules/github.md` and `docs/modules/bitbucket.md`. The edit rule differs by kind of text:
+**current-state** prose is corrected in place; a **historical** decision entry is left standing and
+given a `Superseded by` line — a decision log that rewrites its own past stops being evidence.
+
 ### ⚪ Admin API & Agent Studio
 
 A minimal but real control plane so operators can create workspaces and agent_views, manage scoped config overrides, attach tools from the toolbox, and manage allowlists without hand-editing JSON or SQL. API-first and binding-based — the admin frontend is a client of the API, and the same DB source of truth backs API, CLI, and runtime.
