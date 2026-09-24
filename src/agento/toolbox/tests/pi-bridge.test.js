@@ -322,6 +322,18 @@ describe('factory: handshake and registration', () => {
     expect(calls[1].headers['Mcp-Session-Id']).toBe(SESSION);
   });
 
+  it('sends the capability header from the connection file on every request', async () => {
+    readFileMock.mockImplementation(async () => JSON.stringify({
+      url: 'http://toolbox:3001/mcp', headers: { Authorization: 'Bearer tok' },
+    }));
+    const { handler, calls } = makeServer();
+    vi.stubGlobal('fetch', handler);
+    await bridge(makePi());
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls) expect(c.headers.Authorization).toBe('Bearer tok');
+    expect(calls.every((c) => !c.url.includes('cap='))).toBe(true);
+  });
+
   it('executes a tool and passes the ORIGINAL (unprefixed) name upstream', async () => {
     const { handler, calls } = makeServer();
     vi.stubGlobal('fetch', handler);

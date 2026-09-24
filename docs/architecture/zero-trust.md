@@ -129,7 +129,9 @@ interactive run; both are injected into the run's own MCP config entry only, mat
 path (`/mcp` or `/sse`), never by substring — an operator's third-party MCP server never receives it.
 On `/mcp` the token goes in an `Authorization: Bearer` header and the URL stays unchanged; only an
 `/sse` entry gets `?cap=`. Every token carries `allowed_transports` (`http` or `sse`), checked per
-endpoint with no default, so a header token cannot be replayed through a query string. See
+endpoint with no default, so an `["http"]` token is refused on `/sse` and `/messages`. For now
+the toolbox still reads `?cap=` on `/mcp`, `/api`, `/config-test` and `/health` as well (until the
+retirement rule applies); the invoke endpoint refuses it. See
 [auth-context.md](auth-context.md).
 Operators mint the other two kinds with [`capability:mint`](../cli/capability.md). A minted token is a
 credential: stdout once, onward only through stdin or a mode-0600 file, never argv, a log, or shell
