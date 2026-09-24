@@ -165,6 +165,31 @@ export async function loadScopedDbOverrides(agentViewId) {
   }
 }
 
+async function layerWorkspaceOverrides(workspaceId, overrides) {
+  const [wsRows] = await getCronPool().query(
+    "SELECT path, value, encrypted FROM core_config_data WHERE scope = 'workspace' AND scope_id = ?",
+    [workspaceId]
+  );
+  for (const row of wsRows) {
+    overrides[row.path] = { value: row.value, encrypted: !!row.encrypted };
+  }
+  return overrides;
+}
+
+/**
+ * STRICT default + workspace overrides for a call that is not view-scoped (a user_session
+ * at invoke). Same failure contract as loadScopedDbOverridesStrict: a query failure throws
+ * ScopeUnavailableError and never answers with a narrower or wider layer.
+ */
+export async function loadWorkspaceOverridesStrict(workspaceId) {
+  try {
+    const overrides = await loadDbOverridesOrThrow();
+    return workspaceId ? await layerWorkspaceOverrides(workspaceId, overrides) : overrides;
+  } catch (err) {
+    throw new ScopeUnavailableError(`scope lookup failed: ${errorCategory(err)}`);
+  }
+}
+
 /**
  * Layer workspace + agent_view overrides on top of `overrides`. Throws on a DB failure and
  * reports a missing view as `agentViewMeta: null` — the callers decide what that means.
@@ -193,14 +218,7 @@ async function layerScopedOverrides(agentViewId, overrides) {
     agentViewCode: av.agent_view_code,
   };
 
-  // Layer workspace overrides
-  const [wsRows] = await pool.query(
-    "SELECT path, value, encrypted FROM core_config_data WHERE scope = 'workspace' AND scope_id = ?",
-    [av.workspace_id]
-  );
-  for (const row of wsRows) {
-    overrides[row.path] = { value: row.value, encrypted: !!row.encrypted };
-  }
+  await layerWorkspaceOverrides(av.workspace_id, overrides);
 
   // Layer agent_view overrides (highest priority)
   const [avConfigRows] = await pool.query(
@@ -652,6 +670,42 @@ function createFileManager(moduleConfigs, log) {
 }
 
 /**
+ * Collect the source checkers modules export as `authSources = [[sourceKind, check], ...]`
+ * (E2 sessions, E6 launches). Run once at startup. A source kind two modules claim is
+ * dropped with an ERROR — neither checker could be trusted to be the right one, and a
+ * missing checker fails closed.
+ */
+export async function discoverAuthSources() {
+  const found = new Map();
+  const contested = new Set();
+  for (const mod of scanModules()) {
+    for (const file of discoverToolboxFiles(mod._path)) {
+      let toolModule;
+      try {
+        toolModule = await import(file);
+      } catch (err) {
+        logToolboxRest('discovery', 'ERROR', `Failed to load ${file}: ${err.message}`);
+        continue;
+      }
+      if (!Array.isArray(toolModule.authSources)) continue;
+      for (const [kind, check] of toolModule.authSources) {
+        if (typeof kind !== 'string' || typeof check !== 'function') {
+          logToolboxRest('discovery', 'ERROR', `${mod.name} exports a malformed authSources entry`);
+          continue;
+        }
+        if (found.has(kind)) contested.add(kind);
+        found.set(kind, check);
+      }
+    }
+  }
+  for (const kind of contested) {
+    found.delete(kind);
+    logToolboxRest('discovery', 'ERROR', `auth source '${kind}' is claimed by more than one module; refusing it`);
+  }
+  return [...found.entries()];
+}
+
+/**
  * Register module REST API routes on the Express app at startup.
  * This ensures endpoints like /api/jira/request are available before any
  * MCP session connects (needed by setup:upgrade onboarding).
@@ -696,6 +750,25 @@ export async function registerModuleRestApis(context) {
       }
     }
   }
+}
+
+/**
+ * The one is_enabled/requires rule, shared by registration and by the per-call dispatcher:
+ * a tool is available only if it AND every tool up its `requires` chain is declared and
+ * resolves '1'. Returns 'enabled', 'disabled' or 'undeclared' (a name in the chain nobody
+ * declares); a cycle is 'disabled'.
+ */
+export function toolChainState(toolName, { declared, requiresByTool, dbOverrides, configDefaults }) {
+  const seen = new Set();
+  let current = toolName;
+  while (current) {
+    if (seen.has(current)) return 'disabled';   // cycle: fail closed
+    seen.add(current);
+    if (!declared.has(current)) return 'undeclared';
+    if (!isToolEnabled(current, dbOverrides, configDefaults)) return 'disabled';
+    current = requiresByTool.get(current) || null;
+  }
+  return 'enabled';
 }
 
 export async function registerTools(server, context, agentViewId = null, preloadedOverrides = null) {
@@ -750,20 +823,11 @@ export async function registerTools(server, context, agentViewId = null, preload
   // union is correct, since those names come from manifests by construction.
   const enabledCheck = (toolName) => {
     const owned = currentModule ? declaredByModule.get(currentModule) : declaredToolNames;
-    const declared = owned || new Set();
-    const seen = new Set();
-    let current = toolName;
-    while (current) {
-      if (seen.has(current)) return false;   // cycle: fail closed
-      seen.add(current);
-      if (!declared.has(current)) {
-        if (currentModule) undeclaredLookups.push({ name: toolName, module: currentModule });
-        return false;
-      }
-      if (!isToolEnabled(current, dbOverrides, configDefaults)) return false;
-      current = requiresByTool.get(current) || null;
-    }
-    return true;
+    const state = toolChainState(toolName, {
+      declared: owned || new Set(), requiresByTool, dbOverrides, configDefaults,
+    });
+    if (state === 'undeclared' && currentModule) undeclaredLookups.push({ name: toolName, module: currentModule });
+    return state === 'enabled';
   };
   const fileManager = createFileManager(moduleConfigs, context.log);
   const enrichedContext = {
@@ -789,12 +853,16 @@ export async function registerTools(server, context, agentViewId = null, preload
   // actually registered it — a name declared by a DIFFERENT module must not excuse it.
   const allToolNames = [];
   const registeredBy = [];
+  // The dispatcher's registry: what executeTool runs, on both transports.
+  const tools = new Map();
+  const failedModules = new Set();
   const originalTool = server.tool.bind(server);
   server.tool = (name, desc, schema, handler, options = {}) => {
     allToolNames.push(name);
     if (currentModule) registeredBy.push({ name, module: currentModule });
     const strategy = options.resultStrategy !== undefined ? options.resultStrategy : 'text';
     const wrapped = wrapHandler(handler, name, strategy, offloadConfig);
+    tools.set(name, { schema, handler: wrapped, module: currentModule });
     return originalTool(name, desc, schema, wrapped);
   };
 
@@ -842,6 +910,7 @@ export async function registerTools(server, context, agentViewId = null, preload
           healthchecks.push(() => toolModule.healthcheck(enrichedContext));
         }
       } catch (err) {
+        failedModules.add(mod.name);
         logToolboxRest('discovery', 'ERROR', `Failed to load ${file}: ${err.message}`);
       }
     }
@@ -875,5 +944,18 @@ export async function registerTools(server, context, agentViewId = null, preload
       `invisible in the admin Tools screen and in tool:list. Add it to that module's tools[].`);
   }
 
-  return { toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames };
+  // A tool whose module failed to load is unavailable, not unknown: telling the caller
+  // `not_found` would report a broken deployment as a caller mistake.
+  const unavailableTools = new Set();
+  for (const mod of failedModules) {
+    for (const name of declaredByModule.get(mod) || []) if (!tools.has(name)) unavailableTools.add(name);
+  }
+  const isEnabled = (toolName, overrides) => toolChainState(toolName, {
+    declared: declaredToolNames, requiresByTool, dbOverrides: overrides, configDefaults,
+  }) === 'enabled';
+
+  return {
+    toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames,
+    tools, unavailableTools, isEnabled,
+  };
 }
