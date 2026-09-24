@@ -184,6 +184,15 @@ describe('executeTool', () => {
     expect(response.result.isError).toBe(true);
   });
 
+  it('audits every refusal with its own outcome, and the transport of the endpoint', async () => {
+    const thrower = { schema: {}, handler: async () => { throw new Error('x'); } };
+    const d = deps({ endpoint: 'messages', loadRegistry: async () => registryWith({ echo, thrower }) });
+    const ctx = capabilityContext('mcp_job');
+    expect((await run(ctx, 'nope', {}, d)).row).toMatchObject({ outcome: 'not_found', transport: 'sse' });
+    expect((await run(ctx, 'thrower', {}, d)).row).toMatchObject({ outcome: 'tool_error', transport: 'sse' });
+    expect((await run(ctx, 'echo', { text: 'a' }, d)).row).toMatchObject({ outcome: 'ok', transport: 'sse' });
+  });
+
   it('consumes a single-use capability: a replay is refused and audited', async () => {
     const d = deps({ context: USER });
     d.reverify = vi.fn(async () => ({ context: USER, single_use: true, permitted_tools: ['echo'] }));
@@ -344,6 +353,20 @@ describe('POST /internal/tools/{name}:invoke', () => {
       const scalar = await post('echo', 'text');
       expect(scalar.status).toBe(400);
       expect([...d.audit.rows.values()][0].outcome).toBe('invalid_arguments');
+    } finally { close(); }
+  });
+
+  it('an isError body never reaches an invoke caller', async () => {
+    const SENTINEL = 'upstream-body-sentinel';
+    const erring = { schema: {}, handler: async () => ({ isError: true, content: [{ type: 'text', text: SENTINEL }] }) };
+    const d = deps({ endpoint: 'invoke', loadRegistry: async () => registryWith({ erring }) });
+    const { post, close } = await invokeApp(d, capabilityContext('mcp_job'));
+    try {
+      const res = await post('erring', {});
+      expect(res.status).toBe(HTTP_STATUS.tool_error);
+      const text = await res.text();
+      expect(text).not.toContain(SENTINEL);
+      expect(JSON.parse(text).error.code).toBe('tool_error');
     } finally { close(); }
   });
 
