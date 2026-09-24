@@ -177,7 +177,8 @@ def run_toolbox_test(conn, config_path: str, *, scope: str, scope_id: int = 0) -
         # for exactly the scope being tested — viewless for the default one. It rides in
         # a header, never the URL, and is revoked the moment the one request returns.
         with rest_capability(
-            agent_view_id=scope_id if scope == "agent_view" else None
+            agent_view_id=scope_id if scope == "agent_view" else None,
+            subject_id="service:config-test",
         ) as token:
             # POST, not GET: this triggers a live authentication attempt against a
             # third party. A side-effecting GET lands in proxy logs and browser

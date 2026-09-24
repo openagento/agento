@@ -24,6 +24,13 @@ FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "modules"
 SENTINEL = "SECRET-PROMPT-CONTENT-b7f3"
 
 
+def _view_conn():
+    """A connection that answers the issuer's agent_view -> workspace lookup."""
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = {"workspace_id": 3}
+    return conn
+
+
 def _register_fake() -> None:
     module_dir = FIXTURES / "fake_harness"
     for decl in parse_harness_declarations(module_dir / "di.json", "fake_harness"):
@@ -245,7 +252,7 @@ class TestInteractiveRunToleratesAnEmptyPool:
         with (
             patch("agento.framework.cli.runtime._load_framework_config",
                   return_value=(MagicMock(), MagicMock(), MagicMock())),
-            patch("agento.framework.db.get_connection_or_exit", return_value=MagicMock()),
+            patch("agento.framework.db.get_connection_or_exit", return_value=_view_conn()),
             patch("agento.framework.workspace.get_agent_view_by_code",
                   return_value=MagicMock(id=7, code="dev")),
             patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime",

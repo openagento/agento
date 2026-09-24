@@ -49,7 +49,7 @@ def _patch_env(monkeypatch, *, view=_DEFAULT_VIEW, issued="tok-abc", revoked=Tru
 
 
 def _mint_args(**kw):
-    base = {"kind": KIND_INTERNAL_REST, "agent_view": "dev", "ttl": None}
+    base = {"kind": KIND_INTERNAL_REST, "agent_view": "dev", "ttl": None, "transport": "http"}
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -97,6 +97,27 @@ def test_mint_defaults_the_ttl_to_the_kinds_maximum(monkeypatch):
     calls = _patch_env(monkeypatch)
     cap_cli.CapabilityMintCommand().execute(_mint_args(kind=KIND_MCP_INTERACTIVE))
     assert calls["issue"][0]["ttl_seconds"] == INTERACTIVE_CAPABILITY_TTL_SECONDS
+
+
+def test_mint_issues_http_only_by_default_and_names_a_cli_subject(monkeypatch):
+    calls = _patch_env(monkeypatch)
+    cap_cli.CapabilityMintCommand().execute(_mint_args())
+    assert calls["issue"][0]["allowed_transports"] == ["http"]
+    assert calls["issue"][0]["subject_id"] == "service:cli"
+    assert _parsed_mint(["--kind", KIND_INTERNAL_REST, "--agent-view", "dev"]).transport == "http"
+
+
+@pytest.mark.parametrize("transport,expected", [("sse", ["sse"]), ("both", ["sse", "http"])])
+def test_mint_sse_transport_is_capped_at_the_sse_ttl(monkeypatch, transport, expected):
+    calls = _patch_env(monkeypatch)
+    cap_cli.CapabilityMintCommand().execute(_mint_args(kind=KIND_MCP_INTERACTIVE, transport=transport))
+    assert calls["issue"][0]["allowed_transports"] == expected
+    assert calls["issue"][0]["ttl_seconds"] == 14400
+    assert calls["issue"][0]["subject_id"] is None
+    with pytest.raises(SystemExit):
+        cap_cli.CapabilityMintCommand().execute(
+            _mint_args(kind=KIND_MCP_INTERACTIVE, transport=transport, ttl=14401)
+        )
 
 
 def test_mint_ttl_rejects_a_non_integer():
