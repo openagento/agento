@@ -32,6 +32,9 @@ class FakeCursor:
     def execute(self, sql, params=()):
         self.store.append((" ".join(sql.split()), params))
 
+    def fetchone(self):
+        return {"workspace_id": 3}
+
 
 class FakeConn:
     def __init__(self):
@@ -55,9 +58,9 @@ def test_token_hash_is_sha256_hex():
 
 def test_issue_returns_raw_token_and_stores_only_the_hash():
     conn = FakeConn()
-    raw = issue_capability(conn, kind=KIND_MCP_JOB, agent_view_id=7, job_id=42, ttl_seconds=3600)
+    raw = issue_capability(conn, kind=KIND_MCP_JOB, agent_view_id=7, job_id=42, ttl_seconds=3600, allowed_transports=["http"])
     assert len(raw) >= 43
-    sql, params = conn.statements[0]
+    sql, params = conn.statements[-1]
     assert sql.startswith("INSERT INTO toolbox_capability")
     assert token_hash(raw) in params
     assert raw not in params
@@ -66,46 +69,115 @@ def test_issue_returns_raw_token_and_stores_only_the_hash():
 
 def test_issue_with_commit_false_leaves_the_transaction_to_the_caller():
     conn = FakeConn()
-    issue_capability(conn, kind=KIND_MCP_JOB, agent_view_id=7, job_id=42, ttl_seconds=60, commit=False)
+    issue_capability(conn, kind=KIND_MCP_JOB, agent_view_id=7, job_id=42, ttl_seconds=60, commit=False, allowed_transports=["http"])
     assert conn.commits == 0
 
 
 def test_issue_rejects_unknown_kind():
     with pytest.raises(ValueError):
-        issue_capability(FakeConn(), kind="root", agent_view_id=1, ttl_seconds=60)
+        issue_capability(FakeConn(), kind="root", agent_view_id=1, ttl_seconds=60, allowed_transports=["http"])
 
 
 def test_issue_rejects_non_positive_ttl():
     with pytest.raises(ValueError):
-        issue_capability(FakeConn(), kind=KIND_MCP_JOB, agent_view_id=1, job_id=1, ttl_seconds=0)
+        issue_capability(FakeConn(), kind=KIND_MCP_JOB, agent_view_id=1, job_id=1, ttl_seconds=0, allowed_transports=["http"])
 
 
 def test_mcp_job_requires_a_job_id():
     with pytest.raises(ValueError):
-        issue_capability(FakeConn(), kind=KIND_MCP_JOB, agent_view_id=1, job_id=None, ttl_seconds=60)
+        issue_capability(FakeConn(), kind=KIND_MCP_JOB, agent_view_id=1, job_id=None, ttl_seconds=60, allowed_transports=["http"])
 
 
 @pytest.mark.parametrize("kind", [KIND_MCP_JOB, KIND_MCP_INTERACTIVE, KIND_INTERNAL_REST])
 def test_every_kind_requires_a_positive_agent_view_id(kind):
     for bad in (None, 0, -1):
         with pytest.raises(ValueError):
-            issue_capability(FakeConn(), kind=kind, agent_view_id=bad, job_id=1, ttl_seconds=60)
+            issue_capability(FakeConn(), kind=kind, agent_view_id=bad, job_id=1, ttl_seconds=60, allowed_transports=["http"], subject_id="service:test")
 
 
 
 def test_only_a_jobless_internal_rest_capability_may_be_viewless():
     """A viewless capability serves a default-scope config test and nothing else."""
     assert issue_capability(
-        FakeConn(), kind=KIND_INTERNAL_REST, agent_view_id=None, ttl_seconds=60
+        FakeConn(), kind=KIND_INTERNAL_REST, agent_view_id=None, ttl_seconds=60,
+        allowed_transports=["http"], subject_id="service:test",
     )
     for kind in (KIND_MCP_JOB, KIND_MCP_INTERACTIVE):
         with pytest.raises(ValueError):
-            issue_capability(FakeConn(), kind=kind, agent_view_id=None, ttl_seconds=60)
+            issue_capability(FakeConn(), kind=kind, agent_view_id=None, ttl_seconds=60, allowed_transports=["http"], subject_id="service:test")
+
+
+
+def test_issue_requires_allowed_transports():
+    for bad in (None, [], ["ftp"], ["http", "http"]):
+        with pytest.raises(ValueError):
+            issue_capability(
+                FakeConn(), kind=KIND_MCP_JOB, agent_view_id=7, job_id=1, ttl_seconds=60,
+                allowed_transports=bad,
+            )
+
+
+def test_a_token_that_may_travel_on_sse_is_issued_at_the_sse_ttl():
+    conn = FakeConn()
+    issue_capability(
+        conn, kind=KIND_MCP_JOB, agent_view_id=7, job_id=1, ttl_seconds=86400,
+        allowed_transports=["sse", "http"],
+    )
+    _, params = conn.statements[-1]
+    assert params[4] == 14400
+
+
+def test_internal_rest_cannot_be_issued_for_sse():
+    with pytest.raises(ValueError, match="sse"):
+        issue_capability(
+            FakeConn(), kind=KIND_INTERNAL_REST, agent_view_id=7, ttl_seconds=60,
+            allowed_transports=["sse"], subject_id="service:test",
+        )
+
+
+def test_a_service_capability_names_its_own_subject():
+    for bad in (None, "", "service:legacy-internal-rest", "jira"):
+        with pytest.raises(ValueError):
+            issue_capability(
+                FakeConn(), kind=KIND_INTERNAL_REST, agent_view_id=7, ttl_seconds=60,
+                allowed_transports=["http"], subject_id=bad,
+            )
+
+
+def test_the_row_takes_its_workspace_from_the_agent_view():
+    conn = FakeConn()
+    issue_capability(
+        conn, kind=KIND_MCP_JOB, agent_view_id=7, job_id=1, ttl_seconds=60,
+        allowed_transports=["http"],
+    )
+    assert conn.statements[0] == ("SELECT workspace_id FROM agent_view WHERE id = %s", (7,))
+    _, params = conn.statements[-1]
+    assert params[6:8] == ("7", 3)
+    with pytest.raises(ValueError, match="workspace"):
+        issue_capability(
+            FakeConn(), kind=KIND_MCP_JOB, agent_view_id=7, job_id=1, ttl_seconds=60,
+            allowed_transports=["http"], workspace_id=4,
+        )
+
+
+def test_a_missing_agent_view_is_refused():
+    class NoView(FakeConn):
+        def cursor(self):
+            cur = FakeCursor(self.statements)
+            cur.fetchone = lambda: None
+            return cur
+
+    with pytest.raises(ValueError, match="does not exist"):
+        issue_capability(
+            NoView(), kind=KIND_MCP_JOB, agent_view_id=7, job_id=1, ttl_seconds=60,
+            allowed_transports=["http"],
+        )
+
 
 def test_two_issues_never_collide():
     conn = FakeConn()
-    a = issue_capability(conn, kind=KIND_INTERNAL_REST, agent_view_id=1, ttl_seconds=60)
-    b = issue_capability(conn, kind=KIND_INTERNAL_REST, agent_view_id=1, ttl_seconds=60)
+    a = issue_capability(conn, kind=KIND_INTERNAL_REST, agent_view_id=1, ttl_seconds=60, allowed_transports=["http"], subject_id="service:test")
+    b = issue_capability(conn, kind=KIND_INTERNAL_REST, agent_view_id=1, ttl_seconds=60, allowed_transports=["http"], subject_id="service:test")
     assert a != b
 
 
@@ -173,7 +245,7 @@ class TestRestCapabilityLifetime:
     def test_no_connection_is_held_while_the_block_runs(self, conns):
         """A block can be long. Pinning a pooled connection to it — one the block never uses,
         because the token travels over HTTP to another process — starves every other caller."""
-        with rest_capability(agent_view_id=3):
+        with rest_capability(agent_view_id=3, subject_id="service:test"):
             assert len(conns) == 1
             assert conns[0].closed
         assert len(conns) == 2, "the revoke opens its own connection"
@@ -183,17 +255,17 @@ class TestRestCapabilityLifetime:
         """The toolbox validates the token from another process on another connection, so an
         uncommitted row is an unusable capability. It also means the mint can never share a
         caller's transaction: committing there would publish that caller's pending work."""
-        with rest_capability(agent_view_id=3):
+        with rest_capability(agent_view_id=3, subject_id="service:test"):
             assert conns[0].commits == 1
 
     def test_the_happy_path_revokes_once(self, conns):
-        with rest_capability(agent_view_id=3) as token:
+        with rest_capability(agent_view_id=3, subject_id="service:test") as token:
             assert token
         assert len(self._revoked(conns)) == 1
 
     def test_a_client_constructor_failure_still_revokes(self, conns):
         """The client is built INSIDE the block precisely so this cannot leak a live bearer."""
-        with pytest.raises(ValueError, match="bad base_url"), rest_capability(agent_view_id=3):
+        with pytest.raises(ValueError, match="bad base_url"), rest_capability(agent_view_id=3, subject_id="service:test"):
             raise ValueError("bad base_url")
         assert len(self._revoked(conns)) == 1
 
@@ -206,7 +278,7 @@ class TestRestCapabilityLifetime:
 
         with (
             pytest.raises(OSError, match="socket already gone"),
-            rest_capability(agent_view_id=3) as token,
+            rest_capability(agent_view_id=3, subject_id="service:test") as token,
             closing(Client()),
         ):
             assert token
@@ -215,7 +287,7 @@ class TestRestCapabilityLifetime:
     def test_a_revoke_failure_never_masks_the_original_error(self, conns, monkeypatch, caplog):
         """A broken connection on the way out must not replace the failure that caused it —
         the operator needs the original error, and the revoke problem as a category beside it."""
-        with pytest.raises(RuntimeError, match="the real failure"), rest_capability(agent_view_id=3):
+        with pytest.raises(RuntimeError, match="the real failure"), rest_capability(agent_view_id=3, subject_id="service:test"):
             _break_the_revoke(monkeypatch)
             raise RuntimeError("the real failure")
         assert "RuntimeError" in caplog.text
@@ -226,7 +298,7 @@ class TestRestCapabilityLifetime:
     ):
         """Here the revoke error IS the only error, so it must surface — but the driver's own
         message carries the DSN it just used, and this exception reaches an operator terminal."""
-        with pytest.raises(CapabilityRevokeError) as caught, rest_capability(agent_view_id=3):
+        with pytest.raises(CapabilityRevokeError) as caught, rest_capability(agent_view_id=3, subject_id="service:test"):
             _break_the_revoke(monkeypatch)
         rendered = "".join(traceback.format_exception(caught.value))
         assert "RuntimeError" in str(caught.value)
@@ -274,7 +346,7 @@ class TestCapabilityClientIsMintedPerUse:
             seen.append(client)
             return client
 
-        return capability_client(build, agent_view_id=7, **kw)
+        return capability_client(build, agent_view_id=7, subject_id="service:test", **kw)
 
     def test_nothing_is_minted_until_the_client_is_opened(self, conns):
         """Building the opener is not an authorization event — the operator may still be typing."""

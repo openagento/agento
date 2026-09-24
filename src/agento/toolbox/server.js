@@ -81,19 +81,17 @@ async function createServer(agentViewId = null, jobId = null, runId = null) {
   return { server, healthchecks };
 }
 
-const MCP_KINDS = ['mcp_job', 'mcp_interactive'];
-
 // `run_id` names an interactive run's desk. The capability row has no run id, so it
 // comes from the query string — it NAMES a directory, it grants no scope: the view and
 // the job still come only from the capability. A `job_id` in the query (the harness
 // URL still carries one for a job run) may only AGREE with the capability's job.
 function runIdFrom(req) {
-  return req.capability.jobId === null && req.query.run_id ? String(req.query.run_id) : null;
+  return req.capability.job_id === null && req.query.run_id ? String(req.query.run_id) : null;
 }
 
 function rejectJobMismatch(req, res) {
   const supplied = req.query.job_id;
-  if (supplied === undefined || String(supplied) === String(req.capability.jobId)) return false;
+  if (supplied === undefined || String(supplied) === String(req.capability.job_id)) return false;
   logToolboxRest('auth', 'ERROR', 'supplied job_id disagrees with the capability');
   res.status(400).json({ error: 'job_id does not match the capability' });
   return true;
@@ -102,9 +100,9 @@ function rejectJobMismatch(req, res) {
 
 // SSE is verified ONCE, at connect: a long-lived stream has no per-request hook, so a token
 // revoked mid-stream is only enforced at the next connect. /mcp re-verifies every request.
-app.get('/sse', requireCapability({ kinds: MCP_KINDS }, logToolboxRest), async (req, res) => {
+app.get('/sse', requireCapability({ endpoint: 'sse' }, logToolboxRest), async (req, res) => {
   if (rejectScopeMismatch(req, res, logToolboxRest, 'sse') || rejectJobMismatch(req, res)) return undefined;
-  const { agentViewId, jobId } = req.capability;
+  const { agent_view_id: agentViewId, job_id: jobId } = req.capability;
   let server;
   try {
     ({ server } = await createServer(agentViewId, jobId, runIdFrom(req)));
@@ -145,7 +143,7 @@ function sendScopeError(res, err) {
 
 // The SSE stream is one half of the transport; THIS is the half that carries the tool calls.
 // It is guarded exactly like `/mcp`: a valid MCP capability, and the one that opened the session.
-app.post('/messages', requireCapability({ kinds: MCP_KINDS }, logToolboxRest), async (req, res) => {
+app.post('/messages', requireCapability({ endpoint: 'messages' }, logToolboxRest), async (req, res) => {
   const sessionId = req.query.sessionId;
   const entry = sessions.get(sessionId);
   if (!entry) {
@@ -175,7 +173,7 @@ mcpSessions.startSweeper(MCP_SESSION_SWEEP_MS);
 
 // The guard runs BEFORE the session short-circuit, so every Streamable-HTTP request
 // re-verifies against the DB and a revoked token dies at its very next request.
-app.all('/mcp', requireCapability({ kinds: MCP_KINDS }, logToolboxRest), async (req, res) => {
+app.all('/mcp', requireCapability({ endpoint: 'mcp' }, logToolboxRest), async (req, res) => {
   const sessionId = req.headers['mcp-session-id'];
   if (sessionId && mcpSessions.has(sessionId)) {
     const entry = mcpSessions.get(sessionId);
@@ -191,7 +189,7 @@ app.all('/mcp', requireCapability({ kinds: MCP_KINDS }, logToolboxRest), async (
   }
 
   if (rejectScopeMismatch(req, res, logToolboxRest, 'mcp') || rejectJobMismatch(req, res)) return undefined;
-  const { agentViewId, jobId } = req.capability;
+  const { agent_view_id: agentViewId, job_id: jobId } = req.capability;
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
   });
@@ -253,12 +251,12 @@ const CONFIG_TEST_COOLDOWN_MS = 3_000;
 // internally, like `sessions` above and `mcpSessions` below.
 const configTestLimiter = new ProbeLimiter({ cooldownMs: CONFIG_TEST_COOLDOWN_MS });
 
-app.post('/config-test', requireCapability({ kinds: ['internal_rest'], allowViewless: true }, logToolboxRest), async (req, res) => {
+app.post('/config-test', requireCapability({ endpoint: 'config_test' }, logToolboxRest), async (req, res) => {
   if (rejectScopeMismatch(req, res, logToolboxRest, 'config-test')) return undefined;
   const parsed = parseConfigTestRequest(req.query);
   if (parsed.error) return res.json({ ...parsed.error, path: parsed.path });
   const { configPath } = parsed;
-  const { agentViewId } = req.capability;
+  const agentViewId = req.capability.agent_view_id;
   const result = await runConfigTest(
     { path: configPath, agentViewId },
     { namedTests: configTestRegistry, limiter: configTestLimiter },
@@ -271,14 +269,14 @@ app.post('/config-test', requireCapability({ kinds: ['internal_rest'], allowView
 // Scoped diagnostics are an operator/publisher action, so ONLY internal_rest qualifies.
 // An mcp_job token is held by the sandboxed agent; letting it drive ?test=true would let the
 // agent fire every scoped, secret-backed healthcheck at will.
-const healthGuard = requireCapability({ kinds: ['internal_rest'] }, logToolboxRest);
+const healthGuard = requireCapability({ endpoint: 'health' }, logToolboxRest);
 
 async function scopedHealth(req, res) {
   // `?agent_view_id=` no longer selects the scope (the capability row does), so a value that
   // disagrees is a 400 rather than a silently different answer. `?test=true` is the documented
   // way to ask for the scoped diagnostic.
   if (rejectScopeMismatch(req, res, logToolboxRest, 'health')) return undefined;
-  const agentViewId = req.capability.agentViewId;
+  const agentViewId = req.capability.agent_view_id;
   let registration;
   try {
     registration = await createHealthRegistration(agentViewId, context, { strict: true });
@@ -312,7 +310,7 @@ app.get('/health', async (req, res) => {
 // namespace (rather than each route) means a new module inherits authentication with no
 // opt-in, and cannot forget it. Handlers read req.capability; a caller-supplied
 // agent_view_id in a body may only MATCH it, never override it.
-app.use('/api', requireCapability({ kinds: ['internal_rest'] }, logToolboxRest));
+app.use('/api', requireCapability({ endpoint: 'api' }, logToolboxRest));
 
 // Register module REST APIs and start Playwright in parallel, then listen
 Promise.allSettled([

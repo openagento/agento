@@ -224,6 +224,7 @@ class GitHubOnboarding:
         client_for = capability_client(
             lambda token: GitHubToolboxClient(toolbox_url, capability_token=token),
             agent_view_id=owner_view.id,
+            subject_id="service:github",
         )
         # Verify-before-save loop: nothing is written until a credential verifies.
         while True:
