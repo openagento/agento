@@ -71,8 +71,8 @@ Shortcuts: `cap:mi`, `cap:re`.
 | Kind | Who holds it | Reaches | Max / default TTL |
 |------|--------------|---------|-------------------|
 | `internal_rest` | Python publishers, channels, onboarding, `config:test` | `/api/*`, scoped `/health`, `/config-test` | 120 s |
-| `mcp_interactive` | an interactive `agento run` session | `/mcp`, `/sse` | 43200 s (12 h) |
-| `mcp_job` | a consumer-run job | `/mcp`, `/sse` | issued by the consumer only |
+| `mcp_interactive` | an interactive `agento run` session | `/mcp`, `/sse`, `/messages`, invoke | 43200 s (12 h); 4 h with `sse` |
+| `mcp_job` | a consumer-run job | `/mcp`, `/sse`, `/messages`, invoke | issued by the consumer only |
 
 An `internal_rest` capability may be **viewless** (`agent_view_id` NULL, no job) for one purpose:
 `config:test` at the default scope. Only `/config-test` accepts one — every other guard refuses a
