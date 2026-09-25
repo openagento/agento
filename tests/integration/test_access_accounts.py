@@ -203,7 +203,7 @@ def test_concurrent_duplicate_grants_insert_one_row(conn, scopes):
         try:
             barrier.wait()
             accounts.add_grant(c, "user", "operation", "artifact.launch", workspace_id=scopes["ws2"])
-        except Exception as exc:  # noqa: BLE001 — collected and asserted below
+        except Exception as exc:
             errors.append(exc)
         finally:
             c.close()
