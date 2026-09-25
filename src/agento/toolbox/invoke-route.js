@@ -5,17 +5,16 @@
 // ponytail: per-invoke registration, cache per (agent_view, job) with an idle TTL if invoke latency matters.
 import express from 'express';
 import { executeTool, HTTP_STATUS } from './dispatcher.js';
+import { errorCategory } from './log.js';
 
 export const INVOKE_ROUTE = /^\/internal\/tools\/([a-z0-9_]+):invoke$/;
 
 export function installInvokeRoute(app, { guard, deps, loadRegistryFor, log }) {
-  // Malformed JSON never reaches the dispatcher: there is no execution to audit yet.
-  function bodyError(err, req, res, next) {
-    if (err?.type === 'entity.parse.failed' || err?.type === 'entity.too.large') {
-      log('invoke', 'ERROR', `unreadable request body: ${err.type}`);
-      return res.status(400).json({ ok: false, error: { code: 'invalid_arguments', message: 'unreadable JSON body' } });
-    }
-    return next(err);
+  // An unreadable body never reaches the dispatcher: there is no execution to audit yet. Every
+  // parser error ends here — Express's default handler would answer with the stack.
+  function bodyError(err, req, res, _next) {
+    log('invoke', 'ERROR', `unreadable request body: ${err?.type || errorCategory(err)}`);
+    return res.status(400).json({ ok: false, error: { code: 'invalid_arguments', message: 'unreadable JSON body' } });
   }
 
   async function invoke(req, res) {
