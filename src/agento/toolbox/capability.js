@@ -62,7 +62,6 @@ function normalizeRow(row) {
     ...row,
     agent_view_id: intColumn(row.agent_view_id),
     workspace_id: intColumn(row.workspace_id),
-    app_version_id: intColumn(row.app_version_id),
     created_at: intColumn(row.created_at),
     expires_at: intColumn(row.expires_at),
     tool_ceiling: jsonColumn(row.tool_ceiling),

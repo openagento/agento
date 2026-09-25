@@ -60,6 +60,10 @@ def _is_text(v) -> bool:
     return isinstance(v, str) and len(v) > 0
 
 
+def _is_version_id(v) -> bool:
+    return _is_text(v) and len(v) <= 64
+
+
 def _is_decimal_id(v) -> bool:
     return isinstance(v, str) and _DECIMAL_ID.match(v) is not None
 
@@ -191,7 +195,7 @@ def derive_auth_context(*, row, agent_view_workspace_id=None, source=None, endpo
                 return None
         else:
             code, version, launch = app_fields
-            if not _is_text(code) or not _is_positive_int(version) or not _is_text(launch):
+            if not _is_text(code) or not _is_version_id(version) or not _is_text(launch):
                 return None
             if not _is_string_list(tool_ceiling):
                 return None
