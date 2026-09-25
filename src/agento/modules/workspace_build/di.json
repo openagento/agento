@@ -1,6 +1,7 @@
 {
   "commands": [
     {"name": "workspace:build", "class": "src.commands.workspace_build.WorkspaceBuildCommand"},
-    {"name": "workspace:build-status", "class": "src.commands.workspace_build_status.WorkspaceBuildStatusCommand"}
+    {"name": "workspace:build-status", "class": "src.commands.workspace_build_status.WorkspaceBuildStatusCommand"},
+    {"name": "workspace:ssh-purge", "class": "src.commands.ssh_purge.SshPurgeCommand"}
   ]
 }

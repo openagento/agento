@@ -14,9 +14,11 @@ from binascii import hexlify, unhexlify
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from . import store_env
+
 
 def _derive_key() -> bytes:
-    passphrase = os.environ.get("AGENTO_ENCRYPTION_KEY", "")
+    passphrase = store_env.get("AGENTO_ENCRYPTION_KEY", "")
     if not passphrase:
         raise RuntimeError("AGENTO_ENCRYPTION_KEY not set — cannot encrypt/decrypt")
     return hashlib.sha256(passphrase.encode()).digest()

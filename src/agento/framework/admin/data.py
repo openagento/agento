@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import contextlib
-import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agento.framework import store_env
 from agento.framework.config_resolver import (
     ScopedConfigService,
     _db_path,
@@ -17,6 +17,7 @@ from agento.framework.config_resolver import (
 from agento.framework.config_schema import allowed_scopes as get_allowed_scopes
 from agento.framework.config_schema import is_scope_allowed
 from agento.framework.config_test.manifest import tester_label
+from agento.framework.config_validation import max_length_of
 from agento.framework.scoped_config import Scope
 
 
@@ -58,6 +59,10 @@ class ResolvedField:
     allowed_scopes: list[str] = field(default_factory=lambda: list(_ALL_SCOPES))
     description: str = ""
     tester: str = ""   # display label of the tester declared on this field, if any
+    # Declared `maxLength`, so the editor can run the same shared validation the CLI
+    # does. A normalized value rather than the raw system.json dict — ResolvedField is a
+    # view model, not a second copy of the schema.
+    max_length: int | None = None
 
 
 def _count_modules() -> int:
@@ -402,7 +407,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
         rv, inherited = svc.resolve_field_with_source(module, field_name, field_schema, config_defaults)
         source = _display_source(rv.source, inherited)
         if source == "env":
-            value = os.environ.get(env_key)
+            value = store_env.get(env_key)
         elif source in ("db", "db:inherited"):
             value = svc.overrides.get(db_path, (None, False))[0]
         elif source == "json":
@@ -435,6 +440,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
             allowed_scopes=scopes_list,
             description=description,
             tester=tester,
+            max_length=max_length_of(field_schema),
         ))
 
     # Tool fields
@@ -454,7 +460,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
             )
             source = _display_source(rv.source, inherited)
             if source == "env":
-                value = os.environ.get(env_key)
+                value = store_env.get(env_key)
             elif source in ("db", "db:inherited"):
                 value = svc.overrides.get(db_path, (None, False))[0]
             elif source == "json":
@@ -487,6 +493,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
                 allowed_scopes=scopes_list,
                 description=description,
                 tester="",   # tool fields are gated by is_enabled, never tested
+                max_length=max_length_of(field_schema),
             ))
 
     return results

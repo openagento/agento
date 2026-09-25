@@ -151,6 +151,16 @@ docker compose restart
   properly is a framework change: let `system.json` mark a field toolbox-only and have `resolve_field`
   skip it outside the toolbox. Surfaced by the GitHub PR-review port (2026-08-14) as pre-existing and
   accepted as a residual for that port (owner sign-off 2026-08-13).
+- ~~**A distinct OS uid per agent_view (Option B of D-SSH-1)**~~ — **cancelled 2026-09-23.**
+  agent_views sharing `/workspace` files is a wanted property (it is how a task is handed from one
+  view to another), so per-view uids are not going to be built. What Option B was carrying —
+  D-SSH-1 residual channel (6), the credential store reachable by any process at uid `agent` — was
+  closed instead by **V0**: the store is taken away from the shared uid (root-owned
+  `/opt/cron-agent`, a `0600` store file delivered on a file descriptor, a root-owned `setpriv`
+  launcher, and a root-rendered crontab). See
+  [docs/architecture/cron-privileges.md](docs/architecture/cron-privileges.md) and `DECISIONS.md`
+  D-SSH-1. The peer-**artifact** reads Option B would also have closed remain open and accepted:
+  one uid, one `/workspace`.
 - **Internal-caller auth for the toolbox (N5-2)** — `/sse` and `/mcp` take `agent_view_id` from the
   query string with no caller authentication (`src/agento/toolbox/server.js:88,126`), and the `jira`,
   `outlook`, `bitbucket` and `github` REST handlers take it from the request body. The fix is to bind
@@ -158,6 +168,12 @@ docker compose restart
   that `server.js` resolves `agent_view_id` from), applied **once for all four modules** — a
   module-local fix would create a fourth pattern and protect nobody else. Re-confirmed by the GitHub
   PR-review port (2026-08-14), which ships at parity with the other three (owner sign-off 2026-08-13).
+
+### Deprecation removals due in v0.17 or later
+
+| Shim | Where | Remove when |
+|---|---|---|
+| `workspace:ssh-purge` command (+ its `wo:sp` shortcut) | `workspace_build/src/commands/ssh_purge.py`, `workspace_build/di.json` | every deployment has upgraded past the release that stopped writing `ssh_private_key` to disk and has run the sweep once. Nothing on this code writes a key file, so the command then has nothing to find. Delete the command, its `di.json` entry, its tests, and the doc sections in `docs/cli/workspace-build.md` / `docs/cli/README.md` / `docs/config/identity.md`; keep `find_private_keys` only if `workspace:build`'s own legacy pruning still uses it |
 
 ### Deprecation removals due next release (v0.16)
 

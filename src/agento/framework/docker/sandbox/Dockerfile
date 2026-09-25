@@ -60,10 +60,22 @@ RUN groupadd -g ${HOST_GID} agent 2>/dev/null || true && \
         # UID doesn't exist - create new user
         useradd -m -s /bin/bash -u ${HOST_UID} -g ${HOST_GID} agent; \
     fi && \
-    # Ensure home directory and .ssh exist with correct permissions
-    mkdir -p /home/agent /home/agent/.ssh && \
-    chown ${HOST_UID}:${HOST_GID} /home/agent /home/agent/.ssh && \
-    chmod 700 /home/agent/.ssh
+    # Ensure the home directory exists with correct ownership. NO .ssh is created:
+    # `ssh` resolves ~/.ssh through getpwuid(), not $HOME, so a /home/agent/.ssh would be
+    # a DEFAULT identity directory for every run — one run could plant an id_rsa there and
+    # a later run granted no key at all would silently use it. The identity lives in the
+    # per-run HOME only; the entrypoints and the spawn prelude remove this path if it
+    # reappears.
+    mkdir -p /home/agent && \
+    chown ${HOST_UID}:${HOST_GID} /home/agent
+
+# The spawn prelude is bash and delivers the SSH private key through a process
+# substitution, so the image must provide bash >= 5.1 AND a /dev/fd-backed `<(...)`.
+# Without /dev/fd bash falls back to a NAMED FIFO — a filesystem object — which would
+# defeat "the private key is never a file". Both checks use non-secret payloads; a base
+# image change that breaks either fails the build instead of silently losing the property.
+RUN bash -c '((BASH_VERSINFO[0]>5||(BASH_VERSINFO[0]==5&&BASH_VERSINFO[1]>=1)))'
+RUN bash -c 'exec 3< <(printf x); case "$(readlink /proc/self/fd/3)" in pipe:*) ;; *) exit 1;; esac'
 
 # Allow agent to write workspace files owned by node:node (GID 1000)
 RUN usermod -aG node agent 2>/dev/null || true

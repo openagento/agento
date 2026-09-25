@@ -12,7 +12,6 @@ from agento.modules.workspace_build.src.builder import (
     gc_old_builds,
     link_persistent_paths,
     materialize_agent_credentials,
-    materialize_ssh_identity,
 )
 
 
@@ -46,60 +45,6 @@ class TestEnsureStateDir:
 
         assert marker.is_file()
         assert marker.read_text() == "session-data"
-
-
-class TestMaterializeSshIdentity:
-    def test_writes_private_key_with_600_perms(self, tmp_path):
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        resolved = {
-            "agent_view/identity/ssh_private_key": "-----BEGIN FAKE KEY-----",
-        }
-
-        materialize_ssh_identity(build_dir, resolved)
-
-        key_path = build_dir / ".ssh" / "id_rsa"
-        assert key_path.is_file()
-        assert key_path.read_text() == "-----BEGIN FAKE KEY-----\n"
-        assert (key_path.stat().st_mode & 0o777) == 0o600
-        assert (build_dir / ".ssh").stat().st_mode & 0o777 == 0o700
-
-    def test_writes_public_key_plain(self, tmp_path):
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        resolved = {
-            "agent_view/identity/ssh_public_key": "ssh-ed25519 AAAA host",
-        }
-
-        materialize_ssh_identity(build_dir, resolved)
-
-        pub_path = build_dir / ".ssh" / "id_rsa.pub"
-        assert pub_path.is_file()
-        assert pub_path.read_text() == "ssh-ed25519 AAAA host"
-
-    def test_writes_ssh_config_and_known_hosts(self, tmp_path):
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-        resolved = {
-            "agent_view/identity/ssh_config": "Host git\n  IdentityFile ~/.ssh/id_rsa\n",
-            "agent_view/identity/ssh_known_hosts": "github.com ssh-ed25519 AAAA\n",
-        }
-
-        materialize_ssh_identity(build_dir, resolved)
-
-        config_path = build_dir / ".ssh" / "config"
-        known = build_dir / ".ssh" / "known_hosts"
-        assert "IdentityFile" in config_path.read_text()
-        assert (config_path.stat().st_mode & 0o777) == 0o600
-        assert "github.com" in known.read_text()
-
-    def test_does_nothing_when_no_overrides(self, tmp_path):
-        build_dir = tmp_path / "build"
-        build_dir.mkdir()
-
-        materialize_ssh_identity(build_dir, {})
-
-        assert not (build_dir / ".ssh").exists()
 
 
 class TestLinkPersistentPaths:

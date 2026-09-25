@@ -233,10 +233,11 @@ class TestRunCommand:
 
         argv = mock_run.call_args.args[0]
         assert "-T" in argv and "-it" not in argv
-        # After "sandbox" comes the ssh-prelude wrapper: sh -c <script> -- <cmd...>
+        # After "sandbox" comes the ssh-prelude wrapper: bash -c <script> <arg0> <cmd...>
+        # (bash, not sh: the key is delivered through a process substitution)
         idx = argv.index("sandbox") + 1
-        assert argv[idx:idx + 2] == ["sh", "-c"]
-        assert argv[idx + 3] == "--"
+        assert argv[idx:idx + 2] == ["bash", "-c"]
+        assert argv[idx + 3] == "agento-ssh-prelude"
         assert argv[idx + 4:] == _HEADLESS_CLAUDE
         assert mock_run.call_args.kwargs["stdin"] == subprocess.DEVNULL
 
@@ -255,7 +256,8 @@ class TestRunCommand:
         assert exc.value.code == 0
         argv = mock_run.call_args.args[0]
         idx = argv.index("sandbox") + 1
-        assert argv[idx:idx + 2] == ["sh", "-c"]
+        assert argv[idx:idx + 2] == ["bash", "-c"]
+        assert argv[idx + 3] == "agento-ssh-prelude"
         assert argv[idx + 4:] == _HEADLESS_CODEX
 
     def test_interactive_runs_as_agent_user(self, tmp_path):
@@ -431,14 +433,14 @@ class TestFetchRuntime:
             _fetch_runtime(["-f", "/x/docker-compose.yml"], "dev_01")
         assert mock_run.call_args.args[0] == [
             "docker", "compose", "-f", "/x/docker-compose.yml",
-            "exec", "-T", "-u", "agent", "cron",
+            "exec", "-u", "root", "-T", "cron",
+            "/opt/cron-agent/launch.sh", "--store", "--",
             "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
         ]
 
     def test_appends_prompt_and_yolo_after_service_args(self):
         """``--prompt``/``--yolo`` are arguments to ``prepare-run``, so they go
-        at the TAIL — they must never displace ``-u agent`` from its position
-        before the service name."""
+        at the TAIL — after the launcher's ``--``, never among the exec flags."""
         from agento.framework.cli.run import _fetch_runtime
 
         fake_result = subprocess.CompletedProcess(
@@ -454,7 +456,8 @@ class TestFetchRuntime:
             )
         assert mock_run.call_args.args[0] == [
             "docker", "compose", "-f", "/x/docker-compose.yml",
-            "exec", "-T", "-u", "agent", "cron",
+            "exec", "-u", "root", "-T", "cron",
+            "/opt/cron-agent/launch.sh", "--store", "--",
             "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
             "--prompt", "hello", "--yolo",
         ]

@@ -15,7 +15,7 @@
 | `logs [service]` | Show container logs |
 | `run <agent_view_code> [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one ([details](run.md)) |
 | **Setup** | |
-| `setup:upgrade [--dry-run] [--skip-onboarding]` | Apply migrations, data patches, install crontab, run onboarding ([onboarding details](onboarding.md)) |
+| `setup:upgrade [--dry-run] [--skip-onboarding]` | Apply migrations, data patches, run onboarding ([onboarding details](onboarding.md)) |
 | **Modules** | |
 | `module:add <name>` | Add a module ([details](modules.md)) |
 | `module:list` | List installed modules |
@@ -59,6 +59,7 @@
 | **Workspace** | |
 | `workspace:build --agent-view <code> \| --all` | Build materialized workspace ([details](workspace-build.md)) |
 | `workspace:build-status [--agent-view <code>]` | Show workspace build history ([details](workspace-build.md)) |
+| `workspace:ssh-purge [--dry-run]` | **Deprecated (removal in v0.17+)** — delete SSH private keys left on disk by older versions ([details](workspace-build.md#workspacessh-purge)) |
 | **Admin** | |
 | `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |

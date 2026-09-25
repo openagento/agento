@@ -1,35 +1,37 @@
 """Regression guard: every env var any `from_env()` classmethod under
-`src/agento/framework/` reads must match the cron entrypoint's whitelist
-regex.
+`src/agento/framework/` reads must survive the cron container's env whitelist.
 
-The cron entrypoint persists docker env into `/opt/cron-agent/env` via a
-prefix whitelist, because `su - agent` wipes the parent environment and the
-framework boots as the agent user. Any var read by a `from_env()` that
-isn't whitelisted silently falls back to its default — exactly the bug
-class this test prevents from regressing.
+The cron entrypoint partitions docker's environment into `/opt/cron-agent/env`
+(the credential store, root-only, delivered on a file descriptor) and
+`/opt/cron-agent/env.public` (everything else, re-added by the launcher). Both
+sides come from ONE whitelist, in `docker/cron/split-env.py`. A var read by a
+`from_env()` that is on neither side silently falls back to its default —
+exactly the bug class this test prevents from regressing.
 """
 from __future__ import annotations
 
 import ast
-import re
+import importlib.util
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-ENTRYPOINT = REPO_ROOT / "src/agento/framework/docker/cron/entrypoint.sh"
+SPLIT_ENV = REPO_ROOT / "src/agento/framework/docker/cron/split-env.py"
 FRAMEWORK_DIR = REPO_ROOT / "src/agento/framework"
 
 
-def _whitelist_pattern() -> re.Pattern[str]:
-    text = ENTRYPOINT.read_text()
-    m = re.search(r"env \| grep -E '\^\(([^)]+)\)'", text)
-    assert m, "could not find env whitelist line in entrypoint.sh"
-    return re.compile(rf"^({m.group(1)})")
+def _is_persisted(name: str) -> bool:
+    spec = importlib.util.spec_from_file_location("split_env_whitelist", SPLIT_ENV)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["split_env_whitelist"] = module
+    spec.loader.exec_module(module)
+    return name.startswith(module.PERSISTED_PREFIXES) or name in module.PERSISTED_NAMES
 
 
 def _from_env_literals() -> dict[str, list[str]]:
     """{relative file path: [var names]} for every literal `NAME` passed to
-    `os.environ.get("NAME", ...)` inside a `from_env` classmethod under
-    `src/agento/framework/`."""
+    `os.environ.get("NAME", ...)` or `store_env.get("NAME", ...)` inside a
+    `from_env` classmethod under `src/agento/framework/`."""
     out: dict[str, list[str]] = {}
     for py_file in FRAMEWORK_DIR.rglob("*.py"):
         tree = ast.parse(py_file.read_text(), filename=str(py_file))
@@ -40,12 +42,13 @@ def _from_env_literals() -> dict[str, list[str]]:
                 if not isinstance(call, ast.Call):
                     continue
                 func = call.func
-                if not (
-                    isinstance(func, ast.Attribute)
-                    and func.attr == "get"
-                    and isinstance(func.value, ast.Attribute)
-                    and func.value.attr == "environ"
-                ):
+                if not (isinstance(func, ast.Attribute) and func.attr == "get"):
+                    continue
+                target = func.value
+                reads_env = (
+                    isinstance(target, ast.Attribute) and target.attr == "environ"
+                ) or (isinstance(target, ast.Name) and target.id == "store_env")
+                if not reads_env:
                     continue
                 if not call.args:
                     continue
@@ -57,17 +60,16 @@ def _from_env_literals() -> dict[str, list[str]]:
 
 
 def test_framework_from_env_vars_pass_entrypoint_whitelist():
-    pattern = _whitelist_pattern()
     by_file = _from_env_literals()
     assert by_file, "expected at least one from_env() in src/agento/framework/"
     violations: list[str] = []
     for rel, names in by_file.items():
         for name in names:
-            if not pattern.match(f"{name}=anything"):
+            if not _is_persisted(name):
                 violations.append(f"  {rel}: {name}")
     assert not violations, (
         "the following env vars are read by framework from_env() "
-        "classmethods but are not whitelisted in cron entrypoint.sh — use "
-        "the AGENTO_ prefix (or add to the entrypoint whitelist if it must "
+        "classmethods but are not whitelisted in docker/cron/split-env.py — use "
+        "the AGENTO_ prefix (or add it to that whitelist if it must "
         "follow an external convention):\n" + "\n".join(violations)
     )

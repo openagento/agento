@@ -1,6 +1,6 @@
 # `agento run` — Run the configured agent CLI
 
-Spawns the agent CLI inside the `sandbox` container, with `HOME` and the working directory set to a per-run artifacts directory copied from the agent_view's current workspace build. Credentials, SSH key, instructions, and skills are all resolved naturally from that HOME. The exact CLI command is built by the harness's registered `CommandBuilder` — no harness-specific logic lives in the `run` command itself.
+Spawns the agent CLI inside the `sandbox` container, with `HOME` and the working directory set to a per-run artifacts directory copied from the agent_view's current workspace build. Credentials, instructions, and skills are all resolved naturally from that HOME. The **SSH private key is not** — it is never written to `/workspace` at all; it rides the existing name-only `env` channel into a per-run `ssh-agent` (see [identity docs](../config/identity.md)). The exact CLI command is built by the harness's registered `CommandBuilder` — no harness-specific logic lives in the `run` command itself.
 
 Two modes are selected automatically by presence of a prompt argument:
 
@@ -20,7 +20,7 @@ agento run dev_01 --yolo        # interactive, no approval prompts
 agento run --yolo dev_01        # same — flag may precede the code
 ```
 
-This is safe by construction: the agent runs inside the isolated `sandbox` container with no tool credentials (the toolbox is designed to be the only container that holds them; known gaps: [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt)). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
+This is safe by construction: the agent runs inside the isolated `sandbox` container with no tool or database credential of its own. It receives the harness/provider API credential the run needs, plus one documented exception: the SSH private key used for git (see [DECISIONS.md](../../DECISIONS.md) D-SSH-1). The toolbox is designed to be the only container that holds tool credentials; known gaps: [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
 
 ### `--pretty` — human-readable event stream
 
@@ -90,11 +90,19 @@ Exit code of the agent CLI is propagated to the shell, so headless mode composes
 
 ## What It Does
 
-1. Calls `docker compose exec -T -u agent cron /opt/cron-agent/run.sh agent_view:prepare-run <code>` (`run.sh` is the thin wrapper that execs `python -m agento.framework.cli`) to run the **same pre-spawn pipeline the consumer runs for a real job** (as `agent`, the same uid the consumer's crontab uses — running it as root would leave the per-run credentials and the shared build dir owned by uid 0, unreadable by the agent CLI in step 3 and by the consumer afterwards): claims a credential from the LRU pool for the view's own scope (stamping `used_at`; a provider that needs none simply gets no credential), materializes a unique per-run artifacts directory under `workspace/artifacts/<workspace>/<agent_view>/<run_id>/`, writes that credential into the artifacts HOME via the harness's `WorkspaceAdapter`, and asks the harness's `CommandBuilder` for the unified CLI **command** plus any **env-delivered credentials**. When a prompt is provided, the host passes `--prompt <prompt>` so cron returns the **headless** command instead of the interactive one; `--yolo` is forwarded the same way so the builder produces the interactive command in bypass mode. The host code itself stays agent-agnostic.
+1. Calls `docker compose exec -T -u root cron /opt/cron-agent/launch.sh --store -- /opt/cron-agent/run.sh agent_view:prepare-run <code>` (`run.sh` is the thin wrapper that execs `python -m agento.framework.cli`) to run the **same pre-spawn pipeline the consumer runs for a real job**. The `-u root` is the launcher's entry, not the command's: `launch.sh` clears the environment and hands the command to `drop.py`, which reads the credential store, drops every id to `agent` in-process and then runs the CLI, so `prepare-run` itself runs as `agent` — the same uid the consumer's cron jobs use (see [cron-privileges.md](../architecture/cron-privileges.md) — running it as root would leave the per-run credentials and the shared build dir owned by uid 0, unreadable by the agent CLI in step 3 and by the consumer afterwards): claims a credential from the LRU pool for the view's own scope (stamping `used_at`; a provider that needs none simply gets no credential), materializes a unique per-run artifacts directory under `workspace/artifacts/<workspace>/<agent_view>/<run_id>/`, writes that credential into the artifacts HOME via the harness's `WorkspaceAdapter`, and asks the harness's `CommandBuilder` for the unified CLI **command** plus any **env-delivered credentials**. When a prompt is provided, the host passes `--prompt <prompt>` so cron returns the **headless** command instead of the interactive one; `--yolo` is forwarded the same way so the builder produces the interactive command in bypass mode. The host code itself stays agent-agnostic.
 2. Validates that a build exists on the host at `workspace/build/<workspace>/<agent_view>/current/`.
 3. Executes the returned command inside `sandbox` with `HOME` and `-w` (cwd) both set to the per-run artifacts dir. Any API-key values from the `env` field are injected via docker's **name-only** `-e KEY` form so the secret never appears in `ps`/argv — the value is read from the parent process's environment:
    - **Interactive:** `os.environ.update(env); os.execvp("docker", [..., "exec", "-it", "-u", "agent", "-e", "HOME=…", "-e", "TERM=…", *[("-e", k) for k in env], "-w", <working_dir>, "sandbox", *command])` — replaces the current process so the TTY transfer is clean.
    - **Headless:** `subprocess.run([..., "exec", "-T", "-u", "agent", "-e", "HOME=…", *[("-e", k) for k in env], "-w", <working_dir>, "sandbox", *command], env={**os.environ, **env}, stdin=subprocess.DEVNULL)` — waits for completion and propagates the exit code. With `--pretty` the same argv runs under `subprocess.Popen(..., stdout=subprocess.PIPE)` so the host can render each event line; `stdin`, env and the exit code are identical, and `stderr` stays inherited.
+
+   The SSH private key travels this same name-only `env` channel: `prepare-run` returns it in the
+   `env` dict as `AGENTO_SSH_PRIVATE_KEY`, so the **host CLI process** holds the decrypted key for the
+   life of the command — exactly as that channel already does for provider API keys. Nothing is written
+   to `/workspace`. Inside the container the wrapper loads it into a per-run `ssh-agent` and scrubs it
+   from the environment before the agent command runs; see
+   [identity docs](../config/identity.md#how-it-reaches-the-agent-process) for the delivery chain and
+   [DECISIONS.md](../../DECISIONS.md) (D-SSH-1) for the residual channels this does not close.
 
 ## Agent-Agnostic Architecture
 
@@ -153,7 +161,7 @@ Full contract: [../architecture/harness-contract.md](../architecture/harness-con
   ```bash
   agento config:set agent_view/harness claude --agent-view dev_01
   ```
-- Workspace build exists (config, SSH key, instructions, and assets materialized):
+- Workspace build exists (config, instructions, and assets materialized — the SSH files are written per run, not into the build):
   ```bash
   agento workspace:build --agent-view dev_01
   ```

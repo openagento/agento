@@ -7,6 +7,7 @@ the same dir layout the consumer prepares for a real job.
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,7 +20,16 @@ from .artifacts_dir import (
 from .event_manager import get_event_manager
 from .events import WorkspaceBuildCheckEvent
 from .persistent_home import ensure_state_dir, link_persistent_paths
+from .ssh_identity import (
+    ResolvedSshIdentity,
+    materialize_ssh_public_identity,
+    resolve_ssh_identity,
+    scrub_ssh_private_key,
+)
 from .workspace_paths import BUILD_DIR
+
+logger = logging.getLogger(__name__)
+
 
 if TYPE_CHECKING:
     from .agent_manager.models import CredentialRecord
@@ -37,6 +47,20 @@ def _build_root_for_current_build(
     return Path(BUILD_DIR)
 
 
+def _ensure_private_ssh_dir(artifacts_dir: Path | str) -> None:
+    """Make ``artifacts_dir/.ssh`` a REAL 0700 directory, never a symlink.
+
+    ``copy_build_to_artifacts_dir`` symlinks every non-owned directory, so a build made
+    before this change leaves the run's ``.ssh`` pointing back into the shared build dir —
+    writing an identity through that link would recreate the exact bug this closes.
+    """
+    ssh_dir = Path(artifacts_dir) / ".ssh"
+    if ssh_dir.is_symlink():
+        ssh_dir.unlink()
+    ssh_dir.mkdir(mode=0o700, exist_ok=True)
+    ssh_dir.chmod(0o700)
+
+
 def materialize_run_workspace(
     runtime: AgentViewRuntime,
     *,
@@ -47,6 +71,7 @@ def materialize_run_workspace(
     credential: CredentialRecord | None = None,
     purge_credentials: bool = False,
     effective_model: str | None = None,
+    ssh_identity: ResolvedSshIdentity | None = None,
 ) -> tuple[Path | None, Path | None]:
     """Prepare ``(home_dir, working_dir)`` for one run.
 
@@ -57,6 +82,10 @@ def materialize_run_workspace(
     copied build carried, so a credential-free interactive run really is credential-free.
     Falls back to a fresh ``WorkspaceAdapter.prepare_workspace`` when no build
     exists yet.
+
+    ``ssh_identity`` is the run's already-resolved SSH identity (the spawn path resolves
+    it once and also needs it for the env). Only the NON-SECRET parts are written; the
+    private key is never a file. ``None`` resolves it here from ``agent_config_svc``.
 
     ``run_id`` is the job id (``int``) for the consumer or a unique string for
     ``agento run``. An ``int`` id scopes the run to a job via
@@ -136,6 +165,34 @@ def materialize_run_workspace(
             harness_config,
         )
         writer.prepare_workspace(artifacts_dir, agent_config, **kwargs)
+
+    # SSH identity: the NON-SECRET files only. The private key is never written — it is
+    # delivered in memory through the per-run env to a per-run ssh-agent (ssh_prelude.py).
+    # `ssh_identity` is passed by both spawn paths so the four config values are read ONCE
+    # per run; the `None` default resolves here so existing callers stay valid.
+    if not Path(artifacts_dir).is_dir():
+        # Nothing to scrub and nowhere to write. `prepare_artifacts_dir` above guarantees
+        # the dir in production, so this only fires when a caller stubbed it out.
+        logger.debug("Run dir %s absent — skipping SSH identity", artifacts_dir)
+    else:
+        # UNCONDITIONAL, and before anything that depends on config: a build made BEFORE
+        # this change can still carry .ssh/id_rsa, which the copy above brought along.
+        # Whether this run gets an identity is irrelevant to whether it may read an old
+        # key, so neither step may sit behind the config service. Fails closed: a key we
+        # cannot remove is a key the agent can read, so the run must not start.
+        _ensure_private_ssh_dir(artifacts_dir)
+        scrub_ssh_private_key(artifacts_dir)
+        if agent_config_svc is None and ssh_identity is None:
+            logger.warning(
+                "No agent_view config service for this run — it gets no SSH identity, so "
+                "git-over-SSH will not authenticate",
+            )
+        else:
+            resolved = (
+                ssh_identity if ssh_identity is not None
+                else resolve_ssh_identity(agent_config_svc)
+            )
+            materialize_ssh_public_identity(artifacts_dir, resolved)
 
     if runtime.harness:
         from .harness import persistent_home_paths_for, workspace_adapter_for

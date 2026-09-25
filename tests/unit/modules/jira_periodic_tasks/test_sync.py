@@ -4,12 +4,11 @@ import logging
 from unittest.mock import MagicMock, patch
 
 from agento.modules.jira.src.config import JiraConfig
-from agento.modules.jira_periodic_tasks.src.crontab import CronEntry, CrontabManager
-from agento.modules.jira_periodic_tasks.src.sync import JiraCronSync
+from agento.modules.jira_periodic_tasks.src.sync import CronEntry, JiraCronSync
 
 
 def test_build_jql_without_assignee(sample_config, sample_periodic_config):
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     jql = syncer.build_jql()
     assert jql == 'project = AI AND status = "Cykliczne"'
 
@@ -21,7 +20,7 @@ def test_build_jql_falls_back_to_assignee_when_no_account_id(sample_periodic_con
         jira_projects=["AI"],
         jira_assignee="bot@test.com",
     )
-    syncer = JiraCronSync(config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     jql = syncer.build_jql()
     assert 'AND assignee = "bot@test.com"' in jql
 
@@ -36,7 +35,7 @@ def test_build_jql_prefers_account_id_over_display_name(sample_periodic_config):
         jira_assignee="Mieszko",
         jira_assignee_account_id="712020:abc-def-123",
     )
-    syncer = JiraCronSync(config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     jql = syncer.build_jql()
     assert 'AND assignee = "712020:abc-def-123"' in jql
     assert "Mieszko" not in jql
@@ -47,13 +46,13 @@ def test_build_jql_no_account_id_no_assignee_omits_clause(sample_periodic_config
         toolbox_url="http://toolbox:3001",
         jira_projects=["AI"],
     )
-    syncer = JiraCronSync(config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     jql = syncer.build_jql()
     assert "assignee" not in jql
 
 
 def test_parse_issues_valid(sample_config, sample_periodic_config, jira_cykliczne):
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     entries = syncer.parse_issues(jira_cykliczne)
 
     # AI-2 (Co 5min) and AI-3 (1x dziennie o 8:00) should be parsed
@@ -66,7 +65,7 @@ def test_parse_issues_valid(sample_config, sample_periodic_config, jira_cykliczn
 
 
 def test_parse_issues_skip_null_frequency(sample_config, sample_periodic_config, jira_cykliczne, caplog):
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     with caplog.at_level(logging.WARNING):
         syncer.parse_issues(jira_cykliczne)
 
@@ -74,7 +73,7 @@ def test_parse_issues_skip_null_frequency(sample_config, sample_periodic_config,
 
 
 def test_parse_issues_skip_unknown_frequency(sample_config, sample_periodic_config, jira_cykliczne, caplog):
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     with caplog.at_level(logging.WARNING):
         syncer.parse_issues(jira_cykliczne)
 
@@ -82,7 +81,7 @@ def test_parse_issues_skip_unknown_frequency(sample_config, sample_periodic_conf
 
 
 def test_parse_issues_empty(sample_config, sample_periodic_config, jira_empty):
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     entries = syncer.parse_issues(jira_empty)
     assert entries == []
 
@@ -112,7 +111,7 @@ def test_upsert_schedules_inserts(mock_get_conn, sample_config, sample_periodic_
 
     entries = _sample_entries()
 
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     syncer._upsert_schedules(entries)
 
     # One INSERT per entry + one UPDATE for removed entries
@@ -130,7 +129,7 @@ def test_upsert_schedules_disables_removed(mock_get_conn, sample_config, sample_
 
     entries = _sample_entries()
 
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     syncer._upsert_schedules(entries)
 
     # Last call should be the UPDATE for non-listed keys
@@ -145,7 +144,7 @@ def test_upsert_schedules_empty_disables_all(mock_get_conn, sample_config, sampl
     mock_conn, mock_cursor = _mock_connection()
     mock_get_conn.return_value = mock_conn
 
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
     syncer._upsert_schedules([])
 
     # With empty entries, should disable all schedules
@@ -161,7 +160,7 @@ def test_upsert_schedules_writes_agent_view_id(mock_get_conn, sample_config, sam
     mock_get_conn.return_value = mock_conn
 
     syncer = JiraCronSync(
-        sample_config, sample_periodic_config, MagicMock(), MagicMock(),
+        sample_config, sample_periodic_config, MagicMock(),
         logging.getLogger("test"), agent_view_id=42, agent_view_code="mieszko",
     )
     syncer._upsert_schedules([_sample_entries()[0]])
@@ -182,7 +181,7 @@ def test_upsert_schedules_scoped_disable_sweep_per_agent_view(
     mock_get_conn.return_value = mock_conn
 
     syncer = JiraCronSync(
-        sample_config, sample_periodic_config, MagicMock(), MagicMock(),
+        sample_config, sample_periodic_config, MagicMock(),
         logging.getLogger("test"), agent_view_id=7, agent_view_code="mieszko",
     )
     syncer._upsert_schedules(_sample_entries())
@@ -202,7 +201,7 @@ def test_upsert_schedules_scoped_disable_when_empty_per_agent_view(
     mock_get_conn.return_value = mock_conn
 
     syncer = JiraCronSync(
-        sample_config, sample_periodic_config, MagicMock(), MagicMock(),
+        sample_config, sample_periodic_config, MagicMock(),
         logging.getLogger("test"), agent_view_id=9, agent_view_code="zyga",
     )
     syncer._upsert_schedules([])
@@ -223,7 +222,7 @@ def test_upsert_schedules_null_agent_view_uses_is_null_predicate(
     mock_get_conn.return_value = mock_conn
 
     syncer = JiraCronSync(
-        sample_config, sample_periodic_config, MagicMock(), MagicMock(),
+        sample_config, sample_periodic_config, MagicMock(),
         logging.getLogger("test"),
     )
     syncer._upsert_schedules(_sample_entries())
@@ -238,7 +237,7 @@ def test_upsert_schedules_db_error_logged(mock_get_conn, sample_config, sample_p
     mock_cursor.execute.side_effect = RuntimeError("DB error")
     mock_get_conn.return_value = mock_conn
 
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), MagicMock(), logging.getLogger("test"))
+    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
 
     with caplog.at_level(logging.WARNING):
         syncer._upsert_schedules(_sample_entries())
@@ -250,12 +249,8 @@ def test_sync_view_emits_summary_line(sample_config, sample_periodic_config, jir
     toolbox = MagicMock()
     toolbox.jira_search.return_value = jira_cykliczne
 
-    crontab = CrontabManager()
-    crontab.get_current = MagicMock(return_value="SHELL=/bin/bash\n")
-    crontab.apply = MagicMock(return_value=False)
-
     logger = logging.getLogger("test-sync-summary")
-    syncer = JiraCronSync(sample_config, sample_periodic_config, toolbox, crontab, logger)
+    syncer = JiraCronSync(sample_config, sample_periodic_config, toolbox, logger)
 
     with caplog.at_level(logging.INFO):
         syncer.sync_view(dry_run=True)
@@ -271,11 +266,7 @@ def test_upsert_schedules_skipped_in_dry_run(mock_get_conn, sample_config, sampl
     toolbox = MagicMock()
     toolbox.jira_search.return_value = jira_cykliczne
 
-    crontab = CrontabManager()
-    crontab.get_current = MagicMock(return_value="SHELL=/bin/bash\n")
-    crontab.apply = MagicMock(return_value=True)
-
-    syncer = JiraCronSync(sample_config, sample_periodic_config, toolbox, crontab, logging.getLogger("test"))
+    syncer = JiraCronSync(sample_config, sample_periodic_config, toolbox, logging.getLogger("test"))
     syncer.sync_view(dry_run=True)
 
     # get_connection should NOT have been called (upsert skipped in dry_run)
