@@ -4,6 +4,33 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-25 — E1.5 platform foundation: Caddy proxy, secret-authenticated subrequests, string version ids
+
+- **Caddy, not nginx.** `forward_auth` is the `auth_request` subrequest, `tls internal` terminates
+  TLS with no certificate step, and the log `filter` encoder redacts query values. nginx needs a
+  `map` per redacted parameter and has no internal CA.
+- **The subrequest carries a secret, not a network position.** `web` shares `agento-net` with
+  `sandbox`, so being reachable proves nothing. The proxy's entrypoint writes a random secret into the
+  `proxy-internal` volume, which only `proxy` and `web` mount; `web` reads it per request, so start
+  order does not matter. The proxy sets it only inside `forward_auth`, never on a forwarded request.
+- **The `X-Agento-*` header namespace is the proxy's.** The proxy strips every client header in it,
+  so any header the proxy adds later is protected by the same one rule.
+- **The error log is redacted too.** Caddy's `http.log.error` logger writes the raw URI when an
+  upstream fails; a global logger with the same `cap`/`code` filter covers it. Measured, not assumed.
+- **The artifacts host port is removed with nothing in its place.** Previews and Basic-auth shares
+  go dark until E2/E6 implement the decisions behind `/internal/authz/{app,share}`. A second,
+  unauthenticated path to the same files would make that authorization worthless.
+- **`app_version_id` is `VARCHAR(64)`** (`042`). A VA version id is a string; `036`/`037` declared
+  `BIGINT`. The verifier checks a bounded string, not the VA grammar — that belongs where the id is
+  made. The shared fixture is held to the grammar by the Node suite.
+- **`role_grant` has no exactly-one-scope CHECK.** MySQL 8.0 refuses a CHECK on a column with an FK
+  referential action (ER 3823), and the cascade is what removes grants with their agent_view. Writers
+  set exactly one scope; readers treat both or neither as no grant.
+- **The fixture's table rows are data only.** Nothing maps a `user`/`launch` row into an auth source
+  yet (that is E2), so no mapper ships; the integration test inserts the rows against the real schema.
+
+---
+
 ## 2026-09-24 — E1 toolbox auth: one dispatcher, per-call checks, TTL config in `core/auth/*`
 
 - **Every tool call goes through one `executeTool()`.** The MCP SDK validates arguments before a
