@@ -1,5 +1,22 @@
 import { describe, it, expect, vi } from 'vitest';
 import express from 'express';
+import net from 'node:net';
+import { Readable } from 'node:stream';
+import { gzipSync } from 'node:zlib';
+
+// fetch refuses to send a malformed Content-Length, so this one goes over a raw socket.
+function rawPost(url, headers) {
+  const { hostname, port, pathname } = new URL(url);
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(Number(port), hostname, () => {
+      sock.write(`POST ${pathname} HTTP/1.1\r\nHost: ${hostname}\r\nConnection: close\r\n${headers}\r\n`);
+    });
+    let out = '';
+    sock.on('data', d => { out += d; });
+    sock.on('end', () => resolve(out));
+    sock.on('error', reject);
+  });
+}
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -391,8 +408,17 @@ describe('POST /internal/tools/{name}:invoke', () => {
         expect(res.status).toBe(400);
         expect((await res.json()).error.code).toBe('invalid_arguments');
       }
-      const empty = await fetch(post.url('noargs'), { method: 'POST', headers: { 'content-type': 'application/json' } });
-      expect(empty.status).toBe(400);
+      const empties = [
+        { headers: { 'content-type': 'application/json' } },
+        { headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' }, body: gzipSync(Buffer.alloc(0)) },
+        { headers: { 'content-type': 'application/json' }, body: Readable.toWeb(Readable.from([])), duplex: 'half' },
+      ];
+      for (const init of empties) {
+        const empty = await fetch(post.url('noargs'), { method: 'POST', ...init });
+        expect(empty.status).toBe(400);
+      }
+      const zeros = await rawPost(post.url('noargs'), 'Content-Type: application/json\r\nContent-Length: 00\r\n');
+      expect(zeros).toMatch(/^HTTP\/1\.1 400/);
       expect(d.audit.insert).not.toHaveBeenCalled();
       expect(handler).not.toHaveBeenCalled();
       expect((await post('noargs', {})).status).toBe(200);
