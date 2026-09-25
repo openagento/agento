@@ -47,6 +47,9 @@
 
 # Every caller-supplied identity header is dropped before any upstream or subrequest
 # sees it. X-Agento-* is the proxy's own namespace; only forward_auth sets one.
+# Caddy sorts directives: request_header runs before handle, but forward_auth at site
+# level would run BEFORE request_header, and uri before forward_auth. So every
+# forward_auth sits in a route (written order kept) inside a handle.
 (strip_identity) {
 	request_header -X-Agento-*
 	request_header -X-Forwarded-User
@@ -74,14 +77,16 @@
 	import strip_identity
 	@version path_regexp version ^/a/([a-z0-9][a-z0-9-]{0,63})/v/(v-[0-9]{8}-[0-9]{6}-[a-z0-9]{4})/
 	handle @version {
-		forward_auth web:8000 {
-			uri /internal/authz/app
-			header_up X-Agento-Proxy-Auth {$AGENTO_PROXY_SECRET}
-			header_up X-Agento-Artifact-Code {re.version.1}
-			header_up X-Agento-Version-Id {re.version.2}
+		route {
+			forward_auth web:8000 {
+				uri /internal/authz/app
+				header_up X-Agento-Proxy-Auth {$AGENTO_PROXY_SECRET}
+				header_up X-Agento-Artifact-Code {re.version.1}
+				header_up X-Agento-Version-Id {re.version.2}
+			}
+			uri strip_prefix /a
+			reverse_proxy artifacts:8080
 		}
-		uri strip_prefix /a
-		reverse_proxy artifacts:8080
 	}
 	handle {
 		respond 404
@@ -95,9 +100,13 @@
 	import access_log
 	import strip_identity
 	header Referrer-Policy no-referrer
-	forward_auth web:8000 {
-		uri /internal/authz/share
-		header_up X-Agento-Proxy-Auth {$AGENTO_PROXY_SECRET}
+	handle {
+		route {
+			forward_auth web:8000 {
+				uri /internal/authz/share
+				header_up X-Agento-Proxy-Auth {$AGENTO_PROXY_SECRET}
+			}
+			respond 404
+		}
 	}
-	respond 404
 }
