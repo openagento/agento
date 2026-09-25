@@ -1,7 +1,7 @@
-"""E1.5 web scaffold: a health check and the authorization endpoints the proxy calls.
+"""The panel API, the launch redeem, and the authorization endpoints the proxy calls.
 
-Login, sessions and RBAC are E2's; the allow/deny decision behind /internal/authz/* is
-E2's (apps) and E6's (share). Until then every authorized subrequest is denied.
+The allow/deny decision behind /internal/authz/app is E2's; /internal/authz/share is E6's
+and until then denies every subrequest.
 
 `web` shares agento-net with `sandbox`, so reachability proves nothing: a request is from
 the proxy only if it carries the secret the proxy and web alone can read. Nothing on this
@@ -22,6 +22,7 @@ from agento.framework.access import sessions
 from . import api, security
 
 AUTHZ_PATHS = ("/internal/authz/app", "/internal/authz/share")
+REDEEM_PATH = "/internal/launch/redeem"
 
 
 def _proxy_secret() -> str:
@@ -75,7 +76,22 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/health":
             self._send(200, b"ok")
         elif path in AUTHZ_PATHS:
-            self._send(403 if _from_proxy(self.headers.get("X-Agento-Proxy-Auth", "")) else 401)
+            if not _from_proxy(self.headers.get("X-Agento-Proxy-Auth", "")):
+                self._send(401)
+            elif path == "/internal/authz/app" and security.launch_cookies(
+                    security.parse_cookies(self.headers.get("Cookie"))):
+                self._internal(path, api.authorize_app, b"")
+            else:
+                self._send(403)
+        elif path == REDEEM_PATH:
+            if self.command != "POST":
+                self._reply(api.error(405, "method not allowed"))
+                return
+            body = self._read_body(None, api.MAX_FORM_BODY)
+            if isinstance(body, api.Response):
+                self._reply(body)
+            else:
+                self._internal(path, api.redeem_launch, body)
         elif path.startswith("/api/"):
             self._api(path)
         else:
@@ -93,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
         if write and not security.write_allowed(self.headers, origins):
             self._reply(api.error(403, "forbidden"))
             return
-        body = self._read_body(route)
+        body = self._read_body(route, MAX_JSON_BODY)
         if isinstance(body, api.Response):
             self._reply(body)
             return
@@ -130,14 +146,31 @@ class Handler(BaseHTTPRequestHandler):
             if conn is not None:
                 conn.close()
 
-    def _read_body(self, route: api.Route) -> bytes | api.Response:
+    def _internal(self, path: str, handler, body: bytes) -> None:
+        req = api.Request(
+            method=self.command, path=path, headers=self.headers, body=body,
+            cookies=security.parse_cookies(self.headers.get("Cookie")), origins=security.Origins.from_env(),
+        )
+        conn = None
+        try:
+            conn = connect()
+            req.conn = conn
+            self._reply(handler(req))
+        except Exception as exc:
+            sys.stderr.write(f"{self.command} {path} failed: {type(exc).__name__}\n")
+            self._reply(api.error(500, "internal error"))
+        finally:
+            if conn is not None:
+                conn.close()
+
+    def _read_body(self, route: api.Route | None, limit: int) -> bytes | api.Response:
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             return api.error(400, "bad Content-Length")
-        if length > MAX_JSON_BODY:
+        if length > limit:
             return api.error(413, "body too large")
-        if route.json_body:
+        if route is not None and route.json_body:
             ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             if ctype != "application/json":
                 return api.error(400, "Content-Type must be application/json")
