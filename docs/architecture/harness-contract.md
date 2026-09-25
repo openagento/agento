@@ -50,7 +50,7 @@ Everything static lives in the module's `di.json`, under one `agent_harnesses` e
         "package": "@openai/codex",
         "binary": "codex",
         "version_env_key": "CODEX_VERSION",
-        "default_range": "0.137.0"
+        "default_range": "0.157.0"
       }
     }
   ]
