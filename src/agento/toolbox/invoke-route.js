@@ -18,9 +18,9 @@ export function installInvokeRoute(app, { guard, deps, loadRegistryFor, log }) {
   }
 
   // express.json() skips a body it does not recognise and leaves `{}`, which would run a
-  // zero-argument tool on arbitrary bytes. A JSON body is required; an empty one is not JSON.
+  // zero-argument tool on arbitrary bytes. `req.is` is null for a request with no body at all.
   function requireJson(req, res, next) {
-    if (req.is('application/json') && req.headers['content-length'] !== '0') return next();
+    if (req.is('application/json')) return next();
     log('invoke', 'ERROR', 'request body is not application/json');
     return res.status(400).json({ ok: false, error: { code: 'invalid_arguments', message: 'body must be application/json' } });
   }
@@ -37,5 +37,10 @@ export function installInvokeRoute(app, { guard, deps, loadRegistryFor, log }) {
     return res.status(HTTP_STATUS[error.code]).json({ ok, error, execution_id });
   }
 
-  app.post(INVOKE_ROUTE, guard, requireJson, express.json({ strict: false }), bodyError, invoke);
+  // An empty body is not JSON, however it arrives (`Content-Length: 00`, empty chunked, a gzip of
+  // nothing): the check runs on the DECODED bytes, and bodyError answers the throw.
+  const json = express.json({ strict: false, verify: (_req, _res, buf) => {
+    if (buf.length === 0) throw new Error('empty body');
+  } });
+  app.post(INVOKE_ROUTE, guard, requireJson, json, bodyError, invoke);
 }
