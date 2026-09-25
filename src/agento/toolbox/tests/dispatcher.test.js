@@ -427,6 +427,12 @@ describe('POST /internal/tools/{name}:invoke', () => {
       for (const body of ['   ', '{} {}', 'nul']) {
         expect((await post('noargs', null, body)).status).toBe(400);
       }
+      expect(d.audit.insert).not.toHaveBeenCalled();
+      const nullBody = await post('noargs', null, 'null');
+      expect(nullBody.status).toBe(400);
+      expect([...d.audit.rows.values()].map(r => r.outcome)).toEqual(['invalid_arguments']);
+      d.audit.insert.mockClear();
+      d.audit.rows.clear();
       const zeros = await rawPost(post.url('noargs'), 'Content-Type: application/json\r\nContent-Length: 00\r\n');
       expect(zeros).toMatch(/^HTTP\/1\.1 400/);
       expect(d.audit.insert).not.toHaveBeenCalled();
