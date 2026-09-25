@@ -417,6 +417,16 @@ describe('POST /internal/tools/{name}:invoke', () => {
         const empty = await fetch(post.url('noargs'), { method: 'POST', ...init });
         expect(empty.status).toBe(400);
       }
+      for (const bom of [Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from([0xff, 0xfe])]) {
+        const charset = bom[0] === 0xef ? 'utf-8' : 'utf-16le';
+        const res = await fetch(post.url('noargs'), {
+          method: 'POST', headers: { 'content-type': `application/json; charset=${charset}` }, body: bom,
+        });
+        expect(res.status).toBe(400);
+      }
+      for (const body of ['   ', '{} {}', 'nul']) {
+        expect((await post('noargs', null, body)).status).toBe(400);
+      }
       const zeros = await rawPost(post.url('noargs'), 'Content-Type: application/json\r\nContent-Length: 00\r\n');
       expect(zeros).toMatch(/^HTTP\/1\.1 400/);
       expect(d.audit.insert).not.toHaveBeenCalled();
