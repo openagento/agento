@@ -23,8 +23,8 @@ Ranked. When two goals conflict, the higher goal wins.
 - **CLI:** `bin/agento <command>` — Magento-like CLI
 - **Core modules:** `src/agento/modules/<name>/` with `module.json` — ship with framework
 - **User modules:** `app/code/<name>/` with `module.json` + `config.json` — per-deployment, gitignored
-- **Module dependencies:** `sequence` in `module.json` lists the modules this module needs (MOD-1).
-- **Harness runtime config:** a harness reads only its own module's fields listed in `di.json` `runtime_config_fields`, as `HarnessRunContext.harness_config` and `prepare_workspace(..., harness_config=…)` (SEC-3). See [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
+- **Module dependencies:** `sequence` in `module.json` lists the modules this module needs (MOD-1). Prefer framework code + events over inter-module imports; every module must stay safely disableable.
+- **Harness runtime config:** a harness reads only its own module's fields listed in `di.json` `runtime_config_fields`, as `HarnessRunContext.harness_config` and `prepare_workspace(..., harness_config=…)` (SEC-3). An `obscure` field — or one whose schema cannot be proven safe — is rejected by `module:validate` and again at registration. Each shipped harness uses this seam for one **native-config passthrough** field — `claude/settings` (JSON), `codex/config` (TOML), `pi/settings` (JSON) — deep-merged over the block Agento generates. See [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
 - **Config:** 3-level fallback: ENV (`CONFIG__MODULE__PATH`) → DB (`core_config_data`) → `config.json`. Per-agent_view scoped config via `scope='agent_view'` in DB.
 - **Config testers:** a `system.json` field may declare a `tester` (`smtp`, `http`, a toolbox probe, or `local`). Surfaced as `config:test <path>` and `t` in the admin TUI. The probe runs where the credential already lives (CFG-3). See [docs/config/testers.md](docs/config/testers.md).
 - **Concurrent execution:** `AGENTO_CONSUMER_MAX_WORKERS` env var (default 10). Per-run isolation makes concurrent runs safe.

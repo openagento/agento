@@ -86,6 +86,8 @@
 | `bitbucket:publish-changes [--agent-view C] [--top N]` | Detect reviewer "changes requested" on open PRs (fast lane) ([details](../modules/bitbucket.md)) |
 | `github:publish-comments [--agent-view C] [--top N]` | Sweep open PRs for unanswered reviewer feedback ([details](../modules/github.md)) |
 | `github:publish-changes [--agent-view C] [--top N]` | Detect an outstanding reviewer "changes requested" on open PRs (fast lane) ([details](../modules/github.md)) |
+| `exec:todo [key]` | Execute next TODO task |
+| `replay <job_id>` | Replay a completed job. **Refuses** a job whose `agent_view_id` is NULL (pre-0.15 rows and stubs): the harness's own config — and therefore the exact command — cannot be resolved for it, and a replay that silently differs from the run it claims to reproduce is worse than none |
 | `exec:todo [key] [--agent-view C]` | Execute next TODO task. `--agent-view` names the acting view; it is **required** when more than one active view exists, and there is no global fallback ([details](../architecture/zero-trust.md)) |
 | `replay <job_id>` | Replay a completed job |
 | `e2e` | Run end-to-end tests |
