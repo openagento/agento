@@ -131,3 +131,51 @@ def test_concurrent_redeems_yield_exactly_one_token(conn, scopes, monkeypatch):
     results, errors = _race(*[lambda c: launches.redeem(c, launch.id, code)] * 8)
     assert errors == []
     assert sum(r is not None for r in results) == 1
+
+
+@pytest.mark.parametrize("change", ["set_role", "set_password", "deactivate"])
+def test_sign_in_racing_a_revocation_leaves_no_live_session(conn, change):
+    from agento.framework.access import sessions
+
+    for _ in range(20):
+        _reset(conn)
+        alice = accounts.create_user(conn, "alice", "user", PASSWORD)
+        revoke = {
+            "set_role": partial(accounts.set_role, user_id=alice.id, role="admin"),
+            "set_password": partial(accounts.set_password, user_id=alice.id, password="another long password"),
+            "deactivate": partial(accounts.set_active, user_id=alice.id, active=False),
+        }[change]
+        results, errors = _race(lambda c: sessions.sign_in(c, "alice", PASSWORD), revoke)
+        assert errors == []
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS n FROM session WHERE revoked_at IS NULL")
+            live = cur.fetchone()["n"]
+        # A sign-in after a role change is valid, but it must have read the new role under the lock.
+        # After a password change or a deactivation no sign-in with the old password may survive.
+        assert live == 0 or (change == "set_role" and results[0][0].user.role == "admin")
+
+
+def test_update_user_applies_every_field_or_none(conn):
+    admin = accounts.create_user(conn, "root", "admin", PASSWORD)
+    alice = accounts.create_user(conn, "alice", "user", PASSWORD)
+    with pytest.raises(accounts.AccessError):
+        accounts.update_user(conn, alice.id, role="admin", password="short", actor_id=admin.id)
+    assert accounts.get_user(conn, alice.id).role == "user"
+    # Self-demotion with a password change: one transaction, so both land (no partial commit, no 403).
+    accounts.update_user(conn, admin.id, role="user", password="another long password", actor_id=admin.id)
+    assert accounts.get_user(conn, admin.id).role == "user"
+    assert accounts.authenticate(conn, "root", "another long password") is not None
+
+
+def test_update_user_by_an_actor_demoted_concurrently_changes_nothing(conn):
+    for _ in range(20):
+        _reset(conn)
+        a = accounts.create_user(conn, "root-a", "admin", PASSWORD)
+        b = accounts.create_user(conn, "root-b", "admin", PASSWORD)
+        alice = accounts.create_user(conn, "alice", "user", PASSWORD)
+        _results, errors = _race(
+            partial(accounts.set_role, user_id=b.id, role="user", actor_id=a.id),
+            partial(accounts.update_user, user_id=alice.id, role="admin", active=False, actor_id=b.id))
+        assert errors == []
+        after = accounts.get_user(conn, alice.id)
+        assert (after.role, after.is_active) in {("user", True), ("admin", False)}

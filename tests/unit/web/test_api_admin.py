@@ -44,7 +44,7 @@ def test_admin_routes_exist():
 @pytest.mark.parametrize("route", ADMIN_ROUTES, ids=lambda r: f"{r.method} {r.pattern.pattern}")
 def test_user_role_gets_403_on_every_admin_route(web, monkeypatch, route):
     _as(monkeypatch, USER)
-    for name in ("create_user", "set_role", "set_active", "set_password", "add_grant", "remove_grant",
+    for name in ("create_user", "update_user", "set_role", "set_active", "set_password", "add_grant", "remove_grant",
                  "list_users", "list_grants"):
         monkeypatch.setattr(accounts, name, MagicMock(side_effect=AssertionError("must not be called")))
     monkeypatch.setattr(config_write, "save_config", MagicMock(side_effect=AssertionError("must not be called")))
@@ -55,22 +55,23 @@ def test_admin_user_management(web, monkeypatch):
     _as(monkeypatch, ADMIN)
     created = accounts.User(id=9, username="bob", role="user", is_active=True)
     create = MagicMock(return_value=created)
-    set_role = MagicMock()
+    update = MagicMock()
     monkeypatch.setattr(accounts, "create_user", create)
-    monkeypatch.setattr(accounts, "set_role", set_role)
+    monkeypatch.setattr(accounts, "update_user", update)
     monkeypatch.setattr(accounts, "get_user", lambda conn, uid: created)
     monkeypatch.setattr(accounts, "list_users", lambda conn: [ADMIN, created])
     r = _call(web, "POST", "/api/admin/users", {"username": "bob", "role": "user", "password": "correct horse battery"})
     assert r.status_code == 201 and r.json()["username"] == "bob"
     assert create.call_args.kwargs["actor_id"] == ADMIN.id
-    assert _call(web, "PATCH", "/api/admin/users/9", {"role": "admin"}).status_code == 200
-    assert set_role.call_args.kwargs["actor_id"] == ADMIN.id
+    assert _call(web, "PATCH", "/api/admin/users/9", {"role": "admin", "password": "x" * 12}).status_code == 200
+    assert update.call_count == 1  # every field in one service call: one transaction
+    assert update.call_args.kwargs == {"role": "admin", "active": None, "password": "x" * 12, "actor_id": ADMIN.id}
     assert [u["username"] for u in _call(web, "GET", "/api/admin/users").json()] == ["root", "bob"]
 
 
 def test_admin_write_refused_by_the_service_is_403(web, monkeypatch):
     _as(monkeypatch, ADMIN)
-    monkeypatch.setattr(accounts, "set_role", MagicMock(side_effect=accounts.AccessError("not allowed")))
+    monkeypatch.setattr(accounts, "update_user", MagicMock(side_effect=accounts.AccessError("not allowed")))
     assert _call(web, "PATCH", "/api/admin/users/9", {"role": "user"}).status_code == 403
 
 

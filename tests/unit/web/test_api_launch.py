@@ -191,3 +191,16 @@ def test_authz_app_deny_clears_a_dead_launch_cookie(web, monkeypatch, proxy_secr
     r = _authz(web, V1)
     assert r.status_code == 403
     assert r.headers["Set-Cookie"].startswith(f"__Host-agento-launch-{LID}=;")
+
+
+def test_authz_app_never_clears_a_cookie_past_the_bound(web, monkeypatch, proxy_secret):
+    ids = [f"{i:032x}" for i in range(21)]
+    seen = {}
+    monkeypatch.setattr(launches, "authorize_files", lambda conn, tokens, *a: seen.setdefault("tokens", tokens) and False)
+    monkeypatch.setattr(launches, "live_launch_ids", lambda conn, lids: seen.setdefault("ids", list(lids)) and set())
+    r = httpx.get(f"{web}/internal/authz/app", cookies={f"__Host-agento-launch-{i}": f"t{i}" for i in ids},
+                  headers={"X-Agento-Proxy-Auth": SECRET, "X-Agento-Artifact-Code": "app", "X-Agento-Version-Id": V1})
+    assert r.status_code == 403
+    assert len(seen["tokens"]) == len(seen["ids"]) == 20
+    cleared = {c.split("=")[0] for c in r.headers.get_list("Set-Cookie")}
+    assert cleared == {f"__Host-agento-launch-{i}" for i in seen["ids"]}  # the 21st is neither read nor cleared

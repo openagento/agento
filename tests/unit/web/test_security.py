@@ -68,3 +68,10 @@ def test_write_allowed():
         {**ok, "Sec-Fetch-Mode": "no-cors"},
     ):
         assert not security.write_allowed(bad, ORIGINS)
+
+
+def test_launch_cookies_reads_one_bounded_subset():
+    cookies = {f"{security.LAUNCH_COOKIE_PREFIX}{i:032x}": str(i) for i in range(security.MAX_LAUNCH_COOKIES + 1)}
+    found = security.launch_cookies(cookies)
+    assert len(found) == security.MAX_LAUNCH_COOKIES
+    assert f"{security.MAX_LAUNCH_COOKIES:032x}" not in found

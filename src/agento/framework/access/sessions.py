@@ -9,7 +9,7 @@ from datetime import datetime
 
 from ..auth_context import resolve_auth_ttls
 from ..toolbox_capability import token_hash
-from .accounts import User
+from .accounts import User, _in_transaction, authenticate_in
 
 _SESSION_SQL = (
     "SELECT s.id, s.expires_at, u.id AS user_id, u.username, u.role, u.is_active"
@@ -25,25 +25,35 @@ class Session:
     expires_at: datetime  # naive UTC, as MySQL returns it
 
 
-def create_session(conn, user: User) -> tuple[Session, str]:
-    """Return the session and its raw token; the token is never stored."""
-    ttl = resolve_auth_ttls(conn, None)["session_max_ttl"]
+def _insert_session(cur, user: User, ttl: int) -> tuple[Session, str]:
     session_id, token = secrets.token_hex(16), secrets.token_urlsafe(32)
-    conn.begin()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO session (id, token_hash, user_id, expires_at)"
-                " VALUES (%s, %s, %s, NOW() + INTERVAL %s SECOND)",
-                (session_id, token_hash(token), user.id, ttl),
-            )
-            cur.execute("SELECT expires_at FROM session WHERE id = %s", (session_id,))
-            expires_at = cur.fetchone()["expires_at"]
-        conn.commit()
-    except BaseException:
-        conn.rollback()
-        raise
-    return Session(id=session_id, user=user, expires_at=expires_at), token
+    cur.execute(
+        "INSERT INTO session (id, token_hash, user_id, expires_at) VALUES (%s, %s, %s, NOW() + INTERVAL %s SECOND)",
+        (session_id, token_hash(token), user.id, ttl),
+    )
+    cur.execute("SELECT expires_at FROM session WHERE id = %s", (session_id,))
+    return Session(id=session_id, user=user, expires_at=cur.fetchone()["expires_at"]), token
+
+
+def sign_in(conn, username: str, password: str) -> tuple[Session, str] | None:
+    """Check the password and insert the session under the user row lock.
+
+    A role change, deactivation or password change serializes with it: the session is either
+    created first and revoked by that change, or refused.
+    """
+    ttl = resolve_auth_ttls(conn, None)["session_max_ttl"]
+
+    def work(cur):
+        user = authenticate_in(cur, username, password, lock=True)
+        return _insert_session(cur, user, ttl) if user else None
+
+    return _in_transaction(conn, work)
+
+
+def create_session(conn, user: User) -> tuple[Session, str]:
+    """A session for an already-authenticated user (tests, tooling); the raw token is never stored."""
+    ttl = resolve_auth_ttls(conn, None)["session_max_ttl"]
+    return _in_transaction(conn, lambda cur: _insert_session(cur, user, ttl))
 
 
 def lookup_session(conn, token: str | None) -> Session | None:

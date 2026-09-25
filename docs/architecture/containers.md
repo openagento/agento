@@ -13,7 +13,7 @@ Seven containers. Six share the `agento-net` bridge network; `artifacts` declare
 | **mysql** | mysql:8.0 | Job queue DB (`cron_agent`) | — |
 | **sandbox** | agento-sandbox | Interactive agent execution (ad-hoc) | Python |
 | **artifacts** | agento-toolbox | Static HTTP for the `versioned_artifacts` published tree | Node.js |
-| **web** | agento-cron | Panel API (sign-in, roles and grants, admin, launches), the launch redeem, and `/internal/authz/app` for the proxy; holds no secret ([panel.md](panel.md)) | Python |
+| **web** | agento-cron | Panel API (sign-in, roles and grants, admin, launches), the launch redeem, and `/internal/authz/app` for the proxy; holds only the internal proxy secret, no service credential or encryption key ([panel.md](panel.md)) | Python |
 | **proxy** | caddy:2.11 | TLS, the panel / apps / share origins, `forward_auth` to `web`; the only route to artifact files | — |
 
 ## Volume Mounts

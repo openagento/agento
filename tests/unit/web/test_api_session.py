@@ -32,12 +32,11 @@ def signed_in(monkeypatch):
 def auth(monkeypatch):
     calls = []
 
-    def authenticate(conn, username, password):
+    def sign_in(conn, username, password):
         calls.append(username)
-        return ALICE if (username, password) == ("alice", PASSWORD) else None
+        return (_session(), TOKEN) if (username, password) == ("alice", PASSWORD) else None
 
-    monkeypatch.setattr(accounts, "authenticate", authenticate)
-    monkeypatch.setattr(sessions, "create_session", lambda conn, user: (_session(), TOKEN))
+    monkeypatch.setattr(sessions, "sign_in", sign_in)
     return calls
 
 

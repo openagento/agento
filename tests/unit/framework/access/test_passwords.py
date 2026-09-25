@@ -42,3 +42,9 @@ def test_length_bounds():
     for bad in ("x" * (MIN_PASSWORD - 1), "x" * (MAX_PASSWORD + 1)):
         with pytest.raises(ValueError):
             check_password_policy(bad)
+
+
+def test_a_password_over_the_limit_never_matches_its_prefix():
+    stored = hash_password("x" * MAX_PASSWORD)
+    assert verify_password("x" * MAX_PASSWORD, stored)
+    assert not verify_password("x" * MAX_PASSWORD + "y", stored)
