@@ -201,9 +201,10 @@ authorize them; see ROADMAP.md.
 
 The published half of that volume (`storage/versioned-artifacts/published`) is mounted
 read-only into one more container, `artifacts`, which serves it over HTTP. That container
-declares no `networks:` key, so Compose leaves it alone on the project `default` network
-while every other service names `agento-net` — the agent cannot resolve its name, let
-alone read an artifact it was never granted. It is published on `127.0.0.1` only. Putting
+declares no `networks:` key, so Compose leaves it on the project `default` network, which
+it shares with `proxy` alone, while every other service names `agento-net` — the agent
+cannot resolve its name, let alone read an artifact it was never granted. It publishes no
+host port; `proxy` is the only route to its files. Putting
 it on `agento-net` "for consistency" would make every artifact readable by every agent in
 every agent_view over plain HTTP, with the `allowed_artifacts` allowlist bypassed and no
 audit row written. It also holds no `env_file:` and no `environment:`, so the second

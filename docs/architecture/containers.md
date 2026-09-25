@@ -1,7 +1,8 @@
 # Docker Containers
 
-Five containers. Four share the `agento-net` bridge network; `artifacts` declares no
-`networks:` key and deliberately joins none of it.
+Seven containers. Six share the `agento-net` bridge network; `artifacts` declares no
+`networks:` key and deliberately joins none of it. `proxy` is the only service on both
+`agento-net` and the project `default` network that `artifacts` sits on.
 
 ## Services
 
@@ -12,6 +13,8 @@ Five containers. Four share the `agento-net` bridge network; `artifacts` declare
 | **mysql** | mysql:8.0 | Job queue DB (`cron_agent`) | — |
 | **sandbox** | agento-sandbox | Interactive agent execution (ad-hoc) | Python |
 | **artifacts** | agento-toolbox | Static HTTP for the `versioned_artifacts` published tree | Node.js |
+| **web** | agento-cron | Web API scaffold: `/health` and the deny-all `/internal/authz/*` endpoints the proxy calls (login, sessions, RBAC arrive with E2) | Python |
+| **proxy** | caddy:2.11 | TLS, the panel / apps / share origins, `forward_auth` to `web`; the only route to artifact files | — |
 
 ## Volume Mounts
 
@@ -36,10 +39,12 @@ Five containers. Four share the `agento-net` bridge network; `artifacts` declare
 | `app/etc` → `/app/etc` | read-only | `modules.json` only, so `mo:di versioned_artifacts` makes every route answer 503 without a restart. |
 
 The `artifacts` service declares **no `networks:` key** and carries no `env_file:` or
-`environment:`. Compose therefore leaves it alone on the project's `default` network while
-every other service names `agento-net` — measured: the sandbox cannot resolve the name
-`artifacts`. It is published on `127.0.0.1:${AGENTO_ARTIFACTS_PORT:-8080}` on the host and
-reachable from no other container. Putting it on `agento-net` would let every agent in every
+`environment:`. Compose therefore leaves it on the project's `default` network while every
+other service names `agento-net` — measured: the sandbox cannot resolve the name
+`artifacts`. It publishes **no host port**: the only other container on `default` is `proxy`,
+which is the only route to these files, and it serves only `/a/<code>/v/<id>/` paths after
+`web` authorizes them. Until E2/E6 implement that decision every request is denied, so VA
+`preview_url` links and Basic-auth shares are not reachable from the host. Putting it on `agento-net` would let every agent in every
 agent_view read every artifact over plain HTTP, bypassing `allowed_artifacts` with no audit row.
 
 ### Agent-Only (cron + sandbox)
@@ -74,7 +79,31 @@ agent_view read every artifact over plain HTTP, bypassing `allowed_artifacts` wi
 
 ## Network
 
-All containers **except `artifacts`** communicate on `agento-net` (bridge). DNS names match service names: `toolbox`, `mysql`. `artifacts` declares no `networks:` key, so Compose leaves it alone on the project `default` network and no other container can even resolve its name.
+All containers **except `artifacts`** communicate on `agento-net` (bridge). DNS names match service names: `toolbox`, `mysql`, `web`. `artifacts` declares no `networks:` key, so Compose leaves it on the project `default` network, which it shares with `proxy` alone; no other container can even resolve its name.
+
+### Proxy and web
+
+`proxy` (Caddy, config in `src/agento/framework/docker/proxy/`) terminates TLS (`tls internal`
+by default) on `127.0.0.1:${AGENTO_PROXY_PORT:-8443}` and serves three origins, named by
+`AGENTO_PANEL_HOST`, `AGENTO_APPS_HOST` and `AGENTO_SHARE_HOST` (default `panel.localhost`,
+`apps.localhost`, `*.share.localhost`):
+
+- **panel** → `web:8000`, except `/internal/*`, which answers `404`;
+- **apps** → only `/a/<code>/v/<id>/…`, authorized by `forward_auth` to `web`'s
+  `/internal/authz/app`, then served by `artifacts`; anything else is `404`;
+- **share** (one origin per share) → `forward_auth` to `/internal/authz/share`.
+
+Hardening: every caller-supplied `X-Agento-*`, `X-Forwarded-User`, `X-Remote-User` and
+`Remote-User` header is dropped before any upstream or subrequest sees it; the proxy sets
+`X-Agento-Proxy-Auth` only inside `forward_auth`. The `cap` and `code` (launch exchange code)
+query values are replaced with `REDACTED` in both the access log and Caddy's error log, and no
+route targets the toolbox.
+
+`web` shares `agento-net` with `sandbox`, so **reachability is not trust**. The shared secret
+`X-Agento-Proxy-Auth` lives in the `proxy-internal` volume, which only `proxy` (writes it once
+at start) and `web` (reads it per request) mount. A request without it — a direct call from
+`sandbox` — gets `401` on `/internal/authz/*`. Nothing on `web` may trust an identity or
+forwarding header without that check.
 
 Being on `agento-net` grants **reachability, not authorization**. The toolbox authenticates east-west
 traffic itself: `/mcp`, `/sse`, `/config-test` and every `/api/*` route require a capability token and take their scope
