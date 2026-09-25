@@ -110,7 +110,7 @@ E1.5 deliberately stops short of schema for unspecified epics — the conversati
 manifest stay with E3–E5 and E6, because designing them before those epics exist buys a migration. E7
 stays last regardless: it needs E2's RBAC enforcement, not just its tables.
 
-E1 is built: auth context v1, the `user_session`/`miniapp` profiles (invoke only, refused until E2/E6
+The E1 core (PRD E1 §3–§8) is built; E1.5 is the next track: auth context v1, the `user_session`/`miniapp` profiles (invoke only, refused until E2/E6
 install a source checker), one dispatcher with per-call checks and a `tool_invocation` audit row,
 and header tokens on `/mcp`. See [docs/architecture/auth-context.md](docs/architecture/auth-context.md).
 
