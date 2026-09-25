@@ -381,6 +381,24 @@ describe('POST /internal/tools/{name}:invoke', () => {
     } finally { close(); }
   });
 
+  it('a body that is not application/json gets 400: no audit row, no handler call', async () => {
+    const handler = vi.fn(async () => ({ content: [] }));
+    const d = deps({ endpoint: 'invoke', loadRegistry: async () => registryWith({ noargs: { schema: {}, handler } }) });
+    const { post, close } = await invokeApp(d, capabilityContext('mcp_job'));
+    try {
+      for (const headers of [{ 'content-type': 'text/plain' }, {}]) {
+        const res = await fetch(post.url('noargs'), { method: 'POST', headers, body: 'anything' });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error.code).toBe('invalid_arguments');
+      }
+      const empty = await fetch(post.url('noargs'), { method: 'POST', headers: { 'content-type': 'application/json' } });
+      expect(empty.status).toBe(400);
+      expect(d.audit.insert).not.toHaveBeenCalled();
+      expect(handler).not.toHaveBeenCalled();
+      expect((await post('noargs', {})).status).toBe(200);
+    } finally { close(); }
+  });
+
   it('does not match a name outside [a-z0-9_] or without the :invoke suffix', async () => {
     const { post, close } = await invokeApp(userDeps());
     try {
