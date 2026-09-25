@@ -133,7 +133,7 @@ class TestExplicitCredentialIsHonoured:
             lambda: (MagicMock(), MagicMock(disable_llm=True), MagicMock()),
         )
 
-        runner = rt._make_runner("claude", "anthropic", credential=explicit)
+        runner = rt._make_runner("claude", "anthropic", credential=explicit, harness_config={})
 
         assert runner.context.credential is explicit
 
@@ -148,7 +148,7 @@ class TestExplicitCredentialIsHonoured:
             lambda: (MagicMock(), MagicMock(disable_llm=True), MagicMock()),
         )
 
-        runner = rt._make_runner("claude", "anthropic")
+        runner = rt._make_runner("claude", "anthropic", harness_config={})
 
         assert runner.context.credential is pooled
 

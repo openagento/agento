@@ -49,12 +49,15 @@ class AgentViewRuntimeCommand:
     def execute(self, args: argparse.Namespace) -> None:
         from agento.framework.agent_view_runtime import resolve_agent_view_runtime
         from agento.framework.cli.runtime import _load_framework_config
+        from agento.framework.config_resolver import ScopedConfigService
         from agento.framework.db import get_connection_or_exit
         from agento.framework.harness import (
             HarnessRunContext,
             RunRequest,
             find_harness,
+            get_harness_config,
         )
+        from agento.framework.scoped_config import Scope
         from agento.framework.workspace import get_agent_view_by_code
 
         db_config, _, _ = _load_framework_config()
@@ -66,6 +69,12 @@ class AgentViewRuntimeCommand:
                 sys.exit(1)
 
             runtime = resolve_agent_view_runtime(conn, av.id)
+            registered = find_harness(runtime.harness) if runtime.harness else None
+            # Resolved while the connection is still open; the plain dict outlives it.
+            harness_config = (
+                get_harness_config(ScopedConfigService(conn, Scope.AGENT_VIEW, av.id), registered)
+                if registered is not None else {}
+            )
         finally:
             conn.close()
 
@@ -80,7 +89,6 @@ class AgentViewRuntimeCommand:
         interactive_command: list[str] | None = None
         headless_command: list[str] | None = None
         effective_model = args.model or runtime.model
-        registered = find_harness(runtime.harness) if runtime.harness else None
         if registered is not None and runtime.provider:
             builder = registered.adapter.command_builder
             # Display only: no credential is claimed here, so credential_required is
@@ -91,6 +99,7 @@ class AgentViewRuntimeCommand:
                 model=effective_model,
                 home_dir=home,
                 credential_required=False,
+                harness_config=harness_config,
             )
             interactive_command = builder.interactive(ctx, yolo=getattr(args, "yolo", False))
             if args.prompt:

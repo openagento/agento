@@ -31,7 +31,10 @@ Automates Jira tasks using AI agents (Claude Code, OpenAI Codex, Pi) in Docker c
   would decrypt every module's `obscure` values into a context used to build argv. A field
   whose schema is `{"type": "obscure"}` — or whose schema is not an object, and so cannot be
   proven safe — is rejected by `module:validate` and again at registration, and a violation
-  fails the boot. See [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
+  fails the boot. Each shipped harness uses this seam for one **native-config passthrough** field —
+  `claude/settings` (JSON), `codex/config` (TOML), `pi/settings` (JSON) — deep-merged over the block
+  Agento generates, raising on a malformed blob. See
+  [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
 - **Config:** 3-level fallback: ENV (`CONFIG__MODULE__PATH`) → DB (`core_config_data`) → `config.json`. Per-agent_view scoped config via `scope='agent_view'` in DB.
 - **Config testers:** a `system.json` field may declare a `tester` — `{"kind": "smtp"|"http", …}`
   with `{module/path}` interpolation, a named probe the module exports from `toolbox/`

@@ -18,6 +18,7 @@ from agento.framework.config_schema import allowed_scopes as get_allowed_scopes
 from agento.framework.config_schema import is_scope_allowed
 from agento.framework.config_test.manifest import tester_label
 from agento.framework.config_validation import max_length_of
+from agento.framework.harness import HARNESS_OPTION_KEY
 from agento.framework.scoped_config import Scope
 
 
@@ -393,55 +394,73 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
         return rv_source
 
     results: list[ResolvedField] = []
-    for field_name, field_schema in target.fields.items():
-        if _hidden_provider_option(field_schema, svc):
-            continue
-        field_type = field_schema.get("type", "string")
-        label = field_schema.get("label", field_name)
-        description = field_schema.get("description", "")
-        tester = tester_label(module, target.module_path, field_schema)
-        obscure = field_type == "obscure"
-        db_path = _db_path(module, field_name)
-        env_key = _env_key(module, field_name)
 
-        rv, inherited = svc.resolve_field_with_source(module, field_name, field_schema, config_defaults)
-        source = _display_source(rv.source, inherited)
-        if source == "env":
-            value = store_env.get(env_key)
-        elif source in ("db", "db:inherited"):
-            value = svc.overrides.get(db_path, (None, False))[0]
-        elif source == "json":
-            value = str(config_defaults[field_name])
-        else:
-            value = None
+    def _collect(owner: str, owner_schema: ModuleSchema, defaults: dict, *, borrowed: bool = False) -> None:
+        for field_name, field_schema in owner_schema.fields.items():
+            if borrowed and _hidden_harness_option(field_schema, owner, svc):
+                continue
+            if not borrowed and _hidden_provider_option(field_schema, svc):
+                continue
+            field_type = field_schema.get("type", "string")
+            label = field_schema.get("label", field_name)
+            description = field_schema.get("description", "")
+            tester = tester_label(owner, owner_schema.module_path, field_schema)
+            obscure = field_type == "obscure"
+            db_path = _db_path(owner, field_name)
+            env_key = _env_key(owner, field_name)
 
-        display_value = "****" if obscure and value else (value if value is not None else "")
-        editable = is_scope_allowed(field_schema, scope)
-        scopes_list = get_allowed_scopes(field_schema)
-        if not editable:
-            display_value = f"{display_value} [readonly]" if display_value else "[readonly]"
-        options = (
-            _field_options(
-                field_schema, overrides=svc.overrides, resolved=_resolved_all(svc),
+            rv, inherited = svc.resolve_field_with_source(owner, field_name, field_schema, defaults)
+            source = _display_source(rv.source, inherited)
+            if source == "env":
+                value = store_env.get(env_key)
+            elif source in ("db", "db:inherited"):
+                value = svc.overrides.get(db_path, (None, False))[0]
+            elif source == "json":
+                value = str(defaults[field_name])
+            else:
+                value = None
+
+            display_value = "****" if obscure and value else (value if value is not None else "")
+            editable = is_scope_allowed(field_schema, scope)
+            scopes_list = get_allowed_scopes(field_schema)
+            if not editable:
+                display_value = f"{display_value} [readonly]" if display_value else "[readonly]"
+            options = (
+                _field_options(
+                    field_schema, overrides=svc.overrides, resolved=_resolved_all(svc),
+                )
+                if field_type in ("select", "multiselect") else None
             )
-            if field_type in ("select", "multiselect") else None
-        )
-        results.append(ResolvedField(
-            path=f"{module}/{field_name}",
-            field_name=field_name,
-            value=value,
-            display_value=display_value,
-            source=source,
-            field_type=field_type,
-            label=label,
-            obscure=obscure,
-            options=options,
-            editable_at_scope=editable,
-            allowed_scopes=scopes_list,
-            description=description,
-            tester=tester,
-            max_length=max_length_of(field_schema),
-        ))
+            results.append(ResolvedField(
+                path=f"{owner}/{field_name}",
+                field_name=field_name,
+                value=value,
+                display_value=display_value,
+                source=source,
+                field_type=field_type,
+                label=label,
+                obscure=obscure,
+                options=options,
+                editable_at_scope=editable,
+                allowed_scopes=scopes_list,
+                description=description,
+                tester=tester,
+                max_length=max_length_of(field_schema),
+            ))
+
+    _collect(module, target, config_defaults)
+    if module == AGENT_VIEW_MODULE:
+        # A harness's native-config passthrough is set per agent_view, so it belongs
+        # beside the harness selector rather than on a module node the operator would
+        # otherwise have to know about. The field marks itself (`harness_option`); the
+        # ones for other harnesses are hidden — see `harness_options.py`.
+        for other in schemas:
+            if other.name == module or not any(
+                fs.get(HARNESS_OPTION_KEY) for fs in other.fields.values()
+            ):
+                continue
+            other_defaults = read_config_defaults(other.module_path) if other.module_path else {}
+            _collect(other.name, other, other_defaults, borrowed=True)
 
     # Tool fields
     tool_defaults = config_defaults.get("tools", {})
@@ -714,6 +733,24 @@ def _resolved_all(svc) -> dict:
             cached = {}
         svc._admin_resolved_cache = cached
     return cached
+
+
+AGENT_VIEW_MODULE = "agent_view"
+
+
+def _hidden_harness_option(field_schema: dict, owner: str, svc) -> bool:
+    """Skip a harness-owned field the view's harness does not own.
+
+    Same effective-value source as ``_hidden_provider_option``; an unset or unresolvable
+    harness leaves every passthrough visible — see ``is_harness_option_hidden``.
+    """
+    from ..harness import is_harness_option_hidden
+
+    if not field_schema.get(HARNESS_OPTION_KEY):
+        return True
+    return is_harness_option_hidden(
+        field_schema, module=owner, harness=_resolved_all(svc).get("agent_view/harness"),
+    )
 
 
 def _hidden_provider_option(field_schema: dict, svc) -> bool:

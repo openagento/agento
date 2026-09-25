@@ -4,6 +4,51 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-25 — Harness native-config passthrough (AG-27)
+
+- **Problem: every harness CLI setting needed its own Agento field.** An agent reached the internet
+  through Claude's built-in `WebSearch` (AI-238) although the deployment routes all network access
+  through the Toolbox. Blocking it means writing `permissions.deny` into Claude's `settings.json` —
+  a key Agento never modelled — and the same class of gap exists for every key each CLI adds.
+  Modelling them one by one is endless, and every model is a translation that drifts from the CLI.
+- **Fix: one raw blob per harness, in the harness's own native format.** `claude/settings` (JSON →
+  `.claude/settings.json`), `codex/config` (TOML → `.codex/config.toml`) and `pi/settings`
+  (JSON → `$HOME/.pi/agent/settings.json`). Each adapter parses its own format and deep-merges the
+  operator's blob **over** the block Agento generates, so the operator wins on a collision and a
+  generated key the blob does not mention survives. No Agento-side vocabulary, no drift.
+- **The field lives in the harness module, not in `agent_view`.** Declared in that module's own
+  `system.json` and allow-listed in its `di.json` `runtime_config_fields`, so it arrives through the
+  existing `HarnessRunContext.harness_config` / `prepare_workspace(..., harness_config=…)` seam. An
+  `agent_view/claude/*` entry would put a harness name into the `agent_view` module — CLAUDE.md
+  principle 6. `runtime_config_fields` also refuses an `obscure` field by construction, which is why
+  every field description says: never put a credential here.
+- **A malformed blob fails the workspace build.** Parsing it and moving on would mean an operator's
+  deny-list silently absent — exactly the AI-238 failure mode, dressed as working configuration.
+  This also changes legacy `agent_view/claude/permissions`: an invalid value there used to be logged
+  and skipped and now raises. Breaking for a deployment holding a bad value, deliberately so; the
+  remedy is in `docs/modules/claude.md` and `CHANGELOG.md`. That legacy value also moved from
+  `.claude.json` to `.claude/settings.json`, because Claude ignores `permissions` in `.claude.json`
+  — it never had an effect where it was written.
+- **Codex keeps `--dangerously-bypass-approvals-and-sandbox` unless the operator sets
+  `sandbox_mode`.** The flag overrides `config.toml` wholesale, so a passthrough alone would be dead
+  for Codex; dropping it unconditionally would depend on an unverified claim. Dropping it exactly
+  when the operator expressed a sandbox intent keeps today's behaviour byte-identical by default and
+  makes the block effective when asked for. Agento correspondingly generates **no** `sandbox_mode`
+  or `approval_policy` of its own: the build dir is also the HOME an *interactive* `agento run`
+  uses, so writing "never ask, full access" into the file would silently remove that session's
+  approval prompts — a mode the CLI flag, not the file, had always decided. **The empirical check did not run**: the pinned sandbox
+  image (codex-cli 0.137.0) holds no usable Codex credential, and the probe ended in
+  `401 Unauthorized ... url: wss://api.openai.com/v1/responses` before any command executed. So
+  whether `exec` honours `sandbox_mode` from the file on 0.137.0, and whether the OS sandbox blocks
+  network in that image, are **unverified** — documented as such rather than claimed. The reporter
+  observed it on 0.145.0. Removing the flag unconditionally waits on that re-verification.
+- **Every command-building path must carry the resolved dict.** Three of five
+  `HarnessRunContext` sites passed none (`framework/replay.py`, `framework/cli/runtime.py`,
+  `agent_view` `runtime:show`), so the bypass flag would silently come back on exactly the paths an
+  operator uses to reproduce a run — and `pi/builtin_tools` was already being lost there. An AST
+  guard test with an empty allow-list closes the class instead of the three instances. `replay` now
+  **refuses** a job with no `agent_view_id` rather than emit a command that may differ from the run.
+
 ## 2026-09-17 — `blocked` verdict category, halts to `FAILED` (AG-55)
 
 - **Problem: a deterministic config fault was retried 3× and dead-lettered as an agent failure.** A

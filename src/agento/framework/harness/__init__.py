@@ -17,6 +17,11 @@ from .descriptor import (
     ProviderId,
     SandboxPackage,
 )
+from .harness_options import (
+    HARNESS_OPTION_KEY,
+    is_harness_option_hidden,
+    modules_declaring,
+)
 from .manifest import (
     HarnessDeclaration,
     enumerate_harness_declarations,
@@ -81,6 +86,7 @@ from .subprocess_runner import SubprocessRunner
 
 __all__ = [
     "AGENT_CONFIG_PREFIX",
+    "HARNESS_OPTION_KEY",
     "PROVIDER_OPTION_KEY",
     "SUPPORTED_SOURCES",
     "AgentHarnessAdapter",
@@ -126,10 +132,12 @@ __all__ = [
     "get_harness",
     "get_harness_config",
     "get_harness_for_scope",
+    "is_harness_option_hidden",
     "is_provider_option_hidden",
     "list_credential_scopes",
     "list_descriptors",
     "list_harnesses",
+    "modules_declaring",
     "owned_paths_for",
     "parse_harness_declarations",
     "persistent_home_paths_for",

@@ -10,7 +10,7 @@ import subprocess
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
 from agento.framework.agent_manager.errors import AuthenticationError
@@ -96,17 +96,72 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
+def parse_toml_blob(raw: str, path: str) -> dict:
+    """Parse an operator-supplied TOML blob, or fail the build naming ``path``.
+
+    Also rejects the shapes ``_dump_toml`` cannot re-emit (arrays of tables, and any
+    other non-scalar inside an array). Writing them would silently produce a file Codex
+    then fails to parse — or worse, parses differently.
+    """
+    try:
+        data = tomllib.loads(raw)
+    except (tomllib.TOMLDecodeError, TypeError, AttributeError) as e:
+        raise ValueError(f"Invalid TOML in {path}: {e}") from e
+    _reject_unsupported(data, path, ())
+    return data
+
+
+def _reject_unsupported(table: dict, path: str, at: tuple[str, ...]) -> None:
+    for key, value in table.items():
+        where = ".".join((*at, key))
+        if isinstance(value, dict):
+            _reject_unsupported(value, path, (*at, key))
+        elif isinstance(value, list):
+            if any(isinstance(v, (dict, list)) for v in value):
+                raise ValueError(
+                    f"{path}: '{where}' is an array of tables/arrays, which Agento's "
+                    f"config.toml writer cannot emit; express it as nested tables"
+                )
+        elif not isinstance(value, (str, bool, int, float)):
+            raise ValueError(
+                f"{path}: '{where}' has unsupported TOML type {type(value).__name__} "
+                f"(dates and times are not supported)"
+            )
+
+
 def _toml_quote_key(key: str) -> str:
     if _BARE_TOML_KEY_RE.match(key):
         return key
-    return json.dumps(key)
+    return _toml_string(key)
 
 
-def _toml_literal(value: str | bool | int | float) -> str:
+_TOML_ESCAPES = {"\\": "\\\\", '"': '\\"', "\b": "\\b", "\t": "\\t",
+                 "\n": "\\n", "\f": "\\f", "\r": "\\r"}
+
+
+def _toml_string(value: str) -> str:
+    """A TOML basic string. NOT ``json.dumps``: that escapes a character outside the
+    BMP as a surrogate pair (``"\\ud83d\\ude00"``), which TOML forbids — the file would
+    be written happily and then rejected by every TOML parser, Codex's included."""
+    out = ['"']
+    for ch in value:
+        if ch in _TOML_ESCAPES:
+            out.append(_TOML_ESCAPES[ch])
+        elif ch < "\x20" or ch == "\x7f":
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _toml_literal(value: str | bool | int | float | list) -> str:
     if isinstance(value, str):
-        return json.dumps(value)
+        return _toml_string(value)
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_literal(v) for v in value) + "]"
     return str(value)
 
 
@@ -344,15 +399,19 @@ class CodexWorkspaceAdapter:
         toolbox_url: str,
         harness_config: dict[str, str] | None = None,
     ) -> None:
-        lines: list[str] = []
+        # Deliberately NO generated sandbox_mode / approval_policy. The build dir is
+        # also the HOME an INTERACTIVE `agento run` uses, and that session's approval
+        # prompting depends on the absence of those keys — headless bypass comes from
+        # the CLI flag, not from this file. Only the operator's blob may set them.
+        config: dict[str, Any] = {}
 
         model = agent_config.get("model")
         if model:
-            lines.append(f'model = "{model}"')
+            config["model"] = model
 
         approval_mode = agent_config.get("codex/approval_mode")
         if approval_mode:
-            lines.append(f'approval_mode = "{approval_mode}"')
+            config["approval_mode"] = approval_mode
 
         # Auto-inject the toolbox MCP entry; operators can add more (or shadow
         # "toolbox") via agent_view/mcp/servers.
@@ -368,20 +427,23 @@ class CodexWorkspaceAdapter:
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Invalid JSON in agent_view/mcp/servers, ignoring extras")
 
+        mcp_servers: dict[str, dict] = {}
         for name, server_cfg in servers.items():
             url = server_cfg.get("url", "")
             if agent_view_id is not None and ("/sse" in url or "/mcp" in url):
                 sep = "&" if "?" in url else "?"
                 url = f"{url}{sep}agent_view_id={agent_view_id}"
-            mcp_type = _derive_mcp_type(url)
-            lines.append(f"\n[mcp_servers.{name}]")
-            lines.append(f'type = "{mcp_type}"')
-            lines.append(f'url = "{url}"')
+            mcp_servers[name] = {"type": _derive_mcp_type(url), "url": url}
+        config["mcp_servers"] = mcp_servers
+
+        blob = (harness_config or {}).get("config")
+        if blob:
+            config = _deep_merge(config, parse_toml_blob(blob, "codex/config"))
 
         codex_dir = working_dir / ".codex"
         codex_dir.mkdir(parents=True, exist_ok=True)
         config_path = codex_dir / "config.toml"
-        config_path.write_text("\n".join(lines) + "\n")
+        config_path.write_text(_dump_toml(config))
         logger.debug("Generated %s", config_path)
 
     def inject_runtime_params(
@@ -417,21 +479,9 @@ class CodexWorkspaceAdapter:
                 sep = "&" if "?" in url else "?"
                 server_cfg["url"] = f"{url}{sep}job_id={job_id}"
 
-        # Re-write the TOML (hand-written, simple structure)
-        lines: list[str] = []
-        model = data.get("model")
-        if model:
-            lines.append(f'model = "{model}"')
-        approval_mode = data.get("approval_mode")
-        if approval_mode:
-            lines.append(f'approval_mode = "{approval_mode}"')
-
-        for name, server_cfg in mcp_servers.items():
-            lines.append(f"\n[mcp_servers.{name}]")
-            lines.append(f'type = "{server_cfg.get("type", "sse")}"')
-            lines.append(f'url = "{server_cfg.get("url", "")}"')
-
-        config_path.write_text("\n".join(lines) + "\n")
+        # Re-emit the WHOLE parsed mapping: rebuilding from a few known keys would
+        # silently drop the operator's codex/config passthrough between build and run.
+        config_path.write_text(_dump_toml(data))
 
     def remove_credentials(self, target_dir: Path) -> None:
         """Drop Codex's login state, keeping `.codex/config.toml` intact.

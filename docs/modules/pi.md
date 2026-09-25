@@ -186,6 +186,34 @@ only through gated Toolbox tools.
 
 ---
 
+## `pi/settings` — native settings.json passthrough
+
+**Never put a credential in this field.** It is stored unencrypted in `core_config_data`
+(a `runtime_config_fields` entry may not be `obscure`), it is readable with
+`config:get` / `config:list`, and it is written into a file inside the agent container —
+which by design holds no credential.
+
+| | |
+|---|---|
+| Path | `pi/settings` |
+| Format | raw Pi `settings.json` (JSON object) |
+| Destination | `$HOME/.pi/agent/settings.json` in the build |
+| Merge rule | merged **over** the block Agento generates — the operator wins on a key collision |
+| Invalid value | fails the workspace build (it is never silently skipped) |
+
+```bash
+agento config:set pi/settings '{"autoApprove": false}' --scope=agent_view --scope-id=<n>
+```
+
+Agento generates exactly one key here (`defaultProjectTrust: "trusted"`, see above), so
+the merge is a shallow update rather than a recursive one.
+
+In `agento admin` the field is on the **agent_view** node, beside the harness selector —
+it is listed only when this view's harness is `pi` (see
+[harness contract](../architecture/harness-contract.md#harness_option--showing-the-field-where-it-is-set)).
+
+---
+
 ## Known limitations and gotchas
 
 **`yolo` does nothing.** Pi has no approval prompts by design, so there is no flag to

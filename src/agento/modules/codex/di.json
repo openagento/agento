@@ -24,6 +24,7 @@
         "usage_reporting": true,
         "cost_reporting": false
       },
+      "runtime_config_fields": ["config"],
       "sandbox_package": {
         "manager": "npm",
         "package": "@openai/codex",

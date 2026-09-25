@@ -1,0 +1,9 @@
+{
+  "config": {
+    "type": "textarea",
+    "harness_option": true,
+    "label": "Codex config.toml passthrough (TOML)",
+    "description": "Raw Codex config, deep-merged over the block Agento generates into .codex/config.toml (operator wins). Agento generates no sandbox_mode or approval_policy of its own — headless runs bypass the sandbox with a CLI flag, and the same file is the HOME an interactive run uses. Setting sandbox_mode here (e.g. \"workspace-write\", which blocks network at the OS level) also drops the --dangerously-bypass-approvals-and-sandbox CLI flag, without which the file would be ignored. Invalid TOML fails the workspace build. Never put a credential here: this value is stored unencrypted and is written into the agent container.",
+    "showInAgentView": true
+  }
+}

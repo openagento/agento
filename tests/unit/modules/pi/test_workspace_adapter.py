@@ -45,6 +45,38 @@ class TestPrepareWorkspace:
         assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp"
 
 
+    def test_settings_passthrough_merges_over_trust_default(self, adapter, tmp_path):
+        adapter.prepare_workspace(
+            tmp_path, {}, toolbox_url="http://toolbox:3001",
+            harness_config={"settings": '{"autoApprove": false}'},
+        )
+        data = json.loads((tmp_path / ".pi" / "agent" / "settings.json").read_text())
+        assert data["defaultProjectTrust"] == "trusted"
+        assert data["autoApprove"] is False
+
+    def test_settings_passthrough_operator_wins(self, adapter, tmp_path):
+        adapter.prepare_workspace(
+            tmp_path, {}, toolbox_url="http://toolbox:3001",
+            harness_config={"settings": '{"defaultProjectTrust": "ask"}'},
+        )
+        data = json.loads((tmp_path / ".pi" / "agent" / "settings.json").read_text())
+        assert data["defaultProjectTrust"] == "ask"
+
+    def test_settings_passthrough_invalid_json_raises(self, adapter, tmp_path):
+        with pytest.raises(ValueError, match="pi/settings"):
+            adapter.prepare_workspace(
+                tmp_path, {}, toolbox_url="http://toolbox:3001",
+                harness_config={"settings": "{"},
+            )
+
+    def test_settings_passthrough_non_mapping_raises(self, adapter, tmp_path):
+        with pytest.raises(ValueError, match="pi/settings"):
+            adapter.prepare_workspace(
+                tmp_path, {}, toolbox_url="http://toolbox:3001",
+                harness_config={"settings": "[1, 2]"},
+            )
+
+
 class TestOllamaCatalogue:
     def test_absent_for_a_hosted_provider(self, adapter, tmp_path):
         adapter.prepare_workspace(

@@ -389,8 +389,8 @@ class TestCodexSubprocessRunner:
         assert cmd == [
             "codex", "exec", "Hello world",
             "--json",
-            "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
         ]
 
     def test_build_command_with_model(self):
@@ -399,8 +399,8 @@ class TestCodexSubprocessRunner:
         assert cmd == [
             "codex", "exec", "Hello world",
             "--json",
-            "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
             "--model", "o3",
         ]
 
@@ -411,8 +411,8 @@ class TestCodexSubprocessRunner:
             "codex", "exec", "resume", "sess-456",
             "Continue working from where you left off.",
             "--json",
-            "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
         ]
 
     def test_build_resume_command_with_model(self):

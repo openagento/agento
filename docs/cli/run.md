@@ -13,7 +13,7 @@ Shortcut: `ru`.
 
 ### `--yolo` — skip interactive approval prompts
 
-By default an interactive session uses the agent CLI's normal in-session approval prompting. Pass `--yolo` to run in the same **bypass mode** headless jobs always use — Claude with `--dangerously-skip-permissions`, Codex with `--dangerously-bypass-approvals-and-sandbox` — so the session never stops to ask for per-action approval:
+By default an interactive session uses the agent CLI's normal in-session approval prompting. Pass `--yolo` to run in the same **bypass mode** headless jobs use by default — Claude with `--dangerously-skip-permissions`, Codex with `--dangerously-bypass-approvals-and-sandbox` — so the session never stops to ask for per-action approval:
 
 ```bash
 agento run dev_01 --yolo        # interactive, no approval prompts

@@ -53,13 +53,13 @@ class TestReplayExecutesTheModelItDisplays:
     def test_resolution_prefers_the_jobs_model_when_no_override(self):
         from agento.framework.replay import build_replay_command
 
-        replay = build_replay_command(self._job("opus-4-1"), model_override=None)
+        replay = build_replay_command(self._job("opus-4-1"), model_override=None, harness_config={})
         assert replay.model == "opus-4-1"
 
     def test_an_explicit_override_wins(self):
         from agento.framework.replay import build_replay_command
 
-        replay = build_replay_command(self._job("opus-4-1"), model_override="sonnet")
+        replay = build_replay_command(self._job("opus-4-1"), model_override="sonnet", harness_config={})
         assert replay.model == "sonnet"
 
     def test_exec_passes_the_resolved_model_not_the_raw_flag(self):
@@ -95,7 +95,8 @@ class TestReplayExecutesTheModelItDisplays:
                 return_value=(None, MagicMock(disable_llm=False), None),
             ),
         ):
-            _make_runner("claude", "anthropic", credential=object(), model="opus-4-1")
+            _make_runner("claude", "anthropic", credential=object(), model="opus-4-1",
+                         harness_config={})
 
         assert captured["ctx"].model == "opus-4-1"
 
@@ -113,7 +114,7 @@ class TestReplayExecutesTheModelItDisplays:
                 return_value=(None, MagicMock(disable_llm=False), None),
             ),
         ):
-            _make_runner("claude", "anthropic", credential=object())
+            _make_runner("claude", "anthropic", credential=object(), harness_config={})
 
         assert captured["ctx"].model is None
 

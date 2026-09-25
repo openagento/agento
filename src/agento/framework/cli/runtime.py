@@ -97,6 +97,7 @@ def _make_runner(
     *,
     credential=None,
     model: str | None = None,
+    harness_config: dict[str, str],
 ) -> object:
     """Build a runner for an explicit (harness, provider), claiming the credential ONCE.
 
@@ -104,6 +105,10 @@ def _make_runner(
     and the process can never end up on two different credentials. Pass ``credential``
     when it has already been claimed (e.g. ``replay --credential-id``) so this does not
     claim a second, different one.
+
+    ``harness_config`` is required (keyword-only, no default) on purpose: an empty dict
+    silently drops the harness's own build-time settings, so a caller must resolve one
+    rather than fall into one.
     """
     from ..harness import HarnessRunContext, create_runner, resolve_provider
 
@@ -117,6 +122,7 @@ def _make_runner(
         model=model,
         credential_required=provider_desc.credential_required,
         credential=credential,
+        harness_config=harness_config,
     )
     return create_runner(harness, ctx, logger=logger, dry_run=consumer_config.disable_llm)
 
@@ -290,7 +296,7 @@ class ReplayCommand:
             # DISPLAYED the job's model but EXECUTED on the provider default.
             runner = _make_runner(
                 replay.harness, replay.provider, logger=logger, credential=credential,
-                model=replay.model,
+                model=replay.model, harness_config=replay.harness_config,
             )
             result = runner.execute(
                 RunRequest(prompt=replay.prompt, model=replay.model)
