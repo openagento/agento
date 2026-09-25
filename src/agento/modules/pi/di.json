@@ -36,7 +36,8 @@
       },
       "runtime_config_fields": [
         "builtin_tools",
-        "allow_model_substitution"
+        "allow_model_substitution",
+        "settings"
       ],
       "sandbox_package": {
         "manager": "npm",
