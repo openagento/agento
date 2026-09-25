@@ -33,8 +33,12 @@ cd docker && HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f docker-compos
 If you switch users or deploy to a new server, force a rebuild of every image
 that bakes `HOST_UID`/`HOST_GID` (sandbox, cron-via-sandbox, toolbox):
 
+Dev images are tagged per compose project (`agento-sandbox:${COMPOSE_PROJECT_NAME:-agento}`),
+so a build in one checkout never overwrites another checkout's images.
+
 ```bash
-docker rmi agento-sandbox:latest agento-toolbox:latest
+P=${COMPOSE_PROJECT_NAME:-agento}
+docker rmi agento-sandbox:$P agento-toolbox:$P
 cd docker && HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f docker-compose.dev.yml build sandbox toolbox
 ```
 
@@ -334,7 +338,7 @@ If you see "Permission denied" errors when running `claude` or `codex`:
 1. **Rebuild with correct UID** (most common fix):
 
    ```bash
-   docker rmi agento-sandbox:latest agento-sandbox:uid-*
+   docker rmi agento-sandbox:${COMPOSE_PROJECT_NAME:-agento} agento-sandbox:uid-*
    bin/run-sandbox.sh
    ```
 

@@ -11,7 +11,7 @@ services:
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-2.1.165}
         CODEX_VERSION: ${CODEX_VERSION:-0.137.0}
         PI_VERSION: ${PI_VERSION:-0.84.1}
-    image: agento-sandbox:latest
+    image: agento-sandbox:${COMPOSE_PROJECT_NAME:-agento}
     volumes:
       - ../workspace:/workspace
       - ../app/code:/app/code:ro
@@ -39,7 +39,7 @@ services:
         DOCKERFILE_DIR: src/agento/framework/docker/toolbox
         HOST_UID: ${HOST_UID:-501}
         HOST_GID: ${HOST_GID:-20}
-    image: agento-toolbox:latest
+    image: agento-toolbox:${COMPOSE_PROJECT_NAME:-agento}
     environment:
       - TZ=Europe/Warsaw
       - CRONDB_HOST=mysql
@@ -80,7 +80,10 @@ services:
       args:
         PYPROJECT_DIR: .
         SCRIPTS_DIR: src/agento/framework/docker/cron
-    image: agento-cron:latest
+        SANDBOX_IMAGE: sandbox
+      additional_contexts:
+        sandbox: service:sandbox
+    image: agento-cron:${COMPOSE_PROJECT_NAME:-agento}
     env_file:
       - path: .cron.env
         required: false
