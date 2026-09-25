@@ -7,7 +7,7 @@ See [DECISIONS.md](../../DECISIONS.md) (2026-07-24, 2026-08-23) and [ROADMAP.md]
 
 ## Problem (the state BEFORE the 2026-08-23 delivery — kept for the rationale)
 
-`docs/architecture/zero-trust.md` and `AGENTS.md` state **"Toolbox = only container with
+`docs/architecture/zero-trust.md` and `AGENTS.md` stated **"Toolbox = only container with
 secrets."** This section describes what that meant on the **Python** side before `access:
 "toolbox_only"` existed. Every bullet below still holds for a field that does NOT declare it;
 a field that DOES is now skipped by `bootstrap()` and `resolve_all()`, raises on a direct `.get()`,
