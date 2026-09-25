@@ -619,7 +619,7 @@ class TestSandboxDockerfileIsRendered:
     ``framework/docker/sandbox/Dockerfile`` directly. While that file hardcoded
     ``ARG CLAUDE_CODE_VERSION`` / ``ARG CODEX_VERSION`` and the ``npm install -g`` line, the
     two paths were separate sources of truth and adding a harness still meant editing
-    framework Docker sources — the exact thing AGENTS.md rule #6 forbids. The previous
+    framework Docker sources — the exact thing RULES.md PLC-2 forbids. The previous
     guard here only compared ARG defaults, which could not catch a MISSING harness.
     """
 

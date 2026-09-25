@@ -488,7 +488,7 @@ The agent's world is:
 - **home** = shared CLI session store (globally accessible via symlinks)
 - **Everything else** is reached through MCP tool calls to the toolbox
 
-No credentials, no direct DB access, no awareness of other jobs.
+No awareness of other jobs. The run holds the agent's own harness credential. The target model gives it no tool credentials and no direct DB access; a headless run today inherits the cron env (see [zero-trust.md](zero-trust.md#known-exceptions-and-debt)).
 
 ---
 

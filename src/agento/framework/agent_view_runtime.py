@@ -100,7 +100,7 @@ def _resolve_harness_and_provider(
 
     A legacy value is identified structurally — a ``provider`` that names a REGISTERED
     HARNESS — never by a hardcoded "claude"/"codex" literal, which would reintroduce
-    in the framework exactly the branch this contract exists to remove (AGENTS.md #6).
+    in the framework exactly the branch this contract exists to remove (RULES.md PLC-2).
     """
     from .harness import find_harness, resolve_provider
     from .scoped_config import ORIGIN_ABSENT, resolve_with_origin

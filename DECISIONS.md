@@ -4,6 +4,29 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-25 — One tracked RULES.md with permanent rule IDs
+
+- **Problem: three roles read three rule sets.** The implementer read AGENTS.md, the reviewer read an
+  untracked `agento-code-review/RULES.md` (different in each clone), and the triager read CLAUDE.md and
+  docs. About half of review findings cited no rule, and 3.3% cited AGENTS.md. Loop rounds per task went
+  from 5.25 (June) to 11.7 (August); findings that came back in a later round went from 31% to 49%.
+- **Fix: one tracked `RULES.md` at the repo root.** Every role reads it. AGENTS.md keeps facts (how the
+  system works) and points to it; the skills point to it and keep no copy. Each rule has a permanent ID
+  and a tier (P0 security, P1 architecture/correctness, P2 hygiene). Findings, triage, and comments cite
+  the ID, never a line number, so a citation survives an edit.
+- **Two review principles close the churn loop.** "Judge the change, not the repo": an old violation
+  is reported once as `DEBT` and does not block. "Decisions are binding": a dated entry in this file is
+  approved design, so a finding against it needs new evidence.
+- **Tiers do not gate the verdict.** A "P2 does not block" gate was replayed on 44 past rounds: it saved
+  2, and one of those would have approved a round one step before the reviewer found a P0.
+- **New plan rules:** `EVT-1` (a plan names the event for each state change, or says why none) and
+  `PLC-1` (placement questions: framework, core module, or user module). `PLN-1` (each runtime fact in a
+  plan has proof, or is an `ASSUMPTION` with a spike step) had the largest effect in the replay.
+- **Owner approval:** Marcin Klauza, 2026-09-25 — approved applying the drafted rules and loop changes
+  ("Apply all"), on main first, with `RULES.md` at the repo root.
+
+---
+
 ## 2026-09-17 — `blocked` verdict category, halts to `FAILED` (AG-55)
 
 - **Problem: a deterministic config fault was retried 3× and dead-lettered as an agent failure.** A
@@ -250,7 +273,7 @@ changes, no schema migrations. Details: [docs/modules/github.md](docs/modules/gi
 
 ## 2026-08-04 — One closed `AgentProvider` enum split into harness / provider / model
 
-The refactor that made the "framework is agent-agnostic" rule (AGENTS.md #6) actually
+The refactor that made the "framework is agent-agnostic" rule (AGENTS.md #6, now RULES.md PLC-2) actually
 true. Full contract: [docs/architecture/harness-contract.md](docs/architecture/harness-contract.md).
 
 - **D1 — Three axes, not one.** `AgentProvider(CLAUDE|CODEX)` keyed **five** registries
@@ -293,7 +316,7 @@ true. Full contract: [docs/architecture/harness-contract.md](docs/architecture/h
   or `zod`: Node resolves bare imports by walking up from the importing file, and the
   per-job build directory it is loaded from has no `node_modules` above it (the globally
   installed Pi's modules are not on that path). Validation is therefore hand-written and
-  total. `RULES.md` gained a scoped rule for this artifact class rather than the code
+  total. `RULES.md` gained a scoped rule for this artifact class (TBX-5) rather than the code
   taking a silent exception to the Zod requirement.
 - **D2d — Pi's `cost_reporting` is `false` and its `num_turns` is not comparable.** Pi
   prices from its own model catalogue, and a generated `models.json` (Ollama) carries no
@@ -342,7 +365,7 @@ true. Full contract: [docs/architecture/harness-contract.md](docs/architecture/h
   would have made exactly that class of run invisible.
 - **D8 — Six files in `framework/harness/`, not twelve.** The draft split one protocol per
   file; grouping by cohesion (`descriptor`, `runtime`, `protocols`, `registry`, `manifest`,
-  `subprocess_runner`) reads better and matches AGENTS.md #1 ("three similar lines >
+  `subprocess_runner`) reads better and matches AGENTS.md #1 (now RULES.md CODE-3; "three similar lines >
   premature abstraction").
 - **D9 — Sandbox package fields are schema-validated, NOT shell-quoted.** They are rendered
   into a Dockerfile, so a third-party `di.json` must not be able to inject shell — hence a
@@ -428,7 +451,7 @@ true. Full contract: [docs/architecture/harness-contract.md](docs/architecture/h
 ## 2026-07-24 — Regex + priority sender routing for shared Outlook mailboxes
 
 - **Reuse ingress routing, no new router.** A shared mailbox UPN owned by ≥2 agent_views is polled once and each message is routed to a view by matching the normalized sender against `outlook_sender` ingress bindings (regex `fullmatch`, highest `priority` wins; a tie between different views is ambiguous → no job). Reuses `ingress_identity`, `ingress:*`, `IdentityRouter`, and the routing framework. A UPN owned by exactly one view stays byte-for-byte today's direct behavior.
-- **Regex identity types are module-owned, not framework-hardcoded.** The framework holds an empty registry populated at bootstrap from each module's `di.json` `regex_identity_types`; `outlook` contributes `"outlook_sender"`. Disabling the module drops it. Both the runtime matcher and the `ingress:bind` CLI gate on one `is_regex_identity_type()` predicate — never a hardcoded string — so the framework stays channel-agnostic (CLAUDE.md #6 spirit + module-completeness).
+- **Regex identity types are module-owned, not framework-hardcoded.** The framework holds an empty registry populated at bootstrap from each module's `di.json` `regex_identity_types`; `outlook` contributes `"outlook_sender"`. Disabling the module drops it. Both the runtime matcher and the `ingress:bind` CLI gate on one `is_regex_identity_type()` predicate — never a hardcoded string — so the framework stays channel-agnostic (CLAUDE.md #6, now RULES.md PLC-2, spirit + module-completeness).
 - **`regex` dependency for a bounded ReDoS matcher — a deliberate minimal-deps exception.** Ingress patterns are admin-authored but matched against attacker-influenced senders, so catastrophic backtracking is a DoS risk. Stdlib `re` has no timeout, `signal.alarm` cannot interrupt a C-level match, and the GIL defeats thread timeouts; a per-command cron `timeout` would kill before cursor persistence (permanent mailbox pin) and miss non-cron callers. The pip **`regex`** module (self-contained C-extension, manylinux wheels — NOT google-re2/abseil) supports an operation-level `timeout=`, so the bound lives at the generic matcher `match_ingress_identities` and protects every caller. Justified like `cryptography` (a security dep). Pinned **`regex.VERSION0`** (re-compatible dialect) is used identically by the CLI validator and the runtime matcher so a pattern accepted at bind time behaves the same at match time. Dual wall-clock budget — per-pattern (~0.1s) + total-per-lookup (~0.5s) — so the whole lookup is bounded regardless of binding count; a timed-out/invalid binding is skipped (WARN by binding id via a bounded rate-limiter, never the raw pattern) and the poll advances (no pin). Process-isolation was rejected (fork storm on backlog polls).
 - **PII discipline.** The router logs the sender (`identity_value`) domain-only + a short hash, and `RoutingCandidate.reason` carries `binding_ids`/`priority`/`agent_view_id` only — never the raw pattern (post-normalization it may be an email address).
 - **Secret boundary (SEC-F1) is out of scope.** `bootstrap` transiently decrypts DEFAULT-scope `obscure` config in the cron/consumer/CLI — pre-existing, framework-wide, and unrelated to routing (this change adds only non-secret per-path reads). A blanket obscure-skip is both incomplete (consumer + ENV paths) and harmful (would break app_monitor's cron-side SMTP breach alert). A correct fix (a `toolbox_only` field class + all bootstrap callers + the ENV path + an app_monitor SMTP toolbox transport) is a separate security-hardening effort tracked at [docs/security/toolbox-only-secret-boundary.md](docs/security/toolbox-only-secret-boundary.md).
@@ -715,7 +738,7 @@ A new core, disableable channel that watches an agent's open Bitbucket Cloud PRs
 
 ## 2026-03-24 — Per-agent_view instruction files via observer (agent_view module)
 
-- **Observer on `agento_agent_view_run_started`** writes `AGENTS.md`, `SOUL.md`, and `CLAUDE.md` into the run directory. Why observer, not inline in consumer: Magento spirit — modules extend framework behavior via events. Keeps the consumer lean.
+- **Observer on `agento_agent_view_run_started`** (now `agent_view_run_start_before`) writes `AGENTS.md`, `SOUL.md`, and `CLAUDE.md` into the run directory. Why observer, not inline in consumer: Magento spirit — modules extend framework behavior via events. Keeps the consumer lean.
 - **Content from `core_config_data`** with scoped fallback: `agent_view/instructions/agents_md` and `agent_view/instructions/soul_md`. Follows the same `agent_view/*` config path convention as `agent_view/model`, `agent_view/mcp/servers`, etc.
 - **Fallback to workspace file on disk** if no DB value exists. This preserves backward compatibility — existing deployments with `workspace/AGENTS.md` keep working without DB config.
 

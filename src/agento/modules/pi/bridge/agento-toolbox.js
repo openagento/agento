@@ -10,8 +10,7 @@
  * build directory, and Node's resolver walks up from *that* directory looking for
  * node_modules — it never reaches the globally installed Pi's own modules. So neither
  * `@modelcontextprotocol/sdk` nor `zod` can be imported here. Validation is therefore
- * hand-written and total; see `RULES.md`, section "Agent extensions loaded outside
- * node_modules".
+ * hand-written and total; see `RULES.md` TBX-5.
  *
  * Names are `mcp__toolbox__<tool>` so app_monitor's existing
  * `name.startsWith('mcp__toolbox__')` telemetry keeps working with no change.

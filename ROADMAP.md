@@ -26,7 +26,7 @@ The `CronConfig` god-object was decomposed so every module declares its own conf
 
 ### ✅ Event–observer system
 
-A Magento-style event-observer layer lets modules react to system events without touching core code — a Slack module can observe `job_failed` and post a notification while the Jira module and consumer never learn Slack exists. Observers are declared in `events.json`, execute in deterministic order, and a failing observer never crashes job processing. This is what turns "a codebase with plugins" into "a platform with an ecosystem."
+A Magento-style event-observer layer lets modules react to system events without touching core code — a Slack module can observe `job_fail_after` and post a notification while the Jira module and consumer never learn Slack exists. Observers are declared in `events.json`, execute in deterministic order, and a failing observer never crashes job processing. This is what turns "a codebase with plugins" into "a platform with an ecosystem."
 
 ### ✅ Core module refactoring
 
@@ -58,7 +58,7 @@ Getting a contributor from "I want to add a Slack integration" to a working modu
 
 ### 🟡 Event coverage & naming convention
 
-The `agento_<area>_<action>` naming convention is established, with 25 event classes covering job, consumer, worker, agent_view, routing, config, setup, and migration lifecycles. Remaining events are added incrementally as later milestones introduce the features they describe (for example, tool-binding change events).
+The `{subject}_{verb}_{before|after}` naming convention is established, with event classes covering job, consumer, worker, agent_view, routing, config, setup, and migration lifecycles. Remaining events are added incrementally as later milestones introduce the features they describe (for example, tool-binding change events).
 
 ### 🟡 Composable workspace automation
 

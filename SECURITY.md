@@ -40,8 +40,8 @@ The following are considered security vulnerabilities:
 
 Agento uses a zero-trust container architecture:
 
-- The **sandbox** (where AI agents run) has no credentials and no direct database access.
-- The **toolbox** is the only container with secrets, exposed via controlled MCP tool interfaces.
+- The **sandbox** (where interactive `agento run` executes) has no tool credentials and no direct database access. An agent's own harness credential (OAuth) lives in its per-run HOME. Headless jobs run the agent inside the `cron` container, which inherits the DB password and the encryption key — a known gap, listed with the others in [zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt).
+- The **toolbox** is designed to be the only container that holds tool credentials (known gaps: [zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt)), exposed via controlled MCP tool interfaces.
 - Config encryption uses AES-256-CBC for sensitive fields.
 
-See [docs/architecture/](docs/architecture/) for full details.
+See [docs/architecture/zero-trust.md](docs/architecture/zero-trust.md) for the credential model and its known exceptions, and [docs/architecture/](docs/architecture/) for full details.

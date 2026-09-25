@@ -7,7 +7,7 @@ routing feature. See [DECISIONS.md](../../DECISIONS.md) (2026-07-24) and
 
 ## Problem
 
-`docs/architecture/zero-trust.md` and `AGENTS.md` state **"Toolbox = only container with
+`docs/architecture/zero-trust.md` and `AGENTS.md` stated **"Toolbox = only container with
 secrets."** In practice this is an aspiration, not an enforced invariant, on the **Python** side:
 
 - `bootstrap()` → `resolve_module_config()` resolves **every** declared field of **every** enabled

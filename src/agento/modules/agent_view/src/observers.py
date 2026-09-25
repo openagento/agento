@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 class PopulateInstructionsObserver:
     """Write AGENTS.md and SOUL.md into the artifacts directory before CLI execution.
 
-    Observes ``agento_agent_view_run_started`` — fires after config files are
+    Observes ``agent_view_run_start_before`` — fires after config files are
     generated but before the CLI subprocess starts.
     """
 

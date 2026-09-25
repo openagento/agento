@@ -30,13 +30,7 @@ bin/test
 ```
 src/agento/
   framework/       # Core framework (CLI, config, events, consumer, setup)
-  modules/         # Core modules shipped with the framework
-    jira/          # Jira integration
-    claude/        # Claude Code agent provider
-    codex/         # OpenAI Codex agent provider
-    core/          # Core config, setup lifecycle
-    crypt/         # AES-256-CBC encryption
-    agent_view/    # Multi-agent-view routing
+  modules/         # Core modules shipped with the framework (list: bin/agento module:list)
   toolbox/         # Node.js MCP server (credential broker)
 
 app/code/          # User modules (deployment-specific, gitignored)
@@ -91,7 +85,7 @@ cd src/agento/toolbox && npx eslint .
 
 ## Pull Request Process
 
-1. Create a branch from `master`:
+1. Create a branch from `main`:
 
 ```bash
 git checkout -b feature/my-change
@@ -105,21 +99,11 @@ git checkout -b feature/my-change
 bin/test
 ```
 
-4. Submit a pull request against `master`.
+4. Submit a pull request against `main`.
 
 ## Commit Messages
 
-Use the `type(scope): description` format:
-
-```
-feat(modules): add Slack notification module
-fix(consumer): handle timeout in job polling
-docs(config): add ENV variable examples
-test(crypt): add encryption round-trip tests
-refactor(framework): simplify event dispatcher
-```
-
-Types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`.
+Follow the commit-message format in [GIT-WORKFLOW.md](GIT-WORKFLOW.md).
 
 ## Code of Conduct
 

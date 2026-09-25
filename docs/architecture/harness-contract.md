@@ -1,6 +1,6 @@
 # The harness contract
 
-Adding an agent to Agento must not require editing framework code (AGENTS.md rule #6).
+Adding an agent to Agento must not require editing framework code (RULES.md PLC-2).
 This document describes the contract that makes that true, and why it is shaped the way
 it is.
 

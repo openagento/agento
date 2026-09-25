@@ -8,7 +8,7 @@ class BitbucketConfig:
     """Python-side Bitbucket config — NO API token.
 
     The Atlassian API token (``bitbucket_api_token``) lives in ``system.json`` ONLY so the TOOLBOX (the
-    zero-trust boundary — "toolbox = only container with secrets") can resolve and decrypt it. It is
+    zero-trust boundary, designed to hold every tool credential) can resolve and decrypt it. It is
     deliberately NOT a field here, exactly as ``OutlookConfig`` omits the Graph secrets and ``JiraConfig``
     omits ``jira_token``: this dataclass is what the publisher carries, so the token is never part of it.
 

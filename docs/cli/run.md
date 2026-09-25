@@ -20,7 +20,7 @@ agento run dev_01 --yolo        # interactive, no approval prompts
 agento run --yolo dev_01        # same — flag may precede the code
 ```
 
-This is safe by construction: the agent runs inside the isolated `sandbox` container with no credentials of its own (the toolbox is the only container with secrets). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
+This is safe by construction: the agent runs inside the isolated `sandbox` container with no tool credentials (the toolbox is designed to be the only container that holds them; known gaps: [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt)). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
 
 ### `--pretty` — human-readable event stream
 

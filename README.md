@@ -64,8 +64,8 @@ agento install                        # Interactive wizard — scaffolds, starts
 Agento runs three Docker containers on a shared network:
 
 - **Cron** (Python) -- Job queue consumer, scheduler, CLI host. Manages the lifecycle of agent jobs, runs migrations, and dispatches events. Connects to MySQL for job state, config, and module metadata.
-- **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over stdio. The only container with access to secrets.
-- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container where the AI agent executes. Has no credentials, no direct database access. Communicates with the toolbox exclusively through MCP tool calls.
+- **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over MCP (streamable HTTP `/mcp`, SSE `/sse`). Designed to be the only container that holds tool credentials (known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)).
+- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container for interactive `agento run`. Has no tool credentials and no direct database access. Headless jobs run the agent inside the `cron` container and inherit its env (a known gap, see [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)). Communicates with the toolbox exclusively through MCP tool calls.
 
 ## Module System
 
@@ -167,7 +167,7 @@ One module = one integration = a complete package. The framework provides the me
 - ✅ Ingress identities & agent resolution (deterministic, module-extensible routing)
 - ✅ Composable workspace, skills & tools (CLI-managed tool/skill control)
 - 🟡 Developer experience & open-source polish (docs, CI boundary tests)
-- 🟡 Event coverage & naming convention (`agento_<area>_<action>`, 25 events)
+- 🟡 Event coverage & naming convention (`{subject}_{verb}_{before|after}`)
 - 🟡 Composable workspace automation (auto-rebuild, build GC — scheduled sync pending)
 - ⚪ Admin API & Agent Studio (control plane for workspaces & agent views)
 - ⚪ Credential broker / key vault (broker-owned secrets, reference-based config)

@@ -242,9 +242,9 @@ Declares observers that react to framework events. See [Event-Observer System](.
 
 ```json
 {
-  "job_failed": [
+  "job_fail_after": [
     {
-      "name": "mymodule_job_failed",
+      "name": "mymodule_job_fail_after",
       "class": "src.observers.JobFailedObserver",
       "order": 100
     }

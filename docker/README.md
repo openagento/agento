@@ -50,13 +50,13 @@ See [cron/app/README.md](cron/app/README.md) for architecture, CLI commands, fil
 
 ### Security: Zero-Trust Credential Model
 
-Kontenery `cron` i `sandbox` **nie mają dostępu do żadnych credentials** (JIRA_TOKEN, JIRA_USER itp.). Jedynym pośrednikiem jest `toolbox`:
+Kontener `sandbox` **nie ma dostępu do credentials narzędzi** (JIRA_TOKEN, JIRA_USER itp.). Kontener `cron` ma dziś dostęp do części sekretów (znany dług, zob. [zero-trust.md](../docs/architecture/zero-trust.md#known-exceptions-and-debt)). Jedynym pośrednikiem do narzędzi jest `toolbox`:
 
 - **Toolbox** jest brokerem credentials — przechowuje tokeny, filtruje zapytania, loguje dostęp
 - **Cron** komunikuje się z Jirą wyłącznie przez `POST http://toolbox:3001/api/jira/search` (read)
 - **Claude CLI** łączy się z toolbox przez MCP do mutacji (komentarze, zmiany statusów)
 - Konfiguracja użytkownika (email) jest w `.cron.env` jako `CONFIG__JIRA__USER`
-- `secrets.env` jest montowany **tylko** do kontenera `toolbox`, nigdy do `cron`/`sandbox`
+- `secrets.env` jest montowany do kontenerów `toolbox` i `cron` (nigdy do `sandbox`) — montowanie do `cron` to znany dług, zob. [zero-trust.md](../docs/architecture/zero-trust.md#known-exceptions-and-debt)
 
 ### Build & Deployment
 

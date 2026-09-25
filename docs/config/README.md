@@ -32,7 +32,7 @@ DB values support Magento-style scoping: `--scope=agent_view --scope-id=1` overr
 There is **one resolver per language**, both implementing the same ENV → DB → config.json fallback:
 
 - **Python framework + modules:** `ScopedConfigService` in [config_resolver.py](../../src/agento/framework/config_resolver.py). Every fallback read goes through it — `svc.get(path)` (raw string), `svc.get_module(name)` (typed config), `svc.resolve_field_with_source(...)` (admin/CLI display). Built once per `(scope, scope_id)` over pre-merged scoped overrides.
-- **Toolbox (Node):** [config-loader.js](../../src/agento/toolbox/config-loader.js) — a deliberately separate mirror (the toolbox is the only container with secrets). Kept behaviorally in sync; not merged with the Python service.
+- **Toolbox (Node):** [config-loader.js](../../src/agento/toolbox/config-loader.js) — a deliberately separate mirror (the toolbox is designed to be the only container that holds tool credentials; known gaps: [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt)). Kept behaviorally in sync; not merged with the Python service.
 
 Toolbox reads config at each MCP session:
 
