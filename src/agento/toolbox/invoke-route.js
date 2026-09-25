@@ -37,10 +37,19 @@ export function installInvokeRoute(app, { guard, deps, loadRegistryFor, log }) {
     return res.status(HTTP_STATUS[error.code]).json({ ok, error, execution_id });
   }
 
-  // An empty body is not JSON, however it arrives (`Content-Length: 00`, empty chunked, a gzip of
-  // nothing): the check runs on the DECODED bytes, and bodyError answers the throw.
-  const json = express.json({ strict: false, verify: (_req, _res, buf) => {
-    if (buf.length === 0) throw new Error('empty body');
-  } });
-  app.post(INVOKE_ROUTE, guard, requireJson, json, bodyError, invoke);
+  // express.json() turns an empty body into `{}` — after any framing, compression or charset
+  // (`Content-Length: 00`, empty chunked, a gzip of nothing, a lone BOM). So the body is read as
+  // decoded text and parsed here: anything that is not one JSON value is refused.
+  const text = express.text({ type: 'application/json' });
+  function parseJson(req, res, next) {
+    const raw = typeof req.body === 'string' ? req.body : '';
+    try {
+      if (raw.trim() === '') throw new Error('empty body');
+      req.body = JSON.parse(raw);
+    } catch (err) {
+      return bodyError(err, req, res, next);
+    }
+    return next();
+  }
+  app.post(INVOKE_ROUTE, guard, requireJson, text, bodyError, parseJson, invoke);
 }
