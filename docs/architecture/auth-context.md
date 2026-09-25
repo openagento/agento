@@ -21,6 +21,9 @@ transport that row carries. Python therefore cannot mint a row that Node would r
 ```
 
 - `job_id` and `capability_id` are decimal strings. A BIGINT does not survive a JS number.
+- `app.version_id` is a versioned-artifacts version id, a string (`v-20260925-120000-ab12`).
+  The verifier accepts a non-empty string of at most 64 characters, the column width
+  (`042`). The VA grammar is checked where the id is made, not here.
 - `expires_at` is epoch seconds.
 - `on_behalf_of` is always `null`. Nothing verifies delegation yet, so no profile can claim it.
 
