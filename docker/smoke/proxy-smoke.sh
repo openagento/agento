@@ -6,7 +6,7 @@ set -uo pipefail
 # OPT-IN, like toolbox-capability-smoke.sh. It needs a RUNNING dev stack with web and proxy:
 #
 #   cd docker && docker compose -f docker-compose.dev.yml up -d web proxy
-#   bash docker/smoke/proxy-smoke.sh [--project <compose project, default: agento>]
+#   bash docker/smoke/proxy-smoke.sh [--project <compose project, default: from docker/.env>]
 #
 # It proves, against the real containers:
 #   1. the Caddyfile the proxy runs validates.
@@ -20,7 +20,11 @@ set -uo pipefail
 #
 # It stops and restarts `web` once (step 5).
 
-PROJECT="${COMPOSE_PROJECT_NAME:-agento}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
+# Default to the project docker/.env names — the one `docker compose` in docker/ uses.
+ENV_PROJECT="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$PROJECT_DIR/docker/.env" 2>/dev/null | tail -1)"
+PROJECT="${COMPOSE_PROJECT_NAME:-${ENV_PROJECT:-agento}}"
 PORT="${AGENTO_PROXY_PORT:-8443}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,10 +46,10 @@ resolve_container() {
   fi
   docker inspect --format '{{.Name}}' "$ids" | sed 's|^/||'
 }
-PROXY="$(resolve_container proxy)"
-WEB="$(resolve_container web)"
-SANDBOX="$(resolve_container sandbox)"
-ARTIFACTS="$(resolve_container artifacts)"
+PROXY="$(resolve_container proxy)" || exit 1
+WEB="$(resolve_container web)" || exit 1
+SANDBOX="$(resolve_container sandbox)" || exit 1
+ARTIFACTS="$(resolve_container artifacts)" || exit 1
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 pass=0; fail=0
