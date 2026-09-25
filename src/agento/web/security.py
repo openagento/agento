@@ -50,7 +50,9 @@ def launch_cookie(launch_id: str, token: str, max_age: int) -> str:
 
 
 def clear_cookie(name: str) -> str:
-    return f"{name}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"
+    """Delete with the attributes the cookie was set with."""
+    same_site = "Strict" if name == SESSION_COOKIE else "Lax"
+    return f"{name}=; Secure; HttpOnly; SameSite={same_site}; Path=/; Max-Age=0"
 
 
 def parse_cookies(header: str | None) -> dict[str, str]:

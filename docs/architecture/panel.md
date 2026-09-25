@@ -10,7 +10,7 @@ the web API and the `user:*` / `grant:*` CLI call the same functions. Operator p
 
 | Origin | Serves | Why it is separate |
 |---|---|---|
-| panel (`AGENTO_PANEL_HOST`) | UI, `/api/*`; `/internal/*` answers 404 | agent-written code never runs here |
+| panel (`AGENTO_PANEL_HOST`) | `/api/*` (a frontend comes later); anything else answers 404 | agent-written code never runs here |
 | apps (`AGENTO_APPS_HOST`) | `/a/<code>/v/<id>/…` after `forward_auth`, and `POST /launch` | a page here cannot read panel responses, DOM or the panel cookie |
 
 The split stops cross-origin **reads**. It does not stop writes: panel and apps are same-site,

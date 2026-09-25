@@ -75,3 +75,8 @@ def test_launch_cookies_reads_one_bounded_subset():
     found = security.launch_cookies(cookies)
     assert len(found) == security.MAX_LAUNCH_COOKIES
     assert f"{security.MAX_LAUNCH_COOKIES:032x}" not in found
+
+
+def test_a_cleared_cookie_keeps_its_samesite():
+    assert "SameSite=Strict" in security.clear_cookie(security.SESSION_COOKIE)
+    assert "SameSite=Lax" in security.clear_cookie(security.launch_cookie_name(LAUNCH_ID))

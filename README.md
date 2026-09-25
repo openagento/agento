@@ -68,7 +68,7 @@ network — the **Artifacts** container deliberately joins none of it:
 - **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over stdio. The only container with access to secrets.
 - **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container where the AI agent executes. Holds no upstream service credentials and no direct database access — only its own run's toolbox capability, scoped to one agent_view and expiring. Communicates with the toolbox exclusively through MCP tool calls.
 - **Artifacts** (Node.js) -- Static HTTP for the `versioned_artifacts` published tree. On no shared network, holding no secret and publishing no host port: `proxy` is the only route to its files.
-- **Web** (Python) -- The panel API: sign-in, per-role grants, admin, artifact launches. Holds only the internal proxy secret (no service credential, no encryption key) and never decrypts config; it stores only hashes of session and launch tokens. See [docs/architecture/panel.md](docs/architecture/panel.md).
+- **Web** (Python) -- The panel API: sign-in, per-role grants, admin, artifact launches. Holds only the internal proxy secret (no upstream tool credential, no encryption key) and never decrypts config; it stores only hashes of session and launch tokens. See [docs/architecture/panel.md](docs/architecture/panel.md).
 - **Proxy** (Caddy) -- TLS and the panel / apps / share origins; asks `web` to authorize every artifact file request.
 
 ## Module System
