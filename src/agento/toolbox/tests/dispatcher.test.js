@@ -27,7 +27,9 @@ import {
 } from '../dispatcher.js';
 import { installInvokeRoute } from '../invoke-route.js';
 import { ScopeUnavailableError } from '../config-loader.js';
-import { capabilityContext } from './capability-rows.js';
+import { capabilityContext, capabilityRow } from './capability-rows.js';
+import { createVerifier, createSourceLookup } from '../capability.js';
+import { checkSession } from '../../modules/web/toolbox/auth-sources.js';
 
 const SECRET = 'raw-capability-value';
 
@@ -142,6 +144,48 @@ describe('executeTool', () => {
     enabled = false;
     expect((await run(ctx, 'echo', { text: 'b' }, d)).response.error.code).toBe('not_found');
     expect(d.loadOverrides).toHaveBeenCalledTimes(2);
+  });
+
+  it('an admin user_session is intersected with is_enabled, never exempt', async () => {
+    const admin = { ...USER, subject_id: '1' };
+    const d = deps({
+      endpoint: 'invoke',
+      reverify: vi.fn(async () => ({ context: admin, single_use: true, permitted_tools: ['echo'] })),
+      loadRegistry: async () => registryWith({ echo }, { enabled: () => false }),
+    });
+    const { response, row } = await run(admin, 'echo', { text: 'a' }, d);
+    expect(response.error.code).toBe('not_found');
+    expect(row.outcome).toBe('not_found');
+  });
+
+  it('a user_session whose panel session ended after the mint is unauthorized (real verifier)', async () => {
+    // What set_role / set_active / logout do: the session row stops matching the live query.
+    let live = true;
+    const session = { id: 'sid', user_id: 9, role: 'user', created_at: 1790000000, expires_at: 1790003600 };
+    const query = async (sql, params) => {
+      if (sql.includes('FROM toolbox_capability')) {
+        return [[capabilityRow('mcp_job', {
+          id: params[0], kind: 'user_session', actor: 'user', subject_id: '9', job_id: null,
+          agent_view_id: null, workspace_id: 3, agent_view_workspace_id: null,
+          source_kind: 'session', source_id: 'sid', allowed_transports: ['http'],
+          created_at: 1790000000, expires_at: 1790000030,
+        })]];
+      }
+      if (sql.includes('FROM session')) return [live ? [session] : []];
+      if (sql.includes('FROM role_grant')) return [[{ name: 'echo' }]];
+      throw new Error(`unexpected SQL: ${sql}`);
+    };
+    const verifier = createVerifier(query, {
+      sourceCheckers: createSourceLookup([['session', checkSession]]),
+      resolveTtls: async () => ({ session_max_ttl: 43200, launch_max_ttl: 3600, capability_ttl: 30 }),
+    });
+    const d = deps({ endpoint: 'invoke', reverify: verifier.reverify });
+    const ctx = (id) => ({ ...USER, subject_id: '9', capability_id: id });
+    expect((await run(ctx('301'), 'echo', { text: 'a' }, d)).response.ok).toBe(true);
+    live = false;
+    const { response, row } = await run(ctx('302'), 'echo', { text: 'b' }, d);
+    expect(response.error.code).toBe('unauthorized');
+    expect(row.outcome).toBe('unauthorized');
   });
 
   it('maps unknown and unavailable tools, and a registry failure', async () => {

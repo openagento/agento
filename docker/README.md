@@ -217,6 +217,15 @@ docker compose exec cron /opt/cron-agent/run.sh rotate
   host, re-run the token extraction script, and restart the container.
 - **Config changes** to `.cron.env` require `docker compose restart cron`.
 
+## Panel
+
+The `web` service serves the panel API (no frontend yet) behind `proxy` on `https://panel.localhost:8443`. Setup,
+hosts, the first admin and grants: [../docs/deployment/panel.md](../docs/deployment/panel.md).
+
+**Restriction:** all agent runs share one `agent` UID and the workspace mount, so a shell-capable
+agent can read another run's live capability. Panel roles do not separate users from that. Expose
+the panel only where every user is trusted with every agent_view the agents can reach.
+
 ## Playwright Browser Tools (MCP Proxy)
 
 Toolbox proxies requests to a Playwright MCP child process, providing controlled browser access: each browser tool is enabled individually via its own `tools/<name>/is_enabled` key, and navigation is restricted by `ALLOWED_DOMAINS`.
