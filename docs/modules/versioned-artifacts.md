@@ -194,7 +194,7 @@ agent replaces with a symlink between the check and the write cannot redirect it
 | `versioned_artifacts/storage_root` | `/srv/versioned-artifacts/store` | Absolute; see the single-instance rule below |
 | `versioned_artifacts/published_root` | `/srv/versioned-artifacts/published` | Absolute; the tree the artifacts server reads |
 | `versioned_artifacts/serving/keep_versions` | `10` | Preview directories kept per artifact. `0` keeps every one; the current target is never pruned |
-| `versioned_artifacts/serving/public_base_url` | `http://localhost:8080` | Used to build `preview_url`. Must match the host port the `artifacts` service publishes (`AGENTO_ARTIFACTS_PORT`, default 8080). Never set it through `CONFIG__` — ENV beats DB and would kill `config:set` |
+| `versioned_artifacts/serving/public_base_url` | `http://localhost:8080` | Used to build `preview_url`. Since E1.5 the `artifacts` service publishes no host port, so this URL is **not reachable** until E6 serves versions through the proxy's apps origin. Never set it through `CONFIG__` — ENV beats DB and would kill `config:set` |
 | `versioned_artifacts/allowed_artifacts` | *(empty)* | Comma-separated, **on top of** what the scope owns. Scopable to `agent_view`; this is how one view is granted another's artifact |
 | `versioned_artifacts/limits/max_file_size` | 5 MiB | |
 | `versioned_artifacts/limits/max_total_size` | 100 MiB | |
@@ -222,9 +222,8 @@ in the dev stack it is
 A `restart` is not enough — `git` is an image dependency, not mounted source.
 
 The same upgrade adds the `artifacts` service to the compose file. `docker compose up -d`
-creates it; `restart` cannot, because the service did not exist before. If port 8080 is
-taken on that host, set `AGENTO_ARTIFACTS_PORT` in `docker/.env` and point
-`serving/public_base_url` at the same port.
+creates it; `restart` cannot, because the service did not exist before. It publishes no
+host port — see **The serving container**.
 
 Tools are opt-in. The master switch alone leaves all ten children disabled — each is
 gated on its own key and merely `requires` the master.
@@ -347,9 +346,9 @@ no npm dependency — and it is deliberately the least privileged container in t
 
 | | |
 |---|---|
-| `networks:` | **absent**, so Compose leaves it alone on the project's `default` network while every other service names `agento-net`. Measured: the sandbox cannot resolve the name `artifacts`. |
+| `networks:` | **absent**, so Compose leaves it on the project's `default` network, which it shares with `proxy` alone, while every other service names `agento-net`. Measured: the sandbox cannot resolve the name `artifacts`. |
 | `env_file:` / `environment:` | **absent.** It holds no secret and no DB handle. |
-| `ports:` | `127.0.0.1:${AGENTO_ARTIFACTS_PORT:-8080}:8080` — loopback on the host only. |
+| `ports:` | **absent** (removed in E1.5). `proxy` is the only route to the files: the apps origin serves `/a/<code>/v/<version_id>/…` after a `forward_auth` subrequest to `web`, which denies every request until E2/E6 implement the decision. Previews and Basic-auth shares are therefore dark until then. |
 | volumes | `storage/versioned-artifacts/published` (read-only), `app/etc` (read-only), and the modules tree. Never the store root. |
 
 The absence of `networks:` is the point, not an oversight. One line added for consistency
