@@ -113,7 +113,8 @@ async function authorizeAndRun(authContext, toolName, args, deps) {
     return failure('unauthorized', `tool ${toolName} is not permitted for this user`);
   }
 
-  const parsed = argumentSchema(entry.schema).safeParse(args ?? {});
+  // Omitted arguments (MCP) mean {}; an explicit null is not an arguments object.
+  const parsed = argumentSchema(entry.schema).safeParse(args === undefined ? {} : args);
   if (!parsed.success) {
     const where = parsed.error.issues.map(i => i.path.join('.') || '(root)').join(', ');
     return failure('invalid_arguments', `invalid arguments: ${where}`);
