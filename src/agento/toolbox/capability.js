@@ -96,7 +96,7 @@ export function createRequireCapability(verify, { kinds, allowViewless = false }
   };
 }
 
-// Process singleton, initialised ONCE at module load and never rebound. RULES.md:35 —
+// Process singleton, initialised ONCE at module load and never rebound. RULES.md TBX-1 —
 // a module-level `let` written from a request/session handler cross-contaminates sessions.
 // The pool lookup stays inside the query closure, so module load does not force a connection.
 const defaultVerifier = createVerifier((sql, params) => getCronPool().query(sql, params));
