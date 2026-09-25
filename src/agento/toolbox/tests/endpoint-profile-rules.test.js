@@ -20,7 +20,7 @@ const userRows = {
   miniapp: {
     ...capabilityRow('mcp_job'), kind: 'miniapp', actor: 'user', subject_id: 'u-9',
     agent_view_id: null, agent_view_workspace_id: null, job_id: null,
-    app_artifact_code: 'crm', app_version_id: 2, app_launch_id: 'l-1', tool_ceiling: ['email_send'],
+    app_artifact_code: 'crm', app_version_id: 'v-20260925-120000-ab12', app_launch_id: 'l-1', tool_ceiling: ['email_send'],
     source_kind: 'launch', source_id: 'l-1', created_at: T0, expires_at: T0 + 30,
   },
 };
@@ -29,7 +29,7 @@ const base = { user_id: 'u-9', workspace_id: 3, agent_view_id: null, permitted_t
 const sources = createSourceLookup([
   ['session', async () => ({ ...base, kind: 'session', id: 's-1' })],
   ['launch', async () => ({ ...base, kind: 'launch', id: 'l-1', launch_id: 'l-1',
-    artifact_code: 'crm', version_id: 2 })],
+    artifact_code: 'crm', version_id: 'v-20260925-120000-ab12' })],
 ]);
 const resolveTtls = async () => ({ session_max_ttl: 43200, launch_max_ttl: 3600, capability_ttl: 30 });
 
