@@ -102,8 +102,7 @@ Order: **E1 (including E1.5) → then E2, E3–E5 and E6 in parallel → E7 (adm
 
 The original chain was E1 → E2 → E3–E5 → E6 → E7, but two of its links were collision hazards rather
 than real dependencies: `docker/docker-compose.yml` is generated from shared templates, and framework
-migrations are one global sequence (`035_toolbox_capability.sql` is the latest, so every parallel track
-races for `036`). E1.5 does both once, up front, in a single track; afterwards the epics touch disjoint
+migrations are one global sequence, so every parallel track races for the next free number. E1.5 does both once, up front, in a single track; afterwards the epics touch disjoint
 files. Module migrations are numbered per module, so an epic that puts its tables in its own module can
 never collide with another's.
 
