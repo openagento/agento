@@ -8,7 +8,7 @@ set -uo pipefail
 #
 #   cd docker && docker compose -f docker-compose.dev.yml up -d
 #   bash docker/smoke/toolbox-capability-smoke.sh --agent-view <code> [--other-agent-view <code>] \
-#        [--project <compose project, default: agento>]
+#        [--project <compose project, default: from docker/.env>]
 #
 # It proves, against the real containers:
 #   1. /mcp and /sse: no capability -> 401; a random bearer -> 403.
@@ -39,7 +39,9 @@ AGENTO="$PROJECT_DIR/bin/agento"
 AGENT_VIEW=""
 OTHER_VIEW=""
 OTHER_ID=""
-PROJECT="${COMPOSE_PROJECT_NAME:-agento}"
+# Default to the project docker/.env names — the one `docker compose` in docker/ uses.
+ENV_PROJECT="$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$PROJECT_DIR/docker/.env" 2>/dev/null | tail -1)"
+PROJECT="${COMPOSE_PROJECT_NAME:-${ENV_PROJECT:-agento}}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent-view) AGENT_VIEW="$2"; shift 2 ;;
@@ -66,8 +68,8 @@ resolve_container() {
   fi
   docker inspect --format '{{.Name}}' "$ids" | sed 's|^/||'
 }
-TOOLBOX="$(resolve_container toolbox)"
-CRON="$(resolve_container cron)"
+TOOLBOX="$(resolve_container toolbox)" || exit 1
+CRON="$(resolve_container cron)" || exit 1
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 pass=0; fail=0
