@@ -91,12 +91,25 @@ beside it, outside version control, as:
 
 - `PRD-E1-toolbox-auth-and-tool-execution.md` — auth context v1, per-call authorization, one
   MCP/HTTP dispatcher (`POST /internal/tools/{name}:invoke`), transport rules, rollout order.
+- `PRD-E1.5-platform-foundation.md` — extra scope inside E1: all Compose changes and the
+  already-specified framework schema, front-loaded so the later epics stop colliding.
 - `PRD-E2-admin-panel-rbac.md` — Web API, sessions, `admin`/`user` roles, the `web` and `proxy`
   Compose services, the panel/apps origin split.
 - `PRD-E6-miniapps-va-artifacts.md` — the Miniapps module over Versioned Artifacts, launch pinning,
   proxy-subrequest file authorization, the SDK bridge, the Basic-auth share origin.
 
-Order: E1 → E2 → E3–E5 (chat and history) → E6 → E7 (administration).
+Order: **E1 (including E1.5) → then E2, E3–E5 and E6 in parallel → E7 (administration)**.
+
+The original chain was E1 → E2 → E3–E5 → E6 → E7, but two of its links were collision hazards rather
+than real dependencies: `docker/docker-compose.yml` is generated from shared templates, and framework
+migrations are one global sequence (`035_toolbox_capability.sql` is the latest, so every parallel track
+races for `036`). E1.5 does both once, up front, in a single track; afterwards the epics touch disjoint
+files. Module migrations are numbered per module, so an epic that puts its tables in its own module can
+never collide with another's.
+
+E1.5 deliberately stops short of schema for unspecified epics — the conversation model and the miniapp
+manifest stay with E3–E5 and E6, because designing them before those epics exist buys a migration. E7
+stays last regardless: it needs E2's RBAC enforcement, not just its tables.
 
 E1 is built: auth context v1, the `user_session`/`miniapp` profiles (invoke only, refused until E2/E6
 install a source checker), one dispatcher with per-call checks and a `tool_invocation` audit row,
