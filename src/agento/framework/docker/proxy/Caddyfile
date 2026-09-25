@@ -1,0 +1,103 @@
+# E1.5 proxy: TLS, the three origins, and the forward_auth subrequest to web.
+# The authorization DECISION behind /internal/authz/* is E2's (apps) and E6's (share).
+# No route here ever targets the toolbox, so a `?cap=` token never reaches this proxy.
+{
+	admin off
+	auto_https disable_redirects
+	log default {
+		output stdout
+		format json
+		exclude http.log.error
+	}
+	# Caddy's error logger writes the raw request URI; the per-site access-log
+	# filter does not cover it, so it gets the same redaction here.
+	log redacted_errors {
+		output stdout
+		include http.log.error
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					replace cap REDACTED
+					replace code REDACTED
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
+
+(access_log) {
+	log {
+		output stdout
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					replace cap REDACTED
+					replace code REDACTED
+				}
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+			}
+		}
+	}
+}
+
+# Every caller-supplied identity header is dropped before any upstream or subrequest
+# sees it. X-Agento-* is the proxy's own namespace; only forward_auth sets one.
+(strip_identity) {
+	request_header -X-Agento-*
+	request_header -X-Forwarded-User
+	request_header -X-Remote-User
+	request_header -Remote-User
+}
+
+{$AGENTO_PANEL_HOST} {
+	tls internal
+	import access_log
+	import strip_identity
+	handle /internal/* {
+		respond 404
+	}
+	handle {
+		reverse_proxy web:8000
+	}
+}
+
+# Only the immutable /a/<code>/v/<id>/ shape is served (PRD E6 §6.2): no `current`
+# route and no index. The regexes mirror ARTIFACT_CODE_RE / VERSION_ID_RE.
+{$AGENTO_APPS_HOST} {
+	tls internal
+	import access_log
+	import strip_identity
+	@version path_regexp version ^/a/([a-z0-9][a-z0-9-]{0,63})/v/(v-[0-9]{8}-[0-9]{6}-[a-z0-9]{4})/
+	handle @version {
+		forward_auth web:8000 {
+			uri /internal/authz/app
+			header_up X-Agento-Proxy-Auth {$AGENTO_PROXY_SECRET}
+			header_up X-Agento-Artifact-Code {re.version.1}
+			header_up X-Agento-Version-Id {re.version.2}
+		}
+		uri strip_prefix /a
+		reverse_proxy artifacts:8080
+	}
+	handle {
+		respond 404
+	}
+}
+
+# One origin per share (PRD E6 §9.1). The share-token mapping is E6's; until then
+# web denies every share.
+*.{$AGENTO_SHARE_HOST} {
+	tls internal
+	import access_log
+	import strip_identity
+	header Referrer-Policy no-referrer
+	forward_auth web:8000 {
+		uri /internal/authz/share
+		header_up X-Agento-Proxy-Auth {$AGENTO_PROXY_SECRET}
+	}
+	respond 404
+}

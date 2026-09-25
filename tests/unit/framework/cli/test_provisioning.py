@@ -203,6 +203,13 @@ class TestMaterializeDockerContext:
         assert (target / "toolbox" / "Dockerfile").is_file()
         assert (target / "version").is_file()
 
+    def test_copies_the_proxy_config(self, tmp_path: Path):
+        proj = self._seed_project(tmp_path)
+        materialize_docker_context(proj, force=True)
+        proxy = proj / ".agento" / "docker" / "proxy"
+        assert (proxy / "Caddyfile").is_file()
+        assert (proxy / "entrypoint.sh").is_file()
+
     def test_copies_project_pyproject_into_cron_context(self, tmp_path: Path):
         proj = self._seed_project(tmp_path)
         materialize_docker_context(proj, force=True)
@@ -986,11 +993,6 @@ class TestArtifactsService:
         assert "env_file:" not in block
         assert "environment:" not in block
 
-    def test_publishes_on_loopback_only(self):
-        block = self._block()
-        assert '- "127.0.0.1:${AGENTO_ARTIFACTS_PORT:-8080}:8080"' in block
-        assert "0.0.0.0" not in block
-
     def test_has_no_build_block_and_reuses_the_toolbox_image(self):
         # `build_base_images` has a hardcoded three-entry specs list and would
         # never build a tag of its own.
@@ -1082,3 +1084,92 @@ class TestDocumentedContainerInventory:
             f"docs/architecture/containers.md lists {sorted(documented)}, "
             f"compose renders {sorted(services)}"
         )
+
+
+def _items(block: str, key: str) -> list[str]:
+    """The `- item` lines directly under a 4-space `key:` of one service block."""
+    lines = block.splitlines()
+    try:
+        start = lines.index(f"    {key}:")
+    except ValueError:
+        return []
+    out: list[str] = []
+    for line in lines[start + 1:]:
+        if not line.startswith("      - "):
+            break
+        out.append(line.strip()[2:].strip('"'))
+    return out
+
+
+def _services(content: str) -> set[str]:
+    import re
+
+    body = content.split("\nservices:\n", 1)[1]
+    body = re.split(r"\n(?=\S)", body, maxsplit=1)[0]
+    return set(re.findall(r"^  ([a-z][a-z0-9_-]*):\s*$", body, re.M))
+
+
+def _rendered_template() -> str:
+    from agento.framework.cli._templates import get_template
+
+    return render_compose(
+        get_template("docker-compose.yml"),
+        python_version="3.12",
+        extensions=[],
+        sandbox_packages=[],
+    )
+
+
+_DEV_COMPOSE = Path(__file__).resolve().parents[4] / "docker" / "docker-compose.dev.yml"
+
+
+def _compose_sources() -> list:
+    sources = [pytest.param(_rendered_template, id="template")]
+    if _DEV_COMPOSE.is_file():
+        sources.append(pytest.param(_DEV_COMPOSE.read_text, id="dev"))
+    return sources
+
+
+@pytest.mark.parametrize("load", _compose_sources())
+class TestPlatformFoundationServices:
+    """E1.5 §2: the proxy is the only route to artifact files and the only bridge
+    between agento-net and the artifacts `default` network."""
+
+    def test_runs_the_seven_services(self, load):
+        assert _services(load()) == {
+            "sandbox", "toolbox", "cron", "artifacts", "mysql", "web", "proxy",
+        }
+
+    def test_only_the_proxy_bridges_both_networks(self, load):
+        content = load()
+        assert set(_items(_service_block(content, "proxy"), "networks")) == {"agento-net", "default"}
+        for name in _services(content) - {"proxy"}:
+            assert "default" not in _items(_service_block(content, name), "networks"), name
+
+    def test_artifacts_has_no_network_and_no_host_port(self, load):
+        block = _service_block(load(), "artifacts")
+        assert "networks:" not in block
+        assert "ports:" not in block
+
+    def test_web_sits_on_agento_net_only(self, load):
+        assert _items(_service_block(load(), "web"), "networks") == ["agento-net"]
+
+    def test_only_proxy_and_web_mount_the_proxy_secret(self, load):
+        content = load()
+        mounting = {
+            name for name in _services(content)
+            if any(m.startswith("proxy-internal:") for m in _items(_service_block(content, name), "volumes"))
+        }
+        assert mounting == {"proxy", "web"}
+        assert any(m.endswith(":ro") for m in _items(_service_block(content, "web"), "volumes")
+                   if m.startswith("proxy-internal:"))
+
+    def test_proxy_publishes_on_loopback_only(self, load):
+        ports = _items(_service_block(load(), "proxy"), "ports")
+        assert ports == ["127.0.0.1:${AGENTO_PROXY_PORT:-8443}:443"]
+
+    def test_web_healthcheck_needs_no_curl(self, load):
+        block = _service_block(load(), "web")
+        assert "healthcheck:" in block
+        assert "urllib.request" in block
+        assert "curl" not in block
