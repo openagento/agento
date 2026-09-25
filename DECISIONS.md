@@ -125,6 +125,22 @@ Each decision below stands on its own.
   token**, not the artifact code, so unlike the apps-origin upgrade this is not blocked on the VA
   code grammar. The single-origin fallback is a separate, explicit waiver.
 
+### Sequencing
+
+- **The platform foundation is front-loaded into E1, as E1.5.** All Compose changes and the framework
+  schema the contracts already pin to field level (`user`, `session`, `launch`, `role_grant`, the
+  `toolbox_capability` columns) ship once, in one track, before E2/E3–E5/E6 fan out. The two things
+  this removes were never real dependencies — a generated Compose file and a single global migration
+  sequence are *collision hazards*, and serializing four tracks behind them costs more than doing the
+  work once.
+- **Front-loading stops at the edge of what is specified.** The conversation model and the miniapp
+  manifest are deliberately undefined (PRD E2 §6 lists what its API "must not foreclose"), so E1.5 does
+  not create their tables. Designing schema for an epic that does not exist buys a migration when the
+  epic disagrees. Those tables live in their owning **module**, whose migrations are numbered per
+  module — which is why two epics can both add `001` and never collide.
+- **E7 stays last.** It needs E2's RBAC *enforcement*, not merely its tables, so no amount of
+  front-loading parallelizes it.
+
 ### Documentation
 
 - **Contracts describe the post-#42 system, with pending items marked.** E0 must unblock E1–E7, all of
