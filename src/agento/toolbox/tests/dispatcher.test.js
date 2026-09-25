@@ -304,9 +304,10 @@ async function invokeApp(d, context = USER) {
   });
   const listener = await new Promise(resolve => { const l = app.listen(0, () => resolve(l)); });
   const base = `http://127.0.0.1:${listener.address().port}`;
-  const post = (name, body, raw) => fetch(`${base}/internal/tools/${name}:invoke`, {
+  const post = (name, body, raw) => fetch(post.url(name), {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: raw ?? JSON.stringify(body),
   });
+  post.url = name => `${base}/internal/tools/${name}:invoke`;
   return { post, close: () => listener.close() };
 }
 
@@ -349,6 +350,16 @@ describe('POST /internal/tools/{name}:invoke', () => {
     try {
       const broken = await post('echo', null, '{"text":');
       expect(broken.status).toBe(400);
+      for (const contentType of ['application/json; charset=bogus', 'application/json']) {
+        const res = await fetch(post.url('echo'), {
+          method: 'POST', body: '{}',
+          headers: { 'content-type': contentType, ...(contentType === 'application/json' ? { 'content-encoding': 'bogus' } : {}) },
+        });
+        expect(res.status).toBe(400);
+        const text = await res.text();
+        expect(text).not.toMatch(/at |node_modules|\/Users\/|\.js:/);
+        expect(JSON.parse(text).error.code).toBe('invalid_arguments');
+      }
       expect(d.audit.insert).not.toHaveBeenCalled();
       const scalar = await post('echo', 'text');
       expect(scalar.status).toBe(400);
