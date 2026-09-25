@@ -64,6 +64,15 @@ def test_every_site_strips_caller_identity_and_logs_through_the_filter():
     assert "request_header -X-Agento-*" in strip
 
 
+def test_every_forward_auth_runs_after_the_strip_and_before_any_rewrite():
+    # Caddy sorts directives: at site level forward_auth runs BEFORE request_header, and in
+    # a handle `uri` runs before forward_auth. Only a route keeps the written order.
+    auths = [stack for stack, s in _blocks() if s.startswith("forward_auth ")]
+    assert len(auths) == 2
+    for stack in auths:
+        assert stack[-1] == "route" and stack[-2].startswith("handle"), stack
+
+
 def test_panel_hides_internal_paths_before_proxying_to_web():
     body = _sites()["{$AGENTO_PANEL_HOST}"]
     assert body.index("handle /internal/* {") < body.index("reverse_proxy web:8000")
