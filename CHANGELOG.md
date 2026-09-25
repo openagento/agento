@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CliInvoker.interactive_command()` gained a `yolo` keyword; each agent module decides its own flag.
 
 ### Changed
+- **Codex CLI pinned to 0.157.0** (was 0.137.0) in the sandbox image, the dev compose build arg and
+  the `codex` harness declaration's `default_range`.
 - **BREAKING — an invalid `agent_view/claude/permissions` now fails the workspace build.** It used
   to be logged and skipped, which is a deny-list the operator believes is in place and is not.
   Remedy: `agento config:get agent_view/claude/permissions --scope=agent_view --scope-id=<id>`, then

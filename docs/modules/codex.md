@@ -49,10 +49,11 @@ behaviour is unchanged.
 
 **Unverified on the pinned CLI:** whether `codex exec` honours `sandbox_mode` from
 `config.toml`, and whether the OS sandbox actually blocks network in the shipped image,
-could not be confirmed here — the sandbox container (codex-cli 0.137.0) holds no usable
-Codex credential, so the probe run ended in `401 Unauthorized` before any command ran.
-The reporter observed the behaviour on 0.145.0. Treat the network block as untested on
-0.137.0 until someone re-runs the probe with a credential present.
+could not be confirmed here — no Codex credential in the pool is accepted by the backend
+(`403 Forbidden` from `chatgpt.com/backend-api/codex/*`, on both 0.137.0 and 0.157.0), so
+the probe run ends before any command executes. The reporter observed the behaviour on
+0.145.0, which the pinned 0.157.0 is past. Treat the network block as untested until
+someone re-runs the probe with a working credential.
 
 ### Shapes the writer cannot emit
 
