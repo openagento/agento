@@ -17,6 +17,14 @@ export function installInvokeRoute(app, { guard, deps, loadRegistryFor, log }) {
     return res.status(400).json({ ok: false, error: { code: 'invalid_arguments', message: 'unreadable JSON body' } });
   }
 
+  // express.json() skips a body it does not recognise and leaves `{}`, which would run a
+  // zero-argument tool on arbitrary bytes. A JSON body is required; an empty one is not JSON.
+  function requireJson(req, res, next) {
+    if (req.is('application/json') && req.headers['content-length'] !== '0') return next();
+    log('invoke', 'ERROR', 'request body is not application/json');
+    return res.status(400).json({ ok: false, error: { code: 'invalid_arguments', message: 'body must be application/json' } });
+  }
+
   async function invoke(req, res) {
     const authContext = req.capability;
     const response = await executeTool(authContext, req.params[0], req.body, {
@@ -25,9 +33,9 @@ export function installInvokeRoute(app, { guard, deps, loadRegistryFor, log }) {
     if (response.ok) return res.status(200).json(response);
     // An isError body can quote an upstream response or an exception; an invoke caller (a browser
     // or a miniapp) gets only the code. MCP keeps the body: the agent needs it to recover.
-    const { result: _dropped, ...refusal } = response;
-    return res.status(HTTP_STATUS[response.error.code]).json(refusal);
+    const { ok, error, execution_id } = response;
+    return res.status(HTTP_STATUS[error.code]).json({ ok, error, execution_id });
   }
 
-  app.post(INVOKE_ROUTE, guard, express.json({ strict: false }), bodyError, invoke);
+  app.post(INVOKE_ROUTE, guard, requireJson, express.json({ strict: false }), bodyError, invoke);
 }
