@@ -1,4 +1,5 @@
 """Users, roles and role grants against a real MySQL (framework/access/accounts.py)."""
+# ruff: noqa: F811
 from __future__ import annotations
 
 import json
@@ -10,43 +11,11 @@ import pytest
 from agento.framework.access import accounts
 from agento.framework.access.accounts import AccessError
 
+from .access_fixtures import conn, scopes  # noqa: F401 (fixtures; tests take them as arguments, F811)
 from .conftest import _test_connection
 
 FIXTURE = json.loads((Path(__file__).parents[1] / "fixtures" / "role_grant_v1.json").read_text())
 PASSWORD = "correct horse battery"
-
-
-@pytest.fixture
-def conn():
-    c = _test_connection(autocommit=True)
-    _clean(c)
-    yield c
-    _clean(c)
-    c.close()
-
-
-def _clean(c):
-    with c.cursor() as cur:
-        for table in ("launch", "session", "role_grant", "`user`"):
-            cur.execute(f"DELETE FROM {table}")
-
-
-@pytest.fixture
-def scopes(conn):
-    """ws1 holds av1, ws2 holds av2 — the fixture's symbolic scopes."""
-    ids = {}
-    with conn.cursor() as cur:
-        for ws, av in (("ws1", "av1"), ("ws2", "av2")):
-            cur.execute("INSERT IGNORE INTO workspace (code, label) VALUES (%s, %s)", (f"e2-{ws}", ws))
-            cur.execute("SELECT id FROM workspace WHERE code = %s", (f"e2-{ws}",))
-            ids[ws] = cur.fetchone()["id"]
-            cur.execute(
-                "INSERT IGNORE INTO agent_view (workspace_id, code, label) VALUES (%s, %s, %s)",
-                (ids[ws], f"e2-{av}", av),
-            )
-            cur.execute("SELECT id FROM agent_view WHERE code = %s", (f"e2-{av}",))
-            ids[av] = cur.fetchone()["id"]
-    return ids
 
 
 def _insert_raw_grant(conn, grant, ids):

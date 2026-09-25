@@ -1,4 +1,4 @@
-"""E1.5 web scaffold: health, and a deny-all authorization endpoint only the proxy can reach.
+"""Health, and the authorization endpoints only the proxy can reach.
 
 `sandbox` shares agento-net with `web`, so a direct call from it looks exactly like a
 request with no (or a forged) X-Agento-Proxy-Auth header — the sandbox cannot read the
@@ -60,7 +60,7 @@ def test_caller_identity_headers_without_the_secret_are_denied(base_url, secret_
 
 
 @pytest.mark.parametrize("path", ["/internal/authz/app", "/internal/authz/share"])
-def test_the_proxy_gets_a_deny_until_e2_decides(base_url, secret_file, path):
+def test_the_proxy_gets_a_deny_without_a_launch_cookie(base_url, secret_file, path):
     secret_file.write_text(SECRET)
     r = httpx.get(f"{base_url}{path}", headers={"X-Agento-Proxy-Auth": SECRET})
     assert r.status_code == 403

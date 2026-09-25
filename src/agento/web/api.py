@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from agento.framework.access import accounts, sessions
+from agento.framework.access import accounts, launches, sessions
 from agento.framework.access.passwords import dummy_verify
 
 from . import security
@@ -312,6 +312,128 @@ def admin_set_config(req: Request) -> Response:
     return Response(200, {"path": body.get("path"), "reset": [p for p, _v in reset]})
 
 
+_ARTIFACT_CODE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_VERSION_ID = re.compile(r"^v-[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$")
+_TOOLBOX_DOWN = error(503, "toolbox unavailable")
+
+
+def _launch_json(launch: launches.Launch) -> dict:
+    return {"launch_id": launch.id, "artifact_code": launch.artifact_code, "version_id": launch.version_id,
+            "workspace_id": launch.workspace_id, "agent_view_id": launch.agent_view_id,
+            "expires_at": _iso(launch.expires_at)}
+
+
+def _current_version(req: Request, code: str, workspace_id: int, view_id: int) -> str | Response:
+    """`current` resolves at launch time through the toolbox; the apps origin has no `current` route."""
+    import json
+
+    from .toolbox_client import invoke_tool
+
+    result = invoke_tool(req.conn, req.session, "versioned_artifact_get_current", {"artifact_code": code},
+                         workspace_id=workspace_id, agent_view_id=view_id)
+    if result.status >= 500:
+        return _TOOLBOX_DOWN
+    if not result.body.get("ok"):
+        # Tool not granted or not enabled in this scope: the user cannot launch here.
+        return error(404, "not found")
+    try:
+        payload = json.loads(result.body["result"]["content"][0]["text"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return _TOOLBOX_DOWN
+    version = payload.get("current_version") if isinstance(payload, dict) else None
+    if not isinstance(version, str) or not _VERSION_ID.fullmatch(version):
+        return error(409, "artifact has no published version")
+    return version
+
+
+def create_launch(req: Request) -> Response:
+    body = _body(req)
+    if body.get("agent_view_id") is None or body.get("workspace_id") is not None:
+        return error(400, "agent_view_id is required")
+    code = body.get("artifact_code")
+    if not isinstance(code, str) or not _ARTIFACT_CODE.fullmatch(code):
+        return error(400, "artifact_code must match ^[a-z0-9][a-z0-9-]{0,63}$")
+    scope = _resolve_scope(req, body)
+    if isinstance(scope, Response):
+        return scope
+    workspace_id, view_id = scope
+    user = req.session.user
+    if not accounts.has_operation(req.conn, user.role, "artifact.launch", workspace_id, view_id):
+        return error(404, "not found")
+    version = _current_version(req, code, workspace_id, view_id)
+    if isinstance(version, Response):
+        return version
+    try:
+        launch, exchange_code = launches.create_launch(req.conn, user, workspace_id=workspace_id,
+                                                       agent_view_id=view_id, artifact_code=code, version_id=version)
+    except launches.AccessConfigError:
+        return error(503, "launches are not configured")
+    except accounts.AccessError:
+        return error(404, "not found")
+    # The panel POSTs `fields` as a form to `url`: no URL ever carries the exchange code.
+    return Response(201, {**_launch_json(launch),
+                          "redeem": {"url": f"{req.origins.apps}/launch",
+                                     "fields": {"launch_id": launch.id, "code": exchange_code}}})
+
+
+def list_launches(req: Request) -> Response:
+    return Response(200, [_launch_json(x) for x in launches.list_launches(req.conn, req.session.user)])
+
+
+def end_launch(req: Request) -> Response:
+    if not launches.revoke_launch(req.conn, req.session.user, req.params["id"]):
+        return error(404, "not found")
+    return Response(204)
+
+
+MAX_FORM_BODY = 4 * 1024
+
+
+def redeem_launch(req: Request) -> Response:
+    """POST /launch on the apps origin (proxied to /internal/launch/redeem).
+
+    The exchange code is the credential, so the proxy secret is not required here: a stolen
+    code is equally usable from anywhere. The form must come from the panel page.
+    """
+    from urllib.parse import parse_qs
+
+    site = req.headers.get("Sec-Fetch-Site")
+    if req.headers.get("Origin") != req.origins.panel or site not in (None, "same-site", "same-origin"):
+        return error(403, "forbidden")
+    ctype = (req.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    if ctype != "application/x-www-form-urlencoded":
+        return error(400, "Content-Type must be application/x-www-form-urlencoded")
+    form = parse_qs(req.body.decode("utf-8", "replace"), max_num_fields=4)
+    launch_id, code = form.get("launch_id", [""])[0], form.get("code", [""])[0]
+    if launch_id not in security.launch_cookies({security.LAUNCH_COOKIE_PREFIX + launch_id: ""}):
+        return error(403, "forbidden")
+    won = launches.redeem(req.conn, launch_id, code)
+    if won is None:
+        return error(403, "forbidden")
+    launch, token = won
+    presented = security.launch_cookies(req.cookies)
+    live = launches.live_launch_ids(req.conn, [i for i in presented if i != launch.id])
+    headers = [("Location", f"/a/{launch.artifact_code}/v/{launch.version_id}/"),
+               ("Set-Cookie", security.launch_cookie(launch.id, token, _seconds_until(launch.expires_at)))]
+    headers += [("Set-Cookie", security.clear_cookie(security.launch_cookie_name(i)))
+                for i in presented if i != launch.id and i not in live]
+    return Response(303, None, headers)
+
+
+def authorize_app(req: Request) -> Response:
+    """forward_auth for /a/<code>/v/<version>/ — called by the proxy only (the secret is checked first)."""
+    code, version = req.headers.get("X-Agento-Artifact-Code"), req.headers.get("X-Agento-Version-Id")
+    if not code or not version or not _ARTIFACT_CODE.fullmatch(code) or not _VERSION_ID.fullmatch(version):
+        return error(403, "forbidden")
+    presented = security.launch_cookies(req.cookies)
+    if launches.authorize_files(req.conn, list(presented.values()), code, version):
+        return Response(200)
+    live = launches.live_launch_ids(req.conn, list(presented))
+    return Response(403, {"error": "forbidden"},
+                    [("Set-Cookie", security.clear_cookie(security.launch_cookie_name(i)))
+                     for i in presented if i not in live])
+
+
 def _r(method: str, pattern: str, handler, **kw) -> Route:
     return Route(method, re.compile(f"^{pattern}$"), handler, **kw)
 
@@ -322,6 +444,9 @@ ROUTES: list[Route] = [
     _r("DELETE", "/api/session", logout),
     _r("GET", "/api/agent-views", agent_views),
     _r("POST", r"/api/tools/(?P<name>[a-z0-9_]+):invoke", invoke, json_body=True),
+    _r("POST", "/api/launches", create_launch, json_body=True),
+    _r("GET", "/api/launches", list_launches),
+    _r("DELETE", r"/api/launches/(?P<id>[0-9a-f]{32})", end_launch),
     _r("GET", "/api/admin/users", admin_list_users),
     _r("POST", "/api/admin/users", admin_create_user, json_body=True),
     _r("PATCH", r"/api/admin/users/(?P<id>[0-9]{1,10})", admin_update_user, json_body=True),
