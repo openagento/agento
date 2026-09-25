@@ -115,12 +115,13 @@ def login(req: Request) -> Response:
         return error(401, _INVALID)
     if THROTTLE.blocked(username):
         return error(429, "too many failed logins, try later")
-    user = accounts.authenticate(req.conn, username, password)
-    if user is None:
+    signed_in = sessions.sign_in(req.conn, username, password)
+    if signed_in is None:
         THROTTLE.fail(username)
         return error(401, _INVALID)
     THROTTLE.reset(username)
-    session, token = sessions.create_session(req.conn, user)
+    session, token = signed_in
+    user = session.user
     return Response(
         200,
         {"user": user_json(user), "csrf_token": sessions.csrf_token(token), "expires_at": _iso(session.expires_at)},
@@ -235,13 +236,11 @@ def admin_update_user(req: Request) -> Response:
         return error(400, "is_active must be a boolean")
     if "password" in body and not isinstance(body["password"], str):
         return error(400, "password must be a string")
+    if "role" in body and not isinstance(body["role"], str):
+        return error(400, "role must be a string")
     try:
-        if "role" in body:
-            accounts.set_role(req.conn, user_id, body["role"], actor_id=actor)
-        if "is_active" in body:
-            accounts.set_active(req.conn, user_id, body["is_active"], actor_id=actor)
-        if "password" in body:
-            accounts.set_password(req.conn, user_id, body["password"], actor_id=actor)
+        accounts.update_user(req.conn, user_id, role=body.get("role"), active=body.get("is_active"),
+                             password=body.get("password"), actor_id=actor)
     except accounts.AccessError as exc:
         return _access_error(exc)
     return Response(200, user_json(accounts.get_user(req.conn, user_id)))

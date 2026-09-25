@@ -32,6 +32,9 @@ def dummy_verify(password: str) -> None:
 
 
 def verify_password(password: str, stored: str | None) -> bool:
+    if not MIN_PASSWORD <= len(password) <= MAX_PASSWORD:
+        dummy_verify(password)  # an out-of-policy password costs one derive too, and never matches
+        return False
     try:
         algo, n, r, p, salt, digest = (stored or "").split("$")
         if algo != "scrypt" or (int(n), int(r), int(p)) != (_N, _R, _P):
@@ -40,4 +43,4 @@ def verify_password(password: str, stored: str | None) -> bool:
     except ValueError:
         dummy_verify(password)
         return False
-    return hmac.compare_digest(_derive(password[:MAX_PASSWORD], salt_b, _N, _R, _P), digest_b)
+    return hmac.compare_digest(_derive(password, salt_b, _N, _R, _P), digest_b)

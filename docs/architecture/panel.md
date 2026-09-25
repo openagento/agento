@@ -27,7 +27,8 @@ below close that.
 `__Host-` makes each cookie host-only, so the panel cookie never goes to the apps host and the
 reverse. Each launch has its own cookie name, so two tabs with two versions of one artifact do not
 overwrite each other: the file check accepts the request when **any** live launch cookie matches the
-path's `(code, version)`. At most 20 launch cookies are read from one request.
+path's `(code, version)`. At most 20 launch cookies are read from one request; the same 20 are checked and cleared, and any
+others are ignored.
 
 ## CSRF controls
 

@@ -143,14 +143,20 @@ def get_user_by_username(conn, username: str) -> User | None:
 
 
 def authenticate(conn, username: str, password: str) -> User | None:
+    with conn.cursor() as cur:
+        return authenticate_in(cur, username, password)
+
+
+def authenticate_in(cur, username: str, password: str, *, lock: bool = False) -> User | None:
+    """``lock=True`` holds the user row until the caller's transaction ends (sign-in)."""
     if not isinstance(username, str) or not USERNAME_RE.fullmatch(username):
         dummy_verify(password)
         return None
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT id, username, role, is_active, password_hash FROM `user` WHERE username = %s", (username,),
-        )
-        row = cur.fetchone()
+    cur.execute(
+        "SELECT id, username, role, is_active, password_hash FROM `user` WHERE username = %s"
+        + (" FOR UPDATE" if lock else ""), (username,),
+    )
+    row = cur.fetchone()
     ok = verify_password(password, row["password_hash"] if row else None)
     if not ok or not row["is_active"]:
         return None
@@ -169,38 +175,41 @@ def _require_target(locked: dict[int, dict], user_id: int) -> dict:
     return locked[user_id]
 
 
-def set_role(conn, user_id: int, role: str, *, actor_id: int | None = None) -> None:
-    _check_role(role)
+def update_user(conn, user_id: int, *, role: str | None = None, active: bool | None = None,
+                password: str | None = None, actor_id: int | None = None) -> None:
+    """Apply every given field in one transaction: all of them or none."""
+    if role is not None:
+        _check_role(role)
+    if active is not None and not isinstance(active, bool):
+        raise AccessError("is_active must be a boolean")
+    password_hash = _hash(password) if password is not None else None
 
     def work(cur):
         _require_target(_lock_actor_and(cur, actor_id, user_id), user_id)
-        cur.execute("UPDATE `user` SET role = %s WHERE id = %s", (role, user_id))
-        _revoke_sessions(cur, user_id)
-        _revoke_launches(cur, user_id)
-
-    _in_transaction(conn, work)
-
-
-def set_active(conn, user_id: int, active: bool, *, actor_id: int | None = None) -> None:
-    def work(cur):
-        _require_target(_lock_actor_and(cur, actor_id, user_id), user_id)
-        cur.execute("UPDATE `user` SET is_active = %s WHERE id = %s", (1 if active else 0, user_id))
-        if not active:
+        if role is not None:
+            cur.execute("UPDATE `user` SET role = %s WHERE id = %s", (role, user_id))
+        if active is not None:
+            cur.execute("UPDATE `user` SET is_active = %s WHERE id = %s", (1 if active else 0, user_id))
+        if password_hash is not None:
+            cur.execute("UPDATE `user` SET password_hash = %s WHERE id = %s", (password_hash, user_id))
+        if role is not None or active is False or password_hash is not None:
             _revoke_sessions(cur, user_id)
+        if role is not None or active is False:
             _revoke_launches(cur, user_id)
 
     _in_transaction(conn, work)
 
 
+def set_role(conn, user_id: int, role: str, *, actor_id: int | None = None) -> None:
+    update_user(conn, user_id, role=role, actor_id=actor_id)
+
+
+def set_active(conn, user_id: int, active: bool, *, actor_id: int | None = None) -> None:
+    update_user(conn, user_id, active=active, actor_id=actor_id)
+
+
 def set_password(conn, user_id: int, password: str, *, actor_id: int | None = None) -> None:
-    password_hash = _hash(password)
-
-    def work(cur):
-        _require_target(_lock_actor_and(cur, actor_id, user_id), user_id)
-        cur.execute("UPDATE `user` SET password_hash = %s WHERE id = %s", (password_hash, user_id))
-        _revoke_sessions(cur, user_id)
-
-    _in_transaction(conn, work)
+    update_user(conn, user_id, password=password, actor_id=actor_id)
 
 
 def declared_tools() -> set[str]:

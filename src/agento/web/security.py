@@ -10,10 +10,14 @@ import os
 import re
 from dataclasses import dataclass
 from http.cookies import CookieError, SimpleCookie
+from itertools import islice
+
+from agento.framework.access.launches import MAX_CONCURRENT_CEILING
 
 SESSION_COOKIE = "__Host-agento-session"
 LAUNCH_COOKIE_PREFIX = "__Host-agento-launch-"
 _LAUNCH_ID = re.compile(r"^[0-9a-f]{32}$")
+MAX_LAUNCH_COOKIES = MAX_CONCURRENT_CEILING  # one user holds at most this many live launches
 
 
 @dataclass(frozen=True)
@@ -61,12 +65,17 @@ def parse_cookies(header: str | None) -> dict[str, str]:
 
 
 def launch_cookies(cookies: dict[str, str]) -> dict[str, str]:
-    """``{launch_id: token}`` for every well-formed launch cookie."""
-    return {
-        name[len(LAUNCH_COOKIE_PREFIX):]: value
+    """``{launch_id: token}`` for the first ``MAX_LAUNCH_COOKIES`` well-formed launch cookies.
+
+    Callers authorize, check liveness and clear over this one subset; a cookie past it is
+    neither read nor cleared.
+    """
+    found = (
+        (name[len(LAUNCH_COOKIE_PREFIX):], value)
         for name, value in cookies.items()
         if name.startswith(LAUNCH_COOKIE_PREFIX) and _LAUNCH_ID.fullmatch(name[len(LAUNCH_COOKIE_PREFIX):])
-    }
+    )
+    return dict(islice(found, MAX_LAUNCH_COOKIES))
 
 
 def write_allowed(headers, origins: Origins) -> bool:

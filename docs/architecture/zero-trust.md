@@ -178,7 +178,8 @@ secrets.env (host filesystem)
 
 ## What `web` holds
 
-`web` (the panel API) holds no service credential and no `AGENTO_ENCRYPTION_KEY`. It stores only
+`web` (the panel API) holds no service credential and no `AGENTO_ENCRYPTION_KEY`. Its one
+secret is the internal proxy secret (volume `proxy-internal`), which authenticates `forward_auth`. It stores only
 SHA-256 hashes of session tokens, launch tokens and exchange codes. For each panel tool call it
 mints one single-use `user_session` capability and sends it to the toolbox; the raw token is never
 persisted or logged. See [panel.md](panel.md).
