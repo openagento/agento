@@ -219,7 +219,7 @@ def _prove_not_secret(path: str) -> None:
 
     parsed = _parse_config_path(path)
     module_dir = _find_module_dir(parsed[0]) if parsed else None
-    if module_dir is None:
+    if parsed is None or module_dir is None:
         raise ConfigWriteError(_USE_CLI)
     _module, tool_name, field_name = parsed
     try:

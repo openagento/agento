@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+from typing import NoReturn
 
 from ..access import accounts
 from ..access.accounts import AccessError
@@ -15,7 +16,7 @@ from ..db import get_connection_or_exit
 from .runtime import _load_framework_config
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> NoReturn:
     print(f"Error: {message}", file=sys.stderr)
     sys.exit(1)
 
