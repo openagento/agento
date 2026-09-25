@@ -7,9 +7,9 @@ uv run bin/agento artifact:list [--actor <who>]
 ```
 
 One row per artifact: `artifact_code`, current version, title, owner, `created_at`,
-preview URL. Any missing metadata prints as `-`. The preview URL is where the `artifacts`
-container serves the artifact's current version — reachable on the host at
-`127.0.0.1:${AGENTO_ARTIFACTS_PORT:-8080}`, and nowhere else.
+preview URL. Any missing metadata prints as `-`. The preview URL is built from
+`serving/public_base_url`. Since E1.5 the `artifacts` container publishes no host port, so
+the URL is not reachable until E6 serves versions through the proxy's apps origin.
 
 ## Why it sees every artifact
 

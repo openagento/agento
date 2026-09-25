@@ -395,6 +395,7 @@ def materialize_docker_context(
     )
     _copy_tree(ctx / "cron", target / "cron")
     _copy_tree(ctx / "toolbox", target / "toolbox")
+    _copy_tree(ctx / "proxy", target / "proxy")
 
     # Cron context needs the project's lockfile + pyproject for `uv sync`
     # (deps only — agento itself comes from the bind-mounted host venv).
