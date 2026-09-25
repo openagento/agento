@@ -55,7 +55,7 @@ class TestJobRecordsItsProvider:
         # 'fake_cloud' is NOT the harness default ('fake_local').
         job = _job(agent_type="fake", provider="fake_cloud", model="m1")
 
-        replay = build_replay_command(job)
+        replay = build_replay_command(job, harness_config={})
 
         assert replay.provider == "fake_cloud"
 
@@ -63,7 +63,7 @@ class TestJobRecordsItsProvider:
         """Rows written before `job.provider` existed genuinely don't know it."""
         from agento.framework.replay import build_replay_command
 
-        replay = build_replay_command(_job(agent_type="fake", provider=None))
+        replay = build_replay_command(_job(agent_type="fake", provider=None), harness_config={})
 
         assert replay.provider == "fake_local"
 
@@ -73,6 +73,7 @@ class TestJobRecordsItsProvider:
         replay = build_replay_command(
             _job(agent_type="fake", provider="fake_local"),
             provider_override="fake_cloud",
+            harness_config={},
         )
         assert replay.provider == "fake_cloud"
 
@@ -80,14 +81,14 @@ class TestJobRecordsItsProvider:
         from agento.framework.replay import build_replay_command
 
         with pytest.raises(ValueError, match="does not offer provider"):
-            build_replay_command(_job(agent_type="fake"), provider_override="nope")
+            build_replay_command(_job(agent_type="fake"), provider_override="nope", harness_config={})
 
     def test_stale_recorded_provider_falls_back_rather_than_failing(self):
         """A provider the harness no longer offers (module downgraded) must not hard-fail
         a replay — the default is a usable answer."""
         from agento.framework.replay import build_replay_command
 
-        replay = build_replay_command(_job(agent_type="fake", provider="retired"))
+        replay = build_replay_command(_job(agent_type="fake", provider="retired"), harness_config={})
 
         assert replay.provider == "fake_local"
 
