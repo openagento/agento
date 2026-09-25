@@ -60,21 +60,69 @@ class TestPrepareWorkspace:
         data = json.loads((work_dir / ".claude.json").read_text())
         assert data["systemPrompt"] == "Be concise."
 
-    def test_generates_permissions(self, writer, work_dir):
-        perms = '{"allow": ["Read", "Write"]}'
+    def test_legacy_permissions_merge_under_settings_passthrough(self, writer, work_dir):
         writer.prepare_workspace(
-            work_dir, {"claude/permissions": perms}, toolbox_url=self.TOOLBOX,
+            work_dir, {"claude/permissions": '{"allow": ["Read"]}'}, toolbox_url=self.TOOLBOX,
+            harness_config={"settings": '{"permissions": {"deny": ["WebSearch"]}}'},
         )
-        data = json.loads((work_dir / ".claude.json").read_text())
-        assert data["permissions"] == {"allow": ["Read", "Write"]}
+        data = json.loads((work_dir / ".claude" / "settings.json").read_text())
+        assert data["permissions"]["allow"] == ["Read"]
+        assert data["permissions"]["deny"] == ["WebSearch"]
 
-    def test_skips_invalid_permissions_json(self, writer, work_dir):
+    def test_invalid_legacy_permissions_json_raises(self, writer, work_dir):
+        with pytest.raises(ValueError, match="claude/permissions"):
+            writer.prepare_workspace(
+                work_dir, {"model": "opus", "claude/permissions": "not-json{"},
+                toolbox_url=self.TOOLBOX,
+            )
+
+    def test_settings_passthrough_merges_over_generated_block(self, writer, work_dir):
         writer.prepare_workspace(
-            work_dir, {"model": "opus", "claude/permissions": "not-json{"},
-            toolbox_url=self.TOOLBOX,
+            work_dir, {"claude/trust_level": "full"}, toolbox_url=self.TOOLBOX,
+            harness_config={"settings": '{"permissions": {"deny": ["WebSearch", "WebFetch"]}}'},
         )
-        data = json.loads((work_dir / ".claude.json").read_text())
-        assert "permissions" not in data
+        data = json.loads((work_dir / ".claude" / "settings.json").read_text())
+        assert data["permissions"]["deny"] == ["WebSearch", "WebFetch"]
+        assert data["permissions"]["dangerouslySkipPermissions"] is True
+
+    def test_settings_passthrough_operator_wins_on_collision(self, writer, work_dir):
+        writer.prepare_workspace(
+            work_dir, {"claude/trust_level": "full"}, toolbox_url=self.TOOLBOX,
+            harness_config={"settings": '{"permissions": {"dangerouslySkipPermissions": false}}'},
+        )
+        data = json.loads((work_dir / ".claude" / "settings.json").read_text())
+        assert data["permissions"]["dangerouslySkipPermissions"] is False
+
+    def test_settings_passthrough_advisor_model(self, writer, work_dir):
+        writer.prepare_workspace(
+            work_dir, {}, toolbox_url=self.TOOLBOX,
+            harness_config={"settings": '{"advisorModel": "fable"}'},
+        )
+        data = json.loads((work_dir / ".claude" / "settings.json").read_text())
+        assert data["advisorModel"] == "fable"
+
+    def test_settings_passthrough_invalid_json_raises(self, writer, work_dir):
+        with pytest.raises(ValueError, match="claude/settings"):
+            writer.prepare_workspace(
+                work_dir, {}, toolbox_url=self.TOOLBOX,
+                harness_config={"settings": "not-json{"},
+            )
+
+    def test_settings_passthrough_non_mapping_raises(self, writer, work_dir):
+        with pytest.raises(ValueError, match="claude/settings"):
+            writer.prepare_workspace(
+                work_dir, {}, toolbox_url=self.TOOLBOX,
+                harness_config={"settings": "[1, 2]"},
+            )
+
+    def test_permissions_now_land_in_settings_json(self, writer, work_dir):
+        writer.prepare_workspace(
+            work_dir, {"claude/permissions": '{"allow": ["Read"]}'}, toolbox_url=self.TOOLBOX,
+        )
+        settings = json.loads((work_dir / ".claude" / "settings.json").read_text())
+        assert settings["permissions"]["allow"] == ["Read"]
+        claude_json = work_dir / ".claude.json"
+        assert not claude_json.exists() or "permissions" not in json.loads(claude_json.read_text())
 
     def test_generates_settings_json_full_trust(self, writer, work_dir):
         writer.prepare_workspace(
