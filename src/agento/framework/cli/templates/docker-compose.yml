@@ -111,8 +111,9 @@ services:
   # agent in every agent_view can read every artifact over plain HTTP with `allowed_artifacts`
   # bypassed for reads — silently, with no audit row.
   # Compose puts a service with no `networks:` key on the project's `default` network, and every
-  # other service here names agento-net, so this container ends up alone there. Measured: the
-  # sandbox cannot even resolve the name `artifacts`.
+  # other service here names agento-net, so this container shares it with `proxy` alone.
+  # Measured: the sandbox cannot even resolve the name `artifacts`. It publishes no host port:
+  # the proxy is the only route to these files (PRD E1.5 §2.3).
   # The service mounts storage/versioned-artifacts/published EXACTLY, never the store root, and
   # no other module writes into that tree. docker-compose.override.yml is user-owned and Compose
   # APPENDS volumes, so this mount is the enforcement.
@@ -125,8 +126,6 @@ services:
       - ../.venv/lib/python{{ python_version }}/site-packages/agento/modules:/app/modules/core:ro
       - ../storage/versioned-artifacts/published:/srv/published:ro
       - ../app/etc:/app/etc:ro
-    ports:
-      - "127.0.0.1:${AGENTO_ARTIFACTS_PORT:-8080}:8080"
     healthcheck:
       # The baked HEALTHCHECK probes 3001 and would report this container unhealthy while it
       # serves fine. A disabled module answers 503 here — unhealthy on purpose, no restart loop.
@@ -137,6 +136,65 @@ services:
       start_period: 10s
     security_opt:
       - no-new-privileges:true
+    restart: unless-stopped
+
+  # E1.5 scaffold: answers /health and denies every authorization subrequest; login,
+  # sessions and RBAC are E2's. It shares agento-net with sandbox, so it trusts no
+  # identity header unless the request carries the proxy secret (agento/web/server.py).
+  # It reuses the cron image, like `artifacts` reuses the toolbox one.
+  web:
+    image: agento-cron:${AGENTO_VERSION:-latest}
+    entrypoint: ["python", "-m", "agento.web"]
+    user: agent
+    environment:
+      - TZ=${TZ:-UTC}
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=cron_agent
+      - MYSQL_USER=cron_agent
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-cronagent_pass}
+      - PYTHONPATH=/opt/agento-src
+    volumes:
+      - ../.venv/lib/python{{ python_version }}/site-packages/agento:/opt/agento-src/agento:ro
+      - proxy-internal:/run/agento:ro
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - agento-net
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # The ONLY service on both agento-net and the artifacts `default` network, and the only
+  # route to artifact files. It routes nothing to the toolbox. Config: framework/docker/proxy/.
+  proxy:
+    image: caddy:2.11
+    entrypoint: ["/bin/sh", "/etc/agento-proxy/entrypoint.sh"]
+    environment:
+      - AGENTO_PANEL_HOST=${AGENTO_PANEL_HOST:-panel.localhost}
+      - AGENTO_APPS_HOST=${AGENTO_APPS_HOST:-apps.localhost}
+      - AGENTO_SHARE_HOST=${AGENTO_SHARE_HOST:-share.localhost}
+    volumes:
+      - ../.agento/docker/proxy:/etc/agento-proxy:ro
+      - proxy-internal:/run/agento
+      - caddy-data:/data
+    ports:
+      - "127.0.0.1:${AGENTO_PROXY_PORT:-8443}:443"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - agento-net
+      - default
+    depends_on:
+      - web
+      - artifacts
     restart: unless-stopped
 
   mysql:
@@ -164,3 +222,7 @@ services:
 networks:
   agento-net:
     driver: bridge
+
+volumes:
+  proxy-internal:
+  caddy-data:
