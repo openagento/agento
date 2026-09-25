@@ -1,6 +1,7 @@
 # Running the panel
 
-The panel is the browser UI and API that the `web` service serves behind `proxy`. This page is
+The panel is the HTTP API that the `web` service serves behind `proxy` (E2 ships no frontend yet;
+see [ROADMAP.md](../../ROADMAP.md)). This page is
 for the operator who deploys it. The design is in
 [../architecture/panel.md](../architecture/panel.md).
 
@@ -23,7 +24,7 @@ and serves three origins on it:
 
 | Variable | Default | Origin |
 |---|---|---|
-| `AGENTO_PANEL_HOST` | `panel.localhost` | the panel UI and `/api/*` |
+| `AGENTO_PANEL_HOST` | `panel.localhost` | the panel API, `/api/*` |
 | `AGENTO_APPS_HOST` | `apps.localhost` | launched artifact files, `/a/<code>/v/<id>/…` |
 | `AGENTO_SHARE_HOST` | `share.localhost` | Basic-auth shares (E6; every request is denied until then) |
 | `AGENTO_PROXY_PORT` | `8443` | the host port; `443` gives origins with no port |
@@ -47,7 +48,8 @@ bin/agento user:create admin --role admin          # prompts twice for the passw
 bin/agento user:create ci-admin --role admin < pw  # from a mode-0600 file
 ```
 
-A password has 12 to 1024 characters. Then sign in at `https://panel.localhost:8443/`. See
+A password has 12 to 1024 characters. A client signs in with `POST /api/session` on
+`https://panel.localhost:8443`. See
 [../cli/user.md](../cli/user.md) and [../cli/grant.md](../cli/grant.md).
 
 ## Giving a user role access

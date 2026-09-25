@@ -219,7 +219,7 @@ docker compose exec cron /opt/cron-agent/run.sh rotate
 
 ## Panel
 
-The `web` service serves the panel behind `proxy` on `https://panel.localhost:8443/`. Setup,
+The `web` service serves the panel API (no frontend yet) behind `proxy` on `https://panel.localhost:8443`. Setup,
 hosts, the first admin and grants: [../docs/deployment/panel.md](../docs/deployment/panel.md).
 
 **Restriction:** all agent runs share one `agent` UID and the workspace mount, so a shell-capable
