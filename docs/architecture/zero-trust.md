@@ -92,7 +92,8 @@ a `job_id` on the URL may only agree with the capability's job.
 | `miniapp` | the Web API, for a miniapp launch | invoke only | `core/auth/capability_ttl`, single use |
 
 Invoke is `POST /internal/tools/{name}:invoke`. The two user kinds need a live source (session or
-launch) on every call; E1 ships no source checker, so they are refused until E2/E6 add one. Every
+launch) on every call. The `web` module ships the `session` checker (E2); `miniapp` is refused until
+E6 adds the `launch` checker. Every
 tool call on every transport goes through one dispatcher that authorizes it per call and writes a
 `tool_invocation` audit row — see [auth-context.md](auth-context.md).
 
@@ -187,6 +188,13 @@ secrets.env (host filesystem) — holds only AGENTO_ENCRYPTION_KEY
 
 CONFIG__* ENV overrides take precedence over core_config_data (plaintext)
 ```
+
+## What `web` holds
+
+`web` (the panel API) holds no service credential and no `AGENTO_ENCRYPTION_KEY`. It stores only
+SHA-256 hashes of session tokens, launch tokens and exchange codes. For each panel tool call it
+mints one single-use `user_session` capability and sends it to the toolbox; the raw token is never
+persisted or logged. See [panel.md](panel.md).
 
 ## What the Agent CAN Access
 

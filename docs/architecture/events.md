@@ -119,7 +119,7 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 
 | Event | Data Class | Fields | When |
 |-------|-----------|--------|------|
-| `config_save_after` | `ConfigSavedEvent` | `path, encrypted` | After CLI `config:set` commits a value |
+| `config_save_after` | `ConfigSavedEvent` | `path, encrypted` | After `config_write.write_config` commits a value (`config:set`, the admin TUI, the panel admin config) |
 | `setup_upgrade_before` | `SetupBeforeEvent` | `dry_run` | Before `setup:upgrade` begins work |
 | `setup_upgrade_after` | `SetupCompleteEvent` | `result, dry_run` | After `setup:upgrade` finishes all work |
 | `migration_apply_after` | `MigrationAppliedEvent` | `version, module, path` | After a SQL migration is applied |
@@ -212,7 +212,9 @@ No event contract changed — that is the point of the reclassification.
 
 ### Config & Setup Lifecycle
 
-`config_save_after` fires only from CLI `config:set`, not from internal bootstrap config resolution.
+`config_save_after` fires only from `config_write.write_config` (`config:set`, the admin TUI and the panel
+admin config), not from internal bootstrap config resolution. `web` never runs `bootstrap()`, so a panel
+save dispatches it to no observer. Panel sign-in and launches dispatch no event for the same reason.
 
 `crontab_install_after` fires only when the crontab actually changed and not during dry-run.
 

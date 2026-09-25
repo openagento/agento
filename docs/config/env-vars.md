@@ -32,6 +32,7 @@ CONFIG__{MODULE}__{PATH}
 | `core/client_connection_pool_max_per_tool` | `CONFIG__CORE__CLIENT_CONNECTION_POOL_MAX_PER_TOOL` |
 | `core/server_concurrency_budget` | `CONFIG__CORE__SERVER_CONCURRENCY_BUDGET` |
 | `core/allowed_domains` | `CONFIG__CORE__ALLOWED_DOMAINS` |
+| `web/launch/max_concurrent` | `CONFIG__WEB__LAUNCH__MAX_CONCURRENT` (panel launch limit per user, see [modules/web.md](../modules/web.md)) |
 
 ### Tool-level fields
 

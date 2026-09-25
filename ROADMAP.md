@@ -114,6 +114,19 @@ The E1 core (PRD E1 §3–§8) is built; E1.5 is the next track: auth context v1
 install a source checker), one dispatcher with per-call checks and a `tool_invocation` audit row,
 and header tokens on `/mcp`. See [docs/architecture/auth-context.md](docs/architecture/auth-context.md).
 
+E2 shipped the panel API: users, sessions, `admin`/`user` roles with per-scope grants, per-call
+`user_session` capabilities, and the launch exchange that authorizes files on the apps origin
+([docs/architecture/panel.md](docs/architecture/panel.md)). Left out of E2:
+
+- the panel frontend (E2 ships the API only) and an admin-TUI users screen;
+- per-user grants (visibility is per role), and `operation` grants beyond `artifact.launch`;
+- a DB-backed login throttle (the current one is per process);
+- the launch manifest seam, the `launch` auth source, `miniapp` capabilities and shares (E6);
+- a sequence column for exact launch eviction order (`created_at` has 1 s precision);
+- **per-run UID or container isolation (OPEN)**: until it exists, panel roles do not separate users
+  from what a shell-capable agent can read on the shared mount
+  ([docs/deployment/panel.md](docs/deployment/panel.md)).
+
 ### ⚪ Per-artifact origins for miniapps
 
 The agreed E0 design puts every miniapp on **one shared apps origin**, separate from the panel

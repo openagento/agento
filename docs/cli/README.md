@@ -69,6 +69,11 @@
 | `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |
 | `config:resolve <module> [--scope=S] [--scope-id=N] [--json]` | Resolve effective config values with source info |
+| **Panel users and grants** | |
+| `user:create <username> [--role R]` | Create a panel user; password from a prompt or stdin, never argv ([details](user.md)) |
+| `user:list` / `user:set-role <u> <role>` / `user:activate <u>` / `user:deactivate <u>` / `user:password <u>` | Manage panel users; a role change or deactivation ends their sessions and launches ([details](user.md)) |
+| `grant:add --role R (--tool T \| --operation O) (--workspace C \| --agent-view C)` | Grant a role a tool or `artifact.launch` in one scope ([details](grant.md)) |
+| `grant:list [--role R]` / `grant:remove <id>` | List or remove grants; removal ends that role's launches in the scope ([details](grant.md)) |
 | **Capabilities** | |
 | `capability:mint --kind K --agent-view C [--transport T] [--ttl N]` | Mint a toolbox capability token; prints it on stdout ([details](capability.md)) |
 | `capability:revoke` | Revoke a capability — reads the raw token from **stdin** ([details](capability.md)) |
