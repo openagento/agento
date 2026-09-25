@@ -135,7 +135,7 @@ notifications on that stream continue until the client reconnects. `/mcp` verifi
 
 **The query path is not leak-free.** The toolbox redacts `cap` in its own log lines (a test covers
 every guard error path). A reverse-proxy access log also records a query string; that proxy and its
-redaction come with E2. Until E2 ships them, do not describe `?cap=` as safe from logs.
+redaction shipped with E1.5: `proxy` logs redact `cap` and `code` (`tests/e2e/test_proxy_smoke.py`).
 
 **Retirement rule.** Remove the query path when no supported client needs it. Clients tested in E1:
 
@@ -152,16 +152,18 @@ callable in the next session. At invoke the registry is built per request, so it
 next call. Building it (`register()` of every module, measured in-process with stub clients) costs
 about 0.5 ms per call, so there is no cache. The two config queries per call come in addition.
 
-## Requirements for E2 (no code in E1)
+## Proxy requirements (met)
 
-- The proxy strips every caller-supplied identity header before it forwards a request.
-- The authorization endpoint authenticates the proxy (a shared internal credential, or a listener
-  only the proxy can reach). A test shows that a direct call from the `sandbox` container is denied.
-- The proxy redacts `cap` in its access log, with an acceptance test.
+- The proxy strips every caller-supplied `X-Agento-*` and identity header before it forwards a
+  request (`src/agento/framework/docker/proxy/Caddyfile`).
+- `/internal/authz/*` authenticates the proxy with a secret that only `proxy` and `web` can read.
+  `docker/smoke/proxy-smoke.sh` shows that a direct call from `sandbox` is denied, with and
+  without a launch cookie.
+- The proxy redacts `cap` and `code` in its logs, with an acceptance test.
 
 ## Deployment restriction
 
 Agents share a UID and the workspace mount, so an agent can read another run's directory, including
 its capability. Until a runtime-isolation task closes that, expose the panel only where every user is
 trusted with every agent_view it can reach. RBAC controls the API surface, not what a process can
-read from a shared mount.
+read from a shared mount. Operator page: [../deployment/panel.md](../deployment/panel.md).

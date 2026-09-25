@@ -348,7 +348,7 @@ no npm dependency — and it is deliberately the least privileged container in t
 |---|---|
 | `networks:` | **absent**, so Compose leaves it on the project's `default` network, which it shares with `proxy` alone, while every other service names `agento-net`. Measured: the sandbox cannot resolve the name `artifacts`. |
 | `env_file:` / `environment:` | **absent.** It holds no secret and no DB handle. |
-| `ports:` | **absent** (removed in E1.5). `proxy` is the only route to the files: the apps origin serves `/a/<code>/v/<version_id>/…` after a `forward_auth` subrequest to `web`, which denies every request until E2/E6 implement the decision. Previews and Basic-auth shares are therefore dark until then. |
+| `ports:` | **absent** (removed in E1.5). `proxy` is the only route to the files: the apps origin serves `/a/<code>/v/<version_id>/…` after a `forward_auth` subrequest to `web`, which allows a request only under a live launch (E2, [../architecture/panel.md](../architecture/panel.md)). `preview_url` links and Basic-auth shares stay dark until E6. |
 | volumes | `storage/versioned-artifacts/published` (read-only), `app/etc` (read-only), and the modules tree. Never the store root. |
 
 The absence of `networks:` is the point, not an oversight. One line added for consistency

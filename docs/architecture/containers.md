@@ -13,7 +13,7 @@ Seven containers. Six share the `agento-net` bridge network; `artifacts` declare
 | **mysql** | mysql:8.0 | Job queue DB (`cron_agent`) | — |
 | **sandbox** | agento-sandbox | Interactive agent execution (ad-hoc) | Python |
 | **artifacts** | agento-toolbox | Static HTTP for the `versioned_artifacts` published tree | Node.js |
-| **web** | agento-cron | Web API scaffold: `/health` and the deny-all `/internal/authz/*` endpoints the proxy calls (login, sessions, RBAC arrive with E2) | Python |
+| **web** | agento-cron | Panel API (sign-in, roles and grants, admin, launches), the launch redeem, and `/internal/authz/app` for the proxy; holds no secret ([panel.md](panel.md)) | Python |
 | **proxy** | caddy:2.11 | TLS, the panel / apps / share origins, `forward_auth` to `web`; the only route to artifact files | — |
 
 ## Volume Mounts
@@ -43,8 +43,9 @@ The `artifacts` service declares **no `networks:` key** and carries no `env_file
 other service names `agento-net` — measured: the sandbox cannot resolve the name
 `artifacts`. It publishes **no host port**: the only other container on `default` is `proxy`,
 which is the only route to these files, and it serves only `/a/<code>/v/<id>/` paths after
-`web` authorizes them. Until E2/E6 implement that decision every request is denied, so VA
-`preview_url` links and Basic-auth shares are not reachable from the host. Putting it on `agento-net` would let every agent in every
+`web` authorizes them against a live launch ([panel.md](panel.md)). Shares are E6's and every
+share request is denied until then, so VA `preview_url` links and Basic-auth shares are not
+reachable from the host. Putting it on `agento-net` would let every agent in every
 agent_view read every artifact over plain HTTP, bypassing `allowed_artifacts` with no audit row.
 
 ### Agent-Only (cron + sandbox)
@@ -72,6 +73,10 @@ agent_view read every artifact over plain HTTP, bypassing `allowed_artifacts` wi
 - `AGENTO_ENCRYPTION_KEY` — Decrypt core_config_data secrets
 - `CONFIG__*` — Config overrides (highest priority)
 
+### Web
+- `MYSQL_*` — MySQL connection (no `env_file`, no `AGENTO_ENCRYPTION_KEY`)
+- `AGENTO_PANEL_HOST`, `AGENTO_APPS_HOST`, `AGENTO_PROXY_PORT` — the browser-facing origins, same defaults as `proxy`
+
 ### Cron
 - `MYSQL_*` — MySQL connection
 - `DISABLE_LLM` — Skip LLM calls (testing)
@@ -90,7 +95,8 @@ by default) on `127.0.0.1:${AGENTO_PROXY_PORT:-8443}` and serves three origins, 
 
 - **panel** → `web:8000`, except `/internal/*`, which answers `404`;
 - **apps** → only `/a/<code>/v/<id>/…`, authorized by `forward_auth` to `web`'s
-  `/internal/authz/app`, then served by `artifacts`; anything else is `404`;
+  `/internal/authz/app`, then served by `artifacts`, and `POST /launch`, rewritten to `web`'s
+  `/internal/launch/redeem` (the launch exchange); anything else is `404`;
 - **share** (one origin per share) → `forward_auth` to `/internal/authz/share`.
 
 Hardening: every caller-supplied `X-Agento-*`, `X-Forwarded-User`, `X-Remote-User` and
