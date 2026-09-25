@@ -11,204 +11,26 @@ from .runtime import _load_framework_config
 
 
 def _validate_config_path(path: str, scope: str = Scope.DEFAULT) -> bool:
-    """Validate config path against module schema. Returns False if invalid.
+    """Print the refusal and return False; the rule itself lives in ``config_write``."""
+    from ..config_write import ConfigWriteError, validate_config_path
 
-    Checks field existence plus Magento-style scope restriction flags
-    (`showInDefault` / `showInWorkspace` / `showInAgentView`) declared in
-    system.json (module fields) or module.json tool fields.
-    """
-    from ..config_schema import allowed_scopes, is_scope_allowed
-    from ..core_config import _find_module_dir, _parse_config_path
-
-    parsed = _parse_config_path(path)
-    if parsed is None:
-        print(f"Error: Invalid config path '{path}'.")
-        return False
-    module_name, tool_name, field_name = parsed
-
-    module_dir = _find_module_dir(module_name)
-    if module_dir is None:
-        print(f"Error: Module '{module_name}' not found.")
-        return False
-
-    # Tool config paths (module/tools/tool_name/field)
-    if tool_name is not None:
-        field_def = _load_tool_field_schema(module_dir, tool_name, field_name)
-        if field_def is None:
-            return True
-        if not is_scope_allowed(field_def, scope):
-            scopes = ", ".join(allowed_scopes(field_def)) or "none"
-            print(f"Error: Field '{field_name}' cannot be set at scope '{scope}' "
-                  f"(allowed: {scopes})")
-            return False
-        return True
-
-    # Module config paths (module/field) — validate against system.json.
-    # field_name may contain '/' (slash-keyed schema fields).
-    system_path = module_dir / "system.json"
-    if system_path.exists():
-        try:
-            system = json.loads(system_path.read_text())
-        except (ValueError, OSError):
-            return True
-        if field_name not in system:
-            known = ", ".join(sorted(system.keys()))
-            print(f"Error: Field '{field_name}' not found in {module_name}/system.json")
-            print(f"  Available fields: {known}")
-            return False
-        field_def = system[field_name]
-        if isinstance(field_def, dict) and not is_scope_allowed(field_def, scope):
-            scopes = ", ".join(allowed_scopes(field_def)) or "none"
-            print(f"Error: Field '{field_name}' cannot be set at scope '{scope}' "
-                  f"(allowed: {scopes})")
-            return False
-
-    return True
-
-
-def _load_tool_field_schema(module_dir, tool_name: str, field_name: str) -> dict | None:
-    """Return schema dict for a tool field, or None if not discoverable."""
-    manifest_path = module_dir / "module.json"
-    if not manifest_path.exists():
-        return None
     try:
-        manifest = json.loads(manifest_path.read_text())
-    except (ValueError, OSError):
-        return None
-    for tool in manifest.get("tools", []):
-        if tool.get("name") == tool_name:
-            field = tool.get("fields", {}).get(field_name)
-            return field if isinstance(field, dict) else None
-    return None
-
-
-def _effective_depends_on_value(
-    conn, depends_on: str, *, scope: str, scope_id: int,
-) -> str | None:
-    """The value a dependent select is narrowed by, resolved AT THE TARGET SCOPE.
-
-    Must honour the full precedence chain (ENV > agent_view > workspace > default >
-    config.json), not just a raw DB row at this scope: a view inheriting its harness from
-    the default scope, or one set only via ``CONFIG__AGENT_VIEW__HARNESS``, still has an
-    effective harness that must narrow the provider list.
-    """
-    from ..config_resolver import read_config_defaults
-    from ..core_config import _find_module_dir
-    from ..scoped_config import ORIGIN_ABSENT, Scope, resolve_with_origin
-
-    module, _, field = depends_on.partition("/")
-    module_dir = _find_module_dir(module)
-    defaults = read_config_defaults(module_dir) if module_dir is not None else {}
-    json_value = (defaults or {}).get(field) if field else None
-
-    value, origin = resolve_with_origin(
-        conn, depends_on,
-        agent_view_id=scope_id if scope == Scope.AGENT_VIEW else None,
-        workspace_id=scope_id if scope == Scope.WORKSPACE else None,
-        config_json_value=str(json_value) if json_value is not None else None,
-    )
-    return None if origin == ORIGIN_ABSENT else value
+        validate_config_path(path, scope)
+    except ConfigWriteError as exc:
+        print(exc)
+        return False
+    return True
 
 
 def _validate_config_value(
     path: str, value: str, *, conn=None, scope: str | None = None, scope_id: int = 0,
 ) -> bool:
-    """Validate config value against system.json options for select fields. Returns False if invalid."""
-    from ..core_config import _find_module_dir, _parse_config_path
+    from ..config_write import ConfigWriteError, validate_config_value
 
-    parsed = _parse_config_path(path)
-    if parsed is None:
-        return True
-    module_name, tool_name, field_name = parsed
-    if tool_name is not None:
-        # Tool-field option validation is not handled here today; keep behaviour.
-        return True
-
-    module_dir = _find_module_dir(module_name)
-    if module_dir is None:
-        return True
-
-    system_path = module_dir / "system.json"
-    if not system_path.exists():
-        return True
-
-    import json as _json
     try:
-        system = _json.loads(system_path.read_text())
-    except (ValueError, OSError):
-        return True
-
-    field_def = system.get(field_name)
-    if not isinstance(field_def, dict):
-        return True
-
-    if _is_private_key_field(field_name, field_def):
-        return _validate_private_key(field_name, value)
-
-    field_type = field_def.get("type")
-    if field_type not in ("select", "multiselect"):
-        return True
-
-    # For a dynamic select (harness / provider) the allowed values come from the
-    # agent_harnesses declarations on disk — config:set has no bootstrap() available.
-    # A DEPENDENT select (provider depends on harness) must be narrowed to the harness
-    # actually in effect at this scope; validating against the union of every harness's
-    # providers would accept `(claude, openai)` and only fail at runtime.
-    depends_on = field_def.get("depends_on")
-    depends_value = None
-    if depends_on and conn is not None and scope is not None:
-        depends_value = _effective_depends_on_value(
-            conn, depends_on, scope=scope, scope_id=scope_id,
-        )
-    options = field_options(field_def, depends_on_value=depends_value)
-    allowed = [opt["value"] for opt in options if isinstance(opt, dict) and "value" in opt]
-    if value not in allowed:
-        print(f"Error: Invalid value '{value}' for {field_type} field '{field_name}'")
-        print(f"  Allowed values: {', '.join(allowed)}")
-        return False
-
-    return True
-
-
-def _is_private_key_field(field_name: str, field_def: dict) -> bool:
-    """An ``obscure`` field whose name ends in ``ssh_private_key``.
-
-    Name-suffix matching, not a hardcoded ``agent_view/…`` path, so the
-    framework stays module-agnostic and a third-party module that follows the
-    same naming gets the same protection.
-    """
-    return (
-        field_def.get("type") == "obscure"
-        and field_name.rsplit("/", 1)[-1] == "ssh_private_key"
-    )
-
-
-def _validate_private_key(field_name: str, value: str) -> bool:
-    """Reject a private-key value that cannot parse.
-
-    A corrupted interactive paste once stored a 36-byte value (the BEGIN header
-    alone), which `identity:show` happily fingerprinted and `workspace_build`
-    materialized — four silent builds of `Permission denied (publickey)`.
-    Nothing legitimate fails this check: `config:set … < id_rsa` always yields a
-    parsable key. Never echoes the value.
-    """
-    from ..ssh_keys import EncryptedKeyError, derive_public_key
-
-    if not value.strip():
-        return True  # clearing the field stays possible
-    try:
-        derive_public_key(value)
-    except EncryptedKeyError:
-        print(
-            f"Error: value for '{field_name}' is a passphrase-protected private "
-            f"key. The agent runs unattended and cannot unlock it — store an "
-            f"unencrypted key."
-        )
-        return False
-    except ValueError as e:
-        print(f"Error: value for '{field_name}' does not parse as an SSH private key: {e}")
-        print("  Set it from a file rather than an interactive paste:")
-        print("    agento config:set <path> --agent-view <code> < id_rsa")
+        validate_config_value(path, value, conn=conn, scope=scope, scope_id=scope_id)
+    except ConfigWriteError as exc:
+        print(exc)
         return False
     return True
 
@@ -422,9 +244,6 @@ class ConfigSetCommand:
         )
 
     def execute(self, args: argparse.Namespace) -> None:
-        from ..event_manager import get_event_manager
-        from ..events import ConfigSavedEvent
-
         # Every rejection below exits non-zero: `config:set` is scripted (CI, the e2e
         # suite, onboarding), and a printed error with rc=0 reads as a successful write.
         if "/" not in args.path:
@@ -439,27 +258,18 @@ class ConfigSetCommand:
         conn = get_connection_or_exit(db_config)
         try:
             scope, scope_id = _resolve_scope_from_args(conn, args)
-            if not _validate_config_path(args.path, scope):
-                sys.exit(1)
-            if not _validate_config_value(
-                args.path, value, conn=conn, scope=scope, scope_id=scope_id,
-            ):
-                sys.exit(1)
-
             scope_label = f" [scope={scope}, scope_id={scope_id}]" if scope != Scope.DEFAULT else ""
-            # One shared operation for the write + any dependent repair, so `config:set`
-            # and the admin TUI cannot drift apart on it. Same transaction, so a broken
-            # (harness, provider) pair is never observable.
-            from ..config_dependents import set_config_with_dependents
+            # One shared write path with the admin TUI and the web admin API: validation,
+            # dependent repair in the same transaction, and config_save_after.
+            from ..config_write import ConfigWriteError, save_config
 
-            encrypted, reset = set_config_with_dependents(
-                conn, args.path, value, scope=scope, scope_id=scope_id
-            )
-            conn.commit()
-            get_event_manager().dispatch(
-                "config_save_after",
-                ConfigSavedEvent(path=args.path, encrypted=encrypted),
-            )
+            try:
+                encrypted, reset = save_config(
+                    conn, args.path, value, scope=scope, scope_id=scope_id, allow_secret=True,
+                )
+            except ConfigWriteError as exc:
+                print(exc)
+                sys.exit(1)
             label = " (encrypted)" if encrypted else ""
             print(f"Set: {args.path}{label}{scope_label}")
             for dep_path, dep_value in reset:

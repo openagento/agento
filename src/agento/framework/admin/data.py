@@ -527,17 +527,14 @@ def set_config_value(
 ) -> list[tuple[str, str]]:
     """Save a config value, repairing any dependent the new value invalidates.
 
-    Shares one operation with ``config:set`` — saving a harness here without the repair
+    Shares ``config_write.write_config`` with ``config:set`` — saving a harness here without the repair
     would leave the very broken (harness, provider) pair the CLI prevents. Returns the
     dependents that were rewritten so the TUI can tell the operator.
     """
-    from ..config_dependents import set_config_with_dependents
+    from ..config_write import write_config
 
     _ensure_conn(conn)
-    _encrypted, changed = set_config_with_dependents(
-        conn, path, value, scope=scope, scope_id=scope_id
-    )
-    conn.commit()
+    _encrypted, changed = write_config(conn, path, value, scope=scope, scope_id=scope_id)
     return changed
 
 

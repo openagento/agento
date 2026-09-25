@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -126,7 +127,7 @@ def test_no_route_sets_a_cors_header(web, auth, signed_in):
     cookies = {"__Host-agento-session": TOKEN}
     for route in api.ROUTES:
         path = route.pattern.pattern.strip("^$")
-        path = path.replace("(?P<id>[0-9a-f]{32})", "0" * 32).replace("(?P<id>[0-9]+)", "1")
+        path = re.sub(r"\(\?P<\w+>[^)]*\)", "1", path)
         r = httpx.request(route.method, f"{web}{path}", cookies=cookies, headers={**panel_headers(), "Origin": APPS})
         assert not [h for h in r.headers if h.lower().startswith("access-control-")], path
 

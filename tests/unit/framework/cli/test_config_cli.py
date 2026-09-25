@@ -16,6 +16,7 @@ from agento.framework.cli.config import (
     ConfigSetCommand,
     _validate_config_path,
 )
+from agento.framework.config_write import ConfigWriteError
 from agento.framework.workspace import AgentView
 
 
@@ -183,12 +184,11 @@ def _remove_args(path="jira/jira_token", scope="default", scope_id=0, agent_view
 class TestConfigSetCommand:
     @patch("agento.framework.cli.config.get_connection_or_exit")
     @patch("agento.framework.cli.config._load_framework_config")
-    @patch("agento.framework.cli.config._validate_config_path", return_value=True)
-    @patch("agento.framework.cli.config._validate_config_value", return_value=True)
+    @patch("agento.framework.config_write.validate_config_write")
     @patch("agento.framework.event_manager.get_event_manager")
     @patch("agento.framework.core_config.config_set_auto_encrypt")
     def test_reads_value_from_stdin_pipe(
-        self, mock_write, mock_events, _vv, _vp, mock_config, mock_conn_fn,
+        self, mock_write, mock_events, _vw, mock_config, mock_conn_fn,
         monkeypatch,
     ):
         mock_config.return_value = ({}, None, None)
@@ -207,12 +207,11 @@ class TestConfigSetCommand:
 
     @patch("agento.framework.cli.config.get_connection_or_exit")
     @patch("agento.framework.cli.config._load_framework_config")
-    @patch("agento.framework.cli.config._validate_config_path", return_value=True)
-    @patch("agento.framework.cli.config._validate_config_value", return_value=True)
+    @patch("agento.framework.config_write.validate_config_write")
     @patch("agento.framework.event_manager.get_event_manager")
     @patch("agento.framework.core_config.config_set_auto_encrypt")
     def test_reads_value_from_stdin_tty_strips_trailing_newline(
-        self, mock_write, mock_events, _vv, _vp, mock_config, mock_conn_fn,
+        self, mock_write, mock_events, _vw, mock_config, mock_conn_fn,
         monkeypatch, capsys,
     ):
         mock_config.return_value = ({}, None, None)
@@ -232,13 +231,12 @@ class TestConfigSetCommand:
 
     @patch("agento.framework.cli.config.get_connection_or_exit")
     @patch("agento.framework.cli.config._load_framework_config")
-    @patch("agento.framework.cli.config._validate_config_path", return_value=True)
-    @patch("agento.framework.cli.config._validate_config_value", return_value=True)
+    @patch("agento.framework.config_write.validate_config_write")
     @patch("agento.framework.event_manager.get_event_manager")
     @patch("agento.framework.core_config.config_set_auto_encrypt")
     @patch("agento.framework.workspace.get_agent_view_by_code")
     def test_agent_view_flag_resolves_scope(
-        self, mock_av, mock_write, mock_events, _vv, _vp, mock_config, mock_conn_fn,
+        self, mock_av, mock_write, mock_events, _vw, mock_config, mock_conn_fn,
     ):
         mock_config.return_value = ({}, None, None)
         mock_conn_fn.return_value = _mock_conn()[0]
@@ -279,11 +277,10 @@ class TestConfigSetCommand:
 
     @patch("agento.framework.cli.config.get_connection_or_exit")
     @patch("agento.framework.cli.config._load_framework_config")
-    @patch("agento.framework.cli.config._validate_config_path", return_value=True)
-    @patch("agento.framework.cli.config._validate_config_value", return_value=False)
+    @patch("agento.framework.config_write.validate_config_write", side_effect=ConfigWriteError("Error: refused"))
     @patch("agento.framework.core_config.config_set_auto_encrypt")
     def test_invalid_value_exits_nonzero(
-        self, mock_write, _vv, _vp, mock_config, mock_conn_fn,
+        self, mock_write, _vw, mock_config, mock_conn_fn,
     ):
         """A rejected select value must fail the process, not print and exit 0 —
         scripts (and the e2e suite) treat rc=0 as "the value was set"."""
@@ -298,10 +295,10 @@ class TestConfigSetCommand:
 
     @patch("agento.framework.cli.config.get_connection_or_exit")
     @patch("agento.framework.cli.config._load_framework_config")
-    @patch("agento.framework.cli.config._validate_config_path", return_value=False)
+    @patch("agento.framework.config_write.validate_config_write", side_effect=ConfigWriteError("Error: refused"))
     @patch("agento.framework.core_config.config_set_auto_encrypt")
     def test_invalid_path_exits_nonzero(
-        self, mock_write, _vp, mock_config, mock_conn_fn,
+        self, mock_write, _vw, mock_config, mock_conn_fn,
     ):
         mock_config.return_value = ({}, None, None)
         mock_conn_fn.return_value = _mock_conn()[0]
