@@ -200,10 +200,10 @@ counts must match.
   ownership.
 - **Option C** — proxy git-over-SSH through the toolbox, so the agent holds neither key nor socket; the
   model the GitHub PAT path already follows, and the only option that fully satisfies
-  `RULES.md:112`. Cost: largest — a new toolbox git surface, and it changes how every agent does git.
+  `RULES.md:112` (now `RULES.md` SEC-1). Cost: largest — a new toolbox git surface, and it changes how every agent does git.
 
 **Waiver (granted 2026-08-23 by the project owner, recorded 2026-08-25).**
-`.claude/skills/agento-code-review/RULES.md:112` — "Agent code must never hold, read, or pass
+`.claude/skills/agento-code-review/RULES.md:112` (now `RULES.md` SEC-1) — "Agent code must never hold, read, or pass
 credentials" — is **explicitly waived for this one credential, at Option A scope**, on these terms: it
 covers only the SSH private key used for git, delivered exactly as described above; no other credential
 and no other delivery channel; and the waiver stands until Option C (a toolbox git proxy) replaces it.
