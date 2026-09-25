@@ -38,7 +38,7 @@ ENV EDITOR=nano
 # behavior) can't slip in unannounced. Customers bump via docker/.env without an agento
 # release. Adding a harness needs NO edit here.
 ARG CLAUDE_CODE_VERSION=2.1.165
-ARG CODEX_VERSION=0.137.0
+ARG CODEX_VERSION=0.157.0
 ARG PI_VERSION=0.84.1
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" "@earendil-works/pi-coding-agent@${PI_VERSION}"
 

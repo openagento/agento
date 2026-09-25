@@ -36,12 +36,13 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   makes the block effective when asked for. Agento correspondingly generates **no** `sandbox_mode`
   or `approval_policy` of its own: the build dir is also the HOME an *interactive* `agento run`
   uses, so writing "never ask, full access" into the file would silently remove that session's
-  approval prompts — a mode the CLI flag, not the file, had always decided. **The empirical check did not run**: the pinned sandbox
-  image (codex-cli 0.137.0) holds no usable Codex credential, and the probe ended in
-  `401 Unauthorized ... url: wss://api.openai.com/v1/responses` before any command executed. So
-  whether `exec` honours `sandbox_mode` from the file on 0.137.0, and whether the OS sandbox blocks
-  network in that image, are **unverified** — documented as such rather than claimed. The reporter
-  observed it on 0.145.0. Removing the flag unconditionally waits on that re-verification.
+  approval prompts — a mode the CLI flag, not the file, had always decided. **The empirical check did not run**: no Codex
+  credential in the pool is accepted by the backend (`403 Forbidden` from
+  `chatgpt.com/backend-api/codex/*`), on the previously pinned 0.137.0 and on 0.157.0 alike, so the
+  probe ends before any command executes. So whether `exec` honours `sandbox_mode` from the file,
+  and whether the OS sandbox blocks network in that image, are **unverified** — documented as such
+  rather than claimed. The reporter observed it on 0.145.0. Removing the flag unconditionally waits
+  on that re-verification.
 - **Every command-building path must carry the resolved dict.** Three of five
   `HarnessRunContext` sites passed none (`framework/replay.py`, `framework/cli/runtime.py`,
   `agent_view` `runtime:show`), so the bypass flag would silently come back on exactly the paths an
