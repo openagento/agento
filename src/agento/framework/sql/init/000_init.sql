@@ -208,7 +208,7 @@ CREATE TABLE toolbox_capability (
     workspace_id       INT UNSIGNED    NULL,
     execution_id       VARCHAR(64)     NULL,
     app_artifact_code  VARCHAR(64)     NULL,
-    app_version_id     BIGINT UNSIGNED NULL,
+    app_version_id     VARCHAR(64)     NULL,
     app_launch_id      VARCHAR(64)     NULL,
     tool_ceiling       JSON            NULL,
     allowed_transports JSON            NULL,
@@ -241,7 +241,7 @@ CREATE TABLE tool_invocation (
     agent_view_id     INT UNSIGNED    NULL,
     workspace_id      INT UNSIGNED    NULL,
     app_artifact_code VARCHAR(64)     NULL,
-    app_version_id    BIGINT UNSIGNED NULL,
+    app_version_id    VARCHAR(64)     NULL,
     app_launch_id     VARCHAR(64)     NULL,
     -- pending until the dispatcher finalizes it; a row left pending is itself a signal.
     outcome           VARCHAR(24)     NOT NULL,
@@ -249,6 +249,91 @@ CREATE TABLE tool_invocation (
     UNIQUE KEY uk_tool_invocation_execution (execution_id),
     KEY idx_tool_invocation_capability (capability_id),
     KEY idx_tool_invocation_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Platform users (E1.5, PRD E2 §5). Login and RBAC logic are E2's.
+-- `user` is a non-reserved keyword in MySQL 8: always backtick it.
+CREATE TABLE IF NOT EXISTS `user` (
+    id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    username      VARCHAR(191) NOT NULL,
+    -- NULL until a password is set: such a user cannot log in with one.
+    password_hash VARCHAR(255) NULL,
+    -- No default: every user is given a role on purpose.
+    role          VARCHAR(16)  NOT NULL,
+    is_active     TINYINT(1)   NOT NULL DEFAULT 1,
+    created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_user_username (username),
+    CONSTRAINT chk_user_role CHECK (role IN ('admin', 'user'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Panel sessions behind the __Host- cookie (E1.5, PRD E2 §4.2). Hashes only.
+CREATE TABLE IF NOT EXISTS session (
+    id          VARCHAR(64)  NOT NULL PRIMARY KEY,
+    token_hash  CHAR(64)     NOT NULL,
+    user_id     INT UNSIGNED NOT NULL,
+    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at  DATETIME     NOT NULL,
+    revoked_at  DATETIME     NULL,
+    UNIQUE KEY uk_session_token_hash (token_hash),
+    KEY idx_session_user (user_id),
+    KEY idx_session_expires (expires_at),
+    CONSTRAINT fk_session_user FOREIGN KEY (user_id)
+        REFERENCES `user` (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Miniapp launches (E1.5, PRD E2 §4.3 and PRD E6 §5). Hashes only.
+-- artifact_code and version_id have no FK: versioned artifacts live in the store, not in MySQL.
+-- version_id is a VA version id string (v-YYYYMMDD-HHMMSS-xxxx), pinned at launch.
+CREATE TABLE IF NOT EXISTS launch (
+    id                   VARCHAR(64)  NOT NULL PRIMARY KEY,
+    token_hash           CHAR(64)     NOT NULL,
+    user_id              INT UNSIGNED NOT NULL,
+    artifact_code        VARCHAR(64)  NOT NULL,
+    version_id           VARCHAR(64)  NOT NULL,
+    manifest_fingerprint CHAR(64)     NOT NULL,
+    allowed_actions      JSON         NOT NULL,
+    -- The server-side integration config scope the launch pins.
+    workspace_id         INT UNSIGNED NOT NULL,
+    agent_view_id        INT UNSIGNED NULL,
+    created_at           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at           DATETIME     NOT NULL,
+    revoked_at           DATETIME     NULL,
+    -- The one-time exchange code of PRD E2 §4.3 (query parameter `code`).
+    exchange_code_hash   CHAR(64)     NULL,
+    exchange_expires_at  DATETIME     NULL,
+    exchange_redeemed_at DATETIME     NULL,
+    UNIQUE KEY uk_launch_token_hash (token_hash),
+    UNIQUE KEY uk_launch_exchange_code_hash (exchange_code_hash),
+    KEY idx_launch_user (user_id),
+    KEY idx_launch_expires (expires_at),
+    CONSTRAINT fk_launch_user FOREIGN KEY (user_id)
+        REFERENCES `user` (id) ON DELETE CASCADE,
+    CONSTRAINT fk_launch_workspace FOREIGN KEY (workspace_id)
+        REFERENCES workspace (id) ON DELETE CASCADE,
+    CONSTRAINT fk_launch_agent_view FOREIGN KEY (agent_view_id)
+        REFERENCES agent_view (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Role grants (E1.5, PRD E2 §5.1): a role may use a toolbox tool or a platform operation.
+-- Exactly one of workspace_id / agent_view_id should be set. MySQL 8.0 refuses a CHECK on a
+-- column with an FK referential action (ER 3823), so the rule is E2's: writers set exactly one,
+-- readers treat a row with both or neither as no grant.
+CREATE TABLE IF NOT EXISTS role_grant (
+    id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    role          VARCHAR(16)  NOT NULL,
+    grant_kind    VARCHAR(16)  NOT NULL,
+    name          VARCHAR(128) NOT NULL,
+    workspace_id  INT UNSIGNED NULL,
+    agent_view_id INT UNSIGNED NULL,
+    created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY idx_role_grant_lookup (role, grant_kind, name),
+    CONSTRAINT chk_role_grant_role CHECK (role IN ('admin', 'user')),
+    CONSTRAINT chk_role_grant_kind CHECK (grant_kind IN ('tool', 'operation')),
+    CONSTRAINT fk_role_grant_workspace FOREIGN KEY (workspace_id)
+        REFERENCES workspace (id) ON DELETE CASCADE,
+    CONSTRAINT fk_role_grant_agent_view FOREIGN KEY (agent_view_id)
+        REFERENCES agent_view (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Mark all framework migrations as applied so setup:upgrade skips them
@@ -290,4 +375,9 @@ INSERT INTO schema_migration (version) VALUES
     ('034_credential_error_source_and_refresh_lease'),
     ('035_toolbox_capability'),
     ('036_toolbox_capability_auth_context'),
-    ('037_tool_invocation');
+    ('037_tool_invocation'),
+    ('038_user'),
+    ('039_session'),
+    ('040_launch'),
+    ('041_role_grant'),
+    ('042_app_version_id_varchar');

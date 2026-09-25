@@ -49,6 +49,7 @@ const isPositiveInt = v => typeof v === 'number' && Number.isInteger(v) && v > 0
 const isText = v => typeof v === 'string' && v.length > 0;
 const isNull = v => v === null || v === undefined;
 const isDecimalId = v => typeof v === 'string' && /^[1-9][0-9]*$/.test(v);
+const isVersionId = v => isText(v) && v.length <= 64;
 const isStringList = v => Array.isArray(v) && v.every(isText);
 
 function lifetimeWithin(createdAt, expiresAt, cap) {
@@ -133,7 +134,7 @@ export function deriveAuthContext({ row, agentViewWorkspaceId = null, source = n
       if (row.kind === 'user_session') {
         if (hasApp || !isNull(row.tool_ceiling)) return null;
       } else {
-        if (!isText(row.app_artifact_code) || !isPositiveInt(row.app_version_id) || !isText(row.app_launch_id)) return null;
+        if (!isText(row.app_artifact_code) || !isVersionId(row.app_version_id) || !isText(row.app_launch_id)) return null;
         if (!isStringList(row.tool_ceiling)) return null;
         if (source?.launch_id !== row.app_launch_id || source?.artifact_code !== row.app_artifact_code ||
             source?.version_id !== row.app_version_id) return null;
