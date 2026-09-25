@@ -67,6 +67,39 @@ else
   bad "caddy validate"
 fi
 
+# The Caddyfile's order is not the run order: Caddy sorts directives. Check the adapted
+# config: in every site the identity strip runs before the authz subrequest, and no
+# rewrite runs before it.
+if docker exec "$PROXY" sh -c 'AGENTO_PROXY_SECRET=x caddy adapt --config /etc/agento-proxy/Caddyfile --adapter caddyfile 2>/dev/null' | python3 -c '
+import json, sys
+order = []
+def walk(handlers):
+    for h in handlers:
+        k = h.get("handler")
+        if k == "headers" and "X-Agento-*" in h.get("request", {}).get("delete", []):
+            order.append("strip")
+        elif k == "reverse_proxy" and h.get("rewrite", {}).get("uri", "").startswith("/internal/authz/"):
+            order.append("auth")
+        elif k == "rewrite":
+            order.append("rewrite")
+        for r in h.get("routes", []):
+            walk(r.get("handle", []))
+bad = 0
+auths = 0
+for srv in json.load(sys.stdin)["apps"]["http"]["servers"].values():
+    for route in srv["routes"]:
+        order.clear(); walk(route["handle"])
+        if "auth" in order:
+            auths += 1
+            before = order[:order.index("auth")]
+            bad += "strip" not in before or "rewrite" in before
+sys.exit(1 if bad or auths != 2 else 0)
+'; then
+  ok "strip runs before each authz subrequest, no rewrite before it"
+else
+  bad "adapted config runs the authz subrequest out of order"
+fi
+
 echo "2. web from sandbox"
 for path in /internal/authz/app /internal/authz/share; do
   expect "$path, no header" 401 "$(from_sandbox "http://web:8000$path")"
