@@ -110,7 +110,7 @@ Each decision below stands on its own.
   schema the contracts already pin to field level (`user`, `session`, `launch`, `role_grant`, the
   `toolbox_capability` columns) ship once, in one track, before E2/E3–E5/E6 fan out. The two things
   this removes were never real dependencies — a generated Compose file and a single global migration
-  sequence are *collision hazards*, and serializing four tracks behind them costs more than doing the
+  sequence are *collision hazards*, not dependencies, and serializing four tracks behind them costs more than doing the
   work once.
 - **Front-loading stops at the edge of what is specified.** The conversation model and the miniapp
   manifest are deliberately undefined (PRD E2 §6 lists what its API "must not foreclose"), so E1.5 does
