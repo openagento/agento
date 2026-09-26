@@ -138,14 +138,16 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
-  # E1.5 scaffold: answers /health and denies every authorization subrequest; login,
-  # sessions and RBAC are E2's. It shares agento-net with sandbox, so it trusts no
-  # identity header unless the request carries the proxy secret (agento/web/server.py).
+  # The panel API, the launch redeem and the apps authorization (E2). It shares agento-net
+  # with sandbox, so it trusts no identity header unless the request carries the proxy
+  # secret (agento/web/server.py). No env_file and no encryption key: web never decrypts.
   # It reuses the cron image, like `artifacts` reuses the toolbox one.
   web:
     image: agento-cron:${AGENTO_VERSION:-latest}
     entrypoint: ["python", "-m", "agento.web"]
     user: agent
+    # AGENTO_*_HOST / AGENTO_PROXY_PORT: the browser-facing origins, same defaults as proxy.
+    # app/code + app/etc: the module inventory cron sees; web still never runs bootstrap().
     environment:
       - TZ=${TZ:-UTC}
       - MYSQL_HOST=mysql
@@ -154,8 +156,14 @@ services:
       - MYSQL_USER=cron_agent
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-cronagent_pass}
       - PYTHONPATH=/opt/agento-src
+      - AGENTO_PANEL_HOST=${AGENTO_PANEL_HOST:-panel.localhost}
+      - AGENTO_APPS_HOST=${AGENTO_APPS_HOST:-apps.localhost}
+      - AGENTO_PROXY_PORT=${AGENTO_PROXY_PORT:-8443}
     volumes:
       - ../.venv/lib/python{{ python_version }}/site-packages/agento:/opt/agento-src/agento:ro
+      # {{ extension_mounts_cron }}
+      - ../app/code:/app/code:ro
+      - ../app/etc:/app/etc:ro
       - proxy-internal:/run/agento:ro
     security_opt:
       - no-new-privileges:true

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -uo pipefail
 
-# proxy-smoke.sh — container smoke test for the E1.5 proxy and web scaffold.
+# proxy-smoke.sh — container smoke test for the proxy, web, and the E2 panel + launch flow.
 #
 # OPT-IN, like toolbox-capability-smoke.sh. It needs a RUNNING dev stack with web and proxy:
 #
@@ -10,15 +10,23 @@ set -uo pipefail
 #
 # It proves, against the real containers:
 #   1. the Caddyfile the proxy runs validates.
-#   2. from sandbox, web's authorization endpoints answer 401 — with no header and with a
-#      forged proxy secret plus identity headers.
+#   2. from sandbox, web's authorization endpoints answer 401 — with no header, with a
+#      forged proxy secret plus identity headers, and with forged artifact headers and a
+#      made-up launch cookie; the launch redeem answers 403 to a made-up code.
 #   3. /internal/* through the panel origin is 404.
-#   4. the apps and share origins reach web's authorization endpoint (403 until E2/E6).
+#   4. the apps and share origins reach web's authorization endpoint (403 with no launch
+#      cookie; share is E6's and denies every request).
 #   5. neither a `cap` value nor a launch exchange `code` reaches the proxy or web logs — with
 #      web up, and with web stopped (the error-log path).
 #   6. `artifacts` publishes no host port and does not resolve from sandbox.
+#   7. the panel + launch flow (docker/smoke/panel-launch-smoke.py): log in, launch, redeem by
+#      POST through the apps origin, file with / without the cookie, replay, a role change
+#      ending the session and the launch, and no credential in the proxy or web logs.
 #
-# It stops and restarts `web` once (step 5).
+# It stops and restarts `web` once (step 5). Step 7 seeds, idempotently, at the agent_view
+# SMOKE_AGENT_VIEW (default: dev_01): the user `e2-smoke-user` (a fresh random password
+# each run, via stdin), two role grants, two tool gates, the artifact `e2-smoke`, and
+# `e2-smoke` appended to that view's versioned_artifacts/allowed_artifacts.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
@@ -50,6 +58,8 @@ PROXY="$(resolve_container proxy)" || exit 1
 WEB="$(resolve_container web)" || exit 1
 SANDBOX="$(resolve_container sandbox)" || exit 1
 ARTIFACTS="$(resolve_container artifacts)" || exit 1
+CRON="$(resolve_container cron)" || exit 1
+MYSQL="$(resolve_container mysql)" || exit 1
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 pass=0; fail=0
@@ -76,26 +86,39 @@ fi
 # rewrite runs before it.
 if docker exec "$PROXY" sh -c 'AGENTO_PROXY_SECRET=x caddy adapt --config /etc/agento-proxy/Caddyfile --adapter caddyfile 2>/dev/null' | python3 -c '
 import json, sys
-order = []
-def walk(handlers):
+# Only one route of a `handle` group runs, so a sibling in the same group never precedes.
+def kind(h):
+    k = h.get("handler")
+    if k == "headers" and "X-Agento-*" in h.get("request", {}).get("delete", []):
+        return "strip"
+    if k == "reverse_proxy" and h.get("rewrite", {}).get("uri", "").startswith("/internal/authz/"):
+        return "auth"
+    return "rewrite" if k == "rewrite" else None
+def flat(handlers):
+    out = []
     for h in handlers:
-        k = h.get("handler")
-        if k == "headers" and "X-Agento-*" in h.get("request", {}).get("delete", []):
-            order.append("strip")
-        elif k == "reverse_proxy" and h.get("rewrite", {}).get("uri", "").startswith("/internal/authz/"):
-            order.append("auth")
-        elif k == "rewrite":
-            order.append("rewrite")
+        out += [kind(h)] if kind(h) else []
         for r in h.get("routes", []):
-            walk(r.get("handle", []))
+            out += flat(r.get("handle", []))
+    return out
+def before_auth(handlers, prefix):
+    order = list(prefix)
+    for h in handlers:
+        if kind(h) == "auth":
+            yield order
+        elif kind(h):
+            order.append(kind(h))
+        routes = h.get("routes", [])
+        for i, r in enumerate(routes):
+            earlier = [x for e in routes[:i] if not (r.get("group") and e.get("group") == r.get("group"))
+                       for x in flat(e.get("handle", []))]
+            yield from before_auth(r.get("handle", []), order + earlier)
 bad = 0
 auths = 0
 for srv in json.load(sys.stdin)["apps"]["http"]["servers"].values():
     for route in srv["routes"]:
-        order.clear(); walk(route["handle"])
-        if "auth" in order:
+        for before in before_auth(route["handle"], []):
             auths += 1
-            before = order[:order.index("auth")]
             bad += "strip" not in before or "rewrite" in before
 sys.exit(1 if bad or auths != 2 else 0)
 '; then
@@ -111,6 +134,14 @@ for path in /internal/authz/app /internal/authz/share; do
     -H 'X-Agento-Proxy-Auth: forged' -H 'X-Agento-User: admin' -H 'X-Forwarded-User: admin' \
     "http://web:8000$path")"
 done
+LAUNCH_ID="cccccccccccccccccccccccccccccccc"
+expect "/internal/authz/app, forged secret + artifact headers + made-up launch cookie" 401 "$(from_sandbox \
+  -H 'X-Agento-Proxy-Auth: forged' -H 'X-Agento-Artifact-Code: demo' \
+  -H 'X-Agento-Version-Id: v-20260925-120000-ab12' -H "Cookie: __Host-agento-launch-$LAUNCH_ID=made-up" \
+  http://web:8000/internal/authz/app)"
+expect "/internal/launch/redeem, made-up code" 403 "$(from_sandbox -X POST \
+  -H "Origin: https://panel.localhost:$PORT" -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data "launch_id=$LAUNCH_ID&code=made-up" http://web:8000/internal/launch/redeem)"
 expect "/health" 200 "$(from_sandbox http://web:8000/health)"
 
 echo "3. panel origin"
@@ -119,7 +150,7 @@ expect "/internal/authz/app through panel" 404 "$(via_proxy panel.localhost /int
 echo "4. apps and share origins"
 VERSION_PATH="/a/demo/v/v-20260925-120000-ab12/index.html"
 since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-expect "apps version path, denied by web" 403 "$(via_proxy apps.localhost "$VERSION_PATH?cap=SECRETCAP&code=SECRETCODE")"
+expect "apps version path without a launch cookie, denied by web" 403 "$(via_proxy apps.localhost "$VERSION_PATH?cap=SECRETCAP&code=SECRETCODE")"
 expect "apps non-version path" 404 "$(via_proxy apps.localhost /a/demo/)"
 expect "share origin, denied by web" 403 "$(via_proxy abc.share.localhost "/?cap=SECRETCAP&code=SECRETCODE")"
 
@@ -141,6 +172,39 @@ printf '%s' "$logs" | grep -q 'REDACTED' && ok "query values logged as REDACTED"
 echo "6. artifacts"
 [ -z "$(docker port "$ARTIFACTS")" ] && ok "no published host port" || bad "artifacts publishes a host port"
 docker exec "$SANDBOX" getent hosts artifacts >/dev/null 2>&1 && bad "artifacts resolves from sandbox" || ok "artifacts does not resolve from sandbox"
+
+echo "7. panel and launch flow"
+VIEW="${SMOKE_AGENT_VIEW:-dev_01}"
+RUN=/opt/cron-agent/run.sh
+sql() { docker exec -i "$MYSQL" sh -c 'mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" cron_agent' <<<"$1" 2>/dev/null; }
+VIEW_ID="$(sql "SELECT id FROM agent_view WHERE code = '$VIEW'")"
+SEED="$(umask 077; mktemp -d)"
+trap 'rm -rf "$SEED"' EXIT
+python3 -c 'import secrets; print(secrets.token_urlsafe(18))' > "$SEED/pw"
+if [ -z "$VIEW_ID" ]; then
+  bad "agent_view '$VIEW' not found (set SMOKE_AGENT_VIEW)"
+else
+  docker exec -i "$CRON" $RUN user:create e2-smoke-user --role user < "$SEED/pw" >/dev/null 2>&1 \
+    || docker exec -i "$CRON" $RUN user:password e2-smoke-user < "$SEED/pw" >/dev/null
+  docker exec "$CRON" $RUN user:set-role e2-smoke-user user >/dev/null
+  docker exec "$CRON" $RUN grant:add --role user --tool versioned_artifact_get_current --agent-view "$VIEW" >/dev/null
+  docker exec "$CRON" $RUN grant:add --role user --operation artifact.launch --agent-view "$VIEW" >/dev/null
+  for tool in versioned_artifact versioned_artifact_get_current; do
+    docker exec "$CRON" $RUN tool:enable "$tool" --agent-view "$VIEW" >/dev/null
+  done
+  mkdir "$SEED/src" && echo '<h1>e2 smoke</h1>' > "$SEED/src/index.html"
+  (cd "$PROJECT_DIR" && uv run bin/agento artifact:init e2-smoke --source "$SEED/src" --actor proxy-smoke) >/dev/null 2>&1 || true
+  allowed="$(sql "SELECT value FROM core_config_data WHERE scope = 'agent_view' AND scope_id = $VIEW_ID AND path = 'versioned_artifacts/allowed_artifacts'")"
+  case ",${allowed// /}," in
+    *,e2-smoke,*) ;;
+    *) docker exec "$CRON" $RUN config:set versioned_artifacts/allowed_artifacts "${allowed:+$allowed,}e2-smoke" --agent-view "$VIEW" >/dev/null ;;
+  esac
+  if python3 "$SCRIPT_DIR/panel-launch-smoke.py" "$PORT" "$SEED/pw" "$VIEW_ID" e2-smoke "$CRON" "$PROXY" "$WEB"; then
+    ok "panel and launch flow"
+  else
+    bad "panel and launch flow"
+  fi
+fi
 
 echo
 echo "passed: $pass, failed: $fail"

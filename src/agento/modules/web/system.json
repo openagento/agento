@@ -1,0 +1,3 @@
+{
+  "launch/max_concurrent": {"type": "integer", "label": "Live miniapp launches per user (hard ceiling 20; the oldest is revoked beyond it)", "showInDefault": true, "showInWorkspace": true, "showInAgentView": false}
+}

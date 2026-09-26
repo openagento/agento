@@ -1,0 +1,8 @@
+{
+  "name": "web",
+  "version": "1.0.0",
+  "description": "Web panel — the toolbox session auth source and the launch cap",
+  "sequence": [],
+  "order": 100,
+  "tools": []
+}
