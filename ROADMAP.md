@@ -173,6 +173,7 @@ docker compose restart
 
 | Shim | Where | Remove when |
 |---|---|---|
+| Legacy `aes256:` read path + the `core/RekeyToScrypt` data patch | `framework/crypto.py` (`decrypt` legacy branch, `is_legacy`), `toolbox/crypto.js`, `modules/core/src/patches/rekey_to_scrypt.py`, `modules/core/data_patch.json` | v0.18.0 — the patch ships in 0.17.0, so every deployment that upgraded has been rekeyed to `aes256s:`. Delete both legacy branches, `is_legacy`, the patch and its test, and the legacy-format bullet in `docs/config/encryption.md`. CodeQL alerts `py/weak-sensitive-data-hashing` / `js/insufficient-password-hash` were dismissed for this path and close with it |
 | `workspace:ssh-purge` command (+ its `wo:sp` shortcut) | `workspace_build/src/commands/ssh_purge.py`, `workspace_build/di.json` | every deployment has upgraded past the release that stopped writing `ssh_private_key` to disk and has run the sweep once. Nothing on this code writes a key file, so the command then has nothing to find. Delete the command, its `di.json` entry, its tests, and the doc sections in `docs/cli/workspace-build.md` / `docs/cli/README.md` / `docs/config/identity.md`; keep `find_private_keys` only if `workspace:build`'s own legacy pruning still uses it |
 
 ### Deprecation removals due next release (v0.16)
