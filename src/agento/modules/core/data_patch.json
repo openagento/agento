@@ -1,6 +1,7 @@
 {
     "patches": [
         {"name": "SeedWorkspace", "class": "src.patches.seed_workspace.SeedWorkspace"},
-        {"name": "MigratePlaywrightWhitelistToTools", "class": "src.patches.migrate_playwright_whitelist_to_tools.MigratePlaywrightWhitelistToTools"}
+        {"name": "MigratePlaywrightWhitelistToTools", "class": "src.patches.migrate_playwright_whitelist_to_tools.MigratePlaywrightWhitelistToTools"},
+        {"name": "RekeyToScrypt", "class": "src.patches.rekey_to_scrypt.RekeyToScrypt"}
     ]
 }
