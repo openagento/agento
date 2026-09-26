@@ -4,6 +4,31 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-26 — scrypt key derivation for stored secrets
+
+- **Problem.** The AES key for every `obscure` config value and every `credential` row was a bare
+  `SHA-256(AGENTO_ENCRYPTION_KEY)` — no salt, no work factor. One stolen database plus a wordlist or a
+  precomputed table recovers the passphrase, and one derived key opens every row. CodeQL reported it as
+  `py/weak-sensitive-data-hashing` and `js/insufficient-password-hash`.
+- **Fix.** Derive the key with **scrypt** (N=2^14, r=8, p=1, 16-byte random salt per value) and store
+  `aes256s:{salt}:{iv}:{ciphertext}`. scrypt over PBKDF2 because memory hardness (16 MiB per guess) is
+  what defeats GPU cracking; both `hashlib` and Node's `crypto` ship it, so no dependency is added.
+- **Per-value salt, with a cache.** A shared salt would let one derivation open every row. The cost of a
+  per-value salt is one derivation per distinct salt, so both implementations memoize by
+  (passphrase, salt) — `bootstrap()` decrypts many values in one process.
+- **Migration.** `decrypt` still reads the legacy `aes256:` prefix, so a deployment keeps working the
+  moment the code lands; the `core/RekeyToScrypt` data patch then re-encrypts `core_config_data`
+  (`encrypted=1`) and `credential.credentials` on the next `setup:upgrade`. Nothing writes the legacy
+  format any more. Upgrade order matters: the toolbox must be restarted before cron runs the patch,
+  because an old toolbox cannot read a rekeyed value. The legacy read path and the patch are
+  **obsolete in 0.18.0** — by then every deployment that upgraded has been rekeyed. Upgrading
+  across that boundary without passing through a release that ran the patch is not supported.
+- **Both languages change together.** Python encrypts and the toolbox decrypts the same rows, so the
+  parameters are duplicated in `framework/crypto.py` and `toolbox/crypto.js`; changing one alone makes
+  every stored value unreadable by the other container.
+
+---
+
 ## 2026-09-25 — One tracked RULES.md with permanent rule IDs
 
 - **Problem: three roles read three rule sets.** The implementer read AGENTS.md, the reviewer read an
@@ -26,6 +51,52 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   ("Apply all"), on main first, with `RULES.md` at the repo root.
 
 ---
+
+## 2026-09-25 — Harness native-config passthrough (AG-27)
+
+- **Problem: every harness CLI setting needed its own Agento field.** An agent reached the internet
+  through Claude's built-in `WebSearch` (AI-238) although the deployment routes all network access
+  through the Toolbox. Blocking it means writing `permissions.deny` into Claude's `settings.json` —
+  a key Agento never modelled — and the same class of gap exists for every key each CLI adds.
+  Modelling them one by one is endless, and every model is a translation that drifts from the CLI.
+- **Fix: one raw blob per harness, in the harness's own native format.** `claude/settings` (JSON →
+  `.claude/settings.json`), `codex/config` (TOML → `.codex/config.toml`) and `pi/settings`
+  (JSON → `$HOME/.pi/agent/settings.json`). Each adapter parses its own format and deep-merges the
+  operator's blob **over** the block Agento generates, so the operator wins on a collision and a
+  generated key the blob does not mention survives. No Agento-side vocabulary, no drift.
+- **The field lives in the harness module, not in `agent_view`.** Declared in that module's own
+  `system.json` and allow-listed in its `di.json` `runtime_config_fields`, so it arrives through the
+  existing `HarnessRunContext.harness_config` / `prepare_workspace(..., harness_config=…)` seam. An
+  `agent_view/claude/*` entry would put a harness name into the `agent_view` module — CLAUDE.md
+  principle 6. `runtime_config_fields` also refuses an `obscure` field by construction, which is why
+  every field description says: never put a credential here.
+- **A malformed blob fails the workspace build.** Parsing it and moving on would mean an operator's
+  deny-list silently absent — exactly the AI-238 failure mode, dressed as working configuration.
+  This also changes legacy `agent_view/claude/permissions`: an invalid value there used to be logged
+  and skipped and now raises. Breaking for a deployment holding a bad value, deliberately so; the
+  remedy is in `docs/modules/claude.md` and `CHANGELOG.md`. That legacy value also moved from
+  `.claude.json` to `.claude/settings.json`, because Claude ignores `permissions` in `.claude.json`
+  — it never had an effect where it was written.
+- **Codex keeps `--dangerously-bypass-approvals-and-sandbox` unless the operator sets
+  `sandbox_mode`.** The flag overrides `config.toml` wholesale, so a passthrough alone would be dead
+  for Codex; dropping it unconditionally would depend on an unverified claim. Dropping it exactly
+  when the operator expressed a sandbox intent keeps today's behaviour byte-identical by default and
+  makes the block effective when asked for. Agento correspondingly generates **no** `sandbox_mode`
+  or `approval_policy` of its own: the build dir is also the HOME an *interactive* `agento run`
+  uses, so writing "never ask, full access" into the file would silently remove that session's
+  approval prompts — a mode the CLI flag, not the file, had always decided. **The empirical check did not run**: no Codex
+  credential in the pool is accepted by the backend (`403 Forbidden` from
+  `chatgpt.com/backend-api/codex/*`), on the previously pinned 0.137.0 and on 0.157.0 alike, so the
+  probe ends before any command executes. So whether `exec` honours `sandbox_mode` from the file,
+  and whether the OS sandbox blocks network in that image, are **unverified** — documented as such
+  rather than claimed. The reporter observed it on 0.145.0. Removing the flag unconditionally waits
+  on that re-verification.
+- **Every command-building path must carry the resolved dict.** Three of five
+  `HarnessRunContext` sites passed none (`framework/replay.py`, `framework/cli/runtime.py`,
+  `agent_view` `runtime:show`), so the bypass flag would silently come back on exactly the paths an
+  operator uses to reproduce a run — and `pi/builtin_tools` was already being lost there. An AST
+  guard test with an empty allow-list closes the class instead of the three instances. `replay` now
+  **refuses** a job with no `agent_view_id` rather than emit a command that may differ from the run.
 
 ## 2026-09-17 — `blocked` verdict category, halts to `FAILED` (AG-55)
 
@@ -55,6 +126,165 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   cause is a missing credential (it lives per-deployment in `app/code/`, out of this repo) sets
   `blocked=True`. The framework only honors the contract — no `if provider == …` coupling, no framework
   knowledge of any specific tool.
+## 2026-08-25 — D-SSH-1: the SSH private key is never a file; a per-run `ssh-agent` carries it
+
+`workspace:build` used to decrypt `agent_view/identity/ssh_private_key` into
+`<build_dir>/.ssh/id_rsa` at mode 0600. **The file mode protected nothing.** Every agent_view runs as
+the same uid (`agent`) in the same cron container on the same `/workspace` mount, through a 0755
+directory chain — so the key was readable by every other view, and build retention kept a copy for
+every retained generation. This was observed in production: one view enumerated another's build
+generations, picked a non-truncated `id_rsa`, and used it to push to that view's remote. The GitHub PAT
+path had always been done correctly (token decrypted only in the toolbox); the SSH path had not, which
+also made the per-view tool gate for git irrelevant.
+
+**What changed.** The build writes **no** SSH files at all; the **non-secret** ones (`id_rsa.pub`,
+`config`, `known_hosts`) are written per run into the run HOME. The private key is resolved **per run** and travels config → the spawning process's
+memory → the wrapper's environment → an inherited file descriptor → `ssh-add` in a **per-run
+`ssh-agent`**. `printf` is a bash builtin, so the key never enters any argv. The wrapper then scrubs it
+from the environment with `env -u` and `exec`s the agent command with `SSH_AUTH_SOCK` as its only
+secret-bearing capability (the non-secret `GIT_SSH_COMMAND`, `AGENTO_SSH_TTL` and `SSH_AGENT_PID`
+remain set; only the key is removed). The key
+never becomes a filesystem object — not on the shared mount, not in the container's `/tmp`. Delivery
+fails **closed**: if the key cannot be handed over safely the wrapper drops it and warns rather than
+writing a file, and if it finds a planted identity in the passwd home it cannot remove, it refuses to
+start (exit 78). `workspace:build` prunes legacy keys from its own view's generations (before the
+unchanged-checksum early return), and `workspace:ssh-purge` is the one-time repository-wide admin
+sweep — deprecated on arrival and scheduled for removal in v0.17 or later, since on this code no run
+writes a key file for it to find (ROADMAP.md).
+
+**Why no file, rather than a better-placed file.** Under one uid, no file mode, path choice or delivery
+channel can keep one view from another's credential. Each candidate was checked and rejected: a file on
+the shared mount (readable while it exists), a file in container-private `/tmp` (same uid, merely
+shorter-lived), an environment variable (`/proc/<pid>/environ`), argv (`/proc/<pid>/cmdline`). "No file
+at all" is what remained.
+
+**Residual exposure — the complete list, none of it fixed by this change.** All six channels, with
+their lifetimes:
+
+1. **The wrapper's own environment block** — `/proc/<pid>/environ`, readable by a same-uid peer during
+   the **milliseconds** before `exec env -u …` replaces it. The process substitution that feeds the
+   descriptor forks from that shell, so the key is in *its* environ too, for as long as the `printf`
+   builtin takes to write and exit.
+2. **The inherited key descriptor (fd 3)** — `ssh-agent` does `closefrom(sock + 1)` and `execvp`s the
+   inner shell without closing fd 3, so the descriptor survives into that shell and into the forked
+   agent process (two handles, one pipe) until `exec 3<&-`. **Tens of milliseconds**, spanning
+   `ssh-agent` start plus the `ssh-add` call — a window distinct from (1), since it is after `env -u`
+   already scrubbed the environment. It cannot be shortened: `ssh-add` is already the first thing the
+   inner shell does.
+3. **The live `ssh-agent` socket** — a concurrent peer view can *use* it (sign, and therefore push),
+   though never extract the key from it (`ssh-add -L` yields the public half only). Lifetime: **the run,
+   plus a tail of ~2 ms under active probing, bounded by 10 s when idle** — in command mode the
+   parent `ssh-agent` execs the command and the *child* is the agent, polling for that parent on a
+   10-second `parent_alive_interval`; each incoming connection also runs the event loop, so a peer
+   that keeps probing the socket triggers the check itself and sees it torn down almost at once.
+   `-t` bounds the loaded *identity* independently. Verified live 2026-08-25 (dev deployment): a
+   same-uid peer authenticated through the socket (`authenticated via ssh key`), read only the public
+   key, and the socket — polled continuously — stopped answering 2 ms after the command exited.
+4. **The spawning process's own heap** — the consumer puts the decrypted key in
+   `HarnessRunContext.extra_env`, the runner keeps that context and a copy of the env dict across
+   `proc.wait()`. Lifetime is **the consumer process's, not the job's**: CPython cannot zeroize a
+   `str`, and a freed buffer stays in the allocator's arenas until reuse or process exit. The agent runs
+   as the same uid in the same container, so ptrace-class access (`/proc/<pid>/mem`) was not barred by
+   file modes either. This is not new to the SSH key — `ctx.credential` already carries provider
+   credentials through the identical field.
+   **CLOSED 2026-08-25** by `framework/process_hardening.py`: every framework CLI process calls
+   `prctl(PR_SET_DUMPABLE, 0)` at import time, so the kernel reparents its `/proc` entries to root and
+   denies ptrace-mode access — and these containers drop `CAP_SYS_PTRACE`, so nothing in the container
+   overrides it. Verified live on the dev deployment: as uid `agent`, a read of the consumer's
+   `/proc/<pid>/mem` succeeded before and is `Permission denied` after (`/proc/<pid>/environ` likewise,
+   now `root:root`). Stated limits: a **40-60 ms measured** window between `execve` (which resets
+   dumpable to 1) and the call, and a parent shell that exported the variables still holds them in its
+   own heap. This is process hardening — not a boundary between agent_views.
+5. **The `agento run` transport chain — BOTH its headless and interactive forms.** The key is
+   resolved **inside cron**, by `modules/agent_view/.../prepare_run.py` (`resolve_ssh_identity`), and
+   returned to the host CLI as part of the `prepare-run` **JSON payload over a `docker exec` pipe** —
+   never a file, never echoed back, and stdout is suppressed on a parse failure so the `env` field
+   cannot leak through an error message. The host CLI then holds that value and passes it back into
+   the sandbox with a **name-only** `-e KEY`, so the VALUE is read from an environment the host
+   already holds. **The two forms expose it in different places, and the difference is the whole
+   point of naming them separately:**
+   - *headless* (`cli/run.py:143`) builds a **Python dict** (`child_env`) and hands it to
+     `subprocess.run` as the `docker` client's environment. The host CLI's own `os.environ` is
+     **not** touched, so `/proc/<the-CLI-pid>/environ` never carries the key; the exposure is the
+     CLI's **heap** plus `/proc/<the-docker-client-pid>/environ` for the life of that child.
+   - *interactive* (`cli/run.py:187`) calls `os.environ.update(...)` before `execvp`, because an
+     exec'd process inherits only its own environment. That one **does** put the key in
+     `/proc/<pid>/environ` of the host CLI process, which then becomes the `docker` client.
+
+   Either way it is never a file, never echoed back, and stdout is suppressed on a parse failure so
+   the `env` field cannot leak through an error message. Same trust boundary this channel already
+   carries provider API keys across.
+6. **The credential store itself, to any process running as the container's one uid.**
+   **CLOSED 2026-09-23.** The cron container holds the database credentials and
+   `AGENTO_ENCRYPTION_KEY`, and its entrypoint used to write them to a mode-0644 file
+   (`/opt/cron-agent/env`) because `su - agent` wiped the environment for the crontab and the
+   consumer. Every agent_view's run is the same uid, so any agent could source that file and
+   decrypt **any** view's key — with `bin/agento agent_view:prepare-run <peer-view>`, which
+   prints the resolved key in its JSON `env` field, or with a database client directly.
+
+   The mechanism that closes it (**V0**, owner decision 2026-09-23): the container keeps **one**
+   uid and one shared `/workspace` — views seeing each other's files is a wanted property, so
+   **Option B / AG-42 is cancelled, not deferred** — and the *store* is taken away from that uid
+   instead.
+   - `/opt/cron-agent` is `root:root`; nothing under it is agent-writable.
+   - The entrypoint splits the environment by `credential_store_env.is_credential_store_name`:
+     the store shapes go to `/opt/cron-agent/env` (`root:root 0600`), everything else to
+     `/opt/cron-agent/env.public`. Both files are NUL-delimited, so a value containing a
+     newline cannot forge a second assignment.
+   - `su - agent -c …` is replaced by `/opt/cron-agent/launch.sh` (`root:root 0700`), which
+     re-execs through `env -i`, imports `env.public` **without evaluating it**, and drops
+     privilege with `setpriv --reuid agent`. `setpriv` preserves the environment — which is
+     exactly why the launcher builds that environment from empty.
+   - The store never crosses an `execve`: `launch.sh --store` stays root and runs
+     `/opt/cron-agent/drop.py`, which reads the file, drops every id to `agent` in-process,
+     calls `prctl(PR_SET_DUMPABLE, 0)` and only then loads the payload into
+     `framework/store_env.py`'s private mapping and imports the CLI. An exec resets dumpable,
+     and the images carry no yama `ptrace_scope`, so a store handed across one would be
+     readable to a same-uid `PTRACE_ATTACH` for the whole of Python's startup. It never enters
+     `os.environ` either, so no child inherits it.
+   - The managed crontab belongs to **root**, rendered every minute by
+     `/opt/cron-agent/install-crontab.py` from the *installed* module catalog and the `schedule`
+     table — two inputs uid `agent` cannot write. `app/etc/modules.json` is deliberately not
+     read by root; enablement is enforced after the drop by the `cron:run` dispatcher.
+   - Every `docker compose exec` into the `cron` service enters as root and goes through the
+     launcher, so an operator-initiated command has no store in its initial environ either.
+
+   Residual after V0: root itself. See
+   [docs/architecture/cron-privileges.md](docs/architecture/cron-privileges.md).
+
+Four of the six are gone within seconds of the run ending; (4) is closed outright as of 2026-08-25,
+and (6) as of 2026-09-23.
+**No channel is a file holding the key** — that is what this change buys, and the lifetimes above are
+what it does not. Channel (6) involved a file, the cron env file, which held not the key but the
+means to decrypt it; it predated this change, was not part of the waiver, and is closed. A future change that adds a channel adds it here and to the plan's AC4-residual list; the two
+counts must match.
+
+**Options considered.**
+
+- **Option A (chosen)** — no file; per-run `ssh-agent`. Contained: no container or permission-model
+  change. Removes the capability the incident actually used.
+- **Option B** — a distinct OS uid per agent_view (per-view user created in the entrypoints, jobs
+  spawned via `setpriv`/`gosu`, run HOME and socket dir 0700). Closes channels 1–4 and 6, and also stops peer
+  views reading each other's *artifacts* — the same production job grepped a peer's tree for `ghp_` /
+  `github_pat_` tokens, which Option A does not address. Cost: the container entrypoints, file
+  ownership across `/workspace`, the artifacts cleanup paths, and every existing deployment's on-disk
+  ownership.
+- **Option C** — proxy git-over-SSH through the toolbox, so the agent holds neither key nor socket; the
+  model the GitHub PAT path already follows, and the only option that fully satisfies
+  `RULES.md:112`. Cost: largest — a new toolbox git surface, and it changes how every agent does git.
+
+**Waiver (granted 2026-08-23 by the project owner, recorded 2026-08-25).**
+`.claude/skills/agento-code-review/RULES.md:112` — "Agent code must never hold, read, or pass
+credentials" — is **explicitly waived for this one credential, at Option A scope**, on these terms: it
+covers only the SSH private key used for git, delivered exactly as described above; no other credential
+and no other delivery channel; and the waiver stands until Option C (a toolbox git proxy) replaces it.
+**Option B is cancelled** (2026-09-23): agent_views share one uid and one `/workspace` by
+design, and residual channel (6) — the reason Option B was tracked — is closed by V0 above
+([ROADMAP.md](ROADMAP.md)).
+
+**What this is not.** Option A is a large, real reduction in exposure. It is **not** an authorization
+boundary, and nothing in the code, the docs or a commit message may describe it as isolation between
+agent_views. Under one uid, that boundary does not exist; Option B is what would create it.
 
 ---
 
@@ -486,7 +716,7 @@ Hardens the Outlook channel against cross-user mail exposure in a shared mailbox
 A new core, disableable channel that watches an agent's open Bitbucket Cloud PRs and queues review work, modeled on the Outlook channel (Python publisher + toolbox token boundary) with **zero framework edits**. See [docs/modules/bitbucket.md](docs/modules/bitbucket.md).
 
 - **D-1 routing by per-view config, not the router.** The agent_view's `bitbucket_account_uuid` + `repo_allowlist` *is* the binding (mirrors Outlook's mailbox). The ACC's optional explicit bind is met by the existing generic `ingress:bind bitbucket <account_uuid> <agent_view_code>` (zero new code); the publisher does not depend on it.
-- **D-2 checkout+push uses the existing `workspace_build` SSH identity — a different credential from the API token.** The token (toolbox-only, never agent-reachable) drives all REST work; the SSH key is the agent's own push identity, "opt-in" by being configured. The module does **not** gate git push and the git layer is **not** module-allow-list-enforced (the API write surface is); this boundary is documented rather than overclaimed.
+- **D-2 checkout+push uses the agent_view's configured SSH identity — a different credential from the API token.** (Reworded 2026-08-25: the push identity is `agent_view/identity/ssh_private_key`, **loaded into a per-run `ssh-agent` and never written to disk**; `workspace_build` no longer carries it — see D-SSH-1.) The token (toolbox-only, never agent-reachable) drives all REST work; the SSH key is the agent's own push identity, "opt-in" by being configured. The module does **not** gate git push and the git layer is **not** module-allow-list-enforced (the API write surface is); this boundary is documented rather than overclaimed.
 - **D-3 no schema migrations** — reuse `job` (incl. `requester_*`), `core_config_data`, `ingress_identity`.
 - **D-4 onboarding requires a reachable toolbox to verify-before-save.** Keeps every Bitbucket API call inside the toolbox (the "Python must not hold the token" rule applies to onboarding too). If the toolbox is unreachable, onboarding verifies nothing and saves nothing; the offline path is manual `config:set`.
 - **D-5 the toolbox is the authorization boundary, with NO framework/toolbox edit.** `enabled`, workspace, `account_uuid`, `repo_allowlist` are resolved from scoped config and enforced on every REST + MCP call; caller args/body may only narrow, never authorize. REST handlers call `loadScopedDbOverrides` themselves → have `agentViewMeta` → fail closed (404) on an unknown `agent_view_id`. MCP tools cannot see `agentViewMeta` and the agent (same Docker network as the toolbox) can in principle open its own session with a different/omitted `agent_view_id` — the **framework-wide N5-2 internal-caller-auth gap shared by Jira and Outlook**, explicitly out of scope and not worsened here. The honest guarantee: token toolbox-only; tools opt-in per scope; every read/write bounded to the resolved `repo_allowlist` (fail-closed by config-absence). We do **not** claim MCP "refuses forged views". **Token confinement (hardened in impl review round 2):** the API token is **only ever decrypted in the toolbox** — it is never stored at DEFAULT scope (so the framework's `bootstrap()`, which resolves DEFAULT-scope obscure config in the cron process, never decrypts it), and the publisher resolves only non-secret fields via per-path `.get()` (never `get_module()`, which would resolve the token field). Bitbucket config is therefore always agent_view-scoped (see D-11 update).
@@ -720,7 +950,7 @@ A new core, disableable channel that watches an agent's open Bitbucket Cloud PRs
 ## 2026-03-24 — Concurrent worker pool with per-run isolation (Phase 9.5)
 
 - **ThreadPoolExecutor, not subprocess pool.** Threads are lightweight coordinators; the actual work runs in CLI subprocesses (Claude Code / Codex). Isolation comes from per-run directories, not process-level separation. Simpler shutdown semantics than subprocess supervision.
-- **Per-run directory** `{AGENTO_WORKSPACE_DIR}/{workspace}/{agent_view}/runs/{job_id}/`: each job gets freshly generated `.claude.json`, `.mcp.json`, `.codex/config.toml`, `AGENTS.md`, `SOUL.md`. Eliminates the shared `.claude.json` corruption that forced `concurrency=1`. Directory is cleaned up after job completion.
+- **Per-run directory** `{AGENTO_WORKSPACE_DIR}/{workspace}/{agent_view}/runs/{job_id}/`: each job gets freshly generated `.claude.json`, `.mcp.json`, `.codex/config.toml`, `AGENTS.md`, `SOUL.md`. Eliminates the shared `.claude.json` corruption that forced `concurrency=1`. Directory was cleaned up after job completion at the time of this decision; run dirs are **retained** now (see ROADMAP “GC of old runtime dirs”).
 - **`job.priority`** 0-100 (default 50), stamped at publish time from scoped config path `agent_view/scheduling/priority`. Dequeue uses `ORDER BY priority DESC, created_at ASC`. Changing config does not retroactively affect queued jobs — consistent with Jira's approach to sprint priorities.
 - **`AGENTO_CONSUMER_MAX_WORKERS`** env var (default 10, per-run isolation makes it safe). Originally `CONSUMER_MAX_WORKERS`; renamed in 2026-05 (see [Cron container env prefix convention](#2026-05-14--agento_-prefix-for-cron-container-env-vars) below) because the entrypoint's whitelist dropped non-`AGENTO_*` framework knobs.
 - **`agent_view_worker.py` deprecated** — the subprocess-per-agent_view model from Phase 9 is replaced by generic worker slots in the consumer's thread pool.

@@ -97,6 +97,7 @@ def _make_runner(
     *,
     credential=None,
     model: str | None = None,
+    harness_config: dict[str, str],
 ) -> object:
     """Build a runner for an explicit (harness, provider), claiming the credential ONCE.
 
@@ -104,6 +105,10 @@ def _make_runner(
     and the process can never end up on two different credentials. Pass ``credential``
     when it has already been claimed (e.g. ``replay --credential-id``) so this does not
     claim a second, different one.
+
+    ``harness_config`` is required (keyword-only, no default) on purpose: an empty dict
+    silently drops the harness's own build-time settings, so a caller must resolve one
+    rather than fall into one.
     """
     from ..harness import HarnessRunContext, create_runner, resolve_provider
 
@@ -117,6 +122,7 @@ def _make_runner(
         model=model,
         credential_required=provider_desc.credential_required,
         credential=credential,
+        harness_config=harness_config,
     )
     return create_runner(harness, ctx, logger=logger, dry_run=consumer_config.disable_llm)
 
@@ -164,7 +170,7 @@ class SetupUpgradeCommand:
 
     @property
     def help(self) -> str:
-        return "Apply schema migrations, data patches, and install crontab"
+        return "Apply schema migrations and data patches"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--dry-run", action="store_true", help="Show pending work without applying")
@@ -207,8 +213,6 @@ class SetupUpgradeCommand:
                     print(f"  Data patches [{mod}] ({len(patches)}):")
                     for p in patches:
                         print(f"    {p}")
-                if result.cron_changed:
-                    print("  Crontab: would be updated")
             else:
                 if not result.has_work:
                     print("Nothing to do.")
@@ -219,8 +223,6 @@ class SetupUpgradeCommand:
                     print(f"Applied {len(versions)} migration(s) for {mod}")
                 for mod, patches in result.data_patches.items():
                     print(f"Applied {len(patches)} data patch(es) for {mod}")
-                if result.cron_changed:
-                    print("Crontab updated")
                 for mod in result.onboardings_run:
                     print(f"Onboarding completed for {mod}")
                 if result.onboardings_disabled:
@@ -294,7 +296,7 @@ class ReplayCommand:
             # DISPLAYED the job's model but EXECUTED on the provider default.
             runner = _make_runner(
                 replay.harness, replay.provider, logger=logger, credential=credential,
-                model=replay.model,
+                model=replay.model, harness_config=replay.harness_config,
             )
             result = runner.execute(
                 RunRequest(prompt=replay.prompt, model=replay.model)

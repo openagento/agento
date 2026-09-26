@@ -379,8 +379,13 @@
       <div class="card">
         <div class="card-title">Agent invokes MCP tools</div>
         <div class="card-body">
-          Tool calls flow over the MCP connection defined in <code>.mcp.json</code>. Every privileged action is delegated to the toolbox.
-          (A headless agent still inherits the cron env — see the known gaps in <code>zero-trust.md</code>.)
+          Tool calls flow over the MCP connection defined in <code>.mcp.json</code>. The agent holds no credential from the
+          toolbox store — every privileged action is delegated to the toolbox. One documented exception: the per-run git SSH
+          identity, delivered as a signing socket rather than a key file (see <code>DECISIONS.md</code> D-SSH-1).
+          A <em>scheduled</em> agent runs as the cron container's own uid, but the credential store no longer
+          reaches that uid: the store file is <code>root:root 0600</code> and is delivered to a framework
+          process by a root-owned program that drops privilege before loading it &mdash; <code>DECISIONS.md</code> D-SSH-1
+          residual channel (6), closed 2026-09-23.
         </div>
       </div>
       <div class="card callout">

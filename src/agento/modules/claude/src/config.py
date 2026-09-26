@@ -112,6 +112,21 @@ def _merge_json(legacy: dict[str, Any], current: dict[str, Any]) -> dict[str, An
     return merged
 
 
+def _parse_json_blob(raw: str, path: str) -> dict[str, Any]:
+    """Parse an operator-supplied JSON config blob, or fail the build naming ``path``.
+
+    Deliberately fail-fast: a silently dropped blob is a silently dropped deny-list,
+    i.e. a network block the operator believes is in place and is not.
+    """
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError(f"Invalid JSON in {path}: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must be a JSON object, got {type(data).__name__}")
+    return data
+
+
 class ClaudeWorkspaceAdapter:
     """Writes Claude Code CLI config files: .claude.json, .claude/settings.json, .mcp.json."""
 
@@ -141,7 +156,7 @@ class ClaudeWorkspaceAdapter:
         captured ``~/.claude.json`` into ``build_dir/.claude.json`` (so Claude
         sees ``oauthAccount`` and considers itself logged in on first run).
         Preserves any agent_view-level keys already in ``.claude.json`` such as
-        ``model``/``systemPrompt``/``permissions`` written by ``prepare_workspace``.
+        ``model``/``systemPrompt`` written by ``prepare_workspace``.
         """
         credentials = credential.credentials or {}
         if credential.type == "anthropic_api_key":
@@ -287,7 +302,7 @@ class ClaudeWorkspaceAdapter:
     ) -> None:
         working_dir.mkdir(parents=True, exist_ok=True)
         self._write_claude_json(working_dir, agent_config)
-        self._write_settings_json(working_dir, agent_config)
+        self._write_settings_json(working_dir, agent_config, harness_config)
         self._write_mcp_json(
             working_dir, agent_config,
             agent_view_id=agent_view_id,
@@ -436,25 +451,34 @@ class ClaudeWorkspaceAdapter:
         if personality:
             claude_json["systemPrompt"] = personality
 
-        permissions = agent_config.get("claude/permissions")
-        if permissions:
-            try:
-                claude_json["permissions"] = json.loads(permissions)
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("Invalid JSON in agent_view/claude/permissions, skipping")
-
         if claude_json:
             config_path = working_dir / ".claude.json"
             config_path.write_text(json.dumps(claude_json, indent=2) + "\n")
             logger.debug("Generated %s", config_path)
 
     @staticmethod
-    def _write_settings_json(working_dir: Path, agent_config: dict[str, str]) -> None:
+    def _write_settings_json(
+        working_dir: Path,
+        agent_config: dict[str, str],
+        harness_config: dict[str, str] | None = None,
+    ) -> None:
         settings: dict[str, Any] = {}
 
         trust_level = agent_config.get("claude/trust_level")
         if trust_level:
             settings["permissions"] = {"dangerouslySkipPermissions": trust_level == "full"}
+
+        # Legacy passthrough. It used to land in .claude.json, where Claude ignores it.
+        permissions = agent_config.get("claude/permissions")
+        if permissions:
+            settings = _merge_json(
+                settings,
+                {"permissions": _parse_json_blob(permissions, "agent_view/claude/permissions")},
+            )
+
+        blob = (harness_config or {}).get("settings")
+        if blob:
+            settings = _merge_json(settings, _parse_json_blob(blob, "claude/settings"))
 
         if settings:
             settings_dir = working_dir / ".claude"

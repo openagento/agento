@@ -32,7 +32,7 @@ DB values support Magento-style scoping: `--scope=agent_view --scope-id=1` overr
 There is **one resolver per language**, both implementing the same ENV → DB → config.json fallback:
 
 - **Python framework + modules:** `ScopedConfigService` in [config_resolver.py](../../src/agento/framework/config_resolver.py). Every fallback read goes through it — `svc.get(path)` (raw string), `svc.get_module(name)` (typed config), `svc.resolve_field_with_source(...)` (admin/CLI display). Built once per `(scope, scope_id)` over pre-merged scoped overrides.
-- **Toolbox (Node):** [config-loader.js](../../src/agento/toolbox/config-loader.js) — a deliberately separate mirror (the toolbox is designed to be the only container that holds tool credentials; known gaps: [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt)). Kept behaviorally in sync; not merged with the Python service.
+- **Toolbox (Node):** [config-loader.js](../../src/agento/toolbox/config-loader.js) — a deliberately separate mirror (the toolbox is the only container holding the **tool** credential store, with one documented exception: the SSH private key used for git — see [DECISIONS.md](../../DECISIONS.md) D-SSH-1; known gaps: [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt)). Kept behaviorally in sync; not merged with the Python service.
 
 Toolbox reads config at each MCP session:
 
@@ -91,7 +91,7 @@ Precedence for the model specifically: an explicit `--model` flag on `agento run
 
 ### Workspace build honors ENV too
 
-Workspace materialization (`.mcp.json`, `.codex/config.toml`, `.claude.json`, `AGENTS.md` / `SOUL.md`, `.ssh/`) is built from `ScopedConfigService.resolve_all()` — the **full effective config**, each path resolved ENV → DB → config.json. Its key set is the union of DB-override keys, `CONFIG__*` env keys, and every declared module config field — so provider-specific fields set only via ENV (`CONFIG__AGENT_VIEW__CODEX__APPROVAL_MODE`, `CONFIG__AGENT_VIEW__CLAUDE__PERSONALITY`, …) **and** `config.json`-only defaults (e.g. `agent_view/harness`) both participate. (Tool-field `config.json`-only defaults are excluded — they configure toolbox-side tools and never materialize into the build; tool overrides set via DB/ENV are still included.) The build's freshness checksum hashes that same resolved view, so changing any override or shipped default (then recreating the container, since `CONFIG__*` is read at process start) drifts the checksum and the next job-claim **rebuilds** the workspace. One resolver drives both the checksum and every materialized file — no separate DB-only path.
+Workspace materialization (`.mcp.json`, `.codex/config.toml`, `.claude.json`, `AGENTS.md` / `SOUL.md`; the non-secret `.ssh/` files are written per run, not into the build) is built from `ScopedConfigService.resolve_all()` — the **full effective config**, each path resolved ENV → DB → config.json. Its key set is the union of DB-override keys, `CONFIG__*` env keys, and every declared module config field — so provider-specific fields set only via ENV (`CONFIG__AGENT_VIEW__CODEX__APPROVAL_MODE`, `CONFIG__AGENT_VIEW__CLAUDE__PERSONALITY`, …) **and** `config.json`-only defaults (e.g. `agent_view/harness`) both participate. (Tool-field `config.json`-only defaults are excluded — they configure toolbox-side tools and never materialize into the build; tool overrides set via DB/ENV are still included.) The build's freshness checksum hashes that same resolved view, so changing any override or shipped default (then recreating the container, since `CONFIG__*` is read at process start) drifts the checksum and the next job-claim **rebuilds** the workspace. One resolver drives both the checksum and every materialized file — no separate DB-only path.
 
 ## Scope Restrictions (`showIn*`)
 
@@ -126,6 +126,34 @@ SSH keypair), so the framework never decrypts a secret in order to test one. Res
 claim as "your credential is wrong".
 
 See [Config Testers](testers.md).
+## `maxLength` on text fields
+
+A `system.json` field may declare a byte ceiling on its value:
+
+```json
+{
+  "identity/ssh_private_key": {
+    "type": "obscure",
+    "label": "SSH private key",
+    "maxLength": 16384
+  }
+}
+```
+
+- **Accepted on** `string`, `obscure`, `textarea` — the text types. Declaring it on any other type
+  (`select`, `multiselect`, `integer`, `json`, …) is a manifest error.
+- **The value must be a positive integer.** `"16k"`, `0`, `-1` and `true` are manifest errors.
+- **The unit is UTF-8 bytes**, not characters — the limit means what the storage and the process
+  environment actually see.
+- **Enforced at every entry point:** `config:set` and the admin config editor both reject an oversized
+  value, and `module:validate` (so `setup:upgrade` and `bin/test`) rejects a malformed declaration
+  before any DB change. One shared helper, `framework/config_validation.py`, implements the rule — a
+  constraint enforced in one entry point and not the other is not a constraint.
+- A field with no `maxLength` is unconstrained; this is purely opt-in.
+
+It is an **input sanity bound**, not a security mechanism. On
+`agent_view/identity/ssh_private_key` it bounds a secret that travels through the process environment;
+what keeps that key off disk is the per-run `ssh-agent` ([identity docs](identity.md)).
 
 ## Further Reading
 

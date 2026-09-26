@@ -108,7 +108,7 @@ class TestConfigSetAutoEncrypt:
         # Verify the stored value is aes256-encrypted, not plaintext
         args = cursor.execute.call_args[0]
         stored_value = args[1][3]  # 4th param in INSERT
-        assert stored_value.startswith("aes256:"), f"Expected aes256 prefix, got: {stored_value[:20]}"
+        assert stored_value.startswith("aes256s:"), f"Expected aes256s prefix, got: {stored_value[:20]}"
 
     def test_does_not_encrypt_non_obscure_field(self, modules_dir, monkeypatch):
         cursor = MagicMock()
@@ -136,7 +136,7 @@ class TestConfigSetAutoEncrypt:
         assert encrypted is True
         args = cursor.execute.call_args[0]
         stored_value = args[1][3]
-        assert stored_value.startswith("aes256:")
+        assert stored_value.startswith("aes256s:")
 
 
 class TestWriteReadRoundtrip:
@@ -191,7 +191,7 @@ class TestWriteReadRoundtrip:
         assert db_key in store
         stored_value, stored_enc = store[db_key]
         assert stored_enc == 1
-        assert stored_value.startswith("aes256:")
+        assert stored_value.startswith("aes256s:")
         assert "my-secret-token" not in stored_value
 
         # Read back (simulates bin/agento config:get jira/jira_token)
@@ -232,4 +232,4 @@ class TestWriteReadRoundtrip:
         db_key = ("agent_view", 5, "jira/jira_token")
         assert db_key in store
         stored_value, _ = store[db_key]
-        assert stored_value.startswith("aes256:")
+        assert stored_value.startswith("aes256s:")

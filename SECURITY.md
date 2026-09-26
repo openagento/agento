@@ -40,8 +40,11 @@ The following are considered security vulnerabilities:
 
 Agento uses a zero-trust container architecture:
 
-- The **sandbox** (where interactive `agento run` executes) has no tool credentials and no direct database access. An agent's own harness credential (OAuth) lives in its per-run HOME. Headless jobs run the agent inside the `cron` container, which inherits the DB password and the encryption key — a known gap, listed with the others in [zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt).
-- The **toolbox** is designed to be the only container that holds tool credentials (known gaps: [zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt)), exposed via controlled MCP tool interfaces.
-- Config encryption uses AES-256-CBC for sensitive fields.
+- The **sandbox** (where AI agents run) holds no tool or database credential and has no database
+  access. It does receive the **harness/provider** API credential its own run needs — that is what
+  runs the model — and one further documented exception: the SSH private key used for git, delivered per run into a private `ssh-agent`
+  and never written to disk (a dated, scoped waiver — see [DECISIONS.md](DECISIONS.md) D-SSH-1).
+- The **toolbox** is the only container holding the credential store (API keys, tokens, DB credentials), exposed via controlled MCP tool interfaces (known gaps: [zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt)). The SSH exception above is the one credential that does not come from it.
+- Config encryption uses AES-256-CBC for sensitive fields, with the key derived from `AGENTO_ENCRYPTION_KEY` by scrypt and a per-value salt.
 
 See [docs/architecture/zero-trust.md](docs/architecture/zero-trust.md) for the credential model and its known exceptions, and [docs/architecture/](docs/architecture/) for full details.

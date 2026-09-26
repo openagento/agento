@@ -15,7 +15,7 @@ Agento is extensible by design. Creating and sharing custom modules is simple. W
 
 ## Why Agento?
 
-- **Secure by architecture** — agents run in an isolated sandbox without direct access to secrets.
+- **Secure by architecture** — agents run in an isolated sandbox with no access to the credential store; the one scoped exception is the per-run git SSH identity (see `DECISIONS.md` D-SSH-1). A *scheduled* agent runs as the cron container's own uid, but the store is not reachable from it: it lives in a root-only file that a root-owned program reads before dropping privilege in-process, so it never crosses an `execve` (D-SSH-1 residual channel (6), closed 2026-09-23).
 - **Controlled tool access** — enforce policies for tools like email, browser, and external systems.
 - **Modular by default** — extend behavior through modules, not by patching core code.
 - **Deployment-specific customization** — adapt agents, policies, and workflows per workspace or environment.
@@ -64,8 +64,8 @@ agento install                        # Interactive wizard — scaffolds, starts
 Agento runs three Docker containers on a shared network:
 
 - **Cron** (Python) -- Job queue consumer, scheduler, CLI host. Manages the lifecycle of agent jobs, runs migrations, and dispatches events. Connects to MySQL for job state, config, and module metadata.
-- **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over MCP (streamable HTTP `/mcp`, SSE `/sse`). Designed to be the only container that holds tool credentials (known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)).
-- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container for interactive `agento run`. Has no tool credentials and no direct database access. Headless jobs run the agent inside the `cron` container and inherit its env (a known gap, see [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)). Communicates with the toolbox exclusively through MCP tool calls.
+- **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over MCP (streamable HTTP `/mcp`, SSE `/sse`). The only container that holds the credential store (API keys, tokens, DB credentials); known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt).
+- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container for interactive `agento run`; a headless job runs the agent inside the `cron` container instead. Either way the agent holds no credential from that store and has no database access; the one credential it does get is the **harness/provider** API credential its own run needs, delivered per run. It communicates with the toolbox exclusively through MCP tool calls. One documented exception: the git SSH identity, delivered per run as a signing capability (`SSH_AUTH_SOCK`) from a private `ssh-agent`, never as a key file — a dated, scoped waiver, see `DECISIONS.md` D-SSH-1.
 
 ## Module System
 
@@ -161,7 +161,7 @@ One module = one integration = a complete package. The framework provides the me
 - ✅ Framework kernel & scoped configuration (per-module config, deterministic load order)
 - ✅ Event–observer system (`events.json`, cross-module composition)
 - ✅ Core module refactoring (framework has zero module imports)
-- ✅ Module setup system (`setup:upgrade` — migrations, data patches, cron)
+- ✅ Module setup system (`setup:upgrade` — migrations, data patches; cron is rendered by the container's root installer)
 - ✅ Workspace & agent-view hierarchy (scoped config, generated CLI configs)
 - ✅ Concurrent agent-view execution pool (parallel profiles, priority scheduling)
 - ✅ Ingress identities & agent resolution (deterministic, module-extensible routing)

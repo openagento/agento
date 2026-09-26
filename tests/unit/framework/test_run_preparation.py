@@ -370,3 +370,172 @@ class TestTheNoBuildFallbackOverlayReachesEverySibling:
         written = working / rel
         assert written.is_file(), f"{harness} wrote no {rel}"
         assert extract(written.read_text()) == "configured-model"
+# ---------------------------------------------------------------------------
+# SSH identity: the non-secret files only, and the private key never a file
+# ---------------------------------------------------------------------------
+_PEM = (
+    "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+    "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQy\n"
+    "-----END OPENSSH PRIVATE KEY-----\n"
+)
+
+_SSH_VALUES = {
+    "agent_view/identity/ssh_private_key": _PEM,
+    "agent_view/identity/ssh_public_key": "ssh-ed25519 AAAA host",
+    "agent_view/identity/ssh_config": "Host github.com\n",
+    "agent_view/identity/ssh_known_hosts": "github.com ssh-ed25519 AAAA\n",
+}
+
+
+class _CountingSvc:
+    def __init__(self, values):
+        self.values = values
+        self.calls = []
+
+    def get(self, path):
+        self.calls.append(path)
+        return self.values.get(path)
+
+
+def _staged_build(tmp_path, *, ssh_payload=None, ssh_symlink_to=None):
+    """A `current` build the pipeline can copy, optionally carrying legacy SSH state."""
+    ws, av = "acme", "dev"
+    build_root = tmp_path / "build"
+    actual_build = build_root / ws / av / "builds" / "1"
+    actual_build.mkdir(parents=True)
+    (actual_build / "AGENTS.md").write_text("hello")
+    if ssh_symlink_to is not None:
+        ssh_symlink_to.mkdir(parents=True, exist_ok=True)
+        (actual_build / ".ssh").symlink_to(ssh_symlink_to)
+    elif ssh_payload is not None:
+        (actual_build / ".ssh").mkdir()
+        (actual_build / ".ssh" / "id_rsa").write_text(ssh_payload)
+    (build_root / ws / av / "current").symlink_to(actual_build)
+    return ws, av, build_root, actual_build
+
+
+def _materialize(tmp_path, build_root, ws, av, **kwargs):
+    from agento.framework.run_preparation import materialize_run_workspace
+
+    runtime = _Runtime(
+        agent_view=_AV(code=av, id=7), workspace=_WS(code=ws, id=3), harness=None,
+    )
+    with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "artifacts")), \
+         patch("agento.framework.artifacts_dir.BUILD_DIR", str(build_root)):
+        return materialize_run_workspace(runtime, run_id="run", em=MagicMock(), **kwargs)
+
+
+class TestRunSshIdentity:
+    def test_no_file_under_the_run_dir_contains_private_key_material(self, tmp_path):
+        """AC4, the core guard."""
+        ws, av, build_root, _ = _staged_build(tmp_path)
+        svc = _CountingSvc(_SSH_VALUES)
+
+        home, _ = _materialize(tmp_path, build_root, ws, av, agent_config_svc=svc)
+
+        for path in home.rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                assert "PRIVATE KEY" not in path.read_text(errors="ignore"), path
+        assert not (home / ".ssh" / "id_rsa").exists()
+        # ... while the non-secret files ARE there.
+        assert (home / ".ssh" / "id_rsa.pub").read_text() == "ssh-ed25519 AAAA host"
+        assert (home / ".ssh" / "config").read_text() == "Host github.com\n"
+        assert (home / ".ssh" / "known_hosts").read_text() == "github.com ssh-ed25519 AAAA\n"
+
+    def test_returns_the_unchanged_two_tuple(self, tmp_path):
+        """The signature gained a keyword-only param; the RETURN contract did not change.
+
+        The existing call-site tests in this file and in
+        tests/unit/framework/harness/test_review_round8_regressions.py are therefore
+        untouched — if a future revision does change the contract, those are the files
+        that must change with it.
+        """
+        ws, av, build_root, _ = _staged_build(tmp_path)
+        result = _materialize(
+            tmp_path, build_root, ws, av, agent_config_svc=_CountingSvc(_SSH_VALUES),
+        )
+        assert isinstance(result, tuple) and len(result) == 2
+        assert result[0] == result[1]
+
+    def test_a_legacy_key_the_build_carried_is_removed(self, tmp_path):
+        ws, av, build_root, _ = _staged_build(tmp_path, ssh_payload=_PEM)
+        home, _ = _materialize(
+            tmp_path, build_root, ws, av, agent_config_svc=_CountingSvc(_SSH_VALUES),
+        )
+        assert not (home / ".ssh" / "id_rsa").exists()
+
+    def test_a_failed_scrub_aborts_the_run(self, tmp_path):
+        """Fail closed: starting with a readable id_rsa in the run HOME reproduces the bug."""
+        ws, av, build_root, _ = _staged_build(tmp_path, ssh_payload=_PEM)
+        from pathlib import Path as _P
+        with patch.object(_P, "unlink", side_effect=PermissionError("denied")), \
+             pytest.raises(PermissionError):
+            _materialize(
+                tmp_path, build_root, ws, av, agent_config_svc=_CountingSvc(_SSH_VALUES),
+            )
+
+    def test_a_symlinked_ssh_dir_from_a_prefix_build_becomes_a_real_dir(self, tmp_path):
+        """The symlink trap: writing through it would land in the SHARED build dir."""
+        shared = tmp_path / "shared_build_ssh"
+        ws, av, build_root, _ = _staged_build(tmp_path, ssh_symlink_to=shared)
+        home, _ = _materialize(
+            tmp_path, build_root, ws, av, agent_config_svc=_CountingSvc(_SSH_VALUES),
+        )
+        assert (home / ".ssh").is_dir()
+        assert not (home / ".ssh").is_symlink()
+        assert not (shared / "id_rsa.pub").exists()
+        assert (home / ".ssh" / "id_rsa.pub").is_file()
+
+    def test_none_config_service_warns_and_does_not_raise(self, tmp_path, caplog):
+        import logging
+
+        ws, av, build_root, _ = _staged_build(tmp_path)
+        with caplog.at_level(logging.WARNING):
+            home, _ = _materialize(tmp_path, build_root, ws, av, agent_config_svc=None)
+        assert home is not None
+        assert "no SSH identity" in caplog.text
+
+    def test_a_legacy_key_is_removed_even_with_no_config_service(self, tmp_path, caplog):
+        """The scrub is a precondition of the RUN, not a step of identity materialization.
+
+        A run with no config service gets no identity — that says nothing about whether it
+        may read a key an older build left behind, so the scrub must not sit behind the
+        service. This is the shape the PROD incident used.
+        """
+        import logging
+
+        ws, av, build_root, _ = _staged_build(tmp_path, ssh_payload=_PEM)
+        with caplog.at_level(logging.WARNING):
+            home, _ = _materialize(tmp_path, build_root, ws, av, agent_config_svc=None)
+        assert not (home / ".ssh" / "id_rsa").exists()
+        assert "no SSH identity" in caplog.text
+
+    def test_a_failed_scrub_aborts_the_run_with_no_config_service_too(self, tmp_path):
+        ws, av, build_root, _ = _staged_build(tmp_path, ssh_payload=_PEM)
+        from pathlib import Path as _P
+        with patch.object(_P, "unlink", side_effect=PermissionError("denied")), \
+             pytest.raises(PermissionError):
+            _materialize(tmp_path, build_root, ws, av, agent_config_svc=None)
+
+    def test_a_symlinked_ssh_dir_is_replaced_with_no_config_service_too(self, tmp_path):
+        """Writing through the link would reach the SHARED build dir — identity or not."""
+        shared = tmp_path / "shared_build_ssh"
+        ws, av, build_root, _ = _staged_build(tmp_path, ssh_symlink_to=shared)
+        (shared / "id_rsa").write_text(_PEM)
+        home, _ = _materialize(tmp_path, build_root, ws, av, agent_config_svc=None)
+        assert (home / ".ssh").is_dir() and not (home / ".ssh").is_symlink()
+        assert not (home / ".ssh" / "id_rsa").exists()
+
+    def test_an_already_resolved_identity_is_not_re_read(self, tmp_path):
+        """One resolution per run: the spawn path resolves, then passes the value in."""
+        from agento.framework.ssh_identity import ResolvedSshIdentity
+
+        ws, av, build_root, _ = _staged_build(tmp_path)
+        svc = _CountingSvc(_SSH_VALUES)
+        home, _ = _materialize(
+            tmp_path, build_root, ws, av,
+            agent_config_svc=svc,
+            ssh_identity=ResolvedSshIdentity(public_key="from-caller"),
+        )
+        assert svc.calls == []
+        assert (home / ".ssh" / "id_rsa.pub").read_text() == "from-caller"

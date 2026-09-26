@@ -293,7 +293,7 @@ class SeedDefaults:
 
 ### cron.json
 
-Declares scheduled CLI commands. Collected by `setup:upgrade` into the `AGENTO:BEGIN/END` crontab block. Separate from dynamic cron blocks (e.g. Jira's `JIRA-SYNC:BEGIN/END` for per-issue entries).
+Declares scheduled CLI commands. Collected by the root-owned renderer `/opt/cron-agent/install-crontab.py`, which rebuilds the whole crontab every minute from the installed module catalog and the `schedule` table. Every module line runs `cron:run <module> <command>`, which no-ops when the module is disabled. See [cron-privileges.md](../architecture/cron-privileges.md).
 
 ```json
 {
@@ -383,7 +383,7 @@ class MyOnboarding:
 ```
 
 **Lifecycle:**
-- Runs as step 5 of `setup:upgrade` (after migrations, data patches, and cron)
+- Runs as the last step of `setup:upgrade` (after migrations and data patches)
 - Skipped when `is_complete()` returns `True` (idempotent)
 - Skipped with `--skip-onboarding` flag (for CI/CD)
 - Skipped in `--dry-run` mode

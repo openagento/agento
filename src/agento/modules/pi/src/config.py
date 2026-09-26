@@ -51,9 +51,21 @@ class PiWorkspaceAdapter:
         pi_home = working_dir / ".pi" / "agent"
         pi_home.mkdir(parents=True, exist_ok=True)
 
-        (pi_home / "settings.json").write_text(
-            json.dumps({"defaultProjectTrust": "trusted"}, indent=2) + "\n"
-        )
+        settings: dict = {"defaultProjectTrust": "trusted"}
+        blob = (harness_config or {}).get("settings")
+        if blob:
+            try:
+                extra = json.loads(blob)
+            except (json.JSONDecodeError, TypeError) as e:
+                raise ValueError(f"Invalid JSON in pi/settings: {e}") from e
+            if not isinstance(extra, dict):
+                raise ValueError(
+                    f"pi/settings must be a JSON object, got {type(extra).__name__}"
+                )
+            # Shallow on purpose: Agento generates exactly one top-level key here, so
+            # there is no nested block an operator could half-overwrite.
+            settings.update(extra)
+        (pi_home / "settings.json").write_text(json.dumps(settings, indent=2) + "\n")
 
         # NOT AGENTS.md. `workspace_build/builder.py` already writes it into the build
         # dir, which is Pi's cwd, and Pi reads context files from cwd natively. Writing

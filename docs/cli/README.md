@@ -15,7 +15,7 @@
 | `logs [service]` | Show container logs |
 | `run <agent_view_code> [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one ([details](run.md)) |
 | **Setup** | |
-| `setup:upgrade [--dry-run] [--skip-onboarding]` | Apply migrations, data patches, install crontab, run onboarding ([onboarding details](onboarding.md)) |
+| `setup:upgrade [--dry-run] [--skip-onboarding]` | Apply migrations, data patches, run onboarding ([onboarding details](onboarding.md)) |
 | **Modules** | |
 | `module:add <name>` | Add a module ([details](modules.md)) |
 | `module:list` | List installed modules |
@@ -59,6 +59,7 @@
 | **Workspace** | |
 | `workspace:build --agent-view <code> \| --all` | Build materialized workspace ([details](workspace-build.md)) |
 | `workspace:build-status [--agent-view <code>]` | Show workspace build history ([details](workspace-build.md)) |
+| `workspace:ssh-purge [--dry-run]` | **Deprecated (removal in v0.17+)** — delete SSH private keys left on disk by older versions ([details](workspace-build.md#workspacessh-purge)) |
 | **Admin** | |
 | `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |
@@ -77,7 +78,7 @@
 | `github:publish-comments [--agent-view C] [--top N]` | Sweep open PRs for unanswered reviewer feedback ([details](../modules/github.md)) |
 | `github:publish-changes [--agent-view C] [--top N]` | Detect an outstanding reviewer "changes requested" on open PRs (fast lane) ([details](../modules/github.md)) |
 | `exec:todo [key]` | Execute next TODO task |
-| `replay <job_id>` | Replay a completed job |
+| `replay <job_id>` | Replay a completed job. **Refuses** a job whose `agent_view_id` is NULL (pre-0.15 rows and stubs): the harness's own config — and therefore the exact command — cannot be resolved for it, and a replay that silently differs from the run it claims to reproduce is worse than none |
 | `e2e` | Run end-to-end tests |
 
 ## How It Works

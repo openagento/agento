@@ -112,6 +112,70 @@ class TestPrepareWorkspace:
         assert data["mcp_servers"]["other"]["type"] == "streamable_http"
 
 
+    def test_defaults_decide_no_sandbox_or_approval_mode(self, writer, work_dir):
+        """The same file is HOME for an INTERACTIVE run, whose approval prompting
+        depends on these keys being absent. Headless bypass comes from the CLI flag."""
+        writer.prepare_workspace(work_dir, {"model": "gpt-5.4"}, toolbox_url=self.TOOLBOX)
+        data = tomllib.loads((work_dir / ".codex" / "config.toml").read_text())
+        assert "sandbox_mode" not in data
+        assert "approval_policy" not in data
+        assert data["model"] == "gpt-5.4"
+        assert data["mcp_servers"]["toolbox"]["url"].startswith(self.TOOLBOX)
+
+    def test_config_passthrough_overrides_sandbox(self, writer, work_dir):
+        writer.prepare_workspace(
+            work_dir, {}, toolbox_url=self.TOOLBOX,
+            harness_config={"config": 'sandbox_mode = "workspace-write"\n'
+                                      '[sandbox_workspace_write]\nnetwork_access = false\n'},
+        )
+        data = tomllib.loads((work_dir / ".codex" / "config.toml").read_text())
+        assert data["sandbox_mode"] == "workspace-write"
+        assert data["sandbox_workspace_write"]["network_access"] is False
+        assert "toolbox" in data["mcp_servers"]            # generated table survives
+
+    def test_config_passthrough_invalid_toml_raises(self, writer, work_dir):
+        with pytest.raises(ValueError, match="codex/config"):
+            writer.prepare_workspace(
+                work_dir, {}, toolbox_url=self.TOOLBOX,
+                harness_config={"config": "sandbox_mode = "},
+            )
+
+    def test_toml_arrays_round_trip(self, writer, work_dir):
+        writer.prepare_workspace(
+            work_dir, {}, toolbox_url=self.TOOLBOX,
+            harness_config={"config": '[sandbox_workspace_write]\n'
+                                      'writable_roots = ["/tmp/a", "/tmp/b"]\n'},
+        )
+        data = tomllib.loads((work_dir / ".codex" / "config.toml").read_text())
+        assert data["sandbox_workspace_write"]["writable_roots"] == ["/tmp/a", "/tmp/b"]
+
+    def test_everything_the_writer_emits_parses_back(self, writer, work_dir):
+        """Whatever a blob puts in must survive _dump_toml -> tomllib unchanged.
+        json.dumps() escaped a non-BMP character as a surrogate pair, which TOML
+        forbids: the file was written happily and no parser would read it."""
+        blob = (
+            'greeting = "hi \U0001F600"\n'
+            'tabbed = "a\\tb"\n'
+            'quoted = "say \\"hi\\""\n'
+            '[sandbox_workspace_write]\n'
+            'writable_roots = ["/tmp/\U0001F600", "/tmp/b"]\n'
+        )
+        writer.prepare_workspace(work_dir, {}, toolbox_url=self.TOOLBOX,
+                                 harness_config={"config": blob})
+        data = tomllib.loads((work_dir / ".codex" / "config.toml").read_text())
+        assert data["greeting"] == "hi \U0001F600"
+        assert data["tabbed"] == "a\tb"
+        assert data["quoted"] == 'say "hi"'
+        assert data["sandbox_workspace_write"]["writable_roots"] == ["/tmp/\U0001F600", "/tmp/b"]
+
+    def test_toml_shape_the_writer_cannot_emit_is_rejected(self, writer, work_dir):
+        with pytest.raises(ValueError, match="codex/config"):
+            writer.prepare_workspace(
+                work_dir, {}, toolbox_url=self.TOOLBOX,
+                harness_config={"config": '[[profiles]]\nname = "a"\n'},
+            )
+
+
 class TestInjectRuntimeParams:
     def test_appends_params_to_toml_urls(self, writer, work_dir):
         codex_dir = work_dir / ".codex"
@@ -151,6 +215,20 @@ class TestInjectRuntimeParams:
         assert data["model"] == "gpt-5"
         assert data["approval_mode"] == "full-auto"
         assert "job_id=5" in data["mcp_servers"]["toolbox"]["url"]
+
+
+    def test_passthrough_survives_inject_runtime_params(self, writer, work_dir):
+        writer.prepare_workspace(
+            work_dir, {"model": "o3"}, toolbox_url="http://toolbox:3001",
+            harness_config={"config": 'sandbox_mode = "workspace-write"\n'
+                                      '[sandbox_workspace_write]\nnetwork_access = false\n'},
+        )
+        writer.inject_runtime_params(work_dir, job_id=42)
+        data = tomllib.loads((work_dir / ".codex" / "config.toml").read_text())
+        assert data["sandbox_mode"] == "workspace-write"
+        assert data["sandbox_workspace_write"]["network_access"] is False
+        assert data["model"] == "o3"
+        assert "job_id=42" in data["mcp_servers"]["toolbox"]["url"]
 
 
 class TestWriteCredentials:

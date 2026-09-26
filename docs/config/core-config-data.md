@@ -23,7 +23,7 @@ CREATE TABLE core_config_data (
 
 ```
 my_app/tools/mysql_prod/host             → "10.0.0.1"
-my_app/tools/mysql_prod/pass             → "aes256:iv:ciphertext" (encrypted=1)
+my_app/tools/mysql_prod/pass             → "aes256s:salt:iv:ciphertext" (encrypted=1)
 nav_erp/tools/mssql_nav/database        → "NAV_Production"
 ```
 

@@ -50,7 +50,7 @@ Everything static lives in the module's `di.json`, under one `agent_harnesses` e
         "package": "@openai/codex",
         "binary": "codex",
         "version_env_key": "CODEX_VERSION",
-        "default_range": "0.137.0"
+        "default_range": "0.157.0"
       }
     }
   ]
@@ -205,6 +205,36 @@ matter:
   form anywhere, so checking for one would never match and would admit the field. A schema
   entry that is not an object is also refused: it carries no `type`, so it cannot be proven
   safe.
+
+Each shipped harness uses this seam for one **native-config passthrough** field, so an
+operator can hand the CLI its own config without new Agento code: `claude/settings`
+(JSON → `.claude/settings.json`), `codex/config` (TOML → `.codex/config.toml`) and
+`pi/settings` (JSON → `$HOME/.pi/agent/settings.json`). Each adapter parses its own
+format, deep-merges the blob **over** the block Agento generates, and **raises** on a
+malformed one — a silently dropped blob is a silently dropped deny-list. See
+[claude](../modules/claude.md), [codex](../modules/codex.md) and [pi](../modules/pi.md).
+
+#### `harness_option` — showing the field where it is set
+
+The passthrough is set per agent_view, so `agento admin` lists it under the **agent_view**
+node, next to the harness selector, and hides the passthroughs belonging to the other
+harnesses. The `system.json` field asks for that itself:
+
+```json
+"settings": { "type": "textarea", "harness_option": true, "label": "…" }
+```
+
+The path does **not** move: it stays `{module}/{field}`, which is what
+`runtime_config_fields` resolves and what `config:set` writes — only the display moves, so
+the field still appears on its own module node too. The condition is the declaring
+module's own `agent_harnesses` entry, read off disk (`modules_declaring`), so no framework
+file names a harness; an unset or unresolvable harness shows every passthrough rather than
+hiding one the operator still needs. Same shape as `provider_option`, one axis up.
+
+Every site that builds a `HarnessRunContext` must carry the resolved dict, or the
+harness's own build-time settings silently revert on that path. That is enforced by an
+AST guard (`tests/unit/framework/test_harness_config_wiring.py`) over every
+`HarnessRunContext(` call in `src/agento/`, with an empty allow-list.
 
 ### One CommandBuilder, not two
 

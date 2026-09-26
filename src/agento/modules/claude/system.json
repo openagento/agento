@@ -1,0 +1,9 @@
+{
+  "settings": {
+    "type": "textarea",
+    "harness_option": true,
+    "label": "Claude Code settings.json passthrough (JSON)",
+    "description": "Raw Claude Code settings, deep-merged over the block Agento generates into .claude/settings.json (operator wins). Examples: {\"permissions\":{\"deny\":[\"WebSearch\",\"WebFetch\"]}} blocks the built-in web tools even under --dangerously-skip-permissions; {\"advisorModel\":\"fable\"} picks the /advisor model. Invalid JSON fails the workspace build. Never put a credential here: this value is stored unencrypted and is written into the agent container.",
+    "showInAgentView": true
+  }
+}

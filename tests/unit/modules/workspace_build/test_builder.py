@@ -22,7 +22,6 @@ from agento.modules.workspace_build.src.builder import (
     compute_build_checksum,
     execute_build,
     materialize_git_identity,
-    materialize_ssh_identity,
 )
 
 _BUILDER = "agento.modules.workspace_build.src.builder"
@@ -804,27 +803,22 @@ class TestWriteInstructionFiles:
         assert "AGENTS.md" in (build_dir / "CLAUDE.md").read_text()
 
 
-class TestMaterializeSshIdentity:
-    def test_writes_key_config_known_hosts_from_resolved(self, tmp_path):
-        resolved = {
-            "agent_view/identity/ssh_private_key": "PRIVATE-KEY",
-            "agent_view/identity/ssh_public_key": "PUBLIC-KEY",
-            "agent_view/identity/ssh_config": "Host github.com",
-            "agent_view/identity/ssh_known_hosts": "github.com ssh-ed25519 AAA",
-        }
-        materialize_ssh_identity(tmp_path, resolved)
-        ssh = tmp_path / ".ssh"
-        assert ssh.stat().st_mode & 0o777 == 0o700
-        key = ssh / "id_rsa"
-        assert key.read_text() == "PRIVATE-KEY\n"
-        assert key.stat().st_mode & 0o777 == 0o600
-        assert (ssh / "id_rsa.pub").read_text() == "PUBLIC-KEY"
-        assert (ssh / "config").read_text() == "Host github.com"
-        assert (ssh / "known_hosts").read_text() == "github.com ssh-ed25519 AAA"
+class TestNoSshIdentityHelperInBuilder:
+    """AC1 at the API level: the builder owns no way to write a private key.
 
-    def test_noop_when_no_identity(self, tmp_path):
-        materialize_ssh_identity(tmp_path, {"agent_view/model": "opus"})
-        assert not (tmp_path / ".ssh").exists()
+    An AST check, not a text search: `materialize_ssh_identity` must not exist as a
+    module attribute, so no call site can resurrect the old behaviour by importing it.
+    """
+
+    def test_builder_exposes_no_ssh_materializer(self):
+        from agento.modules.workspace_build.src import builder
+
+        assert not hasattr(builder, "materialize_ssh_identity")
+
+    def test_builder_prunes_instead(self):
+        from agento.modules.workspace_build.src import builder
+
+        assert hasattr(builder, "prune_stale_build_keys")
 
 
 class TestMaterializeGitIdentity:
@@ -1304,6 +1298,141 @@ class TestExecuteBuild:
         assert "toolbox:3001/mcp" in content
         # Legacy-only entries preserved via migrate_legacy_workspace_config
         assert "legacy-extra:9999/mcp" in content
+
+
+class TestBuildPrunesStaleSshKeys:
+    """AC1: no private key anywhere in the view's build tree — including the SKIPPED case."""
+
+    _PEM = (
+        "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+        "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQy\n"
+        "-----END OPENSSH PRIVATE KEY-----\n"
+    )
+
+    @pytest.fixture(autouse=True)
+    def _stub_manifests(self):
+        with patch("agento.framework.bootstrap.get_manifests", return_value=[]):
+            yield
+
+    def _plant_generations(self, tmp_path, ws_code="testws", av_code="dev"):
+        base = tmp_path / ws_code / av_code / "builds"
+        planted = []
+        for gen in (4, 10, 16):
+            ssh = base / str(gen) / ".ssh"
+            ssh.mkdir(parents=True)
+            key = ssh / "id_rsa"
+            key.write_text(self._PEM)
+            (ssh / "id_rsa.pub").write_text("pub")
+            planted.append(key)
+        # A renamed copy — content, not the name .ssh/id_rsa, is what prune matches.
+        renamed = base / "16" / "stolen.pem"
+        renamed.write_text(self._PEM)
+        planted.append(renamed)
+        return base, planted
+
+    @patch("agento.framework.harness.workspace_adapter_for")
+    @patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime")
+    @patch("agento.framework.scoped_config.build_scoped_overrides")
+    @patch("agento.framework.workspace.get_agent_view")
+    def test_a_new_build_writes_no_ssh_dir_and_clears_the_old_ones(
+        self, mock_get_av, mock_overrides, mock_resolve, mock_get_writer, tmp_path,
+    ):
+        mock_get_av.return_value = _make_agent_view()
+        mock_overrides.return_value = {
+            "agent_view/harness": ("claude", False),
+            "agent_view/identity/ssh_private_key": (self._PEM, False),
+            "agent_view/identity/ssh_public_key": ("ssh-ed25519 AAAA", False),
+            "agent_view/identity/ssh_config": ("Host x", False),
+            "agent_view/identity/ssh_known_hosts": ("x", False),
+        }
+        from agento.framework.agent_view_runtime import AgentViewRuntime
+        mock_resolve.return_value = AgentViewRuntime(harness="claude", provider="anthropic")
+        mock_get_writer.return_value = MagicMock()
+        base, _ = self._plant_generations(tmp_path)
+        conn = _skip_conn(None)
+
+        with patch(f"{_BUILDER}.BUILD_DIR", str(tmp_path)):
+            result = execute_build(conn, 1)
+
+        from agento.framework.ssh_identity import find_private_keys
+        assert result.skipped is False
+        # Even with all four identity values configured, the build creates no .ssh at all:
+        # a build-side .ssh would make the per-run one a symlink back into the shared tree.
+        assert not (Path(result.build_dir) / ".ssh").exists()
+        assert find_private_keys(base).keys == ()
+
+    @patch("agento.framework.scoped_config.build_scoped_overrides")
+    @patch("agento.framework.workspace.get_agent_view")
+    def test_a_skipped_build_still_prunes_every_generation(
+        self, mock_get_av, mock_overrides, tmp_path,
+    ):
+        """The case step-7 pruning would have missed entirely: `build()` returns early
+        when an identical ready build exists, which is the COMMON case."""
+        mock_get_av.return_value = _make_agent_view()
+        mock_overrides.return_value = {"agent_view/harness": ("claude", False)}
+        base, planted = self._plant_generations(tmp_path)
+        existing_dir = base / "16"
+        existing = {"id": 16, "build_dir": str(existing_dir)}
+        conn = _skip_conn(existing)
+
+        from agento.framework.ssh_identity import find_private_keys
+        assert len(find_private_keys(base).keys) == len(planted)
+
+        with patch(f"{_BUILDER}.BUILD_DIR", str(tmp_path)):
+            result = execute_build(conn, 1)
+
+        assert result.skipped is True
+        assert find_private_keys(base).keys == ()
+        # Non-secret files are untouched.
+        assert (base / "4" / ".ssh" / "id_rsa.pub").is_file()
+
+
+    @patch("agento.framework.scoped_config.build_scoped_overrides")
+    @patch("agento.framework.workspace.get_agent_view")
+    def test_a_key_that_cannot_be_removed_aborts_the_build(
+        self, mock_get_av, mock_overrides, tmp_path,
+    ):
+        """Fail closed. A build that proceeds (or reports "skipped, all good") while a
+        readable key is still in the tree reports success for the exact exposure the
+        pruning exists to end — and the skip path is the common one."""
+        from agento.framework.ssh_identity import SshKeyPurgeError
+
+        mock_get_av.return_value = _make_agent_view()
+        mock_overrides.return_value = {"agent_view/harness": ("claude", False)}
+        base, _ = self._plant_generations(tmp_path)
+        (base / "10" / ".ssh").chmod(0o500)  # unlink denied, even for the owner
+        conn = _skip_conn({"id": 16, "build_dir": str(base / "16")})
+        try:
+            with patch(f"{_BUILDER}.BUILD_DIR", str(tmp_path)), \
+                 pytest.raises(SshKeyPurgeError) as exc:
+                execute_build(conn, 1)
+        finally:
+            (base / "10" / ".ssh").chmod(0o700)
+        assert "workspace:ssh-purge" in str(exc.value)
+        # Everything removable went first, so the admin faces the smallest remainder.
+        assert not (base / "4" / ".ssh" / "id_rsa").exists()
+
+
+def _skip_conn(existing_build, ws_code="testws"):
+    """A mock conn whose second fetchone reports a ready build (the skip path)."""
+    conn = MagicMock()
+    cursor = MagicMock()
+    conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
+    conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+    calls = {"n": 0}
+
+    def fetchone():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"code": ws_code}
+        if calls["n"] == 2:
+            return existing_build
+        return None
+
+    cursor.fetchone.side_effect = fetchone
+    cursor.fetchall.return_value = []
+    cursor.lastrowid = 42
+    return conn
 
 
 class TestValidateCode:
