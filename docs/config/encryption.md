@@ -45,7 +45,7 @@ echo "AGENTO_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../secrets.env
 - **IV:** Random 16 bytes per encryption
 - **Padding:** PKCS7
 - **Format in DB:** `aes256s:{salt_hex}:{iv_hex}:{ciphertext_hex}`
-- **Legacy format:** `aes256:{iv_hex}:{ciphertext_hex}` (key = bare SHA-256 of the passphrase) is still read, never written. The `core/RekeyToScrypt` data patch re-encrypts those rows in `core_config_data` and `credential` on the next `setup:upgrade`. **Restart the toolbox before cron:** a toolbox still running the old code cannot read a rekeyed value.
+- **Legacy format (removed in 0.18.0):** `aes256:{iv_hex}:{ciphertext_hex}` (key = bare SHA-256 of the passphrase) is still read, never written. The `core/RekeyToScrypt` data patch re-encrypts those rows in `core_config_data` and `credential` on the next `setup:upgrade`. **Restart the toolbox before cron:** a toolbox still running the old code cannot read a rekeyed value.
 
 ## Cross-Language Compatibility
 

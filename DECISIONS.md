@@ -20,7 +20,9 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   moment the code lands; the `core/RekeyToScrypt` data patch then re-encrypts `core_config_data`
   (`encrypted=1`) and `credential.credentials` on the next `setup:upgrade`. Nothing writes the legacy
   format any more. Upgrade order matters: the toolbox must be restarted before cron runs the patch,
-  because an old toolbox cannot read a rekeyed value.
+  because an old toolbox cannot read a rekeyed value. The legacy read path and the patch are
+  **obsolete in 0.18.0** — by then every deployment that upgraded has been rekeyed. Upgrading
+  across that boundary without passing through a release that ran the patch is not supported.
 - **Both languages change together.** Python encrypts and the toolbox decrypts the same rows, so the
   parameters are duplicated in `framework/crypto.py` and `toolbox/crypto.js`; changing one alone makes
   every stored value unreadable by the other container.
