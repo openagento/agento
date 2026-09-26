@@ -25,7 +25,7 @@ echo "AGENTO_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../secrets.env
    # or: echo -n "$SECRET" | bin/agento config:set my_app/tools/mysql_prod/pass
    ```
 2. Python checks if `pass` field is `obscure` in module.json.
-3. If yes → encrypts with AES-256-CBC → stores as `aes256:{iv_hex}:{ciphertext_hex}` with `encrypted=1`.
+3. If yes → encrypts with AES-256-CBC → stores as `aes256s:{salt_hex}:{iv_hex}:{ciphertext_hex}` with `encrypted=1`.
 4. Toolbox reads DB at runtime → decrypts using the same `AGENTO_ENCRYPTION_KEY`.
 
 > **Known limitation:** the Python `bootstrap()` also transiently decrypts DEFAULT-scope `obscure`
@@ -41,10 +41,11 @@ echo "AGENTO_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../secrets.env
 ## Algorithm
 
 - **Cipher:** AES-256-CBC
-- **Key derivation:** SHA-256 of `AGENTO_ENCRYPTION_KEY`
+- **Key derivation:** scrypt (N=2^14, r=8, p=1) over `AGENTO_ENCRYPTION_KEY` with a random 16-byte salt per value
 - **IV:** Random 16 bytes per encryption
 - **Padding:** PKCS7
-- **Format in DB:** `aes256:{iv_hex}:{ciphertext_hex}`
+- **Format in DB:** `aes256s:{salt_hex}:{iv_hex}:{ciphertext_hex}`
+- **Legacy format:** `aes256:{iv_hex}:{ciphertext_hex}` (key = bare SHA-256 of the passphrase) is still read, never written. The `core/RekeyToScrypt` data patch re-encrypts those rows in `core_config_data` and `credential` on the next `setup:upgrade`. **Restart the toolbox before cron:** a toolbox still running the old code cannot read a rekeyed value.
 
 ## Cross-Language Compatibility
 

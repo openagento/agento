@@ -200,7 +200,7 @@ class TestScopedConfigSet:
         scoped_config_set(conn, "mymod/token", "secret", encrypted=True)
         args = cursor.execute.call_args[0]
         stored_value = args[1][3]
-        assert stored_value.startswith("aes256:")
+        assert stored_value.startswith("aes256s:")
         assert args[1][4] == 1
 
 

@@ -4,6 +4,29 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-26 — scrypt key derivation for stored secrets
+
+- **Problem.** The AES key for every `obscure` config value and every `credential` row was a bare
+  `SHA-256(AGENTO_ENCRYPTION_KEY)` — no salt, no work factor. One stolen database plus a wordlist or a
+  precomputed table recovers the passphrase, and one derived key opens every row. CodeQL reported it as
+  `py/weak-sensitive-data-hashing` and `js/insufficient-password-hash`.
+- **Fix.** Derive the key with **scrypt** (N=2^14, r=8, p=1, 16-byte random salt per value) and store
+  `aes256s:{salt}:{iv}:{ciphertext}`. scrypt over PBKDF2 because memory hardness (16 MiB per guess) is
+  what defeats GPU cracking; both `hashlib` and Node's `crypto` ship it, so no dependency is added.
+- **Per-value salt, with a cache.** A shared salt would let one derivation open every row. The cost of a
+  per-value salt is one derivation per distinct salt, so both implementations memoize by
+  (passphrase, salt) — `bootstrap()` decrypts many values in one process.
+- **Migration.** `decrypt` still reads the legacy `aes256:` prefix, so a deployment keeps working the
+  moment the code lands; the `core/RekeyToScrypt` data patch then re-encrypts `core_config_data`
+  (`encrypted=1`) and `credential.credentials` on the next `setup:upgrade`. Nothing writes the legacy
+  format any more. Upgrade order matters: the toolbox must be restarted before cron runs the patch,
+  because an old toolbox cannot read a rekeyed value.
+- **Both languages change together.** Python encrypts and the toolbox decrypts the same rows, so the
+  parameters are duplicated in `framework/crypto.py` and `toolbox/crypto.js`; changing one alone makes
+  every stored value unreadable by the other container.
+
+---
+
 ## 2026-09-25 — One tracked RULES.md with permanent rule IDs
 
 - **Problem: three roles read three rule sets.** The implementer read AGENTS.md, the reviewer read an
