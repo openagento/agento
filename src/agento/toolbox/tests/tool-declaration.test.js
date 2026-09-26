@@ -76,6 +76,7 @@ const SUPPORT_FILES = new Set([
   'versioned_artifacts/paths.js',
   'versioned_artifacts/published-tree.js',
   'versioned_artifacts/service.js',
+  'web/auth-sources.js',
 ]);
 
 // The AUTHORITATIVE "every tool is declared" check for shipped modules.

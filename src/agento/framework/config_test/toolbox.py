@@ -37,7 +37,7 @@ class ToolboxUrlError(ValueError):
     """``core/toolbox/url`` is not a usable internal endpoint."""
 
 
-def _resolve_toolbox_url(conn) -> str:
+def resolve_toolbox_url(conn) -> str:
     """``core/toolbox/url``, validated, or the compose default.
 
     A single per-path read — never ``resolve_all()`` and never ``get_module()``,
@@ -164,7 +164,7 @@ def run_toolbox_test(conn, config_path: str, *, scope: str, scope_id: int = 0) -
             code="SCOPE_ID_INVALID",
         )
     try:
-        url = _resolve_toolbox_url(conn)
+        url = resolve_toolbox_url(conn)
     except ToolboxUrlError as e:
         return TestResult(ERROR, str(e), code="TOOLBOX_URL_INVALID")
 

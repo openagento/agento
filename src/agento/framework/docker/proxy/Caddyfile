@@ -1,5 +1,5 @@
 # E1.5 proxy: TLS, the three origins, and the forward_auth subrequest to web.
-# The authorization DECISION behind /internal/authz/* is E2's (apps) and E6's (share).
+# The authorization DECISION behind /internal/authz/app is web's (E2); /share is E6's.
 # No route here ever targets the toolbox, so a `?cap=` token never reaches this proxy.
 {
 	admin off
@@ -76,6 +76,16 @@
 	import access_log
 	import strip_identity
 	@version path_regexp version ^/a/([a-z0-9][a-z0-9-]{0,63})/v/(v-[0-9]{8}-[0-9]{6}-[a-z0-9]{4})/
+	# The launch exchange (PRD E2 §4.3): the panel page POSTs a form here. POST only, so a
+	# prefetch or a scanner cannot consume the one-time code; the code is never in the URL.
+	@redeem {
+		method POST
+		path /launch
+	}
+	handle @redeem {
+		rewrite * /internal/launch/redeem
+		reverse_proxy web:8000
+	}
 	handle @version {
 		route {
 			forward_auth web:8000 {

@@ -93,7 +93,14 @@ export function createVerifier(query, { sourceCheckers = NO_AUTH_SOURCES, resolv
       // missing, or that no longer finds a live session/launch, rejects an unexpired token.
       const check = sourceCheckers.lookup(normalized.source_kind);
       if (typeof check !== 'function' || typeof normalized.source_id !== 'string') return null;
-      source = await check(normalized.source_id, { capability_kind: normalized.kind });
+      // The row's scope and this verifier's query go to the checker, so it computes the
+      // caller's grants FOR that scope — echoing the scope back does not trust it.
+      source = await check(normalized.source_id, {
+        capability_kind: normalized.kind,
+        workspace_id: normalized.workspace_id,
+        agent_view_id: normalized.agent_view_id,
+        query,
+      });
       if (!source) return null;
       ttlCaps = await ttls(normalized.workspace_id);
     }
