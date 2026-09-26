@@ -20,7 +20,7 @@ agento run dev_01 --yolo        # interactive, no approval prompts
 agento run --yolo dev_01        # same — flag may precede the code
 ```
 
-This is safe by construction: the agent runs inside the isolated `sandbox` container with no tool or database credential of its own (the toolbox is the only container holding the tool credential store; the sandbox does receive the harness/provider API credential the run needs, plus one documented exception: the SSH private key used for git — see [DECISIONS.md](../../DECISIONS.md) D-SSH-1). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
+This is safe by construction: the agent runs inside the isolated `sandbox` container with no tool or database credential of its own (the toolbox is the only container holding the tool credential store; known gaps: [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt)). The sandbox does receive the harness/provider API credential the run needs, plus one documented exception: the SSH private key used for git — see [DECISIONS.md](../../DECISIONS.md) D-SSH-1. `--yolo` only affects **interactive** mode — headless (one-shot) runs bypass by default, unless the harness's own config asks otherwise (e.g. `codex/config` setting `sandbox_mode`), so the flag is a no-op there.
 
 ### `--pretty` — human-readable event stream
 

@@ -6,7 +6,7 @@ Before 0.15, ``agent_view/provider`` held what is now the HARNESS. Because the n
 fallback compares the two values' ORIGINS (ENV > agent_view > workspace > default >
 config.json) instead of mere presence. A legacy value is recognised structurally (a
 provider naming a REGISTERED HARNESS), never by a "claude"/"codex" literal, which would
-put back in the framework the exact branch the harness contract removes (AGENTS.md #6).
+put back in the framework the exact branch the harness contract removes (RULES.md PLC-2).
 """
 from __future__ import annotations
 

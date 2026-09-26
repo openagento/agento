@@ -64,8 +64,8 @@ agento install                        # Interactive wizard — scaffolds, starts
 Agento runs three Docker containers on a shared network:
 
 - **Cron** (Python) -- Job queue consumer, scheduler, CLI host. Manages the lifecycle of agent jobs, runs migrations, and dispatches events. Connects to MySQL for job state, config, and module metadata.
-- **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over stdio. The only container that holds the credential store (API keys, tokens, DB credentials).
-- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container where the AI agent executes. Holds no credential from that store and no database access; the one credential it does get is the **harness/provider** API credential its own run needs, delivered per run; it communicates with the toolbox exclusively through MCP tool calls. One documented exception: the git SSH identity, delivered per run as a signing capability (`SSH_AUTH_SOCK`) from a private `ssh-agent`, never as a key file — a dated, scoped waiver, see `DECISIONS.md` D-SSH-1.
+- **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over MCP (streamable HTTP `/mcp`, SSE `/sse`). The only container that holds the credential store (API keys, tokens, DB credentials); known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt).
+- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container for interactive `agento run`; a headless job runs the agent inside the `cron` container instead. Either way the agent holds no credential from that store and has no database access; the one credential it does get is the **harness/provider** API credential its own run needs, delivered per run. It communicates with the toolbox exclusively through MCP tool calls. One documented exception: the git SSH identity, delivered per run as a signing capability (`SSH_AUTH_SOCK`) from a private `ssh-agent`, never as a key file — a dated, scoped waiver, see `DECISIONS.md` D-SSH-1.
 
 ## Module System
 
@@ -167,7 +167,7 @@ One module = one integration = a complete package. The framework provides the me
 - ✅ Ingress identities & agent resolution (deterministic, module-extensible routing)
 - ✅ Composable workspace, skills & tools (CLI-managed tool/skill control)
 - 🟡 Developer experience & open-source polish (docs, CI boundary tests)
-- 🟡 Event coverage & naming convention (`agento_<area>_<action>`, 25 events)
+- 🟡 Event coverage & naming convention (`{subject}_{verb}_{before|after}`)
 - 🟡 Composable workspace automation (auto-rebuild, build GC — scheduled sync pending)
 - ⚪ Admin API & Agent Studio (control plane for workspaces & agent views)
 - ⚪ Credential broker / key vault (broker-owned secrets, reference-based config)

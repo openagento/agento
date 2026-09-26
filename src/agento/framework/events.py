@@ -478,7 +478,7 @@ class SkillSyncCompletedEvent:
 # --- Credential events ---
 #
 # Names have NO vendor prefix: these are core events, and the convention
-# (AGENTS.md / docs/architecture/events.md) reserves `{vendor}_{module}_...` for
+# (RULES.md EVT-4 / docs/architecture/events.md) reserves `{publisher}_{module}_...` for
 # third-party modules. Same shape as job_claim_after, module_register_before.
 #
 # Dual dispatch: each of these is dispatched under BOTH the new

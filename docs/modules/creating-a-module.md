@@ -113,8 +113,8 @@ Create `events.json` to react to job lifecycle events:
 ```bash
 cat > modules/my-crm/events.json << 'EOF'
 {
-  "job_succeeded": [
-    {"name": "crm_job_succeeded", "class": "src.observers.JobSucceededObserver"}
+  "job_succeed_after": [
+    {"name": "crm_job_succeed_after", "class": "src.observers.JobSucceededObserver"}
   ]
 }
 EOF
@@ -243,6 +243,21 @@ See [Config System](../config/README.md) for the full fallback chain.
 
 ## 11. Add Custom Toolbox Tools (Optional)
 
+Declare every tool in `module.json` `tools[]`. A tool that is not declared is denied at runtime:
+
+```json
+{
+  "tools": [
+    {
+      "type": "mcp",
+      "name": "crm_search_contacts",
+      "description": "Search CRM contacts by name or email",
+      "toolset": "my-crm"
+    }
+  ]
+}
+```
+
 Create `toolbox/` directory with JS files that export `register(server, context)`:
 
 ```bash
@@ -250,25 +265,32 @@ mkdir -p modules/my-crm/toolbox
 cat > modules/my-crm/toolbox/crm-api.js << 'EOF'
 import { z } from 'zod';
 
-export function register(server, { log }) {
-  server.tool(
-    'crm_search_contacts',
-    'Search CRM contacts by name or email.',
-    {
-      user: z.string().email().describe('Agent email from SOUL.md'),
-      query: z.string().describe('Search term'),
-    },
-    async ({ user, query }) => {
-      // Your tool logic — use process.env for credentials
-      log('crm_search_contacts', 'OK', `user=${user} query="${query}"`);
-      return { content: [{ type: 'text', text: JSON.stringify([]) }] };
-    }
-  );
+export function register(server, { log, moduleConfigs, isToolEnabled }) {
+  const cfg = moduleConfigs?.['my-crm'] || {};
+  // At startup (registerModuleRestApis) isToolEnabled is undefined and the server is a stub.
+  const enabled = (name) => !isToolEnabled || isToolEnabled(name);
+  if (enabled('crm_search_contacts')) {
+    server.tool(
+      'crm_search_contacts',
+      'Search CRM contacts by name or email.',
+      {
+        user: z.string().email().describe('Agent email from SOUL.md'),
+        query: z.string().describe('Search term'),
+      },
+      async ({ user, query }) => {
+        // Your tool logic — call cfg.api_url with cfg.api_token
+        log('crm_search_contacts', 'OK', `user=${user} query="${query}"`);
+        return { content: [{ type: 'text', text: JSON.stringify([]) }] };
+      }
+    );
+  }
 }
 EOF
 ```
 
-Convention-based discovery: any `.js` file in `toolbox/` is auto-discovered by the Toolbox at startup. The `context` object provides `{ app, log, db, playwright, fileManager }` -- no imports from framework files needed.
+`moduleConfigs['my-crm']` holds the module's `system.json` fields (step 10), resolved by the 3-level fallback. The toolbox decrypts `obscure` fields, so `cfg.api_token` is the plain value. Gate each registration on its own `tools/<name>/is_enabled` key. A tool is off until you enable it: `agento tool:enable crm_search_contacts`. See [Adding a Tool](../tools/adding-a-tool.md#every-tool-must-be-declared-in-modulejson).
+
+Convention-based discovery: any `.js` file in `toolbox/` is auto-discovered by the Toolbox at startup. The `context` object provides `{ app, log, db, playwright, fileManager, moduleConfigs, isToolEnabled }` -- no imports from framework files needed. `app` is set only in the startup (REST) pass; `isToolEnabled` is set only per MCP session.
 
 Always log tool activity via the injected `log` (never import a logger or hardcode a file path). The Toolbox auto-routes it: handlers registered as MCP tools (`server.tool(...)`) log to `toolbox_mcp.log`, while REST route handlers (`app.post('/api/...')`) log to `toolbox_rest.log`. You don't pass a type -- the correct log is injected per registration path.
 

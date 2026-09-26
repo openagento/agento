@@ -44,7 +44,7 @@ Agento uses a zero-trust container architecture:
   access. It does receive the **harness/provider** API credential its own run needs — that is what
   runs the model — and one further documented exception: the SSH private key used for git, delivered per run into a private `ssh-agent`
   and never written to disk (a dated, scoped waiver — see [DECISIONS.md](DECISIONS.md) D-SSH-1).
-- The **toolbox** is the only container holding the credential store (API keys, tokens, DB credentials), exposed via controlled MCP tool interfaces. The SSH exception above is the one credential that does not come from it.
+- The **toolbox** is the only container holding the credential store (API keys, tokens, DB credentials), exposed via controlled MCP tool interfaces (known gaps: [zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt)). The SSH exception above is the one credential that does not come from it.
 - Config encryption uses AES-256-CBC for sensitive fields.
 
-See [docs/architecture/](docs/architecture/) for full details.
+See [docs/architecture/zero-trust.md](docs/architecture/zero-trust.md) for the credential model and its known exceptions, and [docs/architecture/](docs/architecture/) for full details.

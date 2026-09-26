@@ -35,16 +35,16 @@ Declare observers per event in your module's `events.json` (like Magento's `even
 
 ```json
 {
-  "job_failed": [
+  "job_fail_after": [
     {
-      "name": "mymodule_job_failed",
+      "name": "mymodule_job_fail_after",
       "class": "src.observers.MyJobFailedObserver",
       "order": 100
     }
   ],
-  "job_succeeded": [
+  "job_succeed_after": [
     {
-      "name": "mymodule_job_succeeded",
+      "name": "mymodule_job_succeed_after",
       "class": "src.observers.MyJobSucceededObserver"
     }
   ]
@@ -64,12 +64,14 @@ All event names follow a strict pattern: **`{subject}_{verb}_{before|after}`**
 - **`subject`** — the entity or concept: `job`, `consumer`, `module`, `worker`, `config`, `routing`, `workspace_build`, `skill_sync`
 - **`verb`** — what happens: `claim`, `fail`, `succeed`, `start`, `stop`, `save`, `load`, `resolve`
 - **`before|after`** — timing relative to the action:
-  - `_before` — fires before the action completes (observers can inspect but not prevent)
+  - `_before` — fires before the action commits. Use it only in one of two cases:
+    - the observer sets a field that the dispatcher reads back (for example `job_finalize_before.verdict`);
+    - the observer does a side effect that must come first (for example `agent_view_run_start_before` writes `AGENTS.md`).
   - `_after` — fires after the action is committed
 
 Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete_after`
 
-**Third-party module events** use: `{vendor}_{module}_{subject}_{verb}_{before|after}` — e.g. `acme_slack_message_send_after`. Vendor prefix prevents collisions.
+**Third-party module events** use: `{publisher}_{module}_{subject}_{verb}_{before|after}` — e.g. `acme_slack_message_send_after`. The publisher prefix prevents collisions.
 
 ## Core Events
 
@@ -80,15 +82,18 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 | `job_publish_after` | `JobPublishedEvent` | `type, source, reference_id, idempotency_key, agent_view_id, priority, requester` | After job inserted into queue |
 | `job_claim_after` | `JobClaimedEvent` | `job` | After job dequeued (status → RUNNING) |
 | `job_succeed_after` | `JobSucceededEvent` | `job, summary, agent_type, model, elapsed_ms` | After SUCCESS commit |
-| `job_fail_after` | `JobFailedEvent` | `job, error, elapsed_ms` | On any failure (fires before retry/dead) |
+| `job_fail_after` | `JobFailedEvent` | `job, error, elapsed_ms` | On any failure (fires before retry/blocked/dead) |
 | `job_retry_after` | `JobRetryingEvent` | `job, error, delay_seconds, elapsed_ms` | After retry scheduled (status → TODO) |
 | `job_dead_after` | `JobDeadEvent` | `job, error, elapsed_ms` | After max retries exhausted (status → DEAD) |
+| `job_blocked_after` | `JobBlockedEvent` | `job, error, elapsed_ms` | After a *blocked* verdict halts the job without retry (status → FAILED) |
+| `job_pause_after` | `JobPausedEvent` | `job` | After CLI `job:pause` pauses a running job (status → PAUSED) |
+| `job_resume_after` | `JobResumedEvent` | `job` | After CLI `job:resume` re-queues a paused job (status → TODO) |
 | `job_finalize_before` | `JobFinalizeEvent` | `job, job_result, elapsed_ms, verdict` | After `rc=0`, **before** the SUCCESS UPDATE. The mutable `verdict` field lets an observer veto a "ghost success"; **no in-tree observer sets it** — `verdict` stays `None` by default |
-| `job_finalize_after` | `JobFinalizeEvent` | `job, job_result, elapsed_ms, verdict` | After the terminal status (`SUCCESS`/`TODO`/`DEAD`) commits. `verdict=None` (the in-tree default) means SUCCESS; a populated `verdict` — if a future module sets one — means the run was vetoed |
+| `job_finalize_after` | `JobFinalizeEvent` | `job, job_result, elapsed_ms, verdict` | After the terminal status (`SUCCESS`/`TODO`/`FAILED`/`DEAD`) commits. `verdict=None` (the in-tree default) means SUCCESS; a populated `verdict` — if a future module sets one — means the run was vetoed |
 
-`job_fail_after` fires on every failure, then one of `job_retry_after` or `job_dead_after` also fires.
+`job_fail_after` fires on every failure, then one of `job_retry_after`, `job_blocked_after`, or `job_dead_after` also fires.
 
-`job_finalize_before` fires after a `rc=0` run, before the SUCCESS commit. The framework's **verdict plumbing stays in place** for future modules: an observer may set `verdict` (a `Verdict` dataclass with `retryable`, `reason: VerifyReason`, `fresh_start`, `detail`); a non-`None` verdict converts the apparent success into a `JobVerificationFailed` exception that routes through the normal retry/dead path, and `verdict.fresh_start=True` additionally clears `job.session_id` so the next retry starts a fresh agent session. **No in-tree observer uses this today.** The `app_monitor` module ships `McpHealthTelemetryObserver` on this event for **telemetry only** — it records two nullable per-attempt signals (`toolbox_mcp_calls`, `toolbox_mcp_connected`) on the `job` row and optionally emails ops, but never sets a verdict and never disrupts job flow. See [src/agento/modules/app_monitor/README.md](../../src/agento/modules/app_monitor/README.md).
+`job_finalize_before` fires after a `rc=0` run, before the SUCCESS commit. The framework's **verdict plumbing stays in place** for future modules: an observer may set `verdict` (a `Verdict` dataclass with `retryable`, `reason: VerifyReason`, `fresh_start`, `detail`, `blocked`); a non-`None` verdict converts the apparent success into a `JobVerificationFailed` exception that routes through the normal retry/blocked/dead path, and `verdict.fresh_start=True` additionally clears `job.session_id` so the next retry starts a fresh agent session. **No in-tree observer uses this today.** The `app_monitor` module ships `McpHealthTelemetryObserver` on this event for **telemetry only** — it records two nullable per-attempt signals (`toolbox_mcp_calls`, `toolbox_mcp_connected`) on the `job` row and optionally emails ops, but never sets a verdict and never disrupts job flow. See [src/agento/modules/app_monitor/README.md](../../src/agento/modules/app_monitor/README.md).
 
 `JobFinalizeEvent.job_result` carries the consumer's `_JobResult`, which now propagates `RunResult.mcp_init` — the provider's CLI self-report of MCP servers visible at session start (`McpInitReport(servers=(McpServerStatus(name, status), …))`, or `None` when the provider exposes no init signal). The `status` strings are the provider CLI's own vocabulary, carried through **verbatim** — the runner transcribes, it never interprets. `app_monitor` maps them tri-state: only `connected` is `TRUE`, only a status the CLI treats as terminal (or a missing `toolbox` entry) is `FALSE`, and anything indeterminate or unrecognized — notably Claude's `pending`, which just means the handshake had not finished when init was printed — is `NULL`. Populating `mcp_init` is part of the runner contract: providers fill it when their CLI exposes it (Claude's `system/init` stream line does; Codex does not — see the app_monitor README).
 
@@ -250,8 +255,4 @@ On consumer hot-reload (per-tick re-bootstrap when idle), `module_reload_before`
 
 ## When to Add an Event
 
-- **Add** when a module might reasonably want to react to a state change (e.g., `config_save_after`, `migration_apply_after`, `job_succeed_after`).
-- **Prefer `_after` events** — most events fire after the action is committed. Use `_before` only when observers need to inspect state before it changes (e.g., `consumer_stop_before`, `module_shutdown_before`).
-- **Don't add** events for internal operations that modules should not interfere with (e.g., registry clearing during bootstrap).
-- **Don't add** generic before/after hooks on every function — events should be at meaningful extension points.
-- **Events stay synchronous** — keep debugging and ordering simple.
+[RULES.md](../../RULES.md) EVT-1 decides when to add an event; a plan writes the decision in its `Extension points` section. EVT-8 decides event or `di.json` protocol, and `_before` or `_after`.

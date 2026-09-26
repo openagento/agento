@@ -1,22 +1,34 @@
 # Zero-Trust Credential Model
 
-Toolbox is the **only** container holding the credential store — API keys, tokens, DB
-credentials. The AI agent has none of them, with **one documented exception**: the SSH private key used for git, delivered per run into a private
-`ssh-agent` and never written to disk. That exception is a dated, scoped waiver of
-`RULES.md:112` — see [DECISIONS.md](../../DECISIONS.md) (D-SSH-1).
+**Target model:** the toolbox is the only container that holds **tool** credentials (Jira/GitHub tokens, the tool DB user, SMTP). The AI agent holds no tool credential, only its own
+harness credential, with **one documented exception**: the SSH private key used for git, delivered
+per run into a private `ssh-agent` and never written to disk — a dated, scoped waiver of
+`RULES.md:112`, see [DECISIONS.md](../../DECISIONS.md) (D-SSH-1). Where the code still differs from
+the model, the next section lists every known gap. Rules: `RULES.md` SEC-1, SEC-7, SEC-9.
 
-**Closed in this release:** the credential store no longer reaches uid `agent` at all. The cron container's store file is `root:root 0600` and is read by a root-owned program that drops privilege in-process before loading it, so it crosses no `execve`; the managed crontab is rendered by root from inputs the agent cannot write. [D-SSH-1](../../DECISIONS.md) residual channel (6), **closed 2026-09-23** — see [cron-privileges.md](cron-privileges.md).
+## Known exceptions and debt
 
-> **Known limitation (aspirational, not yet fully enforced on the Python side).** `bootstrap()`
-> transiently decrypts **all** DEFAULT-scope `obscure` config while resolving module config, so the
-> cron, the consumer (every hot-reload), and the CLI briefly hold decrypted secrets. For
-> *toolbox-only* creds (e.g. the Outlook Graph secret) this decryption is unnecessary and the value
-> is discarded unused. But it is **not** universally unused: `app_monitor` intentionally consumes
-> the obscure SMTP password **cron-side** to send breach alerts (`observers.py`), so that credential
-> genuinely lives in the cron today and needs migration to a toolbox-owned transport. `secrets.env`
-> is also mounted into the cron service today, and the `CONFIG__*` ENV path is plaintext regardless.
-> A per-field `toolbox_only` classification + the app_monitor SMTP transport migration are the
-> tracked fix — see [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
+This is the one register of security exceptions and gaps. An **accepted** row links a dated
+DECISIONS.md entry with the owner's approval. A `Part of the model` row restates what the model
+allows. A listed item is not a new review finding, unless a change makes it worse or depends on it. A
+gap already in the repo that is not listed is reported as `DEBT`, and the owner adds its row. A gap a
+change adds is a finding (`RULES.md` SEC).
+
+| Item | Where | Status |
+|---|---|---|
+| A headless agent runs in the cron container, and its CLI subprocess used to inherit the consumer env (`AGENTO_ENCRYPTION_KEY`, `MYSQL_USER`/`MYSQL_PASSWORD`), which let it decrypt every stored credential. | `framework/credential_store_env.py`, `framework/harness/subprocess_runner.py` | **Closed 2026-09-23.** The store never enters the container environment: it lands in a `root:root 0600` file read by root-owned `drop.py`, which drops to uid `agent` in-process, and the agent subprocess gets an env with the store names removed |
+| `bootstrap()` decrypts all DEFAULT-scope `obscure` config while it resolves module config, so cron, the consumer (each hot-reload), and the CLI hold decrypted secrets for a short time. For toolbox-only secrets (the Outlook Graph secret) the value is not used. | `framework/bootstrap.py` | Debt — fix tracked in [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md) |
+| The `jira` observer decrypts an agent_view's `jira/jira_token` cron-side on each bootstrap until that view's account id is resolved, only to check that it is set. | `modules/jira/src/observers.py` (`module_ready_after`) | Debt |
+| `app_monitor` uses the `obscure` SMTP password **cron-side** to send breach alerts. | `modules/app_monitor/src/observers.py` | Debt — same fix as `bootstrap()` (move to a toolbox transport) |
+| `secrets.env` is mounted into the cron service (`env_file`). | `framework/cli/templates/docker-compose.yml` | Debt |
+| `CONFIG__*` ENV values are plaintext in every container that has them. | ENV level of the config fallback | Part of the model (CFG-1) |
+| `/opt/cron-agent/env` held `MYSQL_*`, `CONFIG__*` and `AGENTO_*` (including `AGENTO_ENCRYPTION_KEY`) at mode `0644`, readable by every uid in the cron container. | `framework/docker/cron/entrypoint.sh` (`split-env.py`) | **Closed 2026-09-23.** The environment is split in two: a root-only store file and an agent-visible public file, by `credential_store_env.is_credential_store_name` |
+| The toolbox takes `agent_view_id` from the caller (the MCP query string and the REST request body) and `job_id` from the MCP query string. An absent id means DEFAULT scope ([DECISIONS.md](../../DECISIONS.md) 2026-06-18). On the MCP path and in the Jira REST handlers, an unknown or unparseable id falls back to global config (`config-loader.js`); the Outlook and Bitbucket REST handlers return 404. | `src/agento/toolbox/server.js`, `config-loader.js`, module `toolbox/` handlers | Absent id = DEFAULT scope: accepted (DECISIONS.md 2026-06-18). Caller-supplied id: debt, the framework-wide internal-caller-auth gap N5-2 ([DECISIONS.md](../../DECISIONS.md) 2026-06-19 D-5) |
+| An MCP session without `job_id` gets Outlook reads and actions that are not bound to a trigger. The toolbox cannot tell interactive `agento run` (the intended user) from any other caller that leaves out `job_id`. | `modules/outlook/toolbox/outlook.js` | Accepted for interactive `agento run` — [DECISIONS.md](../../DECISIONS.md) 2026-07-04; other callers are debt |
+| The agent holds its own harness OAuth credential. | per-run HOME (for example `.claude/.credentials.json`), written from the encrypted `credential` row | Part of the model (SEC-1) |
+| The agent can sign git operations with an SSH key. | `SSH_AUTH_SOCK` for a per-run `ssh-agent`; the private key is resolved per run and loaded in memory, never written to disk | Accepted — the git push identity, [DECISIONS.md](../../DECISIONS.md) D-SSH-1 (the on-disk `.ssh/id_rsa` it replaces is gone) |
+
+The sections below show the **target model**. Where the code differs today, the table above says so.
 
 ## Security Boundary
 
@@ -67,16 +79,15 @@ You cannot accidentally `import secrets` in agent code because it's a different 
 ## Credential Flow
 
 ```
-secrets.env (host filesystem)
+secrets.env (host filesystem) — holds only AGENTO_ENCRYPTION_KEY
     │
+    ├──► cron container (env_file in docker-compose) — debt, see the table above
     └──► toolbox container (env_file in docker-compose)
               │
-              ├── JIRA_HOST, JIRA_USER, JIRA_TOKEN
-              ├── SMTP_HOST, SMTP_USER, SMTP_PASS
-              ├── AGENTO_ENCRYPTION_KEY
-              └── CONFIG__* overrides
+              └── decrypts tool credentials (Jira, SMTP, DB logins, API tokens)
+                  stored encrypted in core_config_data (MySQL)
 
-              + core_config_data (MySQL) for per-tool credentials
+CONFIG__* ENV overrides take precedence over core_config_data (plaintext)
 ```
 
 ## What the Agent CAN Access

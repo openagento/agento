@@ -52,7 +52,7 @@ def _set_module_state(name: str, enabled: bool) -> None:
 
     if source == "missing":
         print(f"Module '{name}' not found.")
-        print(f"  - For local modules: place under app/code/<vendor>/{name}/ with module.json")
+        print(f"  - For local modules: place under app/code/{name}/ with module.json")
         print(f"  - For PyPI extensions: run 'uv add {name}' first, then re-run module:enable")
         sys.exit(1)
 

@@ -46,7 +46,7 @@ and it is why there is no "let the framework decrypt this for a tester" permissi
 
 | Credential | Runs in | Why |
 |---|---|---|
-| SMTP, HTTP APIs, Graph | the **toolbox** | the only container with secrets — it already resolves and decrypts them for every tool |
+| SMTP, HTTP APIs, Graph | the **toolbox** | designed to be the only container that holds tool credentials (known gaps: [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt)) — it already resolves and decrypts them for every tool |
 | the agent_view SSH keypair | the **framework** (the module's own Python) | Node cannot parse an OpenSSH private key (`crypto.createPrivateKey` → `DECODER routines::unsupported`); `cryptography.load_ssh_private_key` can, and `agent_view:identity:show` already decrypts that field in-process |
 
 A toolbox probe proves the **toolbox's** vantage point. That is the right one — the toolbox is what
