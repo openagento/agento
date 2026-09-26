@@ -1168,8 +1168,38 @@ class TestPlatformFoundationServices:
         ports = _items(_service_block(load(), "proxy"), "ports")
         assert ports == ["127.0.0.1:${AGENTO_PROXY_PORT:-8443}:443"]
 
+    def test_web_knows_the_browser_origins_with_the_proxy_defaults(self, load):
+        content = load()
+        env = _items(_service_block(content, "web"), "environment")
+        assert {
+            "AGENTO_PANEL_HOST=${AGENTO_PANEL_HOST:-panel.localhost}",
+            "AGENTO_APPS_HOST=${AGENTO_APPS_HOST:-apps.localhost}",
+            "AGENTO_PROXY_PORT=${AGENTO_PROXY_PORT:-8443}",
+        } <= set(env)
+        proxy_env = set(_items(_service_block(content, "proxy"), "environment"))
+        assert {e for e in env if e.startswith("AGENTO_") and "_HOST=" in e} <= proxy_env
+
+    def test_web_reads_the_module_inventory_read_only(self, load):
+        volumes = _items(_service_block(load(), "web"), "volumes")
+        assert {"../app/code:/app/code:ro", "../app/etc:/app/etc:ro"} <= set(volumes)
+
+    def test_web_holds_no_secret(self, load):
+        block = _service_block(load(), "web")
+        assert "env_file:" not in block
+        assert "AGENTO_ENCRYPTION_KEY" not in block
+
     def test_web_healthcheck_needs_no_curl(self, load):
         block = _service_block(load(), "web")
         assert "healthcheck:" in block
         assert "urllib.request" in block
         assert "curl" not in block
+
+
+def test_web_mounts_the_same_extensions_as_cron():
+    from agento.framework.cli._templates import get_template
+
+    content = render_compose(get_template("docker-compose.yml"), python_version="3.12",
+                             extensions=["acme_ext"], sandbox_packages=[])
+    mount = "../.venv/lib/python3.12/site-packages/acme_ext:/opt/agento-src/acme_ext:ro"
+    assert mount in _items(_service_block(content, "web"), "volumes")
+    assert mount in _items(_service_block(content, "cron"), "volumes")

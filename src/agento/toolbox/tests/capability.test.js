@@ -152,7 +152,18 @@ describe('new-profile rows and their sources', () => {
     live = false;
     expect(await verify('t', { endpoint: 'invoke' })).toBeNull();
     expect(check).toHaveBeenCalledTimes(2);
-    expect(check).toHaveBeenCalledWith('s-1', { capability_kind: 'user_session' });
+    expect(check).toHaveBeenCalledWith('s-1', expect.objectContaining({ capability_kind: 'user_session' }));
+  });
+
+  it('hands the checker the row scope and the verifier\'s own query, so it can compute grants for that scope', async () => {
+    const check = vi.fn(async () => session);
+    const query = fakeQuery([sessionRow]);
+    const verify = createVerifier(query, {
+      sourceCheckers: createSourceLookup([['session', check]]), resolveTtls: caps,
+    });
+    await verify('t', { endpoint: 'invoke' });
+    const opts = check.mock.calls[0][1];
+    expect(opts).toEqual({ capability_kind: 'user_session', workspace_id: 3, agent_view_id: null, query });
   });
 
   it('resolves the TTL caps for the row workspace, and a resolver failure propagates (503, not open)', async () => {

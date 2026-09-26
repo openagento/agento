@@ -30,6 +30,7 @@ change adds is a finding (`RULES.md` SEC).
 | `/opt/cron-agent/env` holds `MYSQL_*`, `CONFIG__*`, and `AGENTO_*` (including `AGENTO_ENCRYPTION_KEY`) and is mode `0644`, so every uid in the cron container can read it. | `framework/docker/cron/entrypoint.sh` | Debt |
 | A run's capability token is in that run's own MCP config in the shared workspace, and every agent process is uid `agent`. A shell-capable agent that reads a co-tenant's live token acts as that co-tenant's view until the token is revoked (a job token at the job's end). | run MCP config; `toolbox_capability` | Debt — the co-tenant half of [DECISIONS.md](../../DECISIONS.md) 2026-08-23 Toolbox east-west auth (OPEN, see ROADMAP) |
 | An MCP session whose capability has no `job_id` (kind `mcp_interactive`, minted by `agent_view:prepare-run` or an operator) gets Outlook reads and actions that are not bound to a trigger. | `modules/outlook/toolbox/outlook.js` | Accepted for interactive `agento run` — [DECISIONS.md](../../DECISIONS.md) 2026-07-04; other callers are debt |
+| `web` has no rate limit on the launch redeem (`POST /launch` on apps) or on `/internal/authz/app`, which `proxy` calls for each apps file request. Each request does a DB read for a caller that is not yet authenticated (SEC-12). Sign-in has an in-process throttle. Behind `proxy`, every request has the proxy's address, so an address limit in `web` needs a trusted client-address header first. | `src/agento/web/api.py`, `src/agento/framework/docker/proxy/Caddyfile` | Debt — owner to decide: a limit in `proxy`, or a trusted forwarded address in `web` |
 | The agent holds its own harness OAuth credential. | per-run HOME (for example `.claude/.credentials.json`), written from the encrypted `credential` row | Part of the model (SEC-1) |
 | The agent holds an SSH key for git. | per-run HOME `.ssh/id_rsa`, written by `workspace_build` from the encrypted `agent_view/identity/ssh_private_key` | Accepted — the git push identity, [DECISIONS.md](../../DECISIONS.md) 2026-06-19 D-2 |
 
@@ -95,7 +96,8 @@ a `job_id` on the URL may only agree with the capability's job.
 | `miniapp` | the Web API, for a miniapp launch | invoke only | `core/auth/capability_ttl`, single use |
 
 Invoke is `POST /internal/tools/{name}:invoke`. The two user kinds need a live source (session or
-launch) on every call; E1 ships no source checker, so they are refused until E2/E6 add one. Every
+launch) on every call. The `web` module ships the `session` checker (E2); `miniapp` is refused until
+E6 adds the `launch` checker. Every
 tool call on every transport goes through one dispatcher that authorizes it per call and writes a
 `tool_invocation` audit row — see [auth-context.md](auth-context.md).
 
@@ -190,6 +192,14 @@ secrets.env (host filesystem) — holds only AGENTO_ENCRYPTION_KEY
 
 CONFIG__* ENV overrides take precedence over core_config_data (plaintext)
 ```
+
+## What `web` holds
+
+`web` (the panel API) holds no upstream tool credential and no `AGENTO_ENCRYPTION_KEY`. Its one
+secret is the internal proxy secret (volume `proxy-internal`), which authenticates `forward_auth`. It stores only
+SHA-256 hashes of session tokens, launch tokens and exchange codes. For each panel tool call it
+mints one single-use `user_session` capability and sends it to the toolbox; the raw token is never
+persisted or logged. See [panel.md](panel.md).
 
 ## What the Agent CAN Access
 
