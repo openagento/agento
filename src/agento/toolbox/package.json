@@ -13,6 +13,7 @@
     "@modelcontextprotocol/sdk": "^1.12.0",
     "@playwright/mcp": "^0.0.68",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.7.0",
     "mssql": "^11.0.0",
     "mysql2": "^3.23.1",
     "nodemailer": "^8.0.7",

@@ -121,6 +121,7 @@ E2 shipped the panel API: users, sessions, `admin`/`user` roles with per-scope g
 - the panel frontend (E2 ships the API only) and an admin-TUI users screen;
 - per-user grants (visibility is per role), and `operation` grants beyond `artifact.launch`;
 - a DB-backed login throttle (the current one is per process);
+- rate limits for the launch redeem and `/internal/authz/app` (RULES.md SEC-12; see the zero-trust.md debt row);
 - the launch manifest seam, the `launch` auth source, `miniapp` capabilities and shares (E6);
 - a sequence column for exact launch eviction order (`created_at` has 1 s precision);
 - **per-run UID or container isolation (OPEN)**: until it exists, panel roles do not separate users

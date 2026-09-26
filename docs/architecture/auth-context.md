@@ -111,6 +111,10 @@ Migration `036_toolbox_capability_auth_context` backfills the rows that existed 
 | `tool_error`        | 422           |
 | `unavailable`       | 503 (also a failed audit insert: the tool does not run) |
 
+Before any of this, every toolbox route has two rate limits (`src/agento/toolbox/rate-limit.js`):
+60 authentication failures (401/403) per client address per minute, and 600 requests per capability
+per minute. Past a limit the toolbox answers 429, with no audit row.
+
 A body that is not JSON gets 400 and no audit row, because no execution started. On MCP the
 same outcomes come back as a `CallToolResult` with `isError: true`.
 

@@ -4,6 +4,24 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-26 — Toolbox rate limits: failures per address, requests per capability
+
+- **`express-rate-limit`, declared directly.** It was already installed through the MCP SDK, and
+  CodeQL's missing-rate-limiting check recognizes it. A hand-written limiter would not clear the alerts.
+- **Mounted once with `app.use()` before every route**, so module REST routes, invoke and a route
+  added later are limited too. Answering the five routes CodeQL named would leave the rest.
+- **Two keys.** All sandbox runs share one container address, so an address limit on every request
+  would let one agent throttle the others. The address limit counts only 401/403 (60/min): that
+  bounds a random-token flood, where each token would get a new bucket. Authorized traffic is limited
+  per capability (600/min), keyed by the token's SHA-256, never the raw token.
+- **Constants, no env knob.** The capability limit is per run, so `AGENTO_CONSUMER_MAX_WORKERS` does
+  not change it.
+- **Not changed:** CodeQL's clear-text-logging alerts on `artifact:auth` (printing the credential
+  once on stdout is that command's purpose, the same rule as a minted capability) and the
+  missing-rate-limiting alerts on the test-only server in `tests/sse-transport-auth.test.js`.
+
+---
+
 ## 2026-09-25 — One tracked RULES.md with permanent rule IDs
 
 - **Problem: three roles read three rule sets.** The implementer read AGENTS.md, the reviewer read an

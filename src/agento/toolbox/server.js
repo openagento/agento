@@ -24,11 +24,14 @@ import {
 import * as db from './db.js';
 import * as playwright from './playwright-client.js';
 import { buildArtifactsDir, FALLBACK_ARTIFACTS_DIR } from './artifacts-dir.js';
+import { createRateLimits } from './rate-limit.js';
 
 const PORT = process.env.PORT || 3001;
 
 const app = express();
 // NOTE: no express.json() here — SSEServerTransport reads raw body from req stream
+// Before every route: see rate-limit.js.
+app.use(...createRateLimits());
 
 const sessions = new Map();
 const sqlPoolRegistry = new SqlPoolRegistry({ log: logToolboxRest });
