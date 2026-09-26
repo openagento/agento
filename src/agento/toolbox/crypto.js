@@ -40,7 +40,8 @@ export function decrypt(encoded) {
     iv = Buffer.from(parts[2], 'hex');
     ciphertext = Buffer.from(parts[3], 'hex');
   } else if (parts[0] === 'aes256' && parts.length === 3) {
-    // Read-only path for values the core/RekeyToScrypt data patch has not rewritten yet.
+    // OBSOLETE — remove in 0.18.0. Read-only path for values the core/RekeyToScrypt
+    // data patch has not rewritten yet.
     key = crypto.createHash('sha256').update(passphrase()).digest(); // codeql[js/insufficient-password-hash]
     iv = Buffer.from(parts[1], 'hex');
     ciphertext = Buffer.from(parts[2], 'hex');

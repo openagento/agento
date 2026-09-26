@@ -9,6 +9,9 @@ scrypt and a per-value salt (``aes256s:`` prefix).
 this patch runs; the patch is what actually removes the weak values. It only touches
 rows that still carry the legacy prefix, so it is safe to re-run and cheap when there
 are none.
+
+OBSOLETE in 0.18.0 — by then every deployment that upgraded has run it, so this patch and
+the legacy read path in ``framework/crypto.py`` / ``toolbox/crypto.js`` can go.
 """
 from agento.framework.crypto import decrypt, encrypt, is_legacy
 
