@@ -4,6 +4,52 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-26 — scrypt key derivation for stored secrets
+
+- **Problem.** The AES key for every `obscure` config value and every `credential` row was a bare
+  `SHA-256(AGENTO_ENCRYPTION_KEY)` — no salt, no work factor. One stolen database plus a wordlist or a
+  precomputed table recovers the passphrase, and one derived key opens every row. CodeQL reported it as
+  `py/weak-sensitive-data-hashing` and `js/insufficient-password-hash`.
+- **Fix.** Derive the key with **scrypt** (N=2^14, r=8, p=1, 16-byte random salt per value) and store
+  `aes256s:{salt}:{iv}:{ciphertext}`. scrypt over PBKDF2 because memory hardness (16 MiB per guess) is
+  what defeats GPU cracking; both `hashlib` and Node's `crypto` ship it, so no dependency is added.
+- **Per-value salt, with a cache.** A shared salt would let one derivation open every row. The cost of a
+  per-value salt is one derivation per distinct salt, so both implementations memoize by
+  (passphrase, salt) — `bootstrap()` decrypts many values in one process.
+- **Migration.** `decrypt` still reads the legacy `aes256:` prefix, so a deployment keeps working the
+  moment the code lands; the `core/RekeyToScrypt` data patch then re-encrypts `core_config_data`
+  (`encrypted=1`) and `credential.credentials` on the next `setup:upgrade`. Nothing writes the legacy
+  format any more. Upgrade order matters: the toolbox must be restarted before cron runs the patch,
+  because an old toolbox cannot read a rekeyed value.
+- **Both languages change together.** Python encrypts and the toolbox decrypts the same rows, so the
+  parameters are duplicated in `framework/crypto.py` and `toolbox/crypto.js`; changing one alone makes
+  every stored value unreadable by the other container.
+
+---
+
+## 2026-09-25 — One tracked RULES.md with permanent rule IDs
+
+- **Problem: three roles read three rule sets.** The implementer read AGENTS.md, the reviewer read an
+  untracked `agento-code-review/RULES.md` (different in each clone), and the triager read CLAUDE.md and
+  docs. About half of review findings cited no rule, and 3.3% cited AGENTS.md. Loop rounds per task went
+  from 5.25 (June) to 11.7 (August); findings that came back in a later round went from 31% to 49%.
+- **Fix: one tracked `RULES.md` at the repo root.** Every role reads it. AGENTS.md keeps facts (how the
+  system works) and points to it; the skills point to it and keep no copy. Each rule has a permanent ID
+  and a tier (P0 security, P1 architecture/correctness, P2 hygiene). Findings, triage, and comments cite
+  the ID, never a line number, so a citation survives an edit.
+- **Two review principles close the churn loop.** "Judge the change, not the repo": an old violation
+  is reported once as `DEBT` and does not block. "Decisions are binding": a dated entry in this file is
+  approved design, so a finding against it needs new evidence.
+- **Tiers do not gate the verdict.** A "P2 does not block" gate was replayed on 44 past rounds: it saved
+  2, and one of those would have approved a round one step before the reviewer found a P0.
+- **New plan rules:** `EVT-1` (a plan names the event for each state change, or says why none) and
+  `PLC-1` (placement questions: framework, core module, or user module). `PLN-1` (each runtime fact in a
+  plan has proof, or is an `ASSUMPTION` with a spike step) had the largest effect in the replay.
+- **Owner approval:** Marcin Klauza, 2026-09-25 — approved applying the drafted rules and loop changes
+  ("Apply all"), on main first, with `RULES.md` at the repo root.
+
+---
+
 ## 2026-09-25 — Harness native-config passthrough (AG-27)
 
 - **Problem: every harness CLI setting needed its own Agento field.** An agent reached the internet
