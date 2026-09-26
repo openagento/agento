@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "description": "Grant evaluation shared by Python (framework/access/accounts.py) and Node (modules/web/toolbox/auth-sources.js). Scopes are symbolic: ws1 holds av1, ws2 holds av2. A view grant reaches only a call scoped to that view; a workspace grant reaches a call scoped to the workspace or to any view in it; a row with both or neither scope reaches nothing.",
+  "scopes": {"ws1": {"kind": "workspace"}, "ws2": {"kind": "workspace"}, "av1": {"kind": "agent_view", "workspace": "ws1"}, "av2": {"kind": "agent_view", "workspace": "ws2"}},
+  "grants": [
+    {"role": "user", "grant_kind": "tool", "name": "tool_ws1", "workspace": "ws1", "agent_view": null},
+    {"role": "user", "grant_kind": "tool", "name": "tool_av1", "workspace": null, "agent_view": "av1"},
+    {"role": "user", "grant_kind": "tool", "name": "tool_av2", "workspace": null, "agent_view": "av2"},
+    {"role": "user", "grant_kind": "tool", "name": "tool_both", "workspace": "ws1", "agent_view": "av1"},
+    {"role": "user", "grant_kind": "tool", "name": "tool_neither", "workspace": null, "agent_view": null},
+    {"role": "user", "grant_kind": "operation", "name": "artifact.launch", "workspace": null, "agent_view": "av1"},
+    {"role": "admin", "grant_kind": "tool", "name": "tool_admin_ws2", "workspace": "ws2", "agent_view": null}
+  ],
+  "cases": [
+    {"role": "user", "grant_kind": "tool", "workspace": "ws1", "agent_view": "av1", "expected": ["tool_av1", "tool_ws1"]},
+    {"role": "user", "grant_kind": "tool", "workspace": "ws1", "agent_view": null, "expected": ["tool_ws1"]},
+    {"role": "user", "grant_kind": "tool", "workspace": "ws2", "agent_view": "av2", "expected": ["tool_av2"]},
+    {"role": "user", "grant_kind": "tool", "workspace": "ws2", "agent_view": null, "expected": []},
+    {"role": "user", "grant_kind": "operation", "workspace": "ws1", "agent_view": "av1", "expected": ["artifact.launch"]},
+    {"role": "user", "grant_kind": "operation", "workspace": "ws1", "agent_view": null, "expected": []},
+    {"role": "admin", "grant_kind": "tool", "workspace": "ws1", "agent_view": "av1", "expected": []},
+    {"role": "admin", "grant_kind": "tool", "workspace": "ws2", "agent_view": "av2", "expected": ["tool_admin_ws2"]},
+    {"role": "admin", "grant_kind": "operation", "workspace": "ws1", "agent_view": "av1", "expected": []}
+  ]
+}

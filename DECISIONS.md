@@ -4,6 +4,24 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-26 — Toolbox rate limits: failures per address, requests per capability
+
+- **`express-rate-limit`, declared directly.** It was already installed through the MCP SDK, and
+  CodeQL's missing-rate-limiting check recognizes it. A hand-written limiter would not clear the alerts.
+- **Mounted once with `app.use()` before every route**, so module REST routes, invoke and a route
+  added later are limited too. Answering the five routes CodeQL named would leave the rest.
+- **Two keys.** All sandbox runs share one container address, so an address limit on every request
+  would let one agent throttle the others. The address limit counts only 401/403 (60/min): that
+  bounds a random-token flood, where each token would get a new bucket. Authorized traffic is limited
+  per capability (600/min), keyed by the token's SHA-256, never the raw token.
+- **Constants, no env knob.** The capability limit is per run, so `AGENTO_CONSUMER_MAX_WORKERS` does
+  not change it.
+- **Not changed:** CodeQL's clear-text-logging alerts on `artifact:auth` (printing the credential
+  once on stdout is that command's purpose, the same rule as a minted capability) and the
+  missing-rate-limiting alerts on the test-only server in `tests/sse-transport-auth.test.js`.
+
+---
+
 ## 2026-09-25 — One tracked RULES.md with permanent rule IDs
 
 - **Problem: three roles read three rule sets.** The implementer read AGENTS.md, the reviewer read an
@@ -24,6 +42,57 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   plan has proof, or is an `ASSUMPTION` with a spike step) had the largest effect in the replay.
 - **Owner approval:** Marcin Klauza, 2026-09-25 — approved applying the drafted rules and loop changes
   ("Apply all"), on main first, with `RULES.md` at the repo root.
+
+## 2026-09-25 — E2 panel, sessions, launches and RBAC
+
+Contract deviations (PRD E2 / E1.5 against the code, built as below):
+
+- **The `session` checker receives the capability's scope.** A session is not scoped to a view, the
+  capability row is. The verifier calls `check(sourceId, {capability_kind, workspace_id,
+  agent_view_id, query})`, and the checker computes the role's permitted tools for that scope. It
+  does not echo a stored list.
+- **Visibility is per role, not per user.** With two roles the PRD's `role → grants` model gives
+  per-role visibility. Per-user grants are a follow-up.
+- **The exchange code is a POST form field, not the `code` query parameter.** A one-time code in a
+  URL reaches history, a `Referer` and logs, and a prefetch or a scanner can consume it. The panel
+  submits a form to `https://apps…/launch`; there is no GET route. The `code` log redaction stays.
+- **No manifest seam in E2.** `launch.manifest_fingerprint` and `allowed_actions` are NOT NULL; E2
+  writes `sha256("")` and `[]`. An event would need `bootstrap()` in `web`, which would resolve every
+  module's config, and a veto observer that fails to load would fail open. E6 designs the seam.
+- **`current` resolves through the toolbox.** `POST /api/launches` calls
+  `versioned_artifact_get_current` with a `user_session` capability instead of mounting the store
+  into `web`. So a launch needs that tool grant **and** the `artifact.launch` operation grant in the
+  scope, and the tool must be enabled there.
+
+Choices:
+
+- **The redeem needs no proxy secret.** The exchange code (30 s, once, hashed) is the credential; the
+  redeem also requires `Origin` = panel and a form body.
+- **Panel cookie `SameSite=Strict`, launch cookie `SameSite=Lax`.** The launch cookie must survive the
+  top-level navigation after the cross-origin form post.
+- **The CSRF token is HMAC-SHA256(session token, `agento-csrf`).** Nothing to store, and a page that
+  cannot read the HttpOnly cookie cannot compute it.
+- **One atomic `UPDATE … JOIN user` redeems.** `rowcount == 1` wins; concurrent redeems give one token.
+- **Deny responses clear dead launch cookies.** Caddy returns the `forward_auth` deny response,
+  `Set-Cookie` included, to the client (measured in the Task 0 spike).
+- **Launch eviction orders by `created_at`, which has 1 s precision.** Ties break by id. A sequence
+  column is a follow-up if exact order ever matters.
+- **Launch ids are 32 hex characters**, so each launch cookie name is fixed-length and a bad name is
+  refused before any DB read.
+- **Login throttle is in-process** (10 failures per username per 15 min). A DB-backed throttle when
+  `web` runs more than one replica.
+- **`config_write.write_config` vs `save_config`.** `write_config` is the shared commit-and-dispatch
+  step (`config:set`, admin TUI); `save_config` adds validation and the not-a-secret proof that the
+  panel needs, because `web` holds no encryption key. The admin TUI skips value validation because
+  tool gate keys have no schema.
+- **Every access write locks its `user` rows in one ordered `SELECT … FOR UPDATE`**, and
+  `create_launch` locks the user row and re-checks the grant in the same transaction, so a launch
+  racing a role or grant change is either refused or revoked with it.
+- **Operator seeding for launches** (Task 0): `artifact:init --source` runs on the host, and the view
+  needs `versioned_artifacts/allowed_artifacts` plus `tool:enable` for `versioned_artifact` and
+  `versioned_artifact_get_current`.
+
+---
 
 ## 2026-09-25 — E1.5 platform foundation: Caddy proxy, secret-authenticated subrequests, string version ids
 

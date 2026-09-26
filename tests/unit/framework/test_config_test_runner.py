@@ -238,7 +238,7 @@ class TestAMalformedResultNeverRaises:
         from agento.framework.config_test.toolbox import run_toolbox_test
 
         monkeypatch.setattr(
-            "agento.framework.config_test.toolbox._resolve_toolbox_url",
+            "agento.framework.config_test.toolbox.resolve_toolbox_url",
             lambda conn: "http://toolbox:3001",
         )
         monkeypatch.setattr(

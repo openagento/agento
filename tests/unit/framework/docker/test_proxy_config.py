@@ -79,6 +79,19 @@ def test_panel_hides_internal_paths_before_proxying_to_web():
     assert body[body.index("handle /internal/* {") + 1] == "respond 404"
 
 
+def test_apps_redeem_is_post_only_and_goes_to_web():
+    blocks = _blocks()
+    apps = "{$AGENTO_APPS_HOST}"
+    matcher = [s for stack, s in blocks if stack == [apps, "@redeem"]]
+    assert matcher == ["method POST", "path /launch"]
+    handler = [s for stack, s in blocks if stack == [apps, "handle @redeem"]]
+    assert handler == ["rewrite * /internal/launch/redeem", "reverse_proxy web:8000"]
+    # Nothing else on apps reaches web except the forward_auth subrequest: GET /launch is 404.
+    body = _sites()[apps]
+    assert body[-2:] == ["handle {", "respond 404"]
+    assert sum("reverse_proxy web:8000" in s for s in body) == 1
+
+
 def test_cap_and_code_are_redacted_in_the_access_and_the_error_log():
     blocks = _blocks()
     for owner in ("(access_log)", "log redacted_errors"):
