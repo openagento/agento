@@ -15,7 +15,7 @@ describe('crypto', () => {
     const plaintext = 'my-database-password-123!';
     const encrypted = encrypt(plaintext);
 
-    expect(encrypted).toMatch(/^aes256:[0-9a-f]+:[0-9a-f]+$/);
+    expect(encrypted).toMatch(/^aes256s:[0-9a-f]+:[0-9a-f]+:[0-9a-f]+$/);
     expect(encrypted).not.toContain(plaintext);
 
     const decrypted = decrypt(encrypted);
@@ -28,7 +28,7 @@ describe('crypto', () => {
 
     const a = encrypt('same-value');
     const b = encrypt('same-value');
-    expect(a).not.toBe(b); // different IVs
+    expect(a).not.toBe(b); // different salt + IV
   });
 
   it('throws when AGENTO_ENCRYPTION_KEY not set', async () => {
@@ -39,6 +39,20 @@ describe('crypto', () => {
 
     expect(() => encrypt('test')).toThrow('AGENTO_ENCRYPTION_KEY not set');
     expect(() => decrypt('aes256:aa:bb')).toThrow('AGENTO_ENCRYPTION_KEY not set');
+  });
+
+  it('decrypts a legacy pre-scrypt value', async () => {
+    process.env.AGENTO_ENCRYPTION_KEY = 'legacy-key';
+    const nodeCrypto = (await import('crypto')).default;
+    const { decrypt } = await import('../crypto.js');
+
+    const key = nodeCrypto.createHash('sha256').update('legacy-key').digest();
+    const iv = nodeCrypto.randomBytes(16);
+    const cipher = nodeCrypto.createCipheriv('aes-256-cbc', key, iv);
+    let ct = cipher.update('old-token', 'utf8', 'hex');
+    ct += cipher.final('hex');
+
+    expect(decrypt(`aes256:${iv.toString('hex')}:${ct}`)).toBe('old-token');
   });
 
   it('throws on invalid format', async () => {
