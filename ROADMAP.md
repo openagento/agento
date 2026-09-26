@@ -289,6 +289,7 @@ Each is a one-release compatibility shim; remove all of them together.
 | `--oauth_token` flag alias (`agento replay`, `agento e2e`) | `framework/cli/runtime.py` | drop the second flag name |
 | `_iter_module_dirs` shim | `framework/cli/_provisioning.py` | callers use `framework/module_discovery.py` |
 | Pre-0.15 `agent_view/provider`-as-harness fallback | `framework/agent_view_runtime._resolve_harness_and_provider` | keep until the data patch has demonstrably run everywhere; then delete the legacy branch |
+| `--pass` on `artifact:auth` (argv lands in shell history; use `--pass-stdin`) | `versioned_artifacts/src/commands/auth.py` | drop the flag and its warning |
 
 ### No per-job isolation inside the consumer process (raised during AG-50)
 
