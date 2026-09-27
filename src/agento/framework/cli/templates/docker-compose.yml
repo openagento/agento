@@ -55,6 +55,8 @@ services:
         required: false
     volumes:
       - ../app/code:/app/modules/user:ro
+      # modules.json: a module off with `module:disable` loads no toolbox code (config-loader.js).
+      - ../app/etc:/app/etc:ro
       - ../logs:/app/logs
       - ../workspace/artifacts:/workspace/artifacts
       - ../.venv/lib/python{{ python_version }}/site-packages/agento/toolbox:/opt/agento-toolbox-src:ro

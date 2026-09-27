@@ -50,10 +50,28 @@ function scanDir(dir) {
 }
 
 /**
- * Scan all module directories (core + user) and return parsed manifests.
+ * The modules `module:disable` turned off, from `app/etc/modules.json` — the file the Python
+ * side writes (framework/module_status.py). Only an explicit `false` disables: an absent file,
+ * an absent key or an unparseable file mean enabled, exactly as `module_status.is_enabled`.
+ * Read on every call, so a disable applies to the next MCP session without a restart.
+ */
+function disabledModules() {
+  try {
+    const status = JSON.parse(fs.readFileSync(path.join(process.env.APP_ETC_DIR || '/app/etc', 'modules.json'), 'utf-8'));
+    return new Set(Object.keys(status ?? {}).filter((name) => status[name] === false));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Scan all module directories (core + user) and return the parsed manifests of the enabled
+ * modules. Every toolbox path (tools, auth sources, REST routes, config) starts here, so a
+ * disabled module contributes nothing to the toolbox.
  */
 export function scanModules() {
-  return [...scanDir(CORE_MODULES_DIR), ...scanDir(USER_MODULES_DIR)];
+  const off = disabledModules();
+  return [...scanDir(CORE_MODULES_DIR), ...scanDir(USER_MODULES_DIR)].filter((mod) => !off.has(mod.name));
 }
 
 /**

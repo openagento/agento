@@ -125,10 +125,13 @@ Nothing has shipped under the other spelling, so there is no compatibility route
   `web` to `src/agento/toolbox/capability.js` (`GRANTS_SQL`, `grantsFor`). The verifier hands every
   checker `grants(role, kind)` bound to the capability row's own scope (TBX-4: from the call
   context, not an import); a checker without it refuses.
-- **`web` enforces `module:disable miniapps` (MOD-1).** The toolbox does not read
-  `app/etc/modules.json` (ROADMAP.md), so the `launch` checker still loads when the module is off.
-  `web` is the only minter of a `miniapp` capability and reads that file per request: with the
-  module off, a launch is files-only, an action is 404 and the catalogue is empty.
+- **The toolbox honours `module:disable` (MOD-1).** It mounts `app/etc` read-only and
+  `scanModules()` drops a module set to `false` in `modules.json` (absent file or key, or an
+  unparseable file, mean enabled, as `module_status.is_enabled`). So a disabled module loads no
+  toolbox code: no tools (next MCP session), no auth sources or REST routes (next toolbox start).
+  This applies to every module, not only miniapps. `web` also reads the file per request for
+  miniapps, so a launch is files-only, an action is 404 and the catalogue is empty at once, with
+  no toolbox restart.
 - **Activation is operator-only and has no event.** It happens in the toolbox (Node), which has no
   event mechanism; it writes a `versioned_artifact_audit` row. A tool would let a self-asserted
   `agent_view_id` decide what a user's browser may call.

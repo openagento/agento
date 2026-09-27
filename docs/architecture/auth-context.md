@@ -76,7 +76,8 @@ Migration `036_toolbox_capability_auth_context` backfills the rows that existed 
    tool_ceiling=...)`. You own the session or launch, and you must verify it before you mint.
 2. Export the source checker from your module's `toolbox/` code:
    `export const authSources = [["session", check]]`. At startup the toolbox collects every
-   installed module's `authSources` (it does not read `app/etc/modules.json`; see ROADMAP.md). A
+   enabled module's `authSources` (a module set to `false` in `app/etc/modules.json` loads no
+   toolbox code, from the next toolbox start). A
    kind that two modules claim is dropped with an ERROR, so neither checker runs.
    `check(sourceId, {capability_kind, workspace_id, agent_view_id, query, grants})` gets the
    capability row's scope, the toolbox's DB `query(sql, params)` function, and `grants(role,

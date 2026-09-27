@@ -71,7 +71,7 @@ Enable a module. Stores state in `app/etc/modules.json`. After enabling, the mod
 bin/agento module:disable <name>
 ```
 
-Disable a module. When disabled, the module is not loaded — its CLI commands, cron jobs, config, routes, and observers are skipped. If another enabled module depends on the disabled one (via `sequence`), `setup:upgrade` and bootstrap will raise an error.
+Disable a module. When disabled, the module is not loaded — its CLI commands, cron jobs, config, routes, and observers are skipped. The toolbox skips it too: its tools are gone from the next MCP session, and its auth sources and REST routes from the next toolbox start. If another enabled module depends on the disabled one (via `sequence`), `setup:upgrade` and bootstrap will raise an error.
 
 Modules not listed in `app/etc/modules.json` default to **enabled** (backward compatible).
 

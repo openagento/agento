@@ -137,5 +137,5 @@ files-only.
 **`module:disable miniapps`** stops every miniapp action: `web` is the only minter of a
 `miniapp` capability, and it reads `app/etc/modules.json` per request. With the module off, a new
 launch is files-only, `POST /api/launches/<id>/actions/<tool>` is `404`, and the catalogue is
-empty. The toolbox itself does not read `app/etc/modules.json` (ROADMAP.md), so it still loads
-the `launch` checker; with no capability minted, the checker has nothing to accept.
+empty. The toolbox reads the same file: the next MCP session has no `miniapp_*` tool, and from
+the next toolbox start the `launch` checker is not loaded, so no `miniapp` capability verifies.

@@ -31,7 +31,7 @@ computed by the framework's `grants` (the same SQL rule as `framework/access/acc
 
 ## Disabling the module
 
-The toolbox does not read `app/etc/modules.json` (ROADMAP.md): with `web` disabled it still loads
-the `session` checker, so a `user_session` capability that the `web` service mints is still
-accepted. To stop panel tool calls, stop the `web` service. Launches still get their limit from
-`config.json` (read from disk), and sign-in and the admin API keep working.
+The toolbox reads `app/etc/modules.json` (read-only mount): with `web` disabled it does not load
+the `session` checker from its next start, so no `user_session` capability verifies and panel
+tool calls fail closed. The `web` service itself keeps running until you stop it: launches still
+get their limit from `config.json` (read from disk), and sign-in and the admin API keep working.

@@ -29,6 +29,7 @@ Seven containers. Six share the `agento-net` bridge network; `artifacts` declare
 
 | Mount | Access | Purpose |
 |-------|--------|---------|
+| `app/etc` → `/app/etc` | read-only | `modules.json`: a module off with `module:disable` loads no toolbox code — no tools from the next MCP session, no auth sources or REST routes from the next start. |
 | `storage/versioned-artifacts/` → `/srv/versioned-artifacts` | read-write | `versioned_artifacts` store (bare repos + draft checkouts) and its published tree (materialized versions plus the `current` symlink). Mounted into **toolbox only** — the sandbox and cron never see it, so the agent reaches versioned content exclusively through gated MCP tools. |
 
 ### Artifacts-Only
