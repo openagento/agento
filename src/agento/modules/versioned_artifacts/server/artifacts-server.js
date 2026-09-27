@@ -4,15 +4,20 @@ import fsp from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
-import { ARTIFACT_CODE_RE, VERSION_ID_RE } from '../toolbox/paths.js';
+import { createHash } from 'node:crypto';
+import { ARTIFACT_CODE_RE } from '../toolbox/paths.js';
 import { boundedLine } from '../toolbox/errors.js';
 import { verifyCredential } from '../toolbox/auth.js';
+import { parseServedPath } from './served-path.js';
+import {
+  AUTH_FAILURES_PER_ADDRESS, REQUESTS_PER_CREDENTIAL, WINDOW_MS, createWindowCounter,
+} from './rate-limit.js';
 
 // Under `server/`, NOT `toolbox/`: `src/agento/toolbox/config-loader.js` imports every
 // `.js` in a module's `toolbox/` into the secrets container. This process holds no
 // secret, no DB handle and no framework code — it reads a directory tree and answers
-// HTTP. `paths.js` and `errors.js` are the only imports it shares with the store side,
-// and both are pure — neither reaches Git, the audit sink or a DB handle.
+// HTTP. `paths.js`, `errors.js` and `auth.js` are the only imports it shares with the
+// store side, and all are pure — none reaches Git, the audit sink or a DB handle.
 //
 // Plain `node:http`, no express: `express` is a toolbox dependency that does not resolve
 // under vitest (`Cannot find module './lib/express'` — vite maps the bare specifier to a
@@ -54,8 +59,24 @@ const text = (res, code, body) => {
 // serving the tree open. Distinct object so a fresh parse is never mistaken for it.
 const INVALID_AUTH = Object.freeze({ algo: 'invalid' });
 
-export function createArtifactsServer({ root, etcDir, fs = fsp, openRead = createReadStream } = {}) {
+export function createArtifactsServer({
+  root, etcDir, fs = fsp, openRead = createReadStream, verify = verifyCredential,
+  limits = { authFailuresPerAddress: AUTH_FAILURES_PER_ADDRESS, requestsPerCredential: REQUESTS_PER_CREDENTIAL },
+  now = Date.now,
+} = {}) {
   let realRoot = null;
+  // SEC-12. Failures are counted per client address. `proxy` is the only other container on
+  // this network and it overwrites a client's X-Forwarded-For, so the header is its word;
+  // without it (the healthcheck, a test) the socket address is the key.
+  const failures = createWindowCounter({ limit: limits.authFailuresPerAddress, now });
+  const perCredential = createWindowCounter({ limit: limits.requestsPerCredential, now });
+  const sweeper = setInterval(() => { failures.sweep(); perCredential.sweep(); }, WINDOW_MS);
+  sweeper.unref();
+  const clientAddress = (req) => {
+    const fwd = req.headers['x-forwarded-for'];
+    const first = typeof fwd === 'string' ? fwd.split(',')[0].trim() : '';
+    return first && first.length <= 64 ? first : (req.socket.remoteAddress ?? '');
+  };
   // Re-read per request, stat-cached on mtime+size, so `mo:di` takes effect without a
   // restart: this container has no DB and no env_file and must keep it that way.
   let gate = { key: null, disabled: false };
@@ -126,19 +147,6 @@ export function createArtifactsServer({ root, etcDir, fs = fsp, openRead = creat
     return real === realRoot || real.startsWith(realRoot + path.sep) ? real : null;
   }
 
-  async function index(res, headOnly) {
-    let names;
-    try { names = await fs.readdir(root); }
-    catch (err) { if (isMissing(err)) names = []; else throw err; }
-    // The filter is also the escaping: ARTIFACT_CODE_RE admits only [a-z0-9-].
-    const codes = names.filter((n) => ARTIFACT_CODE_RE.test(n)).sort();
-    const body = `<!doctype html><meta charset="utf-8"><title>Artifacts</title><ul>${
-      codes.map((c) => `<li><a href="/${c}/">${c}</a></li>`).join('')}</ul>\n`;
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'content-length': Buffer.byteLength(body),
-      'x-content-type-options': 'nosniff' });
-    res.end(headOnly ? undefined : body);
-  }
-
   async function serve(res, rel, ctx, retried = false) {
     let real; let st;
     try {
@@ -183,52 +191,65 @@ export function createArtifactsServer({ root, etcDir, fs = fsp, openRead = creat
     }
   }
 
+  /** The artifact a share token names, or null. `published/.shares/<token>` holds the code. */
+  async function shareCode(token) {
+    let code;
+    try { code = (await fs.readFile(path.join(root, '.shares', token), 'utf8')).trim(); }
+    catch (err) { if (isMissing(err)) return null; throw err; }
+    return ARTIFACT_CODE_RE.test(code) ? code : null;
+  }
+
   async function handle(req, res) {
     if (req.method !== 'GET' && req.method !== 'HEAD') return text(res, 405);
     if (await disabled()) return text(res, 503, 'versioned_artifacts is disabled\n');
     const headOnly = req.method === 'HEAD';
+    const address = clientAddress(req);
+    if (!failures.allowed(address)) return text(res, 429);
+    const fail = (code) => { failures.take(address); return text(res, code); };
 
-    let url; let pathname;
-    try {
-      url = new URL(req.url, 'http://artifacts');
-      pathname = decodeURIComponent(url.pathname);
-    } catch { return text(res, 400); }
-    if (pathname.includes('\0')) return text(res, 400);
+    // Routed on the RAW target: `new URL()` resolves `..` and `%2e%2e` before any check
+    // could see them, which is the second parse §6.2 forbids.
+    const route = parseServedPath(req.url);
+    if (route === null) return fail(404);
+    // `/` is the healthcheck. It lists nothing: no directory index anywhere (§6.3, §9).
+    if (route.kind === 'health') return text(res, 200, 'ok\n');
 
-    const segs = pathname.split('/').filter(Boolean);
-    // Kills dotfiles and `..` in one predicate, before any of it reaches the filesystem.
-    if (segs.some((s) => s.startsWith('.'))) return text(res, 404);
-    // `/` stays open: the container healthcheck probes it and it only lists codes, never
-    // content. Auth is per artifact and covers everything under `/<code>/`.
-    if (segs.length === 0) return index(res, headOnly);
-    if (!ARTIFACT_CODE_RE.test(segs[0])) return text(res, 404);
-
-    const sidecar = await authFor(segs[0]);
-    if (sidecar) {
-      const cred = basicCredential(req);
-      if (!cred || !verifyCredential(sidecar, cred.user, cred.password)) return challenge(res, headOnly);
+    const search = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    // Relative, so it is right on the apps origin (`/a/…`) and on a share origin alike.
+    const ctx = { headOnly, redirectTo: route.trailing || route.last === null ? null : `${route.last}/${search}` };
+    if (route.kind === 'app') {
+      // Already authorized by web. Basic auth never applies here: Basic and launch
+      // credentials must not meet on one origin (§9).
+      return serve(res, [route.code, 'v', route.versionId, ...route.names].join('/'), ctx);
     }
 
-    // Built from the RAW url so the redirect target stays encoded exactly as it came in.
-    const ctx = {
-      headOnly,
-      redirectTo: url.pathname.endsWith('/') ? null : `${url.pathname}/${url.search}`,
-    };
-    if (segs[1] === 'v') {
-      if (!VERSION_ID_RE.test(segs[2] ?? '')) return text(res, 404);
-      return serve(res, segs.join('/'), ctx);
+    // A share: the token names the artifact, and it serves only while a Basic credential is set.
+    const code = await shareCode(route.token);
+    if (code === null) return fail(404);
+    const sidecar = await authFor(code);
+    if (!sidecar) return fail(404);
+    const header = req.headers.authorization;
+    if (typeof header === 'string'
+        && !perCredential.take(createHash('sha256').update(header).digest('hex'))) return text(res, 429);
+    const cred = basicCredential(req);
+    if (!cred || !verify(sidecar, cred.user, cred.password)) {
+      failures.take(address);
+      return challenge(res, headOnly);
     }
-    // A pruned version falls through to the ordinary 404 — no branch for it.
-    return serve(res, [segs[0], 'current', ...segs.slice(1)].join('/'), ctx);
+    res.setHeader('referrer-policy', 'no-referrer');
+    const tree = route.versionId ? ['v', route.versionId] : ['current'];
+    return serve(res, [code, ...tree, ...route.names].join('/'), ctx);
   }
 
-  return http.createServer((req, res) => {
+  const server = http.createServer((req, res) => {
     handle(req, res).catch((err) => {
       logLine(req.method, req.url, `- ${err?.code ?? err?.name ?? 'Error'}`);
       if (!res.headersSent) text(res, 500);
       else res.end();
     });
   });
+  server.on('close', () => clearInterval(sweeper));
+  return server;
 }
 
 // The service carries no `environment:` key, so these defaults are the only values

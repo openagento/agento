@@ -41,10 +41,15 @@ def test_health_answers_ok(base_url):
     assert r.text == "ok"
 
 
-@pytest.mark.parametrize("path", ["/internal/authz/app", "/internal/authz/share"])
-def test_direct_call_without_the_proxy_secret_is_denied(base_url, secret_file, path):
+def test_direct_call_without_the_proxy_secret_is_denied(base_url, secret_file):
     secret_file.write_text(SECRET)
-    assert httpx.get(f"{base_url}{path}").status_code == 401
+    assert httpx.get(f"{base_url}/internal/authz/app").status_code == 401
+
+
+def test_there_is_no_share_authz_endpoint(base_url, secret_file):
+    # Shares are checked by the artifacts server (DECISIONS 2026-09-27, E6 S1).
+    secret_file.write_text(SECRET)
+    assert httpx.get(f"{base_url}/internal/authz/share", headers={"X-Agento-Proxy-Auth": SECRET}).status_code == 404
 
 
 def test_forged_proxy_secret_is_denied(base_url, secret_file):
@@ -60,10 +65,9 @@ def test_caller_identity_headers_without_the_secret_are_denied(base_url, secret_
     assert r.status_code == 401
 
 
-@pytest.mark.parametrize("path", ["/internal/authz/app", "/internal/authz/share"])
-def test_the_proxy_gets_a_deny_without_a_launch_cookie(base_url, secret_file, path):
+def test_the_proxy_gets_a_deny_without_a_launch_cookie(base_url, secret_file):
     secret_file.write_text(SECRET)
-    r = httpx.get(f"{base_url}{path}", headers={"X-Agento-Proxy-Auth": SECRET})
+    r = httpx.get(f"{base_url}/internal/authz/app", headers={"X-Agento-Proxy-Auth": SECRET})
     assert r.status_code == 403
 
 

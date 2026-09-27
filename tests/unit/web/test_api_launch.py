@@ -163,10 +163,10 @@ def proxy_secret(tmp_path):
     (tmp_path / "proxy-secret").write_text(SECRET)
 
 
-def _authz(web, version, secret=SECRET):
+def _authz(web, version, secret=SECRET, uri=None):
     return httpx.get(f"{web}/internal/authz/app", cookies={f"__Host-agento-launch-{LID}": "tok"},
-                     headers={"X-Agento-Proxy-Auth": secret, "X-Agento-Artifact-Code": "app",
-                              "X-Agento-Version-Id": version})
+                     headers={"X-Agento-Proxy-Auth": secret,
+                              "X-Forwarded-Uri": uri or f"/a/app/v/{version}/index.html?x=1"})
 
 
 def test_authz_app_without_the_secret_is_401_even_with_a_launch_cookie(web, monkeypatch, proxy_secret):
@@ -179,10 +179,24 @@ def test_authz_app_allows_only_the_pinned_version(web, monkeypatch, proxy_secret
     monkeypatch.setattr(launches, "authorize_files",
                         lambda conn, tokens, code, version: tokens == ["tok"] and (code, version) == ("app", V1))
     monkeypatch.setattr(launches, "live_launch_ids", lambda conn, ids: set(ids))
-    assert _authz(web, V1).status_code == 200
+    allowed = _authz(web, V1)
+    assert allowed.status_code == 200
+    assert allowed.headers["X-Agento-Upstream-Path"] == f"/app/v/{V1}/index.html"
     denied = _authz(web, V2)
     assert denied.status_code == 403
     assert "Set-Cookie" not in denied.headers  # the launch is live: its cookie stays
+
+
+def test_authz_app_decides_on_the_parsed_path_only(web, monkeypatch, proxy_secret):
+    seen = []
+    monkeypatch.setattr(launches, "authorize_files", lambda conn, tokens, code, version: seen.append((code, version)) or True)
+    traversal = f"/a/app/v/{V1}/../../../other/v/{V2}/index.html"
+    r = _authz(web, V1, uri=traversal)
+    assert r.status_code == 404 and seen == []  # refused before any launch lookup
+    r = httpx.get(f"{web}/internal/authz/app", cookies={f"__Host-agento-launch-{LID}": "tok"},
+                  headers={"X-Agento-Proxy-Auth": SECRET, "X-Forwarded-Uri": f"/a/app/v/{V1}/x",
+                           "X-Agento-Artifact-Code": "other", "X-Agento-Version-Id": V2})
+    assert r.status_code == 200 and seen == [("app", V1)]  # the old headers decide nothing
 
 
 def test_authz_app_deny_clears_a_dead_launch_cookie(web, monkeypatch, proxy_secret):
@@ -199,7 +213,7 @@ def test_authz_app_never_clears_a_cookie_past_the_bound(web, monkeypatch, proxy_
     monkeypatch.setattr(launches, "authorize_files", lambda conn, tokens, *a: seen.setdefault("tokens", tokens) and False)
     monkeypatch.setattr(launches, "live_launch_ids", lambda conn, lids: seen.setdefault("ids", list(lids)) and set())
     r = httpx.get(f"{web}/internal/authz/app", cookies={f"__Host-agento-launch-{i}": f"t{i}" for i in ids},
-                  headers={"X-Agento-Proxy-Auth": SECRET, "X-Agento-Artifact-Code": "app", "X-Agento-Version-Id": V1})
+                  headers={"X-Agento-Proxy-Auth": SECRET, "X-Forwarded-Uri": f"/a/app/v/{V1}/"})
     assert r.status_code == 403
     assert len(seen["tokens"]) == len(seen["ids"]) == 20
     cleared = {c.split("=")[0] for c in r.headers.get_list("Set-Cookie")}

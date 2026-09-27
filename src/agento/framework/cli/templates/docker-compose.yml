@@ -47,6 +47,9 @@ services:
       - CRONDB_DATABASE=cron_agent
       - CRONDB_USER=cron_agent
       - CRONDB_PASSWORD=${MYSQL_PASSWORD:-cronagent_pass}
+      # A share's URL (PRD E6 §9.1). `-`, not `:-`: set to empty turns shares off.
+      - AGENTO_SHARE_HOST=${AGENTO_SHARE_HOST-share.localhost}
+      - AGENTO_PROXY_PORT=${AGENTO_PROXY_PORT:-8443}
     env_file:
       - path: ../secrets.env
         required: false
@@ -188,7 +191,7 @@ services:
     environment:
       - AGENTO_PANEL_HOST=${AGENTO_PANEL_HOST:-panel.localhost}
       - AGENTO_APPS_HOST=${AGENTO_APPS_HOST:-apps.localhost}
-      - AGENTO_SHARE_HOST=${AGENTO_SHARE_HOST:-share.localhost}
+      - AGENTO_SHARE_HOST=${AGENTO_SHARE_HOST-share.localhost}
     volumes:
       - ../.agento/docker/proxy:/etc/agento-proxy:ro
       - proxy-internal:/run/agento

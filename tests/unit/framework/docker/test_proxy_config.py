@@ -9,13 +9,20 @@ import re
 import subprocess
 from pathlib import Path
 
+import json
+
+import pytest
+
 import agento.framework.docker as docker_ctx
 
 PROXY = Path(docker_ctx.__file__).parent / "proxy"
+SHARE_HOSTS = json.loads((Path(__file__).parents[3] / "fixtures" / "share_host_v1.json").read_text())
 
 
 def _lines() -> list[str]:
-    return [ln.split("#", 1)[0].rstrip() for ln in (PROXY / "Caddyfile").read_text().splitlines()]
+    # The running config is the Caddyfile plus share.caddy (entrypoint.sh appends it).
+    text = (PROXY / "Caddyfile").read_text() + (PROXY / "share.caddy").read_text()
+    return [ln.split("#", 1)[0].rstrip() for ln in text.splitlines()]
 
 
 def _blocks() -> list[tuple[list[str], str]]:
@@ -68,7 +75,7 @@ def test_every_forward_auth_runs_after_the_strip_and_before_any_rewrite():
     # Caddy sorts directives: at site level forward_auth runs BEFORE request_header, and in
     # a handle `uri` runs before forward_auth. Only a route keeps the written order.
     auths = [stack for stack, s in _blocks() if s.startswith("forward_auth ")]
-    assert len(auths) == 2
+    assert len(auths) == 1
     for stack in auths:
         assert stack[-1] == "route" and stack[-2].startswith("handle"), stack
 
@@ -104,17 +111,26 @@ def test_cap_and_code_are_redacted_in_the_access_and_the_error_log():
     assert "exclude http.log.error" in default
 
 
-def test_apps_route_regexes_match_versioned_artifacts():
-    js = (PROXY.parents[2] / "modules" / "versioned_artifacts" / "toolbox" / "paths.js").read_text()
+def test_apps_fetches_only_the_path_web_returned():
+    # PRD E6 §6.2: one parse. The proxy never derives the file from the request itself.
+    apps = "{$AGENTO_APPS_HOST}"
+    route = [s for stack, s in _blocks() if stack == [apps, "handle /a/*", "route"]]
+    assert route[1:] == ["rewrite * {http.request.header.X-Agento-Upstream-Path}",
+                         "request_header -X-Agento-Upstream-Path", "reverse_proxy artifacts:8080"]
+    auth = [s for stack, s in _blocks() if stack[-1:] == ["forward_auth web:8000 {"[:-2]]]
+    assert "copy_headers X-Agento-Upstream-Path" in auth
+    assert not any("path_regexp" in s or "strip_prefix" in s for s in _lines())
 
-    def body(name: str) -> str:
-        return re.search(rf"{name} = /\^(.*)\$/;", js).group(1).replace(r"\d", "[0-9]")
 
-    matcher = next(s for s in _lines() if "path_regexp version" in s)
-    assert f"^/a/({body('ARTIFACT_CODE_RE')})/v/({body('VERSION_ID_RE')})/" in matcher
+def test_share_origin_never_reaches_web_and_sends_no_referrer():
+    body = _sites()["*.{$AGENTO_SHARE_HOST}"]
+    assert not any("web:8000" in s or "forward_auth" in s for s in body)
+    assert "header Referrer-Policy no-referrer" in body
+    handler = [s for stack, s in _blocks() if stack == ["*.{$AGENTO_SHARE_HOST}", "handle @share"]]
+    assert handler == ["rewrite * /s/{re.share.1}{uri}", "reverse_proxy artifacts:8080"]
 
 
-def _run_entrypoint(tmp_path: Path) -> subprocess.CompletedProcess:
+def _run_entrypoint(tmp_path: Path, share_host: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     stub = bin_dir / "caddy"
@@ -124,9 +140,14 @@ def _run_entrypoint(tmp_path: Path) -> subprocess.CompletedProcess:
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "AGENTO_PROXY_SECRET_FILE": str(tmp_path / "proxy-secret"),
+        "AGENTO_PROXY_CADDYFILE": str(PROXY / "Caddyfile"),
+        "AGENTO_PROXY_RUN_CONFIG": str(tmp_path / "run-Caddyfile"),
     }
+    env.pop("AGENTO_SHARE_HOST", None)
+    if share_host is not None:
+        env["AGENTO_SHARE_HOST"] = share_host
     return subprocess.run(["sh", str(PROXY / "entrypoint.sh")], env=env,
-                          capture_output=True, text=True, check=True)
+                          capture_output=True, text=True, check=check)
 
 
 def test_entrypoint_writes_the_secret_once_and_exports_it(tmp_path):
@@ -134,8 +155,27 @@ def test_entrypoint_writes_the_secret_once_and_exports_it(tmp_path):
     secret = (tmp_path / "proxy-secret").read_text()
     assert re.fullmatch(r"[0-9a-f]{64}", secret)
     assert f"SECRET={secret}" in first.stdout
-    assert "run --config /etc/agento-proxy/Caddyfile --adapter caddyfile" in first.stdout
+    assert f"run --config {tmp_path / 'run-Caddyfile'} --adapter caddyfile" in first.stdout
 
     second = _run_entrypoint(tmp_path)
     assert (tmp_path / "proxy-secret").read_text() == secret
     assert f"SECRET={secret}" in second.stdout
+
+
+def test_empty_share_host_renders_no_share_site(tmp_path):
+    _run_entrypoint(tmp_path, share_host="")
+    assert "*.{$AGENTO_SHARE_HOST}" not in (tmp_path / "run-Caddyfile").read_text()
+
+
+@pytest.mark.parametrize("host", SHARE_HOSTS["valid"])
+def test_valid_share_host_appends_the_share_site(tmp_path, host):
+    _run_entrypoint(tmp_path, share_host=host)
+    assert (tmp_path / "run-Caddyfile").read_text().endswith((PROXY / "share.caddy").read_text())
+
+
+@pytest.mark.parametrize("host", SHARE_HOSTS["invalid"])
+def test_invalid_share_host_stops_the_proxy(tmp_path, host):
+    r = _run_entrypoint(tmp_path, share_host=host, check=False)
+    assert r.returncode != 0
+    assert "ARGS=" not in r.stdout  # caddy never started
+    assert "not a valid host name" in r.stderr

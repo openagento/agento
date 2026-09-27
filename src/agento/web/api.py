@@ -13,7 +13,7 @@ from typing import Any
 from agento.framework.access import accounts, launches, sessions
 from agento.framework.access.passwords import dummy_verify
 
-from . import security
+from . import app_path, security
 
 
 @dataclass
@@ -314,8 +314,6 @@ def admin_set_config(req: Request) -> Response:
     return Response(200, {"path": body.get("path"), "reset": [p for p, _v in reset]})
 
 
-_ARTIFACT_CODE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
-_VERSION_ID = re.compile(r"^v-[0-9]{8}-[0-9]{6}-[a-z0-9]{4}$")
 _TOOLBOX_DOWN = error(503, "toolbox unavailable")
 
 
@@ -343,7 +341,7 @@ def _current_version(req: Request, code: str, workspace_id: int, view_id: int) -
     except (KeyError, IndexError, TypeError, ValueError):
         return _TOOLBOX_DOWN
     version = payload.get("current_version") if isinstance(payload, dict) else None
-    if not isinstance(version, str) or not _VERSION_ID.fullmatch(version):
+    if not isinstance(version, str) or not app_path.VERSION_ID_RE.fullmatch(version):
         return error(409, "artifact has no published version")
     return version
 
@@ -353,7 +351,7 @@ def create_launch(req: Request) -> Response:
     if body.get("agent_view_id") is None or body.get("workspace_id") is not None:
         return error(400, "agent_view_id is required")
     code = body.get("artifact_code")
-    if not isinstance(code, str) or not _ARTIFACT_CODE.fullmatch(code):
+    if not isinstance(code, str) or not app_path.ARTIFACT_CODE_RE.fullmatch(code):
         return error(400, "artifact_code must match ^[a-z0-9][a-z0-9-]{0,63}$")
     scope = _resolve_scope(req, body)
     if isinstance(scope, Response):
@@ -423,13 +421,16 @@ def redeem_launch(req: Request) -> Response:
 
 
 def authorize_app(req: Request) -> Response:
-    """forward_auth for /a/<code>/v/<version>/ — called by the proxy only (the secret is checked first)."""
-    code, version = req.headers.get("X-Agento-Artifact-Code"), req.headers.get("X-Agento-Version-Id")
-    if not code or not version or not _ARTIFACT_CODE.fullmatch(code) or not _VERSION_ID.fullmatch(version):
-        return error(403, "forbidden")
+    """forward_auth for /a/<code>/v/<version>/ — called by the proxy only (the secret is checked first).
+
+    Decides on the path it parsed from the raw X-Forwarded-Uri, and on allow tells the proxy
+    to fetch exactly that path: one parse for the decision and the file (PRD E6 §6.2)."""
+    parsed = app_path.parse_app_path(req.headers.get("X-Forwarded-Uri"))
+    if parsed is None:
+        return error(404, "not found")
     presented = security.launch_cookies(req.cookies)
-    if launches.authorize_files(req.conn, list(presented.values()), code, version):
-        return Response(200)
+    if launches.authorize_files(req.conn, list(presented.values()), parsed.artifact_code, parsed.version_id):
+        return Response(200, None, [("X-Agento-Upstream-Path", parsed.upstream_path)])
     live = launches.live_launch_ids(req.conn, list(presented))
     return Response(403, {"error": "forbidden"},
                     [("Set-Cookie", security.clear_cookie(security.launch_cookie_name(i)))
