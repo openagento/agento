@@ -1,9 +1,11 @@
 """E2 panel + launch flow through the real proxy (step 7 of proxy-smoke.sh). Stdlib only.
 
 usage: panel-launch-smoke.py <port> <password file> <agent_view id> <artifact code> <cron container> <proxy> <web>
+                              <miniapp code> <mysql container> <project dir>
 
 Signs in as the seeded `e2-smoke-user`, launches the seeded artifact, redeems through the apps
-origin, and checks the file gate, the replay, a role change, and that no credential reached a log.
+origin, and checks the file gate, a spoofed X-Forwarded-Uri, the replay, a miniapp action and
+its audit row (E6), a role change, and that no credential reached a log.
 Prints one line per check and only status codes: no token is ever printed.
 """
 from __future__ import annotations
@@ -20,7 +22,7 @@ import urllib.request
 _resolve = socket.getaddrinfo
 socket.getaddrinfo = lambda h, *a, **k: _resolve("127.0.0.1" if h.endswith(".localhost") else h, *a, **k)
 
-port, pw_file, view_id, code, cron, proxy, web = sys.argv[1:8]
+port, pw_file, view_id, code, cron, proxy, web, app_code, mysql, project_dir = sys.argv[1:11]
 PANEL, APPS = f"https://panel.localhost:{port}", f"https://apps.localhost:{port}"
 CTX = ssl._create_unverified_context()  # tls internal: the dev CA is not trusted on the host
 failed = 0
@@ -98,10 +100,56 @@ check("redirect to the pinned version", h.get("Location"), f"/a/{code}/v/{versio
 file_url = f"{APPS}/a/{code}/v/{version}/index.html"
 check("pinned file with the cookie", call("GET", file_url, headers={"Cookie": f"{name}={token}"})[0], 200)
 check("pinned file without the cookie", call("GET", file_url)[0], 403)
-check("another version with the cookie",
-      call("GET", f"{APPS}/a/{code}/v/v-20000101-000000-aaaa/index.html", headers={"Cookie": f"{name}={token}"})[0], 403)
+other = f"{APPS}/a/{code}/v/v-20000101-000000-aaaa/index.html"
+check("another version with the cookie", call("GET", other, headers={"Cookie": f"{name}={token}"})[0], 403)
+# The proxy sets X-Forwarded-Uri from the real request: a caller's value never decides.
+check("another version with the cookie and a spoofed X-Forwarded-Uri naming the pinned one",
+      call("GET", other, headers={"Cookie": f"{name}={token}",
+                                  "X-Forwarded-Uri": f"/a/{code}/v/{version}/index.html"})[0], 403)
 check("redeem replay", call("POST", launch["redeem"]["url"], body=fields, headers=navigate, form=True)[0], 403)
 check("GET /launch on apps", call("GET", f"{APPS}/launch")[0], 404)
+
+
+
+def sql(query):
+    return subprocess.run(["docker", "exec", "-i", mysql, "sh", "-c", 'mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" cron_agent'],
+                          input=query, capture_output=True, text=True).stdout.strip()
+
+
+def launch_app():
+    status, _h, body = call("POST", f"{PANEL}/api/launches",
+                            body={"agent_view_id": int(view_id), "artifact_code": app_code}, headers=panel)
+    return status, (json.loads(body) if status == 201 else None)
+
+
+# E6: a launch before activation is files-only; after `miniapp:activate` it pins the manifest.
+status, first = launch_app()
+check("launch the miniapp artifact before activation", status, 201)
+if first:
+    app_version = first["version_id"]
+    subprocess.run(["uv", "run", "bin/agento", "miniapp:activate", app_code, app_version, "--actor", "proxy-smoke"],
+                   cwd=project_dir, capture_output=True, check=True)
+    seen.append(first["redeem"]["fields"]["code"])
+    status, h, _ = call("POST", first["redeem"]["url"], body=first["redeem"]["fields"], headers=navigate, form=True)
+    seen.append(cookie(h, f"__Host-agento-launch-{first['launch_id']}")[0] or "")
+    action = f"{PANEL}/api/launches/{first['launch_id']}/actions/versioned_artifact_get_current"
+    check("action on a redeemed files-only launch", call("POST", action, body={"arguments": {}}, headers=panel)[0], 403)
+    status, app = launch_app()
+    check("launch the activated miniapp", status, 201)
+    if app:
+        seen.append(app["redeem"]["fields"]["code"])
+        status, h, _ = call("POST", app["redeem"]["url"], body=app["redeem"]["fields"], headers=navigate, form=True)
+        check("redeem the miniapp launch", status, 303)
+        seen.append(cookie(h, f"__Host-agento-launch-{app['launch_id']}")[0] or "")
+        action = f"{PANEL}/api/launches/{app['launch_id']}/actions"
+        status, _h, body = call("POST", f"{action}/versioned_artifact_get_current",
+                                body={"arguments": {"artifact_code": app_code}}, headers=panel)
+        check("an allowed action through the panel", status, 200)
+        check("an action the manifest does not allow",
+              call("POST", f"{action}/versioned_artifact_list", body={"arguments": {}}, headers=panel)[0], 403)
+        row = sql("SELECT CONCAT_WS(' ', app_artifact_code, app_version_id, app_launch_id) FROM tool_invocation"
+                  f" WHERE app_launch_id = '{app['launch_id']}' ORDER BY id DESC LIMIT 1")
+        check("the action's audit row carries the app triple", row, f"{app_code} {app_version} {app['launch_id']}")
 
 status, h, _ = call("OPTIONS", f"{PANEL}/api/session", headers={"Origin": APPS, "Access-Control-Request-Method": "POST"})
 check("no CORS answer to the apps origin", any(k.lower().startswith("access-control-allow") for k in h), False)

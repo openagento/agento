@@ -10,23 +10,33 @@ set -uo pipefail
 #
 # It proves, against the real containers:
 #   1. the Caddyfile the proxy runs validates.
-#   2. from sandbox, web's authorization endpoints answer 401 — with no header, with a
-#      forged proxy secret plus identity headers, and with forged artifact headers and a
+#   2. from sandbox, web's authorization endpoint answers 401 — with no header, with a
+#      forged proxy secret plus identity headers, and with a forged X-Forwarded-Uri and a
 #      made-up launch cookie; the launch redeem answers 403 to a made-up code.
 #   3. /internal/* through the panel origin is 404.
-#   4. the apps and share origins reach web's authorization endpoint (403 with no launch
-#      cookie; share is E6's and denies every request).
+#   4. the apps origin reaches web's authorization endpoint (403 with no launch cookie), and
+#      serves only /a/<code>/v/<id>/…: traversal, encoded traversal and a `current` path
+#      are 404. A share host that is not a token is 404; with AGENTO_SHARE_HOST=bad_host
+#      the proxy entrypoint refuses to start.
 #   5. neither a `cap` value nor a launch exchange `code` reaches the proxy or web logs — with
 #      web up, and with web stopped (the error-log path).
 #   6. `artifacts` publishes no host port and does not resolve from sandbox.
 #   7. the panel + launch flow (docker/smoke/panel-launch-smoke.py): log in, launch, redeem by
-#      POST through the apps origin, file with / without the cookie, replay, a role change
-#      ending the session and the launch, and no credential in the proxy or web logs.
+#      POST through the apps origin, file with / without the cookie, a spoofed
+#      X-Forwarded-Uri, replay, a miniapp action (allowed, refused, and its audit row with
+#      the app triple), a role change ending the session and the launch, and no credential
+#      in the proxy or web logs.
+#   8. shares (E6 §9): a real share token serves 200 with Basic, 401 without, 404 for an
+#      unknown token, with `Referrer-Policy: no-referrer`, no `Access-Control-*`, and `/`
+#      not a listing; a flood of bad credentials is answered 429. It runs last: the flood
+#      limits this address on the artifacts server for one minute.
 #
 # It stops and restarts `web` once (step 5). Step 7 seeds, idempotently, at the agent_view
 # SMOKE_AGENT_VIEW (default: dev_01): the user `e2-smoke-user` (a fresh random password
 # each run, via stdin), two role grants, two tool gates, the artifact `e2-smoke`, and
-# `e2-smoke` appended to that view's versioned_artifacts/allowed_artifacts.
+# `e2-smoke` appended to that view's versioned_artifacts/allowed_artifacts; E6 adds the
+# miniapp artifact `e6-smoke` (with a miniapp.json), its activation, the miniapp tool gates
+# and grants, and a Basic credential (fresh random password each run) on `e2-smoke`.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
@@ -68,10 +78,11 @@ bad() { echo -e "  ${RED}✗${NC} $1"; fail=$((fail+1)); }
 expect() { [ "$2" = "$3" ] && ok "$1 ($3)" || bad "$1 (expected $2, got $3)"; }
 
 from_sandbox() { docker exec "$SANDBOX" curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
+# --path-as-is: curl would otherwise resolve `..` itself, and the proxy would never see it.
 via_proxy() {
-  local host="$1"; shift
-  curl -sk -o /dev/null -w '%{http_code}' --max-time 5 \
-    --resolve "$host:$PORT:127.0.0.1" "https://$host:$PORT$1"
+  local host="$1" path="$2"; shift 2
+  curl -sk --path-as-is -o /dev/null -w '%{http_code}' --max-time 5 \
+    --resolve "$host:$PORT:127.0.0.1" "$@" "https://$host:$PORT$path"
 }
 
 echo "1. Caddyfile"
@@ -128,17 +139,14 @@ else
 fi
 
 echo "2. web from sandbox"
-for path in /internal/authz/app /internal/authz/share; do
-  expect "$path, no header" 401 "$(from_sandbox "http://web:8000$path")"
-  expect "$path, forged secret + identity headers" 401 "$(from_sandbox \
-    -H 'X-Agento-Proxy-Auth: forged' -H 'X-Agento-User: admin' -H 'X-Forwarded-User: admin' \
-    "http://web:8000$path")"
-done
-LAUNCH_ID="cccccccccccccccccccccccccccccccc"
-expect "/internal/authz/app, forged secret + artifact headers + made-up launch cookie" 401 "$(from_sandbox \
-  -H 'X-Agento-Proxy-Auth: forged' -H 'X-Agento-Artifact-Code: demo' \
-  -H 'X-Agento-Version-Id: v-20260925-120000-ab12' -H "Cookie: __Host-agento-launch-$LAUNCH_ID=made-up" \
+expect "/internal/authz/app, no header" 401 "$(from_sandbox http://web:8000/internal/authz/app)"
+expect "/internal/authz/app, forged secret + identity headers" 401 "$(from_sandbox \
+  -H 'X-Agento-Proxy-Auth: forged' -H 'X-Agento-User: admin' -H 'X-Forwarded-User: admin' \
   http://web:8000/internal/authz/app)"
+LAUNCH_ID="cccccccccccccccccccccccccccccccc"
+expect "/internal/authz/app, forged secret + X-Forwarded-Uri + made-up launch cookie" 401 "$(from_sandbox \
+  -H 'X-Agento-Proxy-Auth: forged' -H 'X-Forwarded-Uri: /a/demo/v/v-20260925-120000-ab12/index.html' \
+  -H "Cookie: __Host-agento-launch-$LAUNCH_ID=made-up" http://web:8000/internal/authz/app)"
 expect "/internal/launch/redeem, made-up code" 403 "$(from_sandbox -X POST \
   -H "Origin: https://panel.localhost:$PORT" -H 'Content-Type: application/x-www-form-urlencoded' \
   --data "launch_id=$LAUNCH_ID&code=made-up" http://web:8000/internal/launch/redeem)"
@@ -152,7 +160,20 @@ VERSION_PATH="/a/demo/v/v-20260925-120000-ab12/index.html"
 since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 expect "apps version path without a launch cookie, denied by web" 403 "$(via_proxy apps.localhost "$VERSION_PATH?cap=SECRETCAP&code=SECRETCODE")"
 expect "apps non-version path" 404 "$(via_proxy apps.localhost /a/demo/)"
-expect "share origin, denied by web" 403 "$(via_proxy abc.share.localhost "/?cap=SECRETCAP&code=SECRETCODE")"
+for path in /a/demo/current/index.html /a/demo/v/v-20260925-120000-ab12/../../other/v/v-20260925-120000-ab12/index.html \
+    /a/demo/v/v-20260925-120000-ab12/%2e%2e/%2e%2e/other/index.html /a/demo/v/v-20260925-120000-ab12/a%2Fb \
+    '/a/demo/v/v-20260925-120000-ab12/a\b' /a/demo/v/v-20260925-120000-ab12/.auth; do
+  expect "apps $path" 404 "$(via_proxy apps.localhost "$path")"
+done
+expect "share host that is not a token" 404 "$(via_proxy abc.share.localhost "/?cap=SECRETCAP&code=SECRETCODE")"
+expect "share host with an unknown token" 404 "$(via_proxy "$(printf 'd%.0s' $(seq 32)).share.localhost" /)"
+if out="$(docker exec -e AGENTO_SHARE_HOST=bad_host -e AGENTO_PROXY_RUN_CONFIG=/tmp/smoke-Caddyfile "$PROXY" \
+    sh /etc/agento-proxy/entrypoint.sh 2>&1)"; then
+  bad "proxy entrypoint started with AGENTO_SHARE_HOST=bad_host"
+else
+  printf '%s' "$out" | grep -q 'AGENTO_SHARE_HOST is not a valid host name' \
+    && ok "proxy refuses to start with AGENTO_SHARE_HOST=bad_host" || bad "proxy entrypoint failed for another reason"
+fi
 
 echo "5. log redaction"
 docker stop "$WEB" >/dev/null
@@ -199,10 +220,50 @@ else
     *,e2-smoke,*) ;;
     *) docker exec "$CRON" $RUN config:set versioned_artifacts/allowed_artifacts "${allowed:+$allowed,}e2-smoke" --agent-view "$VIEW" >/dev/null ;;
   esac
-  if python3 "$SCRIPT_DIR/panel-launch-smoke.py" "$PORT" "$SEED/pw" "$VIEW_ID" e2-smoke "$CRON" "$PROXY" "$WEB"; then
+  # E6: a miniapp artifact whose first version carries a manifest; the smoke activates it.
+  mkdir "$SEED/app" && echo '<h1>e6 smoke</h1>' > "$SEED/app/index.html"
+  echo '{"schema": 1, "title": "E6 smoke", "actions": ["versioned_artifact_get_current"]}' > "$SEED/app/miniapp.json"
+  (cd "$PROJECT_DIR" && uv run bin/agento artifact:init e6-smoke --source "$SEED/app" --actor proxy-smoke) >/dev/null 2>&1 || true
+  for tool in miniapp miniapp_get_launch_spec; do
+    docker exec "$CRON" $RUN tool:enable "$tool" --agent-view "$VIEW" >/dev/null
+  done
+  docker exec "$CRON" $RUN grant:add --role user --tool miniapp_get_launch_spec --agent-view "$VIEW" >/dev/null
+  allowed="$(sql "SELECT value FROM core_config_data WHERE scope = 'agent_view' AND scope_id = $VIEW_ID AND path = 'versioned_artifacts/allowed_artifacts'")"
+  case ",${allowed// /}," in
+    *,e6-smoke,*) ;;
+    *) docker exec "$CRON" $RUN config:set versioned_artifacts/allowed_artifacts "${allowed:+$allowed,}e6-smoke" --agent-view "$VIEW" >/dev/null ;;
+  esac
+  if python3 "$SCRIPT_DIR/panel-launch-smoke.py" "$PORT" "$SEED/pw" "$VIEW_ID" e2-smoke "$CRON" "$PROXY" "$WEB" \
+      e6-smoke "$MYSQL" "$PROJECT_DIR"; then
     ok "panel and launch flow"
   else
     bad "panel and launch flow"
+  fi
+
+  echo "8. shares"
+  python3 -c 'import secrets; print(secrets.token_urlsafe(18), end="")' > "$SEED/share-pw"
+  (cd "$PROJECT_DIR" && uv run bin/agento artifact:auth e2-smoke --pass-stdin --actor proxy-smoke < "$SEED/share-pw") >/dev/null 2>&1
+  SHARE="$(sql "SELECT share_token FROM versioned_artifact WHERE artifact_code = 'e2-smoke'")"
+  if [ -z "$SHARE" ] || [ "$SHARE" = NULL ]; then
+    bad "e2-smoke has no share token after artifact:auth"
+  else
+    # The credential goes to curl in a config file, never in argv.
+    { printf 'user = "e2-smoke:'; cat "$SEED/share-pw"; printf '"\n'; } > "$SEED/curlrc"
+    { printf 'user = "e2-smoke:'; cat "$SEED/share-pw"; printf 'x"\n'; } > "$SEED/curlrc-bad"
+    host="$SHARE.share.localhost"
+    expect "share with Basic" 200 "$(via_proxy "$host" /index.html -K "$SEED/curlrc")"
+    expect "share without Basic" 401 "$(via_proxy "$host" /index.html)"
+    expect "share traversal" 404 "$(via_proxy "$host" /../e6-smoke/index.html -K "$SEED/curlrc")"
+    headers="$(curl -sk -D - -o "$SEED/share-root" --max-time 5 -K "$SEED/curlrc" -H "Origin: https://panel.localhost:$PORT" \
+      --resolve "$host:$PORT:127.0.0.1" "https://$host:$PORT/")"
+    printf '%s' "$headers" | grep -qi '^referrer-policy: no-referrer' && ok "share sets Referrer-Policy: no-referrer" \
+      || bad "share has no Referrer-Policy: no-referrer"
+    printf '%s' "$headers" | grep -qi '^access-control-' && bad "share answers with Access-Control-*" \
+      || ok "share sends no Access-Control-* header"
+    grep -q 'e2 smoke' "$SEED/share-root" && ok "share / serves index.html, not a listing" || bad "share / is not index.html"
+    code=""
+    for _ in $(seq 70); do code="$(via_proxy "$host" /index.html -K "$SEED/curlrc-bad")"; done
+    expect "share after a flood of bad credentials" 429 "$code"
   fi
 fi
 
