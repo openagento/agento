@@ -39,6 +39,16 @@ export function parseManifest(bytes) {
 
 export const fingerprint = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
+// The activation statements (fixture tests/fixtures/miniapp_sql_v1.json; run against the
+// real schema by tests/integration/test_miniapp_launch_checker.py).
+export const ACTIVATION_SQL =
+  'SELECT manifest_fingerprint, allowed_actions FROM miniapp_activation WHERE artifact_code = ? AND version_id = ?';
+export const ACTIVATE_SQL =
+  'INSERT INTO miniapp_activation (artifact_code, version_id, manifest_fingerprint, allowed_actions, activated_by) '
+  + 'VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE manifest_fingerprint = VALUES(manifest_fingerprint), '
+  + 'allowed_actions = VALUES(allowed_actions), activated_by = VALUES(activated_by), activated_at = NOW()';
+export const DEACTIVATE_SQL = 'DELETE FROM miniapp_activation WHERE artifact_code = ? AND version_id = ?';
+
 const jsonList = (v) => (Array.isArray(v) ? v : JSON.parse(String(v)));
 
 export function createMiniapps({ vaConfig = {}, db = null, log = null, agentViewId = null, actor = null,
@@ -59,9 +69,7 @@ export function createMiniapps({ vaConfig = {}, db = null, log = null, agentView
   }
 
   async function activationOf(code, versionId) {
-    const [rows] = await requirePool().query(
-      'SELECT manifest_fingerprint, allowed_actions FROM miniapp_activation WHERE artifact_code = ? AND version_id = ?',
-      [code, versionId]);
+    const [rows] = await requirePool().query(ACTIVATION_SQL, [code, versionId]);
     return rows?.[0] ?? null;
   }
 
@@ -96,12 +104,7 @@ export function createMiniapps({ vaConfig = {}, db = null, log = null, agentView
           throw new MiniappError('ACTION_NOT_DECLARED', 'an action is not in the manifest');
         }
         const unique = [...new Set(allowed)];
-        await requirePool().execute(
-          `INSERT INTO miniapp_activation (artifact_code, version_id, manifest_fingerprint, allowed_actions, activated_by)
-           VALUES (?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE manifest_fingerprint = VALUES(manifest_fingerprint),
-             allowed_actions = VALUES(allowed_actions), activated_by = VALUES(activated_by), activated_at = NOW()`,
-          [code, versionId, manifest.fingerprint, JSON.stringify(unique), String(actor ?? 'admin')]);
+        await requirePool().execute(ACTIVATE_SQL, [code, versionId, manifest.fingerprint, JSON.stringify(unique), String(actor ?? 'admin')]);
         return { artifact_code: code, version_id: versionId, manifest_fingerprint: manifest.fingerprint,
           allowed_actions: unique };
       }, (r) => `actions: ${r.allowed_actions.join(',')}`.slice(0, 255));
@@ -109,8 +112,7 @@ export function createMiniapps({ vaConfig = {}, db = null, log = null, agentView
 
     async deactivate(code, versionId) {
       return audited('miniapp.deactivate', code, versionId, async () => {
-        const [r] = await requirePool().execute(
-          'DELETE FROM miniapp_activation WHERE artifact_code = ? AND version_id = ?', [code, versionId]);
+        const [r] = await requirePool().execute(DEACTIVATE_SQL, [code, versionId]);
         if (!r?.affectedRows) throw new MiniappError('NOT_ACTIVATED', 'the version is not activated');
         return { artifact_code: code, version_id: versionId, activated: false };
       });

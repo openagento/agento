@@ -362,20 +362,18 @@ def _launch_spec(req: Request, code: str, version: str, workspace_id: int,
                  view_id: int) -> tuple[str, list[str]] | None | Response:
     """(fingerprint, actions) of an activated miniapp version; None for a files-only launch.
 
-    Tool not granted or not enabled, the miniapps module off, or the version not activated:
-    files-only (least privilege). A toolbox failure is 503, never a files-only guess.
+    Tool not granted or not enabled (403/404), or the version not activated: files-only (least
+    privilege). A toolbox failure or a tool error is 503, never a files-only guess.
     """
     from .toolbox_client import invoke_tool
 
     result = invoke_tool(req.conn, req.session, "miniapp_get_launch_spec",
                          {"artifact_code": code, "version_id": version},
                          workspace_id=workspace_id, agent_view_id=view_id)
-    if result.status >= 500:
-        return _TOOLBOX_DOWN
     if not result.body.get("ok"):
-        return None
+        return None if result.status in (403, 404) else _TOOLBOX_DOWN
     payload = _tool_payload(result)
-    if payload is None:
+    if payload is None or "error_code" in payload:
         return _TOOLBOX_DOWN
     if payload.get("activated") is not True:
         return None
@@ -446,10 +444,9 @@ def agent_view_miniapps(req: Request) -> Response:
     if not accounts.has_operation(req.conn, req.session.user.role, "artifact.launch", workspace_id, view_id):
         return error(404, "not found")
     result = invoke_tool(req.conn, req.session, "miniapp_list", {}, workspace_id=workspace_id, agent_view_id=view_id)
-    if result.status >= 500:
-        return _TOOLBOX_DOWN
     if not result.body.get("ok"):
-        return Response(200, [])
+        # Not granted or not enabled: nothing to launch. Anything else is a failure.
+        return Response(200, []) if result.status in (403, 404) else _TOOLBOX_DOWN
     payload = _tool_payload(result)
     rows = payload.get("miniapps") if payload else None
     if not isinstance(rows, list):

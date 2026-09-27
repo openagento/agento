@@ -67,8 +67,9 @@ There is no event: the change is made in the toolbox (Node), which has no event 
    version, both with the user's own `user_session` capability, under the artifact's retention
    lock.
 2. An activated version pins its `manifest_fingerprint` and `allowed_actions` into the `launch`
-   row. A version that is not activated, a tool the user may not call, or the module off, is a
-   files-only launch. A toolbox failure or a malformed answer is `503`, never a files-only guess.
+   row. A version that is not activated, or a spec tool the user may not call (not granted or not
+   enabled: `403`/`404`), is a files-only launch. A toolbox failure, a tool error or a malformed
+   answer is `503`, never a files-only guess.
 3. The page calls an action through the bridge. The panel posts it to
    `POST /api/launches/<launch_id>/actions/<tool>` with `{"arguments": {…}}`.
 4. `web` checks that the launch is the caller's, redeemed and live (else `404`), and that the tool
@@ -126,5 +127,9 @@ uv run bin/agento grant:add --role user --operation artifact.launch --agent-view
 uv run bin/agento miniapp:activate <artifact_code> <version_id>
 ```
 
-Disabling the module removes both tools, so every later launch is files-only and every action
-call on an existing launch fails at the toolbox.
+**To stop a miniapp's actions**, deactivate the version (`miniapp:deactivate`): the `launch`
+checker requires the activation on every call, so live launches lose their actions at the next
+call. Turning off `miniapp_get_launch_spec` for a scope makes every later launch there
+files-only. Note that the toolbox does not read `app/etc/modules.json`: it loads every core
+module's `toolbox/` files, so `module:disable miniapps` stops the `miniapp:*` commands but not
+the `launch` checker (the same holds for `web`'s `session` checker; see ROADMAP.md).

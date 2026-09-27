@@ -162,6 +162,8 @@ share, the strict one-parse apps path, and retention that keeps what a live laun
 - a panel frontend that uses the bridge (the SDK ships as a library with tests);
 - an `artifact:share` command separate from `artifact:auth` (setting Basic auth makes the share);
 - a per-launch revoke when a manifest is re-activated (a launch with a stale fingerprint just loses its actions).
+- the toolbox does not honour `app/etc/modules.json`: a disabled core module's `toolbox/` files (tools
+  gated by `is_enabled`, and auth sources such as `launch` and `session`) still load. Pre-existing.
 
 ### ⚪ Per-artifact origins for miniapps
 

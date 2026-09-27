@@ -1,0 +1,7 @@
+{
+  "_comment": "The miniapps SQL, shared by the JS constants (miniapps.js, launch-source.js) and tests/integration/test_miniapp_launch_checker.py, which runs it against the real schema.",
+  "activation_sql": "SELECT manifest_fingerprint, allowed_actions FROM miniapp_activation WHERE artifact_code = ? AND version_id = ?",
+  "activate_sql": "INSERT INTO miniapp_activation (artifact_code, version_id, manifest_fingerprint, allowed_actions, activated_by) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE manifest_fingerprint = VALUES(manifest_fingerprint), allowed_actions = VALUES(allowed_actions), activated_by = VALUES(activated_by), activated_at = NOW()",
+  "deactivate_sql": "DELETE FROM miniapp_activation WHERE artifact_code = ? AND version_id = ?",
+  "launch_sql": "SELECT l.id, l.user_id, u.role, l.artifact_code, l.version_id, l.workspace_id, l.agent_view_id, UNIX_TIMESTAMP(l.created_at) AS created_at, UNIX_TIMESTAMP(l.expires_at) AS expires_at FROM launch l JOIN `user` u ON u.id = l.user_id JOIN miniapp_activation a ON a.artifact_code = l.artifact_code AND a.version_id = l.version_id AND a.manifest_fingerprint = l.manifest_fingerprint WHERE l.id = ? AND l.exchange_redeemed_at IS NOT NULL AND l.revoked_at IS NULL AND l.expires_at > NOW() AND u.is_active = 1"
+}

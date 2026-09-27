@@ -325,6 +325,7 @@ FP = "f" * 64
     (NOT_ACTIVATED, {}),
     # Tool not granted, not enabled or the module off: a files-only launch.
     (toolbox_client.InvokeResult(404, {"ok": False, "error": {"code": "not_found"}}), {}),
+    (toolbox_client.InvokeResult(403, {"ok": False, "error": {"code": "forbidden"}}), {}),
 ])
 def test_create_launch_pins_an_activated_manifest_only(web, monkeypatch, signed_in, spec, pinned):
     _current(monkeypatch, spec=spec)
@@ -337,7 +338,9 @@ def test_create_launch_pins_an_activated_manifest_only(web, monkeypatch, signed_
 
 @pytest.mark.parametrize("spec", [
     toolbox_client.InvokeResult(503, {"ok": False, "error": {"code": "toolbox_unavailable"}}),
+    toolbox_client.InvokeResult(401, {"ok": False, "error": {"code": "unauthorized"}}),
     toolbox_client.InvokeResult(200, {"ok": True, "result": "garbage"}),
+    toolbox_client.InvokeResult(200, _tool_body({"error_code": "MINIAPP_STORE_UNAVAILABLE", "message": "x"})),
     toolbox_client.InvokeResult(200, _tool_body({"activated": True, "manifest_fingerprint": "short",
                                                  "allowed_actions": []})),
     toolbox_client.InvokeResult(200, _tool_body({"activated": True, "manifest_fingerprint": FP,
@@ -395,8 +398,11 @@ def test_agent_view_miniapps_lists_only_the_public_fields(web, monkeypatch, sign
 
 @pytest.mark.parametrize(("result", "expected"), [
     (toolbox_client.InvokeResult(404, {"ok": False, "error": {"code": "not_found"}}), (200, [])),
+    (toolbox_client.InvokeResult(403, {"ok": False, "error": {"code": "forbidden"}}), (200, [])),
     (toolbox_client.InvokeResult(503, {"ok": False}), (503, None)),
+    (toolbox_client.InvokeResult(401, {"ok": False}), (503, None)),
     (toolbox_client.InvokeResult(200, _tool_body({"miniapps": "x"})), (503, None)),
+    (toolbox_client.InvokeResult(200, _tool_body({"error_code": "FAILED", "message": "x"})), (503, None)),
 ])
 def test_agent_view_miniapps_failures(web, monkeypatch, signed_in, result, expected):
     _list_answers(monkeypatch, result)

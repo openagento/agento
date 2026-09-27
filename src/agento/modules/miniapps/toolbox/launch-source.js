@@ -5,7 +5,8 @@
 // for that scope bound what the capability's ceiling may reach.
 import { GRANTS_SQL } from '../../web/toolbox/auth-sources.js';
 
-const LAUNCH_SQL =
+// Fixture tests/fixtures/miniapp_sql_v1.json; the integration test runs this checker for real.
+export const LAUNCH_SQL =
   'SELECT l.id, l.user_id, u.role, l.artifact_code, l.version_id, l.workspace_id, l.agent_view_id, ' +
   'UNIX_TIMESTAMP(l.created_at) AS created_at, UNIX_TIMESTAMP(l.expires_at) AS expires_at ' +
   'FROM launch l JOIN `user` u ON u.id = l.user_id ' +
