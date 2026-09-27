@@ -75,7 +75,7 @@ network — the **Artifacts** container deliberately joins none of it:
 
 Agento uses a Magento-inspired modular architecture. Each module is a self-contained package.
 
-**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view, conversation, versioned_artifacts, web).
+**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view, conversation, versioned_artifacts, web, miniapps).
 
 **User modules** live in `app/code/` and are deployment-specific (gitignored by default).
 

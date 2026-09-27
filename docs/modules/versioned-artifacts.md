@@ -326,7 +326,13 @@ a bare success, and never a thrown error that would invite a retry the CAS must 
 **Retention** keeps the newest `serving/keep_versions` preview directories per artifact —
 `10` by default. Set it to `0` to keep every one. With a positive value the newest N survive, plus whatever
 `current` actually resolves to — read from the link itself, never from what a caller
-believed it had just installed. A pruned version is still fully readable through
+believed it had just installed — plus every version a **live launch** pins (PRD E6 §5). The
+prune and web's `create_launch` take the same MySQL named lock, `va_ret:` + sha1(code)
+(fixture `tests/fixtures/retention_lock_v1.json`): the prune tries it without waiting and skips
+this round when it is busy or the DB is down (the next save prunes again); `create_launch` waits
+up to 5 s from reading `current` to committing the launch, and answers `503` when it cannot get
+it. So a launch either commits before the prune reads the live set, or reads a `current` the
+prune kept. A pruned version is still fully readable through
 `versioned_artifact_materialize`; only the browser preview is gone, and
 `versioned_artifact_list_versions` reports `preview_path: null` for it.
 
@@ -348,7 +354,7 @@ no npm dependency — and it is deliberately the least privileged container in t
 |---|---|
 | `networks:` | **absent**, so Compose leaves it on the project's `default` network, which it shares with `proxy` alone, while every other service names `agento-net`. Measured: the sandbox cannot resolve the name `artifacts`. |
 | `env_file:` / `environment:` | **absent.** It holds no secret and no DB handle. |
-| `ports:` | **absent** (removed in E1.5). `proxy` is the only route to the files: the apps origin serves `/a/<code>/v/<version_id>/…` after a `forward_auth` subrequest to `web`, which allows a request only under a live launch (E2, [../architecture/panel.md](../architecture/panel.md)). `preview_url` links and Basic-auth shares stay dark until E6. |
+| `ports:` | **absent** (removed in E1.5). `proxy` is the only route to the files: the apps origin serves `/a/<code>/v/<version_id>/…` after a `forward_auth` subrequest to `web`, which allows a request only under a live launch (E2, [../architecture/panel.md](../architecture/panel.md)). Basic-auth shares reach it on their own origins (see **Shares**). `preview_url` links stay dark: no route serves `current`. |
 | volumes | `storage/versioned-artifacts/published` (read-only), `app/etc` (read-only), and the modules tree. Never the store root. |
 
 The absence of `networks:` is the point, not an oversight. One line added for consistency
@@ -358,8 +364,18 @@ audit row. The comment above the service in both compose files says so. Note wha
 actually buys: Compose still gives the service the project's `default` network, so the
 isolation is that it is **not on `agento-net`**, not that it has no network at all.
 
-**Routes.** `/` lists the artifact codes. `/<code>/…` serves through the `current` symlink.
-`/<code>/v/<version_id>/…` serves one immutable version. A pruned version falls through to
+**Routes** (PRD E6 §6). The server routes on the **raw** request target, parsed once
+(`server/served-path.js`); `new URL()` would resolve `..` and `%2e%2e` before any check saw
+them. There are three shapes, and anything else is `404`:
+
+* `/` — the healthcheck. It answers `ok` and lists nothing: there is no directory index.
+* `/<code>/v/<version_id>/…` — one immutable version. `proxy` fetches exactly the path web
+  returned in `X-Agento-Upstream-Path` after it authorized the launch, so the decision and the
+  file lookup cannot parse the request two ways. Basic auth never applies here.
+* `/s/<share token>/…` — a share (see **Shares**); `proxy` rewrites a share origin to it.
+
+There is **no `current` route** on the apps origin: a launch resolves `current` in the panel and
+pins the version. A pruned version falls through to
 the ordinary 404, and a directory URL without a trailing slash answers `301` to the
 slash-terminated one, so a relative `app.js` resolves inside the directory. Every path is
 checked with `realpath` against the root before anything is read, so a symlink inside a
@@ -393,13 +409,34 @@ forms that never meet, because the container that *enforces* auth is the one wit
 
 The sidecar is what the server actually enforces, so it is written first; a failed DB
 upsert costs only the recoverable copy, never the protection. A present-but-corrupt `.auth`
-fails **closed** (`401`), never open. `/` stays open so the container healthcheck keeps
-passing — auth covers everything under `/<code>/`.
+fails **closed** (`401`), never open. Basic auth applies only on a share origin; the apps origin is
+authorized by the launch, and the two credentials never meet on one origin (PRD E6 §9).
 
 `security/basic_auth_default` (off by default; a null is off) decides whether a **new**
 artifact is gated automatically. When it is, `versioned_artifact_init` returns the
 credential **once** so the agent can hand it to the user. Enabling it needs
 `AGENTO_ENCRYPTION_KEY`; without it the artifact is still created, just served open.
+
+### Shares
+
+A share serves an artifact's `current` tree (or `/v/<version_id>/…`) on its **own origin**,
+`https://<token>.<AGENTO_SHARE_HOST>[:port]/`, behind the Basic credential (PRD E6 §9.1). A
+share is executable HTML, and a browser caches Basic credentials per origin, so one share
+origin per share keeps one share's script from replaying another's credential.
+
+* Setting auth makes the share: the token is 32 random hex characters, kept across rotations of
+  the password, and stored in three places — the `.auth` sidecar (`share`), the record
+  `published/.shares/<token>` (the artifact code), and the `versioned_artifact.share_token`
+  column. The server serves a share only when the sidecar names the token back, so a record
+  left over from a removed artifact opens nothing.
+* Disabling auth or deleting the artifact removes the share; its URL answers `404`.
+* `artifact:auth` prints the share URL, and `versioned_artifact_init` returns it as `basic_auth.share_url` when `basic_auth_default` gates the new artifact. With `AGENTO_SHARE_HOST` empty or
+  invalid there is none, and `proxy` renders no share site.
+* The share origin sends `Referrer-Policy: no-referrer`, has no CORS, reaches no `web` route
+  and starts no launch.
+* The artifacts server counts failed requests per client address (60 a minute) and requests
+  per presented credential (600 a minute), and answers `429` past either (SEC-12). The counters
+  are bounded in memory.
 
 Setting, rotating, showing or disabling auth is operator-only — the
 [`artifact:auth`](../cli/artifact-auth.md) CLI, with **no tool equivalent**, so a

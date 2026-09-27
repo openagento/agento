@@ -84,7 +84,8 @@ Migration `036_toolbox_capability_auth_context` backfills the rows that existed 
    agent_view_id, permitted_tools, created_at, expires_at}` (a launch also has `launch_id`,
    `artifact_code`, `version_id`), or `null` when the source is revoked.
 3. The verifier checks the capability **and** its source on every call. The `web` module ships
-   the `session` checker (E2); a `miniapp` row is refused until E6 installs the `launch` checker.
+   the `session` checker (E2); the `miniapps` module ships the `launch` checker (E6), which also
+   requires the version to be still activated with the fingerprint the launch pinned.
 4. Call a tool with `POST /internal/tools/{name}:invoke`, header `Authorization: Bearer <token>`,
    body = the tool arguments as JSON. Mint a new capability for each call: the first call
    consumes a single-use token, and a second call with it gets 403.

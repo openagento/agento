@@ -101,7 +101,10 @@ by default) on `127.0.0.1:${AGENTO_PROXY_PORT:-8443}` and serves three origins, 
 - **apps** → only `/a/<code>/v/<id>/…`, authorized by `forward_auth` to `web`'s
   `/internal/authz/app`, then served by `artifacts`, and `POST /launch`, rewritten to `web`'s
   `/internal/launch/redeem` (the launch exchange); anything else is `404`;
-- **share** (one origin per share) → `forward_auth` to `/internal/authz/share`.
+- **share** (one origin per share, `<token>.<AGENTO_SHARE_HOST>`) → rewritten to `/s/<token>/…`
+  on `artifacts`, which checks the Basic credential itself; no route reaches `web`. `proxy`
+  renders this site only when `AGENTO_SHARE_HOST` is set, and refuses to start when it is not a
+  valid host name (PRD E6 §9).
 
 Hardening: every caller-supplied `X-Agento-*`, `X-Forwarded-User`, `X-Remote-User` and
 `Remote-User` header is dropped before any upstream or subrequest sees it; the proxy sets

@@ -50,10 +50,13 @@ credentialed CORS.
 panel page                      web                                  proxy / apps origin
    | POST /api/launches {agent_view_id, artifact_code}
    |------------------------------>| can_reach + artifact.launch? else 404
+   |                               | retention lock (va_ret:<sha1(code)>, 5 s) taken
    |                               | versioned_artifact_get_current via the toolbox
    |                               |   (a user_session capability, one call)
+   |                               | miniapp_get_launch_spec for that version (E6)
    |                               | create_launch: user row locked, grant re-checked,
-   |                               |   cap applied, only hashes stored
+   |                               |   cap applied, spec pinned, only hashes stored
+   |                               | retention lock released
    |<------------------------------| 201 {launch_id, version_id, redeem: {url, fields}}
    | form POST (target=_blank) to https://apps…/launch, fields launch_id + code
    |---------------------------------------------------------------------> rewrite to
@@ -64,19 +67,34 @@ panel page                      web                                  proxy / app
    | GET /a/<code>/v/<id>/index.html (cookie)
    |---------------------------------------------------------------------> forward_auth
    |                               |<-------------------------------------| /internal/authz/app
-   |                               | proxy secret? launch live, redeemed, (code, version) match,
-   |                               |   user active? → 200, else 403
+   |                               | proxy secret? path from X-Forwarded-Uri parsed once;
+   |                               |   launch live, redeemed, (code, version) match,
+   |                               |   user active? → 200 + X-Agento-Upstream-Path, else 403
+   | POST /api/launches/<id>/actions/<tool> {arguments}   (E6, from the bridge)
+   |------------------------------>| launch yours, redeemed, live? else 404
+   |                               | tool in allowed_actions? else 403
+   |                               | one miniapp capability (ceiling = allowed_actions)
+   |                               |   → POST /internal/tools/<tool>:invoke
+   |<------------------------------| the toolbox answer
 ```
 
 - The exchange code travels in a form body, never in a URL, so it is not in history, in a
   `Referer` or in a log, and a prefetch or a scanner cannot consume it. `GET /launch` is 404.
 - `current` resolves only at launch time. The apps origin serves only immutable
-  `/v/<version id>/` paths.
+  `/a/<code>/v/<version id>/` paths; there is no `current` route. `web` parses the raw path once
+  and tells `proxy` exactly which upstream path to fetch (PRD E6 §6.2).
+- The retention lock is the one the toolbox prune takes, so a launch never pins a version the
+  prune is deleting ([../modules/versioned-artifacts.md](../modules/versioned-artifacts.md)).
+  Busy for 5 s: `503`.
 - The redeem does not need the proxy secret: the exchange code is the credential.
 - A 403 from `/internal/authz/app` clears every presented launch cookie whose launch is no longer
   live. Caddy returns the deny response, headers included, to the client (measured).
-- E2 writes the no-manifest constants into `launch`: `manifest_fingerprint = sha256("")`,
-  `allowed_actions = []`. An E2 launch serves files and authorizes no action. E6 owns the manifest.
+- A version that is not an activated miniapp gets the no-manifest constants in `launch`:
+  `manifest_fingerprint = sha256("")`, `allowed_actions = []` — it serves files and authorizes no
+  action. An activated one pins its fingerprint and actions; see
+  [../modules/miniapps.md](../modules/miniapps.md). A toolbox failure while reading the spec is
+  `503`, never a files-only guess.
+- `GET /api/agent-views/<id>/miniapps` lists the activated miniapps the user may launch there.
 
 ## Roles and grants
 
