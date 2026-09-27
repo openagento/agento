@@ -49,7 +49,7 @@ describe('panel bridge', () => {
   });
 
   it.each([
-    ['another app window on the same origin', (app) => ({ source: fakeWindow(), origin: APPS, data: action() })],
+    ['another app window on the same origin', () => ({ source: fakeWindow(), origin: APPS, data: action() })],
     ['a wrong origin', (app) => ({ source: app, origin: 'https://evil.example.com', data: action() })],
     ['a wrong launch id', (app) => ({ source: app, origin: APPS, data: action({ launch_id: 'b'.repeat(32) }) })],
     ['no launch id', (app) => ({ source: app, origin: APPS, data: action({ launch_id: undefined }) })],
@@ -62,7 +62,7 @@ describe('panel bridge', () => {
   });
 
   it.each([
-    ['another app window on the same origin', (app) => ({ source: fakeWindow(), origin: APPS })],
+    ['another app window on the same origin', () => ({ source: fakeWindow(), origin: APPS })],
     ['a wrong origin', (app) => ({ source: app, origin: 'https://evil.example.com' })],
   ])('gives no launch id to a ready from %s', async (_name, event) => {
     const { panel, app } = setup();

@@ -4,12 +4,11 @@ The live counterpart (a real Caddy, a captured log) is docker/smoke/proxy-smoke.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
 from pathlib import Path
-
-import json
 
 import pytest
 
