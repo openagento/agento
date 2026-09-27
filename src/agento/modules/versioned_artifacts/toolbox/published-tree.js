@@ -1,7 +1,8 @@
 import path from 'node:path';
-import { mkdir, readdir, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { VERSION_ID_RE, validateArtifactCode, validateVersionId } from './paths.js';
+import { SHARE_TOKEN_RE } from './share-host.js';
 
 // Plain filesystem, no Git and no service: this is the tree an HTTP server reads, and
 // keeping it free of the storage engine is what lets the serving container stay a
@@ -120,9 +121,40 @@ export async function writeAuthSidecar(publishedRoot, code, sidecar) {
   catch (err) { await rm(tmp, { force: true }); throw err; }
 }
 
+/** The sidecar, or null when there is none. Only its `share` token is read from it: the
+ *  share record and the sidecar must name each other (see the artifacts server). */
+export async function readAuthSidecar(publishedRoot, code) {
+  let text;
+  try { text = await readFile(authSidecarPath(publishedRoot, code), 'utf8'); }
+  catch (err) { if (isMissing(err)) return null; throw err; }
+  try { return JSON.parse(text); } catch { return null; }
+}
+
 /** Turns auth OFF by removing the file the server gates on. Reports whether it was there
  *  so a caller can tell a real removal from a no-op. */
 export async function removeAuthSidecar(publishedRoot, code) {
   try { await rm(authSidecarPath(publishedRoot, code)); return true; }
+  catch (err) { if (isMissing(err)) return false; throw err; }
+}
+
+/** `published/.shares/<token>` holds the artifact code a share token names. A dot
+ *  directory: `ARTIFACT_CODE_RE` needs a leading [a-z0-9], so it is never an artifact,
+ *  and the server serves no dot segment. */
+const shareRecordPath = (publishedRoot, token) => {
+  if (!SHARE_TOKEN_RE.test(token)) throw new Error('invalid share token');
+  return path.join(publishedRoot, '.shares', token);
+};
+
+export async function writeShareRecord(publishedRoot, token, code) {
+  const file = shareRecordPath(publishedRoot, token);
+  await mkdir(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp-${randomBytes(6).toString('hex')}`;
+  await writeFile(tmp, `${validateArtifactCode(code)}\n`);
+  try { await rename(tmp, file); }
+  catch (err) { await rm(tmp, { force: true }); throw err; }
+}
+
+export async function removeShareRecord(publishedRoot, token) {
+  try { await rm(shareRecordPath(publishedRoot, token)); return true; }
   catch (err) { if (isMissing(err)) return false; throw err; }
 }

@@ -226,8 +226,10 @@ export function createArtifactsServer({
     // A share: the token names the artifact, and it serves only while a Basic credential is set.
     const code = await shareCode(route.token);
     if (code === null) return fail(404);
+    // The sidecar must name this token back: a record left over from a deleted artifact
+    // never opens a later artifact of the same code. A corrupt sidecar names nothing.
     const sidecar = await authFor(code);
-    if (!sidecar) return fail(404);
+    if (!sidecar || sidecar.share !== route.token) return fail(404);
     const header = req.headers.authorization;
     if (typeof header === 'string'
         && !perCredential.take(createHash('sha256').update(header).digest('hex'))) return text(res, 429);

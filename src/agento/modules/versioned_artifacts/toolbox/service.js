@@ -7,6 +7,8 @@ import { createBackend } from './git-backend.js';
 import { recordAudit } from './audit.js';
 import * as published from './published-tree.js';
 import { generatePassword, defaultAuthUser, hashSecret } from './auth.js';
+import { SHARE_TOKEN_RE, shareUrl } from './share-host.js';
+import { randomBytes } from 'node:crypto';
 
 // A resolved value is not typed: resolveModuleFieldStrict returns an ENV string
 // verbatim and a DB override's raw column value; only a config.json default keeps
@@ -78,7 +80,7 @@ const isNameTaken = (err) => err instanceof ArtifactError
   && err.code === ERROR_CODES.ARTIFACT_ALREADY_EXISTS;
 
 export function createService({ config = {}, db = null, log = null, jobId = null, agentViewId = null,
-  actor = null, backend = null, admin = false, crypto = null } = {}) {
+  actor = null, backend = null, admin = false, crypto = null, env = process.env } = {}) {
   const storageRoot = asStorageRoot(config.storage_root);
   const publishedRoot = asStorageRoot(config.published_root, 'published_root');
   const keepVersions = asNonNegInt(config['serving/keep_versions'], 'serving/keep_versions');
@@ -201,32 +203,48 @@ export function createService({ config = {}, db = null, log = null, jobId = null
   // that nothing checks. The DB row only DECORATES — a failed upsert costs the
   // recoverable copy, never the enforcement — the same degradation `init`'s INSERT has.
   // The CALLER holds the lifecycle lock.
+  //
+  // The share token (PRD E6 §9) lives in the sidecar beside the hash: a rotation keeps
+  // it, and the server serves a share only when the record and the sidecar name each
+  // other, so a stale record never opens a later artifact of the same code.
   const applyAuth = async (artifactCode, { user, password }) => {
     const enc = encryptSecret(password);
-    await published.writeAuthSidecar(publishedRoot, artifactCode, { user, ...hashSecret(password) });
+    const prior = (await published.readAuthSidecar(publishedRoot, artifactCode))?.share;
+    const share = SHARE_TOKEN_RE.test(prior ?? '') ? prior : randomBytes(16).toString('hex');
+    await published.writeAuthSidecar(publishedRoot, artifactCode, { user, ...hashSecret(password), share });
+    await published.writeShareRecord(publishedRoot, share, artifactCode);
     const db2 = pool();
     if (db2) {
       try {
         await db2.execute(
-          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc)
-           VALUES (?, 1, ?, ?)
-           ON DUPLICATE KEY UPDATE auth_enabled = 1, auth_user = VALUES(auth_user), auth_secret_enc = VALUES(auth_secret_enc)`,
-          [artifactCode, user, enc]);
+          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc, share_token)
+           VALUES (?, 1, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE auth_enabled = 1, auth_user = VALUES(auth_user),
+             auth_secret_enc = VALUES(auth_secret_enc), share_token = VALUES(share_token)`,
+          [artifactCode, user, enc, share]);
       } catch (err) {
         log?.('versioned_artifacts', 'ERROR',
           `auth credential not recorded for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
       }
     }
+    return share;
+  };
+  /** The token the sidecar names, if any. Its record goes with the sidecar: a share needs a Basic credential. */
+  const shareOf = async (artifactCode) => {
+    const share = (await published.readAuthSidecar(publishedRoot, artifactCode))?.share;
+    return SHARE_TOKEN_RE.test(share ?? '') ? share : null;
   };
   const clearAuth = async (artifactCode) => {
+    const share = await shareOf(artifactCode);
     const removed = await published.removeAuthSidecar(publishedRoot, artifactCode);
+    if (share) await published.removeShareRecord(publishedRoot, share);
     const db2 = pool();
     if (db2) {
       try {
         await db2.execute(
-          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc)
-           VALUES (?, 0, NULL, NULL)
-           ON DUPLICATE KEY UPDATE auth_enabled = 0, auth_user = NULL, auth_secret_enc = NULL`,
+          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc, share_token)
+           VALUES (?, 0, NULL, NULL, NULL)
+           ON DUPLICATE KEY UPDATE auth_enabled = 0, auth_user = NULL, auth_secret_enc = NULL, share_token = NULL`,
           [artifactCode]);
       } catch (err) {
         log?.('versioned_artifacts', 'ERROR',
@@ -421,8 +439,8 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             const user = defaultAuthUser(finalCode);
             const password = generatePassword();
             try {
-              await withLock(lifecycleLock(finalCode), () => applyAuth(finalCode, { user, password }));
-              basicAuth = { user, password };
+              const share = await withLock(lifecycleLock(finalCode), () => applyAuth(finalCode, { user, password }));
+              basicAuth = { user, password, share_url: shareUrl(share, env, log) };
             } catch (err) {
               log?.('versioned_artifacts', 'ERROR',
                 `basic auth not enabled for '${finalCode}': ${errorFacts(err) ?? 'unknown'}`);
@@ -459,7 +477,9 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, 'this session may not delete artifacts');
           }
           return withLock(lifecycleLock(artifactCode), async () => {
+            const share = await shareOf(artifactCode);
             const removedPublished = await published.removeArtifact(publishedRoot, artifactCode);
+            if (share) await published.removeShareRecord(publishedRoot, share);
             const removedStore = await be.removeArtifact(storageRoot, artifactCode);
             if (!removedPublished && !removedStore) {
               throw new ArtifactError(ERROR_CODES.ARTIFACT_NOT_FOUND, 'artifact not found');
@@ -499,8 +519,9 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             }
             const finalUser = (user && String(user).trim()) || defaultAuthUser(artifactCode);
             const finalPass = (password && String(password)) || generatePassword();
-            await applyAuth(artifactCode, { user: finalUser, password: finalPass });
-            return { artifact_code: artifactCode, auth_enabled: true, auth_user: finalUser, password: finalPass };
+            const share = await applyAuth(artifactCode, { user: finalUser, password: finalPass });
+            return { artifact_code: artifactCode, auth_enabled: true, auth_user: finalUser, password: finalPass,
+              share_url: shareUrl(share, env, log) };
           });
         }, (r) => ({ description: r.auth_enabled ? 'enabled' : 'disabled' }));
       },
@@ -516,7 +537,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         let row;
         try {
           const [rows] = await db2.query(
-            'SELECT auth_enabled, auth_user, auth_secret_enc FROM versioned_artifact WHERE artifact_code = ?',
+            'SELECT auth_enabled, auth_user, auth_secret_enc, share_token FROM versioned_artifact WHERE artifact_code = ?',
             [artifactCode]);
           row = rows?.[0];
         } catch (err) {
@@ -524,7 +545,8 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         }
         if (!row || !row.auth_enabled) return { artifact_code: artifactCode, auth_enabled: false };
         return { artifact_code: artifactCode, auth_enabled: true, auth_user: row.auth_user,
-          password: row.auth_secret_enc ? decryptSecret(row.auth_secret_enc) : null };
+          password: row.auth_secret_enc ? decryptSecret(row.auth_secret_enc) : null,
+          share_url: shareUrl(row.share_token, env, log) };
       },
 
       // ------------------------------------------------------------- reads

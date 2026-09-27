@@ -33,7 +33,7 @@ beforeEach(async () => {
   await symlink(path.join('v', V1), path.join(root, 'site', 'current'));
   await mkdir(path.join(root, '.shares'));
   await writeFile(path.join(root, '.shares', TOKEN), 'site\n');
-  await writeSidecar({ user: 'site', ...auth.hashSecret('pw') });
+  await writeSidecar({ user: 'site', ...auth.hashSecret('pw'), share: TOKEN });
 });
 
 afterEach(async () => {
@@ -91,15 +91,21 @@ describe('share route', () => {
   it('fails closed on a corrupt sidecar', async () => {
     await writeFile(path.join(root, 'site', '.auth'), 'not json');
     await start();
-    expect((await get(`/s/${TOKEN}/`, GOOD())).status).toBe(401);
+    expect((await get(`/s/${TOKEN}/`, GOOD())).status).toBe(404);
+  });
+
+  it('is 404 when the sidecar names another token: a stale record opens nothing', async () => {
+    await writeSidecar({ user: 'site', ...auth.hashSecret('pw'), share: OTHER });
+    await start();
+    expect((await get(`/s/${TOKEN}/`, GOOD())).status).toBe(404);
   });
 
   it('picks up a credential change without a restart (mtime cache)', async () => {
-    await writeSidecar({ user: 'site', ...auth.hashSecret('old') });
+    await writeSidecar({ user: 'site', ...auth.hashSecret('old'), share: TOKEN });
     await start();
     expect((await get(`/s/${TOKEN}/`, { authorization: authHeader('site', 'old') })).status).toBe(200);
     await new Promise((r) => setTimeout(r, 10));
-    await writeSidecar({ user: 'site', ...auth.hashSecret('new') });
+    await writeSidecar({ user: 'site', ...auth.hashSecret('new'), share: TOKEN });
     expect((await get(`/s/${TOKEN}/`, { authorization: authHeader('site', 'old') })).status).toBe(401);
     expect((await get(`/s/${TOKEN}/`, { authorization: authHeader('site', 'new') })).status).toBe(200);
   });
