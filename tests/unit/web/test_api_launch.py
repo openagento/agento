@@ -40,11 +40,20 @@ def _post_launch(web, body):
     return httpx.post(f"{web}/api/launches", json=body, cookies={"__Host-agento-session": TOKEN}, headers=headers)
 
 
-def _current(monkeypatch, status=200, body=None):
+def _tool_body(payload) -> dict:
+    return {"ok": True, "result": {"content": [{"type": "text", "text": json.dumps(payload)}]}}
+
+
+NOT_ACTIVATED = toolbox_client.InvokeResult(200, _tool_body({"activated": False}))
+
+
+def _current(monkeypatch, status=200, body=None, spec=NOT_ACTIVATED):
+    """The toolbox: `get_current` answers `status`/`body`; `miniapp_get_launch_spec` answers `spec`."""
     if body is None:
-        text = json.dumps({"artifact_code": "app", "current_version": V1})
-        body = {"ok": True, "result": {"content": [{"type": "text", "text": text}]}}
-    invoke = MagicMock(return_value=toolbox_client.InvokeResult(status, body))
+        body = _tool_body({"artifact_code": "app", "current_version": V1})
+    current = toolbox_client.InvokeResult(status, body)
+    invoke = MagicMock(side_effect=lambda conn, session, tool, *a, **k:
+                       spec if tool == "miniapp_get_launch_spec" else current)
     monkeypatch.setattr(toolbox_client, "invoke_tool", invoke)
     return invoke
 
@@ -55,7 +64,8 @@ def test_create_launch_resolves_current_and_returns_a_form_not_a_url(web, monkey
     monkeypatch.setattr(launches, "create_launch", create)
     r = _post_launch(web, {"agent_view_id": 3, "artifact_code": "app"})
     assert r.status_code == 201
-    assert invoke.call_args.args[2:] == ("versioned_artifact_get_current", {"artifact_code": "app"})
+    assert invoke.call_args_list[0].args[2:] == ("versioned_artifact_get_current", {"artifact_code": "app"})
+    assert invoke.call_args_list[1].args[2:] == ("miniapp_get_launch_spec", {"artifact_code": "app", "version_id": V1})
     assert create.call_args.kwargs == {"workspace_id": 1, "agent_view_id": 3, "artifact_code": "app", "version_id": V1}
     body = r.json()
     assert body["redeem"] == {"url": f"{APPS}/launch", "fields": {"launch_id": LID, "code": "the-code"}}
@@ -287,11 +297,12 @@ def test_create_launch_holds_the_retention_lock_around_current_and_the_insert(we
 
     monkeypatch.setattr(launches, "retention_lock", lock)
     invoke = _current(monkeypatch)
-    invoke.side_effect = lambda *a, **k: events.append("current") or toolbox_client.InvokeResult(
-        200, {"ok": True, "result": {"content": [{"type": "text", "text": json.dumps({"current_version": V1})}]}})
+    answer = invoke.side_effect
+    invoke.side_effect = lambda conn, session, tool, *a, **k: events.append(tool) or answer(conn, session, tool)
     monkeypatch.setattr(launches, "create_launch", lambda *a, **k: events.append("insert") or (_launch(), "c"))
     assert _post_launch(web, {"agent_view_id": 3, "artifact_code": "app"}).status_code == 201
-    assert events == [("lock", "app"), "current", "insert", ("unlock", "app")]
+    assert events == [("lock", "app"), "versioned_artifact_get_current", "miniapp_get_launch_spec", "insert",
+                      ("unlock", "app")]
 
 
 def test_create_launch_is_503_when_the_retention_lock_is_busy(web, monkeypatch, signed_in):
@@ -301,4 +312,102 @@ def test_create_launch_is_503_when_the_retention_lock_is_busy(web, monkeypatch, 
     monkeypatch.setattr(launches, "retention_lock", busy)
     invoke = _current(monkeypatch)
     assert _post_launch(web, {"agent_view_id": 3, "artifact_code": "app"}).status_code == 503
+    invoke.assert_not_called()
+
+
+FP = "f" * 64
+
+
+@pytest.mark.parametrize(("spec", "pinned"), [
+    (toolbox_client.InvokeResult(200, _tool_body({"activated": True, "manifest_fingerprint": FP,
+                                                  "allowed_actions": ["notes_add"]})),
+     {"manifest_fingerprint": FP, "allowed_actions": ["notes_add"]}),
+    (NOT_ACTIVATED, {}),
+    # Tool not granted, not enabled or the module off: a files-only launch.
+    (toolbox_client.InvokeResult(404, {"ok": False, "error": {"code": "not_found"}}), {}),
+])
+def test_create_launch_pins_an_activated_manifest_only(web, monkeypatch, signed_in, spec, pinned):
+    _current(monkeypatch, spec=spec)
+    create = MagicMock(return_value=(_launch(), "c"))
+    monkeypatch.setattr(launches, "create_launch", create)
+    assert _post_launch(web, {"agent_view_id": 3, "artifact_code": "app"}).status_code == 201
+    assert create.call_args.kwargs == {"workspace_id": 1, "agent_view_id": 3, "artifact_code": "app",
+                                       "version_id": V1, **pinned}
+
+
+@pytest.mark.parametrize("spec", [
+    toolbox_client.InvokeResult(503, {"ok": False, "error": {"code": "toolbox_unavailable"}}),
+    toolbox_client.InvokeResult(200, {"ok": True, "result": "garbage"}),
+    toolbox_client.InvokeResult(200, _tool_body({"activated": True, "manifest_fingerprint": "short",
+                                                 "allowed_actions": []})),
+    toolbox_client.InvokeResult(200, _tool_body({"activated": True, "manifest_fingerprint": FP,
+                                                 "allowed_actions": ["Bad-Name"]})),
+])
+def test_create_launch_never_guesses_files_only_on_a_bad_spec(web, monkeypatch, signed_in, spec):
+    _current(monkeypatch, spec=spec)
+    monkeypatch.setattr(launches, "create_launch", MagicMock(side_effect=AssertionError("must not be called")))
+    assert _post_launch(web, {"agent_view_id": 3, "artifact_code": "app"}).status_code == 503
+
+
+def _post_action(web, tool="notes_add", body=None):
+    headers = panel_headers(**{"X-CSRF-Token": sessions.csrf_token(TOKEN)})
+    return httpx.post(f"{web}/api/launches/{LID}/actions/{tool}", json={"arguments": {"x": 1}} if body is None else body,
+                      cookies={"__Host-agento-session": TOKEN}, headers=headers)
+
+
+def test_launch_action_passes_the_launch_and_the_tool_through(web, monkeypatch, signed_in):
+    call = MagicMock(return_value=toolbox_client.InvokeResult(200, {"ok": True, "result": {}}))
+    monkeypatch.setattr(toolbox_client, "invoke_launch_action", call)
+    r = _post_action(web)
+    assert (r.status_code, r.json()) == (200, {"ok": True, "result": {}})
+    assert call.call_args.args[2:] == (LID, "notes_add", {"x": 1})
+
+
+def test_launch_action_refuses_non_object_arguments(web, monkeypatch, signed_in):
+    monkeypatch.setattr(toolbox_client, "invoke_launch_action", MagicMock(side_effect=AssertionError("no call")))
+    assert _post_action(web, body={"arguments": [1]}).status_code == 400
+
+
+def test_launch_action_route_rejects_a_bad_tool_name(web, monkeypatch, signed_in):
+    monkeypatch.setattr(toolbox_client, "invoke_launch_action", MagicMock(side_effect=AssertionError("no call")))
+    assert _post_action(web, tool="Bad-Name").status_code == 404
+
+
+def _miniapps(web):
+    return httpx.get(f"{web}/api/agent-views/3/miniapps", cookies={"__Host-agento-session": TOKEN},
+                     headers=panel_headers())
+
+
+def _list_answers(monkeypatch, result):
+    invoke = MagicMock(return_value=result)
+    monkeypatch.setattr(toolbox_client, "invoke_tool", invoke)
+    return invoke
+
+
+def test_agent_view_miniapps_lists_only_the_public_fields(web, monkeypatch, signed_in):
+    row = {"artifact_code": "app", "version_id": V1, "title": "Notes", "extra": "hidden"}
+    invoke = _list_answers(monkeypatch, toolbox_client.InvokeResult(200, _tool_body({"miniapps": [row]})))
+    r = _miniapps(web)
+    assert (r.status_code, r.json()) == (200, [{"artifact_code": "app", "version_id": V1, "title": "Notes"}])
+    assert invoke.call_args.args[2:] == ("miniapp_list", {})
+    assert invoke.call_args.kwargs == {"workspace_id": 1, "agent_view_id": 3}
+
+
+@pytest.mark.parametrize(("result", "expected"), [
+    (toolbox_client.InvokeResult(404, {"ok": False, "error": {"code": "not_found"}}), (200, [])),
+    (toolbox_client.InvokeResult(503, {"ok": False}), (503, None)),
+    (toolbox_client.InvokeResult(200, _tool_body({"miniapps": "x"})), (503, None)),
+])
+def test_agent_view_miniapps_failures(web, monkeypatch, signed_in, result, expected):
+    _list_answers(monkeypatch, result)
+    r = _miniapps(web)
+    assert r.status_code == expected[0]
+    if expected[1] is not None:
+        assert r.json() == expected[1]
+
+
+def test_agent_view_miniapps_without_the_operation_is_404(web, monkeypatch, signed_in):
+    monkeypatch.setattr(accounts, "has_operation", lambda *a: False)
+    invoke = _list_answers(monkeypatch, None)
+    assert _miniapps(web).status_code == 404
     invoke.assert_not_called()

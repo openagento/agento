@@ -323,10 +323,19 @@ def _launch_json(launch: launches.Launch) -> dict:
             "expires_at": _iso(launch.expires_at)}
 
 
-def _current_version(req: Request, code: str, workspace_id: int, view_id: int) -> str | Response:
-    """`current` resolves at launch time through the toolbox; the apps origin has no `current` route."""
+def _tool_payload(result) -> dict | None:
+    """The JSON object a toolbox tool answered with, or None."""
     import json
 
+    try:
+        payload = json.loads(result.body["result"]["content"][0]["text"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _current_version(req: Request, code: str, workspace_id: int, view_id: int) -> str | Response:
+    """`current` resolves at launch time through the toolbox; the apps origin has no `current` route."""
     from .toolbox_client import invoke_tool
 
     result = invoke_tool(req.conn, req.session, "versioned_artifact_get_current", {"artifact_code": code},
@@ -336,14 +345,45 @@ def _current_version(req: Request, code: str, workspace_id: int, view_id: int) -
     if not result.body.get("ok"):
         # Tool not granted or not enabled in this scope: the user cannot launch here.
         return error(404, "not found")
-    try:
-        payload = json.loads(result.body["result"]["content"][0]["text"])
-    except (KeyError, IndexError, TypeError, ValueError):
+    payload = _tool_payload(result)
+    if payload is None:
         return _TOOLBOX_DOWN
-    version = payload.get("current_version") if isinstance(payload, dict) else None
+    version = payload.get("current_version")
     if not isinstance(version, str) or not app_path.VERSION_ID_RE.fullmatch(version):
         return error(409, "artifact has no published version")
     return version
+
+
+_FINGERPRINT = re.compile(r"[0-9a-f]{64}")
+_ACTION = re.compile(r"[a-z0-9_]{1,64}")
+
+
+def _launch_spec(req: Request, code: str, version: str, workspace_id: int,
+                 view_id: int) -> tuple[str, list[str]] | None | Response:
+    """(fingerprint, actions) of an activated miniapp version; None for a files-only launch.
+
+    Tool not granted or not enabled, the miniapps module off, or the version not activated:
+    files-only (least privilege). A toolbox failure is 503, never a files-only guess.
+    """
+    from .toolbox_client import invoke_tool
+
+    result = invoke_tool(req.conn, req.session, "miniapp_get_launch_spec",
+                         {"artifact_code": code, "version_id": version},
+                         workspace_id=workspace_id, agent_view_id=view_id)
+    if result.status >= 500:
+        return _TOOLBOX_DOWN
+    if not result.body.get("ok"):
+        return None
+    payload = _tool_payload(result)
+    if payload is None:
+        return _TOOLBOX_DOWN
+    if payload.get("activated") is not True:
+        return None
+    fp, actions = payload.get("manifest_fingerprint"), payload.get("allowed_actions")
+    if (not isinstance(fp, str) or not _FINGERPRINT.fullmatch(fp) or not isinstance(actions, list)
+            or not all(isinstance(a, str) and _ACTION.fullmatch(a) for a in actions)):
+        return _TOOLBOX_DOWN
+    return fp, actions
 
 
 def create_launch(req: Request) -> Response:
@@ -365,9 +405,13 @@ def create_launch(req: Request) -> Response:
             version = _current_version(req, code, workspace_id, view_id)
             if isinstance(version, Response):
                 return version
+            spec = _launch_spec(req, code, version, workspace_id, view_id)
+            if isinstance(spec, Response):
+                return spec
+            pinned = {} if spec is None else {"manifest_fingerprint": spec[0], "allowed_actions": spec[1]}
             launch, exchange_code = launches.create_launch(
                 req.conn, user, workspace_id=workspace_id, agent_view_id=view_id,
-                artifact_code=code, version_id=version)
+                artifact_code=code, version_id=version, **pinned)
     except launches.RetentionBusy:
         return error(503, "artifact busy, try again")
     except launches.AccessConfigError:
@@ -378,6 +422,40 @@ def create_launch(req: Request) -> Response:
     return Response(201, {**_launch_json(launch),
                           "redeem": {"url": f"{req.origins.apps}/launch",
                                      "fields": {"launch_id": launch.id, "code": exchange_code}}})
+
+
+def launch_action(req: Request) -> Response:
+    """POST /api/launches/<id>/actions/<tool>: a miniapp action, through the panel only."""
+    from .toolbox_client import invoke_launch_action
+
+    arguments = _body(req).get("arguments", {})
+    if not isinstance(arguments, dict):
+        return error(400, "arguments must be an object")
+    result = invoke_launch_action(req.conn, req.session, req.params["id"], req.params["tool"], arguments)
+    return Response(result.status, result.body)
+
+
+def agent_view_miniapps(req: Request) -> Response:
+    """GET /api/agent-views/<id>/miniapps: what this user may launch in the view now."""
+    from .toolbox_client import invoke_tool
+
+    scope = _resolve_scope(req, {"agent_view_id": int(req.params["id"])})
+    if isinstance(scope, Response):
+        return scope
+    workspace_id, view_id = scope
+    if not accounts.has_operation(req.conn, req.session.user.role, "artifact.launch", workspace_id, view_id):
+        return error(404, "not found")
+    result = invoke_tool(req.conn, req.session, "miniapp_list", {}, workspace_id=workspace_id, agent_view_id=view_id)
+    if result.status >= 500:
+        return _TOOLBOX_DOWN
+    if not result.body.get("ok"):
+        return Response(200, [])
+    payload = _tool_payload(result)
+    rows = payload.get("miniapps") if payload else None
+    if not isinstance(rows, list):
+        return _TOOLBOX_DOWN
+    return Response(200, [{k: r.get(k) for k in ("artifact_code", "version_id", "title")}
+                          for r in rows if isinstance(r, dict)])
 
 
 def list_launches(req: Request) -> Response:
@@ -454,6 +532,8 @@ ROUTES: list[Route] = [
     _r("POST", "/api/launches", create_launch, json_body=True),
     _r("GET", "/api/launches", list_launches),
     _r("DELETE", r"/api/launches/(?P<id>[0-9a-f]{32})", end_launch),
+    _r("POST", r"/api/launches/(?P<id>[0-9a-f]{32})/actions/(?P<tool>[a-z0-9_]{1,64})", launch_action, json_body=True),
+    _r("GET", r"/api/agent-views/(?P<id>[1-9][0-9]{0,9})/miniapps", agent_view_miniapps),
     _r("GET", "/api/admin/users", admin_list_users),
     _r("POST", "/api/admin/users", admin_create_user, json_body=True),
     _r("PATCH", r"/api/admin/users/(?P<id>[0-9]{1,10})", admin_update_user, json_body=True),

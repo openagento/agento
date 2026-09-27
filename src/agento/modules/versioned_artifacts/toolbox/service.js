@@ -588,6 +588,18 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         const current = await be.getCurrent(storageRoot, artifactCode);
         return { ...current, preview_url: published.previewUrl(publicBaseUrl, artifactCode) };
       },
+      /** One file at the root of a version, as bytes, or null. Mechanism for a module
+       *  that gives a root file a meaning (miniapps reads `miniapp.json`); a read, so no
+       *  audit row. */
+      async readVersionFile(artifactCode, versionId, name, maxBytes = 64 * 1024) {
+        validateArtifactCode(artifactCode);
+        validateVersionId(versionId);
+        if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)) {
+          throw new ArtifactError(ERROR_CODES.INVALID_PATH, 'invalid file name');
+        }
+        await assertArtifactAllowed(artifactCode);
+        return be.readVersionFile(storageRoot, artifactCode, versionId, name, maxBytes);
+      },
       async listVersions(artifactCode, opts = {}) {
         await assertArtifactAllowed(artifactCode);
         const rows = await be.listVersions(storageRoot, artifactCode, opts);
