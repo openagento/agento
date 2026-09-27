@@ -3,7 +3,7 @@ import { mkdtemp, rm, mkdir, writeFile, readFile, readlink, realpath, readdir } 
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createService } from '../../../modules/versioned_artifacts/toolbox/service.js';
+import { createService, LIVE_LAUNCH_VERSIONS_SQL } from '../../../modules/versioned_artifacts/toolbox/service.js';
 import { createBackend } from '../../../modules/versioned_artifacts/toolbox/git-backend.js';
 import { pruneVersions, swapCurrent } from '../../../modules/versioned_artifacts/toolbox/published-tree.js';
 import { mintVersion, readSource } from './helpers.js';
@@ -293,6 +293,10 @@ describe('retention and live launches', () => {
     return { calls, db: { getCronPool: () => ({ getConnection: async () => conn, execute: async () => [[]], query: async () => [[]] }) } };
   };
   const mkDb = (db, over = {}) => createService({ config: cfg({ 'serving/keep_versions': 1, ...over }), db, log: vi.fn(), actor: 'a@b.c' });
+
+  it('runs the live-launch query the integration test runs against the real schema', () => {
+    expect(LIVE_LAUNCH_VERSIONS_SQL).toBe(LOCK.live_launch_versions_sql);
+  });
 
   it('keeps a version a live launch pins, and releases the lock on the same connection', async () => {
     const v1 = (await svc.getCurrent('site')).current_version;

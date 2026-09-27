@@ -12,7 +12,8 @@ import { createHash, randomBytes } from 'node:crypto';
 
 /** The MySQL named lock web's `create_launch` takes too (fixture retention_lock_v1.json). */
 export const retentionLockName = (code) => `va_ret:${createHash('sha1').update(code).digest('hex')}`;
-const LIVE_LAUNCH_VERSIONS_SQL = 'SELECT DISTINCT version_id FROM launch WHERE artifact_code = ? '
+/** What the prune keeps: versions a live launch pins (the same fixture; run against the real schema). */
+export const LIVE_LAUNCH_VERSIONS_SQL = 'SELECT DISTINCT version_id FROM launch WHERE artifact_code = ? '
   + 'AND revoked_at IS NULL AND expires_at > NOW()';
 
 // A resolved value is not typed: resolveModuleFieldStrict returns an ENV string
