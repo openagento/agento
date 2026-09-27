@@ -29,9 +29,10 @@ function fakeDb() {
     query: async (sql, p) => {
       if (/WHERE artifact_code = \? AND version_id = \?/.test(sql)) { const r = rows.get(`${p[0]}@${p[1]}`); return [r ? [r] : []]; }
       if (/FROM miniapp_activation ORDER BY/.test(sql)) return [[...rows.values()]];
-      if (/FROM miniapp_activation WHERE artifact_code IN \(/.test(sql)) {
+      if (/FROM miniapp_activation WHERE \(artifact_code, version_id\) IN \(/.test(sql)) {
         queries.push(sql);
-        return [[...rows.values()].filter((r) => p.includes(r.artifact_code))];
+        const pairs = new Set(); for (let i = 0; i < p.length; i += 2) pairs.add(`${p[i]}@${p[i + 1]}`);
+        return [[...rows.values()].filter((r) => pairs.has(`${r.artifact_code}@${r.version_id}`))];
       }
       throw new Error(`unexpected ${sql}`);
     },

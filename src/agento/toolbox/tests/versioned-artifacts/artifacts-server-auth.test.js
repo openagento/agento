@@ -179,6 +179,18 @@ describe('rate limits (SEC-12)', () => {
     expect((await get('/', from('10.1.0.5'))).status).toBe(200);
   });
 
+  it('refuses a credential over its limit before any file read', async () => {
+    let reads = 0;
+    const fsSpy = { ...(await import('node:fs/promises')) };
+    const readFile = fsSpy.readFile;
+    fsSpy.readFile = (...a) => { reads += 1; return readFile(...a); };
+    await start({ verify, fs: fsSpy, limits: { authFailuresPerAddress: 100, requestsPerCredential: 1 } });
+    expect((await get(`/s/${TOKEN}/`, from('10.3.0.1', GOOD()))).status).toBe(200);
+    reads = 0;
+    expect((await get(`/s/${TOKEN}/`, from('10.3.0.2', GOOD()))).status).toBe(429);
+    expect(reads).toBe(0);
+  });
+
   it('keeps answering 503 first when the module is disabled', async () => {
     await writeFile(path.join(etcDir, 'modules.json'), JSON.stringify({ versioned_artifacts: false }));
     await start(small);

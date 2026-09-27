@@ -228,6 +228,10 @@ export function createArtifactsServer({
       return serve(res, [route.code, 'v', route.versionId, ...route.names].join('/'), ctx);
     }
 
+    // A credential over its limit is refused before the share record or the sidecar is read.
+    const header = req.headers.authorization;
+    if (typeof header === 'string'
+        && !perCredential.take(createHash('sha256').update(header).digest('hex'))) return text(res, 429);
     // A share: the token names the artifact, and it serves only while a Basic credential is set.
     const code = await shareCode(route.token);
     if (code === null) return fail(404);
@@ -235,9 +239,6 @@ export function createArtifactsServer({
     // never opens a later artifact of the same code. A corrupt sidecar names nothing.
     const sidecar = await authFor(code);
     if (!sidecar || sidecar.share !== route.token) return fail(404);
-    const header = req.headers.authorization;
-    if (typeof header === 'string'
-        && !perCredential.take(createHash('sha256').update(header).digest('hex'))) return text(res, 429);
     const cred = basicCredential(req);
     if (!cred || !verify(sidecar, cred.user, cred.password)) {
       if (!counted()) return text(res, 429);

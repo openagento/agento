@@ -49,6 +49,9 @@ export const ACTIVATE_SQL =
   + 'VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE manifest_fingerprint = VALUES(manifest_fingerprint), '
   + 'allowed_actions = VALUES(allowed_actions), activated_by = VALUES(activated_by), activated_at = NOW()';
 export const DEACTIVATE_SQL = 'DELETE FROM miniapp_activation WHERE artifact_code = ? AND version_id = ?';
+/** The activation rows of exactly these `n` (code, version) pairs. */
+export const catalogueSql = (n) => 'SELECT artifact_code, version_id, manifest_fingerprint FROM miniapp_activation '
+  + `WHERE (artifact_code, version_id) IN (${Array.from({ length: n }, () => '(?, ?)').join(', ')})`;
 
 const jsonList = (v) => (Array.isArray(v) ? v : JSON.parse(String(v)));
 
@@ -148,9 +151,9 @@ export function createMiniapps({ vaConfig = {}, db = null, log = null, agentView
       for (const a of await va.listArtifacts()) if (a.current_version) current.set(a.artifact_code, a.current_version);
       if (current.size === 0) return [];
       const codes = [...current.keys()];
-      const [rows] = await requirePool().query(
-        `SELECT artifact_code, version_id, manifest_fingerprint FROM miniapp_activation WHERE artifact_code IN (${
-          codes.map(() => '?').join(', ')})`, codes);
+      // The exact (code, current version) pairs: at most one row per usable artifact, however
+      // many other versions of it are activated.
+      const [rows] = await requirePool().query(catalogueSql(codes.length), codes.flatMap((c) => [c, current.get(c)]));
       const out = [];
       for (const row of rows) {
         if (current.get(row.artifact_code) !== row.version_id) continue;

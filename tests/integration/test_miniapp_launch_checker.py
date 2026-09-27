@@ -126,4 +126,8 @@ def test_the_activation_statements_match_the_schema(conn):
         rows = cur.fetchall()
         assert len(rows) == 1 and rows[0]["manifest_fingerprint"] == OTHER_FP
         assert json.loads(rows[0]["allowed_actions"]) == ["b"]
+        # The catalogue asks for exact (code, current) pairs: another activated version is not read.
+        cur.execute(SQL["activate_sql"], ("e6-chk", "v-20260102-000000-bbbb", FP, json.dumps([]), "admin"))
+        cur.execute(SQL["catalogue_sql"], ("e6-chk", V1, "e6-none", V1))
+        assert [(r["artifact_code"], r["version_id"]) for r in cur.fetchall()] == [("e6-chk", V1)]
         assert cur.execute(SQL["deactivate_sql"], ("e6-chk", V1)) == 1
