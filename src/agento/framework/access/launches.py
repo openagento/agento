@@ -6,6 +6,7 @@ on every file request. E2 writes the no-manifest constants: E6 owns the manifest
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import secrets
@@ -69,6 +70,39 @@ def max_concurrent(conn, workspace_id: int) -> int:
     if not text.isdigit() or int(text) < 1:
         raise AccessConfigError(f"{_MAX_CONCURRENT_PATH} must be a positive integer")
     return min(int(text), MAX_CONCURRENT_CEILING)
+
+
+RETENTION_LOCK_WAIT_SECONDS = 5
+
+
+class RetentionBusy(RuntimeError):
+    """The retention lock of the artifact was not free in time."""
+
+
+def retention_lock_name(artifact_code: str) -> str:
+    """The MySQL named lock the toolbox prune takes too (fixture retention_lock_v1.json)."""
+    return "va_ret:" + hashlib.sha1(artifact_code.encode("utf-8")).hexdigest()
+
+
+@contextlib.contextmanager
+def retention_lock(conn, artifact_code: str):
+    """Hold the artifact's retention lock from reading ``current`` to committing the launch.
+
+    So a launch either commits before the prune reads the live set, or reads a ``current``
+    the prune kept (PRD E6 §5). A named lock belongs to its connection and survives COMMIT;
+    a dropped connection frees it.
+    """
+    name = retention_lock_name(artifact_code)
+    with conn.cursor() as cur:
+        cur.execute("SELECT GET_LOCK(%s, %s) AS got", (name, RETENTION_LOCK_WAIT_SECONDS))
+        row = cur.fetchone()
+    if not row or row["got"] != 1:
+        raise RetentionBusy(artifact_code)
+    try:
+        yield
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("SELECT RELEASE_LOCK(%s)", (name,))
 
 
 def create_launch(conn, user: User, *, workspace_id: int, agent_view_id: int | None,

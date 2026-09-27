@@ -65,8 +65,9 @@ export async function resolveCurrentTarget(publishedRoot, code) {
  *  The exclusion is read from `current` here rather than taken as a parameter. After a
  *  FAILED swap `current` still points at the OLD version, so excluding the version the
  *  caller intended to install would delete the directory HTTP is serving right now.
- *  The prune list comes from the published tree only. */
-export async function pruneVersions(publishedRoot, code, keep) {
+ *  The prune list comes from the published tree only. `pinned` are the versions a live
+ *  launch still serves (PRD E6 §5). */
+export async function pruneVersions(publishedRoot, code, keep, pinned = new Set()) {
   if (!keep) return [];
   const dir = path.join(artifactDir(publishedRoot, code), 'v');
   let names;
@@ -75,7 +76,7 @@ export async function pruneVersions(publishedRoot, code, keep) {
   // IS descending save time — the same ordering `listVersions` uses.
   const newest = names.filter((n) => VERSION_ID_RE.test(n)).sort().reverse();
   const current = await resolveCurrentTarget(publishedRoot, code);
-  const doomed = newest.slice(keep).filter((n) => n !== current);
+  const doomed = newest.slice(keep).filter((n) => n !== current && !pinned.has(n));
   for (const n of doomed) await rm(path.join(dir, n), { recursive: true, force: true });
   return doomed;
 }

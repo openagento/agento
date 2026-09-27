@@ -360,12 +360,16 @@ def create_launch(req: Request) -> Response:
     user = req.session.user
     if not accounts.has_operation(req.conn, user.role, "artifact.launch", workspace_id, view_id):
         return error(404, "not found")
-    version = _current_version(req, code, workspace_id, view_id)
-    if isinstance(version, Response):
-        return version
     try:
-        launch, exchange_code = launches.create_launch(req.conn, user, workspace_id=workspace_id,
-                                                       agent_view_id=view_id, artifact_code=code, version_id=version)
+        with launches.retention_lock(req.conn, code):
+            version = _current_version(req, code, workspace_id, view_id)
+            if isinstance(version, Response):
+                return version
+            launch, exchange_code = launches.create_launch(
+                req.conn, user, workspace_id=workspace_id, agent_view_id=view_id,
+                artifact_code=code, version_id=version)
+    except launches.RetentionBusy:
+        return error(503, "artifact busy, try again")
     except launches.AccessConfigError:
         return error(503, "launches are not configured")
     except accounts.AccessError:

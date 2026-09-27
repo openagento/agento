@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
@@ -31,6 +32,7 @@ def signed_in(monkeypatch):
     monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: session if t == TOKEN else None)
     monkeypatch.setattr(api, "_resolve_scope", lambda req, body: (1, body["agent_view_id"]))
     monkeypatch.setattr(accounts, "has_operation", lambda *a: True)
+    monkeypatch.setattr(launches, "retention_lock", lambda conn, code: contextlib.nullcontext())
 
 
 def _post_launch(web, body):
@@ -272,3 +274,31 @@ def test_the_proxy_asking_for_a_visitor_with_no_cookie_is_not_a_failed_guess(web
                         MagicMock(side_effect=AssertionError("must not be counted")))
     r = httpx.get(f"{web}/internal/authz/app", headers={"X-Agento-Proxy-Auth": SECRET})
     assert r.status_code == 403
+
+
+def test_create_launch_holds_the_retention_lock_around_current_and_the_insert(web, monkeypatch, signed_in):
+    events = []
+
+    @contextlib.contextmanager
+    def lock(conn, code):
+        events.append(("lock", code))
+        yield
+        events.append(("unlock", code))
+
+    monkeypatch.setattr(launches, "retention_lock", lock)
+    invoke = _current(monkeypatch)
+    invoke.side_effect = lambda *a, **k: events.append("current") or toolbox_client.InvokeResult(
+        200, {"ok": True, "result": {"content": [{"type": "text", "text": json.dumps({"current_version": V1})}]}})
+    monkeypatch.setattr(launches, "create_launch", lambda *a, **k: events.append("insert") or (_launch(), "c"))
+    assert _post_launch(web, {"agent_view_id": 3, "artifact_code": "app"}).status_code == 201
+    assert events == [("lock", "app"), "current", "insert", ("unlock", "app")]
+
+
+def test_create_launch_is_503_when_the_retention_lock_is_busy(web, monkeypatch, signed_in):
+    def busy(conn, code):
+        raise launches.RetentionBusy(code)
+
+    monkeypatch.setattr(launches, "retention_lock", busy)
+    invoke = _current(monkeypatch)
+    assert _post_launch(web, {"agent_view_id": 3, "artifact_code": "app"}).status_code == 503
+    invoke.assert_not_called()

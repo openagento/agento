@@ -8,7 +8,12 @@ import { recordAudit } from './audit.js';
 import * as published from './published-tree.js';
 import { generatePassword, defaultAuthUser, hashSecret } from './auth.js';
 import { SHARE_TOKEN_RE, shareUrl } from './share-host.js';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+
+/** The MySQL named lock web's `create_launch` takes too (fixture retention_lock_v1.json). */
+export const retentionLockName = (code) => `va_ret:${createHash('sha1').update(code).digest('hex')}`;
+const LIVE_LAUNCH_VERSIONS_SQL = 'SELECT DISTINCT version_id FROM launch WHERE artifact_code = ? '
+  + 'AND revoked_at IS NULL AND expires_at > NOW()';
 
 // A resolved value is not typed: resolveModuleFieldStrict returns an ENV string
 // verbatim and a DB override's raw column value; only a config.json default keeps
@@ -296,10 +301,38 @@ export function createService({ config = {}, db = null, log = null, jobId = null
     }
 
     /** Retention is maintenance, never a reason to fail the operation that triggered it. */
+    /** Retention never deletes a version a live launch serves (PRD E6 §5). web's
+     *  `create_launch` holds the same named lock from reading `current` to committing
+     *  the launch, so a launch either lands before this reads the live set or reads a
+     *  `current` this prune keeps. A named lock belongs to its connection, so one
+     *  borrowed connection carries the whole step. Busy lock or failed query: skip, the
+     *  next save prunes — keeping files is the safe side. */
     async function pruneQuietly(artifactCode) {
-      try { await published.pruneVersions(publishedRoot, artifactCode, keepVersions); }
-      catch (err) {
-        log?.('versioned_artifacts', 'ERROR', `preview retention failed for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
+      if (!keepVersions) return;
+      const db2 = pool();
+      if (!db2) {
+        // No DB, no launches: nothing can be pinned.
+        try { await published.pruneVersions(publishedRoot, artifactCode, keepVersions); }
+        catch (err) { log?.('versioned_artifacts', 'ERROR', `preview retention failed for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`); }
+        return;
+      }
+      let conn;
+      try {
+        conn = await db2.getConnection();
+        const name = retentionLockName(artifactCode);
+        const [[{ got }]] = await conn.query('SELECT GET_LOCK(?, 0) AS got', [name]);
+        if (Number(got) !== 1) return;
+        try {
+          const [rows] = await conn.query(LIVE_LAUNCH_VERSIONS_SQL, [artifactCode]);
+          await published.pruneVersions(publishedRoot, artifactCode, keepVersions,
+            new Set(rows.map((r) => r.version_id)));
+        } finally {
+          await conn.query('SELECT RELEASE_LOCK(?)', [name]);
+        }
+      } catch (err) {
+        log?.('versioned_artifacts', 'ERROR', `preview retention skipped for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
+      } finally {
+        conn?.release();
       }
     }
 

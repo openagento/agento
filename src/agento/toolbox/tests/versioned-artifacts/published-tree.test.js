@@ -272,3 +272,53 @@ describe('save version', () => {
     expect(log).toHaveBeenCalled();
   });
 });
+
+// Retention keeps what a live launch pins (PRD E6 §5), under the named lock web's
+// create_launch takes too. The lock is per connection, so one borrowed connection
+// carries the acquire, the query, the deletes and the release.
+describe('retention and live launches', () => {
+  const LOCK = JSON.parse(fs.readFileSync(
+    path.join(path.dirname(new URL(import.meta.url).pathname), '../../../../../tests/fixtures/retention_lock_v1.json'), 'utf8'));
+  const fakeDb = ({ got = 1, pinned = [], liveFails = false } = {}) => {
+    const calls = [];
+    const conn = {
+      query: async (sql, params) => {
+        calls.push([sql, params]);
+        if (/GET_LOCK/.test(sql)) return [[{ got }]];
+        if (/FROM launch/.test(sql)) { if (liveFails) throw new Error('db down'); return [pinned.map((v) => ({ version_id: v }))]; }
+        return [[{}]];
+      },
+      release: () => calls.push(['release']),
+    };
+    return { calls, db: { getCronPool: () => ({ getConnection: async () => conn, execute: async () => [[]], query: async () => [[]] }) } };
+  };
+  const mkDb = (db, over = {}) => createService({ config: cfg({ 'serving/keep_versions': 1, ...over }), db, log: vi.fn(), actor: 'a@b.c' });
+
+  it('keeps a version a live launch pins, and releases the lock on the same connection', async () => {
+    const v1 = (await svc.getCurrent('site')).current_version;
+    const { calls, db } = fakeDb({ pinned: [v1] });
+    const s = mkDb(db);
+    const v2 = await mkVersion('<h1>v2</h1>\n');
+    await s.publish('site', v2, v1);
+    const v3 = await mkVersion('<h1>v3</h1>\n');
+    await s.publish('site', v3, v2);
+    expect(fs.existsSync(vDir(v1))).toBe(true);    // pinned by the launch
+    expect(fs.existsSync(vDir(v2))).toBe(false);   // neither newest, current nor pinned
+    const lock = calls.find(([sql]) => /GET_LOCK/.test(sql));
+    expect(lock).toEqual(["SELECT GET_LOCK(?, 0) AS got", [LOCK.cases.site]]);   // timeout 0: never waits
+    expect(calls.some(([sql]) => /RELEASE_LOCK/.test(sql))).toBe(true);
+    expect(calls.at(-1)).toEqual(['release']);
+  });
+
+  it('skips the prune when the lock is busy or the live query fails', async () => {
+    const v1 = (await svc.getCurrent('site')).current_version;
+    for (const opts of [{ got: 0 }, { liveFails: true }]) {
+      const { calls, db } = fakeDb(opts);
+      const s = mkDb(db);
+      const v2 = await mkVersion(`<h1>${JSON.stringify(opts)}</h1>\n`);
+      await s.publish('site', v2, (await s.getCurrent('site')).current_version);
+      expect(fs.existsSync(vDir(v1))).toBe(true);
+      expect(calls.at(-1)).toEqual(['release']);
+    }
+  });
+});
