@@ -160,6 +160,25 @@ describe('rate limits (SEC-12)', () => {
     expect((await get(`/s/${TOKEN}/`, from('10.0.0.8', GOOD()))).status).toBe(429);
   });
 
+  it('fails closed when the address store is full: 429 before any file read or scrypt', async () => {
+    let reads = 0;
+    const fsSpy = { ...(await import('node:fs/promises')) };
+    const readFile = fsSpy.readFile;
+    fsSpy.readFile = (...a) => { reads += 1; return readFile(...a); };
+    await start({ verify, fs: fsSpy, limits: { authFailuresPerAddress: 3, requestsPerCredential: 100, maxKeys: 2 } });
+    for (const addr of ['10.1.0.1', '10.1.0.2']) {
+      expect((await get(`/s/${OTHER}/`, from(addr))).status).toBe(404);
+    }
+    reads = 0; verified = 0;
+    // A third address meets a full store: refused before the share record or the sidecar is read.
+    expect((await get(`/s/${TOKEN}/`, from('10.1.0.3', GOOD()))).status).toBe(429);
+    expect((await get(`/s/${OTHER}/`, from('10.1.0.4'))).status).toBe(429);
+    expect(reads).toBe(0);
+    expect(verified).toBe(0);
+    // The healthcheck does no work and stays up under the flood.
+    expect((await get('/', from('10.1.0.5'))).status).toBe(200);
+  });
+
   it('keeps answering 503 first when the module is disabled', async () => {
     await writeFile(path.join(etcDir, 'modules.json'), JSON.stringify({ versioned_artifacts: false }));
     await start(small);

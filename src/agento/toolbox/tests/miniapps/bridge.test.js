@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createLaunchBridge } from '../../../modules/miniapps/sdk/bridge.js';
-import { createAgentoSdk, exactOrigin } from '../../../modules/miniapps/sdk/agento-sdk.js';
+import { createAgentoSdk, exactOrigin, MAX_IN_FLIGHT } from '../../../modules/miniapps/sdk/agento-sdk.js';
 
 const PANEL = 'https://panel.example.com';
 const APPS = 'https://apps.example.com';
@@ -130,6 +130,19 @@ describe('app sdk', () => {
     await app.deliver({ source: panel, origin: PANEL, data: { type: 'agento.result', launch_id: 'b'.repeat(32), id: 1, status: 200, body: {} } });
     const seen = await Promise.race([call, new Promise((r) => setTimeout(() => r('none'), 20))]);
     expect(seen).toBe('none');
+  });
+
+  it('bounds the calls in flight: past the cap a call resolves 429 and posts nothing', async () => {
+    const { panel, app, sdk } = setup();
+    await app.deliver(hello(panel));
+    for (let i = 0; i < MAX_IN_FLIGHT; i++) sdk.callAction('notes_add');
+    await vi.waitFor(() => expect(panel.postMessage).toHaveBeenCalledTimes(1 + MAX_IN_FLIGHT));
+    expect(await sdk.callAction('notes_add')).toEqual({ status: 429, body: null });
+    expect(panel.postMessage).toHaveBeenCalledTimes(1 + MAX_IN_FLIGHT);
+    // A result frees a slot.
+    await app.deliver({ source: panel, origin: PANEL, data: { type: 'agento.result', launch_id: LID, id: 1, status: 200, body: {} } });
+    sdk.callAction('notes_add');
+    await vi.waitFor(() => expect(panel.postMessage).toHaveBeenCalledTimes(2 + MAX_IN_FLIGHT));
   });
 
   it.each(['*', `${PANEL}/`, 'http://panel.example.com', undefined])('refuses panelOrigin %s', (panelOrigin) => {

@@ -1,7 +1,8 @@
 // Fixed-window counters for the artifacts server (RULES.md SEC-12). Plain `node:http`
 // here, so not the toolbox's express-rate-limit. Memory is bounded: an expired entry is
 // dropped when read, `sweep()` drops every expired one, and a store holds at most
-// `maxKeys` — at the cap, after a sweep, a new key is refused (fail closed under a flood).
+// `maxKeys` — at the cap, after a sweep, a new key is refused by `allowed()` and `take()`
+// alike (fail closed under a flood), so a caller refuses it before doing any work.
 export const WINDOW_MS = 60_000;
 export const AUTH_FAILURES_PER_ADDRESS = 60;
 export const REQUESTS_PER_CREDENTIAL = 600;
@@ -18,15 +19,21 @@ export function createWindowCounter({ limit, windowMs = WINDOW_MS, maxKeys = MAX
     const t = now();
     for (const [k, e] of store) if (e.resetAt <= t) store.delete(k);
   };
+  const full = () => {
+    if (store.size >= maxKeys) sweep();
+    return store.size >= maxKeys;
+  };
   return {
-    /** Is `key` under its limit? Counts nothing. */
-    allowed: (key) => (live(key)?.count ?? 0) < limit,
+    /** Is `key` under its limit, with room to count it? Counts nothing. */
+    allowed(key) {
+      const e = live(key);
+      return e ? e.count < limit : !full();
+    },
     /** Count one for `key`; false when that is over the limit, or the store is full. */
     take(key) {
       let e = live(key);
       if (!e) {
-        if (store.size >= maxKeys) sweep();
-        if (store.size >= maxKeys) return false;
+        if (full()) return false;
         e = { count: 0, resetAt: now() + windowMs };
         store.set(key, e);
       }

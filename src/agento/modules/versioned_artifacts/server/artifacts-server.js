@@ -10,7 +10,7 @@ import { boundedLine } from '../toolbox/errors.js';
 import { verifyCredential } from '../toolbox/auth.js';
 import { parseServedPath } from './served-path.js';
 import {
-  AUTH_FAILURES_PER_ADDRESS, REQUESTS_PER_CREDENTIAL, WINDOW_MS, createWindowCounter,
+  AUTH_FAILURES_PER_ADDRESS, MAX_KEYS, REQUESTS_PER_CREDENTIAL, WINDOW_MS, createWindowCounter,
 } from './rate-limit.js';
 
 // Under `server/`, NOT `toolbox/`: `src/agento/toolbox/config-loader.js` imports every
@@ -61,15 +61,17 @@ const INVALID_AUTH = Object.freeze({ algo: 'invalid' });
 
 export function createArtifactsServer({
   root, etcDir, fs = fsp, openRead = createReadStream, verify = verifyCredential,
-  limits = { authFailuresPerAddress: AUTH_FAILURES_PER_ADDRESS, requestsPerCredential: REQUESTS_PER_CREDENTIAL },
+  limits = { authFailuresPerAddress: AUTH_FAILURES_PER_ADDRESS, requestsPerCredential: REQUESTS_PER_CREDENTIAL,
+    maxKeys: MAX_KEYS },
   now = Date.now,
 } = {}) {
   let realRoot = null;
   // SEC-12. Failures are counted per client address. `proxy` is the only other container on
   // this network and it overwrites a client's X-Forwarded-For, so the header is its word;
   // without it (the healthcheck, a test) the socket address is the key.
-  const failures = createWindowCounter({ limit: limits.authFailuresPerAddress, now });
-  const perCredential = createWindowCounter({ limit: limits.requestsPerCredential, now });
+  const maxKeys = limits.maxKeys ?? MAX_KEYS;
+  const failures = createWindowCounter({ limit: limits.authFailuresPerAddress, maxKeys, now });
+  const perCredential = createWindowCounter({ limit: limits.requestsPerCredential, maxKeys, now });
   const sweeper = setInterval(() => { failures.sweep(); perCredential.sweep(); }, WINDOW_MS);
   sweeper.unref();
   const clientAddress = (req) => {
@@ -203,16 +205,19 @@ export function createArtifactsServer({
     if (req.method !== 'GET' && req.method !== 'HEAD') return text(res, 405);
     if (await disabled()) return text(res, 503, 'versioned_artifacts is disabled\n');
     const headOnly = req.method === 'HEAD';
-    const address = clientAddress(req);
-    if (!failures.allowed(address)) return text(res, 429);
-    const fail = (code) => { failures.take(address); return text(res, code); };
-
     // Routed on the RAW target: `new URL()` resolves `..` and `%2e%2e` before any check
-    // could see them, which is the second parse §6.2 forbids.
+    // could see them, which is the second parse §6.2 forbids. A pure parse, no file work.
     const route = parseServedPath(req.url);
+    // `/` is the healthcheck. It lists nothing: no directory index anywhere (§6.3, §9),
+    // and it does no work, so a flood that fills the limit store does not take it down.
+    if (route?.kind === 'health') return text(res, 200, 'ok\n');
+    const address = clientAddress(req);
+    // Before every file read and every scrypt. A full store refuses a new address too.
+    if (!failures.allowed(address)) return text(res, 429);
+    // A failure that cannot be counted (over the limit, or the store filled meanwhile) is 429.
+    const counted = () => failures.take(address);
+    const fail = (code) => text(res, counted() ? code : 429);
     if (route === null) return fail(404);
-    // `/` is the healthcheck. It lists nothing: no directory index anywhere (§6.3, §9).
-    if (route.kind === 'health') return text(res, 200, 'ok\n');
 
     const search = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
     // Relative, so it is right on the apps origin (`/a/…`) and on a share origin alike.
@@ -235,7 +240,7 @@ export function createArtifactsServer({
         && !perCredential.take(createHash('sha256').update(header).digest('hex'))) return text(res, 429);
     const cred = basicCredential(req);
     if (!cred || !verify(sidecar, cred.user, cred.password)) {
-      failures.take(address);
+      if (!counted()) return text(res, 429);
       return challenge(res, headOnly);
     }
     res.setHeader('referrer-policy', 'no-referrer');

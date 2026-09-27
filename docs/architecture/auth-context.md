@@ -76,10 +76,12 @@ Migration `036_toolbox_capability_auth_context` backfills the rows that existed 
    tool_ceiling=...)`. You own the session or launch, and you must verify it before you mint.
 2. Export the source checker from your module's `toolbox/` code:
    `export const authSources = [["session", check]]`. At startup the toolbox collects every
-   enabled module's `authSources`. A kind that two modules claim is dropped with an ERROR, so
-   neither checker runs. `check(sourceId, {capability_kind, workspace_id, agent_view_id,
-   query})` gets the capability row's scope and the toolbox's DB `query(sql, params)` function. It
-   computes the caller's permitted tools **for that scope** (do not echo a stored list), and
+   installed module's `authSources` (it does not read `app/etc/modules.json`; see ROADMAP.md). A
+   kind that two modules claim is dropped with an ERROR, so neither checker runs.
+   `check(sourceId, {capability_kind, workspace_id, agent_view_id, query, grants})` gets the
+   capability row's scope, the toolbox's DB `query(sql, params)` function, and `grants(role,
+   kind)`: the framework's role-grant rule bound to that scope. It computes the caller's permitted
+   tools **for that scope** with `grants` (do not echo a stored list, and do not copy the SQL), and
    returns the live source record `{kind, id, user_id, workspace_id,
    agent_view_id, permitted_tools, created_at, expires_at}` (a launch also has `launch_id`,
    `artifact_code`, `version_id`), or `null` when the source is revoked.

@@ -356,6 +356,16 @@ def _current_version(req: Request, code: str, workspace_id: int, view_id: int) -
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 _ACTION = re.compile(r"[a-z0-9_]{1,64}")
+_MAX_ACTIONS = 64  # the manifest's own limit (docs/modules/miniapps.md)
+
+
+def _miniapps_enabled() -> bool:
+    """MOD-1: web is the only minter of a ``miniapp`` capability, so ``module:disable
+    miniapps`` stops launches pinning actions, actions and the catalogue here. The toolbox
+    does not read ``app/etc/modules.json`` (ROADMAP.md)."""
+    from agento.framework import module_status
+
+    return module_status.is_enabled("miniapps", module_status.read_module_status())
 
 
 def _launch_spec(req: Request, code: str, version: str, workspace_id: int,
@@ -367,18 +377,23 @@ def _launch_spec(req: Request, code: str, version: str, workspace_id: int,
     """
     from .toolbox_client import invoke_tool
 
+    if not _miniapps_enabled():
+        return None
     result = invoke_tool(req.conn, req.session, "miniapp_get_launch_spec",
                          {"artifact_code": code, "version_id": version},
                          workspace_id=workspace_id, agent_view_id=view_id)
     if not result.body.get("ok"):
         return None if result.status in (403, 404) else _TOOLBOX_DOWN
     payload = _tool_payload(result)
-    if payload is None or "error_code" in payload:
-        return _TOOLBOX_DOWN
-    if payload.get("activated") is not True:
+    # Exactly one of the two shapes the tool answers; anything else is malformed (503).
+    if isinstance(payload, dict) and set(payload) == {"activated"} and payload["activated"] is False:
         return None
-    fp, actions = payload.get("manifest_fingerprint"), payload.get("allowed_actions")
+    if payload is None or set(payload) != {"activated", "manifest_fingerprint", "allowed_actions"} \
+            or payload["activated"] is not True:
+        return _TOOLBOX_DOWN
+    fp, actions = payload["manifest_fingerprint"], payload["allowed_actions"]
     if (not isinstance(fp, str) or not _FINGERPRINT.fullmatch(fp) or not isinstance(actions, list)
+            or len(actions) > _MAX_ACTIONS or len(set(map(str, actions))) != len(actions)
             or not all(isinstance(a, str) and _ACTION.fullmatch(a) for a in actions)):
         return _TOOLBOX_DOWN
     return fp, actions
@@ -426,6 +441,8 @@ def launch_action(req: Request) -> Response:
     """POST /api/launches/<id>/actions/<tool>: a miniapp action, through the panel only."""
     from .toolbox_client import invoke_launch_action
 
+    if not _miniapps_enabled():
+        return error(404, "not found")
     arguments = _body(req).get("arguments", {})
     if not isinstance(arguments, dict):
         return error(400, "arguments must be an object")
@@ -443,16 +460,24 @@ def agent_view_miniapps(req: Request) -> Response:
     workspace_id, view_id = scope
     if not accounts.has_operation(req.conn, req.session.user.role, "artifact.launch", workspace_id, view_id):
         return error(404, "not found")
+    if not _miniapps_enabled():
+        return Response(200, [])
     result = invoke_tool(req.conn, req.session, "miniapp_list", {}, workspace_id=workspace_id, agent_view_id=view_id)
     if not result.body.get("ok"):
         # Not granted or not enabled: nothing to launch. Anything else is a failure.
         return Response(200, []) if result.status in (403, 404) else _TOOLBOX_DOWN
     payload = _tool_payload(result)
     rows = payload.get("miniapps") if payload else None
-    if not isinstance(rows, list):
+    if not isinstance(rows, list) or not all(_is_catalogue_row(r) for r in rows):
         return _TOOLBOX_DOWN
-    return Response(200, [{k: r.get(k) for k in ("artifact_code", "version_id", "title")}
-                          for r in rows if isinstance(r, dict)])
+    return Response(200, [{k: r[k] for k in ("artifact_code", "version_id", "title")} for r in rows])
+
+
+def _is_catalogue_row(r: object) -> bool:
+    return (isinstance(r, dict)
+            and isinstance(r.get("artifact_code"), str) and bool(app_path.ARTIFACT_CODE_RE.fullmatch(r["artifact_code"]))
+            and isinstance(r.get("version_id"), str) and bool(app_path.VERSION_ID_RE.fullmatch(r["version_id"]))
+            and isinstance(r.get("title"), str) and 1 <= len(r["title"]) <= 200)
 
 
 def list_launches(req: Request) -> Response:

@@ -19,7 +19,9 @@ describe('createWindowCounter', () => {
     for (const k of ['a', 'b', 'c']) expect(c.take(k)).toBe(true);
     expect(c.take('d')).toBe(false); // full: a new key is refused, not stored
     expect(c.size()).toBe(3);
-    expect(c.allowed('d')).toBe(true); // a read never inserts
+    expect(c.allowed('d')).toBe(false); // full: a new key is refused before any work
+    expect(c.size()).toBe(3); // a read never inserts
+    expect(c.allowed('a')).toBe(true); // a known key under its limit still passes
     t = 1000;
     c.sweep();
     expect(c.size()).toBe(0);

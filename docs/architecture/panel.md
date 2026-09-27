@@ -106,7 +106,8 @@ Two roles: `admin` and `user`. `admin` has the built-in operations `users.manage
 
 A row has exactly one scope. A workspace grant reaches the workspace and every view in it. A view
 grant reaches only that view. The same SQL rule is used in Python (`accounts._granted`) and in the
-toolbox checker (`modules/web/toolbox/auth-sources.js` `GRANTS_SQL`); the fixture
+toolbox (`src/agento/toolbox/capability.js` `GRANTS_SQL`, handed to every auth source as
+`grants`); the fixture
 `tests/fixtures/role_grant_v1.json` holds both to it.
 
 Grants are **per role**, not per user (the PRD asks for per-user visibility; see DECISIONS.md).

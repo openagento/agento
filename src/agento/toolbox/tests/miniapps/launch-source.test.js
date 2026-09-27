@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { authSources, checkLaunch } from '../../../modules/miniapps/toolbox/launch-source.js';
-import { GRANTS_SQL } from '../../../modules/web/toolbox/auth-sources.js';
+import { GRANTS_SQL, grantsFor } from '../../capability.js';
 
 const LAUNCH = { id: 'L1', user_id: 7, role: 'user', artifact_code: 'site', version_id: 'v-20260101-120000-aaaa',
   workspace_id: 1, agent_view_id: 11, created_at: 1000, expires_at: 2000 };
@@ -23,7 +23,11 @@ function fakeQuery({ launch = LAUNCH, ops = ['artifact.launch'], tools = ['jira_
     throw new Error(`unexpected SQL: ${sql}`);
   };
 }
-const opts = (over = {}) => ({ capability_kind: 'miniapp', workspace_id: 1, agent_view_id: 11, query: fakeQuery(), ...over });
+// The verifier hands a checker the framework's grant rule for the row's own scope.
+const opts = (over = {}) => {
+  const o = { capability_kind: 'miniapp', workspace_id: 1, agent_view_id: 11, query: fakeQuery(), ...over };
+  return { grants: grantsFor(o.query, o.workspace_id, o.agent_view_id), ...o };
+};
 
 describe('launch auth source', () => {
   it('exports the launch kind', () => expect(authSources).toEqual([['launch', checkLaunch]]));
@@ -38,6 +42,10 @@ describe('launch auth source', () => {
   it('refuses a launch the query no longer finds', async () => {
     expect(await checkLaunch('L1', opts({ query: fakeQuery({ launch: null }) }))).toBeNull();
     expect(await checkLaunch('L2', opts())).toBeNull();
+  });
+
+  it('refuses when the verifier hands no grant rule (fails closed)', async () => {
+    expect(await checkLaunch('L1', { ...opts(), grants: undefined })).toBeNull();
   });
 
   it('refuses when artifact.launch or every tool grant was removed', async () => {

@@ -25,7 +25,8 @@ export class MiniappError extends Error {
 /** The manifest, strict: unknown keys, a wrong type or a duplicate action is null. */
 export function parseManifest(bytes) {
   let m;
-  try { m = JSON.parse(Buffer.from(bytes).toString('utf8')); } catch { return null; }
+  // Fatal: bytes that are not UTF-8 are refused, never read as U+FFFD.
+  try { m = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)); } catch { return null; }
   if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
   const keys = Object.keys(m);
   if (keys.length !== MANIFEST_KEYS.length || !MANIFEST_KEYS.every((k) => keys.includes(k))) return null;
@@ -129,25 +130,36 @@ export function createMiniapps({ vaConfig = {}, db = null, log = null, agentView
     /** What a launch of this version may do. Not activated, or a manifest that no longer
      *  matches the activation, is `{activated: false}`: a files-only launch. */
     async launchSpec(code, versionId) {
-      const row = await activationOf(code, versionId);
-      if (!row) return { activated: false };
+      // The manifest read runs the artifact access check FIRST: a version outside this
+      // scope is refused before the (global) activation table is asked, so the answer
+      // never tells whether another scope's version is activated.
       const manifest = await manifestOf(code, versionId);
-      if (!manifest || manifest.fingerprint !== row.manifest_fingerprint) return { activated: false };
+      if (!manifest) return { activated: false };
+      const row = await activationOf(code, versionId);
+      if (!row || manifest.fingerprint !== row.manifest_fingerprint) return { activated: false };
       return { activated: true, manifest_fingerprint: row.manifest_fingerprint,
         allowed_actions: jsonList(row.allowed_actions) };
     },
 
-    /** The activated miniapps this scope may launch now: each usable artifact's `current`. */
+    /** The activated miniapps this scope may launch now: each usable artifact's `current`.
+     *  One activation query for the whole scope, and one manifest read per activated candidate. */
     async catalogue() {
+      const current = new Map();
+      for (const a of await va.listArtifacts()) if (a.current_version) current.set(a.artifact_code, a.current_version);
+      if (current.size === 0) return [];
+      const codes = [...current.keys()];
+      const [rows] = await requirePool().query(
+        `SELECT artifact_code, version_id, manifest_fingerprint FROM miniapp_activation WHERE artifact_code IN (${
+          codes.map(() => '?').join(', ')})`, codes);
       const out = [];
-      for (const a of await va.listArtifacts()) {
-        if (!a.current_version) continue;
-        const spec = await this.launchSpec(a.artifact_code, a.current_version);
-        if (!spec.activated) continue;
-        const manifest = await manifestOf(a.artifact_code, a.current_version);
-        out.push({ artifact_code: a.artifact_code, version_id: a.current_version, title: manifest.title });
+      for (const row of rows) {
+        if (current.get(row.artifact_code) !== row.version_id) continue;
+        const manifest = await manifestOf(row.artifact_code, row.version_id);
+        if (!manifest || manifest.fingerprint !== row.manifest_fingerprint) continue;
+        out.push({ artifact_code: row.artifact_code, version_id: row.version_id, title: manifest.title });
       }
-      return out;
+      // The listing's order, not the table's.
+      return out.sort((x, y) => codes.indexOf(x.artifact_code) - codes.indexOf(y.artifact_code));
     },
   };
 }

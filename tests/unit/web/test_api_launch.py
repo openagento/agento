@@ -345,6 +345,17 @@ def test_create_launch_pins_an_activated_manifest_only(web, monkeypatch, signed_
                                                  "allowed_actions": []})),
     toolbox_client.InvokeResult(200, _tool_body({"activated": True, "manifest_fingerprint": FP,
                                                  "allowed_actions": ["Bad-Name"]})),
+    # Exactly one of the two shapes: anything else is a malformed answer, not files-only.
+    toolbox_client.InvokeResult(200, _tool_body({})),
+    toolbox_client.InvokeResult(200, _tool_body({"activated": "yes"})),
+    toolbox_client.InvokeResult(200, _tool_body({"activated": 0})),
+    toolbox_client.InvokeResult(200, _tool_body({"activated": False, "extra": 1})),
+    toolbox_client.InvokeResult(200, _tool_body({"activated": True, "manifest_fingerprint": FP,
+                                                 "allowed_actions": [], "extra": 1})),
+    toolbox_client.InvokeResult(200, _tool_body({"activated": True, "manifest_fingerprint": FP,
+                                                 "allowed_actions": ["a", "a"]})),
+    toolbox_client.InvokeResult(200, _tool_body({"activated": True, "manifest_fingerprint": FP,
+                                                 "allowed_actions": [f"t{i}" for i in range(65)]})),
 ])
 def test_create_launch_never_guesses_files_only_on_a_bad_spec(web, monkeypatch, signed_in, spec):
     _current(monkeypatch, spec=spec)
@@ -403,6 +414,12 @@ def test_agent_view_miniapps_lists_only_the_public_fields(web, monkeypatch, sign
     (toolbox_client.InvokeResult(401, {"ok": False}), (503, None)),
     (toolbox_client.InvokeResult(200, _tool_body({"miniapps": "x"})), (503, None)),
     (toolbox_client.InvokeResult(200, _tool_body({"error_code": "FAILED", "message": "x"})), (503, None)),
+    # Every row is checked: a malformed one is a failure, never a row of nulls.
+    (toolbox_client.InvokeResult(200, _tool_body({"miniapps": [{"artifact_code": "app", "version_id": V1}]})),
+     (503, None)),
+    (toolbox_client.InvokeResult(200, _tool_body({"miniapps": [{"artifact_code": "Bad", "version_id": V1,
+                                                                "title": "x"}]})), (503, None)),
+    (toolbox_client.InvokeResult(200, _tool_body({"miniapps": ["x"]})), (503, None)),
 ])
 def test_agent_view_miniapps_failures(web, monkeypatch, signed_in, result, expected):
     _list_answers(monkeypatch, result)
@@ -416,4 +433,31 @@ def test_agent_view_miniapps_without_the_operation_is_404(web, monkeypatch, sign
     monkeypatch.setattr(accounts, "has_operation", lambda *a: False)
     invoke = _list_answers(monkeypatch, None)
     assert _miniapps(web).status_code == 404
+    invoke.assert_not_called()
+
+
+def _miniapps_disabled(monkeypatch):
+    from agento.framework import module_status
+    monkeypatch.setattr(module_status, "read_module_status", lambda path=None: {"miniapps": False})
+
+
+def test_a_disabled_miniapps_module_makes_every_launch_files_only(web, monkeypatch, signed_in):
+    """MOD-1: web is the only minter of a miniapp capability, so it stops here."""
+    _miniapps_disabled(monkeypatch)
+    invoke = _current(monkeypatch, spec=toolbox_client.InvokeResult(
+        200, _tool_body({"activated": True, "manifest_fingerprint": FP, "allowed_actions": ["notes_add"]})))
+    create = MagicMock(return_value=(_launch(), "c"))
+    monkeypatch.setattr(launches, "create_launch", create)
+    assert _post_launch(web, {"agent_view_id": 3, "artifact_code": "app"}).status_code == 201
+    assert "manifest_fingerprint" not in create.call_args.kwargs
+    assert [c.args[2] for c in invoke.call_args_list] == ["versioned_artifact_get_current"]
+
+
+def test_a_disabled_miniapps_module_refuses_actions_and_lists_nothing(web, monkeypatch, signed_in):
+    _miniapps_disabled(monkeypatch)
+    monkeypatch.setattr(toolbox_client, "invoke_launch_action", MagicMock(side_effect=AssertionError("no call")))
+    invoke = _list_answers(monkeypatch, None)
+    assert _post_action(web).status_code == 404
+    r = _miniapps(web)
+    assert (r.status_code, r.json()) == (200, [])
     invoke.assert_not_called()

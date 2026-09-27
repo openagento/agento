@@ -3,7 +3,6 @@
 // user is active and still holds `artifact.launch` in the launch's scope, and that the
 // version is still activated with the manifest the launch pinned. The user's tool grants
 // for that scope bound what the capability's ceiling may reach.
-import { GRANTS_SQL } from '../../web/toolbox/auth-sources.js';
 
 // Fixture tests/fixtures/miniapp_sql_v1.json; the integration test runs this checker for real.
 export const LAUNCH_SQL =
@@ -19,8 +18,10 @@ const VIEW_WORKSPACE_SQL = 'SELECT workspace_id FROM agent_view WHERE id = ?';
 
 const isPositiveInt = v => Number.isInteger(v) && v > 0;
 
-export async function checkLaunch(sourceId, { capability_kind, workspace_id, agent_view_id, query } = {}) {
-  if (capability_kind !== 'miniapp' || typeof sourceId !== 'string' || typeof query !== 'function') return null;
+// `grants(role, kind)` is the framework's grant rule for the capability's own scope.
+export async function checkLaunch(sourceId, { capability_kind, workspace_id, agent_view_id, query, grants } = {}) {
+  if (capability_kind !== 'miniapp' || typeof sourceId !== 'string' || typeof query !== 'function'
+      || typeof grants !== 'function') return null;
   if (!isPositiveInt(workspace_id)) return null;
   const viewId = agent_view_id ?? null;
   if (viewId !== null) {
@@ -34,17 +35,16 @@ export async function checkLaunch(sourceId, { capability_kind, workspace_id, age
   if (Number(l.workspace_id) !== workspace_id || (l.agent_view_id === null ? null : Number(l.agent_view_id)) !== viewId) {
     return null;
   }
-  const [operations] = await query(GRANTS_SQL, [l.role, 'operation', viewId, workspace_id]);
-  if (!operations.some(g => g.name === 'artifact.launch')) return null;
-  const [grants] = await query(GRANTS_SQL, [l.role, 'tool', viewId, workspace_id]);
-  if (grants.length === 0) return null;
+  if (!(await grants(l.role, 'operation')).includes('artifact.launch')) return null;
+  const tools = await grants(l.role, 'tool');
+  if (tools.length === 0) return null;
   return {
     kind: 'launch',
     id: l.id,
     user_id: String(l.user_id),
     workspace_id,
     agent_view_id: viewId,
-    permitted_tools: grants.map(g => g.name),
+    permitted_tools: tools,
     created_at: Number(l.created_at),
     expires_at: Number(l.expires_at),
     launch_id: l.id,

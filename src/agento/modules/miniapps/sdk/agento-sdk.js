@@ -8,6 +8,9 @@
 // app → `{type:'agento.action', launch_id, id, tool, arguments}`;
 // panel → `{type:'agento.result', launch_id, id, status, body}`.
 
+// A panel that stops answering must not grow `pending` for the app's lifetime (CODE-8).
+export const MAX_IN_FLIGHT = 16;
+
 /** `v` when it is one exact origin (`https:`, or `http:` on localhost); else null. */
 export function exactOrigin(v) {
   if (typeof v !== 'string') return null;
@@ -49,9 +52,12 @@ export function createAgentoSdk({ panelOrigin, window: w = globalThis.window } =
   return {
     /** The launch id the panel bound this window to. */
     ready,
-    /** Call one of the launch's allowed actions; resolves `{status, body}`. */
+    /** Call one of the launch's allowed actions; resolves `{status, body}`. At most
+     *  `MAX_IN_FLIGHT` calls wait for an answer; one more resolves `{status: 429}`. */
     async callAction(tool, args = {}) {
-      const id = await ready.then(() => (next += 1));
+      await ready;
+      if (pending.size >= MAX_IN_FLIGHT) return { status: 429, body: null };
+      const id = (next += 1);
       return new Promise((settle) => {
         pending.set(id, settle);
         panel.postMessage({ type: 'agento.action', launch_id: launchId, id, tool, arguments: args }, origin);

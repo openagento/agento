@@ -115,12 +115,20 @@ Nothing has shipped under the other spelling, so there is no compatibility route
   guard `tests/module-toolbox-imports.test.js` forbade any module toolbox file importing outside its
   own module. `miniapps` needs `versioned_artifacts`' `service.js` (the only code that may reach the
   Git backend, so re-implementing the read would break that boundary), `paths.js`, `audit.js`,
-  `errors.js`, and `web`'s `GRANTS_SQL` (the checker must compute grants with the same SQL as the
-  `session` checker). Evidence that the path resolves in the containers: both
+  and `errors.js`. Evidence that the path resolves in the containers: both
   `docker/docker-compose.dev.yml` and the generated template mount every core module under one
   parent, `/app/modules/core/<m>`. The exception is narrow: core module → a core module listed in
   its own `sequence` (MOD-1), `toolbox/` files only. A user module (`app/code/`, mounted at
   `/app/modules/user`) still may not.
+- **The role-grant rule is framework mechanism (PLC-4).** The `session` checker (`web`) and the
+  `launch` checker (`miniapps`) both bound a capability by the user's grants, so the SQL moved from
+  `web` to `src/agento/toolbox/capability.js` (`GRANTS_SQL`, `grantsFor`). The verifier hands every
+  checker `grants(role, kind)` bound to the capability row's own scope (TBX-4: from the call
+  context, not an import); a checker without it refuses.
+- **`web` enforces `module:disable miniapps` (MOD-1).** The toolbox does not read
+  `app/etc/modules.json` (ROADMAP.md), so the `launch` checker still loads when the module is off.
+  `web` is the only minter of a `miniapp` capability and reads that file per request: with the
+  module off, a launch is files-only, an action is 404 and the catalogue is empty.
 - **Activation is operator-only and has no event.** It happens in the toolbox (Node), which has no
   event mechanism; it writes a `versioned_artifact_audit` row. A tool would let a self-asserted
   `agent_view_id` decide what a user's browser may call.

@@ -15,7 +15,7 @@ function fakeVa(files = {}, current = { site: V1 }) {
 }
 // The activation and audit tables in memory.
 function fakeDb() {
-  const rows = new Map(); const audit = [];
+  const rows = new Map(); const audit = []; const queries = [];
   const pool = {
     execute: async (sql, p) => {
       if (/INSERT INTO versioned_artifact_audit/.test(sql)) { audit.push(p); return [{}]; }
@@ -29,10 +29,14 @@ function fakeDb() {
     query: async (sql, p) => {
       if (/WHERE artifact_code = \? AND version_id = \?/.test(sql)) { const r = rows.get(`${p[0]}@${p[1]}`); return [r ? [r] : []]; }
       if (/FROM miniapp_activation ORDER BY/.test(sql)) return [[...rows.values()]];
+      if (/FROM miniapp_activation WHERE artifact_code IN \(/.test(sql)) {
+        queries.push(sql);
+        return [[...rows.values()].filter((r) => p.includes(r.artifact_code))];
+      }
       throw new Error(`unexpected ${sql}`);
     },
   };
-  return { rows, audit, db: { getCronPool: () => pool } };
+  return { rows, audit, queries, db: { getCronPool: () => pool } };
 }
 const mk = (va, db, over = {}) => createMiniapps({ service: va, db, vaConfig: { storage_root: '/tmp/x' }, actor: 'op', admin: true, ...over });
 
@@ -47,6 +51,10 @@ describe('manifest', () => {
     ['a bad action name', { actions: ['Bad-Name'] }], ['too many actions', { actions: Array.from({ length: 65 }, (_, i) => `t${i}`) }],
     ['actions not a list', { actions: 'a' }],
   ])('refuses %s', (_n, over) => expect(parseManifest(manifest(over))).toBeNull());
+  it('refuses bytes that are not valid UTF-8', () => {
+    const bad = Buffer.concat([Buffer.from('{"schema":1,"title":"'), Buffer.from([0xff]), Buffer.from('","actions":[]}')]);
+    expect(parseManifest(bad)).toBeNull();
+  });
   it('refuses a missing key, not JSON and an array', () => {
     expect(parseManifest(Buffer.from('{"schema":1,"title":"x"}'))).toBeNull();
     expect(parseManifest(Buffer.from('nope'))).toBeNull();
@@ -125,6 +133,43 @@ describe('launch spec and catalogue', () => {
     const apps = mk(fakeVa(files, { site: V1, other: V2, plain: V1 }), db);
     await apps.activate('site', V1);
     expect(await apps.catalogue()).toEqual([{ artifact_code: 'site', version_id: V1, title: 'Demo' }]);
+  });
+
+  it('the catalogue makes one activation query and reads each candidate manifest once (CODE-8)', async () => {
+    const { db, queries } = fakeDb();
+    const files = { [`site@${V1}`]: manifest(), [`other@${V2}`]: manifest({ title: 'Other' }), [`old@${V1}`]: manifest() };
+    const va = fakeVa(files, { site: V1, other: V2, plain: V1, old: V2 });
+    const apps = mk(va, db);
+    await apps.activate('site', V1);
+    await apps.activate('other', V2);
+    await apps.activate('old', V1); // activated, but not the current version
+    va.readVersionFile.mockClear();
+    expect(await apps.catalogue()).toEqual([
+      { artifact_code: 'site', version_id: V1, title: 'Demo' },
+      { artifact_code: 'other', version_id: V2, title: 'Other' },
+    ]);
+    expect(queries).toHaveLength(1);
+    expect(va.readVersionFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('an empty scope makes no activation query', async () => {
+    const { db, queries } = fakeDb();
+    expect(await mk(fakeVa({}, {}), db).catalogue()).toEqual([]);
+    expect(queries).toHaveLength(0);
+  });
+
+  it('refuses a version outside the scope the same way, activated or not (SEC-7)', async () => {
+    const { db } = fakeDb();
+    const files = { [`foreign@${V1}`]: manifest(), [`foreign@${V2}`]: manifest() };
+    const admin = mk(fakeVa(files), db);
+    await admin.activate('foreign', V1);
+    const va = fakeVa(files);
+    va.readVersionFile.mockImplementation(async () => {
+      throw Object.assign(new Error('ARTIFACT_ACCESS_DENIED: denied'), { code: 'ARTIFACT_ACCESS_DENIED' });
+    });
+    const scoped = mk(va, db, { admin: false });
+    await expect(scoped.launchSpec('foreign', V1)).rejects.toThrow(/ARTIFACT_ACCESS_DENIED/);
+    await expect(scoped.launchSpec('foreign', V2)).rejects.toThrow(/ARTIFACT_ACCESS_DENIED/);
   });
 });
 

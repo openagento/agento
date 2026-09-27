@@ -23,14 +23,15 @@ container. Design: [../architecture/panel.md](../architecture/panel.md). Operato
 
 ## The `session` checker
 
-The toolbox calls `checkSession(sourceId, {capability_kind, workspace_id, agent_view_id, query})`
+The toolbox calls `checkSession(sourceId, {capability_kind, workspace_id, agent_view_id, query, grants})`
 for every call made with a `user_session` capability. It returns `null` unless the session is
 live and not revoked, the user is active, the view belongs to the workspace, and the user's role has
 at least one tool grant reaching that scope. It returns the role's permitted tools for that scope,
-computed with the same SQL as `framework/access/accounts.py`.
+computed by the framework's `grants` (the same SQL rule as `framework/access/accounts.py`).
 
 ## Disabling the module
 
-With `web` disabled, the toolbox has no `session` checker, so every `user_session` capability is
-refused and panel tool calls fail closed. Launches still get their limit from `config.json`
-(read from disk), and sign-in and the admin API keep working.
+The toolbox does not read `app/etc/modules.json` (ROADMAP.md): with `web` disabled it still loads
+the `session` checker, so a `user_session` capability that the `web` service mints is still
+accepted. To stop panel tool calls, stop the `web` service. Launches still get their limit from
+`config.json` (read from disk), and sign-in and the admin API keep working.

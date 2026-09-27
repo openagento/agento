@@ -106,6 +106,8 @@ All apps share one origin, so `event.origin` cannot tell two apps apart (PRD E6 
   origin, and — past the handshake — carrying this `launch_id`. It replies to `appsOrigin`,
   never `'*'`.
 * **App** — `createAgentoSdk({panelOrigin})` → `{ready, callAction(tool, args), close()}`.
+  At most `MAX_IN_FLIGHT` (16) calls wait for an answer; one more resolves `{status: 429}` at
+  once and posts nothing.
   `panelOrigin` is a trusted value the app gives itself (from its agent_view instructions), never
   one read from a message or the URL. It must be one exact `https:` origin (or `http://localhost`).
   The SDK refuses to start without `window.opener`, accepts messages only from the opener at
@@ -130,6 +132,10 @@ uv run bin/agento miniapp:activate <artifact_code> <version_id>
 **To stop a miniapp's actions**, deactivate the version (`miniapp:deactivate`): the `launch`
 checker requires the activation on every call, so live launches lose their actions at the next
 call. Turning off `miniapp_get_launch_spec` for a scope makes every later launch there
-files-only. Note that the toolbox does not read `app/etc/modules.json`: it loads every core
-module's `toolbox/` files, so `module:disable miniapps` stops the `miniapp:*` commands but not
-the `launch` checker (the same holds for `web`'s `session` checker; see ROADMAP.md).
+files-only.
+
+**`module:disable miniapps`** stops every miniapp action: `web` is the only minter of a
+`miniapp` capability, and it reads `app/etc/modules.json` per request. With the module off, a new
+launch is files-only, `POST /api/launches/<id>/actions/<tool>` is `404`, and the catalogue is
+empty. The toolbox itself does not read `app/etc/modules.json` (ROADMAP.md), so it still loads
+the `launch` checker; with no capability minted, the checker has nothing to accept.
