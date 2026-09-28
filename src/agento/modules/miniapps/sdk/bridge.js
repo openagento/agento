@@ -4,7 +4,7 @@
 // origin, and — past the handshake — carries this launch's id. Replies target the
 // apps origin, never '*'. `onAction(tool, args)` calls the panel's action endpoint
 // (`POST /api/launches/<id>/actions/<tool>`) and resolves `{status, body}`.
-import { exactOrigin } from './agento-sdk.js';
+import { exactOrigin, MAX_IN_FLIGHT } from './agento-sdk.js';
 
 export function createLaunchBridge({ appWindow, appsOrigin, launchId, onAction, window: w = globalThis.window } = {}) {
   const origin = exactOrigin(appsOrigin);
@@ -12,6 +12,8 @@ export function createLaunchBridge({ appWindow, appsOrigin, launchId, onAction, 
   if (!appWindow) throw new Error('bridge: appWindow is required');
   if (typeof launchId !== 'string' || !launchId) throw new Error('bridge: launchId is required');
   const reply = (m) => appWindow.postMessage({ ...m, launch_id: launchId }, origin);
+  // The app is untrusted: it must not start unbounded panel requests (CODE-8).
+  let inFlight = 0;
 
   async function onMessage(event) {
     if (event.source !== appWindow || event.origin !== origin) return;
@@ -20,11 +22,15 @@ export function createLaunchBridge({ appWindow, appsOrigin, launchId, onAction, 
     // `ready` carries no data and gets only the launch id this window was opened for.
     if (m.type === 'agento.ready') { reply({ type: 'agento.hello' }); return; }
     if (m.type !== 'agento.action' || m.launch_id !== launchId || typeof m.tool !== 'string') return;
+    if (inFlight >= MAX_IN_FLIGHT) { reply({ type: 'agento.result', id: m.id, status: 429, body: null }); return; }
+    inFlight += 1;
     let result;
     try {
       result = await onAction(m.tool, m.arguments ?? {});
     } catch {
       result = { status: 503, body: { ok: false, error: { code: 'unavailable', message: 'the panel could not call the action' } } };
+    } finally {
+      inFlight -= 1;
     }
     reply({ type: 'agento.result', id: m.id, status: result.status, body: result.body });
   }

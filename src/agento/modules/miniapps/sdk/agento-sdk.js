@@ -53,15 +53,16 @@ export function createAgentoSdk({ panelOrigin, window: w = globalThis.window } =
     /** The launch id the panel bound this window to. */
     ready,
     /** Call one of the launch's allowed actions; resolves `{status, body}`. At most
-     *  `MAX_IN_FLIGHT` calls wait for an answer; one more resolves `{status: 429}`. */
-    async callAction(tool, args = {}) {
-      await ready;
-      if (pending.size >= MAX_IN_FLIGHT) return { status: 429, body: null };
+     *  `MAX_IN_FLIGHT` calls wait — for the handshake or for an answer; one more resolves
+     *  `{status: 429}`. The slot is taken before the handshake, so no wait is unbounded. */
+    callAction(tool, args = {}) {
+      if (pending.size >= MAX_IN_FLIGHT) return Promise.resolve({ status: 429, body: null });
       const id = (next += 1);
-      return new Promise((settle) => {
-        pending.set(id, settle);
-        panel.postMessage({ type: 'agento.action', launch_id: launchId, id, tool, arguments: args }, origin);
+      const result = new Promise((settle) => { pending.set(id, settle); });
+      ready.then(() => {
+        if (pending.has(id)) panel.postMessage({ type: 'agento.action', launch_id: launchId, id, tool, arguments: args }, origin);
       });
+      return result;
     },
     close() { w.removeEventListener('message', onMessage); pending.clear(); },
   };

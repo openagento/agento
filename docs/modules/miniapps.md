@@ -104,9 +104,10 @@ All apps share one origin, so `event.origin` cannot tell two apps apart (PRD E6 
 * **Panel** — `createLaunchBridge({appWindow, appsOrigin, launchId, onAction})`. It accepts a
   message only from the exact window it opened (`event.source === appWindow`), from the apps
   origin, and — past the handshake — carrying this `launch_id`. It replies to `appsOrigin`,
-  never `'*'`.
+  never `'*'`. At most `MAX_IN_FLIGHT` (16) actions run at once; one more gets `{status: 429}`
+  and calls nothing, because the app is untrusted.
 * **App** — `createAgentoSdk({panelOrigin})` → `{ready, callAction(tool, args), close()}`.
-  At most `MAX_IN_FLIGHT` (16) calls wait for an answer; one more resolves `{status: 429}` at
+  At most `MAX_IN_FLIGHT` (16) calls wait, for the handshake or for an answer; one more resolves `{status: 429}` at
   once and posts nothing.
   `panelOrigin` is a trusted value the app gives itself (from its agent_view instructions), never
   one read from a message or the URL. It must be one exact `https:` origin (or `http://localhost`).

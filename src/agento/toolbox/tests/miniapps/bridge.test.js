@@ -78,6 +78,14 @@ describe('panel bridge', () => {
     expect(app.postMessage.mock.calls[1][0].status).toBe(503);
   });
 
+  it('bounds the actions in flight: past the cap an action gets 429 and calls nothing', async () => {
+    const { panel, app, onAction } = setup(vi.fn(() => new Promise(() => {})));
+    for (let i = 1; i <= MAX_IN_FLIGHT; i++) panel.deliver({ source: app, origin: APPS, data: action({ id: i }) });
+    await panel.deliver({ source: app, origin: APPS, data: action({ id: 99 }) });
+    expect(onAction).toHaveBeenCalledTimes(MAX_IN_FLIGHT);
+    expect(app.postMessage).toHaveBeenCalledWith({ type: 'agento.result', id: 99, status: 429, body: null, launch_id: LID }, APPS);
+  });
+
   it('refuses a wildcard or invalid apps origin', () => {
     for (const appsOrigin of ['*', `${APPS}/`, 'http://apps.example.com']) {
       expect(() => createLaunchBridge({ appWindow: fakeWindow(), appsOrigin, launchId: LID, onAction: vi.fn(), window: fakeWindow() }))
@@ -143,6 +151,14 @@ describe('app sdk', () => {
     await app.deliver({ source: panel, origin: PANEL, data: { type: 'agento.result', launch_id: LID, id: 1, status: 200, body: {} } });
     sdk.callAction('notes_add');
     await vi.waitFor(() => expect(panel.postMessage).toHaveBeenCalledTimes(2 + MAX_IN_FLIGHT));
+  });
+
+  it('bounds the calls that wait for the handshake too', async () => {
+    const { panel, app, sdk } = setup();
+    for (let i = 0; i < MAX_IN_FLIGHT; i++) sdk.callAction('notes_add');
+    expect(await sdk.callAction('notes_add')).toEqual({ status: 429, body: null });
+    await app.deliver(hello(panel));
+    await vi.waitFor(() => expect(panel.postMessage).toHaveBeenCalledTimes(1 + MAX_IN_FLIGHT));
   });
 
   it.each(['*', `${PANEL}/`, 'http://panel.example.com', undefined])('refuses panelOrigin %s', (panelOrigin) => {
