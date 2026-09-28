@@ -361,8 +361,9 @@ _MAX_ACTIONS = 64  # the manifest's own limit (docs/modules/miniapps.md)
 
 def _miniapps_enabled() -> bool:
     """MOD-1: web is the only minter of a ``miniapp`` capability, so ``module:disable
-    miniapps`` stops launches pinning actions, actions and the catalogue here. The toolbox
-    does not read ``app/etc/modules.json`` (ROADMAP.md)."""
+    miniapps`` stops launches pinning actions, actions and the catalogue here at once. The
+    toolbox reads the same file too, but its tools go at the next MCP session and its
+    ``launch`` checker at the next toolbox start (toolbox/config-loader.js)."""
     from agento.framework import module_status
 
     return module_status.is_enabled("miniapps", module_status.read_module_status())

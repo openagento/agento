@@ -191,6 +191,15 @@ describe('rate limits (SEC-12)', () => {
     expect(reads).toBe(0);
   });
 
+  it('counts equivalent encodings of one credential in one bucket', async () => {
+    await start({ verify, limits: { authFailuresPerAddress: 100, requestsPerCredential: 1 } });
+    expect((await get(`/s/${TOKEN}/`, from('10.4.0.1', GOOD()))).status).toBe(200);
+    // All decode to `site:pw`, so none may open a new bucket.
+    for (const b64 of ['c2l0 ZTpwdw==', 'c2l0ZTpwdw', 'c2l0ZTpwdw==!!!!']) {
+      expect((await get(`/s/${TOKEN}/`, from('10.4.0.2', { authorization: `basic ${b64}` }))).status).toBe(429);
+    }
+  });
+
   it('keeps answering 503 first when the module is disabled', async () => {
     await writeFile(path.join(etcDir, 'modules.json'), JSON.stringify({ versioned_artifacts: false }));
     await start(small);

@@ -229,9 +229,12 @@ export function createArtifactsServer({
     }
 
     // A credential over its limit is refused before the share record or the sidecar is read.
-    const header = req.headers.authorization;
-    if (typeof header === 'string'
-        && !perCredential.take(createHash('sha256').update(header).digest('hex'))) return text(res, 429);
+    // The bucket is the DECODED credential: Base64 has many encodings of one `user:password`,
+    // and a raw-header key would give each of them a fresh bucket.
+    const cred = basicCredential(req);
+    if (cred && !perCredential.take(createHash('sha256').update(`${cred.user}:${cred.password}`).digest('hex'))) {
+      return text(res, 429);
+    }
     // A share: the token names the artifact, and it serves only while a Basic credential is set.
     const code = await shareCode(route.token);
     if (code === null) return fail(404);
@@ -239,7 +242,6 @@ export function createArtifactsServer({
     // never opens a later artifact of the same code. A corrupt sidecar names nothing.
     const sidecar = await authFor(code);
     if (!sidecar || sidecar.share !== route.token) return fail(404);
-    const cred = basicCredential(req);
     if (!cred || !verify(sidecar, cred.user, cred.password)) {
       if (!counted()) return text(res, 429);
       return challenge(res, headOnly);
