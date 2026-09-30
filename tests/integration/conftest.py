@@ -29,6 +29,16 @@ TEST_DB = "cron_agent_test"
 # saturation); it does not share this knob on purpose.
 CONCURRENT_WORKERS_STRESS_TEST = 100
 
+# Default to this checkout's own MySQL (docker/.env MYSQL_PORT), never a sibling's on 3306.
+# Set in os.environ so spawned node helpers (verify_capability.mjs) inherit it.
+_env_file = Path(__file__).resolve().parents[2] / "docker" / ".env"
+_ports = [
+    line.split("=", 1)[1].strip()
+    for line in (_env_file.read_text().splitlines() if _env_file.is_file() else [])
+    if line.startswith("MYSQL_PORT=")
+]
+os.environ.setdefault("TEST_MYSQL_PORT", _ports[-1] if _ports else "3306")
+
 # Ensure encryption key is available for tests (used for credential.credentials and obscure configs)
 os.environ.setdefault("AGENTO_ENCRYPTION_KEY", "test-encryption-key-for-integration")
 
