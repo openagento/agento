@@ -138,10 +138,31 @@ describe('rate limits (SEC-12)', () => {
     expect((await get(`/s/${TOKEN}/`, from('10.0.0.3', GOOD()))).status).toBe(429);
   });
 
-  it('counts paths the validator refuses', async () => {
+  it('counts paths the validator refuses, but never throttles an app file web authorized', async () => {
     await start(small);
     for (let i = 0; i < 3; i++) expect((await get(`/site/v/${V1}/%2e%2e/x${i}`, from('10.0.0.4'))).status).toBe(404);
-    expect((await get(`/site/v/${V1}/`, from('10.0.0.4'))).status).toBe(429);
+    expect((await get(`/s/${TOKEN}/`, from('10.0.0.4', GOOD()))).status).toBe(429);
+    expect((await get(`/site/v/${V1}/`, from('10.0.0.4'))).status).toBe(200);
+  });
+
+  it('lets a credential that already opened the share through a failure flood from its address', async () => {
+    await start(small);
+    expect((await get(`/s/${TOKEN}/`, from('10.0.0.6', GOOD()))).status).toBe(200);
+    for (let i = 0; i < 3; i++) {
+      expect((await get(`/s/${TOKEN}/`, from('10.0.0.6', { authorization: authHeader('site', `x${i}`) }))).status).toBe(401);
+    }
+    expect((await get(`/s/${TOKEN}/`, from('10.0.0.6', { authorization: authHeader('site', 'y') }))).status).toBe(429);
+    expect((await get(`/s/${TOKEN}/`, from('10.0.0.6', GOOD()))).status).toBe(200);
+  });
+
+  it('reserves before the work, so concurrent bad credentials cannot all pass the limit', async () => {
+    await start(small);
+    verified = 0;
+    const codes = await Promise.all(Array.from({ length: 10 }, (_, i) =>
+      get(`/s/${TOKEN}/`, from('10.0.0.7', { authorization: authHeader('site', `c${i}`) })).then((r) => r.status)));
+    expect(verified).toBeLessThanOrEqual(3);
+    expect(codes.filter((c) => c === 401)).toHaveLength(verified);
+    expect(codes.filter((c) => c === 429)).toHaveLength(10 - verified);
   });
 
   it('never counts an authenticated share 404 or an app 404', async () => {

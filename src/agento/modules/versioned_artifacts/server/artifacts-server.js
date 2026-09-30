@@ -10,7 +10,7 @@ import { boundedLine } from '../toolbox/errors.js';
 import { verifyCredential } from '../toolbox/auth.js';
 import { parseServedPath } from './served-path.js';
 import {
-  AUTH_FAILURES_PER_ADDRESS, MAX_KEYS, REQUESTS_PER_CREDENTIAL, WINDOW_MS, createWindowCounter,
+  AUTH_FAILURES_PER_ADDRESS, MAX_KEYS, REQUESTS_PER_CREDENTIAL, WINDOW_MS, createRecentSet, createWindowCounter,
 } from './rate-limit.js';
 
 // Under `server/`, NOT `toolbox/`: `src/agento/toolbox/config-loader.js` imports every
@@ -72,7 +72,10 @@ export function createArtifactsServer({
   const maxKeys = limits.maxKeys ?? MAX_KEYS;
   const failures = createWindowCounter({ limit: limits.authFailuresPerAddress, maxKeys, now });
   const perCredential = createWindowCounter({ limit: limits.requestsPerCredential, maxKeys, now });
-  const sweeper = setInterval(() => { failures.sweep(); perCredential.sweep(); }, WINDOW_MS);
+  // Share credentials that opened their share: they skip the address check, so one caller's
+  // failures never throttle another's authorized traffic from the same address (SEC-12).
+  const opened = createRecentSet({ maxKeys, now });
+  const sweeper = setInterval(() => { failures.sweep(); perCredential.sweep(); opened.sweep(); }, WINDOW_MS);
   sweeper.unref();
   const clientAddress = (req) => {
     const fwd = req.headers['x-forwarded-for'];
@@ -211,30 +214,34 @@ export function createArtifactsServer({
     // `/` is the healthcheck. It lists nothing: no directory index anywhere (§6.3, §9),
     // and it does no work, so a flood that fills the limit store does not take it down.
     if (route?.kind === 'health') return text(res, 200, 'ok\n');
-    const address = clientAddress(req);
-    // Before every file read and every scrypt. A full store refuses a new address too.
-    if (!failures.allowed(address)) return text(res, 429);
-    // A failure that cannot be counted (over the limit, or the store filled meanwhile) is 429.
-    const counted = () => failures.take(address);
-    const fail = (code) => text(res, counted() ? code : 429);
-    if (route === null) return fail(404);
-
     const search = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
     // Relative, so it is right on the apps origin (`/a/…`) and on a share origin alike.
-    const ctx = { headOnly, redirectTo: route.trailing || route.last === null ? null : `${route.last}/${search}` };
-    if (route.kind === 'app') {
-      // Already authorized by web. Basic auth never applies here: Basic and launch
+    const ctx = route && { headOnly, redirectTo: route.trailing || route.last === null ? null : `${route.last}/${search}` };
+    if (route?.kind === 'app') {
+      // Already authorized by web (proxy's forward_auth), so it is authorized traffic that
+      // no failure count may throttle. Basic auth never applies here: Basic and launch
       // credentials must not meet on one origin (§9).
       return serve(res, [route.code, 'v', route.versionId, ...route.names].join('/'), ctx);
     }
 
-    // A credential over its limit is refused before the share record or the sidecar is read.
     // The bucket is the DECODED credential: Base64 has many encodings of one `user:password`,
     // and a raw-header key would give each of them a fresh bucket.
-    const cred = basicCredential(req);
-    if (cred && !perCredential.take(createHash('sha256').update(`${cred.user}:${cred.password}`).digest('hex'))) {
-      return text(res, 429);
-    }
+    const cred = route && basicCredential(req);
+    const credKey = cred ? createHash('sha256').update(`${cred.user}:${cred.password}`).digest('hex') : null;
+    const openedKey = credKey && `${route.token}:${credKey}`;
+    const address = clientAddress(req);
+    // Before every file read and every scrypt: one failure is reserved up front (so concurrent
+    // requests cannot all pass the limit) and given back when the answer is not a failure. A
+    // full store refuses a new address too. A credential that opened this share skips it.
+    const reserved = !(openedKey && opened.has(openedKey));
+    if (reserved && !failures.take(address)) return text(res, 429);
+    let failed = false;
+    if (reserved) res.on('close', () => { if (!failed) failures.refund(address); });
+    const fail = (code) => { failed = true; return text(res, code); };
+    if (route === null) return fail(404);
+
+    // A credential over its limit is refused before the share record or the sidecar is read.
+    if (credKey && !perCredential.take(credKey)) return text(res, 429);
     // A share: the token names the artifact, and it serves only while a Basic credential is set.
     const code = await shareCode(route.token);
     if (code === null) return fail(404);
@@ -243,9 +250,10 @@ export function createArtifactsServer({
     const sidecar = await authFor(code);
     if (!sidecar || sidecar.share !== route.token) return fail(404);
     if (!cred || !verify(sidecar, cred.user, cred.password)) {
-      if (!counted()) return text(res, 429);
+      failed = true;
       return challenge(res, headOnly);
     }
+    opened.add(openedKey);
     res.setHeader('referrer-policy', 'no-referrer');
     const tree = route.versionId ? ['v', route.versionId] : ['current'];
     return serve(res, [code, ...tree, ...route.names].join('/'), ctx);
