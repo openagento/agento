@@ -1,5 +1,5 @@
 """run_lane loop behaviour — ENV guard, fan-out guard, skips, per-repo/per-PR isolation, cleanup."""
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -48,6 +48,10 @@ def _run(
 
     with ExitStack() as stack:
         stack.enter_context(patch(f"{_LOOP}.get_active_agent_views", return_value=views))
+        # The loop mints one capability per view; these tests pass a stub connection.
+        stack.enter_context(
+            patch(f"{_LOOP}.rest_capability", lambda *a, **k: nullcontext("cap"))
+        )
         MockSCS = stack.enter_context(patch(f"{_LOOP}.ScopedConfigService"))
         stack.enter_context(patch(f"{_LOOP}.resolve_publish_priority", return_value=50))
         mock_lso = stack.enter_context(patch(f"{_LOOP}.load_scoped_db_overrides"))
@@ -94,7 +98,9 @@ def test_disabled_view_skipped():
     published, m = _run(views=[_view(1, "dev")], cfg_by_view={1: _cfg(enabled="0")})
     assert published == 0
     m["client"].open_prs.assert_not_called()
-    m["client"].close.assert_called_once()
+    # The client is built per view, AFTER the enabled/allow-list gates, so a skipped
+    # view builds none — and there is nothing to close.
+    m["client"].close.assert_not_called()
 
 
 def test_empty_allowlist_skipped():
@@ -159,6 +165,10 @@ def test_per_view_exception_isolated_and_remaining_views_run():
     logger = MagicMock()
     with ExitStack() as stack:
         stack.enter_context(patch(f"{_LOOP}.get_active_agent_views", return_value=views))
+        # The loop mints one capability per view; these tests pass a stub connection.
+        stack.enter_context(
+            patch(f"{_LOOP}.rest_capability", lambda *a, **k: nullcontext("cap"))
+        )
         MockSCS = stack.enter_context(patch(f"{_LOOP}.ScopedConfigService"))
         stack.enter_context(patch(f"{_LOOP}.resolve_publish_priority", return_value=50))
         stack.enter_context(patch(f"{_LOOP}.load_scoped_db_overrides",
@@ -174,7 +184,8 @@ def test_per_view_exception_isolated_and_remaining_views_run():
         published = run_lane(object(), object(), "http://tb:3001", logger, lane="comments")
     assert published == 1
     logger.exception.assert_called_once()
-    MockClient.return_value.close.assert_called_once()
+    # One client per view now — two views, two closes, even though the first raised.
+    assert MockClient.return_value.close.call_count == 2
 
 
 def test_the_token_path_is_never_resolved_by_the_publisher():

@@ -1,0 +1,5 @@
+{
+    "patches": [
+        {"name": "MoveSecretsToWorkspace", "class": "src.patches.MoveSecretsToWorkspace.MoveSecretsToWorkspace"}
+    ]
+}

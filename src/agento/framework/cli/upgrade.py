@@ -26,6 +26,7 @@ from ._project import (
 from ._provisioning import (
     build_base_images,
     bump_agento_version,
+    ensure_storage_dirs,
     enumerate_sandbox_packages,
     find_links_for_local_install,
     materialize_docker_context,
@@ -226,6 +227,7 @@ class UpgradeCommand:
             log_error("uv sync failed. Resolve the error and rerun 'agento upgrade'.")
             sys.exit(result.returncode)
         materialize_docker_context(project_root, force=True)
+        ensure_storage_dirs(project_root)
         regenerate_compose(project_root)
         log_info("Refreshed docker-compose.yml + .agento/docker/")
 

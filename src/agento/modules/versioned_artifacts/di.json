@@ -1,0 +1,24 @@
+{
+  "commands": [
+    {
+      "name": "artifact:init",
+      "class": "src.commands.init.VersionedArtifactInitCommand"
+    },
+    {
+      "name": "artifact:list",
+      "class": "src.commands.list.VersionedArtifactListCommand"
+    },
+    {
+      "name": "artifact:delete",
+      "class": "src.commands.delete.VersionedArtifactDeleteCommand"
+    },
+    {
+      "name": "artifact:publish",
+      "class": "src.commands.publish.VersionedArtifactPublishCommand"
+    },
+    {
+      "name": "artifact:auth",
+      "class": "src.commands.auth.VersionedArtifactAuthCommand"
+    }
+  ]
+}

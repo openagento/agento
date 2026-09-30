@@ -2,12 +2,22 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from agento.framework.database_config import DatabaseConfig
 from agento.modules.jira.src.config import JiraConfig
 from agento.modules.jira.src.models import JiraIssue, TaskAction, TaskPriority, TaskSource
 
+
+@pytest.fixture(autouse=True)
+def _no_real_capability():
+    """`rest_capability` opens its OWN connection (the toolbox reads the row from another
+    process), so a unit test that mocks only the caller's connection would dial a real DB."""
+    with patch("agento.modules.jira.src.commands.publish.rest_capability", lambda *a, **k: nullcontext("cap")):
+        yield
 
 def _make_args(kind: str, issue_key: str | None = None) -> argparse.Namespace:
     return argparse.Namespace(kind=kind, issue_key=issue_key)
@@ -406,85 +416,24 @@ class TestCmdPublishTodoDispatch:
         assert requester.meta["changelog_id"] == "77"
 
 
-class TestCmdPublishTodoGlobalFallback:
-    """PublishCommand jira-todo with no active agent_views — global fallback path."""
+class TestCmdPublishWithoutAnyAgentView:
+    """The global-config fallback is gone: a viewless publish has no scope to mint a
+    toolbox capability for, so it must fail loudly instead of running unauthenticated."""
 
-    @patch("agento.modules.jira.src.channel.publish_todo")
-    @patch("agento.modules.jira.src.commands.publish.TaskListBuilder")
     @patch("agento.modules.jira.src.commands.publish.ToolboxClient")
     @patch("agento.modules.jira.src.commands.publish.get_logger")
     @patch("agento.modules.jira.src.commands.publish._get_connection_and_bootstrap")
     @patch("agento.framework.workspace.get_active_agent_views")
-    @patch("agento.framework.bootstrap.get_module_config")
-    def test_global_publishes_all_tasks(
-        self, mock_get_module_cfg, mock_get_avs, mock_bootstrap,
-        mock_logger, mock_toolbox_cls, mock_builder_cls, mock_channel_publish,
+    def test_publish_without_any_agent_view_exits_and_never_builds_a_client(
+        self, mock_get_avs, mock_bootstrap, mock_logger, mock_toolbox_cls,
     ):
-        """Global fallback must iterate the full task list, not just tasks[0]."""
         conn = MagicMock()
         mock_bootstrap.return_value = (DatabaseConfig(), conn)
         mock_get_avs.return_value = []
-        mock_get_module_cfg.return_value = _make_jira_config()
-
-        tasks = [
-            _make_task("AI-72", updated="2026-05-26T07:13:00.000+0000"),
-            _make_task("AI-100", updated="2026-05-26T07:13:00.000+0000"),
-            _make_task("AI-107", updated="2026-05-26T07:13:00.000+0000"),
-        ]
-        builder = MagicMock()
-        builder.get_status_change.return_value = (None, True)
-        builder.get_todo_tasks.return_value = tasks
-        mock_builder_cls.return_value = builder
-        mock_channel_publish.return_value = True
 
         from agento.modules.jira.src.commands.publish import PublishCommand
-        PublishCommand().execute(_make_args("jira-todo"))
 
-        assert mock_channel_publish.call_count == 3
-        published_keys = [call.kwargs["issue_key"] for call in mock_channel_publish.call_args_list]
-        assert published_keys == ["AI-72", "AI-100", "AI-107"]
-        for call in mock_channel_publish.call_args_list:
-            assert call.kwargs.get("updated") == "2026-05-26T07:13:00.000+0000"
-            assert isinstance(call.kwargs.get("payload"), dict)
-            assert call.kwargs["payload"]["key"] == call.kwargs["issue_key"]
-
-    @patch("agento.modules.jira.src.channel.publish_todo")
-    @patch("agento.modules.jira.src.commands.publish.TaskListBuilder")
-    @patch("agento.modules.jira.src.commands.publish.ToolboxClient")
-    @patch("agento.modules.jira.src.commands.publish.get_logger")
-    @patch("agento.modules.jira.src.commands.publish._get_connection_and_bootstrap")
-    @patch("agento.framework.workspace.get_active_agent_views")
-    @patch("agento.framework.bootstrap.get_module_config")
-    def test_global_strips_reporter_email_from_routing_payload(
-        self, mock_get_module_cfg, mock_get_avs, mock_bootstrap,
-        mock_logger, mock_toolbox_cls, mock_builder_cls, mock_channel_publish,
-    ):
-        """6d PII guard: reporter_email must never reach RoutingContext.payload / routing events."""
-        conn = MagicMock()
-        mock_bootstrap.return_value = (DatabaseConfig(), conn)
-        mock_get_avs.return_value = []
-        mock_get_module_cfg.return_value = _make_jira_config()
-
-        task = _make_task(
-            "AI-72", updated="2026-05-26T07:13:00.000+0000",
-            reporter="Reporter", reporter_account_id="rep-1", reporter_email="rep@example.com",
-        )
-        builder = MagicMock()
-        builder.get_status_change.return_value = (None, True)
-        builder.get_todo_tasks.return_value = [task]
-        mock_builder_cls.return_value = builder
-        mock_channel_publish.return_value = True
-
-        from agento.modules.jira.src.commands.publish import PublishCommand
-        PublishCommand().execute(_make_args("jira-todo"))
-
-        payload = mock_channel_publish.call_args.kwargs["payload"]
-        assert "reporter_email" not in payload
-        # other (already-serialized) fields are preserved
-        assert payload["summary"] == "Test task"
-        assert payload["reporter"] == "Reporter"
-        assert payload["reporter_account_id"] == "rep-1"
-        # the email still rides on the requester (audit metadata), just not the routing payload
-        requester = mock_channel_publish.call_args.kwargs["requester"]
-        assert requester is not None
-        assert requester.email == "rep@example.com"
+        with pytest.raises(SystemExit) as exc:
+            PublishCommand().execute(_make_args("jira-todo"))
+        assert exc.value.code == 1
+        mock_toolbox_cls.assert_not_called()

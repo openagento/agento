@@ -42,7 +42,7 @@ class TestFallbackEncryptor:
         monkeypatch.setenv("AGENTO_ENCRYPTION_KEY", "test-key-for-fallback")
         enc = _FallbackEncryptor()
         encrypted = enc.encrypt("secret-value")
-        assert encrypted.startswith("aes256:")
+        assert encrypted.startswith("aes256s:")
         assert enc.decrypt(encrypted) == "secret-value"
 
     def test_raises_without_key(self, monkeypatch):
@@ -58,7 +58,7 @@ class TestAesCbcBackend:
         from agento.modules.crypt.src.aes_cbc_backend import AesCbcBackend
         backend = AesCbcBackend()
         encrypted = backend.encrypt("my-secret")
-        assert encrypted.startswith("aes256:")
+        assert encrypted.startswith("aes256s:")
         assert backend.decrypt(encrypted) == "my-secret"
 
     def test_conforms_to_protocol(self):

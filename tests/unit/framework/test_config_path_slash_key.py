@@ -152,7 +152,7 @@ class TestAutoEncryptSlashKey:
 
         assert encrypted is True, "slash-key obscure field must auto-encrypt"
         stored_value = cursor.execute.call_args[0][1][3]
-        assert stored_value.startswith("aes256:")
+        assert stored_value.startswith("aes256s:")
         assert "OPENSSH" not in stored_value
 
     def test_does_not_encrypt_non_obscure_slash_key(self, modules_dir):
@@ -359,7 +359,7 @@ class TestEncryptObscureRowsAtRest:
 
         value, enc = conn._store[("default", 0, "agent_view/identity/ssh_private_key")]
         assert enc == 1
-        assert value.startswith("aes256:")
+        assert value.startswith("aes256s:")
         # Decrypt round-trip
         from agento.framework.encryptor import get_encryptor
         assert get_encryptor().decrypt(value) == "PLAINTEXT-KEY"

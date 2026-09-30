@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 from datetime import UTC, datetime
 
 from agento.framework.agent_view_runtime import resolve_publish_priority
@@ -81,27 +82,27 @@ class JiraDiscovery:
     """DiscoverableChannel concern: find pending tasks assigned to the agent."""
 
     def discover_work(
-        self, config: object, logger: logging.Logger
+        self, config: object, logger: logging.Logger, *, capability_token: str
     ) -> list[WorkItem]:
         ai_user = config.jira_assignee or config.user
         if not ai_user:
             logger.warning("jira_assignee/user not set, cannot discover Jira work")
             return []
 
-        toolbox = ToolboxClient(config.toolbox_url)
-        builder = TaskListBuilder(toolbox, config, ai_user, logger)
-        tasks = builder.get_todo_tasks()
-        return [
-            WorkItem(
-                reference_id=t.issue.key,
-                title=t.issue.summary,
-                priority=t.priority.value,
-                reason=t.reason,
-                source_tag=t.source.value,
-                updated=t.issue.updated,
-            )
-            for t in tasks
-        ]
+        with closing(ToolboxClient(config.toolbox_url, capability_token=capability_token)) as toolbox:
+            builder = TaskListBuilder(toolbox, config, ai_user, logger)
+            tasks = builder.get_todo_tasks()
+            return [
+                WorkItem(
+                    reference_id=t.issue.key,
+                    title=t.issue.summary,
+                    priority=t.priority.value,
+                    reason=t.reason,
+                    source_tag=t.source.value,
+                    updated=t.issue.updated,
+                )
+                for t in tasks
+            ]
 
 
 class JiraPublisher:
@@ -215,6 +216,7 @@ class JiraPublisher:
         db_config: object | None = None,
         agent_view_id: int | None = None,
         priority: int = 50,
+        capability_token: str | None = None,
     ) -> int:
         """Find and publish unanswered mention jobs. Returns count of published jobs."""
         if agent_view_id is None:
@@ -230,43 +232,43 @@ class JiraPublisher:
             logger.warning("jira_assignee/user not set")
             return 0
 
-        toolbox = ToolboxClient(config.toolbox_url)
-        builder = TaskListBuilder(toolbox, config, ai_user, logger, agent_view_id=agent_view_id)
-        candidates = builder.get_unanswered_mentions()
+        with closing(ToolboxClient(config.toolbox_url, capability_token=capability_token)) as toolbox:
+            builder = TaskListBuilder(toolbox, config, ai_user, logger, agent_view_id=agent_view_id)
+            candidates = builder.get_unanswered_mentions()
 
-        publish_cfg = db_config or config
-        published = 0
-        for task in candidates:
-            try:
-                comments = toolbox.jira_get_comments(task.issue.key, agent_view_id=agent_view_id)
-                mention = find_unanswered_mention(comments, agent_account_id)
-                if mention is None:
-                    logger.debug(f"{task.issue.key}: no unanswered mention, skipping")
-                    continue
+            publish_cfg = db_config or config
+            published = 0
+            for task in candidates:
+                try:
+                    comments = toolbox.jira_get_comments(task.issue.key, agent_view_id=agent_view_id)
+                    mention = find_unanswered_mention(comments, agent_account_id)
+                    if mention is None:
+                        logger.debug(f"{task.issue.key}: no unanswered mention, skipping")
+                        continue
 
-                comment_id = mention["id"]
-                idem_key = f"jira:mention:{task.issue.key}:{comment_id}"
-                author = mention.get("author") or {}
-                account_id = author.get("accountId")
-                requester = None
-                if account_id:
-                    requester = JobRequester(
-                        key=f"jira:{account_id}",
-                        email=author.get("emailAddress"),  # JobRequester normalizes (strip+lower)
-                        trust=RequesterTrust.ACCOUNT,
-                        meta={"basis": "comment_author", "issue_key": task.issue.key,
-                              "comment_id": comment_id, "display_name": author.get("displayName")},
+                    comment_id = mention["id"]
+                    idem_key = f"jira:mention:{task.issue.key}:{comment_id}"
+                    author = mention.get("author") or {}
+                    account_id = author.get("accountId")
+                    requester = None
+                    if account_id:
+                        requester = JobRequester(
+                            key=f"jira:{account_id}",
+                            email=author.get("emailAddress"),  # JobRequester normalizes (strip+lower)
+                            trust=RequesterTrust.ACCOUNT,
+                            meta={"basis": "comment_author", "issue_key": task.issue.key,
+                                  "comment_id": comment_id, "display_name": author.get("displayName")},
+                        )
+                    inserted = publish(
+                        publish_cfg, AgentType.TODO, self.name, idem_key,
+                        reference_id=task.issue.key, logger=logger,
+                        agent_view_id=agent_view_id, priority=priority,
+                        requester=requester,
                     )
-                inserted = publish(
-                    publish_cfg, AgentType.TODO, self.name, idem_key,
-                    reference_id=task.issue.key, logger=logger,
-                    agent_view_id=agent_view_id, priority=priority,
-                    requester=requester,
-                )
-                if inserted:
-                    published += 1
-            except Exception:
-                logger.exception(f"Error processing mention candidate {task.issue.key}")
+                    if inserted:
+                        published += 1
+                except Exception:
+                    logger.exception(f"Error processing mention candidate {task.issue.key}")
 
         return published
 
@@ -313,11 +315,3 @@ def publish_todo(
         config, issue_key, updated=updated, logger=logger,
         payload=payload, requester=requester,
     )
-
-
-def publish_mentions(
-    config: object,
-    logger: logging.Logger | None = None,
-    db_config: object | None = None,
-) -> int:
-    return _jira.publish_mentions(config, logger or logging.getLogger(__name__), db_config=db_config)

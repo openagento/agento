@@ -5,21 +5,10 @@ import { createTransporter } from './email-transport.js';
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
-function matchesWhitelist(email, whitelist) {
-  email = email.toLowerCase();
-  return whitelist.some(pattern => {
-    const regex = new RegExp(
-      '^' +
-        pattern
-          .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-          .replace(/\*/g, '[^@]*') +
-        '$'
-    );
-    return regex.test(email);
-  });
-}
-
-function findRejectedRecipient(whitelist, ...groups) {
+// `matchesWhitelist` is the shared toolbox matcher — one implementation for the outbound gate
+// here and the inbound gate in outlook. It arrives through the registration context because a
+// module cannot import framework code by path (see config-loader.js TOOLBOX_HELPERS).
+function findRejectedRecipient(matchesWhitelist, whitelist, ...groups) {
   for (const { field, list } of groups) {
     if (!list) continue;
     for (const addr of list) {
@@ -52,7 +41,7 @@ async function validateAttachments(paths) {
   return null;
 }
 
-export async function healthcheck({ moduleConfigs }) {
+export async function healthcheck({ moduleConfigs, sanitizeHealthError }) {
   const cfg = moduleConfigs?.core || {};
   const smtpConfig = {
     host: cfg.smtp_host || null,
@@ -76,11 +65,11 @@ export async function healthcheck({ moduleConfigs }) {
     await transporter.verify();
     return [{ tool: 'email_send', status: 'ok', ms: Date.now() - start }];
   } catch (err) {
-    return [{ tool: 'email_send', status: 'fail', ms: Date.now() - start, error: err.message }];
+    return [{ tool: 'email_send', status: 'fail', ms: Date.now() - start, error: sanitizeHealthError(err) }];
   }
 }
 
-export function register(server, { log, moduleConfigs, isToolEnabled }) {
+export function register(server, { log, moduleConfigs, isToolEnabled, matchesWhitelist }) {
   if (isToolEnabled && !isToolEnabled('email_send')) return;
   const cfg = moduleConfigs?.core || {};
   const smtpConfig = {
@@ -121,6 +110,8 @@ export function register(server, { log, moduleConfigs, isToolEnabled }) {
     },
     async ({ user, to, cc, bcc, attachments, subject, body_html }) => {
       const rejected = findRejectedRecipient(
+        // FAIL-CLOSED: with no matcher wired, no recipient is on the allow list.
+        matchesWhitelist || (() => false),
         whitelist,
         { field: 'to', list: to },
         { field: 'cc', list: cc },

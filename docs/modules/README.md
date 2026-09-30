@@ -61,8 +61,15 @@ bin/agento config:set my_system/tools/mysql_my_prod/pass
 - [config.json format](config-json.md)
 - [Creating a module step-by-step](creating-a-module.md)
 
+### Bundled harness modules
+
+- [The `claude` harness](claude.md) — Claude Code, with the `claude/settings` passthrough
+- [The `codex` harness](codex.md) — OpenAI Codex, with the `codex/config` passthrough
+- [The `pi` harness](pi.md) — Pi, with the `pi/settings` passthrough
+
 ### Bundled channel modules
 
 - [Outlook / Microsoft 365 email channel](outlook.md) — DMARC-gated, allow-listed inbound email channel
 - [Bitbucket Cloud PR-review channel](bitbucket.md) — watches an agent's open PRs and queues review work
 - [GitHub PR-review channel](github.md) — watches an agent's open GitHub PRs and queues review work
+- [Versioned artifacts](versioned-artifacts.md) — drafts, immutable versions, and an atomic current pointer for file trees

@@ -50,7 +50,7 @@ Everything static lives in the module's `di.json`, under one `agent_harnesses` e
         "package": "@openai/codex",
         "binary": "codex",
         "version_env_key": "CODEX_VERSION",
-        "default_range": "0.137.0"
+        "default_range": "0.157.0"
       }
     }
   ]
@@ -100,7 +100,7 @@ The module supplies one object implementing `AgentHarnessAdapter`, which wires t
 | Protocol                  | Responsibility                                                    |
 |---------------------------|-------------------------------------------------------------------|
 | `CommandBuilder`          | `headless(ctx, request)`, `interactive(ctx, *, yolo)` and `stdin_payload(ctx, request)` — **the only** place that harness's CLI invocation exists |
-| `WorkspaceAdapter`        | materializes config + credentials into a build/run dir; owns `owned_paths`, `persistent_home_paths`, `capture_refreshed_credentials`, `serialize_toolbox_connection` |
+| `WorkspaceAdapter`        | materializes config + credentials into a build/run dir; owns `owned_paths`, `persistent_home_paths`, `inject_runtime_params`, `capture_refreshed_credentials`, `serialize_toolbox_connection` |
 | `TranscriptReader`        | parses that harness's own session transcript (optional — `None` when it keeps none) |
 | `StreamRenderer`          | renders one **live stdout event** as terminal text for `agento run --pretty` (optional — omit the member entirely and the run streams raw) |
 | `CredentialAuthenticator` | one per credential-requiring scope: interactive OAuth + `register_from_secret(mode, secret)` |
@@ -108,6 +108,44 @@ The module supplies one object implementing `AgentHarnessAdapter`, which wires t
 
 `descriptor` is deliberately **absent** from the adapter: the framework builds it from
 `di.json` so it can be enumerated without importing the module's Python.
+
+### `inject_runtime_params` — the capability injection point
+
+```python
+def inject_runtime_params(
+    self,
+    artifacts_dir: Path,
+    *,
+    job_id: int | None,
+    run_id: str | None = None,
+    capability_token: str | None = None,
+    toolbox_url: str | None = None,
+) -> None: ...
+```
+
+`capability_token` arrives with the trusted `toolbox_url` it belongs to, and only to an adapter that
+names the keyword (or takes `**kwargs`); an adapter that cannot receive it gets no token and its
+session is refused `401`. `job_id` / `run_id` still scope the run's desk (see below). The build
+directory is shared by every run of the agent_view and therefore carries no claims; this call is where
+the *per-run* credential enters the *copied* config.
+
+The adapter's responsibility is narrow and is a security contract, not a style choice:
+
+- Inject the capability into **the toolbox's own MCP entry only**. Match by **origin and path** —
+  `(scheme, host, port)` equal to the toolbox's, and a path of exactly `/mcp` or `/sse`. Use the
+  framework helpers `toolbox_origin()` / `is_toolbox_endpoint()` from
+  `agento.framework.harness` rather than writing the comparison again.
+- **Never match by substring.** Operators may add third-party MCP servers under
+  `agent_view/mcp/servers`; a `"/mcp" in url` test would hand them the capability. An adapter that
+  injects the token anywhere but our own endpoint is a security defect.
+- **Validate the trusted input first.** `toolbox_origin()` raises on a `toolbox_url` that is not a
+  usable http(s) origin, and the adapter must call it *before* touching any file, so a misconfigured
+  `core/toolbox/url` fails the run loudly instead of scattering the token. Never compare a sentinel:
+  a helper returning `None` on failure would make two failures compare equal and match everything.
+- **Never log the token**, and never write it anywhere but the run's own config file.
+
+An entry the operator added that shadows the `toolbox` key stays legal — it simply fails the endpoint
+test, receives no capability, and is refused `401` by the toolbox. Fail-closed by construction.
 
 ### Adding pretty rendering to a harness
 
@@ -205,6 +243,36 @@ matter:
   form anywhere, so checking for one would never match and would admit the field. A schema
   entry that is not an object is also refused: it carries no `type`, so it cannot be proven
   safe.
+
+Each shipped harness uses this seam for one **native-config passthrough** field, so an
+operator can hand the CLI its own config without new Agento code: `claude/settings`
+(JSON → `.claude/settings.json`), `codex/config` (TOML → `.codex/config.toml`) and
+`pi/settings` (JSON → `$HOME/.pi/agent/settings.json`). Each adapter parses its own
+format, deep-merges the blob **over** the block Agento generates, and **raises** on a
+malformed one — a silently dropped blob is a silently dropped deny-list. See
+[claude](../modules/claude.md), [codex](../modules/codex.md) and [pi](../modules/pi.md).
+
+#### `harness_option` — showing the field where it is set
+
+The passthrough is set per agent_view, so `agento admin` lists it under the **agent_view**
+node, next to the harness selector, and hides the passthroughs belonging to the other
+harnesses. The `system.json` field asks for that itself:
+
+```json
+"settings": { "type": "textarea", "harness_option": true, "label": "…" }
+```
+
+The path does **not** move: it stays `{module}/{field}`, which is what
+`runtime_config_fields` resolves and what `config:set` writes — only the display moves, so
+the field still appears on its own module node too. The condition is the declaring
+module's own `agent_harnesses` entry, read off disk (`modules_declaring`), so no framework
+file names a harness; an unset or unresolvable harness shows every passthrough rather than
+hiding one the operator still needs. Same shape as `provider_option`, one axis up.
+
+Every site that builds a `HarnessRunContext` must carry the resolved dict, or the
+harness's own build-time settings silently revert on that path. That is enforced by an
+AST guard (`tests/unit/framework/test_harness_config_wiring.py`) over every
+`HarnessRunContext(` call in `src/agento/`, with an empty allow-list.
 
 ### One CommandBuilder, not two
 
@@ -322,24 +390,32 @@ Stating the current state precisely, because the protocol table alone reads as t
 hook were already load-bearing:
 
 A workspace build is materialized once per **agent_view**, while the Toolbox URL a run must
-call carries per-job scoping (`?agent_view_id=…&job_id=…`). Two methods divide that work:
+call carries per-run scoping (`?agent_view_id=…&job_id=…`, or `…&run_id=…` for a run with no
+job). Two methods divide that work:
 
 1. `prepare_workspace(...)` writes the build-time configuration. **Today every shipped
    adapter writes its Toolbox wiring directly here** — they do not route it through
    `serialize_toolbox_connection`.
 2. `inject_runtime_params(artifacts_dir, job_id=…)` rewrites that configuration inside the
-   per-run directory, adding the job id. Without this step a run has no job scope at
+   per-run directory, adding the run's scope. Without this step a run has no scope at
    all — its tool calls simply are not attributed to a job (there is no misattribution to
-   another job, since no job builds the agent_view workspace).
+   another job, since no job builds the agent_view workspace), and the toolbox can give it
+   no per-run directory of its own: it falls back to `/workspace/artifacts/_fallback`,
+   which every unscoped session shares, so the `versioned_artifacts` desk tools refuse it
+   with `WORKSPACE_UNAVAILABLE`.
 
    `job_id` is `int | None`: `None` means the run has no job scope, which is what a
-   string-id `agento run` has. An adapter MAY also accept `effective_model` /
+   string-id `agento run` has. Such a run names itself with the optional `run_id` keyword
+   instead — its own unique id, already the last segment of its artifacts dir. Build the
+   scope with `agento.framework.harness.run_scope.scope_toolbox_url(url, job_id, run_id)`
+   rather than formatting the query by hand; it rejects anything that is not one plain path
+   segment, and `_fallback` itself. An adapter MAY also accept `effective_model` /
    `effective_provider` — the per-run values, where a `--model` override beats build-time
    config. Each is passed to any adapter that can receive it, whether by a named parameter
    or by `**kwargs`.
-   **The two rules interact:** `job_id=None` is passed *only* to an adapter declaring a
-   **named** `effective_model` or `effective_provider` matching the override supplied,
-   because otherwise the call has nothing to do. `**kwargs` does not qualify — it is a
+   **The rules interact:** `job_id=None` is passed *only* to an adapter declaring a
+   **named** `run_id`, `effective_model` or `effective_provider` matching what is actually
+   supplied, because otherwise the call has nothing to do. `**kwargs` does not qualify — it is a
    forward-compatibility idiom, and an adapter carrying it may still declare `job_id: int`.
    So an adapter that names an override parameter must also widen `job_id` to `int | None`.
    Both shipped siblings accept `int | None` and return early on `None`.

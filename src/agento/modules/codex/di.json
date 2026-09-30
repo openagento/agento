@@ -24,12 +24,13 @@
         "usage_reporting": true,
         "cost_reporting": false
       },
+      "runtime_config_fields": ["config"],
       "sandbox_package": {
         "manager": "npm",
         "package": "@openai/codex",
         "binary": "codex",
         "version_env_key": "CODEX_VERSION",
-        "default_range": "0.137.0"
+        "default_range": "0.157.0"
       }
     }
   ]

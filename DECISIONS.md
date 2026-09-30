@@ -4,6 +4,99 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-26 — scrypt key derivation for stored secrets
+
+- **Problem.** The AES key for every `obscure` config value and every `credential` row was a bare
+  `SHA-256(AGENTO_ENCRYPTION_KEY)` — no salt, no work factor. One stolen database plus a wordlist or a
+  precomputed table recovers the passphrase, and one derived key opens every row. CodeQL reported it as
+  `py/weak-sensitive-data-hashing` and `js/insufficient-password-hash`.
+- **Fix.** Derive the key with **scrypt** (N=2^14, r=8, p=1, 16-byte random salt per value) and store
+  `aes256s:{salt}:{iv}:{ciphertext}`. scrypt over PBKDF2 because memory hardness (16 MiB per guess) is
+  what defeats GPU cracking; both `hashlib` and Node's `crypto` ship it, so no dependency is added.
+- **Per-value salt, with a cache.** A shared salt would let one derivation open every row. The cost of a
+  per-value salt is one derivation per distinct salt, so both implementations memoize by
+  (passphrase, salt) — `bootstrap()` decrypts many values in one process.
+- **Migration.** `decrypt` still reads the legacy `aes256:` prefix, so a deployment keeps working the
+  moment the code lands; the `core/RekeyToScrypt` data patch then re-encrypts `core_config_data`
+  (`encrypted=1`) and `credential.credentials` on the next `setup:upgrade`. Nothing writes the legacy
+  format any more. Upgrade order matters: the toolbox must be restarted before cron runs the patch,
+  because an old toolbox cannot read a rekeyed value. The legacy read path and the patch are
+  **obsolete in 0.18.0** — by then every deployment that upgraded has been rekeyed. Upgrading
+  across that boundary without passing through a release that ran the patch is not supported.
+- **Both languages change together.** Python encrypts and the toolbox decrypts the same rows, so the
+  parameters are duplicated in `framework/crypto.py` and `toolbox/crypto.js`; changing one alone makes
+  every stored value unreadable by the other container.
+
+---
+
+## 2026-09-25 — One tracked RULES.md with permanent rule IDs
+
+- **Problem: three roles read three rule sets.** The implementer read AGENTS.md, the reviewer read an
+  untracked `agento-code-review/RULES.md` (different in each clone), and the triager read CLAUDE.md and
+  docs. About half of review findings cited no rule, and 3.3% cited AGENTS.md. Loop rounds per task went
+  from 5.25 (June) to 11.7 (August); findings that came back in a later round went from 31% to 49%.
+- **Fix: one tracked `RULES.md` at the repo root.** Every role reads it. AGENTS.md keeps facts (how the
+  system works) and points to it; the skills point to it and keep no copy. Each rule has a permanent ID
+  and a tier (P0 security, P1 architecture/correctness, P2 hygiene). Findings, triage, and comments cite
+  the ID, never a line number, so a citation survives an edit.
+- **Two review principles close the churn loop.** "Judge the change, not the repo": an old violation
+  is reported once as `DEBT` and does not block. "Decisions are binding": a dated entry in this file is
+  approved design, so a finding against it needs new evidence.
+- **Tiers do not gate the verdict.** A "P2 does not block" gate was replayed on 44 past rounds: it saved
+  2, and one of those would have approved a round one step before the reviewer found a P0.
+- **New plan rules:** `EVT-1` (a plan names the event for each state change, or says why none) and
+  `PLC-1` (placement questions: framework, core module, or user module). `PLN-1` (each runtime fact in a
+  plan has proof, or is an `ASSUMPTION` with a spike step) had the largest effect in the replay.
+- **Owner approval:** Marcin Klauza, 2026-09-25 — approved applying the drafted rules and loop changes
+  ("Apply all"), on main first, with `RULES.md` at the repo root.
+
+---
+
+## 2026-09-25 — Harness native-config passthrough (AG-27)
+
+- **Problem: every harness CLI setting needed its own Agento field.** An agent reached the internet
+  through Claude's built-in `WebSearch` (AI-238) although the deployment routes all network access
+  through the Toolbox. Blocking it means writing `permissions.deny` into Claude's `settings.json` —
+  a key Agento never modelled — and the same class of gap exists for every key each CLI adds.
+  Modelling them one by one is endless, and every model is a translation that drifts from the CLI.
+- **Fix: one raw blob per harness, in the harness's own native format.** `claude/settings` (JSON →
+  `.claude/settings.json`), `codex/config` (TOML → `.codex/config.toml`) and `pi/settings`
+  (JSON → `$HOME/.pi/agent/settings.json`). Each adapter parses its own format and deep-merges the
+  operator's blob **over** the block Agento generates, so the operator wins on a collision and a
+  generated key the blob does not mention survives. No Agento-side vocabulary, no drift.
+- **The field lives in the harness module, not in `agent_view`.** Declared in that module's own
+  `system.json` and allow-listed in its `di.json` `runtime_config_fields`, so it arrives through the
+  existing `HarnessRunContext.harness_config` / `prepare_workspace(..., harness_config=…)` seam. An
+  `agent_view/claude/*` entry would put a harness name into the `agent_view` module — CLAUDE.md
+  principle 6. `runtime_config_fields` also refuses an `obscure` field by construction, which is why
+  every field description says: never put a credential here.
+- **A malformed blob fails the workspace build.** Parsing it and moving on would mean an operator's
+  deny-list silently absent — exactly the AI-238 failure mode, dressed as working configuration.
+  This also changes legacy `agent_view/claude/permissions`: an invalid value there used to be logged
+  and skipped and now raises. Breaking for a deployment holding a bad value, deliberately so; the
+  remedy is in `docs/modules/claude.md` and `CHANGELOG.md`. That legacy value also moved from
+  `.claude.json` to `.claude/settings.json`, because Claude ignores `permissions` in `.claude.json`
+  — it never had an effect where it was written.
+- **Codex keeps `--dangerously-bypass-approvals-and-sandbox` unless the operator sets
+  `sandbox_mode`.** The flag overrides `config.toml` wholesale, so a passthrough alone would be dead
+  for Codex; dropping it unconditionally would depend on an unverified claim. Dropping it exactly
+  when the operator expressed a sandbox intent keeps today's behaviour byte-identical by default and
+  makes the block effective when asked for. Agento correspondingly generates **no** `sandbox_mode`
+  or `approval_policy` of its own: the build dir is also the HOME an *interactive* `agento run`
+  uses, so writing "never ask, full access" into the file would silently remove that session's
+  approval prompts — a mode the CLI flag, not the file, had always decided. **The empirical check did not run**: no Codex
+  credential in the pool is accepted by the backend (`403 Forbidden` from
+  `chatgpt.com/backend-api/codex/*`), on the previously pinned 0.137.0 and on 0.157.0 alike, so the
+  probe ends before any command executes. So whether `exec` honours `sandbox_mode` from the file,
+  and whether the OS sandbox blocks network in that image, are **unverified** — documented as such
+  rather than claimed. The reporter observed it on 0.145.0. Removing the flag unconditionally waits
+  on that re-verification.
+- **Every command-building path must carry the resolved dict.** Three of five
+  `HarnessRunContext` sites passed none (`framework/replay.py`, `framework/cli/runtime.py`,
+  `agent_view` `runtime:show`), so the bypass flag would silently come back on exactly the paths an
+  operator uses to reproduce a run — and `pi/builtin_tools` was already being lost there. An AST
+  guard test with an empty allow-list closes the class instead of the three instances. `replay` now
+  **refuses** a job with no `agent_view_id` rather than emit a command that may differ from the run.
 ## 2026-09-25 — One tracked RULES.md with permanent rule IDs
 
 - **Problem: three roles read three rule sets.** The implementer read AGENTS.md, the reviewer read an
@@ -217,6 +310,190 @@ agent_views. Under one uid, that boundary does not exist; Option B is what would
 
 ---
 
+## 2026-09-12 — VersionedArtifacts: the `artifacts` container ships unconditionally, and a disabled module answers 503
+
+- **Decision:** the serving container is written into every rendered `docker-compose.yml` with no
+  per-module condition, and `app/etc/modules.json` is bind-mounted read-only so the server itself
+  refuses to serve when `versioned_artifacts` is disabled.
+- **Why unconditional:** `regenerate_compose` has no per-module service mechanism — `render_compose`
+  (`framework/cli/_provisioning.py`) is placeholder substitution, and "modules declare compose services"
+  is a framework feature this ticket is not buying. The precedent is the existing unconditional
+  `storage/versioned-artifacts` bind mount on the toolbox.
+- **Why the gate exists anyway:** without it, `mo:di versioned_artifacts` removes the tools and leaves
+  every previously published version still answering on loopback, which breaks CLAUDE.md's "every module
+  must be safely disableable". An earlier wording of this deviation claimed a disabled deployment serves
+  "an empty tree" — that is only true before anything is published.
+- **The gate mirrors module enablement, not the `is_enabled` tool gate.** Absent file, absent key or
+  unparseable file all mean SERVE, because `app/etc/modules.json` lists only explicitly toggled modules,
+  so absence is "enabled". The `is_enabled` gate is the one that fails closed; do not conflate them.
+- **Severity, stated honestly:** the port is loopback-only, so the content was reachable only by someone
+  who already has a shell on the host and could read the published tree directly. The gate buys correct
+  disablement semantics and an operator expectation that holds, not a new privilege boundary.
+- **No `networks:`, no `env_file:`, no `environment:` — deliberate, and a comment above the service says
+  so in both compose files.** One `networks:` line added for consistency puts every artifact on
+  `agento-net`, where every agent in every agent_view can read every artifact over plain HTTP with
+  `allowed_artifacts` bypassed for reads, silently and with no audit row.
+
+## 2026-09-12 — VersionedArtifacts: the serving container is `node:http`, not Express
+
+- **Decision:** `server/artifacts-server.js` uses `node:http` plus a small extension→MIME map instead of
+  `express.static`, although `express` is already a toolbox dependency.
+- **Why:** `express` does not resolve under vitest — vite maps the bare specifier to a phantom path at
+  the vitest root and the package's own `require('./lib/express')` then fails (`Cannot find module
+  './lib/express'`). An Express version of this file could carry no test at all, and the plan's test
+  list — symlink refused, dotfile refused, 503 gate, `EINVAL` retry — *is* the security story.
+- **Alternative rejected — a test-only `resolve.alias` in a new `vitest.config.js`.** It works
+  (measured), but it changes module resolution for the whole suite to paper over one quirk, and it would
+  leave the tested path different from the production path.
+- **What Express would have bought is small:** the containment check is ours either way — `send` does
+  zero `lstat`/`realpath` and served a file through a symlink pointing outside the root. What is
+  genuinely absent is `Range`, `ETag` and conditional requests; acceptable for an artifact preview, and
+  recorded here rather than discovered later.
+- **Consequence:** the server has no npm dependency at all, so `/app/modules/core` is a consistency
+  choice, not a module-resolution requirement.
+
+## 2026-09-06 — VersionedArtifacts: Git as the storage engine, invoked only from the toolbox
+
+- **Decision:** back versioned artifacts with the real `git` binary, added to the toolbox image, over a
+  dedicated `storage/versioned-artifacts` volume.
+- **Alternative rejected — `isomorphic-git`.** It has no linked-worktree API, and a draft in PRD §6 *is*
+  a linked worktree: several editable checkouts of one repository, isolated from each other. Emulating
+  that with copies would lose the atomic ref operations the whole design rests on.
+- **Why it is safe:** the agent never receives a generic `git(command)` for this store (PRD §32), and the
+  store is not mounted in its container at all. Every invocation is built by the module with fixed
+  `-c core.hooksPath=/dev/null -c core.symlinks=false` flags and a scrubbed environment (no `HOME`, no
+  global/system config, no credential helper, `GIT_ALLOW_PROTOCOL=none`), so repository content can
+  never execute and no remote can ever be reached.
+
+## 2026-09-06 — VersionedArtifacts: the store is toolbox-only
+
+- **Decision:** mount `storage/versioned-artifacts` into the toolbox and nowhere else — not cron, not the
+  sandbox.
+- **Why:** the toolbox is the only container with secrets and the only one that validates requests. A
+  mount in the sandbox would let the agent read and write versioned content directly, bypassing the
+  `is_enabled` gate, the per-`agent_view` artifact allowlist, the size limits, the locking and the audit
+  trail in one step.
+
+## 2026-09-13 — VersionedArtifacts: the agent owns the whole lifecycle, scoped by a derived namespace
+
+- **Supersedes** the creation half of the 2026-09-06 entry below: creation is no longer withheld from
+  the agent. Artifacts are a collaboration mechanism between agents, and a lifecycle that needs an
+  operator to bootstrap or finalize it is not one — an agent must be able to init, iterate, hand the
+  code to a sub-agent, and publish, unattended.
+- **Decision:** `versioned_artifact_init` is a tool, gated on its own `is_enabled` key like every
+  other. An agent may create `av<agent_view_id>-*` — DERIVED from the session, never configured and
+  never stored — plus anything `allowed_artifacts` grants it, capped by `limits/max_agent_artifacts`.
+- **Why an `owner` marker beside the artifact and not the `owner` column.** The column decorates the
+  store (a failed INSERT keeps the artifact), so it cannot carry authorization. The marker is written
+  inside `init`'s own compensating `try`, so a half-written one takes the artifact with it, and an
+  artifact with no marker is reachable only through `allowed_artifacts` — which is what makes the
+  change need no migration. This replaced an `av<id>-` code PREFIX: the prefix carried ownership in
+  the NAME, so the agent had to know and type it and every artifact wore an operator concern in its
+  URL.
+- **Why the cap counts `filter(mayUse)` and not the store.** A store-wide count answers "how many
+  artifacts does every other agent_view hold" in at most `cap` calls, and — with delete reachable only
+  by an operator — lets one view lock creation out for all of them until a human intervenes. One word of filtering removes both.
+- **Alternative rejected — a `publish/agent_owned` switch.** `save_version` already materializes every
+  saved version into the served tree; `publish` only moves `current`. A switch there would guard an
+  open wall, block the loop this entry exists to enable, and be a second allow-list beside
+  `is_enabled`, which CLAUDE.md forbids. The operator's opt-in is the `is_enabled` pair.
+- **Known limit, deliberate:** `agent_view_id` is asserted by the caller (`?agent_view_id=` on the SSE
+  URL), so the namespace SCOPES cooperating views rather than authorizing them. (Closed by AG-16: the
+  view now comes from the session's capability row.) The fix is
+  session-bound identity in the framework, not a module-local check — see ROADMAP.md.
+- **Cost, accepted:** `artifact:delete` is the operator's alone — destroying an immutable history is
+  not something a self-asserted identity may do — so for an agent the cap is still a one-way ratchet
+  and a human is what resets it.
+
+## 2026-09-06 — VersionedArtifacts: artifact creation is a host command, not an HTTP route
+
+- **Decision:** `artifact:init` runs on the host and pipes a payload into
+  `docker compose exec -T toolbox node …/cli.js`. It stays the operator's equivalent of the tool —
+  it is the only path that can import a host directory as version 1.
+- **Alternative rejected — an Express route on the toolbox.** The toolbox authenticates no caller, so
+  every route it serves is reachable by the agent. A route would have meant handing the toolbox an
+  arbitrary host path to read — which is also why the TOOL takes no `--source` (see the entry above).
+- **Consequence:** the command must not be proxied into cron (which sees neither the host source nor the
+  storage volume), but it is still a *module* command, so it lives in `_LOCAL_MODULE_COMMANDS` — that
+  stops the proxy while leaving the module bootstrap that registers it with argparse intact.
+
+## 2026-09-06 — VersionedArtifacts: no runtime stale-lock breaking
+
+- **Decision:** a held lock is simply held. Abandoned locks are cleared by a sweep at toolbox startup,
+  never by a waiter.
+- **Why:** `mkdir` gives atomic *acquire*, not atomic *break*. Breaking is a read-then-delete pair, and a
+  third process can acquire in the window between them — so a waiter that deletes an aged lock can
+  destroy a lock someone else is actively holding. An ownership token makes *release* safe; it cannot
+  make breaking safe.
+- **Cost, accepted:** an abandoned lock returns `DRAFT_LOCKED` until the next toolbox start. A stuck
+  draft is recoverable by an administrator; two interleaved mutations on one worktree are silent
+  corruption. If this bites in practice the fix is a kernel-backed lock, not a shorter stale timeout.
+
+## 2026-09-06 — VersionedArtifacts: one toolbox instance per `storage_root`
+
+- **Decision:** a given store may be used by exactly one toolbox instance. Recorded in `system.json`
+  field help, the developer doc, and here.
+- **Why:** acquire is safe across processes, but the startup sweep is a check-then-delete pair with no
+  concurrent acquirer *by assumption*. A second toolbox on the same volume can take a lock inside that
+  window and have it deleted underneath a live mutation.
+- **Alternative rejected — a longer stale timeout.** It narrows the window and looks like a fix; it does
+  not close it. Supporting multiple instances needs a real distributed lock, which PRD §28 explicitly
+  scopes out ("one storage/VPS").
+
+## 2026-09-06 — VersionedArtifacts: a version carries no description
+
+- **Decision:** `versioned_artifact_list_versions` returns `{version_id, revision}` only. The label passed
+  to `save_version` is persisted in `versioned_artifact_audit.description`.
+- **Superseded 2026-09-12:** the tool now returns `{version_id, revision, preview_path}` — a third field
+  that says where the version is served, not a label. The decision above still stands for the *label*:
+  no version carries a description of its own.
+- **Why:** a version is a ref pointing at a commit and cannot hold a message of its own. Returning the
+  draft's last change message under the name `description` would hand the caller a field that looks like
+  the label they supplied and is not — the worse of the two failure modes. Inventing a field the PRD
+  does not define is the other.
+- **Forward path:** an annotated tag object per version, whose subject is a real version label.
+
+## 2026-08-23 — Toolbox east-west auth: a DB-backed capability, not a shared secret or a network boundary
+
+Closes the caller-authentication half of the N5-2 internal-caller gap for all four channels at once
+(the co-tenant half — concurrent runs sharing the `agent` UID — stays OPEN) (`jira`, `outlook`, `bitbucket`,
+`github`). Reference: [docs/architecture/zero-trust.md](docs/architecture/zero-trust.md),
+[docs/cli/capability.md](docs/cli/capability.md).
+
+- **The claims move server-side.** `/mcp`, `/sse` and every `/api` route now require a capability token.
+  The toolbox looks the token's SHA-256 hash up in `toolbox_capability` and takes `agent_view_id` and
+  `job_id` from **that row**. A query string or a request body may still carry an `agent_view_id`, but it
+  is only ever *compared* with the capability's scope — a mismatch is refused, never honoured. A caller
+  therefore cannot select a scope it was not issued.
+- **Why a DB capability and not a shared HMAC secret.** A signing key placed in the cron container would
+  sit next to a shell-capable agent, so it is exfiltratable; and one key mints *every* scope, so a single
+  leak grants the whole deployment. A capability is a random opaque string that only the DB can
+  interpret, is minted per run for one view (and one job), expires, and can be revoked at any moment.
+  Nothing reusable ever reaches the agent-adjacent container — which is also why this needs **no new
+  `AGENTO_*` cron env var** (see [docs/architecture/cron-env-contract.md](docs/architecture/cron-env-contract.md)).
+- **Why network segmentation alone was rejected.** Marking `agento-net` internal and exposing only MCP to
+  the sandbox stops an *outsider*, not the agent. The agent must legitimately reach the MCP port, and over
+  that same port it could open a session naming another view. Segmentation cannot authorize; it can only
+  reduce who may ask. It stays a useful defence in depth, not the fix.
+- **Three kinds, least privilege each.** `mcp_job` (a consumer-run job — never mintable by hand, revoked
+  on the job's terminal transition), `mcp_interactive` (one `agento run` session, 12 h), `internal_rest`
+  (Python publishers and channels, 120 s). Scoped `/health` diagnostics accept `internal_rest` only: an
+  MCP kind lives inside the sandbox, and a diagnostic that reports backend reachability would be an
+  infrastructure oracle for the agent.
+- **`/mcp` and `/sse` revoke differently, deliberately.** Streamable HTTP re-verifies on every request, so
+  a revocation is immediate. SSE verifies at connect, so a revocation lands at the next connect. Both are
+  documented rather than papered over; job capabilities are additionally bound to the job's lifetime.
+- **`/config-test` (added in v0.17) joins the guarded set, with a viewless exception.** A config test at
+  the default scope has no view to mint against, so `toolbox_capability.agent_view_id` is nullable for
+  an `internal_rest` row without a job — and only `/config-test` opts in (`allowViewless`). Every other
+  guard still refuses a viewless row, because the lenient loaders read global config for a missing
+  view. `run_id` (the interactive-run desk) stays a query parameter: it names a directory, not a scope.
+- **The token is a credential.** It goes to stdout once, travels onward only by stdin or a mode-0600
+  file, is replaced with `cap=***` in any agent output the framework persists, and is never written to
+  argv, a log, or shell history.
+
+---
+
 ## 2026-08-18 — Job dedupe by SELECT-then-INSERT, not `INSERT IGNORE` (AG-22)
 
 - **`INSERT IGNORE` burns an auto_increment id on every rejected duplicate.** MySQL/InnoDB allocates the
@@ -335,14 +612,10 @@ changes, no schema migrations. Details: [docs/modules/github.md](docs/modules/gi
   DEFAULT only, and nothing in this module asks for a `CONFIG__*` credential override. Setting one is the
   same act that would leak `jira`'s, `outlook`'s or `bitbucket`'s credential today with no guard at all;
   `github` is the only one of the four that detects it and refuses. See ROADMAP.
-- **N5-2, internal-caller auth.** `/sse` and `/mcp` take `agent_view_id` from the query string with no
-  caller authentication (`src/agento/toolbox/server.js:88,126`), and the module REST handlers take it
-  from the body — exactly as `jira`, `outlook` and `bitbucket` do. `bitbucket/module.json` already
-  declares the same eight capabilities behind the same door, so this module adds a credential and a host,
-  not a capability class. The real fix belongs in `server.js` — bind the view to an authenticated
-  caller/session (e.g. a job-scoped token in the MCP URL that `server.js` resolves `agent_view_id` from)
-  — applied **once for all four modules**; doing it inside `github/` alone would create a fourth pattern
-  and protect nobody else. **Owner sign-off 2026-08-13:** this port ships at parity. See ROADMAP.
+- **N5-2, internal-caller auth — CLOSED 2026-08-23.** This port shipped at parity with the residual
+  accepted (owner sign-off 2026-08-13). The framework fix landed later and applies to all four modules
+  at once: every MCP session and every `/api` route needs a capability token, and `agent_view_id` comes
+  from the capability row rather than from a query string or a body. See the 2026-08-23 entry above.
 
 ---
 
@@ -633,7 +906,7 @@ true. Full contract: [docs/architecture/harness-contract.md](docs/architecture/h
 
 Hardens the Outlook channel against cross-user mail exposure in a shared mailbox and against bot-to-bot loops — with **no new DB tables and no persisted thread state**. See [docs/modules/outlook.md](docs/modules/outlook.md).
 
-- **Privacy is by construction — remove enumeration + bind reads to the triggering message, not an ACL.** The leak vector was *enumeration*: `outlook_search_messages` / `outlook_get_new_messages` listed other people's mail (subjects, senders, ids) in a shared mailbox, and `outlook_get_message` would then read any harvested id. Both enumeration tools are removed, and `outlook_get_message`/`outlook_get_attachment` are **hard-bound to the current job's own triggering message** — resolved in the toolbox from `job.reference_id` via `jobId`, with a scope-checked lookup (`WHERE id=? AND agent_view_id=? AND source='outlook'`, fail-closed). A leaked opaque id — or a `jobId` pointing at another view's/channel's job — cannot read another conversation. Chosen over a conversation-ACL gate table (no new state); email self-quoting carries prior thread context inline, so thread-walking is rarely needed. Interactive `agento run` (no `jobId`) is a deliberate, documented **operator escape hatch**, not part of the by-construction guarantee.
+- **Privacy is by construction — remove enumeration + bind reads to the triggering message, not an ACL.** The leak vector was *enumeration*: `outlook_search_messages` / `outlook_get_new_messages` listed other people's mail (subjects, senders, ids) in a shared mailbox, and `outlook_get_message` would then read any harvested id. Both enumeration tools are removed, and `outlook_get_message`/`outlook_get_attachment` are **hard-bound to the current job's own triggering message** — resolved in the toolbox from `job.reference_id` via `jobId`, with a scope-checked lookup (`WHERE id=? AND agent_view_id=? AND source='outlook'`, fail-closed). A leaked opaque id cannot read another conversation. **Since 2026-08-23 `jobId` is not caller-supplied at all** — it comes from the session's capability row (see the toolbox east-west auth entry), so the agent cannot even name another job's id — within its own run's capability (a co-tenant run's token read off the shared workspace is the residual, see zero-trust.md). Chosen over a conversation-ACL gate table (no new state); email self-quoting carries prior thread context inline, so thread-walking is rarely needed. Interactive `agento run` (no `jobId`) is a deliberate, documented **operator escape hatch**, not part of the by-construction guarantee.
 - **One reply verb — reply-to-all.** For a 1:1 mail reply-all == reply; for a group thread it keeps everyone in one thread (the actual goal). `outlook_reply` replies to `(Reply-To || From) ∪ To ∪ Cc` minus the agent's own mailbox; every recipient is gated against `core/email_whitelist`, and **only whitelisted addresses ever receive the reply**. A non-whitelisted recipient is handled per **`outlook/reply_policy`** (agent_view-scoped): `remove` (default) **drops** the blocked address and sends to the rest — so one bad address in a group thread never blocks the whole conversation — while `block` blocks the whole send (the original behavior). The whitelist invariant is identical either way (a blocked address never receives mail); `remove` was made the default because block-whole silently loses the entire reply on one stray Cc, whereas `remove` still reaches the humans on the thread and reports exactly who it dropped (so it is not silent to the agent). All-blocked under `remove` sends nothing and errors (cannot reply to nobody). Applies to `outlook_reply` only — `outlook_send_mail` still blocks the whole send (there the agent chose the addresses explicitly). Targeted 1:1 mail uses `outlook_send_mail`. The single-recipient reply behavior is dropped.
 - **Activation is a pure function; loop-safety is stateless fleet-mailbox detection — no thread-state table, no per-message marker.** The publisher creates a job only when the mail is `direct` (the mailbox, or a `mailbox_aliases` entry, is the sole recipient across To+Cc — strictness via `direct_requires_sole_recipient`) or a `mention` (the `summon_token`, default `@agento`, appears in subject/body-preview); otherwise it stays silent and advances the cursor. Bot-to-bot loops are broken by treating an inbound message as agent-authored when its **DMARC-verified `From` is in the fleet mailbox set** — **auto-derived** by the toolbox delta handler from the active agent_views (the union of each outlook-enabled view's resolved `outlook/outlook_mailbox_user_id`, standard fallback), never a hand-maintained list; such mail is hard-suppressed unless `allow_bot_collaboration=true`. All computed from the current message — no hop counter, no persisted state.
 - **Loop detection is address-based, NOT an outbound HMAC header — because Graph makes `internetMessageHeaders` read-only after create.** The original design stamped a signed `X-Agento` header on outbound mail. Impl review established (Microsoft Graph `message` resource docs: "add custom headers only when creating a message … after the message is sent you cannot modify the headers"; the property is Read-only) that headers can only be set at **create** time, and `createReplyAll`'s JSON `message` param documents only `comment`/`body` (headers only via the MIME path) — so a reliable signed marker on the main *reply* path would require manual MIME construction. Rather than carry that complexity (and an HMAC secret), loop detection keys on the sender address: the `From` is already DMARC-gated, so it can't be spoofed into a false positive, and a false positive only ever *suppresses* a reply (safe direction). This also removes the need for any loop-marker secret entirely (no `OUTLOOK_LOOP_MARKER_SECRET`, no `stamp_loop_marker`), so the SKILL.md §5a secret-decryption concern does not arise for loop-safety at all. Companion fix retained: the Outlook publisher reads its non-secret fields via per-path `.get()` (never `get_module("outlook")`) so it never resolves the Graph secret. Trade-off: the fleet is scoped to **this deployment's** agent_views — a cross-**deployment** peer's mailbox is not part of the auto-derived set, so intra-deployment loops (the primary risk) are covered with **zero config**, while cross-deployment ones fall back to the activation rule.
@@ -648,7 +921,7 @@ A new core, disableable channel that watches an agent's open Bitbucket Cloud PRs
 - **D-2 checkout+push uses the agent_view's configured SSH identity — a different credential from the API token.** (Reworded 2026-08-25: the push identity is `agent_view/identity/ssh_private_key`, **loaded into a per-run `ssh-agent` and never written to disk**; `workspace_build` no longer carries it — see D-SSH-1.) The token (toolbox-only, never agent-reachable) drives all REST work; the SSH key is the agent's own push identity, "opt-in" by being configured. The module does **not** gate git push and the git layer is **not** module-allow-list-enforced (the API write surface is); this boundary is documented rather than overclaimed.
 - **D-3 no schema migrations** — reuse `job` (incl. `requester_*`), `core_config_data`, `ingress_identity`.
 - **D-4 onboarding requires a reachable toolbox to verify-before-save.** Keeps every Bitbucket API call inside the toolbox (the "Python must not hold the token" rule applies to onboarding too). If the toolbox is unreachable, onboarding verifies nothing and saves nothing; the offline path is manual `config:set`.
-- **D-5 the toolbox is the authorization boundary, with NO framework/toolbox edit.** `enabled`, workspace, `account_uuid`, `repo_allowlist` are resolved from scoped config and enforced on every REST + MCP call; caller args/body may only narrow, never authorize. REST handlers call `loadScopedDbOverrides` themselves → have `agentViewMeta` → fail closed (404) on an unknown `agent_view_id`. MCP tools cannot see `agentViewMeta` and the agent (same Docker network as the toolbox) can in principle open its own session with a different/omitted `agent_view_id` — the **framework-wide N5-2 internal-caller-auth gap shared by Jira and Outlook**, explicitly out of scope and not worsened here. The honest guarantee: token toolbox-only; tools opt-in per scope; every read/write bounded to the resolved `repo_allowlist` (fail-closed by config-absence). We do **not** claim MCP "refuses forged views". **Token confinement (hardened in impl review round 2):** the API token is **only ever decrypted in the toolbox** — it is never stored at DEFAULT scope (so the framework's `bootstrap()`, which resolves DEFAULT-scope obscure config in the cron process, never decrypts it), and the publisher resolves only non-secret fields via per-path `.get()` (never `get_module()`, which would resolve the token field). Bitbucket config is therefore always agent_view-scoped (see D-11 update).
+- **D-5 the toolbox is the authorization boundary, with NO framework/toolbox edit.** `enabled`, workspace, `account_uuid`, `repo_allowlist` are resolved from scoped config and enforced on every REST + MCP call; caller args/body may only narrow, never authorize. REST handlers call `loadScopedDbOverrides` themselves → have `agentViewMeta` → fail closed (404) on an unknown `agent_view_id`. MCP tools cannot see `agentViewMeta` and the agent (same Docker network as the toolbox) can in principle open its own session with a different/omitted `agent_view_id` — the **framework-wide N5-2 internal-caller-auth gap shared by Jira and Outlook**, explicitly out of scope for this port. **Closed framework-side on 2026-08-23** (see the entry above): an MCP session now needs a capability token and takes its `agent_view_id` from that row, so MCP *does* refuse a forged view claimed on a session's own capability. The module-level guarantee is unchanged: token toolbox-only; tools opt-in per scope; every read/write bounded to the resolved `repo_allowlist` (fail-closed by config-absence). **Token confinement (hardened in impl review round 2):** the API token is **only ever decrypted in the toolbox** — it is never stored at DEFAULT scope (so the framework's `bootstrap()`, which resolves DEFAULT-scope obscure config in the cron process, never decrypts it), and the publisher resolves only non-secret fields via per-path `.get()` (never `get_module()`, which would resolve the token field). Bitbucket config is therefore always agent_view-scoped (see D-11 update).
 - **D-6 API-token scopes are the granular 2026 names, listed explicitly with no implication** (unlike OAuth, API-token scopes do not grant one another): `read:user:bitbucket`, `read:repository:bitbucket`, `read:pullrequest:bitbucket`, `write:pullrequest:bitbucket` — NOT the deprecated `pullrequest`/`pullrequest:write`/`repository` names. `write:repository` is not requested (no API repo writes; push is SSH).
 - **D-7 two registered channel instances, `.name` == published `job.source`.** The framework resolves a job's channel via `get_channel(job.source)` keyed on the instance `.name` (registry.py / consumer.py). Distinct sources are required for `skip_if_active` lane independence, so `di.json` registers `BitbucketCommentsChannel` (`bitbucket-comments`) and `BitbucketChangesChannel` (`bitbucket-changes`), both subclassing a shared `BitbucketPromptChannel`. A single `.name == "bitbucket"` channel would make every job fail at `get_channel`.
 - **D-8 changes-requested detection via the `/activity` event log, not `participants[]`, order-independent.** `participants[].participated_on` is an approval/last-comment timestamp, not the changes-requested time, and cannot disambiguate multiple reviewers. The fast lane reads a bounded `/activity` window, keeps all non-agent `changes_request` events, and takes `max(date)` client-side (does not assume API sort order). `participants[]` is a cheap pre-filter only. Symmetrically, `last_commit_on = max(commit.date)` over a bounded commits window (not `values[0]`; empty list ⇒ null).

@@ -56,6 +56,7 @@ services:
       - ../workspace/artifacts:/workspace/artifacts
       - ../.venv/lib/python{{ python_version }}/site-packages/agento/toolbox:/opt/agento-toolbox-src:ro
       - ../.venv/lib/python{{ python_version }}/site-packages/agento/modules:/app/modules/core:ro
+      - ../storage/versioned-artifacts:/srv/versioned-artifacts
     security_opt:
       - no-new-privileges:true
     networks:
@@ -103,6 +104,39 @@ services:
         condition: service_healthy
       mysql:
         condition: service_healthy
+    restart: unless-stopped
+
+  # The absence of `networks:`, `env_file:` and `environment:` is DELIBERATE and must stay.
+  # One `networks:` line added for consistency puts every artifact on agento-net, where every
+  # agent in every agent_view can read every artifact over plain HTTP with `allowed_artifacts`
+  # bypassed for reads — silently, with no audit row.
+  # Compose puts a service with no `networks:` key on the project's `default` network, and every
+  # other service here names agento-net, so this container ends up alone there. Measured: the
+  # sandbox cannot even resolve the name `artifacts`.
+  # The service mounts storage/versioned-artifacts/published EXACTLY, never the store root, and
+  # no other module writes into that tree. docker-compose.override.yml is user-owned and Compose
+  # APPENDS volumes, so this mount is the enforcement.
+  # It is added unconditionally because regenerate_compose has no per-module service mechanism;
+  # `mo:di versioned_artifacts` stops it SERVING through the app/etc mount below, not running.
+  artifacts:
+    image: agento-toolbox:${AGENTO_VERSION:-latest}
+    command: ["node", "/app/modules/core/versioned_artifacts/server/artifacts-server.js"]
+    volumes:
+      - ../.venv/lib/python{{ python_version }}/site-packages/agento/modules:/app/modules/core:ro
+      - ../storage/versioned-artifacts/published:/srv/published:ro
+      - ../app/etc:/app/etc:ro
+    ports:
+      - "127.0.0.1:${AGENTO_ARTIFACTS_PORT:-8080}:8080"
+    healthcheck:
+      # The baked HEALTHCHECK probes 3001 and would report this container unhealthy while it
+      # serves fine. A disabled module answers 503 here — unhealthy on purpose, no restart loop.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
   mysql:

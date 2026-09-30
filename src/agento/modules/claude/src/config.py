@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
-from agento.framework.harness import ToolboxConnectionSpec
+from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
+from agento.framework.harness.run_scope import scope_toolbox_url
 
 if TYPE_CHECKING:
     import pymysql
@@ -112,6 +113,21 @@ def _merge_json(legacy: dict[str, Any], current: dict[str, Any]) -> dict[str, An
     return merged
 
 
+def _parse_json_blob(raw: str, path: str) -> dict[str, Any]:
+    """Parse an operator-supplied JSON config blob, or fail the build naming ``path``.
+
+    Deliberately fail-fast: a silently dropped blob is a silently dropped deny-list,
+    i.e. a network block the operator believes is in place and is not.
+    """
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError(f"Invalid JSON in {path}: {e}") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must be a JSON object, got {type(data).__name__}")
+    return data
+
+
 class ClaudeWorkspaceAdapter:
     """Writes Claude Code CLI config files: .claude.json, .claude/settings.json, .mcp.json."""
 
@@ -141,7 +157,7 @@ class ClaudeWorkspaceAdapter:
         captured ``~/.claude.json`` into ``build_dir/.claude.json`` (so Claude
         sees ``oauthAccount`` and considers itself logged in on first run).
         Preserves any agent_view-level keys already in ``.claude.json`` such as
-        ``model``/``systemPrompt``/``permissions`` written by ``prepare_workspace``.
+        ``model``/``systemPrompt`` written by ``prepare_workspace``.
         """
         credentials = credential.credentials or {}
         if credential.type == "anthropic_api_key":
@@ -287,28 +303,29 @@ class ClaudeWorkspaceAdapter:
     ) -> None:
         working_dir.mkdir(parents=True, exist_ok=True)
         self._write_claude_json(working_dir, agent_config)
-        self._write_settings_json(working_dir, agent_config)
-        self._write_mcp_json(
-            working_dir, agent_config,
-            agent_view_id=agent_view_id,
-            toolbox_url=toolbox_url,
-        )
+        self._write_settings_json(working_dir, agent_config, harness_config)
+        self._write_mcp_json(working_dir, agent_config, toolbox_url=toolbox_url)
 
     def inject_runtime_params(
         self,
         artifacts_dir: Path,
         *,
-        job_id: int | None,
+        job_id: int | None = None,
+        run_id: str | None = None,
+        capability_token: str | None = None,
+        toolbox_url: str | None = None,
     ) -> None:
-        """Scope the copied config to one job.
+        """Scope the copied config to one run and hand it the run's toolbox capability.
 
-        ``job_id=None`` means the run has no job scope (a string-id ``agento run``). There
-        is nothing to scope then, so return early rather than render the literal "None"
-        into the config. The framework does not currently make this call for this adapter —
-        it only passes ``None`` to adapters that name an ``effective_*`` override keyword —
-        but the Protocol permits it, so honouring it here keeps the declared type true.
+        ``job_id=None`` means the run has no job scope (a string-id ``agento run``); its
+        ``run_id`` scopes it instead, so the toolbox can still give it a desk of its own.
+        With neither and no capability there is nothing to inject, so return early rather
+        than render the literal "None" into the config.
         """
-        if job_id is None:
+        # Validate the TRUSTED input first, so a misconfigured core/toolbox/url fails the
+        # run whether or not an MCP file happens to exist.
+        target = toolbox_origin(toolbox_url) if capability_token else None
+        if job_id is None and not run_id and not capability_token:
             return
         mcp_path = artifacts_dir / ".mcp.json"
         if not mcp_path.is_file():
@@ -322,9 +339,21 @@ class ClaudeWorkspaceAdapter:
             if not isinstance(server_cfg, dict):
                 continue
             url = server_cfg.get("url")
-            if isinstance(url, str) and ("/sse" in url or "/mcp" in url):
+            if not isinstance(url, str):
+                continue
+            # With a capability: endpoint match, NOT a "/mcp in url" substring test —
+            # operators may add third-party MCP servers, and the toolbox capability must
+            # never travel to one of them.
+            if target is not None:
+                if not is_toolbox_endpoint(url, target):
+                    continue
+            elif not ("/sse" in url or "/mcp" in url):
+                continue
+            url = scope_toolbox_url(url, job_id, run_id)
+            if capability_token:
                 sep = "&" if "?" in url else "?"
-                server_cfg["url"] = f"{url}{sep}job_id={job_id}"
+                url = f"{url}{sep}cap={capability_token}"
+            server_cfg["url"] = url
         mcp_path.write_text(json.dumps(data, indent=2))
 
     def credential_ttl_seconds(self, credential: CredentialRecord) -> int | None:
@@ -436,25 +465,34 @@ class ClaudeWorkspaceAdapter:
         if personality:
             claude_json["systemPrompt"] = personality
 
-        permissions = agent_config.get("claude/permissions")
-        if permissions:
-            try:
-                claude_json["permissions"] = json.loads(permissions)
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("Invalid JSON in agent_view/claude/permissions, skipping")
-
         if claude_json:
             config_path = working_dir / ".claude.json"
             config_path.write_text(json.dumps(claude_json, indent=2) + "\n")
             logger.debug("Generated %s", config_path)
 
     @staticmethod
-    def _write_settings_json(working_dir: Path, agent_config: dict[str, str]) -> None:
+    def _write_settings_json(
+        working_dir: Path,
+        agent_config: dict[str, str],
+        harness_config: dict[str, str] | None = None,
+    ) -> None:
         settings: dict[str, Any] = {}
 
         trust_level = agent_config.get("claude/trust_level")
         if trust_level:
             settings["permissions"] = {"dangerouslySkipPermissions": trust_level == "full"}
+
+        # Legacy passthrough. It used to land in .claude.json, where Claude ignores it.
+        permissions = agent_config.get("claude/permissions")
+        if permissions:
+            settings = _merge_json(
+                settings,
+                {"permissions": _parse_json_blob(permissions, "agent_view/claude/permissions")},
+            )
+
+        blob = (harness_config or {}).get("settings")
+        if blob:
+            settings = _merge_json(settings, _parse_json_blob(blob, "claude/settings"))
 
         if settings:
             settings_dir = working_dir / ".claude"
@@ -468,7 +506,6 @@ class ClaudeWorkspaceAdapter:
         working_dir: Path,
         agent_config: dict[str, str],
         *,
-        agent_view_id: int | None = None,
         toolbox_url: str,
     ) -> None:
         # Auto-inject the toolbox MCP entry; operators can add more (or shadow
@@ -508,13 +545,6 @@ class ClaudeWorkspaceAdapter:
                             continue
                         server_cfg["type"] = derived
                     servers[name] = server_cfg
-
-        if agent_view_id is not None:
-            for server_cfg in servers.values():
-                url = server_cfg.get("url")
-                if isinstance(url, str) and ("/sse" in url or "/mcp" in url):
-                    sep = "&" if "?" in url else "?"
-                    server_cfg["url"] = f"{url}{sep}agent_view_id={agent_view_id}"
 
         mcp_config = {"mcpServers": servers}
         config_path = working_dir / ".mcp.json"

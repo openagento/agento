@@ -49,6 +49,15 @@ _MAYBE_INTERACTIVE_COMMANDS = frozenset({
 })
 
 
+# Host-local commands that are nevertheless provided by a MODULE, so they still
+# need bootstrap() to register them with argparse. Without this split, a module
+# command added to _LOCAL_COMMANDS would skip module registration entirely and
+# argparse would report it as unknown.
+_LOCAL_MODULE_COMMANDS = frozenset({
+    "artifact:init", "artifact:list", "artifact:publish", "artifact:delete", "artifact:auth",
+})
+
+
 def _get_command(argv: list[str]) -> str | None:
     """Extract command name from argv (first non-flag arg)."""
     parts = [a for a in argv if not a.startswith("-")]
@@ -64,7 +73,7 @@ def _should_proxy(argv: list[str]) -> bool:
     if "--local" in argv:
         return False  # Escape hatch
     cmd = _get_command(argv)
-    return cmd is not None and cmd not in _LOCAL_COMMANDS
+    return cmd is not None and cmd not in (_LOCAL_COMMANDS | _LOCAL_MODULE_COMMANDS)
 
 
 def _proxy_to_docker(argv: list[str]) -> None:
@@ -114,6 +123,7 @@ def _register_framework_commands() -> None:
     """Register framework commands directly (no bootstrap needed)."""
     from ..admin import AdminCommand
     from ..commands import register_command
+    from .capability import CapabilityMintCommand, CapabilityRevokeCommand
     from .compose import DownCommand, LogsCommand, UpCommand
     from .config import (
         ConfigGetCommand,
@@ -170,6 +180,7 @@ def _register_framework_commands() -> None:
         CredentialRegisterCommand, CredentialRefreshCommand, CredentialListCommand,
         CredentialDeregisterCommand, CredentialMarkErrorCommand, CredentialResetCommand,
         CredentialSetPriorityCommand, CredentialUsageCommand,
+        CapabilityMintCommand, CapabilityRevokeCommand,
         # Hidden `token:*` aliases, kept for one cycle (ROADMAP.md).
         *LEGACY_TOKEN_COMMANDS,
     ]:
@@ -177,13 +188,14 @@ def _register_framework_commands() -> None:
 
 
 _GROUP_ORDER = [
-    "project", "setup", "module", "config", "credential",
+    "project", "setup", "module", "config", "credential", "capability",
     "ingress", "job", "jira", "test",
 ]
 
 _GROUP_LABELS = {
     "project": "Project", "setup": "Setup", "module": "Modules",
-    "config": "Configuration", "credential": "Credentials", "ingress": "Ingress",
+    "config": "Configuration", "credential": "Credentials",
+    "capability": "Capabilities", "ingress": "Ingress",
     "job": "Jobs", "jira": "Jira", "test": "Testing",
 }
 

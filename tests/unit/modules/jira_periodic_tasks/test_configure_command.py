@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -46,6 +46,8 @@ def _scoped_factory(instances, *, default=None, per_view=None):
 
 
 _UNSET = object()
+_ONE_VIEW_WITH_GLOB = {1: {"jira/enabled": "true", "jira/jira_projects": '["GLOB"]'}}
+_CFG = "agento.modules.jira_periodic_tasks.src.commands.configure"
 
 
 def _patch_deps(stack, *, periodic=None, admin=_UNSET, report=None, projects_default=None,
@@ -64,7 +66,10 @@ def _patch_deps(stack, *, periodic=None, admin=_UNSET, report=None, projects_def
                                    return_value={}),
         "config_set": patch("agento.framework.core_config.config_set"),
         "get_active_avs": patch("agento.framework.workspace.get_active_agent_views",
-                                return_value=avs if avs is not None else []),
+                                return_value=avs if avs is not None else [_agent_view(1, "dev")]),
+        # The reachability probe runs as a real view and mints a capability for it.
+        "rest_cap": patch("agento.modules.jira_periodic_tasks.src.commands.configure.rest_capability",
+                          lambda *a, **k: nullcontext("cap")),
         "toolbox": patch("agento.modules.jira.src.toolbox_client.ToolboxClient"),
         "configurer": patch("agento.modules.jira_periodic_tasks.src.configure.JiraPeriodicConfigurer"),
         "render": patch("agento.modules.jira_periodic_tasks.src.configure.render_report",
@@ -134,11 +139,13 @@ def test_skip_view_with_unparseable_projects():
         assert m["configurer"].call_args.kwargs["projects"] == ["BUG"]
 
 
-def test_fallback_to_global_when_no_views():
+def test_without_any_agent_view_it_exits_and_never_configures():
+    """No global fallback: the toolbox scopes every call to a capability, and a
+    capability needs a view."""
     with ExitStack() as stack:
         m = _patch_deps(stack, avs=[], projects_default='["GLOB"]')
-        _run(_args())
-        assert m["configurer"].call_args.kwargs["projects"] == ["GLOB"]
+        assert _run(_args()) == 1
+        m["configurer"].return_value.run.assert_not_called()
 
 
 def test_project_arg_overrides_derivation():
@@ -147,8 +154,8 @@ def test_project_arg_overrides_derivation():
         m = _patch_deps(stack, avs=[av1], per_view={1: {"jira/enabled": "true", "jira/jira_projects": '["AI"]'}})
         _run(_args(project=["ONLY"]))
         assert m["configurer"].call_args.kwargs["projects"] == ["ONLY"]
-        # derivation short-circuited: no per-view ScopedConfigService built (only default cfg)
-        assert m["get_active_avs"].call_count == 0
+        # derivation short-circuited: the only view lookup left is the probe's own
+        assert m["get_active_avs"].call_count == 1
 
 
 def test_positional_project_used():
@@ -156,7 +163,7 @@ def test_positional_project_used():
         m = _patch_deps(stack)
         _run(_args(projects=["DEV"]))
         assert m["configurer"].call_args.kwargs["projects"] == ["DEV"]
-        assert m["get_active_avs"].call_count == 0  # explicit → no derivation
+        assert m["get_active_avs"].call_count == 1  # explicit → probe lookup only
 
 
 def test_positional_and_flag_unioned():
@@ -168,7 +175,7 @@ def test_positional_and_flag_unioned():
 
 def test_reads_config_via_per_path_never_get_module():
     with ExitStack() as stack:
-        m = _patch_deps(stack, projects_default='["GLOB"]')
+        m = _patch_deps(stack, per_view=_ONE_VIEW_WITH_GLOB)
         _run(_args())
         # get_module_config only ever asked for the secret-free periodic module
         assert all(c.args[0] == "jira_periodic_tasks" for c in m["get_module_config"].call_args_list)
@@ -181,54 +188,54 @@ def test_reads_config_via_per_path_never_get_module():
 
 def test_empty_projects_exits_0():
     with ExitStack() as stack:
-        _patch_deps(stack, avs=[], projects_default=None)  # no global projects either
+        _patch_deps(stack, per_view={1: {}})  # a view, but no jira projects on it
         assert _run(_args()) == 0
 
 
 def test_check_inconsistent_exits_1():
     with ExitStack() as stack:
-        _patch_deps(stack, projects_default='["GLOB"]',
+        _patch_deps(stack, per_view=_ONE_VIEW_WITH_GLOB,
                     report=ConfigureReport(resolved_field_id="f", inconsistent=True))
         assert _run(_args(check=True)) == 1
 
 
 def test_check_incomplete_exits_1():
     with ExitStack() as stack:
-        _patch_deps(stack, projects_default='["GLOB"]',
+        _patch_deps(stack, per_view=_ONE_VIEW_WITH_GLOB,
                     report=ConfigureReport(resolved_field_id="f", incomplete=True))
         assert _run(_args(check=True)) == 1
 
 
 def test_check_clean_exits_0():
     with ExitStack() as stack:
-        _patch_deps(stack, projects_default='["GLOB"]',
+        _patch_deps(stack, per_view=_ONE_VIEW_WITH_GLOB,
                     report=ConfigureReport(resolved_field_id="f"))
         assert _run(_args(check=True)) == 0
 
 
 def test_apply_success_exits_0():
     with ExitStack() as stack:
-        _patch_deps(stack, projects_default='["GLOB"]',
+        _patch_deps(stack, per_view=_ONE_VIEW_WITH_GLOB,
                     report=ConfigureReport(resolved_field_id="f", failed=False))
         assert _run(_args()) == 0
 
 
 def test_apply_failed_exits_1():
     with ExitStack() as stack:
-        _patch_deps(stack, projects_default='["GLOB"]',
+        _patch_deps(stack, per_view=_ONE_VIEW_WITH_GLOB,
                     report=ConfigureReport(resolved_field_id="f", failed=True))
         assert _run(_args()) == 1
 
 
 def test_apply_without_admin_exits_1():
     with ExitStack() as stack:
-        _patch_deps(stack, projects_default='["GLOB"]', admin=None)
+        _patch_deps(stack, per_view=_ONE_VIEW_WITH_GLOB, admin=None)
         assert _run(_args()) == 1  # apply requires admin
 
 
 def test_toolbox_unreachable_exits_1():
     with ExitStack() as stack:
-        _patch_deps(stack, projects_default='["GLOB"]', toolbox_error=Exception("refused"))
+        _patch_deps(stack, per_view=_ONE_VIEW_WITH_GLOB, toolbox_error=Exception("refused"))
         assert _run(_args(check=True)) == 1
 
 
@@ -237,7 +244,7 @@ def test_toolbox_unreachable_exits_1():
 def test_persists_field_and_status_in_apply():
     with ExitStack() as stack:
         m = _patch_deps(
-            stack, projects_default='["GLOB"]',
+            stack, per_view=_ONE_VIEW_WITH_GLOB,
             periodic=_periodic(status="", field=""),  # nothing stored yet → both change
             report=ConfigureReport(resolved_field_id="customfield_NEW", field_created=True),
         )
@@ -249,7 +256,7 @@ def test_persists_field_and_status_in_apply():
 
 def test_check_does_not_persist():
     with ExitStack() as stack:
-        m = _patch_deps(stack, projects_default='["GLOB"]',
+        m = _patch_deps(stack, per_view=_ONE_VIEW_WITH_GLOB,
                         periodic=_periodic(status="", field=""),
                         report=ConfigureReport(resolved_field_id="customfield_NEW"))
         _run(_args(check=True))
@@ -259,7 +266,7 @@ def test_check_does_not_persist():
 def test_persistence_guarded_on_failed_run():
     with ExitStack() as stack:
         m = _patch_deps(
-            stack, projects_default='["GLOB"]',
+            stack, per_view=_ONE_VIEW_WITH_GLOB,
             periodic=_periodic(status="Periodic", field="customfield_OLD"),
             report=ConfigureReport(resolved_field_id=None, failed=True),  # field creation failed
         )
@@ -270,7 +277,7 @@ def test_persistence_guarded_on_failed_run():
 def test_no_change_no_persist():
     with ExitStack() as stack:
         m = _patch_deps(
-            stack, projects_default='["GLOB"]',
+            stack, per_view=_ONE_VIEW_WITH_GLOB,
             periodic=_periodic(status="Periodic", field="customfield_10709"),
             report=ConfigureReport(resolved_field_id="customfield_10709"),  # unchanged
         )
@@ -280,6 +287,6 @@ def test_no_change_no_persist():
 
 def test_conn_closed_in_finally():
     with ExitStack() as stack:
-        m = _patch_deps(stack, projects_default='["GLOB"]')
+        m = _patch_deps(stack, per_view=_ONE_VIEW_WITH_GLOB)
         _run(_args())
         m["get_conn"].return_value.close.assert_called_once()

@@ -60,10 +60,19 @@
 | `workspace:build --agent-view <code> \| --all` | Build materialized workspace ([details](workspace-build.md)) |
 | `workspace:build-status [--agent-view <code>]` | Show workspace build history ([details](workspace-build.md)) |
 | `workspace:ssh-purge [--dry-run]` | **Deprecated (removal in v0.17+)** — delete SSH private keys left on disk by older versions ([details](workspace-build.md#workspacessh-purge)) |
+| **Versioned artifacts** | |
+| `artifact:init <artifact_code> [--source <dir>]` | Create a versioned artifact from a host directory; operator equivalent of `versioned_artifact_init` ([details](artifact-init.md)) |
+| `artifact:list` | List the artifacts the store holds ([details](artifact-list.md)) |
+| `artifact:delete <artifact_code>` | Remove an artifact, its versions and its served pages; asks first, and has no tool equivalent ([details](artifact-delete.md)) |
+| `artifact:publish <artifact_code> <version_id> --expected <version_id>` | Point an artifact's current at a version ([details](artifact-publish.md)) |
+| `artifact:auth <artifact_code> [--user <u>] [--pass <p>] [--disable] [--show]` | Set, rotate, show or disable an artifact's HTTP Basic auth; has no tool equivalent ([details](artifact-auth.md)) |
 | **Admin** | |
 | `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |
 | `config:resolve <module> [--scope=S] [--scope-id=N] [--json]` | Resolve effective config values with source info |
+| **Capabilities** | |
+| `capability:mint --kind K --agent-view C [--ttl N]` | Mint a toolbox capability token; prints it on stdout ([details](capability.md)) |
+| `capability:revoke` | Revoke a capability — reads the raw token from **stdin** ([details](capability.md)) |
 | **Jobs** | |
 | `job:list [--status S] [--source SRC] [--agent-view C] [--limit N]` | List recent jobs; surfaces failed/dead jobs with their error ([details](job-pause-resume.md)) |
 | `job:pause <job_id>` | Pause a running job (SIGTERM, keep session) ([details](job-pause-resume.md)) |
@@ -72,12 +81,14 @@
 | `consumer` | Start job consumer loop |
 | `jira:periodic:sync` | Sync Jira recurring tasks to crontab |
 | `jira:periodic:configure [--check] [--project K]... [K ...]` | Create/verify the periodic status + Frequency field and sync its options from `frequency_map` across projects (setup command; uses the Jira admin token — `jira/jira_admin_token` paired with `jira/jira_admin_user`, falling back to `jira/jira_user`). Project keys may be given positionally or via `--project`. `--check` = read-only report, exit 1 on any inconsistency or if it could not be verified |
-| `publish <kind>` | Publish a job (jira-cron, jira-todo, jira-mention) |
+| `publish <kind> [--agent-view C]` | Publish a job (jira-cron, jira-todo, jira-mention). Publishing is **per-view**: a deployment with no active agent_view fails with an actionable message instead of publishing on global config |
 | `bitbucket:publish-comments [--agent-view C] [--top N]` | Sweep open PRs for unanswered reviewer feedback ([details](../modules/bitbucket.md)) |
 | `bitbucket:publish-changes [--agent-view C] [--top N]` | Detect reviewer "changes requested" on open PRs (fast lane) ([details](../modules/bitbucket.md)) |
 | `github:publish-comments [--agent-view C] [--top N]` | Sweep open PRs for unanswered reviewer feedback ([details](../modules/github.md)) |
 | `github:publish-changes [--agent-view C] [--top N]` | Detect an outstanding reviewer "changes requested" on open PRs (fast lane) ([details](../modules/github.md)) |
 | `exec:todo [key]` | Execute next TODO task |
+| `replay <job_id>` | Replay a completed job. **Refuses** a job whose `agent_view_id` is NULL (pre-0.15 rows and stubs): the harness's own config — and therefore the exact command — cannot be resolved for it, and a replay that silently differs from the run it claims to reproduce is worse than none |
+| `exec:todo [key] [--agent-view C]` | Execute next TODO task. `--agent-view` names the acting view; it is **required** when more than one active view exists, and there is no global fallback ([details](../architecture/zero-trust.md)) |
 | `replay <job_id>` | Replay a completed job |
 | `e2e` | Run end-to-end tests |
 
