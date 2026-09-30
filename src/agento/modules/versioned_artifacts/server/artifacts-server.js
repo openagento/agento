@@ -236,7 +236,9 @@ export function createArtifactsServer({
     const reserved = !(openedKey && opened.has(openedKey));
     if (reserved && !failures.take(address)) return text(res, 429);
     let failed = false;
-    if (reserved) res.on('close', () => { if (!failed) failures.refund(address); });
+    // 'finish', not 'close': an aborted request keeps its reservation, so dropping the
+    // connection before the answer cannot buy scrypt work for free.
+    if (reserved) res.on('finish', () => { if (!failed) failures.refund(address); });
     const fail = (code) => { failed = true; return text(res, code); };
     if (route === null) return fail(404);
 
@@ -251,6 +253,8 @@ export function createArtifactsServer({
     if (!sidecar || sidecar.share !== route.token) return fail(404);
     if (!cred || !verify(sidecar, cred.user, cred.password)) {
       failed = true;
+      // A known credential that fails now (rotated, or auth changed) is forgotten and counted.
+      if (!reserved) { opened.delete(openedKey); failures.take(address); }
       return challenge(res, headOnly);
     }
     opened.add(openedKey);

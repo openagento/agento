@@ -71,6 +71,7 @@ export function createRecentSet({ ttlMs = RECENT_MS, maxKeys = MAX_KEYS, now = D
       }
       store.set(key, now() + ttlMs);
     },
+    delete(key) { store.delete(key); },
     sweep,
   };
 }

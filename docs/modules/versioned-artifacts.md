@@ -437,9 +437,10 @@ origin per share keeps one share's script from replaying another's credential.
 * The artifacts server counts failed requests per client address (60 a minute) and requests
   per presented credential (600 a minute), and answers `429` past either (SEC-12). The counters
   are bounded in memory. One failure is reserved before the work and given back when the answer
-  is not a failure, so concurrent requests cannot all pass. A credential that opened its share in
-  the last 15 minutes, and every app file (`web` authorized it already), skip the address count:
-  callers behind one address never throttle each other's authorized traffic.
+  is not a failure, so concurrent requests cannot all pass; an aborted request keeps it. A
+  credential that opened its share in the last 15 minutes, and every app file (`web` authorized
+  it already), skip the address count: callers behind one address never throttle each other's
+  authorized traffic. A known credential that then fails (rotated) is forgotten and counted.
 
 Setting, rotating, showing or disabling auth is operator-only — the
 [`artifact:auth`](../cli/artifact-auth.md) CLI, with **no tool equivalent**, so a

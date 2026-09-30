@@ -155,6 +155,31 @@ describe('rate limits (SEC-12)', () => {
     expect((await get(`/s/${TOKEN}/`, from('10.0.0.6', GOOD()))).status).toBe(200);
   });
 
+  it('forgets an opened credential once it fails, so it returns to the address limit', async () => {
+    await start(small);
+    expect((await get(`/s/${TOKEN}/`, from('10.0.0.8', GOOD()))).status).toBe(200);
+    await writeSidecar({ user: 'site', ...auth.hashSecret('pw2'), share: TOKEN }); // rotated
+    const codes = [];
+    for (let i = 0; i < 4; i++) codes.push((await get(`/s/${TOKEN}/`, from('10.0.0.8', GOOD()))).status);
+    expect(codes).toEqual([401, 401, 401, 429]);
+  });
+
+  it('keeps the reservation of an aborted request', async () => {
+    const slow = { ...(await import('node:fs/promises')) };
+    const readFile = slow.readFile;
+    slow.readFile = async (...a) => { await new Promise((r) => setTimeout(r, 100)); return readFile(...a); };
+    await start({ ...small, fs: slow });
+    verified = 0;
+    for (let i = 0; i < 3; i++) {
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(), 20);
+      await fetch(`${base}/s/${TOKEN}/`, { headers: from('10.0.0.9', { authorization: authHeader('site', `a${i}`) }), signal: ac.signal })
+        .catch(() => {});
+    }
+    await new Promise((r) => setTimeout(r, 400)); // let the aborted work finish
+    expect((await get(`/s/${TOKEN}/`, from('10.0.0.9', { authorization: authHeader('site', 'x') }))).status).toBe(429);
+  });
+
   it('reserves before the work, so concurrent bad credentials cannot all pass the limit', async () => {
     await start(small);
     verified = 0;
