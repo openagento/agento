@@ -4,7 +4,10 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:                       # job_types imports this module: runtime would cycle
+    from .job_types import JobTypeLike
 
 
 def normalize_email(value: str | None) -> str | None:
@@ -58,7 +61,9 @@ class JobStatus(Enum):
 class Job:
     id: int
     schedule_id: int | None
-    type: AgentType
+    # A built-in resolves to its AgentType member; a module-declared type to a
+    # ModuleJobType. Both satisfy JobTypeLike (framework/job_types.py).
+    type: JobTypeLike
     source: str
     agent_view_id: int | None
     priority: int
@@ -91,12 +96,16 @@ class Job:
     requester_email: str | None = None
     requester_trust: RequesterTrust = RequesterTrust.CLAIMED
     requester_meta: dict[str, Any] | None = None
+    # Not a `job` column: the id the execution-hook provider minted for THIS attempt (§5.1).
+    # It is carried on the job because the mint and the finalize sit in different scopes of
+    # the consumer, and `None` - no provider registered - is the framework's own behaviour.
+    execution_id: str | None = None
 
     @classmethod
     def stub(
         cls,
         *,
-        type: AgentType,
+        type: JobTypeLike,
         source: str,
         reference_id: str | None = None,
         agent_view_id: int | None = None,
@@ -119,6 +128,8 @@ class Job:
 
     @classmethod
     def from_row(cls, row: dict) -> Job:
+        from .job_types import resolve_job_type
+
         requester_meta = row.get("requester_meta")
         if isinstance(requester_meta, str):
             requester_meta = json.loads(requester_meta)
@@ -131,7 +142,8 @@ class Job:
         return cls(
             id=row["id"],
             schedule_id=row["schedule_id"],
-            type=AgentType(row["type"]),
+            # Local import: job_types imports AgentType from here (PRD E3-E5 §4.2).
+            type=resolve_job_type(row["type"]),
             source=row["source"],
             agent_view_id=row.get("agent_view_id"),
             priority=row.get("priority", 50),

@@ -114,6 +114,11 @@ def _coerce_type(value: str, field_type: str) -> Any:
     """Coerce a string value to the declared field type."""
     if field_type == "integer":
         return int(value)
+    if field_type == "number":
+        # Without this branch an ENV or DB value stays a `str` while the same field's
+        # `config.json` default arrives as a float, so one field has two types depending
+        # on which source answered.
+        return float(value)
     if field_type == "boolean":
         return value.lower() in ("1", "true", "yes")
     if field_type == "json":
@@ -218,6 +223,51 @@ def _resolve_from_db(
     return value, True
 
 
+class MissingBoundedDefault(RuntimeError):
+    """A bounded field has no ``config.json`` value to fall back to.
+
+    Serving an unbounded value instead would be the one thing the bound exists to
+    prevent, so resolution fails closed (SEC-9).
+    """
+
+
+_REJECT = object()
+
+
+def _is_bounded(field_schema: dict) -> bool:
+    return field_schema.get("min") is not None or field_schema.get("max") is not None
+
+
+def _checked_dynamic(
+    module_name: str, field_name: str, field_schema: dict, raw: str, source: str
+) -> Any:
+    """Coerce an ENV/DB value and check the field's declared bounds (PRD E3-E5 §3.3).
+
+    Returns ``_REJECT`` when the value is unparseable, the wrong type, or outside the
+    range: nothing validated it, so it is not served. Only the two DYNAMIC sources go
+    through here - the ``config.json`` default is validated statically by
+    ``module:validate``, which is what makes it safe to fall back to.
+    """
+    field_type = field_schema.get("type", "string")
+    bounded = _is_bounded(field_schema)
+    # Conversion first: a bound compares numbers, and "abc" is out of every range.
+    try:
+        value = _coerce_type(raw, field_type)
+    except (TypeError, ValueError):
+        if not bounded:
+            raise
+        logger.warning(
+            "Ignoring %s value for %s/%s: not a valid %s", source, module_name, field_name, field_type
+        )
+        return _REJECT
+    if bounded:
+        error = numeric_bound_error(field_name, field_schema, value)
+        if error is not None:
+            logger.warning("Ignoring %s value for %s/%s: %s", source, module_name, field_name, error)
+            return _REJECT
+    return value
+
+
 def resolve_field(
     module_name: str,
     field_name: str,
@@ -226,7 +276,6 @@ def resolve_field(
     db_overrides: dict[str, tuple[str, bool]],
 ) -> ResolvedValue:
     """Resolve a single module config field using 3-level fallback."""
-    field_type = field_schema.get("type", "string")
 
     # 0. Only the toolbox may hold this value. Return BEFORE the ENV read and before the
     # DB read, so neither the credential store nor the decryptor is ever touched for it.
@@ -234,23 +283,36 @@ def resolve_field(
         return ResolvedValue(value=None, source="toolbox_only")
 
     # 1. ENV var (highest priority), unless the field opted out of the ENV source
+    rejected = False
     if env_allowed(field_schema):
         env_val = store_env.get(_env_key(module_name, field_name))
         if env_val is not None:
-            return ResolvedValue(value=_coerce_type(env_val, field_type), source="env")
+            value = _checked_dynamic(module_name, field_name, field_schema, env_val, "env")
+            if value is not _REJECT:
+                return ResolvedValue(value=value, source="env")
+            # A rejected ENV value does not hand the field to the DB row below it: the
+            # only value known good is the config.json default.
+            rejected = True
 
     # 2. DB override
-    db_val, found = _resolve_from_db(
-        _db_path(module_name, field_name), db_overrides
-    )
-    if found and db_val is not None:
-        return ResolvedValue(value=_coerce_type(db_val, field_type), source="db")
+    if not rejected:
+        db_val, found = _resolve_from_db(
+            _db_path(module_name, field_name), db_overrides
+        )
+        if found and db_val is not None:
+            value = _checked_dynamic(module_name, field_name, field_schema, db_val, "db")
+            if value is not _REJECT:
+                return ResolvedValue(value=value, source="db")
 
     # 3. config.json default
     cfg_val = config_defaults.get(field_name)
     if cfg_val is not None:
         return ResolvedValue(value=cfg_val, source="config.json")
 
+    if _is_bounded(field_schema):
+        raise MissingBoundedDefault(
+            f"{module_name}/{field_name} declares a bound but config.json has no default"
+        )
     return ResolvedValue(value=None, source="none")
 
 

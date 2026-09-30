@@ -37,6 +37,8 @@ def modules_dir(tmp_path, monkeypatch):
     # agent_view-like module with slash-containing schema keys (system.json)
     av_dir = core_dir / "agent_view"
     av_dir.mkdir()
+    # A directory is a module only with a manifest — that is what the one discovery selects.
+    (av_dir / "module.json").write_text(json.dumps({"name": "agent_view"}))
     (av_dir / "system.json").write_text(json.dumps({
         "identity/ssh_private_key": {
             "type": "obscure",

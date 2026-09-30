@@ -50,6 +50,25 @@ class EventManager:
                     event_name,
                 )
 
+    def dispatch_with_result(self, event_name: str, event: object) -> bool:
+        """Dispatch, and tell the caller whether every observer completed.
+
+        `dispatch()` swallows a failure because most events are notifications: a broken
+        observer must not break the job it is watching. This one hands the failure back,
+        for the caller that must treat "the observer could not decide" as a decision of its
+        own (PRD E3-E5 §4.4). It is otherwise the same dispatch, in the same order.
+        """
+        ok = True
+        for entry in self._observers.get(event_name, []):
+            try:
+                entry.observer_class().execute(event)
+            except Exception:
+                ok = False
+                logger.exception(
+                    "Observer %r failed for event %r", entry.name, event_name,
+                )
+        return ok
+
     def observer_count(self, event_name: str) -> int:
         return len(self._observers.get(event_name, []))
 

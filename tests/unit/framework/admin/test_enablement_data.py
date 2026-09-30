@@ -70,15 +70,10 @@ class TestScanToolsByToolset:
                 {"name": "mysql_wms"},  # no toolset -> falls back to module name "erp"
             ]),
         ]
-        # scan_modules is called once per modules dir; return the fakes on the
-        # first call and nothing afterwards, regardless of how many dirs exist.
-        calls = {"n": 0}
-
-        def _scan(_dir):
-            calls["n"] += 1
-            return manifests if calls["n"] == 1 else []
-
-        with patch("agento.framework.module_loader.scan_modules", side_effect=_scan), patch(
+        # Patched at `scan_all_modules`, the ONE discovery path: a per-root scan here
+        # would pass while the screen read a different module set than the toolbox gate.
+        with patch("agento.framework.module_discovery.scan_all_modules",
+                   return_value=manifests), patch(
             "agento.framework.module_status.filter_enabled", side_effect=lambda x: x
         ):
             groups = _scan_tools_by_toolset()

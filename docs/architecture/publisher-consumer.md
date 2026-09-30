@@ -13,7 +13,7 @@ Publisher (cron, every minute)
     │
     ▼
 MySQL (jobs table)
-    │  INSERT IGNORE (idempotent)
+    │  SELECT-then-INSERT on idempotency_key
     │
     ▼
 Consumer (loop, poll every 5s)
@@ -36,7 +36,48 @@ Each job has a unique key preventing duplicates:
 jira:{type}:{issue_key}:{time_window|comment_id}
 ```
 
-`INSERT IGNORE` ensures the same task isn't queued twice within a time window.
+The unique key on `idempotency_key` ensures the same task isn't queued twice within a time
+window. The publisher checks with a `SELECT` first and only then inserts, catching the
+`IntegrityError` a racing insert raises: `INSERT IGNORE` would burn an auto_increment id on
+every rejected duplicate (see DECISIONS.md, AG-22).
+
+### Two entry points, one insert
+
+| Function | Returns | Also writes |
+|---|---|---|
+| `publisher.publish(...)` | `True` if inserted, `False` if duplicate | nothing |
+| `publish_service.publish_job(...)` | the job **id**, existing or new | a `job.queued` row in `job_event_outbox`, **in the insert's transaction** |
+
+A caller that must then point a row at the job (a conversation message waiting on its turn)
+needs the id, and needs the announcement to commit with the job or not at all. Both share
+`publisher.insert_job()`, so a job row is still born in exactly one place.
+
+## Job Types
+
+The four built-ins are `cron`, `todo`, `followup` and `blank`. A module may add its own —
+`job.type` is a `VARCHAR(32)`, not an enum (migration `043`).
+
+```jsonc
+// <module>/di.json
+{
+  "job_types": ["conversation"],
+  "workflows": [{ "type": "conversation", "class": "src.workflow.ConversationWorkflow" }]
+}
+```
+
+- **Grammar:** lowercase letters and underscores, starting with a letter, at most 32 characters.
+- **`job_types` declares; `workflows` binds.** A `workflows` entry whose `type` is a built-in
+  *replaces* that built-in's workflow (`modules/jira_periodic_tasks` does this for `cron`) — it
+  declares nothing. Only `job_types` adds a value to the vocabulary.
+- **Collisions are refused at `module:validate`:** a built-in's value, or a value another enabled
+  module already declares. The load order would otherwise decide whose workflow runs a job.
+- **Unknown at runtime fails closed** with `JobTypeUnknown`, the same shape `get_channel()` raises
+  for an unregistered source.
+- **Compatibility:** a built-in resolves to its `AgentType` member, so `job.type == AgentType.CRON`,
+  its hash and its use as a dict key are all unchanged. A module type resolves to a `ModuleJobType`
+  value object with the same `.value` attribute, so `job.type.value` works for both.
+- **Disabling the module removes the type.** The registry is cleared on every `bootstrap()`, which
+  the consumer re-runs each poll interval when idle, so a disabled module leaves nothing behind.
 
 ## Job States
 
@@ -112,6 +153,7 @@ job_publish_after → job_claim_after → job_succeed_after
 |-----------|------|
 | Consumer loop | [src/agento/framework/consumer.py](../../src/agento/framework/consumer.py) |
 | Publisher | [src/agento/framework/publisher.py](../../src/agento/framework/publisher.py) |
+| Publishing service (job id + `job.queued`) | [src/agento/framework/publish_service.py](../../src/agento/framework/publish_service.py) |
 | Job models | [src/agento/framework/job_models.py](../../src/agento/framework/job_models.py) |
 | Harness contract (runner, command builder, workspace adapter) | [src/agento/framework/harness/](../../src/agento/framework/harness/) |
 | Event data classes | [src/agento/framework/events.py](../../src/agento/framework/events.py) |

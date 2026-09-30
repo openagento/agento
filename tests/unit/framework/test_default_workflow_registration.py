@@ -23,6 +23,6 @@ def _clean_registries():
 
 def test_bootstrap_registers_generic_workflows_with_no_modules(tmp_path):
     bootstrap(core_dir=str(tmp_path), user_dir="/nonexistent", db_conn=None)
-    assert AgentType.BLANK in _WORKFLOW_MAP
+    assert AgentType.BLANK.value in _WORKFLOW_MAP  # keyed by the type id (PRD E3-E5 §4.2)
     assert get_workflow_class(AgentType.TODO).__name__ == "TodoWorkflow"
     assert get_workflow_class(AgentType.FOLLOWUP).__name__ == "FollowupWorkflow"

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agento.web import api, server
+from agento.web import api, rate_limit, server
 from agento.web.server import Handler
 
 PANEL = "https://panel.localhost:8443"
@@ -32,3 +32,25 @@ def web(monkeypatch, tmp_path):
 
 def panel_headers(**extra) -> dict:
     return {"Origin": PANEL, "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", **extra}
+
+
+@pytest.fixture(autouse=True)
+def counted(monkeypatch):
+    """The limiter needs a database; these tests have none.
+
+    Stubbed to ALLOW and to record what it was asked, so a test can still assert that a
+    request reached the limiter at all. The limiter's own behaviour is tested against real
+    MySQL in tests/integration/test_rate_limit.py.
+    """
+    seen: list = []
+
+    def check(conn, buckets, *, cfg=None):
+        seen.append(buckets)
+        return rate_limit.Decision(True)
+
+    monkeypatch.setattr(server, "connect", lambda: MagicMock(name="conn"))
+    monkeypatch.setattr(rate_limit, "check", check)
+    monkeypatch.setattr(rate_limit, "held", lambda conn, buckets: 0)
+    monkeypatch.setattr(rate_limit, "count_identity", lambda *a, **kw: rate_limit.Decision(True))
+    monkeypatch.setattr(rate_limit, "record_auth_failure", lambda *a, **kw: None)
+    return seen

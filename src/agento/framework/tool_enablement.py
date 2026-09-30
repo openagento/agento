@@ -8,7 +8,6 @@ admin Tools screen and ``tool:list`` so neither can drift from the runtime.
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 
 
 def scan_tool_requires() -> dict[str, str]:
@@ -19,22 +18,20 @@ def scan_tool_requires() -> dict[str, str]:
     gate enforces.
     """
     from .bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
-    from .module_loader import scan_modules
+    from .module_discovery import scan_all_modules
     from .module_status import filter_enabled
 
+    # The shared discovery, which carries the container extension mount: a hand-written
+    # pair of roots left an installed extension's tool requirements unenforced. A failing
+    # scan is NOT caught here: an empty map reports every dependent tool as unblocked, so
+    # one malformed extension would silently open the whole gate (SEC-9, fail closed).
+    manifests = filter_enabled(scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR))
     requires: dict[str, str] = {}
-    for modules_dir in (CORE_MODULES_DIR, USER_MODULES_DIR):
-        if not Path(modules_dir).is_dir():
-            continue
-        try:
-            manifests = filter_enabled(scan_modules(modules_dir))
-        except Exception:
-            continue
-        for manifest in manifests:
-            for tool in manifest.tools:
-                name, req = tool.get("name"), tool.get("requires")
-                if name and isinstance(req, str) and req:
-                    requires[name] = req
+    for manifest in manifests:
+        for tool in manifest.tools:
+            name, req = tool.get("name"), tool.get("requires")
+            if name and isinstance(req, str) and req:
+                requires[name] = req
     return requires
 
 

@@ -972,11 +972,13 @@ class TestFinalize:
 
         consumer._finalize_job(job, error=None, job_result=job_result, elapsed_ms=100)
 
-        # Only the SELECT should have run — no UPDATE to SUCCESS/DEAD/TODO
-        assert mock_cursor.execute.call_count == 1
+        # No UPDATE to SUCCESS/DEAD/TODO — the job row is not ours to write any more.
+        assert not [c for c in mock_cursor.execute.call_args_list if "UPDATE job" in c[0][0]]
         sql = mock_cursor.execute.call_args_list[0][0][0]
         assert "SELECT status" in sql
-        mock_conn.commit.assert_not_called()
+        # It DOES commit: this attempt's execution is abandoned, because the process it
+        # described has exited (§5.3). With no finalizer registered that commit is empty.
+        mock_conn.commit.assert_called_once()
 
 
 # ---- Section 8: Lifecycle ----

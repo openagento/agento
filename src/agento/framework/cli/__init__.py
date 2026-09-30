@@ -151,6 +151,7 @@ def _register_framework_commands() -> None:
     from .cron import CronRunCommand
     from .doctor import DoctorCommand
     from .install import InstallCommand
+    from .limits import LimitsPruneCommand, OutboxPruneCommand
     from .module import (
         MakeModuleCommand,
         ModuleDisableCommand,
@@ -184,6 +185,7 @@ def _register_framework_commands() -> None:
         CredentialDeregisterCommand, CredentialMarkErrorCommand, CredentialResetCommand,
         CredentialSetPriorityCommand, CredentialUsageCommand,
         CapabilityMintCommand, CapabilityRevokeCommand,
+        LimitsPruneCommand, OutboxPruneCommand,
         *ACCESS_COMMANDS,
         # Hidden `token:*` aliases, kept for one cycle (ROADMAP.md).
         *LEGACY_TOKEN_COMMANDS,

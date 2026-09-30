@@ -128,6 +128,32 @@ E2 shipped the panel API: users, sessions, `admin`/`user` roles with per-scope g
   from what a shell-capable agent can read on the shared mount
   ([docs/deployment/panel.md](docs/deployment/panel.md)).
 
+### 🟡 Conversations, history and chat (E3–E5)
+
+The `conversation` module: threads, idempotent submission, executions, the durable
+`conversation_event` log with cursor replay, SSE, `§4.5`'s unblock route, and the framework seams
+those need — route registration, streaming responses, the pre-claim hook, the three execution
+protocols and the delta sink, and the rate limiter. See
+[docs/architecture/conversations.md](docs/architecture/conversations.md) and
+[docs/modules/conversation.md](docs/modules/conversation.md).
+
+Known gaps, each deliberate:
+
+- **The open-cursor guarantee is withdrawn.** The PRD's earlier draft promised that any cursor a
+  client ever held would still replay. `§10.1`'s age prune makes that unkeepable: a cursor at or
+  below a thread's prune watermark is **expired**, answered `409 cursor_expired` on the replay route
+  and as one `cursor_expired` SSE frame (before any event frame) on a reconnect. A client that sees
+  it restarts from the newest page. History that has been pruned is gone, and saying so is the
+  guarantee — silently serving the survivors as if they were the whole thread is not.
+- **F14 — the Node job insert emits no event.** `src/agento/modules/core/toolbox/schedule.js`
+  writes to `job` directly from the toolbox, so a job scheduled by a tool never reaches
+  `publish_service` and never dispatches `job_publish_after`. Nothing relays it into a thread. Give
+  the toolbox a publish path that goes through the framework, or have it write the outbox row too.
+- **Nothing streams live deltas yet.** No shipped harness declares a `stream_event_mapper`, so the
+  `§8.2` seam is registered and unused — every run falls back to `§8.1`'s per-event behaviour.
+- **The `§4.5` audit ordering is E7's.** The framework's audit writer must be called from inside
+  `service.unblock()`'s transaction, not from an observer and not with module SQL.
+
 ### ⚪ Per-artifact origins for miniapps
 
 The agreed E0 design puts every miniapp on **one shared apps origin**, separate from the panel
@@ -326,6 +352,12 @@ the queue.
 **`schedule_followup` must not be widened to cover this.** Its idempotency key
 `followup:{source}:{reference_id}:{minute}` (`schedule.js:91`) collapses a two-agent
 fan-out in the same minute into one job — and reports success.
+
+As of the conversations epic the Python side has exactly ONE insert into `job` —
+`publisher.insert_job()`, which both `publisher.publish()` and `publish_service.publish_job()`
+call — plus `framework/e2e.py` for the smoke stack. `schedule.js` remains the second write
+path, in the toolbox, in another language, with its own dedupe. `grep -rn -i "insert into job"
+src/agento` is the check; a fourth hit is the bug this entry is about.
 
 ### Ungated Toolbox REST endpoints (raised during the Pi harness work)
 
