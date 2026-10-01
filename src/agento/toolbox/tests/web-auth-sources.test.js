@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 
-import { authSources, checkSession, GRANTS_SQL } from '../../modules/web/toolbox/auth-sources.js';
+import { authSources, checkSession } from '../../modules/web/toolbox/auth-sources.js';
+import { GRANTS_SQL, grantsFor } from '../capability.js';
 
 const FIXTURE = JSON.parse(fs.readFileSync(
   path.join(import.meta.dirname, '../../../../tests/fixtures/role_grant_v1.json'), 'utf8'));
@@ -36,7 +37,11 @@ function fakeQuery({ session = LIVE } = {}) {
   };
 }
 
-const opts = (over = {}) => ({ capability_kind: 'user_session', workspace_id: 1, agent_view_id: 11, query: fakeQuery(), ...over });
+// The verifier hands a checker the framework's grant rule for the row's own scope.
+const opts = (over = {}) => {
+  const o = { capability_kind: 'user_session', workspace_id: 1, agent_view_id: 11, query: fakeQuery(), ...over };
+  return { grants: grantsFor(o.query, o.workspace_id, o.agent_view_id), ...o };
+};
 
 describe('web session auth source', () => {
   it('exports the session kind', () => {
@@ -53,6 +58,10 @@ describe('web session auth source', () => {
   it('refuses a session the query no longer finds (revoked, expired, inactive user)', async () => {
     expect(await checkSession('abc', opts({ query: fakeQuery({ session: null }) }))).toBeNull();
     expect(await checkSession('other', opts())).toBeNull();
+  });
+
+  it('refuses when the verifier hands no grant rule (fails closed)', async () => {
+    expect(await checkSession('abc', { ...opts(), grants: undefined })).toBeNull();
   });
 
   it('refuses another capability kind', async () => {

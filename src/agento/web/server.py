@@ -1,7 +1,7 @@
 """The panel API, the launch redeem, and the authorization endpoints the proxy calls.
 
-The allow/deny decision behind /internal/authz/app is E2's; /internal/authz/share is E6's
-and until then denies every subrequest.
+The allow/deny decision behind /internal/authz/app is E2's; the path it decides on is parsed
+once, in app_path (E6). Shares never reach web: the artifacts server checks them (E6).
 
 `web` shares agento-net with `sandbox`, so reachability proves nothing: a request is from
 the proxy only if it carries the secret the proxy and web alone can read. Nothing on this
@@ -23,7 +23,7 @@ from agento.framework.access import sessions
 from . import api, rate_limit, security
 from .streaming import StreamingResponse
 
-AUTHZ_PATHS = ("/internal/authz/app", "/internal/authz/share")
+AUTHZ_PATHS = ("/internal/authz/app",)
 REDEEM_PATH = "/internal/launch/redeem"
 
 
@@ -239,11 +239,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._proxy_trusted:         # only the proxy may ask this question
                 self._send(401)
                 return
-            if path == "/internal/authz/app" and security.launch_cookies(
-                    security.parse_cookies(self.headers.get("Cookie"))):
-                self._internal(path, api.authorize_app, b"")
-            else:
-                self._send(403)
+            self._internal(path, api.authorize_app, b"")
         elif path == REDEEM_PATH:
             if self.command != "POST":
                 self._reply(api.error(405, "method not allowed"))

@@ -6,6 +6,7 @@ on every file request. E2 writes the no-manifest constants: E6 owns the manifest
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import secrets
@@ -71,9 +72,47 @@ def max_concurrent(conn, workspace_id: int) -> int:
     return min(int(text), MAX_CONCURRENT_CEILING)
 
 
+RETENTION_LOCK_WAIT_SECONDS = 5
+
+
+class RetentionBusy(RuntimeError):
+    """The retention lock of the artifact was not free in time."""
+
+
+def retention_lock_name(artifact_code: str) -> str:
+    """The MySQL named lock the toolbox prune takes too (fixture retention_lock_v1.json)."""
+    return "va_ret:" + hashlib.sha1(artifact_code.encode("utf-8")).hexdigest()
+
+
+@contextlib.contextmanager
+def retention_lock(conn, artifact_code: str):
+    """Hold the artifact's retention lock from reading ``current`` to committing the launch.
+
+    So a launch either commits before the prune reads the live set, or reads a ``current``
+    the prune kept (PRD E6 §5). A named lock belongs to its connection and survives COMMIT;
+    a dropped connection frees it.
+    """
+    name = retention_lock_name(artifact_code)
+    with conn.cursor() as cur:
+        cur.execute("SELECT GET_LOCK(%s, %s) AS got", (name, RETENTION_LOCK_WAIT_SECONDS))
+        row = cur.fetchone()
+    if not row or row["got"] != 1:
+        raise RetentionBusy(artifact_code)
+    try:
+        yield
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("SELECT RELEASE_LOCK(%s)", (name,))
+
+
 def create_launch(conn, user: User, *, workspace_id: int, agent_view_id: int | None,
-                  artifact_code: str, version_id: str) -> tuple[Launch, str]:
-    """Return the launch and its raw exchange code; the code is never stored."""
+                  artifact_code: str, version_id: str, manifest_fingerprint: str = NO_MANIFEST_FINGERPRINT,
+                  allowed_actions: list[str] | tuple[str, ...] = ()) -> tuple[Launch, str]:
+    """Return the launch and its raw exchange code; the code is never stored.
+
+    The defaults are a files-only launch (no manifest, no actions). E6 passes the
+    activated manifest's fingerprint and actions.
+    """
     ttl = resolve_auth_ttls(conn, workspace_id)["launch_max_ttl"]
     cap = max_concurrent(conn, workspace_id)
     launch_id, code = secrets.token_hex(16), secrets.token_urlsafe(32)
@@ -93,7 +132,8 @@ def create_launch(conn, user: User, *, workspace_id: int, agent_view_id: int | N
             " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() + INTERVAL %s SECOND, %s,"
             " NOW() + INTERVAL %s SECOND)",
             (launch_id, token_hash(secrets.token_urlsafe(32)), user.id, artifact_code, version_id,
-             NO_MANIFEST_FINGERPRINT, json.dumps([]), workspace_id, agent_view_id, ttl, token_hash(code),
+             manifest_fingerprint, json.dumps(list(allowed_actions)), workspace_id, agent_view_id, ttl,
+             token_hash(code),
              EXCHANGE_TTL_SECONDS),
         )
         # Oldest first beyond the cap; the new launch always survives.
