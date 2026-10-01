@@ -16,6 +16,7 @@ import pytest
 from agento.web.server import Handler
 
 SECRET = "a" * 64
+APP = "/a/demo/v/v-20260925-120000-ab12/index.html"
 
 
 @pytest.fixture
@@ -67,8 +68,17 @@ def test_caller_identity_headers_without_the_secret_are_denied(base_url, secret_
 
 def test_the_proxy_gets_a_deny_without_a_launch_cookie(base_url, secret_file):
     secret_file.write_text(SECRET)
-    r = httpx.get(f"{base_url}/internal/authz/app", headers={"X-Agento-Proxy-Auth": SECRET})
+    r = httpx.get(f"{base_url}/internal/authz/app", headers={"X-Agento-Proxy-Auth": SECRET, "X-Forwarded-Uri": APP})
     assert r.status_code == 403
+
+
+@pytest.mark.parametrize("uri", [None, "/a/demo/", "/a/demo/current/index.html",
+                                 "/a/demo/v/v-20260925-120000-ab12/%2e%2e/other/index.html"])
+def test_a_path_that_is_not_a_version_path_is_404_without_a_launch_cookie(base_url, secret_file, uri):
+    # The proxy serves only /a/<code>/v/<id>/ (PRD E6 §6.2): the path decides before the cookie.
+    secret_file.write_text(SECRET)
+    headers = {"X-Agento-Proxy-Auth": SECRET} | ({"X-Forwarded-Uri": uri} if uri else {})
+    assert httpx.get(f"{base_url}/internal/authz/app", headers=headers).status_code == 404
 
 
 def test_missing_secret_on_web_fails_closed(base_url, secret_file):
@@ -77,7 +87,7 @@ def test_missing_secret_on_web_fails_closed(base_url, secret_file):
 
 
 def test_secret_written_after_start_is_picked_up(base_url, secret_file):
-    headers = {"X-Agento-Proxy-Auth": SECRET}
+    headers = {"X-Agento-Proxy-Auth": SECRET, "X-Forwarded-Uri": APP}
     assert httpx.get(f"{base_url}/internal/authz/app", headers=headers).status_code == 401
     secret_file.write_text(SECRET + "\n")
     assert httpx.get(f"{base_url}/internal/authz/app", headers=headers).status_code == 403

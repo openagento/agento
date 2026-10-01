@@ -534,6 +534,8 @@ def authorize_app(req: Request) -> Response:
     if parsed is None:
         return error(404, "not found")
     presented = security.launch_cookies(req.cookies)
+    if not presented:
+        return error(403, "forbidden")
     if launches.authorize_files(req.conn, list(presented.values()), parsed.artifact_code, parsed.version_id):
         return Response(200, None, [("X-Agento-Upstream-Path", parsed.upstream_path)])
     live = launches.live_launch_ids(req.conn, list(presented))

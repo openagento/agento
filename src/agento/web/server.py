@@ -239,10 +239,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._proxy_trusted:         # only the proxy may ask this question
                 self._send(401)
                 return
-            if security.launch_cookies(security.parse_cookies(self.headers.get("Cookie"))):
-                self._internal(path, api.authorize_app, b"")
-            else:
-                self._send(403)
+            self._internal(path, api.authorize_app, b"")
         elif path == REDEEM_PATH:
             if self.command != "POST":
                 self._reply(api.error(405, "method not allowed"))

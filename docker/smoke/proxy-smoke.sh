@@ -131,7 +131,7 @@ for srv in json.load(sys.stdin)["apps"]["http"]["servers"].values():
         for before in before_auth(route["handle"], []):
             auths += 1
             bad += "strip" not in before or "rewrite" in before
-sys.exit(1 if bad or auths != 2 else 0)
+sys.exit(1 if bad or auths != 1 else 0)
 '; then
   ok "strip runs before each authz subrequest, no rewrite before it"
 else

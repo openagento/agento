@@ -123,6 +123,10 @@ def launch_app():
 
 
 # E6: a launch before activation is files-only; after `miniapp:activate` it pins the manifest.
+# A rerun finds the version activated by the last run: deactivate it, so the run starts files-only.
+for old in filter(None, sql(f"SELECT version_id FROM miniapp_activation WHERE artifact_code = '{app_code}'").split()):
+    subprocess.run(["uv", "run", "bin/agento", "miniapp:deactivate", app_code, old, "--actor", "proxy-smoke"],
+                   cwd=project_dir, capture_output=True, check=True)
 status, first = launch_app()
 check("launch the miniapp artifact before activation", status, 201)
 if first:

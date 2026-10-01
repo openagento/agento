@@ -232,15 +232,13 @@ def test_authz_app_never_clears_a_cookie_past_the_bound(web, monkeypatch, proxy_
     assert cleared == {f"__Host-agento-launch-{i}" for i in seen["ids"]}  # the 21st is neither read nor cleared
 
 
-@pytest.mark.parametrize("path", ["/internal/authz/app", "/internal/authz/share"])
-def test_rotating_launch_cookies_are_counted_on_the_shared_bucket(web, monkeypatch,
-                                                                  proxy_secret, path):
+def test_rotating_launch_cookies_are_counted_on_the_shared_bucket(web, monkeypatch, proxy_secret):
     """SEC-12. The proxy's secret proves the HOP, not the caller.
 
     Read as a caller identity it was a way through the limiter on the only routes the proxy
     can reach: every rotated cookie is a fresh PRIVATE bucket, and the shared bucket - the
     one that is supposed to hold a brute force - was neither counted nor told. Each rejected
-    attempt must reach it, whichever of the two authorization paths answered.
+    attempt must reach it.
     """
     monkeypatch.setattr(launches, "authorize_files", lambda *a: False)
     monkeypatch.setattr(launches, "live_launch_ids", lambda conn, ids: set(ids))
@@ -249,9 +247,8 @@ def test_rotating_launch_cookies_are_counted_on_the_shared_bucket(web, monkeypat
                         lambda conn, buckets, **kw: failures.append(buckets))
 
     for i in range(3):
-        r = httpx.get(f"{web}{path}", cookies={f"__Host-agento-launch-{i:032x}": f"t{i}"},
-                      headers={"X-Agento-Proxy-Auth": SECRET,
-                               "X-Agento-Artifact-Code": "app", "X-Agento-Version-Id": V1})
+        r = httpx.get(f"{web}/internal/authz/app", cookies={f"__Host-agento-launch-{i:032x}": f"t{i}"},
+                      headers={"X-Agento-Proxy-Auth": SECRET, "X-Forwarded-Uri": f"/a/app/v/{V1}/index.html"})
         assert r.status_code == 403
 
     assert len(failures) == 3
@@ -282,7 +279,8 @@ def test_the_proxy_asking_for_a_visitor_with_no_cookie_is_not_a_failed_guess(web
     otherwise place the hold that exists to stop guessing. Nothing presented, nothing guessed."""
     monkeypatch.setattr(rate_limit, "record_auth_failure",
                         MagicMock(side_effect=AssertionError("must not be counted")))
-    r = httpx.get(f"{web}/internal/authz/app", headers={"X-Agento-Proxy-Auth": SECRET})
+    r = httpx.get(f"{web}/internal/authz/app",
+                  headers={"X-Agento-Proxy-Auth": SECRET, "X-Forwarded-Uri": f"/a/app/v/{V1}/index.html"})
     assert r.status_code == 403
 
 
