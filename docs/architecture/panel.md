@@ -10,8 +10,8 @@ the web API and the `user:*` / `grant:*` CLI call the same functions. Operator p
 
 | Origin | Serves | Why it is separate |
 |---|---|---|
-| panel (`AGENTO_PANEL_HOST`) | `/api/*` (a frontend comes later); anything else answers 404 | agent-written code never runs here |
-| apps (`AGENTO_APPS_HOST`) | `/a/<code>/v/<id>/…` after `forward_auth`, and `POST /launch` | a page here cannot read panel responses, DOM or the panel cookie |
+| panel (`AGENTO_PANEL_HOST`) | `/api/*` and `/health` from `web`; `/internal/*` answers 404; every other path is the built panel, static from `proxy` (E8, [../development/frontend.md](../development/frontend.md)) | agent-written code never runs here |
+| apps (`AGENTO_APPS_HOST`) | `/a/<code>/v/<id>/…` after `forward_auth`, `POST /launch`, and the miniapp kit at `/_ui/<version>/` (static, immutable, no data) | a page here cannot read panel responses, DOM or the panel cookie |
 
 The split stops cross-origin **reads**. It does not stop writes: panel and apps are same-site,
 so a page on apps can make the browser send a credentialed request to the panel. The CSRF controls
@@ -172,6 +172,13 @@ module's routes appear or disappear when `web` restarts, which `module:enable` a
 The same pass registers each enabled module's `job_types` from that `di.json`. A route that
 publishes a job (a conversation message submit) resolves its type in the `web` process, and
 without `bootstrap()` nothing else registers it — the submit would fail with `JobTypeUnknown`.
+
+### Module screens
+
+A core module may also ship `panel/index.ts`, its screens in the panel app. The build collects
+them; the panel shows a module's screens only while its `availability.probe` (a GET under its own
+`/api/<module>/`) answers 2xx, so a disabled module's screens are hidden. A user or PyPI module
+never ships panel JavaScript. See [../development/frontend.md](../development/frontend.md#adding-a-module-screen).
 
 ## Rate limiting
 

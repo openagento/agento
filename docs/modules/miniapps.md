@@ -118,6 +118,14 @@ Messages: app → `{type: "agento.ready"}`; panel → `{type: "agento.hello", la
 app → `{type: "agento.action", launch_id, id, tool, arguments}`;
 panel → `{type: "agento.result", launch_id, id, status, body}`.
 
+## Writing a miniapp
+
+A miniapp page is hand-written HTML over the shared kit, served by `proxy` at `/_ui/<version>/`
+on the apps origin: `agento-ui.css` (the same tokens as the panel), `agento-ui.js` (`<ag-table>`,
+`<ag-dialog>`, `<ag-copy>`, `<ag-json>`) and `agento-bridge.js` (this SDK, byte for byte). The
+`miniapp-ui` skill tells an agent how to write one; enable it per scope. An example is in
+`frontend/miniapps/examples/job-status/`. See [../development/frontend.md](../development/frontend.md#the-miniapp-kit).
+
 ## Enable checklist
 
 ```bash

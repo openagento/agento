@@ -1,0 +1,258 @@
+/* The `.ag-*` component rules (PRD E8 §10.3). Written against the `--ag-*` variables only;
+   no literal color here. Every block opens with a `@catalogue` comment: the authoring skill is
+   generated from these comments, and `npm test` fails when a block has none. */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+/* @catalogue .ag-app
+Page root. Put it on <body>: it sets the font, the text color and the background.
+<body class="ag-app"><main class="ag-page">…</main></body>
+*/
+.ag-app {
+  margin: 0;
+  font-family: var(--ag-font-family);
+  font-size: var(--ag-font-size-md);
+  line-height: 1.5;
+  color: var(--ag-color-text);
+  background: var(--ag-color-background);
+}
+
+/* @catalogue .ag-page
+Centered page column with side gutters. Full width at 320px, at most 960px wide.
+<main class="ag-page">…</main>
+*/
+.ag-page {
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: var(--ag-space-4);
+}
+@media (min-width: 768px) { .ag-page { padding: var(--ag-space-6); } }
+
+/* @catalogue .ag-stack
+Vertical stack with a gap. `.ag-row` is the horizontal one; it wraps under 480px.
+<div class="ag-stack"><div>…</div><div>…</div></div>
+<div class="ag-row"><button class="ag-button">A</button><button class="ag-button">B</button></div>
+*/
+.ag-stack { display: flex; flex-direction: column; gap: var(--ag-space-4); }
+fieldset.ag-stack { min-width: 0; margin: 0; padding: 0; border: 0; }
+.ag-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ag-space-2); }
+
+/* @catalogue .ag-page-header
+Page title, an optional description and actions on the right.
+<header class="ag-page-header"><div><h1 class="ag-page-header__title">Jobs</h1><p class="ag-page-header__description">Recent runs.</p></div><div class="ag-row">…</div></header>
+*/
+.ag-page-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ag-space-3);
+  margin-bottom: var(--ag-space-5);
+}
+.ag-page-header__title { margin: 0; font-size: var(--ag-font-size-xl); font-weight: 600; }
+.ag-page-header__description { margin: var(--ag-space-1) 0 0; color: var(--ag-color-text-muted); }
+
+/* @catalogue .ag-section-header
+Section title inside a page.
+<h2 class="ag-section-header">Settings</h2>
+*/
+.ag-section-header {
+  margin: var(--ag-space-5) 0 var(--ag-space-3);
+  font-size: var(--ag-font-size-lg);
+  font-weight: 600;
+}
+
+/* @catalogue .ag-card
+Bordered surface for one item. Header, body and an optional meta line.
+<article class="ag-card"><header class="ag-card__head"><h3 class="ag-card__title">Title</h3></header><div class="ag-card__body">Text</div><p class="ag-card__meta">Updated 2 min ago</p></article>
+`.ag-card__body--pre` keeps the line breaks of plain text.
+*/
+.ag-card {
+  display: block;
+  padding: var(--ag-space-4);
+  font-family: var(--ag-font-family);
+  font-size: var(--ag-font-size-md);
+  color: var(--ag-color-text);
+  background: var(--ag-color-surface);
+  border: 1px solid var(--ag-color-border);
+  border-radius: var(--ag-radius-md);
+}
+.ag-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ag-space-2);
+}
+.ag-card__title { margin: 0; font-size: var(--ag-font-size-lg); font-weight: 600; }
+.ag-card__body { margin-top: var(--ag-space-2); }
+.ag-card__body--pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ag-card__meta { margin: var(--ag-space-2) 0 0; font-size: var(--ag-font-size-sm); color: var(--ag-color-text-muted); }
+
+/* @catalogue .ag-job
+Job status card: an `.ag-card` with a state badge. States: pending, published, running, succeeded, failed, blocked.
+<article class="ag-card ag-job"><header class="ag-card__head"><h3 class="ag-card__title">Nightly import</h3><span class="ag-badge ag-badge--running">Running</span></header><p class="ag-card__body">Step 2 of 4</p><p class="ag-card__meta">Updated 10:42</p></article>
+*/
+.ag-job { border-left-width: 4px; }
+.ag-job:has(.ag-badge--failed) { border-left-color: var(--ag-color-error); }
+.ag-job:has(.ag-badge--succeeded) { border-left-color: var(--ag-color-success); }
+.ag-job:has(.ag-badge--blocked) { border-left-color: var(--ag-color-warning); }
+.ag-job:has(.ag-badge--running) { border-left-color: var(--ag-color-info); }
+
+/* @catalogue .ag-badge
+Short status label. Modifiers: --pending, --published, --running, --succeeded, --failed, --blocked, --neutral, --info. The text says the state; color is not the only signal.
+<span class="ag-badge ag-badge--succeeded">Succeeded</span>
+*/
+.ag-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--ag-space-2);
+  font-size: var(--ag-font-size-sm);
+  font-weight: 500;
+  line-height: 22px;
+  white-space: nowrap;
+  color: var(--ag-color-text-muted);
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: var(--ag-radius-sm);
+}
+.ag-badge--pending, .ag-badge--published, .ag-badge--neutral { color: var(--ag-color-text-muted); }
+.ag-badge--running, .ag-badge--info { color: var(--ag-color-info); }
+.ag-badge--succeeded { color: var(--ag-color-success); }
+.ag-badge--failed { color: var(--ag-color-error); }
+.ag-badge--blocked { color: var(--ag-color-warning); }
+
+/* @catalogue .ag-button
+Button. Modifiers: --primary, --subtle, --danger. Use a real <button>.
+<button class="ag-button ag-button--primary" type="button">Save</button>
+*/
+.ag-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ag-space-2);
+  min-height: 36px;
+  padding: 0 var(--ag-space-4);
+  font: inherit;
+  font-weight: 500;
+  color: var(--ag-color-text);
+  background: var(--ag-color-surface);
+  border: 1px solid var(--ag-color-border);
+  border-radius: var(--ag-radius-md);
+  cursor: pointer;
+}
+.ag-button:focus-visible { outline: 2px solid var(--ag-color-primary); outline-offset: 2px; }
+.ag-button:disabled { opacity: 0.55; cursor: not-allowed; }
+.ag-button--primary { color: var(--ag-color-primary-text); background: var(--ag-color-primary); border-color: var(--ag-color-primary); }
+.ag-button--subtle { background: transparent; border-color: transparent; }
+.ag-button--danger { color: var(--ag-color-error); border-color: var(--ag-color-error); }
+
+/* @catalogue .ag-field
+Labelled form field with an optional hint or error. Keep the hint outside the <label> and link it with aria-describedby, so it is not read as part of the name.
+<div class="ag-field"><label class="ag-field__label" for="name">Name</label><input class="ag-field__input" id="name" name="name" aria-describedby="name-hint"><span class="ag-field__hint" id="name-hint">As on the invoice.</span></div>
+*/
+.ag-field { display: flex; flex-direction: column; gap: var(--ag-space-1); }
+.ag-field__label { font-weight: 500; }
+.ag-field__input {
+  min-height: 36px;
+  padding: 0 var(--ag-space-3);
+  font: inherit;
+  color: var(--ag-color-text);
+  background: var(--ag-color-surface);
+  border: 1px solid var(--ag-color-border);
+  border-radius: var(--ag-radius-md);
+}
+.ag-field__input:focus-visible { outline: 2px solid var(--ag-color-primary); outline-offset: 1px; }
+.ag-field__hint { font-size: var(--ag-font-size-sm); color: var(--ag-color-text-muted); }
+.ag-field__error { font-size: var(--ag-font-size-sm); color: var(--ag-color-error); }
+
+/* @catalogue .ag-table
+Data table. Wrap it in `.ag-table` so it scrolls sideways on a narrow screen, or use the `<ag-table>` element.
+<div class="ag-table"><table><thead><tr><th>Name</th></tr></thead><tbody><tr><td>Alpha</td></tr></tbody></table></div>
+*/
+.ag-table {
+  display: block;
+  overflow-x: auto;
+  background: var(--ag-color-surface);
+  border: 1px solid var(--ag-color-border);
+  border-radius: var(--ag-radius-md);
+}
+.ag-table table { width: 100%; border-collapse: collapse; }
+.ag-table th, .ag-table td {
+  padding: var(--ag-space-2) var(--ag-space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--ag-color-border);
+}
+.ag-table th { font-weight: 600; color: var(--ag-color-text-muted); white-space: nowrap; }
+.ag-table th button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+.ag-table tbody tr:last-child td { border-bottom: 0; }
+.ag-table tbody tr:focus-visible { outline: 2px solid var(--ag-color-primary); outline-offset: -2px; }
+
+/* @catalogue .ag-state
+Empty, loading and error states. Modifiers: --empty, --loading, --error. Say what happened and what to do.
+<div class="ag-state ag-state--empty"><p class="ag-state__title">No jobs yet</p><p class="ag-state__text">A job shows here when it starts.</p></div>
+*/
+.ag-state {
+  padding: var(--ag-space-6) var(--ag-space-4);
+  text-align: center;
+  color: var(--ag-color-text-muted);
+}
+.ag-state__title { margin: 0; font-weight: 600; color: var(--ag-color-text); }
+.ag-state__text { margin: var(--ag-space-1) 0 0; }
+.ag-state--error .ag-state__title { color: var(--ag-color-error); }
+
+/* @catalogue .ag-code
+Monospace block for code, ids or JSON. Scrolls sideways; never wraps a long token.
+<pre class="ag-code">{"ok": true}</pre>
+*/
+.ag-code {
+  margin: 0;
+  padding: var(--ag-space-3);
+  overflow-x: auto;
+  font-family: var(--ag-font-mono);
+  font-size: var(--ag-font-size-sm);
+  color: var(--ag-color-text);
+  background: var(--ag-color-surface-elevated);
+  border: 1px solid var(--ag-color-border);
+  border-radius: var(--ag-radius-sm);
+}
+
+/* @catalogue .ag-list
+A list with no bullets and a gap between items.
+<ul class="ag-list"><li>One</li><li>Two</li></ul>
+*/
+.ag-list { display: flex; flex-direction: column; gap: var(--ag-space-3); margin: 0; padding: 0; list-style: none; }
+
+/* @catalogue .ag-muted
+Secondary text.
+<p class="ag-muted">Last synced 5 min ago</p>
+*/
+.ag-muted { color: var(--ag-color-text-muted); }
+
+/* @catalogue .ag-dialog
+Modal dialog on a native <dialog>. Use the `<ag-dialog>` element, which opens and closes it.
+<dialog class="ag-dialog"><h2 class="ag-dialog__title">Delete?</h2><p>This cannot be undone.</p><div class="ag-row"><button class="ag-button">Cancel</button></div></dialog>
+*/
+.ag-dialog {
+  max-width: min(480px, calc(100vw - 32px));
+  padding: var(--ag-space-5);
+  color: var(--ag-color-text);
+  background: var(--ag-color-surface-elevated);
+  border: 1px solid var(--ag-color-border);
+  border-radius: var(--ag-radius-lg);
+}
+.ag-dialog::backdrop { background: rgb(0 0 0 / 0.45); }
+.ag-dialog__title { margin: 0 0 var(--ag-space-3); font-size: var(--ag-font-size-lg); font-weight: 600; }
+
+/* @catalogue .ag-visually-hidden
+Text for screen readers only.
+<span class="ag-visually-hidden">Copied</span>
+*/
+.ag-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

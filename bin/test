@@ -45,7 +45,7 @@ check() {
 }
 
 # ============================================================
-echo -e "${CYAN}[1/8] JSON Config Validation${NC}"
+echo -e "${CYAN}[1/9] JSON Config Validation${NC}"
 echo "========================================"
 
 json_errors=0
@@ -144,7 +144,7 @@ fi
 echo ""
 
 # ============================================================
-echo -e "${CYAN}[2/8] Module Validation${NC}"
+echo -e "${CYAN}[2/9] Module Validation${NC}"
 echo "========================================"
 
 cd "$PROJECT_DIR"
@@ -169,7 +169,7 @@ fi
 echo ""
 
 # ============================================================
-echo -e "${CYAN}[3/8] Ruff Lint${NC}"
+echo -e "${CYAN}[3/9] Ruff Lint${NC}"
 echo "========================================"
 
 cd "$PROJECT_DIR"
@@ -183,7 +183,7 @@ fi
 echo ""
 
 # ============================================================
-echo -e "${CYAN}[4/8] Basedpyright${NC}"
+echo -e "${CYAN}[4/9] Basedpyright${NC}"
 echo "========================================"
 
 if uv run basedpyright 2>&1; then
@@ -196,7 +196,7 @@ fi
 echo ""
 
 # ============================================================
-echo -e "${CYAN}[5/8] ESLint (Toolbox + module bridges)${NC}"
+echo -e "${CYAN}[5/9] ESLint (Toolbox + module bridges)${NC}"
 echo "========================================"
 
 # Two invocations, not one. ESLint refuses paths outside its config's base directory, so
@@ -219,7 +219,7 @@ cd "$PROJECT_DIR"
 echo ""
 
 # ============================================================
-echo -e "${CYAN}[6/8] Python Tests — unit + integration${NC}"
+echo -e "${CYAN}[6/9] Python Tests — unit + integration${NC}"
 echo "========================================"
 
 cd "$PROJECT_DIR"
@@ -233,11 +233,11 @@ echo ""
 
 # ============================================================
 if [ "$fast_mode" -eq 1 ]; then
-  echo -e "${CYAN}[7/8] Python e2e Tests ${DIM}(--fast)${NC}"
+  echo -e "${CYAN}[7/9] Python e2e Tests ${DIM}(--fast)${NC}"
   echo "========================================"
   echo -e "  ${DIM}-- skipped --${NC}"
 else
-  echo -e "${CYAN}[7/8] Python e2e Tests${NC}"
+  echo -e "${CYAN}[7/9] Python e2e Tests${NC}"
   echo "========================================"
   if uv run pytest -q -m "e2e" 2>&1; then
     ((pass++)) || true
@@ -249,11 +249,27 @@ fi
 echo ""
 
 # ============================================================
-echo -e "${CYAN}[8/8] JS Toolbox Tests${NC}"
+echo -e "${CYAN}[8/9] JS Toolbox Tests${NC}"
 echo "========================================"
 
 cd "$PROJECT_DIR/src/agento/toolbox"
 if npm test 2>&1; then
+  ((pass++)) || true
+else
+  ((fail++)) || true
+fi
+
+cd "$PROJECT_DIR"
+echo ""
+
+# ============================================================
+echo -e "${CYAN}[9/9] Frontend — panel, ui kit, miniapp kit${NC}"
+echo "========================================"
+# Builds the panel and the kit, then lint, types, unit tests and every Storybook story
+# (render, play, a11y) in headless Chromium. See docs/development/frontend.md.
+cd "$PROJECT_DIR/frontend"
+if { [ -d node_modules ] || npm ci; } && npm test 2>&1 \
+   && (cd "$PROJECT_DIR" && uv run python tests/check_wheel_frontend.py); then
   ((pass++)) || true
 else
   ((fail++)) || true

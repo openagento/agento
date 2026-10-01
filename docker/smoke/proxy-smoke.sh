@@ -13,7 +13,9 @@ set -uo pipefail
 #   2. from sandbox, web's authorization endpoint answers 401 — with no header, with a
 #      forged proxy secret plus identity headers, and with a forged X-Forwarded-Uri and a
 #      made-up launch cookie; the launch redeem answers 403 to a made-up code.
-#   3. /internal/* through the panel origin is 404.
+#   3. /internal/* through the panel origin is 404; the panel shell is served with no-store on a
+#      client route, a missing asset is 404, and the kit under /_ui/<v>/ on the apps origin is
+#      immutable while a missing kit file is an uncached 404 (E8).
 #   4. the apps origin reaches web's authorization endpoint (403 with no launch cookie), and
 #      serves only /a/<code>/v/<id>/…: traversal, encoded traversal and a `current` path
 #      are 404. A share host that is not a token is 404; with AGENTO_SHARE_HOST=bad_host
@@ -154,6 +156,16 @@ expect "/health" 200 "$(from_sandbox http://web:8000/health)"
 
 echo "3. panel origin"
 expect "/internal/authz/app through panel" 404 "$(via_proxy panel.localhost /internal/authz/app)"
+# E8: the built panel and the miniapp kit are static files on proxy.
+cache_of() { curl -sk -o /dev/null -w '%header{cache-control}' --max-time 5 --resolve "$1:$PORT:127.0.0.1" "https://$1:$PORT$2"; }
+expect "panel shell on a client route" 200 "$(via_proxy panel.localhost /conversations)"
+[ "$(cache_of panel.localhost /conversations)" = "no-store" ] && ok "panel shell is no-store" || bad "panel shell is cached"
+expect "panel missing asset" 404 "$(via_proxy panel.localhost /assets/nope.js)"
+expect "kit stylesheet on apps" 200 "$(via_proxy apps.localhost /_ui/1.0.0/agento-ui.css)"
+[ "$(cache_of apps.localhost /_ui/1.0.0/agento-ui.css)" = "public, max-age=31536000, immutable" ] \
+  && ok "kit is immutable" || bad "kit is not immutable"
+expect "kit unknown version" 404 "$(via_proxy apps.localhost /_ui/9.9.9/agento-ui.css)"
+[ -z "$(cache_of apps.localhost /_ui/9.9.9/agento-ui.css)" ] && ok "a kit 404 is not cached" || bad "a kit 404 is cached"
 
 echo "4. apps and share origins"
 VERSION_PATH="/a/demo/v/v-20260925-120000-ab12/index.html"
