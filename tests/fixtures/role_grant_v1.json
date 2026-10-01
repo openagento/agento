@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Grant evaluation shared by Python (framework/access/accounts.py) and Node (modules/web/toolbox/auth-sources.js). Scopes are symbolic: ws1 holds av1, ws2 holds av2. A view grant reaches only a call scoped to that view; a workspace grant reaches a call scoped to the workspace or to any view in it; a row with both or neither scope reaches nothing.",
+  "description": "Grant evaluation shared by Python (framework/access/accounts.py) and Node (toolbox/capability.js GRANTS_SQL). Scopes are symbolic: ws1 holds av1, ws2 holds av2. A view grant reaches only a call scoped to that view; a workspace grant reaches a call scoped to the workspace or to any view in it; a row with both or neither scope reaches nothing.",
   "scopes": {"ws1": {"kind": "workspace"}, "ws2": {"kind": "workspace"}, "av1": {"kind": "agent_view", "workspace": "ws1"}, "av2": {"kind": "agent_view", "workspace": "ws2"}},
   "grants": [
     {"role": "user", "grant_kind": "tool", "name": "tool_ws1", "workspace": "ws1", "agent_view": null},

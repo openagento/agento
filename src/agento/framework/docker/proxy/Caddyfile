@@ -1,5 +1,6 @@
-# E1.5 proxy: TLS, the three origins, and the forward_auth subrequest to web.
-# The authorization DECISION behind /internal/authz/app is web's (E2); /share is E6's.
+# E1.5 proxy: TLS, the origins, and the forward_auth subrequest to web.
+# The authorization DECISION behind /internal/authz/app is web's (E2). The share origins
+# live in share.caddy, which entrypoint.sh appends only when AGENTO_SHARE_HOST is set (E6).
 # No route here ever targets the toolbox, so a `?cap=` token never reaches this proxy.
 {
 	admin off
@@ -70,12 +71,13 @@
 }
 
 # Only the immutable /a/<code>/v/<id>/ shape is served (PRD E6 §6.2): no `current`
-# route and no index. The regexes mirror ARTIFACT_CODE_RE / VERSION_ID_RE.
+# route and no index. web parses the RAW path (X-Forwarded-Uri) once, decides on it, and
+# returns the canonical path in X-Agento-Upstream-Path; exactly that path is fetched, so
+# the decision and the file lookup cannot parse the request two ways.
 {$AGENTO_APPS_HOST} {
 	tls internal
 	import access_log
 	import strip_identity
-	@version path_regexp version ^/a/([a-z0-9][a-z0-9-]{0,63})/v/(v-[0-9]{8}-[0-9]{6}-[a-z0-9]{4})/
 	# The launch exchange (PRD E2 §4.3): the panel page POSTs a form here. POST only, so a
 	# prefetch or a scanner cannot consume the one-time code; the code is never in the URL.
 	@redeem {
@@ -86,37 +88,19 @@
 		rewrite * /internal/launch/redeem
 		reverse_proxy web:8000
 	}
-	handle @version {
+	handle /a/* {
 		route {
 			forward_auth web:8000 {
 				uri /internal/authz/app
 				header_up X-Agento-Proxy-Auth {$AGENTO_PROXY_SECRET}
-				header_up X-Agento-Artifact-Code {re.version.1}
-				header_up X-Agento-Version-Id {re.version.2}
+				copy_headers X-Agento-Upstream-Path
 			}
-			uri strip_prefix /a
+			rewrite * {http.request.header.X-Agento-Upstream-Path}
+			request_header -X-Agento-Upstream-Path
 			reverse_proxy artifacts:8080
 		}
 	}
 	handle {
 		respond 404
-	}
-}
-
-# One origin per share (PRD E6 §9.1). The share-token mapping is E6's; until then
-# web denies every share.
-*.{$AGENTO_SHARE_HOST} {
-	tls internal
-	import access_log
-	import strip_identity
-	header Referrer-Policy no-referrer
-	handle {
-		route {
-			forward_auth web:8000 {
-				uri /internal/authz/share
-				header_up X-Agento-Proxy-Auth {$AGENTO_PROXY_SECRET}
-			}
-			respond 404
-		}
 	}
 }

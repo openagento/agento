@@ -80,6 +80,22 @@ export function createSourceLookup(entries) {
   return Object.freeze({ lookup: kind => (table.has(kind) ? table.get(kind) : null) });
 }
 
+// The role-grant rule of framework/access/accounts.py, parameter for parameter (fixture
+// tests/fixtures/role_grant_v1.json). Framework mechanism: every auth source that bounds a
+// capability by a user's grants gets it as `grants`, so no module owns a copy (PLC-4).
+export const GRANTS_SQL =
+  'SELECT DISTINCT name FROM role_grant WHERE role = ? AND grant_kind = ? AND (' +
+  '(agent_view_id = ? AND workspace_id IS NULL) OR (agent_view_id IS NULL AND workspace_id = ?)) ' +
+  'ORDER BY name';
+
+/** `(role, kind) => names` for exactly this scope: an agent_view grant, or a workspace-wide one. */
+export function grantsFor(query, workspaceId, agentViewId) {
+  return async (role, kind) => {
+    const [rows] = await query(GRANTS_SQL, [role, kind, agentViewId ?? null, workspaceId]);
+    return rows.map(r => r.name);
+  };
+}
+
 export function createVerifier(query, { sourceCheckers = NO_AUTH_SOURCES, resolveTtls } = {}) {
   const ttls = resolveTtls || (workspaceId => resolveAuthTtls(query, workspaceId));
 
@@ -100,6 +116,7 @@ export function createVerifier(query, { sourceCheckers = NO_AUTH_SOURCES, resolv
         workspace_id: normalized.workspace_id,
         agent_view_id: normalized.agent_view_id,
         query,
+        grants: grantsFor(query, normalized.workspace_id, normalized.agent_view_id),
       });
       if (!source) return null;
       ttlCaps = await ttls(normalized.workspace_id);

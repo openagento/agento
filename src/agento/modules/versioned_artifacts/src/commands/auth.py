@@ -50,6 +50,7 @@ class VersionedArtifactAuthCommand:
             print(f"Basic auth for '{args.artifact_code}':")
             print(f"  user:     {body.get('auth_user')}")
             print(f"  password: {body.get('password')}")
+            _print_share(body)
             return
 
         if args.pass_stdin:
@@ -77,7 +78,13 @@ class VersionedArtifactAuthCommand:
         print(f"Basic auth enabled for '{args.artifact_code}':")
         print(f"  user:     {body.get('auth_user')}")
         print(f"  password: {body.get('password')}")
+        _print_share(body)
         print("Pass these to whoever needs to open the preview; the password is shown only now unless you --show it.")
+
+
+def _print_share(body: dict) -> None:
+    url = body.get("share_url")
+    print(f"  share:    {url}" if url else "  share:    not configured (AGENTO_SHARE_HOST is empty or invalid)")
 
 
 def _read_password() -> str:

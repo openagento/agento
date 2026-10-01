@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import {
-  tokenHash, extractToken, createVerifier, createRequireCapability, rejectScopeMismatch,
+  GRANTS_SQL, grantsFor, tokenHash, extractToken, createVerifier, createRequireCapability, rejectScopeMismatch,
   createSourceLookup, NO_AUTH_SOURCES, resolveAuthTtls,
 } from '../capability.js';
 import { ENDPOINTS } from '../auth-context.js';
@@ -162,8 +162,13 @@ describe('new-profile rows and their sources', () => {
       sourceCheckers: createSourceLookup([['session', check]]), resolveTtls: caps,
     });
     await verify('t', { endpoint: 'invoke' });
-    const opts = check.mock.calls[0][1];
+    const { grants, ...opts } = check.mock.calls[0][1];
     expect(opts).toEqual({ capability_kind: 'user_session', workspace_id: 3, agent_view_id: null, query });
+    // `grants` is the framework's grant rule, bound to the ROW's scope, on the same query.
+    expect(typeof grants).toBe('function');
+    const q = vi.fn(async () => [[{ name: 'jira_search' }]]);
+    expect(await grantsFor(q, 3, null)('user', 'tool')).toEqual(['jira_search']);
+    expect(q).toHaveBeenCalledWith(GRANTS_SQL, ['user', 'tool', null, 3]);
   });
 
   it('resolves the TTL caps for the row workspace, and a resolver failure propagates (503, not open)', async () => {

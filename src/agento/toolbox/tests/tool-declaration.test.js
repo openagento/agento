@@ -26,6 +26,7 @@ import { register as registerGitHub } from '../../modules/github/toolbox/github.
 import { register as registerJira } from '../../modules/jira/toolbox/jira.js';
 import { register as registerOutlook } from '../../modules/outlook/toolbox/outlook.js';
 import { register as registerVersionedArtifacts } from '../../modules/versioned_artifacts/toolbox/versioned-artifacts.js';
+import { register as registerMiniapps } from '../../modules/miniapps/toolbox/miniapps.js';
 
 // Keyed by the exact toolbox FILE each registrar comes from, so the coverage guard below can
 // compare against what is on disk — a module-level comparison would let a new
@@ -37,6 +38,7 @@ const REGISTRARS = {
   jira: { 'jira.js': registerJira },
   outlook: { 'outlook.js': registerOutlook },
   versioned_artifacts: { 'versioned-artifacts.js': registerVersionedArtifacts },
+  miniapps: { 'miniapps.js': registerMiniapps },
 };
 
 // Route-only files: they mount Express routes and register ZERO tools. Asserted below rather
@@ -76,6 +78,9 @@ const SUPPORT_FILES = new Set([
   'versioned_artifacts/paths.js',
   'versioned_artifacts/published-tree.js',
   'versioned_artifacts/service.js',
+  'versioned_artifacts/share-host.js',
+  'miniapps/cli.js',
+  'miniapps/launch-source.js',
   'web/auth-sources.js',
 ]);
 
