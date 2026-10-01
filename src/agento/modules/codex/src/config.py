@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING
 
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
 from agento.framework.agent_manager.errors import AuthenticationError
-from agento.framework.harness import ToolboxConnectionSpec
+from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
+from agento.framework.harness.run_scope import scope_toolbox_url, toolbox_auth
 
 if TYPE_CHECKING:
     import pymysql
@@ -370,9 +371,6 @@ class CodexWorkspaceAdapter:
 
         for name, server_cfg in servers.items():
             url = server_cfg.get("url", "")
-            if agent_view_id is not None and ("/sse" in url or "/mcp" in url):
-                sep = "&" if "?" in url else "?"
-                url = f"{url}{sep}agent_view_id={agent_view_id}"
             mcp_type = _derive_mcp_type(url)
             lines.append(f"\n[mcp_servers.{name}]")
             lines.append(f'type = "{mcp_type}"')
@@ -388,17 +386,22 @@ class CodexWorkspaceAdapter:
         self,
         artifacts_dir: Path,
         *,
-        job_id: int | None,
+        job_id: int | None = None,
+        run_id: str | None = None,
+        capability_token: str | None = None,
+        toolbox_url: str | None = None,
     ) -> None:
-        """Scope the copied config to one job.
+        """Scope the copied config to one run and hand it the run's toolbox capability.
 
-        ``job_id=None`` means the run has no job scope (a string-id ``agento run``). There
-        is nothing to scope then, so return early rather than render the literal "None"
-        into the config. The framework does not currently make this call for this adapter —
-        it only passes ``None`` to adapters that name an ``effective_*`` override keyword —
-        but the Protocol permits it, so honouring it here keeps the declared type true.
+        ``job_id=None`` means the run has no job scope (a string-id ``agento run``); its
+        ``run_id`` scopes it instead, so the toolbox can still give it a desk of its own.
+        With neither and no capability there is nothing to inject, so return early rather
+        than render the literal "None" into the config.
         """
-        if job_id is None:
+        # Validate the TRUSTED input first, so a misconfigured core/toolbox/url fails the
+        # run whether or not an MCP file happens to exist.
+        target = toolbox_origin(toolbox_url) if capability_token else None
+        if job_id is None and not run_id and not capability_token:
             return
         config_path = artifacts_dir / ".codex" / "config.toml"
         if not config_path.is_file():
@@ -413,9 +416,20 @@ class CodexWorkspaceAdapter:
 
         for server_cfg in mcp_servers.values():
             url = server_cfg.get("url", "")
-            if "/sse" in url or "/mcp" in url:
-                sep = "&" if "?" in url else "?"
-                server_cfg["url"] = f"{url}{sep}job_id={job_id}"
+            # With a capability: endpoint match, NOT a "/mcp in url" substring test —
+            # operators may add third-party MCP servers, and the toolbox capability must
+            # never travel to one of them.
+            if target is not None:
+                if not is_toolbox_endpoint(url, target):
+                    continue
+            elif not ("/sse" in url or "/mcp" in url):
+                continue
+            url = scope_toolbox_url(url, job_id, run_id)
+            if capability_token:
+                url, headers = toolbox_auth(url, capability_token)
+                if headers:
+                    server_cfg["http_headers"] = {**(server_cfg.get("http_headers") or {}), **headers}
+            server_cfg["url"] = url
 
         # Re-write the TOML (hand-written, simple structure)
         lines: list[str] = []
@@ -430,6 +444,12 @@ class CodexWorkspaceAdapter:
             lines.append(f"\n[mcp_servers.{name}]")
             lines.append(f'type = "{server_cfg.get("type", "sse")}"')
             lines.append(f'url = "{server_cfg.get("url", "")}"')
+            if server_cfg.get("http_headers"):
+                inline = ", ".join(
+                    f"{_toml_quote_key(k)} = {_toml_literal(v)}"
+                    for k, v in sorted(server_cfg["http_headers"].items())
+                )
+                lines.append(f"http_headers = {{ {inline} }}")
 
         config_path.write_text("\n".join(lines) + "\n")
 

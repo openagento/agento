@@ -93,6 +93,41 @@ Precedence for the model specifically: an explicit `--model` flag on `agento run
 
 Workspace materialization (`.mcp.json`, `.codex/config.toml`, `.claude.json`, `AGENTS.md` / `SOUL.md`; the non-secret `.ssh/` files are written per run, not into the build) is built from `ScopedConfigService.resolve_all()` — the **full effective config**, each path resolved ENV → DB → config.json. Its key set is the union of DB-override keys, `CONFIG__*` env keys, and every declared module config field — so provider-specific fields set only via ENV (`CONFIG__AGENT_VIEW__CODEX__APPROVAL_MODE`, `CONFIG__AGENT_VIEW__CLAUDE__PERSONALITY`, …) **and** `config.json`-only defaults (e.g. `agent_view/harness`) both participate. (Tool-field `config.json`-only defaults are excluded — they configure toolbox-side tools and never materialize into the build; tool overrides set via DB/ENV are still included.) The build's freshness checksum hashes that same resolved view, so changing any override or shipped default (then recreating the container, since `CONFIG__*` is read at process start) drifts the checksum and the next job-claim **rebuilds** the workspace. One resolver drives both the checksum and every materialized file — no separate DB-only path.
 
+## Access Restrictions (`access`, `allowEnv`)
+
+Two `system.json` keys narrow **who** may resolve a field and **which source** may supply it. Both are
+enforced in **both** resolvers — Python (`framework/config_resolver.py`) and the toolbox mirror
+(`src/agento/toolbox/config-loader.js`) — so neither language is a way around the other.
+
+```json
+{
+  "outlook_client_secret": {
+    "type": "obscure",
+    "label": "Graph client secret",
+    "access": "toolbox_only",
+    "allowEnv": false,
+    "showInDefault": false
+  }
+}
+```
+
+- **`"access": "toolbox_only"`** — Python never resolves the field, so it is never decrypted outside
+  the toolbox. `resolve_field` returns `None` with source `toolbox_only`; a **direct**
+  `ScopedConfigService.get()` **raises** `ToolboxOnlyConfigError`, because a direct read is a bug in
+  the caller; the bulk `resolve_all()` walk simply **omits** the path (walking every declared field is
+  not a read of that one). `get_module()` sees `None`, exactly like an unset value.
+- **`"allowEnv": false`** — the ENV source is refused for this field. `CONFIG__OUTLOOK__OUTLOOK_CLIENT_SECRET`
+  is ignored rather than honoured, and `module:validate` **fails the deploy** that sets one, so a
+  misconfiguration is loud instead of silent. Use it for anything that must not travel as plaintext in
+  a container environment.
+- The two are independent: `allowEnv: false` alone closes the ENV hole for a field a Python process
+  still legitimately needs (`app_monitor`'s SMTP password today).
+- Combine with `showIn*` (below) to also keep the value off the DEFAULT scope, so `bootstrap()`'s
+  DEFAULT-only walk never sees the row at all.
+
+See [zero-trust.md](../architecture/zero-trust.md) and
+[toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
+
 ## Scope Restrictions (`showIn*`)
 
 Fields declared in a module's `system.json` may restrict which scopes allow editing, using Magento-style flags:
@@ -115,6 +150,57 @@ Rules:
 - Fields without any `showIn*` declaration remain editable on every scope — backward compatible.
 - Enforcement is in CLI (`config:set`) and in the admin TUI (edit blocked with a `[readonly]` badge). No DB constraint is applied.
 - Applies equally to module-level fields (`module/field`) and tool fields (`module/tools/tool/field`).
+
+## Numeric Bounds (`min`, `max`)
+
+A `system.json` field of type `integer` or `number` may declare `min` and/or `max`. Either one
+alone is enough; a field that declares neither is never bound-checked.
+
+```json
+{
+  "stream/max_per_user": {
+    "type": "integer",
+    "label": "Concurrent streams per user",
+    "min": 1,
+    "max": 16
+  }
+}
+```
+
+The bound is one rule, enforced on all three levels:
+
+| Level | Behaviour when the value is out of bounds, unparseable, or the wrong type |
+| --- | --- |
+| `config:set` (DB write) | Refused, with the whole allowed range in the message. |
+| `config.json` default | `module:validate` (and therefore `setup:upgrade` and `bin/test`) refuses the module. A bounded field must declare a default. |
+| ENV `CONFIG__*` and a pre-existing DB row | One warning is logged and the `config.json` default is served instead. |
+
+The two dynamic sources are substituted, not refused, because neither is validated when it is
+written: an ENV var is set outside the framework, and a DB row may predate the bound. The
+`config.json` default is what they fall back to, which is why that one is checked statically —
+there is no second default behind it. A rejected ENV value falls straight through to the default
+and does **not** promote the DB row underneath it. If a bounded field has no `config.json`
+default, `resolve_field` raises rather than serve an unbounded value (SEC-9, fail closed).
+
+### The `core/limits/*` keys
+
+The panel limiter (see [panel.md](../architecture/panel.md#rate-limiting)) reads these six.
+Every one is bounded, so no source can widen or switch the limiter off.
+
+| Path | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `core/limits/window_seconds` | 60 | 1 – 3600 | Length of one counting window. |
+| `core/limits/max_requests_per_user` | 120 | 1 – 10000 | Requests per window on a caller's own bucket. |
+| `core/limits/max_requests_per_address` | 60 | 1 – 10000 | Requests per window on the shared address bucket. |
+| `core/limits/auth_failures_before_hold` | 10 | 1 – 100 | Failed authentications that place a hold. |
+| `core/limits/hold_seconds` | 900 | 1 – 86400 | How long a hold lasts. |
+| `core/limits/bucket_retention_seconds` | 3600 | 300 – 604800 | Floor on how long a bucket outlives its window before `limits:prune` may delete it. |
+
+`core/outbox/retention_days` (default 30, minimum 7) is the framework's backstop over
+`job_event_outbox`: `outbox:prune` (cron, nightly) deletes every row past it, **relayed or
+not**. Relayed-only would be unbounded — with the consuming module disabled nothing is ever
+relayed. A module's own shorter retention over relayed rows is a faster cleanup inside this
+backstop, never a replacement for it.
 
 ## Testing a stored value
 
@@ -157,7 +243,7 @@ what keeps that key off disk is the per-run `ssh-agent` ([identity docs](identit
 
 ## Further Reading
 
-- [ENV Variables](env-vars.md) — naming convention and examples
+- [ENV Variables](env-vars.md) — naming convention, examples, and the `allowEnv: false` exception
 - [core_config_data](core-config-data.md) — DB table and CLI
 - [Encryption](encryption.md) — obscure fields and AES-256-CBC
 - [Config Testers](testers.md) — declaring a "Test connection" for a field

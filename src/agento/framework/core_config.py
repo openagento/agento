@@ -157,12 +157,14 @@ def config_list(conn, prefix: str = "") -> list[dict]:
 def _find_module_dir(module_name: str) -> Path | None:
     """Find a module directory across core and user module paths."""
     from .bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
+    from .module_discovery import module_dirs_by_name
 
-    for base in (CORE_MODULES_DIR, USER_MODULES_DIR):
-        for name_variant in (module_name.replace("_", "-"), module_name):
-            candidate = Path(base) / name_variant
-            if candidate.exists():
-                return candidate
+    # The ONE selection (see module_discovery): a hand-written root list read the CORE copy
+    # of a name that app/code overrides, so config resolved against the shadowed schema.
+    dirs = dict(module_dirs_by_name(CORE_MODULES_DIR, USER_MODULES_DIR))
+    for name_variant in (module_name.replace("_", "-"), module_name):
+        if name_variant in dirs:
+            return dirs[name_variant]
     return None
 
 

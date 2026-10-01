@@ -230,14 +230,20 @@ class TestAMalformedResultNeverRaises:
         assert (cleaned.status, cleaned.code) == (OK, "")
 
     def test_an_unhashable_status_on_the_wire_is_a_bad_body(self, monkeypatch):
+        import contextlib
+
         import httpx
         import respx
 
         from agento.framework.config_test.toolbox import run_toolbox_test
 
         monkeypatch.setattr(
-            "agento.framework.config_test.toolbox._resolve_toolbox_url",
+            "agento.framework.config_test.toolbox.resolve_toolbox_url",
             lambda conn: "http://toolbox:3001",
+        )
+        monkeypatch.setattr(
+            "agento.framework.config_test.toolbox.rest_capability",
+            lambda **_: contextlib.nullcontext("tok"),
         )
         with respx.mock:
             respx.post("http://toolbox:3001/config-test").mock(

@@ -67,16 +67,9 @@ class ResolvedField:
 
 def _count_modules() -> int:
     from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
+    from ..module_discovery import module_dirs_by_name
 
-    count = 0
-    for modules_dir in (CORE_MODULES_DIR, USER_MODULES_DIR):
-        base = Path(modules_dir)
-        if not base.is_dir():
-            continue
-        for entry in base.iterdir():
-            if entry.is_dir() and not entry.name.startswith("_") and (entry / "module.json").exists():
-                count += 1
-    return count
+    return len(module_dirs_by_name(CORE_MODULES_DIR, USER_MODULES_DIR))
 
 
 def _ensure_conn(conn) -> None:
@@ -329,32 +322,25 @@ def get_module_schemas() -> list[ModuleSchema]:
         return _module_schema_cache
 
     from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
-    from ..module_loader import scan_modules
+    from ..module_discovery import scan_all_modules
     from ..module_status import filter_enabled
 
     schemas: list[ModuleSchema] = []
-    for modules_dir in (CORE_MODULES_DIR, USER_MODULES_DIR):
-        if not Path(modules_dir).is_dir():
+    for m in filter_enabled(scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR)):
+        if not m.config and not m.tools:
             continue
-        try:
-            manifests = filter_enabled(scan_modules(modules_dir))
-        except Exception:
-            continue
-        for m in manifests:
-            if not m.config and not m.tools:
-                continue
-            tool_fields: dict = {}
-            for tool in m.tools:
-                tool_name = tool.get("name", "")
-                fields = tool.get("fields", {})
-                if fields:
-                    tool_fields[tool_name] = fields
-            schemas.append(ModuleSchema(
-                name=m.name,
-                fields=dict(m.config),
-                tools=tool_fields,
-                module_path=m.path,
-            ))
+        tool_fields: dict = {}
+        for tool in m.tools:
+            tool_name = tool.get("name", "")
+            fields = tool.get("fields", {})
+            if fields:
+                tool_fields[tool_name] = fields
+        schemas.append(ModuleSchema(
+            name=m.name,
+            fields=dict(m.config),
+            tools=tool_fields,
+            module_path=m.path,
+        ))
 
     _module_schema_cache = schemas
     return schemas
@@ -534,17 +520,14 @@ def set_config_value(
 ) -> list[tuple[str, str]]:
     """Save a config value, repairing any dependent the new value invalidates.
 
-    Shares one operation with ``config:set`` — saving a harness here without the repair
+    Shares ``config_write.write_config`` with ``config:set`` — saving a harness here without the repair
     would leave the very broken (harness, provider) pair the CLI prevents. Returns the
     dependents that were rewritten so the TUI can tell the operator.
     """
-    from ..config_dependents import set_config_with_dependents
+    from ..config_write import write_config
 
     _ensure_conn(conn)
-    _encrypted, changed = set_config_with_dependents(
-        conn, path, value, scope=scope, scope_id=scope_id
-    )
-    conn.commit()
+    _encrypted, changed = write_config(conn, path, value, scope=scope, scope_id=scope_id)
     return changed
 
 
@@ -599,24 +582,17 @@ def _scan_tools_by_toolset() -> list[tuple[str, list[str]]]:
     directly (like ``tool:list``) so field-less tools are included.
     """
     from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
-    from ..module_loader import scan_modules
+    from ..module_discovery import scan_all_modules
     from ..module_status import filter_enabled
 
     groups: dict[str, list[str]] = {}
-    for modules_dir in (CORE_MODULES_DIR, USER_MODULES_DIR):
-        if not Path(modules_dir).is_dir():
-            continue
-        try:
-            manifests = filter_enabled(scan_modules(modules_dir))
-        except Exception:
-            continue
-        for m in manifests:
-            for tool in m.tools:
-                name = tool.get("name")
-                if not name:
-                    continue
-                toolset = tool.get("toolset") or m.name
-                groups.setdefault(toolset, []).append(name)
+    for m in filter_enabled(scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR)):
+        for tool in m.tools:
+            name = tool.get("name")
+            if not name:
+                continue
+            toolset = tool.get("toolset") or m.name
+            groups.setdefault(toolset, []).append(name)
     return [(toolset, sorted(names)) for toolset, names in sorted(groups.items())]
 
 

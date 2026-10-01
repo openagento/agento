@@ -30,6 +30,8 @@ def modules_dir(tmp_path, monkeypatch):
     # jira module (core) with system.json declaring jira_token as obscure
     jira_dir = core_dir / "jira"
     jira_dir.mkdir()
+    # A directory is a module only with a manifest — that is what the one discovery selects.
+    (jira_dir / "module.json").write_text(json.dumps({"name": "jira"}))
     (jira_dir / "system.json").write_text(json.dumps({
         "jira_host": {"type": "string", "label": "Jira host URL"},
         "jira_user": {"type": "string", "label": "Jira user email"},

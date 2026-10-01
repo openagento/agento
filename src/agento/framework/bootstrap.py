@@ -7,11 +7,13 @@ import re
 from pathlib import Path
 from typing import Any
 
+from . import execution_deltas
 from .channels import registry as channel_registry
 from .channels.base import Channel
 from .commands import Command, register_command
 from .commands import clear as clear_commands
 from .config_resolver import load_db_overrides, read_config_defaults, resolve_module_config
+from .config_schema import remember_restricted_fields
 from .dependency_resolver import resolve_order, validate_dependencies
 from .event_manager import Observer, ObserverEntry, get_event_manager
 from .event_manager import clear as clear_event_manager
@@ -22,6 +24,8 @@ from .events import (
     ModuleReloadEvent,
     ModuleShutdownEvent,
 )
+from .execution_hooks import SEAMS as EXECUTION_SEAMS
+from .execution_hooks import clear as clear_execution_hooks
 from .harness import (
     AgentHarnessAdapter,
     DuplicateCredentialScopeError,
@@ -33,6 +37,11 @@ from .harness import (
 from .harness import clear as clear_harnesses
 from .ingress_identity import clear_regex_identity_types, register_regex_identity_type
 from .job_models import AgentType
+from .job_types import (
+    clear_job_types,
+    register_job_type,
+    resolve_job_type,
+)
 from .module_discovery import scan_all_modules
 from .module_loader import ModuleManifest, import_class
 from .module_status import filter_enabled
@@ -121,13 +130,23 @@ def bootstrap(
     clear_routers()
     clear_regex_identity_types()
     clear_event_manager()
+    clear_job_types()
+    clear_execution_hooks()
+    _DELTA_SINK_DECLARATION.clear()
     _MODULE_CONFIGS.clear()
-    _MANIFESTS.clear()
+    # _MANIFESTS is NOT cleared here. Discovery below can raise (a bad manifest, a
+    # dependency cycle), and an empty registry between the clear and the repopulate makes
+    # every field look like it declares no security metadata. It is replaced atomically
+    # once discovery succeeds, so a failed reload keeps the previous good schema.
 
     # ONE discovery path shared with setup:upgrade and module:validate — it also covers
     # PyPI extensions bind-mounted at /opt/agento-src/<ext>, which are under neither
     # core_dir nor user_dir.
     all_scanned = scan_all_modules(core_dir, user_dir)
+    # Remember the restricted fields of EVERY scanned module, enabled or not: disabling a
+    # module must not turn its `toolbox_only` secret into a readable one.
+    for scanned in all_scanned:
+        remember_restricted_fields(scanned.name, scanned.config)
     enabled = filter_enabled(all_scanned)
     validate_dependencies(enabled, all_scanned)
     manifests = resolve_order(enabled)
@@ -173,18 +192,23 @@ def bootstrap(
 
         # Register capabilities
         _load_channels(m)
+        _load_job_types(m)
         _load_workflows(m)
         _load_agent_harnesses(m)
         _load_commands(m)
         _load_onboarding(m)
         _load_routers(m)
         _load_regex_identity_types(m)
+        _load_execution_hooks(m)
 
         # Dispatch module_loaded (capabilities registered)
         em.dispatch("module_load_after", ModuleLoadedEvent(name=m.name, path=m.path))
 
-    # Store manifests for shutdown and introspection
-    _MANIFESTS.extend(manifests)
+    _sync_delta_worker()
+
+    # Store manifests for shutdown and introspection — replaced in one statement, never
+    # cleared first (see the note above the discovery block).
+    _MANIFESTS[:] = manifests
 
     # Dispatch module_ready (all modules loaded, safe to query registries)
     for m in manifests:
@@ -244,6 +268,56 @@ def _load_channels(m: ModuleManifest) -> None:
             logger.exception("Failed to load channel %r from module %s", decl.get("name"), m.name)
 
 
+# Filled by `_load_execution_hooks`, read once per bootstrap by `_sync_delta_worker`.
+_DELTA_SINK_DECLARATION: dict[str, str] = {}
+
+
+def _sync_delta_worker() -> None:
+    """Reconcile the delta writer thread to what this bootstrap registered (§14, MOD-2).
+
+    A sink that is gone means the module was disabled: `sync(None)` stops the thread and
+    discards the queue rather than draining it into a sink whose tables are no longer ours
+    to write.
+    """
+    sink = EXECUTION_SEAMS["execution_delta_sink"].get()
+    execution_deltas.sync(sink, **_DELTA_SINK_DECLARATION)
+
+
+def _load_execution_hooks(m: ModuleManifest) -> None:
+    """Register the module's `execution_hooks` (§5.1) - at most one implementation each.
+
+    Unlike the other loaders this one does NOT swallow its failures. The other capabilities
+    degrade: a channel that will not load leaves its channel unreachable. These four decide
+    whether a run is recorded at all, and a silently missing provider is a run that looks
+    normal and is invisible afterwards - the failure this seam exists to prevent.
+    """
+    declarations = m.provides.get("execution_hooks") or {}
+    for seam, path in declarations.items():
+        slot = EXECUTION_SEAMS.get(seam)
+        if slot is None:
+            raise ValueError(f"module {m.name}: unknown execution hook {seam!r}")
+        slot.register(import_class(m.path, path)(), module=m.name)
+        if seam == "execution_delta_sink":
+            # The RECONCILIATION key: the declaration, never the object. This loader builds
+            # a new instance on every bootstrap, and the consumer bootstraps every idle poll
+            # tick - keying the writer thread on identity would restart it for ever.
+            _DELTA_SINK_DECLARATION.update(module=m.name, class_path=path)
+        logger.debug("Registered %s from module %s", seam, m.name)
+
+
+def _load_job_types(m: ModuleManifest) -> None:
+    """Register the module's own job types, BEFORE its workflows resolve them (§4.2).
+
+    Its own ``job_types`` key: a ``workflows`` entry for ``cron`` replaces a built-in's
+    workflow, which is a different thing from declaring a type.
+    """
+    for value in m.provides.get("job_types", []):
+        try:
+            register_job_type(value, module=m.name)
+        except Exception:
+            logger.exception("Failed to register job type %r from module %s", value, m.name)
+
+
 def _load_workflows(m: ModuleManifest) -> None:
     for decl in m.provides.get("workflows", []):
         try:
@@ -254,8 +328,7 @@ def _load_workflows(m: ModuleManifest) -> None:
                     decl.get("type"), m.name,
                 )
                 continue
-            agent_type = AgentType(decl["type"])
-            register_workflow(agent_type, cls)
+            register_workflow(resolve_job_type(decl["type"]), cls)
             logger.debug("Registered workflow %r from module %s", decl["type"], m.name)
         except Exception:
             logger.exception("Failed to load workflow %r from module %s", decl.get("type"), m.name)

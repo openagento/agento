@@ -56,7 +56,7 @@ def _message_id_from_reference(reference_id: str) -> str:
 
 
 def _matches_allowed(sender: str, allowed_senders: list[str] | None) -> bool:
-    """Reproduce core's ``matchesWhitelist`` semantics (email.js).
+    """Reproduce the shared JS ``matchesWhitelist`` semantics (toolbox/email-match.js).
 
     Each pattern is anchored (``^...$``), case-insensitive (caller passes a lowered sender),
     and ``*`` expands to ``[^@]*`` so ``*@mycompany.com`` matches any local part but never crosses
@@ -64,13 +64,18 @@ def _matches_allowed(sender: str, allowed_senders: list[str] | None) -> bool:
     """
     if not allowed_senders:
         return False
+    # FAIL-CLOSED: a message with no sender address is not "everyone" — it is nobody. Without
+    # this a pattern of ``*`` would admit it. The JS twin guards the same case.
+    sender = (sender or "").strip().lower()
+    if not sender:
+        return False
     for pattern in allowed_senders:
         # Escape EVERY regex metachar in the literal segments (split on the glob ``*``) so a pattern
         # like ``a?b@x.com`` matches literally — never as a regex quantifier, which would WIDEN the
         # allow-list (the fail-OPEN direction). ``*`` expands to ``[^@]*`` (matches a local part but
-        # never crosses the ``@``). Kept in lockstep with the JS ``matchesWhitelist`` (outlook.js).
+        # never crosses the ``@``). Kept in lockstep with the JS ``matchesWhitelist`` (src/agento/toolbox/email-match.js).
         regex = "^" + "[^@]*".join(re.escape(seg) for seg in pattern.lower().split("*")) + "$"
-        if re.match(regex, sender):
+        if re.fullmatch(regex, sender):
             return True
     return False
 

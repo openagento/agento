@@ -16,6 +16,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agento.framework.toolbox_capability import (
+    INTERACTIVE_CAPABILITY_TTL_SECONDS,
+    KIND_MCP_INTERACTIVE,
+)
+
+
+def _view_conn():
+    """A connection that answers the issuer's agent_view -> workspace lookup."""
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = {"workspace_id": 3}
+    return conn
+
 
 def _make_args(agent_view_code="dev", prompt=None, model=None, yolo=False):
     return argparse.Namespace(
@@ -88,7 +100,7 @@ def _run_command(
         "agento.framework.cli.runtime._load_framework_config",
         return_value=(MagicMock(), MagicMock(), MagicMock()),
     ), patch(
-        "agento.framework.db.get_connection_or_exit", return_value=MagicMock(),
+        "agento.framework.db.get_connection_or_exit", return_value=_view_conn(),
     ), patch(
         "agento.framework.workspace.get_agent_view_by_code",
         return_value=MagicMock(id=runtime.agent_view.id, code=runtime.agent_view.code),
@@ -261,6 +273,30 @@ class TestAgentViewPrepareRunCommand:
             == "anthropic/claude-sonnet-4.5"
         )
 
+    def test_interactive_run_injects_a_capability(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        """An interactive run gets its own mcp_interactive capability, minted for the
+        view it runs as and handed to the materializer — never to the host payload."""
+        with patch(
+            "agento.framework.toolbox_capability.issue_capability",
+            return_value="tok-interactive",
+        ) as mock_issue:
+            payload, mock_materialize = _run_command(
+                _make_args(), runtime_stub, token_stub, builder_stub, writer_stub,
+                home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+                return_mocks=True,
+            )
+
+        kwargs = mock_issue.call_args.kwargs
+        assert kwargs["kind"] == KIND_MCP_INTERACTIVE
+        assert kwargs["agent_view_id"] == runtime_stub.agent_view.id
+        assert kwargs["ttl_seconds"] == INTERACTIVE_CAPABILITY_TTL_SECONDS
+        assert kwargs["allowed_transports"] == ["http"]
+        assert mock_materialize.call_args.kwargs["capability_token"] == "tok-interactive"
+        # The payload reaches the host terminal and its shell history.
+        assert "tok-interactive" not in json.dumps(payload)
+
     def test_unregistered_harness_returns_null_command(
         self, tmp_path, runtime_stub, token_stub, writer_stub,
     ):
@@ -277,7 +313,7 @@ class TestAgentViewPrepareRunCommand:
             "agento.framework.cli.runtime._load_framework_config",
             return_value=(MagicMock(), MagicMock(), MagicMock()),
         ), patch(
-            "agento.framework.db.get_connection_or_exit", return_value=MagicMock(),
+            "agento.framework.db.get_connection_or_exit", return_value=_view_conn(),
         ), patch(
             "agento.framework.workspace.get_agent_view_by_code",
             return_value=MagicMock(id=7, code="dev"),

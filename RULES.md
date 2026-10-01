@@ -129,6 +129,16 @@ an explicit allow-list.
 **SEC-11 Dependencies (P1).** A new dependency has no known CVE and is maintained. Add none where the
 stdlib or an installed dependency does the job.
 
+**SEC-12 Rate limits.** A listener that authenticates a caller, or does work per request (a DB
+read, a hash, a derive) for a caller it has not authenticated, has a rate limit that runs before the
+route. Mount it once, before every route, so a new route is limited with no opt-in (toolbox:
+`rate-limit.js`). Key a limit by the credential's hash, or by the client address. Never key by a raw
+credential (SEC-6). Count authentication failures (401, 403) per client address, because a flood of
+random tokens gets a new credential key on each request. Where many callers share one address (all
+sandbox runs), the address limit counts failures only, so one caller cannot throttle the others'
+authorized traffic. A limit is never the only guard: authentication still runs on every request. A
+server that only a test starts is exempt.
+
 ## TBX — Toolbox and tools
 
 **TBX-1 Session isolation (P0).** Trigger: a change under `src/agento/toolbox/**` or

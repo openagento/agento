@@ -203,6 +203,29 @@ class TestApplyMigration:
         assert "KEY idx_job_requester_email (requester_email)" in sql
         assert "('026_job_requester')" in sql
 
+    def test_fresh_init_includes_toolbox_capability(self):
+        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
+        assert "CREATE TABLE toolbox_capability" in sql
+        assert "uk_toolbox_capability_hash (token_hash)" in sql
+        assert "fk_toolbox_capability_view" in sql
+        assert "('035_toolbox_capability')" in sql
+
+    def test_every_framework_migration_is_marked_applied_in_fresh_init(self):
+        """The class guard: 000_init.sql is the schema a NEW project starts from, so a
+        migration whose marker is missing runs against a schema that already has its effect
+        (usually a fatal duplicate DDL), and one marked without being applied is skipped
+        forever. Both directions must stay empty — this catches the NEXT migration too, not
+        only the one a reviewer named.
+
+        Scope: NAME parity only. It cannot see a migration whose marker is present but whose
+        DDL effect is missing from the file, so every migration still needs its own
+        effect-specific assertion like the ones above."""
+        migrations = {p.stem for p in Path("src/agento/framework/sql").glob("*.sql")}
+        init = Path("src/agento/framework/sql/init/000_init.sql").read_text()
+        marked = set(re.findall(r"\('([0-9]{3}_[a-z0-9_]+)'\)", init))
+        assert migrations - marked == set(), "migrations with no marker in 000_init.sql"
+        assert marked - migrations == set(), "markers in 000_init.sql with no migration file"
+
     def test_fresh_init_includes_error_source_and_refresh_lease_columns(self):
         # Column alignment in the init DDL is cosmetic, so collapse runs of spaces.
         sql = re.sub(

@@ -13,8 +13,20 @@ class ToolboxAPIError(Exception):
 class ToolboxClient:
     """HTTP client for the toolbox REST API."""
 
-    def __init__(self, base_url: str, timeout: float = 30.0):
-        self._client = httpx.Client(base_url=base_url, timeout=timeout)
+    def __init__(
+        self, base_url: str, timeout: float = 30.0, *, capability_token: str
+    ):
+        # Every /api route is capability-guarded. The token rides in a header, never in
+        # the URL or the body: a URL reaches access logs, and a body claim is only ever
+        # cross-checked against the capability — never trusted on its own.
+        # REQUIRED, not optional. Every /api route is capability-guarded, so a client built
+        # without a token can only make a request that is already known to fail with 401 —
+        # better to fail here, where the missing scope owner is still visible, than at the
+        # far end of an HTTP call.
+        if not capability_token:
+            raise ValueError("capability_token is required — every /api route is guarded")
+        headers = {"Authorization": f"Bearer {capability_token}"}
+        self._client = httpx.Client(base_url=base_url, timeout=timeout, headers=headers)
 
     def jira_search(
         self, jql: str, fields: list[str], max_results: int = 50,
@@ -42,7 +54,7 @@ class ToolboxClient:
     def jira_request(
         self, method: str, path: str, body: dict | None = None,
         *, auth_user: str | None = None, auth_token: str | None = None,
-        jira_host: str | None = None, agent_view_id: int | None = None,
+        agent_view_id: int | None = None,
     ) -> dict:
         payload: dict = {"method": method, "path": path}
         if body is not None:
@@ -51,8 +63,6 @@ class ToolboxClient:
             payload["auth_user"] = auth_user
         if auth_token:
             payload["auth_token"] = auth_token
-        if jira_host:
-            payload["jira_host"] = jira_host
         if agent_view_id is not None:
             payload["agent_view_id"] = agent_view_id
         response = self._client.post("/api/jira/request", json=payload)

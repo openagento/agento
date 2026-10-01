@@ -2,14 +2,21 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Iterable
 from pathlib import Path
 
+from .config_validation import MAX_LENGTH_TYPES
+
+# The job-type grammar is the registry's, not a second copy of it (PRD E3-E5 §4.2).
+from .job_types import BUILTIN_JOB_TYPES
+from .job_types import JOB_TYPE_GRAMMAR as _JOB_TYPE_GRAMMAR
+
 # `is_confined_class_path` is the single source of truth for "inside the module" —
 # the validator reports at setup time what the loader refuses at boot.
-from .config_validation import MAX_LENGTH_TYPES
 from .module_loader import is_confined_class_path
+from .route_rules import declaration_error, route_key
 
 # `{module/field}` — the same shape the toolbox interpolates (config-tests.js).
 # Keep the `/` separator out of the segment class so it matches unambiguously;
@@ -32,6 +39,9 @@ REQUIRED_MANIFEST_FIELDS = {"name", "version", "description"}
 FULL_ACCESS_TOOL_NAME_SUFFIXES = {"mysql_root": "_root"}
 RESERVED_TOOL_NAME_SUFFIXES = frozenset(FULL_ACCESS_TOOL_NAME_SUFFIXES.values())
 VALID_FIELD_TYPES = {"string", "integer", "boolean", "obscure", "select", "multiselect", "json", "textarea"}
+# The only `access` value that means anything. Every other spelling is a typo, and a typo
+# here reads as "unrestricted" — the field the author meant to hide becomes resolvable.
+VALID_ACCESS_VALUES = {"toolbox_only"}
 # A tool registered by `server.tool('<name>', …)` in a module's toolbox JS but absent from
 # module.json `tools[]` is invisible on the admin Tools screen and in `tool:list` (both
 # enumerate manifests only), so its `tools/<name>/is_enabled` key can never be flipped there.
@@ -181,6 +191,224 @@ def _literal_server_tool_names(module_dir: Path) -> dict[str, str]:
     return found
 
 
+def effective_declarations(module_dir: Path, manifest: dict) -> dict:
+    """What the loader actually loads as ``provides`` — di.json, else module.json.
+
+    ``module_loader.scan_modules`` reads ``_read_json(di.json) or data["provides"]``, so an
+    absent, unreadable OR EMPTY di.json falls back to the manifest. Every reader below goes
+    through this one helper: a reader with its own fallback validates a source nothing
+    loads, and lets the other source through unchecked.
+    """
+    di = _read_json_quietly(Path(module_dir) / "di.json")
+    provides = di or manifest.get("provides")
+    return provides if isinstance(provides, dict) else {}
+
+
+def job_type_declarations(module_dir: Path, manifest: dict) -> list[str]:
+    """The job types a module declares, read the way bootstrap reads them.
+
+    ``module_loader`` takes ``di.json`` when it exists and falls back to module.json's
+    ``provides``; validating the other source would check a file nothing loads.
+
+    Its own ``job_types`` key, not the ``type`` of a ``workflows`` entry: a module
+    providing a workflow for ``cron`` is REPLACING a built-in's workflow, which is
+    shipped behaviour (``modules/jira_periodic_tasks``), not declaring a new type.
+    """
+    provides = effective_declarations(module_dir, manifest)
+    declared = provides.get("job_types")
+    if not isinstance(declared, list):
+        return []
+    return [v for v in declared if isinstance(v, str) and v]
+
+
+
+def route_declarations(module_dir: Path, manifest: dict) -> list[dict]:
+    """The routes a module declares, read the way the route registry reads them."""
+    provides = effective_declarations(module_dir, manifest)
+    declared = provides.get("routes")
+    return declared if isinstance(declared, list) else []
+
+
+def declaration_shape_errors(module_dir: Path, manifest: dict) -> list[str]:
+    """The CONTAINER and element types of the three declaration keys, when each is present.
+
+    The three readers above deliberately mirror the loader, which is lenient: a malformed
+    declaration reads as an absent one so a bad manifest cannot crash bootstrap. That
+    leniency must not reach validation, or `"job_types": "conversation"`, `"routes": {}` and
+    `"execution_hooks": []` all pass `module:validate` and then fail or silently do nothing at
+    web/consumer startup - which is the pre-install gate not gating (PRD E3-E5 §11, §4.2).
+
+    Present means checked; absent means absent. A key nobody wrote is not an error.
+    """
+    provides = effective_declarations(module_dir, manifest)
+    errors: list[str] = []
+    if "job_types" in provides:
+        declared = provides["job_types"]
+        if not isinstance(declared, list):
+            errors.append("di.json: 'job_types' must be a list of strings")
+        else:
+            errors += [f"di.json: job type {v!r} is not a non-empty string"
+                       for v in declared if not (isinstance(v, str) and v)]
+    if "routes" in provides and not isinstance(provides["routes"], list):
+        errors.append("di.json: 'routes' must be a list of route declarations")
+    if "execution_hooks" in provides:
+        declared = provides["execution_hooks"]
+        if not isinstance(declared, dict):
+            errors.append("di.json: 'execution_hooks' must be an object of seam -> class path")
+        else:
+            errors += [f"di.json: execution hook {k!r} must map a string seam to a string "
+                       "class path"
+                       for k, v in declared.items()
+                       if not (isinstance(k, str) and isinstance(v, str))]
+    return errors
+
+
+def validate_route_grammar(module_name: str, routes: Iterable[object]) -> list[str]:
+    """Per-module: the declaration grammar, the module's own `/api/<name>/` prefix, and
+    no duplicate inside one manifest.
+
+    The prefix rule is what keeps a module off every built-in path - none of them lives
+    under another module's name - and it is also why there is no cross-module collision
+    pass here: two modules cannot name one path (PRD E3-E5 §11).
+    """
+    errors: list[str] = []
+    seen: set[str] = set()
+    for route in routes:
+        problem = declaration_error(module_name, route)
+        if problem is not None:
+            errors.append(f"di.json: {problem}")
+            continue
+        key = route_key(route)
+        if key in seen:
+            errors.append(f"di.json: route '{key}' is declared twice")
+        seen.add(key)
+    return errors
+
+
+def validate_job_type_grammar(job_types: Iterable[str]) -> list[str]:
+    """Per-module: the identifier grammar, and no redeclaring a built-in (PRD E3-E5 §4.2)."""
+    errors: list[str] = []
+    for value in job_types:
+        if value in BUILTIN_JOB_TYPES:
+            errors.append(
+                f"di.json: job type '{value}' is a framework built-in and cannot be redeclared"
+            )
+        elif not _JOB_TYPE_GRAMMAR.match(value):
+            errors.append(
+                f"di.json: job type '{value}' is invalid — lowercase letters and underscores, "
+                "starting with a letter, at most 32 characters"
+            )
+    return errors
+
+
+def validate_job_types(
+    declarations: Iterable[tuple[str, list[str]]],
+) -> dict[str, list[str]]:
+    """Cross-manifest job-type collisions. Returns ``{module_name: [errors]}``.
+
+    ``job.type`` is one column and one registry: two modules claiming one value would
+    have the load order decide whose workflow runs a job. Same-module duplicates are
+    harmless (one value, one registration), so only CROSS-module collisions are reported.
+    """
+    results: dict[str, list[str]] = {}
+    owner: dict[str, str] = {}
+    for module_name, job_types in declarations:
+        for value in job_types:
+            other = owner.get(value)
+            if other is not None and other != module_name:
+                results.setdefault(module_name, []).append(
+                    f"di.json: job type '{value}' is already declared by module '{other}'"
+                )
+                continue
+            owner.setdefault(value, module_name)
+    return results
+
+
+def execution_hook_declarations(module_dir: Path, manifest: dict) -> dict[str, str]:
+    """The `execution_hooks` a module declares, read the way bootstrap reads them."""
+    provides = effective_declarations(module_dir, manifest)
+    declared = provides.get("execution_hooks")
+    if not isinstance(declared, dict):
+        return {}
+    return {k: v for k, v in declared.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def validate_execution_hooks(
+    declarations: Iterable[tuple[str, dict[str, str]]],
+) -> dict[str, list[str]]:
+    """At most one implementation of each execution seam, across every module (§5.1).
+
+    Checked here rather than at load time because a second provider is a deployment
+    mistake, not a runtime condition: `setup:upgrade` must refuse it before it applies a
+    single schema change, and the load-time raise is the second line of defence.
+    """
+    from .execution_hooks import SEAMS
+
+    results: dict[str, list[str]] = {}
+    owner: dict[str, str] = {}
+    for module_name, hooks in declarations:
+        for seam in hooks:
+            if seam not in SEAMS:
+                results.setdefault(module_name, []).append(
+                    f"di.json: unknown execution hook '{seam}' — one of {', '.join(sorted(SEAMS))}"
+                )
+                continue
+            other = owner.get(seam)
+            if other is not None and other != module_name:
+                results.setdefault(module_name, []).append(
+                    f"di.json: execution hook '{seam}' is already provided by module '{other}'"
+                )
+                continue
+            owner.setdefault(seam, module_name)
+    return results
+
+
+def validate_config_defaults(module_dir: Path) -> list[str]:
+    """Every numeric ``config.json`` default is inside its ``system.json`` bounds (SEC-9).
+
+    There is no second default to fall back to - ``system.json`` carries field metadata
+    only - so the runtime substitution that protects a limiter from an out-of-bounds ENV
+    or legacy DB row lands on THIS value. That makes it the one that has to be checked
+    statically, before ``setup:upgrade`` touches the database.
+    """
+    from .config_schema import numeric_bound_error
+
+    module_dir = Path(module_dir)
+    system = _read_json_quietly(module_dir / "system.json")
+    config = _read_json_quietly(module_dir / "config.json")
+    if not isinstance(system, dict) or not isinstance(config, dict):
+        return []
+
+    errors: list[str] = []
+    for field_name, field_def in system.items():
+        if not isinstance(field_def, dict) or field_def.get("type") not in ("integer", "number"):
+            continue
+        if field_def.get("min") is None and field_def.get("max") is None:
+            continue
+        if field_name not in config:
+            # A bounded field with no default has nothing to fall back to: resolve_field
+            # raises rather than serving an unvalidated value, so catch it here instead.
+            errors.append(
+                f"config.json: bounded field '{field_name}' has no default; "
+                "a bounded field must ship the value its fallback uses"
+            )
+            continue
+        error = numeric_bound_error(field_name, field_def, config[field_name])
+        if error is not None:
+            errors.append(f"config.json: {error}")
+    return errors
+
+
+def _read_json_quietly(path: Path) -> object | None:
+    """Parse a JSON file, or None. Malformed JSON is reported by its own check."""
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+
+
 def validate_tool_namespace(
     declarations: Iterable[tuple[str, list]],
 ) -> dict[str, list[str]]:
@@ -239,7 +467,10 @@ def _resolve_class_path(module_dir: Path, class_path: str) -> bool:
     Class path format: 'src.commands.hello.HelloCommand'
     -> check if {module_dir}/src/commands/hello.py exists.
     """
-    if not is_confined_class_path(module_dir, class_path):
+    # A non-string reaches here from a hand-edited manifest ("class": 7, [], {}). `.rsplit`
+    # would raise AttributeError and abort the whole validation run, so the caller's type
+    # check reports it instead and this stays total.
+    if not isinstance(class_path, str) or not is_confined_class_path(module_dir, class_path):
         return False
     parts = class_path.rsplit(".", 1)
     if len(parts) < 2:
@@ -349,6 +580,15 @@ def _validate_field_tester(
     return errors
 
 
+def _class_path_errors(module_dir: Path, label: str, class_path) -> list[str]:
+    """Report a declared class path — wrong TYPE and unresolvable are different errors."""
+    if not isinstance(class_path, str):
+        return [f"{label} 'class' must be a string, got {type(class_path).__name__}"]
+    if not _resolve_class_path(module_dir, class_path):
+        return [f"{label} class '{class_path}' does not resolve to a .py file"]
+    return []
+
+
 def validate_module(module_dir: Path) -> list[str]:
     """Validate a module directory structure and manifests.
 
@@ -387,6 +627,13 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
         if field not in manifest:
             errors.append(f"module.json: missing required field '{field}'")
 
+    # The name keys the module registry, the tool namespace and every config path. A
+    # non-string one is unhashable in half of those places and silently wrong in the rest.
+    if "name" in manifest and (
+        not isinstance(manifest["name"], str) or not manifest["name"].strip()
+    ):
+        errors.append("module.json: 'name' must be a non-empty string")
+
     # Validate sequence
     sequence = manifest.get("sequence", [])
     if not isinstance(sequence, list):
@@ -413,10 +660,19 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                     errors.append(f"module.json: tools[{i}] missing '{tf}'")
 
             tool_name = str(tool.get("name", ""))
-            suffix = FULL_ACCESS_TOOL_NAME_SUFFIXES.get(tool.get("type"))
+            # `dict.get(<list>)` raises TypeError (unhashable), which aborts validation
+            # instead of reporting the malformed manifest. Report, then look up safely.
+            tool_type = tool.get("type")
+            if "type" in tool and not isinstance(tool_type, str):
+                errors.append(
+                    f"module.json: tools[{i}] 'type' must be a string, got "
+                    f"{type(tool_type).__name__}"
+                )
+                tool_type = None
+            suffix = FULL_ACCESS_TOOL_NAME_SUFFIXES.get(tool_type)
             if suffix and not tool_name.endswith(suffix):
                 errors.append(
-                    f"module.json: tools[{i}] type '{tool['type']}' grants full read/write, so its "
+                    f"module.json: tools[{i}] type '{tool_type}' grants full read/write, so its "
                     f"name '{tool_name}' must end in '{suffix}' — capability must be visible "
                     "in the tool name (enablement is keyed by name, so renaming forces fresh consent)"
                 )
@@ -426,7 +682,7 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                     errors.append(
                         f"module.json: tools[{i}] name '{tool_name}' ends in '{squatted}', which is "
                         f"reserved for full-access tool types ({', '.join(sorted(FULL_ACCESS_TOOL_NAME_SUFFIXES))}) "
-                        f"— type '{tool.get('type')}' must not use it, otherwise the tool could later be "
+                        f"— type '{tool_type}' must not use it, otherwise the tool could later be "
                         "escalated in place by editing only its type, keeping its is_enabled grant"
                     )
 
@@ -504,15 +760,27 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
             errors.append(f"di.json: invalid JSON — {e}")
             di = None
 
-        if di is not None and isinstance(di, dict):
+        if di is not None and not isinstance(di, dict):
+            errors.append("di.json: root must be an object")
+
+        if isinstance(di, dict):
             if "agent_harnesses" in di:
                 errors.extend(_validate_agent_harnesses(module_dir, di["agent_harnesses"]))
             for section in ("channels", "workflows", "commands"):
-                for entry in di.get(section, []):
-                    if isinstance(entry, dict) and "class" in entry and not _resolve_class_path(module_dir, entry["class"]):
-                        errors.append(
-                            f"di.json: {section} class '{entry['class']}' does not resolve to a .py file"
-                        )
+                if section not in di:
+                    continue
+                entries = di[section]
+                # A section that is not an array is malformed, not empty: iterating a dict
+                # would walk its KEYS and report nothing, and a scalar would raise TypeError.
+                if not isinstance(entries, list):
+                    errors.append(f"di.json: '{section}' must be an array")
+                    continue
+                for entry in entries:
+                    if not isinstance(entry, dict) or "class" not in entry:
+                        continue
+                    errors.extend(
+                        _class_path_errors(module_dir, f"di.json: {section}", entry["class"])
+                    )
             if "regex_identity_types" in di:
                 regex_types = di["regex_identity_types"]
                 # Key presence (not `is not None`): an explicit `null` is a malformed declaration
@@ -525,6 +793,15 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                             errors.append(
                                 f"di.json: regex_identity_types[{i}] must match ^[a-z][a-z0-9_]{{0,31}}$"
                             )
+
+    # The declarations the loader actually loads — di.json OR module.json's `provides`, so
+    # these run whether or not di.json exists. The SHAPE first: the readers mirror the lenient
+    # loader, so a malformed declaration reads as an absent one and would else pass the gate.
+    errors.extend(declaration_shape_errors(module_dir, manifest))
+    errors.extend(validate_job_type_grammar(job_type_declarations(module_dir, manifest)))
+    errors.extend(
+        validate_route_grammar(module_dir.name, route_declarations(module_dir, manifest))
+    )
 
     # events.json
     events_path = module_dir / "events.json"
@@ -541,10 +818,11 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                 if not isinstance(observer_list, list):
                     continue
                 for observer in observer_list:
-                    if isinstance(observer, dict) and "class" in observer and not _resolve_class_path(module_dir, observer["class"]):
-                        errors.append(
-                            f"events.json: observer class '{observer['class']}' does not resolve to a .py file"
-                        )
+                    if not isinstance(observer, dict) or "class" not in observer:
+                        continue
+                    errors.extend(
+                        _class_path_errors(module_dir, "events.json: observer", observer["class"])
+                    )
 
     # config.json
     config_path = module_dir / "config.json"
@@ -566,6 +844,8 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                         "declare in module.json tools[]"
                     )
 
+    errors.extend(validate_config_defaults(module_dir))
+
     # system.json
     system_path = module_dir / "system.json"
     if system_path.is_file():
@@ -580,9 +860,16 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                 if not isinstance(field_def, dict):
                     continue
                 field_type = field_def.get("type")
-                if field_type and field_type not in VALID_FIELD_TYPES:
+                # A `not in` against a set raises TypeError on a list or a dict value, which
+                # aborts validation instead of reporting the malformed manifest. Every
+                # membership test on a manifest value checks the type first.
+                # `if field_type` would skip every FALSY wrong type — `[]`, `{}`, `0`, `""`,
+                # `false` all read as "absent" and pass. Only a genuinely absent key may pass.
+                if field_type is not None and (
+                    not isinstance(field_type, str) or field_type not in VALID_FIELD_TYPES
+                ):
                     errors.append(
-                        f"system.json: field '{field_name}' has invalid type '{field_type}'"
+                        f"system.json: field '{field_name}' has invalid type {field_type!r}"
                     )
                 # `maxLength` is a NEW schema constraint the shared value validator
                 # reads, so a typo must fail the manifest gate at setup:upgrade rather
@@ -629,12 +916,62 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                             f"system.json: field '{field_name}' has 'options_source' but type "
                             f"is '{field_type}' (only select/multiselect support options)"
                         )
-                    elif field_def["options_source"] not in SUPPORTED_SOURCES:
+                    elif not isinstance(field_def["options_source"], str) or (
+                        field_def["options_source"] not in SUPPORTED_SOURCES
+                    ):
                         errors.append(
                             f"system.json: field '{field_name}' options_source "
-                            f"'{field_def['options_source']}' is not supported "
+                            f"{field_def['options_source']!r} is not supported "
                             f"(known: {', '.join(SUPPORTED_SOURCES)})"
                         )
+                # The two security keys fail OPEN on a typo: `is_toolbox_only` compares
+                # `access` with the exact string, and `env_allowed` refuses only the exact
+                # boolean `false`. So `"toolbox-only"` or `"allowEnv": "false"` would deploy
+                # with the boundary silently off. Reject them here, before any DB change.
+                access = field_def.get("access")
+                # `not in` on a list or a dict raises TypeError (unhashable), which aborts
+                # validation instead of reporting it — the type check has to come first.
+                if access is not None and (
+                    not isinstance(access, str) or access not in VALID_ACCESS_VALUES
+                ):
+                    errors.append(
+                        f"system.json: field '{field_name}' has invalid access {access!r} "
+                        f"(known: {', '.join(sorted(VALID_ACCESS_VALUES))}) — a value the "
+                        "resolver does not know leaves the field unrestricted"
+                    )
+                for flag in ("showInDefault", "showInWorkspace", "showInAgentView"):
+                    if flag in field_def and not isinstance(field_def[flag], bool):
+                        errors.append(
+                            f"system.json: field '{field_name}' has non-boolean {flag} "
+                            f"{field_def[flag]!r} — the scope gate reads it as truthy, so the "
+                            "field stays editable at that scope"
+                        )
+                if "allowEnv" in field_def and not isinstance(field_def["allowEnv"], bool):
+                    errors.append(
+                        f"system.json: field '{field_name}' has non-boolean allowEnv "
+                        f"{field_def['allowEnv']!r} — only `false` refuses the ENV source, so "
+                        "any other type leaves the field settable from the environment"
+                    )
+
+                # A field that refused the ENV source cannot be supplied through the
+                # environment. Catching it here means `setup:upgrade` aborts BEFORE any DB
+                # change, instead of the deploy running with a value the resolver ignores.
+                if field_def.get("allowEnv") is False:
+                    # The SAME mapping the resolver uses (`-` -> `_`, `/` -> `__`), imported
+                    # rather than restated: a validator that computes a different key than the
+                    # resolver silently passes the variable it promised to reject (a hyphenated
+                    # module, a slash-keyed field).
+                    from .config_resolver import path_to_env_key
+
+                    env_key = path_to_env_key(f"{module_name}/{field_name}")
+                    if os.environ.get(env_key) is not None:
+                        errors.append(
+                            f"system.json: field '{field_name}' declares allowEnv:false but "
+                            f"{env_key} is set — the resolver ignores it. Remove the variable "
+                            f"and use `agento config:set {module_name}/{field_name} "
+                            f"--scope workspace` (the value is read from stdin — never argv)."
+                        )
+
                 # `depends_on` is validated for EVERY field, not only those with an
                 # options_source: a literal-options select can declare it too, and a
                 # dangling dependency there silently narrows to nothing at runtime.
@@ -718,28 +1055,48 @@ def validate_all(core_dir: Path, user_dir: Path) -> dict[str, list[str]]:
     here (as this did) let a container extension load and run while ``agento module:validate``
     and ``bin/test`` silently skipped its manifest.
     """
-    from .module_discovery import module_dirs_for_validation
+    from .module_discovery import module_dirs_by_name
 
     results: dict[str, list[str]] = {}
     all_modules: dict[str, dict] = {}  # name -> manifest
 
-    candidates = module_dirs_for_validation(core_dir, user_dir)
+    candidates = module_dirs_by_name(core_dir, user_dir)
     for name, entry in candidates:
         errors, manifest = _validate_module(entry)
         if errors:
             results[name] = errors
         if manifest is not None:
-            all_modules[manifest.get("name", name)] = manifest
+            # A malformed 'name' is already reported above. Keying on it here would raise
+            # TypeError (unhashable) and abort the whole run before printing any of it.
+            declared = manifest.get("name")
+            all_modules[declared if isinstance(declared, str) and declared else name] = manifest
 
     for module_name, errs in validate_tool_namespace(
         (name, manifest.get("tools", [])) for name, manifest in all_modules.items()
     ).items():
         results.setdefault(module_name, []).extend(errs)
 
+    for module_name, errs in validate_job_types(
+        (name, job_type_declarations(entry, all_modules.get(name, {})))
+        for name, entry in candidates
+    ).items():
+        results.setdefault(module_name, []).extend(errs)
+
+    for module_name, errs in validate_execution_hooks(
+        (name, execution_hook_declarations(entry, all_modules.get(name, {})))
+        for name, entry in candidates
+    ).items():
+        results.setdefault(module_name, []).extend(errs)
+
     # Cross-validate sequence references
     available_names = set(all_modules.keys())
     for name, manifest in all_modules.items():
-        for dep in manifest.get("sequence", []):
+        sequence = manifest.get("sequence", [])
+        if not isinstance(sequence, list):
+            continue  # already reported per-module; iterating a dict/str here reports nonsense
+        for dep in sequence:
+            if not isinstance(dep, str):
+                continue  # already reported per-module; `in` on an unhashable dep would raise
             if dep not in available_names:
                 results.setdefault(name, []).append(
                     f"module.json: sequence dependency '{dep}' not found on disk"

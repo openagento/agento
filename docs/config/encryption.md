@@ -28,13 +28,13 @@ echo "AGENTO_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../secrets.env
 3. If yes → encrypts with AES-256-CBC → stores as `aes256:{iv_hex}:{ciphertext_hex}` with `encrypted=1`.
 4. Toolbox reads DB at runtime → decrypts using the same `AGENTO_ENCRYPTION_KEY`.
 
-> **Known limitation:** the Python `bootstrap()` also transiently decrypts DEFAULT-scope `obscure`
-> values in the cron/consumer/CLI while resolving module config. For *toolbox-only* fields (e.g. the
-> Outlook Graph secret) this is unnecessary and the value is discarded unused; but `app_monitor`
-> intentionally consumes its obscure SMTP password cron-side (to send breach alerts), so not every
-> obscure field is unused Python-side. Making Python bootstrap never decrypt toolbox-only fields
-> (and migrating the app_monitor SMTP transport) is tracked separately — see
-> [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
+> **Scope of the Python-side decrypt:** `bootstrap()` still transiently decrypts DEFAULT-scope
+> `obscure` values in the cron/consumer/CLI while resolving module config — **except** fields that
+> declare `access: "toolbox_only"`. Those are skipped by `bootstrap()` and by `resolve_all()`, and a
+> direct `.get()` on one raises `ToolboxOnlyConfigError`; the Outlook Graph credentials are declared
+> that way. Still open: `app_monitor` intentionally consumes its obscure SMTP password cron-side (to
+> send breach alerts), so it cannot simply be marked toolbox-only — migrating that transport is
+> tracked separately, see [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
 
 > **Don't** pass secrets as the positional `value` arg (`config:set path my-secret`). That leaks the value into `ps aux` for the duration of the command and into `~/.bash_history` / `~/.zsh_history` forever. Always omit the value so agento prompts / reads stdin. See [cli/config.md](../cli/config.md#secrets--never-pass-on-the-command-line) for the full rationale.
 
@@ -69,6 +69,13 @@ Any field with `"type": "obscure"` in module.json:
 ```
 
 Only `pass` would be encrypted. `host` is stored as plain text.
+
+**Encryption is not a boundary on its own.** Whoever holds `AGENTO_ENCRYPTION_KEY` can decrypt, and
+`bootstrap()` decrypts DEFAULT-scope obscure config inside the cron. To keep a secret out of Python
+entirely, mark the field `"access": "toolbox_only"` (Python never resolves it) and `"allowEnv": false`
+(the plaintext `CONFIG__*` path is refused) — see
+[Access Restrictions](README.md#access-restrictions-access-allowenv). `obscure` says *how it is
+stored*; `access` says *who may read it*.
 
 ## Key Rotation
 

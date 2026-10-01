@@ -1,7 +1,7 @@
 import express from 'express';
 import { createOpenPrsHandler, createVerifyHandler } from './api-handlers.js';
 
-export function register(server, { app, log, loadModuleConfigs, loadScopedDbOverrides }) {
+export function register(server, { app, log, loadModuleConfigs, loadScopedDbOverridesStrict }) {
   // The toolbox calls every module's register() TWICE: once at startup via registerModuleRestApis()
   // (context has `app` + `loadModuleConfigs`) and again on EVERY MCP session via registerTools()
   // (context has NO `loadModuleConfigs`). Without this guard the routes would be re-registered per
@@ -12,6 +12,6 @@ export function register(server, { app, log, loadModuleConfigs, loadScopedDbOver
   app.post(
     '/api/github/open-prs',
     express.json(),
-    createOpenPrsHandler({ loadScopedDbOverrides, loadModuleConfigs }, log),
+    createOpenPrsHandler({ loadScopedDbOverridesStrict, loadModuleConfigs }, log),
   );
 }

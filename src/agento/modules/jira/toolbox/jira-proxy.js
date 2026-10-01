@@ -7,30 +7,43 @@
  */
 export function createJiraProxyHandler(configResolver, log) {
   return async (req, res) => {
-    const config = await configResolver(req.body.agent_view_id || null);
+    const agentViewId = req.capability.agent_view_id;
+    const config = await configResolver(agentViewId);
 
     const { method, path } = req.body;
     const body = req.body.body || null;
 
     if (!method || !path) {
-      log('api/jira/request', 'ERROR', `agent_view_id=${req.body.agent_view_id ?? '?'} method/path missing`);
+      log('api/jira/request', 'ERROR', `agent_view_id=${agentViewId} method/path missing`);
       return res.status(400).json({ error: 'method and path are required' });
     }
 
     const ALLOWED_METHODS = ['GET', 'POST', 'PUT', 'DELETE'];
     if (!ALLOWED_METHODS.includes(method.toUpperCase())) {
-      log('api/jira/request', 'ERROR', `agent_view_id=${req.body.agent_view_id ?? '?'} Invalid method: ${method}`);
+      log('api/jira/request', 'ERROR', `agent_view_id=${agentViewId} invalid method rejected`);
       return res.status(400).json({ error: `Invalid method: ${method}` });
     }
 
-    // Allow per-request overrides (for onboarding/admin without agent_view context)
-    const host = req.body.jira_host || config.host;
+    if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) {
+      // A fixed reason: the 400 below tells the caller what was wrong, so the record
+      // never has to carry the caller's own string into the operator log.
+      log('api/jira/request', 'ERROR', `agent_view_id=${agentViewId} path rejected: not host-relative`);
+      return res.status(400).json({ error: 'path must be a host-relative path' });
+    }
+
+    if (req.body.jira_host) {
+      log('api/jira/request', 'WARN', 'jira_host in request ignored — the proxy only calls the configured host');
+    }
+
+    // Allow per-request credential overrides (for onboarding/admin without agent_view context).
+    // The host is NOT overridable: it decides where the Authorization header is sent.
+    const host = config.host;
     const user = req.body.auth_user || config.user;
     const token = req.body.auth_token || config.token;
 
     if (!user || !token || !host) {
       const missing = [!user && 'jira_user', !token && 'jira_token', !host && 'jira_host'].filter(Boolean).join(',');
-      log('api/jira/request', 'ERROR', `agent_view_id=${req.body.agent_view_id ?? '?'} missing=${missing}`);
+      log('api/jira/request', 'ERROR', `agent_view_id=${agentViewId} missing=${missing}`);
       return res.status(500).json({ error: 'Jira API not configured (jira_host/jira_user/jira_token)' });
     }
 

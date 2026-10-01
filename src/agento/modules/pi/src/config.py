@@ -17,7 +17,8 @@ import shutil
 from pathlib import Path
 
 from agento.framework.agent_manager.models import CredentialRecord
-from agento.framework.harness import ToolboxConnectionSpec
+from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
+from agento.framework.harness.run_scope import scope_toolbox_url, toolbox_auth
 
 from .auth import CREDENTIAL_TYPE
 
@@ -65,11 +66,9 @@ class PiWorkspaceAdapter:
             self._write_models_json(pi_home, agent_config)
 
         self._install_bridge(working_dir)
-        # agent_view scoping is applied here, where the id is in scope;
-        # `ToolboxConnectionSpec` carries only (name, transport, url, headers).
+        # No agent_view in the URL: the toolbox takes the scope from the run's capability,
+        # which `inject_runtime_params` appends per run.
         url = f"{toolbox_url.rstrip('/')}/mcp"
-        if agent_view_id is not None:
-            url = f"{url}?agent_view_id={agent_view_id}"
         self.serialize_toolbox_connection(
             ToolboxConnectionSpec(name="toolbox", transport="http", url=url),
             working_dir,
@@ -186,17 +185,24 @@ class PiWorkspaceAdapter:
         artifacts_dir: Path,
         *,
         job_id: int | None,
+        run_id: str | None = None,
         effective_model: str | None = None,
         effective_provider: str | None = None,
+        capability_token: str | None = None,
+        toolbox_url: str | None = None,
     ) -> None:
         """Rewrite the connection file in the per-run dir with per-run facts.
 
         Two things are per-run rather than per-build:
 
-        * ``job_id`` — parity with claude's ``.mcp.json`` injection. Without it a run has
-          no job scope and its Toolbox calls are unattributable. ``None`` is legal and
-          means "no job scope": ``agento run`` identifies its run by a STRING id, and
-          skipping the whole call for those runs is what used to lose the override below.
+        * the run scope — ``job_id``, parity with claude's ``.mcp.json`` injection.
+          Without it a run has no scope and its Toolbox calls are unattributable, and the
+          toolbox can give it no desk of its own. ``None`` is legal and means "no job
+          scope": ``agento run`` identifies its run by a STRING id, which ``run_id``
+          carries instead, and skipping the whole call for those runs is what used to
+          lose the override below.
+        * the run's toolbox capability, appended only when the URL is our toolbox's own
+          MCP endpoint — the toolbox refuses a session without one.
         * the model/provider expectations. ``prepare_workspace`` writes them from the
           agent_view config at BUILD time, but both the consumer and ``agento run``
           support a per-run override (``--model``). A legitimate override would otherwise
@@ -207,6 +213,9 @@ class PiWorkspaceAdapter:
         undo it, so a build that had no model configured still gets a live guard when the
         run names one.
         """
+        # Validate the TRUSTED input first, so a misconfigured core/toolbox/url fails the
+        # run whether or not the connection file happens to exist.
+        target = toolbox_origin(toolbox_url) if capability_token else None
         path = Path(artifacts_dir) / BRIDGE_DIR / BRIDGE_CONFIG_FILENAME
         if not path.is_file():
             return
@@ -217,9 +226,13 @@ class PiWorkspaceAdapter:
         if not isinstance(payload, dict):
             return
         url = payload.get("url")
-        if job_id is not None and isinstance(url, str) and url:
-            sep = "&" if "?" in url else "?"
-            payload["url"] = f"{url}{sep}job_id={job_id}"
+        if isinstance(url, str) and url:
+            url = scope_toolbox_url(url, job_id, run_id)
+            if target is not None and is_toolbox_endpoint(url, target):
+                url, headers = toolbox_auth(url, capability_token)
+                if headers:
+                    payload["headers"] = {**(payload.get("headers") or {}), **headers}
+            payload["url"] = url
         if effective_model and effective_model.strip():
             payload["expected_model"] = effective_model.strip()
         if effective_provider and effective_provider.strip():

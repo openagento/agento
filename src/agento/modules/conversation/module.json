@@ -1,0 +1,7 @@
+{
+  "name": "conversation",
+  "version": "1.0.0",
+  "description": "Conversations, message history and chat executions (PRD E3-E5)",
+  "sequence": ["agent_view"],
+  "order": 60
+}

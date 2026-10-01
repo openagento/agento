@@ -144,12 +144,36 @@ class WorkspaceAdapter(Protocol):
         """
         ...
 
-    def inject_runtime_params(self, artifacts_dir: Path, *, job_id: int | None) -> None:
+    def inject_runtime_params(
+        self,
+        artifacts_dir: Path,
+        *,
+        job_id: int | None,
+        run_id: str | None = None,
+        capability_token: str | None = None,
+        toolbox_url: str | None = None,
+    ) -> None:
         """Apply per-run facts to the copied build in ``artifacts_dir``.
 
         ``job_id`` is the job scope, or ``None`` for a run that has no job — ``agento run``
         identifies its run by a string id. An adapter that only scopes by job id may
         return early on ``None``.
+
+        An adapter MAY additionally accept a ``run_id`` keyword: the string id of a
+        job-less run, ``None`` when the run has a job id (which already names it) or when
+        it cannot be named. It exists because the toolbox derives the run's desk from what
+        the URL names — a URL naming neither id lands on the shared ``_fallback`` desk and
+        gets no desk at all. Build the scope with
+        ``agento.framework.harness.run_scope.scope_toolbox_url`` rather than by hand.
+
+        ``capability_token`` is the run's toolbox credential, with the trusted
+        ``toolbox_url`` it belongs to. Attach it with
+        ``agento.framework.harness.run_scope.toolbox_auth`` (a Bearer header on ``/mcp``,
+        ``cap=<token>`` on ``/sse``) ONLY to a server whose URL is our toolbox's MCP endpoint — match with
+        ``agento.framework.harness.is_toolbox_endpoint(url, toolbox_origin(toolbox_url))``,
+        never a ``"/mcp" in url`` test — so it can never travel to an operator's
+        third-party MCP server. An adapter that does not accept it gets no token, and the
+        toolbox refuses its session with ``401``.
 
         An adapter MAY additionally accept ``effective_model`` / ``effective_provider``
         keyword arguments — the per-run values, where a ``--model`` override wins over
@@ -327,6 +351,30 @@ class StreamRenderer(Protocol):
 
 
 @runtime_checkable
+class StreamEventMapper(Protocol):
+    """Turns one event of a harness's stdout event stream into a framework-shaped fragment.
+
+    The sibling of ``StreamRenderer``: that one produces terminal text for a human, this one
+    produces ``{"kind", "text", "tool_name"}`` for the delta seam (PRD E3-E5 §8.2). Same
+    rule behind both — the framework **never parses** a harness's stream format, it asks the
+    harness. ``kind`` is the framework's own vocabulary, so a reader never has to know which
+    CLI produced the run.
+
+    **Optional, like ``stream_renderer``.** A harness that declares no mapper streams nothing
+    extra and its users get §8.1's behaviour; it is read with
+    ``getattr(adapter, "stream_event_mapper", None)`` and is deliberately not a member of
+    ``AgentHarnessAdapter``, which is ``runtime_checkable`` and would then refuse every
+    harness written before this existed.
+    """
+
+    def map_event(self, event: dict) -> dict | None:
+        """Return ``{"kind": "delta", "text": str, "tool_name": str | None}``, or ``None``
+        to suppress the event. Raising is allowed: the caller logs and drops the fragment,
+        so a mapper bug costs a delta and never the run."""
+        ...
+
+
+@runtime_checkable
 class CredentialAuthenticator(Protocol):
     """How credentials for one credential scope are obtained.
 
@@ -382,6 +430,9 @@ class AgentHarnessAdapter(Protocol):
 
     @property
     def transcript_reader(self) -> TranscriptReader | None: ...
+
+    # ``stream_event_mapper`` (-> StreamEventMapper | None) is omitted here for exactly
+    # the same reason as ``stream_renderer`` below, and read the same way.
 
     # ``stream_renderer`` (-> StreamRenderer | None) is deliberately NOT declared
     # here. ``AgentHarnessAdapter`` is ``runtime_checkable`` and ``register_harness``

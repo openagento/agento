@@ -61,17 +61,21 @@ agento install                        # Interactive wizard — scaffolds, starts
 
 ## Architecture
 
-Agento runs three Docker containers on a shared network:
+Agento runs six service containers plus MySQL. All but one share the `agento-net` bridge
+network — the **Artifacts** container deliberately joins none of it:
 
 - **Cron** (Python) -- Job queue consumer, scheduler, CLI host. Manages the lifecycle of agent jobs, runs migrations, and dispatches events. Connects to MySQL for job state, config, and module metadata.
 - **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over MCP (streamable HTTP `/mcp`, SSE `/sse`). Designed to be the only container that holds tool credentials (known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)).
-- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container for interactive `agento run`. Holds no tool credential and no database access; it gets only the **harness/provider** API credential its own run needs, delivered per run. One documented exception: the git SSH identity, delivered per run as a signing capability (`SSH_AUTH_SOCK`) from a private `ssh-agent`, never as a key file (`DECISIONS.md` D-SSH-1). Headless jobs run the agent inside the `cron` container (known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)). Communicates with the toolbox exclusively through MCP tool calls.
+- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container for interactive `agento run`. Holds no upstream service credentials and no direct database access; it gets only the **harness/provider** API credential its own run needs and its own run's toolbox capability, scoped to one agent_view and expiring. One documented exception: the git SSH identity, delivered per run as a signing capability (`SSH_AUTH_SOCK`) from a private `ssh-agent`, never as a key file (`DECISIONS.md` D-SSH-1). Headless jobs run the agent inside the `cron` container (known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)). Communicates with the toolbox exclusively through MCP tool calls.
+- **Artifacts** (Node.js) -- Static HTTP for the `versioned_artifacts` published tree. On no shared network, holding no secret and publishing no host port: `proxy` is the only route to its files.
+- **Web** (Python) -- The panel API: sign-in, per-role grants, admin, artifact launches. Holds only the internal proxy secret (no upstream tool credential, no encryption key) and never decrypts config; it stores only hashes of session and launch tokens. See [docs/architecture/panel.md](docs/architecture/panel.md).
+- **Proxy** (Caddy) -- TLS and the panel / apps / share origins; asks `web` to authorize every artifact file request.
 
 ## Module System
 
 Agento uses a Magento-inspired modular architecture. Each module is a self-contained package.
 
-**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view).
+**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view, conversation, versioned_artifacts, web, miniapps).
 
 **User modules** live in `app/code/` and are deployment-specific (gitignored by default).
 

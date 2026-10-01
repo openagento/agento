@@ -4,6 +4,161 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-09-28 — E3–E5: the job-type contract, the outbox, and the four execution protocols
+
+- **A job type is declared in a module manifest, never in a framework enum (§4.2).** The framework
+  resolves `agent_type` through a registry the modules fill, so `conversation` naming its own type
+  costs the framework no knowledge of it (PLC-2). The column widened to `VARCHAR` (migration `043`)
+  for the same reason: an `ENUM` is a framework-side list of every module that will ever exist.
+
+- **The consumer reaches a module table through an outbox, never directly (§6.4.1).** The consumer
+  runs in the cron container and its transaction cannot name `conversation_event` without the
+  framework knowing a module's schema. So it writes `job_event_outbox` — framework-owned, module-
+  agnostic — and `conversation:relay` moves those rows into threads. **One** relay process, by
+  contract: two would interleave and invert the order that `conversation_event.id` is supposed to
+  give a thread. `UNIQUE (source_kind, source_id)` on the event table is what makes the relay
+  idempotent, so a crashed tick re-runs instead of duplicating.
+
+- **Four seams, not one execution hook (§5.1–§5.3, §8.2).** `ExecutionIdProvider`,
+  `ExecutionFinalizer`, `ResumeSessionResolver` and `ExecutionDeltaSink` are separate because they
+  fire at different moments and a module may want one without the others — a module that records
+  executions need not also stream deltas. Each seam holds **at most one** implementation, checked by
+  one generic validator: two finalizers would each believe they owned the terminal write. Every seam
+  falls back to today's behaviour when nothing registers it (MOD-2), which is what lets the whole
+  `conversation` module be disabled.
+
+- **The framework never parses a harness's stream format.** The delta path asks the harness through
+  an optional `stream_event_mapper` and carries the result over a bounded queue to the module's sink;
+  the framework side holds no SQL and the module side holds every `INSERT`. An import-layering test
+  enforces it. Three things must all be true or a run streams nothing extra: a registered sink, an
+  `execution_id`, and a harness that declares the mapper. Any one missing attaches no callback, so
+  nothing is buffered and nothing is dropped.
+
+---
+
+## 2026-09-28 — E3–E5: the panel paths are `/api/conversation/threads…`, not `/api/conversations/…`
+
+The PRD and the plan both write the routes as `/api/conversations/{id}` while also calling them
+"a **module** route under the conversation prefix (§11)". The two cannot both hold, and §11 is the
+one that is a rule: a module owns `/api/<its own module name>/` and nothing else
+(`framework/route_rules.py`), which is what keeps one module out of another's URL space and out of
+every built-in path. The module is named `conversation`, so:
+
+- the prefix is `/api/conversation/` — singular, because the module directory is;
+- the prefix ends in `/`, so a route needs a segment under it: there is no `/api/conversation`
+  collection route to declare. `threads` is that segment.
+
+Renaming the module to `conversations` to recover the PRD's spelling was rejected: the name is also
+the config namespace (`conversation/retention/*`), the event prefix and the module directory, so the
+URL's plural would be paid for in every other contract. The alternative — exempting this module from
+the prefix rule — trades a URL's spelling for the rule that bounds every module's reach.
+
+So the shipped paths are `/api/conversation/threads`, `/api/conversation/threads/{id}`,
+`…/{id}/messages`, `…/{id}/messages/{message_id}/unblock`, `…/{id}/events` and `…/{id}/events/stream`.
+Nothing has shipped under the other spelling, so there is no compatibility route to keep (CODE-5).
+
+---
+
+## 2026-09-28 — E3–E5: migration numbers, and E7 as a prerequisite of E4
+
+- **Framework migrations `043`–`047` belong to this epic; E7 starts at `048`.** Both neighbouring PRDs
+  defer: E6 takes no framework numbers (`PRD-E6…md:65` — its own tables live in its module sequence),
+  and E7 says explicitly (`PRD-E7…md:450`) that "PRD E3–E5 §3.4 is the controlling list … and takes
+  `043` onward for all of them". Coordinating the range once, here, is what stops two epics from
+  writing `043` in parallel branches and discovering it at merge.
+
+- **E7 §4.3.1 and §8.1 are prerequisites of the E4 slice, not later integrations.** E4's gate needs
+  `job_stop_request`, all three of its acknowledging paths (the consumer monitor, the pre-spawn status
+  re-check, the stop-request pass) and the `admin_audit` migration in place; without them a paused
+  turn cannot be proved unblockable end to end. The dependency runs that way round because this epic
+  owns the `ExecutionFinalizer` seam and E7 calls it, not the reverse.
+
+- **The §4.5 audit row is written inside the unblock transaction, never by an observer.** Observer
+  failures are swallowed and logged (`framework/event_manager.py:40-50`), so an audit row dispatched as
+  an event is an audit row that can silently not exist. E7 calls the framework's audit writer from
+  inside `service.unblock()`'s transaction; the two commit together or neither does.
+
+- **E3–E5 ships first; the unblock route carries no audit write today.** `service.unblock()` is
+  implemented, guarded, evented and tested here, and `conversation` writes **no SQL against
+  `admin_audit`** — a test greps the module for it. `admin_audit`, its writer and its retention are
+  framework-owned (PRD E7 §14: "one table several components write") and `conversation` therefore
+  declares **no** E7 dependency in `sequence` (MOD-1). When E7 §8.1's migration lands it adds one call
+  from `service.unblock()` to the framework's transaction-aware writer, on that transaction's own
+  cursor, with `meta = {conversation_id, message_id}`. This is ordering, not a runtime branch: there is
+  no "does the table exist?" check anywhere in the code.
+
+---
+
+## 2026-09-27 — E6 miniapps: shares in the artifacts server, one path parser, core-dependency imports
+
+- **S1: shares are checked by the `artifacts` server, not by `web`.** Owner decision, answered
+  "A: artifacts server (Recommended)". The server already holds the scrypt sidecar it verifies
+  against and has no DB or secret; routing shares through `web` would put a Basic credential and a
+  launch credential behind one service, which PRD E6 §9 keeps apart. A share origin is
+  `<token>.<AGENTO_SHARE_HOST>`, one per share (§9.1). `proxy` rewrites it to `/s/<token>/…`; the
+  record `published/.shares/<token>` names the artifact, and the server serves it only when that
+  artifact's `.auth` sidecar names the same token back, so a stale record opens nothing. `web`'s
+  `/internal/authz/share` is gone. The artifacts server does its own SEC-12 limits (failures per
+  address, requests per credential) because it is plain `node:http`.
+- **One parse per request path (PRD E6 §6.2).** `web` parses the raw `X-Forwarded-Uri` once
+  (`web/app_path.py`), decides on it, and returns the canonical path in `X-Agento-Upstream-Path`;
+  `proxy` fetches exactly that path. The artifacts server routes on the raw request target
+  (`server/served-path.js`), never on `new URL()`, which resolves `..` and `%2e%2e` before a check
+  can see them. Both refuse dot segments, encoded separators, backslashes and dotfiles. There is no
+  `current` route on the apps origin: a launch resolves `current` in the panel and pins it.
+- **Retention and launches share one MySQL named lock**, `va_ret:` + sha1(code) (fixture
+  `tests/fixtures/retention_lock_v1.json`). The prune takes it without waiting and skips when busy;
+  `create_launch` waits 5 s and answers 503. A named lock belongs to a connection and survives
+  COMMIT, so the prune does the acquire, the live-launch query, the deletes and the release on one
+  borrowed connection.
+- **Contract vs reality: a core module may import a core dependency's `toolbox/` files.** The
+  guard `tests/module-toolbox-imports.test.js` forbade any module toolbox file importing outside its
+  own module. `miniapps` needs `versioned_artifacts`' `service.js` (the only code that may reach the
+  Git backend, so re-implementing the read would break that boundary), `paths.js`, `audit.js`,
+  and `errors.js`. Evidence that the path resolves in the containers: both
+  `docker/docker-compose.dev.yml` and the generated template mount every core module under one
+  parent, `/app/modules/core/<m>`. The exception is narrow: core module → a core module listed in
+  its own `sequence` (MOD-1), `toolbox/` files only. A user module (`app/code/`, mounted at
+  `/app/modules/user`) still may not.
+- **The role-grant rule is framework mechanism (PLC-4).** The `session` checker (`web`) and the
+  `launch` checker (`miniapps`) both bound a capability by the user's grants, so the SQL moved from
+  `web` to `src/agento/toolbox/capability.js` (`GRANTS_SQL`, `grantsFor`). The verifier hands every
+  checker `grants(role, kind)` bound to the capability row's own scope (TBX-4: from the call
+  context, not an import); a checker without it refuses.
+- **The toolbox honours `module:disable` (MOD-1).** It mounts `app/etc` read-only and
+  `scanModules()` drops a module set to `false` in `modules.json` (absent file or key, or an
+  unparseable file, mean enabled, as `module_status.is_enabled`). So a disabled module loads no
+  toolbox code: no tools (next MCP session), no auth sources or REST routes (next toolbox start).
+  This applies to every module, not only miniapps. `web` also reads the file per request for
+  miniapps, so a launch is files-only, an action is 404 and the catalogue is empty at once, with
+  no toolbox restart.
+- **Activation is operator-only and has no event.** It happens in the toolbox (Node), which has no
+  event mechanism; it writes a `versioned_artifact_audit` row. A tool would let a self-asserted
+  `agent_view_id` decide what a user's browser may call.
+- **The launch spec is a tool (`miniapp_get_launch_spec`), not an event or a seam in `web`.**
+  `web` never runs `bootstrap()`; the answer it needs is one protocol call (EVT-8), made with the
+  user's own `user_session` capability, so a user without the grant gets a files-only launch.
+
+---
+
+## 2026-09-26 — Toolbox rate limits: failures per address, requests per capability
+
+- **`express-rate-limit`, declared directly.** It was already installed through the MCP SDK, and
+  CodeQL's missing-rate-limiting check recognizes it. A hand-written limiter would not clear the alerts.
+- **Mounted once with `app.use()` before every route**, so module REST routes, invoke and a route
+  added later are limited too. Answering the five routes CodeQL named would leave the rest.
+- **Two keys.** All sandbox runs share one container address, so an address limit on every request
+  would let one agent throttle the others. The address limit counts only 401/403 (60/min): that
+  bounds a random-token flood, where each token would get a new bucket. Authorized traffic is limited
+  per capability (600/min), keyed by the token's SHA-256, never the raw token.
+- **Constants, no env knob.** The capability limit is per run, so `AGENTO_CONSUMER_MAX_WORKERS` does
+  not change it.
+- **Not changed:** CodeQL's clear-text-logging alerts on `artifact:auth` (printing the credential
+  once on stdout is that command's purpose, the same rule as a minted capability) and the
+  missing-rate-limiting alerts on the test-only server in `tests/sse-transport-auth.test.js`.
+
+---
+
 ## 2026-09-25 — One tracked RULES.md with permanent rule IDs
 
 - **Problem: three roles read three rule sets.** The implementer read AGENTS.md, the reviewer read an
@@ -24,6 +179,207 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
   plan has proof, or is an `ASSUMPTION` with a spike step) had the largest effect in the replay.
 - **Owner approval:** Marcin Klauza, 2026-09-25 — approved applying the drafted rules and loop changes
   ("Apply all"), on main first, with `RULES.md` at the repo root.
+
+## 2026-09-25 — E2 panel, sessions, launches and RBAC
+
+Contract deviations (PRD E2 / E1.5 against the code, built as below):
+
+- **The `session` checker receives the capability's scope.** A session is not scoped to a view, the
+  capability row is. The verifier calls `check(sourceId, {capability_kind, workspace_id,
+  agent_view_id, query})`, and the checker computes the role's permitted tools for that scope. It
+  does not echo a stored list.
+- **Visibility is per role, not per user.** With two roles the PRD's `role → grants` model gives
+  per-role visibility. Per-user grants are a follow-up.
+- **The exchange code is a POST form field, not the `code` query parameter.** A one-time code in a
+  URL reaches history, a `Referer` and logs, and a prefetch or a scanner can consume it. The panel
+  submits a form to `https://apps…/launch`; there is no GET route. The `code` log redaction stays.
+- **No manifest seam in E2.** `launch.manifest_fingerprint` and `allowed_actions` are NOT NULL; E2
+  writes `sha256("")` and `[]`. An event would need `bootstrap()` in `web`, which would resolve every
+  module's config, and a veto observer that fails to load would fail open. E6 designs the seam.
+- **`current` resolves through the toolbox.** `POST /api/launches` calls
+  `versioned_artifact_get_current` with a `user_session` capability instead of mounting the store
+  into `web`. So a launch needs that tool grant **and** the `artifact.launch` operation grant in the
+  scope, and the tool must be enabled there.
+
+Choices:
+
+- **The redeem needs no proxy secret.** The exchange code (30 s, once, hashed) is the credential; the
+  redeem also requires `Origin` = panel and a form body.
+- **Panel cookie `SameSite=Strict`, launch cookie `SameSite=Lax`.** The launch cookie must survive the
+  top-level navigation after the cross-origin form post.
+- **The CSRF token is HMAC-SHA256(session token, `agento-csrf`).** Nothing to store, and a page that
+  cannot read the HttpOnly cookie cannot compute it.
+- **One atomic `UPDATE … JOIN user` redeems.** `rowcount == 1` wins; concurrent redeems give one token.
+- **Deny responses clear dead launch cookies.** Caddy returns the `forward_auth` deny response,
+  `Set-Cookie` included, to the client (measured in the Task 0 spike).
+- **Launch eviction orders by `created_at`, which has 1 s precision.** Ties break by id. A sequence
+  column is a follow-up if exact order ever matters.
+- **Launch ids are 32 hex characters**, so each launch cookie name is fixed-length and a bad name is
+  refused before any DB read.
+- **Login throttle is in-process** (10 failures per username per 15 min). A DB-backed throttle when
+  `web` runs more than one replica.
+- **`config_write.write_config` vs `save_config`.** `write_config` is the shared commit-and-dispatch
+  step (`config:set`, admin TUI); `save_config` adds validation and the not-a-secret proof that the
+  panel needs, because `web` holds no encryption key. The admin TUI skips value validation because
+  tool gate keys have no schema.
+- **Every access write locks its `user` rows in one ordered `SELECT … FOR UPDATE`**, and
+  `create_launch` locks the user row and re-checks the grant in the same transaction, so a launch
+  racing a role or grant change is either refused or revoked with it.
+- **Operator seeding for launches** (Task 0): `artifact:init --source` runs on the host, and the view
+  needs `versioned_artifacts/allowed_artifacts` plus `tool:enable` for `versioned_artifact` and
+  `versioned_artifact_get_current`.
+
+---
+
+## 2026-09-25 — E1.5 platform foundation: Caddy proxy, secret-authenticated subrequests, string version ids
+
+- **Caddy, not nginx.** `forward_auth` is the `auth_request` subrequest, `tls internal` terminates
+  TLS with no certificate step, and the log `filter` encoder redacts query values. nginx needs a
+  `map` per redacted parameter and has no internal CA.
+- **The subrequest carries a secret, not a network position.** `web` shares `agento-net` with
+  `sandbox`, so being reachable proves nothing. The proxy's entrypoint writes a random secret into the
+  `proxy-internal` volume, which only `proxy` and `web` mount; `web` reads it per request, so start
+  order does not matter. The proxy sets it only inside `forward_auth`, never on a forwarded request.
+- **The `X-Agento-*` header namespace is the proxy's.** The proxy strips every client header in it,
+  so any header the proxy adds later is protected by the same one rule.
+- **The error log is redacted too.** Caddy's `http.log.error` logger writes the raw URI when an
+  upstream fails; a global logger with the same `cap`/`code` filter covers it. Measured, not assumed.
+- **The artifacts host port is removed with nothing in its place.** Previews and Basic-auth shares
+  go dark until E2/E6 implement the decisions behind `/internal/authz/{app,share}`. A second,
+  unauthenticated path to the same files would make that authorization worthless.
+- **`app_version_id` is `VARCHAR(64)`** (`042`). A VA version id is a string; `036`/`037` declared
+  `BIGINT`. The verifier checks a bounded string, not the VA grammar — that belongs where the id is
+  made. The shared fixture is held to the grammar by the Node suite.
+- **`role_grant` has no exactly-one-scope CHECK.** MySQL 8.0 refuses a CHECK on a column with an FK
+  referential action (ER 3823), and the cascade is what removes grants with their agent_view. Writers
+  set exactly one scope; readers treat both or neither as no grant.
+- **The fixture's table rows are data only.** Nothing maps a `user`/`launch` row into an auth source
+  yet (that is E2), so no mapper ships; the integration test inserts the rows against the real schema.
+
+---
+
+## 2026-09-24 — E1 toolbox auth: one dispatcher, per-call checks, TTL config in `core/auth/*`
+
+- **Every tool call goes through one `executeTool()`.** The MCP SDK validates arguments before a
+  per-tool handler runs, so an invalid call would never reach our code and go unaudited. We replace
+  the SDK's `tools/call` handler with the dispatcher; the SDK keeps `tools/list`.
+- **The audit row is written first.** A failed insert answers `unavailable` and runs nothing. The row
+  holds a SHA-256 of the arguments, never their values.
+- **Single use is one `UPDATE … WHERE consumed_at IS NULL`.** The row count decides the winner; no
+  lock and no second store of bearers.
+- **Strict argument validation** (`z.object(...).strict()`): an unknown key is `invalid_arguments`.
+  This is stricter than the SDK default, which drops unknown keys without an error.
+- **TTL bounds live at `core/auth/*`, not `auth/*`** (the PRD's path). A config path starts with its
+  module, and the framework's module is `core`. Hard ceilings are in code; config can only narrow.
+- **`/mcp` gets the token in a header; `/sse` keeps `?cap=`.** An SSE client sends no headers, so the
+  query path stays for it, with a 4 h ceiling for any token that may travel on `sse`. New MCP tokens
+  are `["http"]`; the migration backfill gives legacy rows both transports on the same 4 h clock.
+- **Source checkers come from modules.** A module exports `authSources`; the toolbox collects them at
+  startup and drops a kind that two modules claim. E1 ships none, so user kinds fail closed.
+- **`on_behalf_of` is always null** until something verifies delegation; a non-null value is refused.
+- **Invoke builds the tool registry per request.** It costs about 0.5 ms, so there is no cache.
+- **Enabling a tool takes effect in the next MCP session**, not in the open one. Disabling takes
+  effect on the next call. Widening an open session would run `register()` for tools the scope does
+  not grant.
+- **Thrown tool errors reach the caller as a fixed `tool failed`.** A thrown message can quote an
+  upstream response body; the log gets only the error class. An `isError` result is the tool's own
+  answer: MCP passes it to the agent as before E1 (the agent needs "issue not found" to recover),
+  and invoke drops it, so a browser or miniapp caller gets only the error code.
+
+## 2026-09-24 — E0 contracts for panel, toolbox and miniapps
+
+E0 fixes the shared semantics so E1–E7 can start without re-deciding them. The detailed PRDs are
+intentionally **not** in this repo (owner decision) — they live beside it, outside version control.
+Each decision below stands on its own.
+
+### Identity and capability
+
+- **`kind` is kept and `actor` is added beside it, not in place of it.** Existing `toolbox_capability`
+  rows migrate without a rewrite. `kind` describes a token's *purpose*; it never stands in for who the
+  caller is.
+- **Per-kind actor invariants, never a default.** A blanket `actor = agent` would label the platform's
+  own viewless `internal_rest` config-test capability an agent. Each legacy kind gets one fail-closed
+  row of required and must-be-null fields; a row whose claims cannot be derived fails verification. A
+  permissive default on an identity field is exactly the failure the field was added to prevent.
+- **Legacy `internal_rest` maps to one reserved subject constant** (`service:legacy-internal-rest`),
+  not a per-row guess and not a rejection. `035_toolbox_capability.sql` stores no component identity,
+  so the row cannot say which service issued it; rejecting breaks live callers and inventing a subject
+  is fabrication. The constant is allowed a fixed endpoint set, no delegation and no app scope, and it
+  retires by TTL expiry — no drain step.
+- **The auth context is verified once and carried in one structure, not re-derived per transport.**
+  MCP and HTTP must not drift on what a caller is allowed to be.
+
+### Transport
+
+- **`?cap=` stays as an MCP-client compatibility path while `Authorization` becomes the runtime path.**
+  The SSE transport hands the client a bare URL which the client posts to verbatim with no headers, so
+  a header-only `/messages` would 401 every legitimate SSE client. Removing the query path first breaks
+  clients that cannot set headers.
+- **Transport is a capability claim, not a property of the request.** A bearer moves freely between a
+  header and a query string, so "query tokens get a shorter TTL" is unenforceable as a request
+  property. Tokens carry an explicit `allowed_transports`, checked per endpoint, with no default —
+  missing or empty fails verification once the migration backfill has run.
+
+### Miniapps, artifacts and origins
+
+- **Miniapps is a separate module over Versioned Artifacts, not a VA feature.** VA stays free of user
+  and RBAC concepts: it owns files, drafts, versions and the `current` pointer; Miniapps owns the
+  manifest, user access, launch and actions.
+- **Miniapp files are authorized by a reverse-proxy subrequest to the Web API**, rather than by moving
+  file serving into Python. That keeps the artifacts service credential-free and keeps a single
+  authorization source. The apps origin serves **only** immutable `/v/<id>/` paths — `current` is resolved once, by
+  authenticated launch creation on the panel origin, and pinned on the launch. Keeping a `current` route on the apps
+  origin would break launch pinning and cannot be repaired by a proxy rewrite: concurrent launches each set their own
+  `Path=/` cookie, so the credential is ambiguous, and it is opaque to the proxy anyway, so the pinned version is not
+  knowable before the authorization subrequest that validates it.
+- **The artifacts service loses its published host port when E6 activates.** An authorization layer
+  with a second, unauthorized path to the same bytes authorizes nothing.
+- **One apps origin shared by all miniapps, separate from the panel origin.** Owner decision, waiving
+  PRD E0 §6 requirement 5 (app↔app isolation). The panel/apps split is what stops agent-generated code
+  from **reading** panel data — responses, DOM, session cookie — and is not negotiable. It is not write
+  protection on its own: sibling subdomains are same-site, so `SameSite` does not stop an apps page
+  causing a credentialed panel request. Writes are blocked by separate CSRF controls, which are part
+  of the same decision, not an optional extra. App↔app isolation is traded for one DNS name
+  and one certificate, and is only valid while every artifact reachable from one session is one that
+  user could open anyway. Upgrade path (per-artifact origins) is in ROADMAP.md.
+- **Artifact codes are path segments, not host labels.** The shared apps origin therefore needs no
+  DNS-safe identifier, no host→artifact mapping and no sanitising step. The VA grammar
+  (`toolbox/paths.js`) allows 64 characters and a trailing hyphen, both illegal in a DNS label — which
+  is also what blocks the per-artifact-origin upgrade.
+- **The Basic-auth share gets its own origin, mandatory for E6.** Browsers attach cached Basic
+  credentials automatically per origin, so sharing an origin with agent-generated scripts would put
+  those credentials inside the miniapp trust domain. This is a credential boundary, and it is not
+  covered by the two-origin decision above. The share origin grants no CORS permission to the panel or
+  apps origins. Shipping without a separate share origin needs a new explicit owner waiver.
+- **Shares need one origin *per share*, not one share origin.** Share content is agent-authored HTML
+  and JavaScript served behind a single fixed Basic realm, and browsers replay cached Basic
+  credentials per origin+realm — so one shared share-origin lets script in one share read another
+  share's DOM and fetch its files with its credentials. The label is an opaque generated **share
+  token**, not the artifact code, so unlike the apps-origin upgrade this is not blocked on the VA
+  code grammar. The single-origin fallback is a separate, explicit waiver.
+
+### Sequencing
+
+- **The platform foundation is front-loaded into E1, as E1.5.** All Compose changes and the framework
+  schema the contracts already pin to field level (`user`, `session`, `launch`, `role_grant`, the
+  `toolbox_capability` columns) ship once, in one track, before E2/E3–E5/E6 fan out. The two things
+  this removes were never real dependencies — a generated Compose file and a single global migration
+  sequence are *collision hazards*, not dependencies, and serializing four tracks behind them costs more than doing the
+  work once.
+- **Front-loading stops at the edge of what is specified.** The conversation model and the miniapp
+  manifest are deliberately undefined (PRD E2 §6 lists what its API "must not foreclose"), so E1.5 does
+  not create their tables. Designing schema for an epic that does not exist buys a migration when the
+  epic disagrees. Those tables live in their owning **module**, whose migrations are numbered per
+  module — which is why two epics can both add `001` and never collide.
+- **E7 stays last.** It needs E2's RBAC *enforcement*, not merely its tables, so no amount of
+  front-loading parallelizes it.
+
+### Documentation
+
+- **Contracts describe the post-#42 system, with pending items marked.** E0 must unblock E1–E7, all of
+  which land after PR #42.
+- **Historical records are superseded in place, never rewritten.** A decision log that edits its own
+  past stops being evidence. Corrections are appended with a `Superseded by` line.
 
 ---
 
@@ -217,6 +573,190 @@ agent_views. Under one uid, that boundary does not exist; Option B is what would
 
 ---
 
+## 2026-09-12 — VersionedArtifacts: the `artifacts` container ships unconditionally, and a disabled module answers 503
+
+- **Decision:** the serving container is written into every rendered `docker-compose.yml` with no
+  per-module condition, and `app/etc/modules.json` is bind-mounted read-only so the server itself
+  refuses to serve when `versioned_artifacts` is disabled.
+- **Why unconditional:** `regenerate_compose` has no per-module service mechanism — `render_compose`
+  (`framework/cli/_provisioning.py`) is placeholder substitution, and "modules declare compose services"
+  is a framework feature this ticket is not buying. The precedent is the existing unconditional
+  `storage/versioned-artifacts` bind mount on the toolbox.
+- **Why the gate exists anyway:** without it, `mo:di versioned_artifacts` removes the tools and leaves
+  every previously published version still answering on loopback, which breaks CLAUDE.md's "every module
+  must be safely disableable". An earlier wording of this deviation claimed a disabled deployment serves
+  "an empty tree" — that is only true before anything is published.
+- **The gate mirrors module enablement, not the `is_enabled` tool gate.** Absent file, absent key or
+  unparseable file all mean SERVE, because `app/etc/modules.json` lists only explicitly toggled modules,
+  so absence is "enabled". The `is_enabled` gate is the one that fails closed; do not conflate them.
+- **Severity, stated honestly:** the port is loopback-only, so the content was reachable only by someone
+  who already has a shell on the host and could read the published tree directly. The gate buys correct
+  disablement semantics and an operator expectation that holds, not a new privilege boundary.
+- **No `networks:`, no `env_file:`, no `environment:` — deliberate, and a comment above the service says
+  so in both compose files.** One `networks:` line added for consistency puts every artifact on
+  `agento-net`, where every agent in every agent_view can read every artifact over plain HTTP with
+  `allowed_artifacts` bypassed for reads, silently and with no audit row.
+
+## 2026-09-12 — VersionedArtifacts: the serving container is `node:http`, not Express
+
+- **Decision:** `server/artifacts-server.js` uses `node:http` plus a small extension→MIME map instead of
+  `express.static`, although `express` is already a toolbox dependency.
+- **Why:** `express` does not resolve under vitest — vite maps the bare specifier to a phantom path at
+  the vitest root and the package's own `require('./lib/express')` then fails (`Cannot find module
+  './lib/express'`). An Express version of this file could carry no test at all, and the plan's test
+  list — symlink refused, dotfile refused, 503 gate, `EINVAL` retry — *is* the security story.
+- **Alternative rejected — a test-only `resolve.alias` in a new `vitest.config.js`.** It works
+  (measured), but it changes module resolution for the whole suite to paper over one quirk, and it would
+  leave the tested path different from the production path.
+- **What Express would have bought is small:** the containment check is ours either way — `send` does
+  zero `lstat`/`realpath` and served a file through a symlink pointing outside the root. What is
+  genuinely absent is `Range`, `ETag` and conditional requests; acceptable for an artifact preview, and
+  recorded here rather than discovered later.
+- **Consequence:** the server has no npm dependency at all, so `/app/modules/core` is a consistency
+  choice, not a module-resolution requirement.
+
+## 2026-09-06 — VersionedArtifacts: Git as the storage engine, invoked only from the toolbox
+
+- **Decision:** back versioned artifacts with the real `git` binary, added to the toolbox image, over a
+  dedicated `storage/versioned-artifacts` volume.
+- **Alternative rejected — `isomorphic-git`.** It has no linked-worktree API, and a draft in PRD §6 *is*
+  a linked worktree: several editable checkouts of one repository, isolated from each other. Emulating
+  that with copies would lose the atomic ref operations the whole design rests on.
+- **Why it is safe:** the agent never receives a generic `git(command)` for this store (PRD §32), and the
+  store is not mounted in its container at all. Every invocation is built by the module with fixed
+  `-c core.hooksPath=/dev/null -c core.symlinks=false` flags and a scrubbed environment (no `HOME`, no
+  global/system config, no credential helper, `GIT_ALLOW_PROTOCOL=none`), so repository content can
+  never execute and no remote can ever be reached.
+
+## 2026-09-06 — VersionedArtifacts: the store is toolbox-only
+
+- **Decision:** mount `storage/versioned-artifacts` into the toolbox and nowhere else — not cron, not the
+  sandbox.
+- **Why:** the toolbox is the only container with secrets and the only one that validates requests. A
+  mount in the sandbox would let the agent read and write versioned content directly, bypassing the
+  `is_enabled` gate, the per-`agent_view` artifact allowlist, the size limits, the locking and the audit
+  trail in one step.
+
+## 2026-09-13 — VersionedArtifacts: the agent owns the whole lifecycle, scoped by a derived namespace
+
+- **Supersedes** the creation half of the 2026-09-06 entry below: creation is no longer withheld from
+  the agent. Artifacts are a collaboration mechanism between agents, and a lifecycle that needs an
+  operator to bootstrap or finalize it is not one — an agent must be able to init, iterate, hand the
+  code to a sub-agent, and publish, unattended.
+- **Decision:** `versioned_artifact_init` is a tool, gated on its own `is_enabled` key like every
+  other. An agent may create `av<agent_view_id>-*` — DERIVED from the session, never configured and
+  never stored — plus anything `allowed_artifacts` grants it, capped by `limits/max_agent_artifacts`.
+- **Why an `owner` marker beside the artifact and not the `owner` column.** The column decorates the
+  store (a failed INSERT keeps the artifact), so it cannot carry authorization. The marker is written
+  inside `init`'s own compensating `try`, so a half-written one takes the artifact with it, and an
+  artifact with no marker is reachable only through `allowed_artifacts` — which is what makes the
+  change need no migration. This replaced an `av<id>-` code PREFIX: the prefix carried ownership in
+  the NAME, so the agent had to know and type it and every artifact wore an operator concern in its
+  URL.
+- **Why the cap counts `filter(mayUse)` and not the store.** A store-wide count answers "how many
+  artifacts does every other agent_view hold" in at most `cap` calls, and — with delete reachable only
+  by an operator — lets one view lock creation out for all of them until a human intervenes. One word of filtering removes both.
+- **Alternative rejected — a `publish/agent_owned` switch.** `save_version` already materializes every
+  saved version into the served tree; `publish` only moves `current`. A switch there would guard an
+  open wall, block the loop this entry exists to enable, and be a second allow-list beside
+  `is_enabled`, which CLAUDE.md forbids. The operator's opt-in is the `is_enabled` pair.
+- **Known limit, deliberate:** `agent_view_id` is asserted by the caller (`?agent_view_id=` on the SSE
+  URL), so the namespace SCOPES cooperating views rather than authorizing them. (Closed by AG-16: the
+  view now comes from the session's capability row.) The fix is
+  session-bound identity in the framework, not a module-local check — see ROADMAP.md.
+- **Cost, accepted:** `artifact:delete` is the operator's alone — destroying an immutable history is
+  not something a self-asserted identity may do — so for an agent the cap is still a one-way ratchet
+  and a human is what resets it.
+
+## 2026-09-06 — VersionedArtifacts: artifact creation is a host command, not an HTTP route
+
+- **Decision:** `artifact:init` runs on the host and pipes a payload into
+  `docker compose exec -T toolbox node …/cli.js`. It stays the operator's equivalent of the tool —
+  it is the only path that can import a host directory as version 1.
+- **Alternative rejected — an Express route on the toolbox.** The toolbox authenticates no caller, so
+  every route it serves is reachable by the agent. A route would have meant handing the toolbox an
+  arbitrary host path to read — which is also why the TOOL takes no `--source` (see the entry above).
+- **Consequence:** the command must not be proxied into cron (which sees neither the host source nor the
+  storage volume), but it is still a *module* command, so it lives in `_LOCAL_MODULE_COMMANDS` — that
+  stops the proxy while leaving the module bootstrap that registers it with argparse intact.
+
+## 2026-09-06 — VersionedArtifacts: no runtime stale-lock breaking
+
+- **Decision:** a held lock is simply held. Abandoned locks are cleared by a sweep at toolbox startup,
+  never by a waiter.
+- **Why:** `mkdir` gives atomic *acquire*, not atomic *break*. Breaking is a read-then-delete pair, and a
+  third process can acquire in the window between them — so a waiter that deletes an aged lock can
+  destroy a lock someone else is actively holding. An ownership token makes *release* safe; it cannot
+  make breaking safe.
+- **Cost, accepted:** an abandoned lock returns `DRAFT_LOCKED` until the next toolbox start. A stuck
+  draft is recoverable by an administrator; two interleaved mutations on one worktree are silent
+  corruption. If this bites in practice the fix is a kernel-backed lock, not a shorter stale timeout.
+
+## 2026-09-06 — VersionedArtifacts: one toolbox instance per `storage_root`
+
+- **Decision:** a given store may be used by exactly one toolbox instance. Recorded in `system.json`
+  field help, the developer doc, and here.
+- **Why:** acquire is safe across processes, but the startup sweep is a check-then-delete pair with no
+  concurrent acquirer *by assumption*. A second toolbox on the same volume can take a lock inside that
+  window and have it deleted underneath a live mutation.
+- **Alternative rejected — a longer stale timeout.** It narrows the window and looks like a fix; it does
+  not close it. Supporting multiple instances needs a real distributed lock, which PRD §28 explicitly
+  scopes out ("one storage/VPS").
+
+## 2026-09-06 — VersionedArtifacts: a version carries no description
+
+- **Decision:** `versioned_artifact_list_versions` returns `{version_id, revision}` only. The label passed
+  to `save_version` is persisted in `versioned_artifact_audit.description`.
+- **Superseded 2026-09-12:** the tool now returns `{version_id, revision, preview_path}` — a third field
+  that says where the version is served, not a label. The decision above still stands for the *label*:
+  no version carries a description of its own.
+- **Why:** a version is a ref pointing at a commit and cannot hold a message of its own. Returning the
+  draft's last change message under the name `description` would hand the caller a field that looks like
+  the label they supplied and is not — the worse of the two failure modes. Inventing a field the PRD
+  does not define is the other.
+- **Forward path:** an annotated tag object per version, whose subject is a real version label.
+
+## 2026-08-23 — Toolbox east-west auth: a DB-backed capability, not a shared secret or a network boundary
+
+Closes the caller-authentication half of the N5-2 internal-caller gap for all four channels at once
+(the co-tenant half — concurrent runs sharing the `agent` UID — stays OPEN) (`jira`, `outlook`, `bitbucket`,
+`github`). Reference: [docs/architecture/zero-trust.md](docs/architecture/zero-trust.md),
+[docs/cli/capability.md](docs/cli/capability.md).
+
+- **The claims move server-side.** `/mcp`, `/sse` and every `/api` route now require a capability token.
+  The toolbox looks the token's SHA-256 hash up in `toolbox_capability` and takes `agent_view_id` and
+  `job_id` from **that row**. A query string or a request body may still carry an `agent_view_id`, but it
+  is only ever *compared* with the capability's scope — a mismatch is refused, never honoured. A caller
+  therefore cannot select a scope it was not issued.
+- **Why a DB capability and not a shared HMAC secret.** A signing key placed in the cron container would
+  sit next to a shell-capable agent, so it is exfiltratable; and one key mints *every* scope, so a single
+  leak grants the whole deployment. A capability is a random opaque string that only the DB can
+  interpret, is minted per run for one view (and one job), expires, and can be revoked at any moment.
+  Nothing reusable ever reaches the agent-adjacent container — which is also why this needs **no new
+  `AGENTO_*` cron env var** (see [docs/architecture/cron-env-contract.md](docs/architecture/cron-env-contract.md)).
+- **Why network segmentation alone was rejected.** Marking `agento-net` internal and exposing only MCP to
+  the sandbox stops an *outsider*, not the agent. The agent must legitimately reach the MCP port, and over
+  that same port it could open a session naming another view. Segmentation cannot authorize; it can only
+  reduce who may ask. It stays a useful defence in depth, not the fix.
+- **Three kinds, least privilege each.** `mcp_job` (a consumer-run job — never mintable by hand, revoked
+  on the job's terminal transition), `mcp_interactive` (one `agento run` session, 12 h), `internal_rest`
+  (Python publishers and channels, 120 s). Scoped `/health` diagnostics accept `internal_rest` only: an
+  MCP kind lives inside the sandbox, and a diagnostic that reports backend reachability would be an
+  infrastructure oracle for the agent.
+- **`/mcp` and `/sse` revoke differently, deliberately.** Streamable HTTP re-verifies on every request, so
+  a revocation is immediate. SSE verifies at connect, so a revocation lands at the next connect. Both are
+  documented rather than papered over; job capabilities are additionally bound to the job's lifetime.
+- **`/config-test` (added in v0.17) joins the guarded set, with a viewless exception.** A config test at
+  the default scope has no view to mint against, so `toolbox_capability.agent_view_id` is nullable for
+  an `internal_rest` row without a job — and only `/config-test` opts in (`allowViewless`). Every other
+  guard still refuses a viewless row, because the lenient loaders read global config for a missing
+  view. `run_id` (the interactive-run desk) stays a query parameter: it names a directory, not a scope.
+- **The token is a credential.** It goes to stdout once, travels onward only by stdin or a mode-0600
+  file, is replaced with `cap=***` in any agent output the framework persists, and is never written to
+  argv, a log, or shell history.
+
+---
+
 ## 2026-08-18 — Job dedupe by SELECT-then-INSERT, not `INSERT IGNORE` (AG-22)
 
 - **`INSERT IGNORE` burns an auto_increment id on every rejected duplicate.** MySQL/InnoDB allocates the
@@ -335,14 +875,10 @@ changes, no schema migrations. Details: [docs/modules/github.md](docs/modules/gi
   DEFAULT only, and nothing in this module asks for a `CONFIG__*` credential override. Setting one is the
   same act that would leak `jira`'s, `outlook`'s or `bitbucket`'s credential today with no guard at all;
   `github` is the only one of the four that detects it and refuses. See ROADMAP.
-- **N5-2, internal-caller auth.** `/sse` and `/mcp` take `agent_view_id` from the query string with no
-  caller authentication (`src/agento/toolbox/server.js:88,126`), and the module REST handlers take it
-  from the body — exactly as `jira`, `outlook` and `bitbucket` do. `bitbucket/module.json` already
-  declares the same eight capabilities behind the same door, so this module adds a credential and a host,
-  not a capability class. The real fix belongs in `server.js` — bind the view to an authenticated
-  caller/session (e.g. a job-scoped token in the MCP URL that `server.js` resolves `agent_view_id` from)
-  — applied **once for all four modules**; doing it inside `github/` alone would create a fourth pattern
-  and protect nobody else. **Owner sign-off 2026-08-13:** this port ships at parity. See ROADMAP.
+- **N5-2, internal-caller auth — CLOSED 2026-08-23.** This port shipped at parity with the residual
+  accepted (owner sign-off 2026-08-13). The framework fix landed later and applies to all four modules
+  at once: every MCP session and every `/api` route needs a capability token, and `agent_view_id` comes
+  from the capability row rather than from a query string or a body. See the 2026-08-23 entry above.
 
 ---
 
@@ -633,7 +1169,7 @@ true. Full contract: [docs/architecture/harness-contract.md](docs/architecture/h
 
 Hardens the Outlook channel against cross-user mail exposure in a shared mailbox and against bot-to-bot loops — with **no new DB tables and no persisted thread state**. See [docs/modules/outlook.md](docs/modules/outlook.md).
 
-- **Privacy is by construction — remove enumeration + bind reads to the triggering message, not an ACL.** The leak vector was *enumeration*: `outlook_search_messages` / `outlook_get_new_messages` listed other people's mail (subjects, senders, ids) in a shared mailbox, and `outlook_get_message` would then read any harvested id. Both enumeration tools are removed, and `outlook_get_message`/`outlook_get_attachment` are **hard-bound to the current job's own triggering message** — resolved in the toolbox from `job.reference_id` via `jobId`, with a scope-checked lookup (`WHERE id=? AND agent_view_id=? AND source='outlook'`, fail-closed). A leaked opaque id — or a `jobId` pointing at another view's/channel's job — cannot read another conversation. Chosen over a conversation-ACL gate table (no new state); email self-quoting carries prior thread context inline, so thread-walking is rarely needed. Interactive `agento run` (no `jobId`) is a deliberate, documented **operator escape hatch**, not part of the by-construction guarantee.
+- **Privacy is by construction — remove enumeration + bind reads to the triggering message, not an ACL.** The leak vector was *enumeration*: `outlook_search_messages` / `outlook_get_new_messages` listed other people's mail (subjects, senders, ids) in a shared mailbox, and `outlook_get_message` would then read any harvested id. Both enumeration tools are removed, and `outlook_get_message`/`outlook_get_attachment` are **hard-bound to the current job's own triggering message** — resolved in the toolbox from `job.reference_id` via `jobId`, with a scope-checked lookup (`WHERE id=? AND agent_view_id=? AND source='outlook'`, fail-closed). A leaked opaque id cannot read another conversation. **Since 2026-08-23 `jobId` is not caller-supplied at all** — it comes from the session's capability row (see the toolbox east-west auth entry), so the agent cannot even name another job's id — within its own run's capability (a co-tenant run's token read off the shared workspace is the residual, see zero-trust.md). Chosen over a conversation-ACL gate table (no new state); email self-quoting carries prior thread context inline, so thread-walking is rarely needed. Interactive `agento run` (no `jobId`) is a deliberate, documented **operator escape hatch**, not part of the by-construction guarantee.
 - **One reply verb — reply-to-all.** For a 1:1 mail reply-all == reply; for a group thread it keeps everyone in one thread (the actual goal). `outlook_reply` replies to `(Reply-To || From) ∪ To ∪ Cc` minus the agent's own mailbox; every recipient is gated against `core/email_whitelist`, and **only whitelisted addresses ever receive the reply**. A non-whitelisted recipient is handled per **`outlook/reply_policy`** (agent_view-scoped): `remove` (default) **drops** the blocked address and sends to the rest — so one bad address in a group thread never blocks the whole conversation — while `block` blocks the whole send (the original behavior). The whitelist invariant is identical either way (a blocked address never receives mail); `remove` was made the default because block-whole silently loses the entire reply on one stray Cc, whereas `remove` still reaches the humans on the thread and reports exactly who it dropped (so it is not silent to the agent). All-blocked under `remove` sends nothing and errors (cannot reply to nobody). Applies to `outlook_reply` only — `outlook_send_mail` still blocks the whole send (there the agent chose the addresses explicitly). Targeted 1:1 mail uses `outlook_send_mail`. The single-recipient reply behavior is dropped.
 - **Activation is a pure function; loop-safety is stateless fleet-mailbox detection — no thread-state table, no per-message marker.** The publisher creates a job only when the mail is `direct` (the mailbox, or a `mailbox_aliases` entry, is the sole recipient across To+Cc — strictness via `direct_requires_sole_recipient`) or a `mention` (the `summon_token`, default `@agento`, appears in subject/body-preview); otherwise it stays silent and advances the cursor. Bot-to-bot loops are broken by treating an inbound message as agent-authored when its **DMARC-verified `From` is in the fleet mailbox set** — **auto-derived** by the toolbox delta handler from the active agent_views (the union of each outlook-enabled view's resolved `outlook/outlook_mailbox_user_id`, standard fallback), never a hand-maintained list; such mail is hard-suppressed unless `allow_bot_collaboration=true`. All computed from the current message — no hop counter, no persisted state.
 - **Loop detection is address-based, NOT an outbound HMAC header — because Graph makes `internetMessageHeaders` read-only after create.** The original design stamped a signed `X-Agento` header on outbound mail. Impl review established (Microsoft Graph `message` resource docs: "add custom headers only when creating a message … after the message is sent you cannot modify the headers"; the property is Read-only) that headers can only be set at **create** time, and `createReplyAll`'s JSON `message` param documents only `comment`/`body` (headers only via the MIME path) — so a reliable signed marker on the main *reply* path would require manual MIME construction. Rather than carry that complexity (and an HMAC secret), loop detection keys on the sender address: the `From` is already DMARC-gated, so it can't be spoofed into a false positive, and a false positive only ever *suppresses* a reply (safe direction). This also removes the need for any loop-marker secret entirely (no `OUTLOOK_LOOP_MARKER_SECRET`, no `stamp_loop_marker`), so the SKILL.md §5a secret-decryption concern does not arise for loop-safety at all. Companion fix retained: the Outlook publisher reads its non-secret fields via per-path `.get()` (never `get_module("outlook")`) so it never resolves the Graph secret. Trade-off: the fleet is scoped to **this deployment's** agent_views — a cross-**deployment** peer's mailbox is not part of the auto-derived set, so intra-deployment loops (the primary risk) are covered with **zero config**, while cross-deployment ones fall back to the activation rule.
@@ -648,7 +1184,7 @@ A new core, disableable channel that watches an agent's open Bitbucket Cloud PRs
 - **D-2 checkout+push uses the agent_view's configured SSH identity — a different credential from the API token.** (Reworded 2026-08-25: the push identity is `agent_view/identity/ssh_private_key`, **loaded into a per-run `ssh-agent` and never written to disk**; `workspace_build` no longer carries it — see D-SSH-1.) The token (toolbox-only, never agent-reachable) drives all REST work; the SSH key is the agent's own push identity, "opt-in" by being configured. The module does **not** gate git push and the git layer is **not** module-allow-list-enforced (the API write surface is); this boundary is documented rather than overclaimed.
 - **D-3 no schema migrations** — reuse `job` (incl. `requester_*`), `core_config_data`, `ingress_identity`.
 - **D-4 onboarding requires a reachable toolbox to verify-before-save.** Keeps every Bitbucket API call inside the toolbox (the "Python must not hold the token" rule applies to onboarding too). If the toolbox is unreachable, onboarding verifies nothing and saves nothing; the offline path is manual `config:set`.
-- **D-5 the toolbox is the authorization boundary, with NO framework/toolbox edit.** `enabled`, workspace, `account_uuid`, `repo_allowlist` are resolved from scoped config and enforced on every REST + MCP call; caller args/body may only narrow, never authorize. REST handlers call `loadScopedDbOverrides` themselves → have `agentViewMeta` → fail closed (404) on an unknown `agent_view_id`. MCP tools cannot see `agentViewMeta` and the agent (same Docker network as the toolbox) can in principle open its own session with a different/omitted `agent_view_id` — the **framework-wide N5-2 internal-caller-auth gap shared by Jira and Outlook**, explicitly out of scope and not worsened here. The honest guarantee: token toolbox-only; tools opt-in per scope; every read/write bounded to the resolved `repo_allowlist` (fail-closed by config-absence). We do **not** claim MCP "refuses forged views". **Token confinement (hardened in impl review round 2):** the API token is **only ever decrypted in the toolbox** — it is never stored at DEFAULT scope (so the framework's `bootstrap()`, which resolves DEFAULT-scope obscure config in the cron process, never decrypts it), and the publisher resolves only non-secret fields via per-path `.get()` (never `get_module()`, which would resolve the token field). Bitbucket config is therefore always agent_view-scoped (see D-11 update).
+- **D-5 the toolbox is the authorization boundary, with NO framework/toolbox edit.** `enabled`, workspace, `account_uuid`, `repo_allowlist` are resolved from scoped config and enforced on every REST + MCP call; caller args/body may only narrow, never authorize. REST handlers call `loadScopedDbOverrides` themselves → have `agentViewMeta` → fail closed (404) on an unknown `agent_view_id`. MCP tools cannot see `agentViewMeta` and the agent (same Docker network as the toolbox) can in principle open its own session with a different/omitted `agent_view_id` — the **framework-wide N5-2 internal-caller-auth gap shared by Jira and Outlook**, explicitly out of scope for this port. **Closed framework-side on 2026-08-23** (see the entry above): an MCP session now needs a capability token and takes its `agent_view_id` from that row, so MCP *does* refuse a forged view claimed on a session's own capability. The module-level guarantee is unchanged: token toolbox-only; tools opt-in per scope; every read/write bounded to the resolved `repo_allowlist` (fail-closed by config-absence). **Token confinement (hardened in impl review round 2):** the API token is **only ever decrypted in the toolbox** — it is never stored at DEFAULT scope (so the framework's `bootstrap()`, which resolves DEFAULT-scope obscure config in the cron process, never decrypts it), and the publisher resolves only non-secret fields via per-path `.get()` (never `get_module()`, which would resolve the token field). Bitbucket config is therefore always agent_view-scoped (see D-11 update).
 - **D-6 API-token scopes are the granular 2026 names, listed explicitly with no implication** (unlike OAuth, API-token scopes do not grant one another): `read:user:bitbucket`, `read:repository:bitbucket`, `read:pullrequest:bitbucket`, `write:pullrequest:bitbucket` — NOT the deprecated `pullrequest`/`pullrequest:write`/`repository` names. `write:repository` is not requested (no API repo writes; push is SSH).
 - **D-7 two registered channel instances, `.name` == published `job.source`.** The framework resolves a job's channel via `get_channel(job.source)` keyed on the instance `.name` (registry.py / consumer.py). Distinct sources are required for `skip_if_active` lane independence, so `di.json` registers `BitbucketCommentsChannel` (`bitbucket-comments`) and `BitbucketChangesChannel` (`bitbucket-changes`), both subclassing a shared `BitbucketPromptChannel`. A single `.name == "bitbucket"` channel would make every job fail at `get_channel`.
 - **D-8 changes-requested detection via the `/activity` event log, not `participants[]`, order-independent.** `participants[].participated_on` is an approval/last-comment timestamp, not the changes-requested time, and cannot disambiguate multiple reviewers. The fast lane reads a bounded `/activity` window, keeps all non-agent `changes_request` events, and takes `max(date)` client-side (does not assume API sort order). `participants[]` is a cheap pre-filter only. Symmetrically, `last_commit_on = max(commit.date)` over a bounded commits window (not `values[0]`; empty list ⇒ null).

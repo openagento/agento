@@ -5,7 +5,19 @@ import { decrypt, hasEncryptionKey } from './crypto.js';
 import { registerAdapterTools } from './adapters/index.js';
 import { wrapHandler } from './adapters/large-result.js';
 import { FileManager, ConverterRegistry } from './file-manager.js';
-import { logToolboxRest } from './log.js';
+import { logToolboxRest, errorCategory } from './log.js';
+import { rejectScopeMismatch } from './capability.js';
+import { matchesWhitelist } from './email-match.js';
+import { sanitizeHealthError } from './health-run.js';
+
+// The helpers a module's toolbox/ code may use. A module tree and the toolbox tree are mounted at
+// UNRELATED container paths (/app/modules/core/<m>/toolbox vs the toolbox package root), so a
+// module CANNOT reach framework code by a relative import — the specifier that resolves in the
+// repo checkout resolves to nothing in the container and the whole file fails to load. Framework
+// code reaches a module only through the registration context, so shared helpers travel that way.
+// `errorCategory` is wrapped rather than referenced: this object is built at module load, and a
+// test that partially mocks log.js would fail on the read before any of its own code runs.
+const TOOLBOX_HELPERS = { matchesWhitelist, sanitizeHealthError, errorCategory: err => errorCategory(err) };
 
 const CORE_MODULES_DIR = process.env.CORE_MODULES_DIR || '/app/modules/core';
 const USER_MODULES_DIR = process.env.USER_MODULES_DIR || '/app/modules/user';
@@ -38,10 +50,28 @@ function scanDir(dir) {
 }
 
 /**
- * Scan all module directories (core + user) and return parsed manifests.
+ * The modules `module:disable` turned off, from `app/etc/modules.json` — the file the Python
+ * side writes (framework/module_status.py). Only an explicit `false` disables: an absent file,
+ * an absent key or an unparseable file mean enabled, exactly as `module_status.is_enabled`.
+ * Read on every call, so a disable applies to the next MCP session without a restart.
+ */
+function disabledModules() {
+  try {
+    const status = JSON.parse(fs.readFileSync(path.join(process.env.APP_ETC_DIR || '/app/etc', 'modules.json'), 'utf-8'));
+    return new Set(Object.keys(status ?? {}).filter((name) => status[name] === false));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Scan all module directories (core + user) and return the parsed manifests of the enabled
+ * modules. Every toolbox path (tools, auth sources, REST routes, config) starts here, so a
+ * disabled module contributes nothing to the toolbox.
  */
 export function scanModules() {
-  return [...scanDir(CORE_MODULES_DIR), ...scanDir(USER_MODULES_DIR)];
+  const off = disabledModules();
+  return [...scanDir(CORE_MODULES_DIR), ...scanDir(USER_MODULES_DIR)].filter((mod) => !off.has(mod.name));
 }
 
 /**
@@ -63,20 +93,25 @@ export function readConfigDefaults(modulePath) {
  * Load all core_config_data overrides from DB into a map.
  * Returns { 'path': { value, encrypted } }
  */
-export async function loadDbOverrides() {
+async function loadDbOverridesOrThrow() {
   const overrides = {};
-  try {
-    const pool = getCronPool();
-    const [rows] = await pool.query(
-      "SELECT path, value, encrypted FROM core_config_data WHERE scope = 'default' AND scope_id = 0"
-    );
-    for (const row of rows) {
-      overrides[row.path] = { value: row.value, encrypted: !!row.encrypted };
-    }
-  } catch (err) {
-    console.warn(`[config-loader] Failed to load core_config_data: ${err.message}`);
+  const pool = getCronPool();
+  const [rows] = await pool.query(
+    "SELECT path, value, encrypted FROM core_config_data WHERE scope = 'default' AND scope_id = 0"
+  );
+  for (const row of rows) {
+    overrides[row.path] = { value: row.value, encrypted: !!row.encrypted };
   }
   return overrides;
+}
+
+export async function loadDbOverrides() {
+  try {
+    return await loadDbOverridesOrThrow();
+  } catch (err) {
+    console.warn(`[config-loader] Failed to load core_config_data: ${errorCategory(err)}`);
+    return {};
+  }
 }
 
 /**
@@ -133,56 +168,190 @@ export async function loadStrictScopedOverrides(agentViewId) {
  */
 export async function loadScopedDbOverrides(agentViewId) {
   const overrides = await loadDbOverrides();
-  let agentViewMeta = null;
 
-  if (!agentViewId) return { overrides, agentViewMeta };
+  if (!agentViewId) return { overrides, agentViewMeta: null };
 
   try {
-    const pool = getCronPool();
-
-    const [avRows] = await pool.query(
-      `SELECT av.id, av.workspace_id, av.label, av.code AS agent_view_code, w.code AS workspace_code
-       FROM agent_view av
-       JOIN workspace w ON w.id = av.workspace_id
-       WHERE av.id = ?`,
-      [agentViewId]
-    );
-    if (avRows.length === 0) {
+    const result = await layerScopedOverrides(agentViewId, overrides);
+    if (!result.agentViewMeta) {
       console.warn(`[config-loader] agent_view_id=${agentViewId} not found, using global config`);
-      return { overrides, agentViewMeta };
     }
-
-    const av = avRows[0];
-    agentViewMeta = {
-      id: av.id,
-      label: av.label,
-      workspaceId: av.workspace_id,
-      workspaceCode: av.workspace_code,
-      agentViewCode: av.agent_view_code,
-    };
-
-    // Layer workspace overrides
-    const [wsRows] = await pool.query(
-      "SELECT path, value, encrypted FROM core_config_data WHERE scope = 'workspace' AND scope_id = ?",
-      [av.workspace_id]
-    );
-    for (const row of wsRows) {
-      overrides[row.path] = { value: row.value, encrypted: !!row.encrypted };
-    }
-
-    // Layer agent_view overrides (highest priority)
-    const [avConfigRows] = await pool.query(
-      "SELECT path, value, encrypted FROM core_config_data WHERE scope = 'agent_view' AND scope_id = ?",
-      [agentViewId]
-    );
-    for (const row of avConfigRows) {
-      overrides[row.path] = { value: row.value, encrypted: !!row.encrypted };
-    }
+    return result;
   } catch (err) {
-    console.warn(`[config-loader] Failed to load scoped overrides: ${err.message}`);
+    console.warn(`[config-loader] Failed to load scoped overrides: ${errorCategory(err)}`);
+    return { overrides, agentViewMeta: null };
+  }
+}
+
+async function layerWorkspaceOverrides(workspaceId, overrides) {
+  const [wsRows] = await getCronPool().query(
+    "SELECT path, value, encrypted FROM core_config_data WHERE scope = 'workspace' AND scope_id = ?",
+    [workspaceId]
+  );
+  for (const row of wsRows) {
+    overrides[row.path] = { value: row.value, encrypted: !!row.encrypted };
+  }
+  return overrides;
+}
+
+/**
+ * STRICT default + workspace overrides for a call that is not view-scoped (a user_session
+ * at invoke). Same failure contract as loadScopedDbOverridesStrict: a query failure throws
+ * ScopeUnavailableError and never answers with a narrower or wider layer.
+ */
+export async function loadWorkspaceOverridesStrict(workspaceId) {
+  try {
+    const overrides = await loadDbOverridesOrThrow();
+    return workspaceId ? await layerWorkspaceOverrides(workspaceId, overrides) : overrides;
+  } catch (err) {
+    throw new ScopeUnavailableError(`scope lookup failed: ${errorCategory(err)}`);
+  }
+}
+
+/**
+ * Layer workspace + agent_view overrides on top of `overrides`. Throws on a DB failure and
+ * reports a missing view as `agentViewMeta: null` — the callers decide what that means.
+ */
+async function layerScopedOverrides(agentViewId, overrides) {
+  let agentViewMeta = null;
+  const pool = getCronPool();
+
+  const [avRows] = await pool.query(
+    `SELECT av.id, av.workspace_id, av.label, av.code AS agent_view_code, w.code AS workspace_code
+     FROM agent_view av
+     JOIN workspace w ON w.id = av.workspace_id
+     WHERE av.id = ?`,
+    [agentViewId]
+  );
+  if (avRows.length === 0) {
+    return { overrides, agentViewMeta: null };
+  }
+
+  const av = avRows[0];
+  agentViewMeta = {
+    id: av.id,
+    label: av.label,
+    workspaceId: av.workspace_id,
+    workspaceCode: av.workspace_code,
+    agentViewCode: av.agent_view_code,
+  };
+
+  await layerWorkspaceOverrides(av.workspace_id, overrides);
+
+  // Layer agent_view overrides (highest priority)
+  const [avConfigRows] = await pool.query(
+    "SELECT path, value, encrypted FROM core_config_data WHERE scope = 'agent_view' AND scope_id = ?",
+    [agentViewId]
+  );
+  for (const row of avConfigRows) {
+    overrides[row.path] = { value: row.value, encrypted: !!row.encrypted };
   }
 
   return { overrides, agentViewMeta };
+}
+
+/**
+ * Raised when a capability names a scope the toolbox cannot resolve. Distinct from a DB
+ * failure so the caller can answer 403 (the view is gone) rather than 503 (try again).
+ */
+export class ScopeResolutionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ScopeResolutionError';
+  }
+}
+
+/**
+ * Raised when the scope could not be resolved at all (a DB failure). Separate from
+ * ScopeResolutionError so the caller answers 503 (transient) rather than 403 (the view is gone).
+ */
+export class ScopeUnavailableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ScopeUnavailableError';
+  }
+}
+
+/**
+ * STRICT sibling of loadScopedDbOverrides for capability-authenticated callers. The lenient
+ * version answers with GLOBAL overrides when a view is missing or the lookup throws — a
+ * silent scope WIDENING, which is exactly what a capability exists to prevent. This one
+ * throws; the caller answers 403/503 and no session is created.
+ */
+export async function loadScopedDbOverridesStrict(agentViewId) {
+  if (!Number.isInteger(agentViewId) || agentViewId <= 0) {
+    throw new ScopeResolutionError('capability carries no usable agent_view');
+  }
+  let result;
+  try {
+    const overrides = await loadDbOverridesOrThrow();
+    result = await layerScopedOverrides(agentViewId, overrides);
+  } catch (err) {
+    // Category, never the driver's message: a mysql2 failure names the host and user it
+    // dialled, and this message is both logged and handed to the 503 responder.
+    throw new ScopeUnavailableError(`scope lookup failed: ${errorCategory(err)}`);
+  }
+  if (!result.agentViewMeta) {
+    throw new ScopeResolutionError(`agent_view_id=${agentViewId} not found`);
+  }
+  return result;
+}
+
+/**
+ * Express 4 does not forward an async handler's rejection to the error middleware, so a module
+ * route that throws would simply hang. Every module route is registered through this wrapper —
+ * one place, no per-module opt-in — which turns a rejection into the right status code:
+ * a scope that no longer exists is 403, a lookup that failed is 503, anything else is 500.
+ */
+export function createModuleRouteApp(app, log) {
+  const sendRouteError = (err, res, route) => {
+    if (res.headersSent) return undefined;
+    if (err instanceof ScopeResolutionError) {
+      log(route, 'ERROR', `capability scope unresolvable: ${err.message}`);
+      return res.status(403).json({ error: 'capability scope unresolvable' });
+    }
+    if (err instanceof ScopeUnavailableError) {
+      log(route, 'ERROR', `scope resolution failed: ${err.message}`);
+      return res.status(503).json({ error: 'scope resolution unavailable' });
+    }
+    log(route, 'ERROR', `unhandled route error: ${errorCategory(err)}`);
+    return res.status(500).json({ error: 'Internal error' });
+  };
+  const wrap = (handler, route) => {
+    if (typeof handler !== 'function' || handler.length >= 4) return handler;
+    return (req, res, next) => {
+      let out;
+      try {
+        out = handler(req, res, next);
+      } catch (err) {
+        return sendRouteError(err, res, route);
+      }
+      if (out && typeof out.then === 'function') {
+        return out.catch(err => sendRouteError(err, res, route));
+      }
+      return out;
+    };
+  };
+  // The conflicting-claim check runs HERE, once, for every module route — not in each handler.
+  // A module cannot forget it, and a new module gets it with no code of its own. It guards the
+  // LAST handler only: the earlier ones are body parsers, and a check that ran before
+  // express.json() would see no body to compare.
+  const guard = (handler, route) => {
+    if (typeof handler !== 'function' || handler.length >= 4) return handler;
+    return (req, res, next) => {
+      if (rejectScopeMismatch(req, res, log, route)) return undefined;
+      return handler(req, res, next);
+    };
+  };
+  const api = {};
+  for (const method of ['get', 'post', 'put', 'patch', 'delete', 'all']) {
+    api[method] = (route, ...handlers) => {
+      const last = handlers.length - 1;
+      return app[method](route, ...handlers.map((h, i) => wrap(i === last ? guard(h, route) : h, route)));
+    };
+  }
+  api.use = (...args) => app.use(...args);
+  return api;
 }
 
 /**
@@ -202,7 +371,7 @@ export async function listActiveAgentViewIds() {
     );
     return rows.map((r) => r.id);
   } catch (err) {
-    console.warn(`[config-loader] Failed to list active agent_views: ${err.message}`);
+    console.warn(`[config-loader] Failed to list active agent_views: ${errorCategory(err)}`);
     return [];
   }
 }
@@ -216,11 +385,19 @@ export async function listActiveAgentViewIds() {
  * This is the toolbox's single config-resolution entrypoint for raw paths —
  * the mirror of Python's ScopedConfigService.get(). Callers must NOT index
  * dbOverrides directly, so ENV and config.json fallbacks always apply.
+ *
+ * `fieldSchema` is optional and carries the same meaning as in resolveModuleField:
+ * `allowEnv: false` refuses the ENV source, leaving the DB as the only one. Today's
+ * only caller is the tool gate, which resolves no restricted field — the parameter is
+ * here so the NEXT raw-path caller inherits the restriction instead of silently
+ * bypassing it. Both entrypoints must enforce it, or one of them is a way around it.
  */
-export function resolveConfigValue(configPath, dbOverrides = {}, configDefaults = {}) {
-  // 1. ENV var (highest priority)
-  const envKey = `CONFIG__${configPath.replace(/\//g, '__')}`.toUpperCase().replace(/-/g, '_');
-  if (process.env[envKey] !== undefined) return process.env[envKey];
+export function resolveConfigValue(configPath, dbOverrides = {}, configDefaults = {}, fieldSchema = {}) {
+  // 1. ENV var (highest priority), unless the field opted out of the ENV source
+  if (fieldSchema?.allowEnv !== false) {
+    const envKey = `CONFIG__${configPath.replace(/\//g, '__')}`.toUpperCase().replace(/-/g, '_');
+    if (process.env[envKey] !== undefined) return process.env[envKey];
+  }
 
   // 2. DB override (merged scope chain)
   const override = dbOverrides[configPath];
@@ -280,21 +457,29 @@ export function isToolEnabled(toolName, dbOverrides, configDefaults = {}) {
  * exists to catch: a value that is there and unreadable must not report as
  * absent. A config test is a diagnostic, so it needs the two apart.
  *
- * 1. ENV var: CONFIG__{MODULE}__{FIELD}
+ * 1. ENV var: CONFIG__{MODULE}__{FIELD} — skipped when the field declares `allowEnv: false`
  * 2. DB: core_config_data at path {module}/{field}
  * 3. config.json defaults (top-level)
+ *
+ * `fieldSchema` is the field's system.json entry. `allowEnv: false` says the value must not
+ * come from the process environment (readable by every child process, and it lands in crash
+ * dumps and `ps` output) — the DB is then the only source. `access: "toolbox_only"` is
+ * deliberately a NO-OP here: the toolbox is the intended owner of those values.
  */
-export function resolveModuleFieldStrict(moduleName, fieldName, configDefaults, dbOverrides) {
+export function resolveModuleFieldStrict(moduleName, fieldName, configDefaults, dbOverrides, fieldSchema = {}) {
+  // 1. ENV var (highest priority), unless the field opted out of the ENV source.
   // `/` -> `__`, matching `config_resolver.py:130` and the documented
   // `CONFIG__APP_MONITOR__ALERTS__SMTP_PASSWORD`. The lenient resolver omitted
   // this, so a NESTED field (every app_monitor SMTP field is `alerts/…`) built
   // an env name containing a slash and could never match.
-  const envKey = `CONFIG__${moduleName}__${fieldName}`
-    .toUpperCase()
-    .replace(/-/g, '_')
-    .replace(/\//g, '__');
-  if (process.env[envKey] !== undefined) {
-    return { value: process.env[envKey], state: 'set' };
+  if (fieldSchema?.allowEnv !== false) {
+    const envKey = `CONFIG__${moduleName}__${fieldName}`
+      .toUpperCase()
+      .replace(/-/g, '_')
+      .replace(/\//g, '__');
+    if (process.env[envKey] !== undefined) {
+      return { value: process.env[envKey], state: 'set' };
+    }
   }
 
   const dbPath = `${moduleName}/${fieldName}`.replace(/-/g, '_');
@@ -314,8 +499,8 @@ export function resolveModuleFieldStrict(moduleName, fieldName, configDefaults, 
   return { value: null, state: 'unset' };
 }
 
-export function resolveModuleField(moduleName, fieldName, configDefaults, dbOverrides) {
-  const { value, state } = resolveModuleFieldStrict(moduleName, fieldName, configDefaults, dbOverrides);
+export function resolveModuleField(moduleName, fieldName, configDefaults, dbOverrides, fieldSchema = {}) {
+  const { value, state } = resolveModuleFieldStrict(moduleName, fieldName, configDefaults, dbOverrides, fieldSchema);
   if (state === 'undecryptable') {
     // The lenient callers rely on this being visible somewhere, and they still
     // receive `null`.
@@ -442,43 +627,6 @@ export function discoverToolboxFiles(modulePath) {
  * @param {object} context - Shared context { app, log, db, playwright }
  * @returns {string[]} All registered tool names (adapter tools only; module tools are self-registering)
  */
-/**
- * Every resolved config value whose schema type is `obscure`.
- *
- * The toolbox is the only process holding these, so it is the only process that
- * can redact them. Values are masked at ANY length — a one-character secret
- * garbling a message is the correct trade: the alternative is printing it.
- *
- * One caller: `/health`, whose fan-out can return a message from any registered
- * healthcheck and which already holds the process-wide `moduleConfigs`.
- * `/config-test` deliberately does NOT use this — it masks only the values its
- * own declaration resolved, which is the complete set one probe can have seen
- * (Step 6). Resolving every module's obscure fields per request would widen
- * exposure for nothing.
- */
-export function collectObscureValues(moduleConfigs = null, modules = scanModules()) {
-  const out = new Set();
-  for (const mod of modules) {
-    const systemPath = path.join(mod._path, 'system.json');
-    if (!fs.existsSync(systemPath)) continue;
-    let system;
-    try {
-      system = JSON.parse(fs.readFileSync(systemPath, 'utf-8'));
-    } catch {
-      continue;
-    }
-    if (!system || typeof system !== 'object' || Array.isArray(system)) continue;
-
-    const resolved = moduleConfigs?.[mod.name] || {};
-    for (const [field, schema] of Object.entries(system)) {
-      if (schema?.type !== 'obscure') continue;
-      const value = resolved[field];
-      if (typeof value === 'string' && value.length > 0) out.add(value);
-    }
-  }
-  return [...out];
-}
-
 /** Replace every known secret in `text` with `***`. Longest-first, so a secret
  *  containing another is masked whole. */
 export function redactSecrets(text, secrets) {
@@ -514,7 +662,9 @@ export async function loadModuleConfigs(dbOverrides = null) {
     const configDefaults = readConfigDefaults(mod._path);
     const resolved = {};
     for (const fieldName of Object.keys(system)) {
-      resolved[fieldName] = resolveModuleField(mod.name, fieldName, configDefaults, dbOverrides);
+      resolved[fieldName] = resolveModuleField(
+        mod.name, fieldName, configDefaults, dbOverrides, system[fieldName],
+      );
     }
     moduleConfigs[mod.name] = resolved;
   }
@@ -538,6 +688,42 @@ function createFileManager(moduleConfigs, log) {
 }
 
 /**
+ * Collect the source checkers modules export as `authSources = [[sourceKind, check], ...]`
+ * (E2 sessions, E6 launches). Run once at startup. A source kind two modules claim is
+ * dropped with an ERROR — neither checker could be trusted to be the right one, and a
+ * missing checker fails closed.
+ */
+export async function discoverAuthSources() {
+  const found = new Map();
+  const contested = new Set();
+  for (const mod of scanModules()) {
+    for (const file of discoverToolboxFiles(mod._path)) {
+      let toolModule;
+      try {
+        toolModule = await import(file);
+      } catch (err) {
+        logToolboxRest('discovery', 'ERROR', `${mod.name}: failed to load ${path.basename(file)}: ${errorCategory(err)}`);
+        continue;
+      }
+      if (!Array.isArray(toolModule.authSources)) continue;
+      for (const [kind, check] of toolModule.authSources) {
+        if (typeof kind !== 'string' || typeof check !== 'function') {
+          logToolboxRest('discovery', 'ERROR', `${mod.name} exports a malformed authSources entry`);
+          continue;
+        }
+        if (found.has(kind)) contested.add(kind);
+        found.set(kind, check);
+      }
+    }
+  }
+  for (const kind of contested) {
+    found.delete(kind);
+    logToolboxRest('discovery', 'ERROR', `auth source '${kind}' is claimed by more than one module; refusing it`);
+  }
+  return [...found.entries()];
+}
+
+/**
  * Register module REST API routes on the Express app at startup.
  * This ensures endpoints like /api/jira/request are available before any
  * MCP session connects (needed by setup:upgrade onboarding).
@@ -547,7 +733,16 @@ export async function registerModuleRestApis(context) {
   const dbOverrides = await loadDbOverrides();
   const moduleConfigs = await loadModuleConfigs(dbOverrides);
   const fileManager = createFileManager(moduleConfigs, context.log);
-  const enrichedContext = { ...context, moduleConfigs, loadModuleConfigs, loadScopedDbOverrides, listActiveAgentViewIds, fileManager };
+  const enrichedContext = {
+    ...TOOLBOX_HELPERS,
+    ...context,
+    app: context.app ? createModuleRouteApp(context.app, context.log) : context.app,
+    moduleConfigs,
+    loadModuleConfigs,
+    loadScopedDbOverridesStrict,
+    listActiveAgentViewIds,
+    fileManager,
+  };
 
   const sorted = [...modules].sort((a, b) => (a.order || 100) - (b.order || 100));
 
@@ -573,6 +768,25 @@ export async function registerModuleRestApis(context) {
       }
     }
   }
+}
+
+/**
+ * The one is_enabled/requires rule, shared by registration and by the per-call dispatcher:
+ * a tool is available only if it AND every tool up its `requires` chain is declared and
+ * resolves '1'. Returns 'enabled', 'disabled' or 'undeclared' (a name in the chain nobody
+ * declares); a cycle is 'disabled'.
+ */
+export function toolChainState(toolName, { declared, requiresByTool, dbOverrides, configDefaults }) {
+  const seen = new Set();
+  let current = toolName;
+  while (current) {
+    if (seen.has(current)) return 'disabled';   // cycle: fail closed
+    seen.add(current);
+    if (!declared.has(current)) return 'undeclared';
+    if (!isToolEnabled(current, dbOverrides, configDefaults)) return 'disabled';
+    current = requiresByTool.get(current) || null;
+  }
+  return 'enabled';
 }
 
 export async function registerTools(server, context, agentViewId = null, preloadedOverrides = null) {
@@ -627,23 +841,15 @@ export async function registerTools(server, context, agentViewId = null, preload
   // union is correct, since those names come from manifests by construction.
   const enabledCheck = (toolName) => {
     const owned = currentModule ? declaredByModule.get(currentModule) : declaredToolNames;
-    const declared = owned || new Set();
-    const seen = new Set();
-    let current = toolName;
-    while (current) {
-      if (seen.has(current)) return false;   // cycle: fail closed
-      seen.add(current);
-      if (!declared.has(current)) {
-        if (currentModule) undeclaredLookups.push({ name: toolName, module: currentModule });
-        return false;
-      }
-      if (!isToolEnabled(current, dbOverrides, configDefaults)) return false;
-      current = requiresByTool.get(current) || null;
-    }
-    return true;
+    const state = toolChainState(toolName, {
+      declared: owned || new Set(), requiresByTool, dbOverrides, configDefaults,
+    });
+    if (state === 'undeclared' && currentModule) undeclaredLookups.push({ name: toolName, module: currentModule });
+    return state === 'enabled';
   };
   const fileManager = createFileManager(moduleConfigs, context.log);
   const enrichedContext = {
+    ...TOOLBOX_HELPERS,
     ...context,
     app: undefined,
     moduleConfigs,
@@ -665,12 +871,16 @@ export async function registerTools(server, context, agentViewId = null, preload
   // actually registered it — a name declared by a DIFFERENT module must not excuse it.
   const allToolNames = [];
   const registeredBy = [];
+  // The dispatcher's registry: what executeTool runs, on both transports.
+  const tools = new Map();
+  const failedModules = new Set();
   const originalTool = server.tool.bind(server);
   server.tool = (name, desc, schema, handler, options = {}) => {
     allToolNames.push(name);
     if (currentModule) registeredBy.push({ name, module: currentModule });
     const strategy = options.resultStrategy !== undefined ? options.resultStrategy : 'text';
     const wrapped = wrapHandler(handler, name, strategy, offloadConfig);
+    tools.set(name, { schema, handler: wrapped, module: currentModule });
     return originalTool(name, desc, schema, wrapped);
   };
 
@@ -718,6 +928,7 @@ export async function registerTools(server, context, agentViewId = null, preload
           healthchecks.push(() => toolModule.healthcheck(enrichedContext));
         }
       } catch (err) {
+        failedModules.add(mod.name);
         logToolboxRest('discovery', 'ERROR', `Failed to load ${file}: ${err.message}`);
       }
     }
@@ -751,8 +962,18 @@ export async function registerTools(server, context, agentViewId = null, preload
       `invisible in the admin Tools screen and in tool:list. Add it to that module's tools[].`);
   }
 
+  // A tool whose module failed to load is unavailable, not unknown: telling the caller
+  // `not_found` would report a broken deployment as a caller mistake.
+  const unavailableTools = new Set();
+  for (const mod of failedModules) {
+    for (const name of declaredByModule.get(mod) || []) unavailableTools.add(name);
+  }
+  const isEnabled = (toolName, overrides) => toolChainState(toolName, {
+    declared: declaredToolNames, requiresByTool, dbOverrides: overrides, configDefaults,
+  }) === 'enabled';
+
   return {
     toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames,
-    obscureValues: collectObscureValues(moduleConfigs),
+    tools, unavailableTools, isEnabled,
   };
 }

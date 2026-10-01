@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..config_resolver import ScopedConfigService
+from ..toolbox_capability import rest_capability
 from .protocols import CODE_RE, ERROR, FAIL, NOT_CONFIGURED, OK, TestResult
 
 DEFAULT_TOOLBOX_URL = "http://toolbox:3001"
@@ -36,7 +37,7 @@ class ToolboxUrlError(ValueError):
     """``core/toolbox/url`` is not a usable internal endpoint."""
 
 
-def _resolve_toolbox_url(conn) -> str:
+def resolve_toolbox_url(conn) -> str:
     """``core/toolbox/url``, validated, or the compose default.
 
     A single per-path read — never ``resolve_all()`` and never ``get_module()``,
@@ -163,7 +164,7 @@ def run_toolbox_test(conn, config_path: str, *, scope: str, scope_id: int = 0) -
             code="SCOPE_ID_INVALID",
         )
     try:
-        url = _resolve_toolbox_url(conn)
+        url = resolve_toolbox_url(conn)
     except ToolboxUrlError as e:
         return TestResult(ERROR, str(e), code="TOOLBOX_URL_INVALID")
 
@@ -172,10 +173,22 @@ def run_toolbox_test(conn, config_path: str, *, scope: str, scope_id: int = 0) -
         params["agent_view_id"] = str(scope_id)
 
     try:
-        # POST, not GET: this triggers a live authentication attempt against a
-        # third party. A side-effecting GET lands in proxy logs and browser
-        # history and is replayable from anywhere that can emit a link.
-        resp = httpx.post(f"{url}/config-test", params=params, timeout=TIMEOUT_S)
+        # The route takes its scope from the capability row, so the capability is minted
+        # for exactly the scope being tested — viewless for the default one. It rides in
+        # a header, never the URL, and is revoked the moment the one request returns.
+        with rest_capability(
+            agent_view_id=scope_id if scope == "agent_view" else None,
+            subject_id="service:config-test",
+        ) as token:
+            # POST, not GET: this triggers a live authentication attempt against a
+            # third party. A side-effecting GET lands in proxy logs and browser
+            # history and is replayable from anywhere that can emit a link.
+            resp = httpx.post(
+                f"{url}/config-test",
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=TIMEOUT_S,
+            )
     except (httpx.HTTPError, httpx.InvalidURL) as e:
         # InvalidURL is a subclass of Exception, NOT of HTTPError — verified:
         # `issubclass(httpx.InvalidURL, httpx.HTTPError)` is False. Listing it
@@ -187,6 +200,14 @@ def run_toolbox_test(conn, config_path: str, *, scope: str, scope_id: int = 0) -
             f"probe runs inside the toolbox container; run this without --local "
             f"so the CLI proxies into it",
             code="TOOLBOX_UNREACHABLE",
+        )
+    except Exception as e:
+        # Minting or revoking the capability failed (the DB, not the toolbox). Category
+        # only — a driver message can carry the DSN.
+        return TestResult(
+            ERROR,
+            f"Could not mint a toolbox capability ({type(e).__name__})",
+            code="CAPABILITY_UNAVAILABLE",
         )
     if resp.status_code != 200:
         return TestResult(

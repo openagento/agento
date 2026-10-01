@@ -126,12 +126,12 @@ class TestCopyBuildToArtifactsDir:
         assert not (artifacts_dir / "AGENTS.md").is_symlink()
         assert (artifacts_dir / ".claude.json").read_text() == '{"model": "test"}'
 
-    def test_injects_runtime_params_into_mcp_json(self, tmp_path):
-        """job_id is injected into .mcp.json toolbox URLs via ConfigWriter."""
+    def test_injects_the_capability_into_mcp_json(self, tmp_path):
+        """The run's capability is injected into .mcp.json toolbox URLs via the adapter."""
 
         build_dir = tmp_path / "build"
         build_dir.mkdir()
-        mcp = {"mcpServers": {"toolbox": {"url": "http://toolbox:3001/sse?agent_view_id=1"}}}
+        mcp = {"mcpServers": {"toolbox": {"url": "http://toolbox:3001/sse"}}}
         (build_dir / ".mcp.json").write_text(json.dumps(mcp))
 
         artifacts_dir = tmp_path / "run"
@@ -141,18 +141,20 @@ class TestCopyBuildToArtifactsDir:
         with patch("agento.framework.harness.workspace_adapter_for", return_value=writer):
             copy_build_to_artifacts_dir(
                 build_dir, artifacts_dir,
-                job_id=42,
+                capability_token="tok-42",
+                toolbox_url="http://toolbox:3001",
                 harness="claude",
             )
 
         result = json.loads((artifacts_dir / ".mcp.json").read_text())
         url = result["mcpServers"]["toolbox"]["url"]
-        assert "job_id=42" in url
-        assert "ws=" not in url
-        assert "av=" not in url
+        assert "cap=tok-42" in url
+        # No claims in the URL — the toolbox derives them from the capability.
+        assert "job_id=" not in url
+        assert "agent_view_id=" not in url
 
-    def test_no_injection_without_job_id(self, tmp_path):
-        """Without job_id, .mcp.json is copied as-is."""
+    def test_no_injection_without_a_capability(self, tmp_path):
+        """Without a capability token, .mcp.json is copied as-is."""
         build_dir = tmp_path / "build"
         build_dir.mkdir()
         mcp = {"mcpServers": {"toolbox": {"url": "http://toolbox:3001/sse?agent_view_id=1"}}}
@@ -164,4 +166,4 @@ class TestCopyBuildToArtifactsDir:
         copy_build_to_artifacts_dir(build_dir, artifacts_dir, harness="claude")
 
         result = json.loads((artifacts_dir / ".mcp.json").read_text())
-        assert "job_id" not in result["mcpServers"]["toolbox"]["url"]
+        assert "cap=" not in result["mcpServers"]["toolbox"]["url"]

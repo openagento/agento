@@ -88,6 +88,9 @@ def copy_build_to_artifacts_dir(
     artifacts_dir: Path,
     *,
     job_id: int | None = None,
+    run_id: str | None = None,
+    capability_token: str | None = None,
+    toolbox_url: str | None = None,
     harness: str | None = None,
     effective_model: str | None = None,
     effective_provider: str | None = None,
@@ -136,7 +139,7 @@ def copy_build_to_artifacts_dir(
             # `None` it renders into its config as the literal "None". So `**kwargs` is good
             # enough to RECEIVE an override alongside a real job id, but only a named
             # parameter admits the job-less call.
-            declares_model = declares_provider = takes_kwargs = False
+            declares_model = declares_provider = takes_kwargs = declares_run = declares_cap = False
             try:
                 params = _inspect.signature(writer.inject_runtime_params).parameters
                 takes_kwargs = any(
@@ -144,6 +147,20 @@ def copy_build_to_artifacts_dir(
                 )
                 declares_model = "effective_model" in params
                 declares_provider = "effective_provider" in params
+                # `run_id` names a job-less run so its desk is its own. Only a NAMED
+                # parameter qualifies, for the same reason `**kwargs` does not qualify an
+                # adapter for a `None` job id: an adapter that never heard of run scope
+                # must not be handed it.
+                declares_run = "run_id" in params
+                # The capability is the run's toolbox credential. Named or `**kwargs`, like
+                # the overrides: an adapter that cannot receive it keeps its baked config and
+                # its toolbox session is refused with 401 — never silently widened.
+                declares_cap = "capability_token" in params
+                if capability_token and (declares_cap or takes_kwargs):
+                    kwargs["capability_token"] = capability_token
+                    kwargs["toolbox_url"] = toolbox_url
+                if run_id and declares_run:
+                    kwargs["run_id"] = run_id
                 if effective_model and (declares_model or takes_kwargs):
                     kwargs["effective_model"] = effective_model
                 if effective_provider and (declares_provider or takes_kwargs):
@@ -151,15 +168,17 @@ def copy_build_to_artifacts_dir(
             except (TypeError, ValueError):  # pragma: no cover - exotic callables
                 pass
             # A `None` job_id (a string-id `agento run`) has no job scope to inject, so the
-            # call is worth making ONLY to apply a per-run override — and only to an adapter
-            # that named the keyword for the override actually being supplied. Both halves
-            # are checked independently: an adapter that declares `effective_provider` alone
+            # call is worth making only to apply a per-run override or the run scope — and
+            # only to an adapter that named the keyword actually being supplied. Each half
+            # is checked independently: an adapter that declares `effective_provider` alone
             # was previously excluded, because the gate keyed on `effective_model` only.
             explicit_override = bool(
                 (effective_model and declares_model)
                 or (effective_provider and declares_provider)
             )
-            if job_id is None and not explicit_override:
+            scopes_run = bool(run_id and declares_run)
+            carries_cap = bool(capability_token and declares_cap)
+            if job_id is None and not explicit_override and not scopes_run and not carries_cap:
                 return
             writer.inject_runtime_params(artifacts_dir, **kwargs)
         except KeyError:

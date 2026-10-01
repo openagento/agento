@@ -1,13 +1,13 @@
 import { z } from 'zod';
 
-export async function healthcheck({ db }) {
+export async function healthcheck({ db, sanitizeHealthError }) {
   const start = Date.now();
   try {
     const pool = db.getCronPool();
     await pool.query('SELECT 1');
     return [{ tool: 'schedule_followup', status: 'ok', ms: Date.now() - start }];
   } catch (err) {
-    return [{ tool: 'schedule_followup', status: 'fail', ms: Date.now() - start, error: err.message }];
+    return [{ tool: 'schedule_followup', status: 'fail', ms: Date.now() - start, error: sanitizeHealthError(err) }];
   }
 }
 
