@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Job status</title>
+  <!-- The kit, served by proxy on the apps origin (PRD E8 §10.1). Never bundled here. -->
+  <link rel="stylesheet" href="/_ui/1.0.0/agento-ui.css">
+  <script type="module" src="/_ui/1.0.0/agento-ui.js"></script>
+</head>
+<body class="ag-app">
+  <main class="ag-page ag-stack">
+    <header class="ag-page-header">
+      <div>
+        <h1 class="ag-page-header__title">Job status</h1>
+        <p class="ag-page-header__description">The last run of this agent view.</p>
+      </div>
+    </header>
+
+    <!-- The acceptance card: the same markup <JobStatusCard> renders (PRD E8 §10.3). -->
+    <article class="ag-card ag-job" id="job-card">
+      <header class="ag-card__head">
+        <h3 class="ag-card__title">Nightly import</h3>
+        <span class="ag-badge ag-badge--running">Running</span>
+      </header>
+      <p class="ag-card__body">Step 2 of 4</p>
+    </article>
+
+    <h2 class="ag-section-header">Recent runs</h2>
+    <ag-table data-empty="No runs yet">
+      <table>
+        <thead><tr><th data-sort>Run</th><th data-sort>State</th></tr></thead>
+        <tbody id="runs"></tbody>
+      </table>
+    </ag-table>
+    <h2 class="ag-section-header">Miniapps in this view</h2>
+    <div class="ag-row"><button class="ag-button ag-button--primary" type="button" id="load" disabled>Load</button></div>
+    <ul class="ag-list" id="apps"></ul>
+    <p class="ag-muted" id="status" role="status"></p>
+  </main>
+
+  <!-- The data an agent wrote into this version. -->
+  <script type="application/json" id="data">
+    {"job": {"title": "Nightly import", "state": "running", "detail": "Step 2 of 4"},
+     "runs": [{"id": "run-41", "state": "succeeded"}, {"id": "run-40", "state": "failed"}]}
+  </script>
+  <script type="module">
+    import { createAgentoSdk } from "/_ui/1.0.0/agento-bridge.js";
+
+    // The panel origin comes from this app's own instructions, never from a message or the URL.
+    const PANEL_ORIGIN = "https://panel.localhost:8443";
+    const status = document.getElementById("status");
+    const card = document.getElementById("job-card");
+    const data = JSON.parse(document.getElementById("data").textContent);
+
+    const badge = card.querySelector(".ag-badge");
+    card.querySelector(".ag-card__title").textContent = data.job.title;
+    badge.className = `ag-badge ag-badge--${data.job.state}`;
+    badge.textContent = data.job.state[0].toUpperCase() + data.job.state.slice(1);
+    card.querySelector(".ag-card__body").textContent = data.job.detail;
+    document.getElementById("runs").replaceChildren(...data.runs.map((r) => {
+      const tr = document.createElement("tr");
+      for (const v of [r.id, r.state]) { const td = document.createElement("td"); td.textContent = v; tr.append(td); }
+      return tr;
+    }));
+
+    // An action answers the toolbox envelope {ok, result: {content: [{text: "<json>"}], isError}}.
+    function toolPayload(body) {
+      if (!body?.ok || body.result?.isError) return null;
+      try { return JSON.parse(body.result.content[0].text); } catch { return null; }
+    }
+
+    // The one declared action (miniapp.json): it runs in the toolbox with the signed-in user's
+    // rights, through the panel. The page sees only {status, body}.
+    const load = document.getElementById("load");
+    try {
+      const sdk = createAgentoSdk({ panelOrigin: PANEL_ORIGIN });
+      sdk.ready.then(() => { status.textContent = "Connected to the panel."; load.disabled = false; });
+      load.addEventListener("click", async () => {
+        load.disabled = true;
+        const { status: code, body } = await sdk.callAction("miniapp_list", {});
+        load.disabled = false;
+        const payload = code === 200 ? toolPayload(body) : null;
+        if (!payload) { status.textContent = `The action was refused (${code}).`; return; }
+        const rows = Array.isArray(payload.miniapps) ? payload.miniapps : [];
+        document.getElementById("apps").replaceChildren(...rows.map((m) => {
+          const li = document.createElement("li");
+          li.textContent = `${m.title ?? m.artifact_code} (${m.artifact_code})`;
+          return li;
+        }));
+        status.textContent = rows.length ? "" : "No activated miniapps in this view.";
+      });
+    } catch (e) {
+      status.textContent = "Open this app from the Agento panel.";
+    }
+  </script>
+</body>
+</html>

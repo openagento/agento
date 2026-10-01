@@ -198,6 +198,8 @@ services:
       - ../.agento/docker/proxy:/etc/agento-proxy:ro
       - proxy-internal:/run/agento
       - caddy-data:/data
+      - ../.venv/lib/python{{ python_version }}/site-packages/agento/framework/web/panel:/srv/panel:ro
+      - ../.venv/lib/python{{ python_version }}/site-packages/agento/framework/web/miniapp-ui:/srv/miniapp-ui:ro
     ports:
       - "127.0.0.1:${AGENTO_PROXY_PORT:-8443}:443"
     security_opt:
