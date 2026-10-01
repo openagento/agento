@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 
+from .config_schema import numeric_bound_error
 from .config_schema_options import field_options
 from .scoped_config import Scope
 
@@ -150,6 +151,11 @@ def validate_config_value(path: str, value: str, *, conn=None, scope: str | None
         return
 
     field_type = field_def.get("type")
+
+    if field_type in ("integer", "number"):
+        _validate_numeric_bounds(field_name, field_def, value)
+        return
+
     if field_type not in ("select", "multiselect"):
         return
 
@@ -169,6 +175,12 @@ def validate_config_value(path: str, value: str, *, conn=None, scope: str | None
             f"Error: Invalid value '{value}' for {field_type} field '{field_name}'\n"
             f"  Allowed values: {', '.join(allowed)}"
         )
+
+
+def _validate_numeric_bounds(field_name: str, field_def: dict, value: str) -> None:
+    error = numeric_bound_error(field_name, field_def, value)
+    if error is not None:
+        raise ConfigWriteError(f"Error: {error}")
 
 
 def is_private_key_field(field_name: str, field_def: dict) -> bool:

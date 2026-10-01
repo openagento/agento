@@ -95,6 +95,15 @@ Validate module structure and manifests. Checks:
 - `requires` names a tool declared in the same module, is not self-referential, and forms no cycle
 - Tool names are unique — within the manifest, and across modules
 - A `config.json` `tools/<name>/is_enabled` default belongs to a tool this module declares
+- `di.json`'s root is an object
+- The declarations — `job_types`, `routes` and `execution_hooks` — are read where the loader
+  reads them: `di.json` when it holds anything, else `module.json`'s `provides`. A module that
+  declares them the legacy way is checked the same, and an empty `di.json` does not hide them
+- These declarations, when present, have the right container
+  type and the right element types. The loaders read these leniently on purpose — a malformed
+  declaration reads as an absent one so a bad manifest cannot crash `bootstrap` — and validation
+  deliberately does not inherit that: `"job_types": "conversation"`, `"routes": {}` and
+  `"execution_hooks": []` are errors here rather than surprises at web/consumer startup
 
 ### `setup:upgrade` aborts on these too
 

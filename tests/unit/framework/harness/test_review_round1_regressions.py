@@ -402,10 +402,10 @@ class TestCrossModuleValidation:
     def test_clean_module_set_has_no_cross_module_errors(self):
         """Round 6 replaced the dir-walking helper with the shared discovery path, so the
         collision check now sees exactly the modules the framework would load."""
-        from agento.framework.module_discovery import module_dirs_for_validation
+        from agento.framework.module_discovery import module_dirs_by_name
         from agento.framework.module_validator import _collision_errors
 
-        candidates = module_dirs_for_validation(
+        candidates = module_dirs_by_name(
             Path("src/agento/modules"), Path("app/code"),
         )
         assert _collision_errors(candidates) == []

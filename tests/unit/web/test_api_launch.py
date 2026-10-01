@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from agento.framework.access import accounts, launches, sessions
-from agento.web import api, toolbox_client
+from agento.web import api, rate_limit, toolbox_client
 
 from .conftest import APPS, PANEL, panel_headers
 
@@ -204,3 +204,57 @@ def test_authz_app_never_clears_a_cookie_past_the_bound(web, monkeypatch, proxy_
     assert len(seen["tokens"]) == len(seen["ids"]) == 20
     cleared = {c.split("=")[0] for c in r.headers.get_list("Set-Cookie")}
     assert cleared == {f"__Host-agento-launch-{i}" for i in seen["ids"]}  # the 21st is neither read nor cleared
+
+
+@pytest.mark.parametrize("path", ["/internal/authz/app", "/internal/authz/share"])
+def test_rotating_launch_cookies_are_counted_on_the_shared_bucket(web, monkeypatch,
+                                                                  proxy_secret, path):
+    """SEC-12. The proxy's secret proves the HOP, not the caller.
+
+    Read as a caller identity it was a way through the limiter on the only routes the proxy
+    can reach: every rotated cookie is a fresh PRIVATE bucket, and the shared bucket - the
+    one that is supposed to hold a brute force - was neither counted nor told. Each rejected
+    attempt must reach it, whichever of the two authorization paths answered.
+    """
+    monkeypatch.setattr(launches, "authorize_files", lambda *a: False)
+    monkeypatch.setattr(launches, "live_launch_ids", lambda conn, ids: set(ids))
+    failures: list[list] = []
+    monkeypatch.setattr(rate_limit, "record_auth_failure",
+                        lambda conn, buckets, **kw: failures.append(buckets))
+
+    for i in range(3):
+        r = httpx.get(f"{web}{path}", cookies={f"__Host-agento-launch-{i:032x}": f"t{i}"},
+                      headers={"X-Agento-Proxy-Auth": SECRET,
+                               "X-Agento-Artifact-Code": "app", "X-Agento-Version-Id": V1})
+        assert r.status_code == 403
+
+    assert len(failures) == 3
+    assert all(any(not b.private for b in buckets) for buckets in failures)
+
+
+def test_a_held_address_cannot_keep_guessing_through_the_proxy(web, monkeypatch, proxy_secret):
+    """The hold those failures place has to reach the same route - without the subrequest
+    itself spending the shared ceiling, since the proxy makes one per request it forwards."""
+    monkeypatch.setattr(launches, "authorize_files",
+                        MagicMock(side_effect=AssertionError("held: must not be reached")))
+    counted: list = []
+    monkeypatch.setattr(rate_limit, "check",
+                        lambda conn, buckets, **kw: counted.append(buckets)
+                        or rate_limit.Decision(True))
+    monkeypatch.setattr(rate_limit, "held", lambda conn, buckets: 42)
+
+    r = _authz(web, V1)
+
+    assert r.status_code == 429
+    assert r.headers["Retry-After"] == "42"
+    assert all(all(b.private for b in buckets) for buckets in counted)  # nothing shared spent
+
+
+def test_the_proxy_asking_for_a_visitor_with_no_cookie_is_not_a_failed_guess(web, monkeypatch,
+                                                                            proxy_secret):
+    """One subrequest per forwarded request: an ordinary visitor with no launch cookie would
+    otherwise place the hold that exists to stop guessing. Nothing presented, nothing guessed."""
+    monkeypatch.setattr(rate_limit, "record_auth_failure",
+                        MagicMock(side_effect=AssertionError("must not be counted")))
+    r = httpx.get(f"{web}/internal/authz/app", headers={"X-Agento-Proxy-Auth": SECRET})
+    assert r.status_code == 403

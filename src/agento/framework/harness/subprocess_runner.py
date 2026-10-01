@@ -44,6 +44,9 @@ class SubprocessRunner(ABC):
         # rather than two attributes the caller assigns.
         self.pid_callback: Callable[[int], None] | None = None
         self.session_id_callback: Callable[[str], None] | None = None
+        # One line of the harness's stdout, raw. The callback maps and enqueues it; it does
+        # NO DB work, because this runs on the drain thread and a query here stalls the run.
+        self.line_callback: Callable[[str], None] | None = None
         # Prompt-free rendering of the current command, for logs AND exception strings
         # (a TimeoutExpired's `cmd` ends up in job.error_message).
         self._log_cmd: str | None = None
@@ -133,12 +136,15 @@ class SubprocessRunner(ABC):
         *,
         on_pid=None,
         on_session_id=None,
+        on_line=None,
     ) -> None:
         """Register the progress callbacks (``Runner`` protocol)."""
         if on_pid is not None:
             self.pid_callback = on_pid
         if on_session_id is not None:
             self.session_id_callback = on_session_id
+        if on_line is not None:
+            self.line_callback = on_line
 
     @staticmethod
     def _failure_output(stdout: str, stderr: str) -> str:
@@ -220,10 +226,18 @@ class SubprocessRunner(ABC):
         stderr_lines: list[str] = []
         session_id_found: str | None = None
 
-        def _drain(stream, lines: list[str], parse_session: bool) -> None:
+        def _drain(stream, lines: list[str], parse_session: bool,
+                   stream_lines: bool = False) -> None:
             nonlocal session_id_found
             for line in stream:
                 lines.append(line)
+                if stream_lines and self.line_callback:
+                    # Caught and logged like `session_id_callback`: a streaming seam must
+                    # never be able to fail a run.
+                    try:
+                        self.line_callback(line)
+                    except Exception:
+                        self.logger.warning("line_callback failed")
                 if parse_session and session_id_found is None:
                     sid = self._try_parse_session_id(line)
                     if sid:
@@ -235,7 +249,8 @@ class SubprocessRunner(ABC):
                                 self.logger.warning(f"session_id_callback failed for sid={sid}")
 
         stdout_thread = threading.Thread(
-            target=_drain, args=(proc.stdout, stdout_lines, True), daemon=True,
+            # Only stdout is streamed: the event stream is there, and stderr is diagnostics.
+            target=_drain, args=(proc.stdout, stdout_lines, True, True), daemon=True,
         )
         stderr_thread = threading.Thread(
             target=_drain, args=(proc.stderr, stderr_lines, True), daemon=True,

@@ -129,10 +129,10 @@ class TestScanRequires:
         m = MagicMock()
         m.name = "demo"
         m.tools = [_t("demo"), _t("demo_a", requires="demo")]
-        with patch("agento.framework.module_loader.scan_modules", return_value=[m]), \
-             patch("agento.framework.module_status.filter_enabled", side_effect=lambda x: x), \
-             patch("agento.framework.tool_enablement.Path") as p:
-            p.return_value.is_dir.return_value = True
+        # Patched at `scan_all_modules`, the ONE discovery path: a per-root scan here would
+        # pass while an installed extension's tool requirements stayed unenforced.
+        with patch("agento.framework.module_discovery.scan_all_modules", return_value=[m]), \
+             patch("agento.framework.module_status.filter_enabled", side_effect=lambda x: x):
             assert scan_tool_requires() == {"demo_a": "demo"}
 
 

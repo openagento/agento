@@ -41,10 +41,10 @@ def _set_module_state(name: str, enabled: bool) -> None:
         source = resolve_module_source(name, project_root)
     else:
         # In-container fallback: only modules visible to scan can be toggled.
-        from ..module_loader import scan_modules
+        from ..module_discovery import scan_all_modules
 
         core_dir, user_dir = _module_dirs()
-        all_names = {m.name for m in scan_modules(str(core_dir)) + scan_modules(str(user_dir))}
+        all_names = {m.name for m in scan_all_modules(str(core_dir), str(user_dir))}
         if name not in all_names:
             print(f"Module '{name}' not found")
             sys.exit(1)
@@ -250,11 +250,11 @@ class ModuleListCommand:
 
     def execute(self, args: argparse.Namespace) -> None:
         from ..dependency_resolver import resolve_order
-        from ..module_loader import scan_modules
+        from ..module_discovery import scan_all_modules
         from ..module_status import is_enabled, read_module_status
 
         core_dir, user_dir = _module_dirs()
-        all_modules = resolve_order(scan_modules(str(core_dir)) + scan_modules(str(user_dir)))
+        all_modules = resolve_order(scan_all_modules(str(core_dir), str(user_dir)))
         status = read_module_status()
 
         for m in all_modules:
