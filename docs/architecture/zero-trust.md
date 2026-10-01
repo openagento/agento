@@ -202,6 +202,12 @@ SHA-256 hashes of session tokens, launch tokens and exchange codes. For each pan
 mints one single-use `user_session` capability and sends it to the toolbox; the raw token is never
 persisted or logged. See [panel.md](panel.md).
 
+The panel in the browser (E8) holds no credential either: the session cookie is `HttpOnly`, the
+CSRF token lives only in a JavaScript closure (never storage, a URL or a log), and the panel never
+receives a capability or a bearer — the miniapp bridge relays only `{status, body}` of an action.
+The panel and miniapp kit files are static and hold no data. See
+[../development/frontend.md](../development/frontend.md).
+
 ## What the Agent CAN Access
 
 - Its own OAuth credential (Claude/Codex/Pi) — written into its per-run HOME from the encrypted `credential` row

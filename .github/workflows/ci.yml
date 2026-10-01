@@ -62,3 +62,8 @@ jobs:
       # non-root run here is the one the root container cannot give us.
       - run: sudo mkdir -p /workspace/artifacts && sudo chown -R "$(id -u):$(id -g)" /workspace
       - run: cd src/agento/toolbox && npm ci && npm test
+      # Panel, ui kit and miniapp kit: build, lint, types, unit tests and every story in Chromium.
+      - run: cd frontend && npm ci && npm test
+      # The wheel ships the build that npm test just made.
+      - uses: astral-sh/setup-uv@v4
+      - run: uv run python tests/check_wheel_frontend.py

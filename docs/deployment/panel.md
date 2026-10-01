@@ -32,8 +32,8 @@ and serves three origins on it:
 
 | Variable | Default | Origin |
 |---|---|---|
-| `AGENTO_PANEL_HOST` | `panel.localhost` | the panel API, `/api/*` |
-| `AGENTO_APPS_HOST` | `apps.localhost` | launched artifact files, `/a/<code>/v/<id>/…` |
+| `AGENTO_PANEL_HOST` | `panel.localhost` | the panel: the built app, and the API at `/api/*` |
+| `AGENTO_APPS_HOST` | `apps.localhost` | launched artifact files, `/a/<code>/v/<id>/…`, and the miniapp kit, `/_ui/<version>/` |
 | `AGENTO_SHARE_HOST` | `share.localhost` | Basic-auth shares, one origin per share: `<token>.<host>`. Set it to empty to turn shares off; an invalid value stops `proxy` from starting. `toolbox` reads it too, to print share URLs |
 | `AGENTO_PROXY_PORT` | `8443` | the host port; `443` gives origins with no port |
 
@@ -96,6 +96,13 @@ stores only SHA-256 hashes of session tokens, launch tokens and exchange codes. 
 `app/code` and `app/etc` read-only, so it sees the same module list as `cron` when it checks a
 grant or a config write. The admin config form refuses every field that it cannot prove is not a
 secret: set those with `bin/agento config:set`.
+
+## The panel files
+
+The panel and the miniapp kit are static files inside the installed `agento-core` package
+(`agento/framework/web/panel` and `agento/framework/web/miniapp-ui`). `proxy` mounts both
+read-only, so `agento upgrade` brings the new panel with no extra step. A wheel built without
+them is refused at build time. In the dev stack, `cd frontend && npm run build` updates them live.
 
 ## Checking a deployment
 
