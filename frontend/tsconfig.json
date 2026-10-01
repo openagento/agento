@@ -1,0 +1,65 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": false,
+    "types": [
+      "node",
+      "vite/client",
+      "@testing-library/jest-dom/vitest"
+    ],
+    "paths": {
+      "@agento/ui": [
+        "./packages/ui/src/index.ts"
+      ],
+      "@agento/api": [
+        "./packages/api/src/index.ts"
+      ],
+      "@agento/miniapp-kit/tokens": [
+        "./packages/miniapp-kit/src/tokens.ts"
+      ],
+      "vitest": ["./node_modules/vitest"],
+      "@testing-library/react": ["./node_modules/@testing-library/react"],
+      "@agento/miniapp-bridge": [
+        "./panel/src/bridge.d.ts"
+      ],
+      "react": [
+        "./node_modules/@types/react/index.d.ts"
+      ],
+      "react/jsx-runtime": [
+        "./node_modules/@types/react/jsx-runtime.d.ts"
+      ],
+      "react-router": [
+        "./node_modules/react-router/dist/production/index.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "packages",
+    "panel",
+    ".storybook",
+    "*.ts",
+    "../src/agento/modules/*/panel"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/dist",
+    "packages/miniapp-kit/released"
+  ]
+}

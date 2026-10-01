@@ -85,6 +85,44 @@ def test_panel_hides_internal_paths_before_proxying_to_web():
     assert body[body.index("handle /internal/* {") + 1] == "respond 404"
 
 
+def test_panel_sends_only_api_and_health_to_web_and_serves_the_rest_statically():
+    blocks = _blocks()
+    panel = "{$AGENTO_PANEL_HOST}"
+    to_web = [stack[1] for stack, s in blocks if s == "reverse_proxy web:8000" and stack[0] == panel]
+    assert to_web == ["handle /api/*", "handle /health"]
+    shell = [s for stack, s in blocks if stack == [panel, "handle"]]
+    assert shell == ["root * /srv/panel", 'header Cache-Control "no-store"', "try_files {path} /index.html", "file_server"]
+    assert [s for stack, s in blocks if stack == [panel, "handle /assets/*", "route"]] == _IMMUTABLE("/srv/panel")
+
+
+# A missing file answers 404 before the cache header, so no 404 or shell is cached forever.
+def _IMMUTABLE(root: str) -> list[str]:
+    return [f"root * {root}", "@missing not file", "respond @missing 404",
+            'header Cache-Control "public, max-age=31536000, immutable"', "file_server"]
+
+
+def test_apps_serve_the_kit_under_ui_without_auth_or_web():
+    blocks = _blocks()
+    apps = "{$AGENTO_APPS_HOST}"
+    assert [s for stack, s in blocks if stack == [apps, "handle_path /_ui/*", "route"]] == _IMMUTABLE("/srv/miniapp-ui")
+    site = _sites()[apps]
+    assert site.index("handle_path /_ui/* {") < site.index("handle /a/* {")
+
+
+@pytest.mark.parametrize("compose", [
+    Path(__file__).parents[4] / "docker" / "docker-compose.dev.yml",
+    Path(docker_ctx.__file__).parents[1] / "cli" / "templates" / "docker-compose.yml",
+])
+def test_proxy_mounts_the_built_frontend_read_only(compose):
+    text = compose.read_text()
+    proxy = text[text.index("\n  proxy:\n"):]
+    proxy = proxy[: proxy.index("\n\n")]
+    assert re.search(r"framework/web/panel:/srv/panel:ro$", proxy, re.M)
+    assert re.search(r"framework/web/miniapp-ui:/srv/miniapp-ui:ro$", proxy, re.M)
+    # The artifacts service never sees the kit: proxy serves it.
+    assert "miniapp-ui" not in text.replace(proxy, "")
+
+
 def test_apps_redeem_is_post_only_and_goes_to_web():
     blocks = _blocks()
     apps = "{$AGENTO_APPS_HOST}"

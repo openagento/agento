@@ -199,7 +199,8 @@ def test_a_clamped_delay_reaches_the_row(
 def test_the_framework_names_no_module_config_path():
     """PLC-2: the delay travels in the verdict; the framework never reads `conversation/*`."""
     found = subprocess.run(
-        ["grep", "-rn", "conversation/", "src/agento/framework/"],
+        # framework/web/{panel,miniapp-ui} is gitignored build output: the panel bundles module screens.
+        ["grep", "-rn", "--exclude-dir=panel", "--exclude-dir=miniapp-ui", "conversation/", "src/agento/framework/"],
         capture_output=True, text=True,
     )
     assert found.stdout == "", found.stdout

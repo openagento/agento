@@ -30,6 +30,45 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+---
+
+## 2026-10-01 — E8 composable frontend: a static panel, one token source, an immutable miniapp kit
+
+- **The panel is static files on `proxy`, mounted read-only from the installed package.** No Node
+  process at runtime, no new image: the built `framework/web/panel` and `framework/web/miniapp-ui`
+  ship in the wheel and `proxy` mounts them like every other service mounts package code, so
+  `agento upgrade` brings the new panel. `web` stays the API only; the panel origin sends just
+  `/api/*` and `/health` to it.
+
+- **One token source for the panel and miniapps.** `packages/miniapp-kit/src/tokens.ts` generates
+  `agento-ui.css` and builds the Mantine theme. The presentational components render the same
+  `.ag-*` markup a miniapp writes by hand, and a story asserts the computed styles of the panel card
+  and the miniapp card are equal in light and dark. Mantine is kept to the shell, modal, tabs and
+  notifications, where a11y behaviour is costly to rewrite.
+
+- **A released kit version is immutable.** `/_ui/<version>/` is served `immutable`, so its bytes
+  can never change under a cached URL: the released copy is committed and the build fails on a
+  difference. A change is a new version; old versions stay served, so a miniapp never restyles
+  without its author.
+
+- **The kit's bridge is the E6 SDK, byte for byte.** One implementation of the origin and
+  `event.source` checks, not two that can drift.
+
+- **A miniapp opens in a window, not an iframe.** The E6 SDK needs `window.opener`, and a window keeps
+  the app's DOM and the panel's in separate browsing contexts. The window is reserved in the click
+  handler (or the browser blocks it), and the exchange code goes only into a form POST.
+
+- **Module screens are core-only and gated by the module's own probe.** A user or PyPI module never
+  ships JavaScript into the panel origin. With no module-list API, a screen shows only while a GET the
+  module owns answers 2xx — a disabled module answers 404, so this fails closed.
+
+- **Import boundaries are an AST test, not dependency-cruiser.** dependency-cruiser refused the Node
+  version in use; `ts.preProcessFile` over the module panels and shared packages checks the same
+  graph with no new dependency.
+
+- **Stories are tests through `@storybook/addon-vitest`**, not the separate test-runner: every story
+  renders, runs its `play` and fails on an a11y violation inside the same `vitest run`.
+
 ## 2026-09-28 — E3–E5: the job-type contract, the outbox, and the four execution protocols
 
 - **A job type is declared in a module manifest, never in a framework enum (§4.2).** The framework
