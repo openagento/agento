@@ -23,13 +23,8 @@ async function loadXlsx() {
   return m.default || m;
 }
 
-// sheet_to_csv walks the sheet's declared range (ws['!ref']), not just the cells
-// that exist. An XLSX exported after whole rows/columns were formatted declares a
-// dimension like A1:XFB1048571 (~1.7e10 cells) for a few hundred real cells, so the
-// conversion runs effectively forever and blocks the single toolbox event loop.
-// Clamp the range to the cells that actually exist, then refuse a range that is
-// still pathologically large (e.g. one real cell planted in the far corner, which
-// clamping alone would not catch) so the work stays bounded.
+// sheet_to_csv walks the declared range (ws['!ref']), which inflated exports
+// blow up to ~1.7e10 cells, blocking the single-threaded toolbox. Bound the work.
 const MAX_CELLS = 5_000_000;
 
 function clampSheetRange(XLSX, ws) {
