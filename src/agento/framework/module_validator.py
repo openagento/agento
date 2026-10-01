@@ -7,13 +7,14 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
+from .config_validation import MAX_LENGTH_TYPES
+
 # The job-type grammar is the registry's, not a second copy of it (PRD E3-E5 §4.2).
 from .job_types import BUILTIN_JOB_TYPES
 from .job_types import JOB_TYPE_GRAMMAR as _JOB_TYPE_GRAMMAR
 
 # `is_confined_class_path` is the single source of truth for "inside the module" —
 # the validator reports at setup time what the loader refuses at boot.
-from .config_validation import MAX_LENGTH_TYPES
 from .module_loader import is_confined_class_path
 from .route_rules import declaration_error, route_key
 

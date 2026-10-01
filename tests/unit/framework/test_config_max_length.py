@@ -26,6 +26,7 @@ def modules_dir(tmp_path, monkeypatch):
     user_dir.mkdir()
     av_dir = core_dir / "agent_view"
     av_dir.mkdir()
+    (av_dir / "module.json").write_text(json.dumps({"name": "agent_view"}))
     (av_dir / "system.json").write_text(json.dumps({
         "identity/ssh_private_key": {
             "type": "obscure", "label": "SSH private key", "maxLength": 16,

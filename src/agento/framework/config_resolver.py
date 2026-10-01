@@ -19,7 +19,12 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import store_env
-from .config_schema import ToolboxOnlyConfigError, env_allowed, is_toolbox_only
+from .config_schema import (
+    ToolboxOnlyConfigError,
+    env_allowed,
+    is_toolbox_only,
+    numeric_bound_error,
+)
 from .encryptor import get_encryptor
 
 logger = logging.getLogger(__name__)
