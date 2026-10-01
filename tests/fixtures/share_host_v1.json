@@ -1,0 +1,26 @@
+{
+  "_comment": "AGENTO_SHARE_HOST schema (PRD E6 \u00a79.1, RULES SEC-5): read by the proxy entrypoint test and the toolbox share-url vitest.",
+  "valid": [
+    "share.localhost",
+    "share.example.com",
+    "s-1.a.b.example",
+    "x1.y2"
+  ],
+  "invalid": [
+    "localhost",
+    "Share.localhost",
+    "share.localhost:8443",
+    "*.share.localhost",
+    "share..localhost",
+    ".share.localhost",
+    "share.localhost.",
+    "-share.localhost",
+    "share-.localhost",
+    "share_x.localhost",
+    "share.localhost\nevil.com",
+    "share.localhost {",
+    "share localhost",
+    "a.{$AGENTO_PROXY_SECRET}",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.localhost"
+  ]
+}

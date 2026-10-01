@@ -29,6 +29,7 @@ Seven containers. Six share the `agento-net` bridge network; `artifacts` declare
 
 | Mount | Access | Purpose |
 |-------|--------|---------|
+| `app/etc` → `/app/etc` | read-only | `modules.json`: a module off with `module:disable` loads no toolbox code — no tools from the next MCP session, no auth sources or REST routes from the next start. |
 | `storage/versioned-artifacts/` → `/srv/versioned-artifacts` | read-write | `versioned_artifacts` store (bare repos + draft checkouts) and its published tree (materialized versions plus the `current` symlink). Mounted into **toolbox only** — the sandbox and cron never see it, so the agent reaches versioned content exclusively through gated MCP tools. |
 
 ### Artifacts-Only
@@ -101,7 +102,10 @@ by default) on `127.0.0.1:${AGENTO_PROXY_PORT:-8443}` and serves three origins, 
 - **apps** → only `/a/<code>/v/<id>/…`, authorized by `forward_auth` to `web`'s
   `/internal/authz/app`, then served by `artifacts`, and `POST /launch`, rewritten to `web`'s
   `/internal/launch/redeem` (the launch exchange); anything else is `404`;
-- **share** (one origin per share) → `forward_auth` to `/internal/authz/share`.
+- **share** (one origin per share, `<token>.<AGENTO_SHARE_HOST>`) → rewritten to `/s/<token>/…`
+  on `artifacts`, which checks the Basic credential itself; no route reaches `web`. `proxy`
+  renders this site only when `AGENTO_SHARE_HOST` is set, and refuses to start when it is not a
+  valid host name (PRD E6 §9).
 
 Hardening: every caller-supplied `X-Agento-*`, `X-Forwarded-User`, `X-Remote-User` and
 `Remote-User` header is dropped before any upstream or subrequest sees it; the proxy sets

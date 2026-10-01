@@ -89,6 +89,58 @@ Nothing has shipped under the other spelling, so there is no compatibility route
 
 ---
 
+## 2026-09-27 — E6 miniapps: shares in the artifacts server, one path parser, core-dependency imports
+
+- **S1: shares are checked by the `artifacts` server, not by `web`.** Owner decision, answered
+  "A: artifacts server (Recommended)". The server already holds the scrypt sidecar it verifies
+  against and has no DB or secret; routing shares through `web` would put a Basic credential and a
+  launch credential behind one service, which PRD E6 §9 keeps apart. A share origin is
+  `<token>.<AGENTO_SHARE_HOST>`, one per share (§9.1). `proxy` rewrites it to `/s/<token>/…`; the
+  record `published/.shares/<token>` names the artifact, and the server serves it only when that
+  artifact's `.auth` sidecar names the same token back, so a stale record opens nothing. `web`'s
+  `/internal/authz/share` is gone. The artifacts server does its own SEC-12 limits (failures per
+  address, requests per credential) because it is plain `node:http`.
+- **One parse per request path (PRD E6 §6.2).** `web` parses the raw `X-Forwarded-Uri` once
+  (`web/app_path.py`), decides on it, and returns the canonical path in `X-Agento-Upstream-Path`;
+  `proxy` fetches exactly that path. The artifacts server routes on the raw request target
+  (`server/served-path.js`), never on `new URL()`, which resolves `..` and `%2e%2e` before a check
+  can see them. Both refuse dot segments, encoded separators, backslashes and dotfiles. There is no
+  `current` route on the apps origin: a launch resolves `current` in the panel and pins it.
+- **Retention and launches share one MySQL named lock**, `va_ret:` + sha1(code) (fixture
+  `tests/fixtures/retention_lock_v1.json`). The prune takes it without waiting and skips when busy;
+  `create_launch` waits 5 s and answers 503. A named lock belongs to a connection and survives
+  COMMIT, so the prune does the acquire, the live-launch query, the deletes and the release on one
+  borrowed connection.
+- **Contract vs reality: a core module may import a core dependency's `toolbox/` files.** The
+  guard `tests/module-toolbox-imports.test.js` forbade any module toolbox file importing outside its
+  own module. `miniapps` needs `versioned_artifacts`' `service.js` (the only code that may reach the
+  Git backend, so re-implementing the read would break that boundary), `paths.js`, `audit.js`,
+  and `errors.js`. Evidence that the path resolves in the containers: both
+  `docker/docker-compose.dev.yml` and the generated template mount every core module under one
+  parent, `/app/modules/core/<m>`. The exception is narrow: core module → a core module listed in
+  its own `sequence` (MOD-1), `toolbox/` files only. A user module (`app/code/`, mounted at
+  `/app/modules/user`) still may not.
+- **The role-grant rule is framework mechanism (PLC-4).** The `session` checker (`web`) and the
+  `launch` checker (`miniapps`) both bound a capability by the user's grants, so the SQL moved from
+  `web` to `src/agento/toolbox/capability.js` (`GRANTS_SQL`, `grantsFor`). The verifier hands every
+  checker `grants(role, kind)` bound to the capability row's own scope (TBX-4: from the call
+  context, not an import); a checker without it refuses.
+- **The toolbox honours `module:disable` (MOD-1).** It mounts `app/etc` read-only and
+  `scanModules()` drops a module set to `false` in `modules.json` (absent file or key, or an
+  unparseable file, mean enabled, as `module_status.is_enabled`). So a disabled module loads no
+  toolbox code: no tools (next MCP session), no auth sources or REST routes (next toolbox start).
+  This applies to every module, not only miniapps. `web` also reads the file per request for
+  miniapps, so a launch is files-only, an action is 404 and the catalogue is empty at once, with
+  no toolbox restart.
+- **Activation is operator-only and has no event.** It happens in the toolbox (Node), which has no
+  event mechanism; it writes a `versioned_artifact_audit` row. A tool would let a self-asserted
+  `agent_view_id` decide what a user's browser may call.
+- **The launch spec is a tool (`miniapp_get_launch_spec`), not an event or a seam in `web`.**
+  `web` never runs `bootstrap()`; the answer it needs is one protocol call (EVT-8), made with the
+  user's own `user_session` capability, so a user without the grant gets a files-only launch.
+
+---
+
 ## 2026-09-26 — Toolbox rate limits: failures per address, requests per capability
 
 - **`express-rate-limit`, declared directly.** It was already installed through the MCP SDK, and

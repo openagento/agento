@@ -22,9 +22,9 @@ function fakeDb() {
       if (/INSERT INTO versioned_artifact \(artifact_code, title, owner\)/.test(sql)) {
         upsert(params[0], { title: params[1], owner: params[2] });
       } else if (/auth_enabled = 1/.test(sql)) {
-        upsert(params[0], { auth_enabled: 1, auth_user: params[1], auth_secret_enc: params[2] });
+        upsert(params[0], { auth_enabled: 1, auth_user: params[1], auth_secret_enc: params[2], share_token: params[3] });
       } else if (/auth_enabled = 0/.test(sql)) {
-        upsert(params[0], { auth_enabled: 0, auth_user: null, auth_secret_enc: null });
+        upsert(params[0], { auth_enabled: 0, auth_user: null, auth_secret_enc: null, share_token: null });
       } else if (/DELETE FROM versioned_artifact/.test(sql)) {
         table.delete(params[0]);
       }
@@ -44,8 +44,10 @@ const cfg = (over = {}) => ({ storage_root: root, published_root: pub, allowed_a
   'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', 'limits/max_files': 2000,
   'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600, 'limits/max_diff_bytes': 1048576,
   'limits/max_agent_artifacts': 50, 'security/allow_symlinks': false, ...over });
+const SHARE_ENV = { AGENTO_SHARE_HOST: 'share.localhost', AGENTO_PROXY_PORT: '8443' };
 const svc = (over = {}, opts = {}) => createService({ config: cfg(over), db, log: vi.fn(),
-  actor: 'a@b.c', crypto: fakeCrypto, ...opts });
+  actor: 'a@b.c', crypto: fakeCrypto, env: SHARE_ENV, ...opts });
+const shareRecord = (token) => readFile(path.join(pub, '.shares', token), 'utf8');
 const sidecar = async () => JSON.parse(await readFile(path.join(pub, 'site', '.auth'), 'utf8'));
 
 beforeEach(async () => {
@@ -126,5 +128,59 @@ describe('setAuth / getAuth', () => {
     const s = createService({ config: cfg(), db: auditingDb, log: vi.fn(), actor: 'a@b.c', crypto: fakeCrypto });
     await s.setAuth('site', { user: 'admin', password: 'hunter2' });
     expect(rows.at(-1)).toContain('versioned_artifact.auth.set');
+  });
+});
+
+// Shares (PRD E6 §9): the token is made on enable, kept on rotate, and goes with the
+// Basic credential on disable and on delete.
+describe('share token', () => {
+  const tokenOf = async () => (await sidecar()).share;
+  beforeEach(async () => { await svc().init('site', { files }); });
+
+  it('enable makes a token, records it, and returns the share URL', async () => {
+    const set = await svc().setAuth('site', {});
+    const token = await tokenOf();
+    expect(token).toMatch(/^[0-9a-f]{32}$/);
+    expect(await shareRecord(token)).toBe('site\n');
+    expect(db.table.get('site').share_token).toBe(token);
+    expect(set.share_url).toBe(`https://${token}.share.localhost:8443/`);
+    expect((await svc().getAuth('site')).share_url).toBe(set.share_url);
+  });
+
+  it('rotate keeps the token', async () => {
+    await svc().setAuth('site', {});
+    const token = await tokenOf();
+    await svc().setAuth('site', { password: 'new-one' });
+    expect(await tokenOf()).toBe(token);
+    expect(await shareRecord(token)).toBe('site\n');
+  });
+
+  it('disable removes the record and the row value; enable again makes a new token', async () => {
+    await svc().setAuth('site', {});
+    const token = await tokenOf();
+    await svc().setAuth('site', { disable: true });
+    await expect(shareRecord(token)).rejects.toThrow();
+    expect(db.table.get('site').share_token).toBeNull();
+    await svc().setAuth('site', {});
+    expect(await tokenOf()).not.toBe(token);
+  });
+
+  it('delete removes the record', async () => {
+    await svc().setAuth('site', {});
+    const token = await tokenOf();
+    await svc({}, { admin: true }).remove('site');
+    await expect(shareRecord(token)).rejects.toThrow();
+  });
+
+  it('init with basic_auth_default makes a token like enable', async () => {
+    const r = await svc({ 'security/basic_auth_default': true, allowed_artifacts: 'site2' }).init('site2', { files });
+    const token = JSON.parse(await readFile(path.join(pub, 'site2', '.auth'), 'utf8')).share;
+    expect(await shareRecord(token)).toBe('site2\n');
+    expect(r.basic_auth.share_url).toBe(`https://${token}.share.localhost:8443/`);
+  });
+
+  it('gives no share URL when the share host is empty', async () => {
+    const set = await svc({}, { env: { AGENTO_SHARE_HOST: '' } }).setAuth('site', {});
+    expect(set.share_url).toBeNull();
   });
 });

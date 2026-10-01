@@ -47,6 +47,9 @@ services:
       - CRONDB_DATABASE=cron_agent
       - CRONDB_USER=cron_agent
       - CRONDB_PASSWORD=${MYSQL_PASSWORD:-cronagent_pass}
+      # A share's URL (PRD E6 §9.1). `-`, not `:-`: set to empty turns shares off.
+      - AGENTO_SHARE_HOST=${AGENTO_SHARE_HOST-share.localhost}
+      - AGENTO_PROXY_PORT=${AGENTO_PROXY_PORT:-8443}
     env_file:
       - path: .toolbox.env
         required: true
@@ -56,6 +59,8 @@ services:
       - ../src/agento/toolbox:/opt/agento-toolbox-src:ro
       - ../src/agento/modules:/app/modules/core:ro
       - ../app/code:/app/modules/user:ro
+      # modules.json: a module off with `module:disable` loads no toolbox code (config-loader.js).
+      - ../app/etc:/app/etc:ro
       - ../logs:/app/logs
       - ../workspace/artifacts:/workspace/artifacts
       - ../storage/versioned-artifacts:/srv/versioned-artifacts
@@ -195,7 +200,7 @@ services:
     environment:
       - AGENTO_PANEL_HOST=${AGENTO_PANEL_HOST:-panel.localhost}
       - AGENTO_APPS_HOST=${AGENTO_APPS_HOST:-apps.localhost}
-      - AGENTO_SHARE_HOST=${AGENTO_SHARE_HOST:-share.localhost}
+      - AGENTO_SHARE_HOST=${AGENTO_SHARE_HOST-share.localhost}
     volumes:
       - ../src/agento/framework/docker/proxy:/etc/agento-proxy:ro
       - proxy-internal:/run/agento

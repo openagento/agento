@@ -19,6 +19,12 @@ Leaving out `--user` and `--pass-stdin` enables auth with the artifact code as t
 and a fresh strong password. The password is printed **only** by the command that sets it
 (or by `--show`), so pass it on when you see it.
 
+It also prints the artifact's **share URL**, `https://<token>.<AGENTO_SHARE_HOST>[:port]/`: the
+only address the credential opens (PRD E6 §9.1). The token stays the same when you rotate the
+password; `--disable` removes it, and the old URL answers `404`. With `AGENTO_SHARE_HOST` empty
+or invalid the line reads `share: not configured`. See
+[versioned-artifacts.md → Shares](../modules/versioned-artifacts.md#shares).
+
 **There is no tool equivalent, and there will not be one.** `agent_view_id` is asserted by
 the caller, so ownership *scopes* and does not authorize — a self-asserted identity must not
 be able to change who may read a published tree. The toolbox refuses the operation for any

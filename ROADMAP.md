@@ -122,7 +122,6 @@ E2 shipped the panel API: users, sessions, `admin`/`user` roles with per-scope g
 - per-user grants (visibility is per role), and `operation` grants beyond `artifact.launch`;
 - a DB-backed login throttle (the current one is per process);
 - rate limits for the launch redeem and `/internal/authz/app` (RULES.md SEC-12; see the zero-trust.md debt row);
-- the launch manifest seam, the `launch` auth source, `miniapp` capabilities and shares (E6);
 - a sequence column for exact launch eviction order (`created_at` has 1 s precision);
 - **per-run UID or container isolation (OPEN)**: until it exists, panel roles do not separate users
   from what a shell-capable agent can read on the shared mount
@@ -153,6 +152,16 @@ Known gaps, each deliberate:
   `§8.2` seam is registered and unused — every run falls back to `§8.1`'s per-event behaviour.
 - **The `§4.5` audit ordering is E7's.** The framework's audit writer must be called from inside
   `service.unblock()`'s transaction, not from an observer and not with module SQL.
+
+E6 shipped the `miniapps` module: the strict `miniapp.json` manifest, operator activation,
+launch pinning of the manifest and its actions, the `launch` auth source, single-use `miniapp`
+capabilities with a tool ceiling, the `postMessage` SDK bridge, Basic-auth shares on one origin per
+share, the strict one-parse apps path, and retention that keeps what a live launch pins
+([docs/modules/miniapps.md](docs/modules/miniapps.md)). Left out of E6:
+
+- a panel frontend that uses the bridge (the SDK ships as a library with tests);
+- an `artifact:share` command separate from `artifact:auth` (setting Basic auth makes the share);
+- a per-launch revoke when a manifest is re-activated (a launch with a stale fingerprint just loses its actions).
 
 ### ⚪ Per-artifact origins for miniapps
 

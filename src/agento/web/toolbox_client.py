@@ -5,6 +5,7 @@ header (never a query string), and nothing here logs or returns it.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import httpx
@@ -37,6 +38,47 @@ def invoke_tool(conn, session: Session, tool: str, arguments: dict, *, workspace
         conn, kind="user_session", agent_view_id=agent_view_id, workspace_id=workspace_id,
         ttl_seconds=ttl, allowed_transports=["http"], subject_id=str(session.user.id), source_id=session.id,
     )
+    return _post(conn, tool, arguments, token, timeout)
+
+
+_LIVE_LAUNCH_SQL = (
+    "SELECT l.id, l.artifact_code, l.version_id, l.workspace_id, l.agent_view_id, l.allowed_actions,"
+    " TIMESTAMPDIFF(SECOND, NOW(), l.expires_at) AS left_s FROM launch l"
+    " WHERE l.id = %s AND l.user_id = %s AND l.exchange_redeemed_at IS NOT NULL"
+    " AND l.revoked_at IS NULL AND l.expires_at > NOW()"
+)
+_NOT_FOUND = {"ok": False, "error": {"code": "not_found", "message": "not found"}}
+
+
+def invoke_launch_action(conn, session: Session, launch_id: str, tool: str, arguments: dict, *,
+                         timeout: float = 30.0) -> InvokeResult:
+    """One miniapp action: a single-use `miniapp` capability bound to the launch (PRD E6 §10).
+
+    Its ceiling is the launch's allowed actions, so no broad capability ever serves a
+    miniapp; the toolbox re-checks the launch, the activation and the grants per call.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_LIVE_LAUNCH_SQL, (launch_id, session.user.id))
+        launch = cur.fetchone()
+    if not launch:
+        return InvokeResult(404, _NOT_FOUND)
+    actions = launch["allowed_actions"]
+    actions = json.loads(actions) if isinstance(actions, (str, bytes)) else actions
+    if not isinstance(actions, list) or tool not in actions:
+        return InvokeResult(403, {"ok": False, "error": {"code": "forbidden", "message": "action not allowed"}})
+    ttl = min(resolve_auth_ttls(conn, launch["workspace_id"])["capability_ttl"], launch["left_s"] or 0)
+    if ttl <= 0:
+        return InvokeResult(404, _NOT_FOUND)
+    token = issue_capability(
+        conn, kind="miniapp", agent_view_id=launch["agent_view_id"], workspace_id=launch["workspace_id"],
+        ttl_seconds=ttl, allowed_transports=["http"], subject_id=str(session.user.id), source_id=launch["id"],
+        app={"artifact_code": launch["artifact_code"], "version_id": launch["version_id"], "launch_id": launch["id"]},
+        tool_ceiling=list(actions),
+    )
+    return _post(conn, tool, arguments, token, timeout)
+
+
+def _post(conn, tool: str, arguments: dict, token: str, timeout: float) -> InvokeResult:
     try:
         r = httpx.post(
             f"{resolve_toolbox_url(conn)}/internal/tools/{tool}:invoke",
