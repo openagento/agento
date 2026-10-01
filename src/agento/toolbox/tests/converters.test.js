@@ -75,6 +75,55 @@ describe('core converters', () => {
     expect(csv).toContain('Bob,99');
   });
 
+  it('XLSX converter clamps an inflated <dimension> to the real range', async () => {
+    const mod = await import('../../modules/core/toolbox/converters.js');
+
+    // Mimic an Excel export that formatted whole rows/columns: the sheet declares a
+    // ~1.7e10-cell range while only four cells actually exist. Inject the parsed
+    // workbook directly — a real sheet_to_csv over A1:XFB1048571 never returns, so
+    // the test would hang if the converter did not clamp first.
+    const ws = {
+      '!ref': 'A1:XFB1048571',
+      A1: { t: 's', v: 'Name' }, B1: { t: 's', v: 'Value' },
+      A2: { t: 's', v: 'Alice' }, B2: { t: 's', v: '42' },
+    };
+    mod._setXlsx({ read: () => ({ SheetNames: ['Sheet1'], Sheets: { Sheet1: ws } }), utils: XLSX.utils });
+
+    const inputPath = path.join(tmpDir, 'inflated.xlsx');
+    fs.writeFileSync(inputPath, 'stub');
+
+    const xlsxConv = mod.converters.find(c => c.fromExt === '.xlsx');
+    const start = Date.now();
+    const result = await xlsxConv.convert(inputPath);
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(fs.existsSync(result)).toBe(true);
+
+    const csv = fs.readFileSync(result, 'utf-8');
+    expect(csv).toContain('Name,Value');
+    expect(csv).toContain('Alice,42');
+  });
+
+  it('XLSX converter rejects a range too large even after clamping', async () => {
+    const mod = await import('../../modules/core/toolbox/converters.js');
+
+    // A single real cell planted in the far corner — clamping to the real cells
+    // alone would still yield a ~1.7e10-cell range, so the guard must reject it
+    // (and must do so without ever walking the range).
+    const ws = {
+      '!ref': 'A1:XFB1048571',
+      A1: { t: 's', v: 'x' }, XFB1048571: { t: 's', v: 'y' },
+    };
+    mod._setXlsx({ read: () => ({ SheetNames: ['Sheet1'], Sheets: { Sheet1: ws } }), utils: XLSX.utils });
+
+    const inputPath = path.join(tmpDir, 'far-corner.xlsx');
+    fs.writeFileSync(inputPath, 'stub');
+
+    const xlsxConv = mod.converters.find(c => c.fromExt === '.xlsx');
+    const start = Date.now();
+    await expect(xlsxConv.convert(inputPath)).rejects.toThrow(/too large/i);
+    expect(Date.now() - start).toBeLessThan(2000);
+  });
+
   it('XLSX converter handles multiple sheets', async () => {
     const mod = await import('../../modules/core/toolbox/converters.js');
     mod._setXlsx(XLSX);
