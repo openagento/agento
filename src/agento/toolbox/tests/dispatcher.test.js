@@ -301,6 +301,31 @@ describe('the SQL the dispatcher writes', () => {
     expect(query.mock.calls[1][1][0]).toBe('ok');
   });
 
+  it("writes the RUN's execution id, which is not the call's own", async () => {
+    const query = vi.fn(async () => [{}]);
+    const d = deps({ audit: createAuditStore(query) });
+    await executeTool(capabilityContext('mcp_job', { execution_id: 'run-abc' }), 'echo', { text: 'x' }, d);
+    const [sql, params] = query.mock.calls[0];
+    // Positionally: the call's own UUID first, the run's id second.
+    expect(sql).toMatch(/\(execution_id, run_execution_id,/);
+    expect(params[0]).not.toBe('run-abc');
+    expect(params[1]).toBe('run-abc');
+  });
+
+  it('writes NULL when the capability carries no run', async () => {
+    const query = vi.fn(async () => [{}]);
+    const d = deps({ audit: createAuditStore(query) });
+    await executeTool(capabilityContext('mcp_interactive'), 'echo', { text: 'x' }, d);
+    expect(query.mock.calls[0][1][1]).toBeNull();
+  });
+
+  it('carries the run on the HTTP transport too', async () => {
+    const query = vi.fn(async () => [{}]);
+    const d = deps({ audit: createAuditStore(query), endpoint: 'invoke' });
+    await executeTool(capabilityContext('internal_rest', { execution_id: 'run-http' }), 'echo', { text: 'x' }, d);
+    expect(query.mock.calls[0][1][1]).toBe('run-http');
+  });
+
   it('digests arguments canonically', () => {
     expect(argsSha256({ a: 1, b: [2, { d: 1, c: 2 }] })).toBe(argsSha256({ b: [2, { c: 2, d: 1 }], a: 1 }));
     expect(argsSha256({ a: 1 })).not.toBe(argsSha256({ a: 2 }));

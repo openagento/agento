@@ -25,6 +25,9 @@ class Request:
     cookies: dict[str, str]
     origins: security.Origins
     params: dict[str, str] = field(default_factory=dict)
+    # First value per key, already decoded. A repeated key is a caller mistake, not a list:
+    # every parameter this API takes is scalar.
+    query: dict[str, str] = field(default_factory=dict)
     conn: Any = None
     session: sessions.Session | None = None
     session_token: str | None = None

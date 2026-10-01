@@ -173,9 +173,13 @@ def int_periodic_config() -> PeriodicTasksConfig:
     )
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _bootstrap_registries():
-    """Populate registries from core modules (once per session).
+def bootstrap_for_tests() -> None:
+    """Populate the registries the integration suite needs (see below).
+
+    A test that must exercise a real `bootstrap()` - a module reaching a registry
+    through its own manifest - calls THIS, not `bootstrap()`: a bare `bootstrap()`
+    resets the module-config registry this fills, and the next Jira test then runs
+    without its config.
 
     Stubs ``read_module_status`` so bootstrap ignores the developer's
     ``app/etc/modules.json``. Without this, locally-disabled modules
@@ -216,6 +220,52 @@ def _bootstrap_registries():
             "1x w tygodniu (Pon, 7:00)": "0 7 * * 1",
         },
     ))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _bootstrap_registries():
+    bootstrap_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _keep_bootstrapped_registries():
+    """`bootstrap_for_tests()` runs ONCE per session, so a test that clears a registry to
+    get a clean slate leaves every later test with an empty one. The observed bite: an empty
+    event manager means no workspace-build observer, which means a job run resolves its state
+    dir under the container's read-only `/workspace`. Every registry bootstrap fills gets the
+    same snapshot-and-restore, whatever the test did to it."""
+    from agento.framework import event_manager, execution_hooks
+    from agento.framework.workflows import _WORKFLOW_MAP
+
+    manager = event_manager._EVENT_MANAGER
+    seams = {name: (slot.get(), slot.module()) for name, slot in execution_hooks.SEAMS.items()}
+    workflows = dict(_WORKFLOW_MAP)
+    yield
+    if event_manager._EVENT_MANAGER is not manager:
+        event_manager._EVENT_MANAGER = manager
+    for name, (impl, module) in seams.items():
+        slot = execution_hooks.SEAMS[name]
+        if slot.get() is not impl:
+            slot.clear()
+            if impl is not None:
+                slot.register(impl, module=module)
+    if workflows != _WORKFLOW_MAP:
+        _WORKFLOW_MAP.clear()
+        _WORKFLOW_MAP.update(workflows)
+
+
+@pytest.fixture(autouse=True)
+def _db_from_env(int_db_config):
+    """No integration test may reach the production database host.
+
+    Several paths a job takes open their OWN connection from `DatabaseConfig.from_env()` -
+    the workspace-build observer, the conversation workflow, `publish_job`. A test that did
+    not patch it passed only when an earlier test's fixture happened to leak the patch, so
+    the suite's result depended on file order. One autouse patch removes the whole class.
+    A test that needs the real classmethod stops this patch itself.
+    """
+    with patch.object(DatabaseConfig, "from_env", return_value=int_db_config):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -345,9 +395,13 @@ def int_agent_view(tmp_path, int_db_config, monkeypatch):
 
             # Jira publishing routes through an ingress identity; with no binding
             # `_resolve_routing` returns (None, 50) and the job is published viewless.
+            # ON DUPLICATE KEY UPDATE, not INSERT IGNORE: the row caches an agent_view id,
+            # and a stale one points the router at a view that is gone - the publish then
+            # fails the foreign key and the jira flows fail with no explanation.
             cur.execute(
-                "INSERT IGNORE INTO ingress_identity "
-                "(identity_type, identity_value, agent_view_id) VALUES (%s, %s, %s)",
+                "INSERT INTO ingress_identity "
+                "(identity_type, identity_value, agent_view_id) VALUES (%s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE agent_view_id = VALUES(agent_view_id)",
                 ("jira", "jira", agent_view_id),
             )
     finally:
@@ -356,6 +410,16 @@ def int_agent_view(tmp_path, int_db_config, monkeypatch):
     try:
         yield agent_view_id
     finally:
+        # Remove the routing before the BUILD_DIR patches stop. The binding is global: a
+        # later test that publishes a jira job would otherwise resolve this view and run the
+        # workspace-build observer against the REAL build root, which is read-only here.
+        conn = _test_connection(autocommit=True)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM ingress_identity WHERE identity_type = 'jira' "
+                            "AND identity_value = 'jira'")
+        finally:
+            conn.close()
         for p_ in patches:
             p_.stop()
 
@@ -494,3 +558,66 @@ def update_job(job_id: int, **fields) -> None:
             )
     finally:
         conn.close()
+
+
+# --- the conversation world (PRD E3-E5) ------------------------------------
+#
+# These live here, not in a test module, so the fourteen conversation test files can take
+# them as arguments without importing them: an imported fixture is a module binding that
+# every test's parameter then shadows, which is 382 ruff F811 errors for one pattern. A test
+# file that defines its own `conn` still overrides this one.
+
+def _clean(c):
+    with c.cursor() as cur:
+        for table in ("conversation_event", "message", "conversation", "job_event_outbox",
+                      "job_defer_stretch", "job", "launch", "session", "role_grant", "`user`"):
+            cur.execute(f"DELETE FROM {table}")
+        # The scopes too: a test that deactivates the view must not hand the next test a
+        # deactivated one (INSERT IGNORE would keep it).
+        cur.execute("DELETE FROM agent_view WHERE code IN ('c-av', 'c-av2')")
+        cur.execute("DELETE FROM workspace WHERE code IN ('c-ws', 'c-ws2')")
+    c.commit()
+
+
+@pytest.fixture
+def conn(int_db_config, monkeypatch):
+    from agento.framework import publish_service
+    from agento.modules.conversation.src import service
+
+    # publish_job opens its own connection; point it at the test database.
+    real = publish_service.publish_job
+    monkeypatch.setattr(
+        publish_service, "publish_job",
+        lambda **kw: real(**{**kw, "config": int_db_config}),
+    )
+    monkeypatch.setattr(service, "publish_job", publish_service.publish_job)
+
+    c = _test_connection(autocommit=False)
+    _clean(c)
+    yield c
+    _clean(c)
+    c.close()
+
+
+@pytest.fixture
+def world(conn):
+    """One workspace, one view, an owner who reaches it, and a stranger who does not."""
+    from agento.framework.access import accounts
+
+    ids = {}
+    with conn.cursor() as cur:
+        for ws, av, key in (("c-ws", "c-av", "view"), ("c-ws2", "c-av2", "other_view")):
+            cur.execute("INSERT IGNORE INTO workspace (code, label) VALUES (%s, %s)", (ws, ws))
+            cur.execute("SELECT id FROM workspace WHERE code = %s", (ws,))
+            ids[f"workspace{'' if key == 'view' else '2'}"] = cur.fetchone()["id"]
+            cur.execute("INSERT IGNORE INTO agent_view (workspace_id, code, label) VALUES (%s, %s, %s)",
+                        (ids[f"workspace{'' if key == 'view' else '2'}"], av, av))
+            cur.execute("SELECT id FROM agent_view WHERE code = %s", (av,))
+            ids[key] = cur.fetchone()["id"]
+    conn.commit()
+    owner = accounts.create_user(conn, "c-owner", "user", "pw-owner-123")
+    stranger = accounts.create_user(conn, "c-stranger", "user", "pw-stranger-123")
+    admin = accounts.create_user(conn, "c-admin", "admin", "pw-admin-1234")
+    accounts.add_grant(conn, "user", "operation", "artifact.launch", agent_view_id=ids["view"])
+    ids.update(owner=owner, stranger=stranger, admin=admin)
+    return ids

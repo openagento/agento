@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import itertools
+import json
 import logging
 import os
 import random
 import signal
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -31,17 +34,21 @@ from .channels.registry import get_channel
 from .consumer_config import ConsumerConfig
 from .database_config import DatabaseConfig
 from .db import get_connection
+from .defer import close_stretch, defer_seconds, open_or_bump_stretch
 from .event_manager import get_event_manager
 from .events import (
     AgentViewRunFinishedEvent,
     AgentViewRunStartedEvent,
+    ClaimVerdict,
     ConsumerReloadedEvent,
     ConsumerStartedEvent,
     ConsumerStoppingEvent,
     CredentialAuthFailedEvent,
     CredentialAuthThrottledEvent,
     CredentialUsageLimitedEvent,
+    ExecutionEvent,
     JobBlockedEvent,
+    JobClaimBeforeEvent,
     JobClaimedEvent,
     JobDeadEvent,
     JobFailedEvent,
@@ -52,6 +59,12 @@ from .events import (
     WorkerStartedEvent,
     WorkerStoppedEvent,
     dispatch_credential_event,
+)
+from .execution_hooks import (
+    DeltaRecord,
+    finalize_execution,
+    mint_execution_id,
+    resolve_resume_session,
 )
 from .harness import (
     HarnessRunContext,
@@ -65,6 +78,7 @@ from .harness import (
     workspace_adapter_for,
 )
 from .job_models import Job, JobStatus
+from .outbox import write_outbox
 from .retry_policy import evaluate as evaluate_retry
 from .run_preparation import materialize_run_workspace
 from .secret_redaction import redact_exception, redact_secret
@@ -173,6 +187,74 @@ CLAIM_SQL = """
 """
 
 
+# `job.failed`'s coarse vocabulary (§6.4.2). Four kinds, because a reader decides whether to
+# wait, to re-ask or to page a human - and a Python class name in a durable payload would be
+# an internal identifier leaking into a public contract.
+_CREDENTIAL_ERRORS = frozenset({
+    "AuthenticationError", "TransientAuthError", "UsageLimitError",
+    "CredentialsBusyError", "CredentialLeasedError",
+})
+_HARNESS_ERRORS = frozenset({
+    "CalledProcessError", "JobVerificationFailed", "StaleJobRecovery",
+})
+
+
+def failure_kind(error_class: str | None) -> str:
+    if error_class and "Timeout" in error_class:
+        return "timeout"
+    if error_class in _CREDENTIAL_ERRORS:
+        return "credential_error"
+    if error_class in _HARNESS_ERRORS:
+        return "harness_error"
+    return "internal"
+
+
+def _delta_callback(harness_entry, execution_id: str | None, logger):
+    """The optional stdout->delta seam (PRD E3-E5 §8.2), or None to attach nothing.
+
+    Three independent conditions, and all three must hold: a module registered a sink, the
+    run has an execution to attribute fragments to, and the harness declares a mapper. Any
+    one missing means the run streams nothing extra and its users get §8.1 - which is the
+    disableable-module rule, not a degraded mode.
+
+    The framework never parses a harness's stream format. It asks the harness, exactly as
+    `--pretty` does, and `map_event` is read with `getattr` for the same reason
+    `stream_renderer` is: `AgentHarnessAdapter` is runtime_checkable, so a declared member
+    would stop every harness written before this existed from loading at all.
+    """
+    from . import execution_deltas
+
+    if execution_id is None or not execution_deltas.is_streaming():
+        return None
+    mapper = getattr(harness_entry.adapter, "stream_event_mapper", None)
+    if mapper is None:
+        return None
+
+    seq = itertools.count(1)
+
+    def on_line(line: str) -> None:
+        # On the harness's drain thread: map, enqueue, return. No DB work, ever.
+        try:
+            event = json.loads(line)
+        except ValueError:
+            return
+        if not isinstance(event, dict):
+            return
+        try:
+            fragment = mapper.map_event(event)
+        except Exception as exc:
+            logger.debug("stream_event_mapper failed: %s", type(exc).__name__)
+            return
+        if not fragment:
+            return
+        execution_deltas.submit(DeltaRecord(
+            execution_id=execution_id, seq=next(seq),
+            kind=fragment.get("kind") or "delta",
+            text=fragment.get("text"), tool_name=fragment.get("tool_name")))
+
+    return on_line
+
+
 class Consumer:
     """Long-running consumer that dequeues and executes jobs from MySQL."""
 
@@ -271,6 +353,12 @@ class Consumer:
                 self._renew_leases()
                 time.sleep(self._consumer_config.poll_interval)
             executor.shutdown(wait=True, cancel_futures=False)
+            # BEFORE the module shutdown, and not after: this drains what is still queued
+            # while the sink that writes it is still live. Left uncalled, the daemon thread
+            # kept writing past the module's own shutdown and lost whatever it still held
+            # when the process exited (CODE-4).
+            from . import execution_deltas
+            execution_deltas.shutdown()
             dispatch_shutdown()
             self.logger.info("Consumer stopped.")
 
@@ -385,6 +473,7 @@ class Consumer:
 
                     retried = 0
                     dead = 0
+                    recovered: list[Callable[[], None]] = []
                     for row in running_jobs:
                         job_id = row["id"]
                         ref_id = row["reference_id"]
@@ -419,6 +508,12 @@ class Consumer:
                                 (f"Recovered: process dead (pid={pid})", job_id),
                             )
                             revoke_job_capabilities(conn, job_id, commit=False)
+                            # Another process's run: its id was never ours, so the
+                            # finalizer resolves the row by (job_id, attempt).
+                            recovered.append(self._end_execution(
+                                conn, job_id=job_id, attempt=attempt, execution_id=None,
+                                outcome="abandoned", job_terminal=False,
+                            ))
                             retried += 1
                             self.logger.warning(
                                 f"Recovered stale job -> TODO (retry) | "
@@ -438,6 +533,19 @@ class Consumer:
                                 (f"Recovered: process dead (pid={pid}), max attempts reached", job_id),
                             )
                             revoke_job_capabilities(conn, job_id, commit=False)
+                            # A dead transition is a fail/dead transition (§6.4.2), whoever
+                            # noticed it: the process that was running this job cannot write
+                            # the row any more, so the recovering one writes it here, in the
+                            # same transaction as the DEAD update. `execution_id` is NULL -
+                            # the run belonged to a process whose id was never ours.
+                            write_outbox(cur, job_id=job_id, kind="job.failed",
+                                         payload={"job_id": job_id, "attempt": attempt,
+                                                  "kind": failure_kind("StaleJobRecovery"),
+                                                  "execution_id": None})
+                            recovered.append(self._end_execution(
+                                conn, job_id=job_id, attempt=attempt, execution_id=None,
+                                outcome="failed", job_terminal=True,
+                            ))
                             dead += 1
                             self.logger.warning(
                                 f"Recovered stale job -> DEAD | "
@@ -446,6 +554,8 @@ class Consumer:
                             )
 
                 conn.commit()
+                for announce in recovered:
+                    announce()
                 if retried or dead:
                     self.logger.warning(
                         f"Stale job recovery: {retried} retried, {dead} dead-lettered"
@@ -467,12 +577,43 @@ class Consumer:
                     return None
 
                 job = Job.from_row(row)
+
+                # The ordering seam (§4.4). It runs INSIDE the claim transaction and before
+                # CLAIM_SQL, so a deferral and the bookkeeping that records it commit
+                # together - and a job that is deferred was never RUNNING, so its attempt
+                # count is untouched and nothing downstream sees an execution.
+                claim = JobClaimBeforeEvent(job_id=job.id)
+                if not get_event_manager().dispatch_with_result("job_claim_before", claim):
+                    # An observer that cannot decide has not decided "yes". This is the one
+                    # dispatch in the framework that is not fail-open.
+                    claim.verdict = ClaimVerdict.DEFER
+                if claim.verdict is ClaimVerdict.DEFER:
+                    cur.execute(
+                        "UPDATE job SET scheduled_after = NOW() + INTERVAL %s SECOND "
+                        "WHERE id = %s",
+                        (defer_seconds(claim.delay_ms), job.id),
+                    )
+                    open_or_bump_stretch(cur, job_id=job.id)
+                    conn.commit()
+                    return None
+
                 cur.execute(CLAIM_SQL, (job.id,))
+                # §6.4.2: `job.claimed` is written by the FRAMEWORK, in the consumer's claim
+                # transaction. In it and not after it - a row written on a second commit is a
+                # transition a crash can lose, and the claim is the one a waiting reader is
+                # watching for. The attempt is the one this claim just took.
+                write_outbox(cur, job_id=job.id, kind="job.claimed",
+                             payload={"job_id": job.id, "attempt": job.attempt + 1})
+                # The stretch ends where the block ends, and only the caller that closed it
+                # announces it - one block, one event, however many ticks it lasted.
+                defer_after = close_stretch(cur, job_id=job.id, reason="claimed")
                 conn.commit()
 
                 job.status = JobStatus.RUNNING
                 job.attempt += 1
 
+                if defer_after is not None:
+                    get_event_manager().dispatch("job_defer_after", defer_after)
                 get_event_manager().dispatch("job_claim_after", JobClaimedEvent(job=job))
 
                 return job
@@ -546,7 +687,26 @@ class Consumer:
             row = cur.fetchone()
         status = row["status"] if row else None
         if status != JobStatus.RUNNING.value:
-            conn.rollback()
+            # Commit, not rollback: the execution row minted a few lines above describes an
+            # attempt that really was claimed and really is being abandoned, and discarding
+            # it would leave the run with no trace at all. The commit also releases the
+            # FOR UPDATE lock, which is all the rollback was ever doing here.
+            announce = self._end_execution(
+                conn, job_id=job.id, attempt=job.attempt, execution_id=job.execution_id,
+                outcome="abandoned", job_terminal=False,
+            )
+            conn.commit()
+            # The start FIRST, then the abandon: this attempt really was claimed and
+            # really is being abandoned, and an observer that sees only the finish has no
+            # run to attribute it to (EVT-4: the start and finish events of one run fire
+            # together or not at all). Unconditional, exactly like the success path's
+            # dispatch: with no provider registered `execution_id` is None, and
+            # `_end_execution` announces the abandon with that same None - pairing only
+            # the cases that have an id would leave the no-provider run unpaired again.
+            get_event_manager().dispatch("execution_start_after", ExecutionEvent(
+                execution_id=job.execution_id, job_id=job.id, attempt=job.attempt,
+            ))
+            announce()
             self.logger.info(
                 "Job no longer RUNNING, abandoning run before issuing capabilities",
                 extra={"job_id": job.id, "status": status},
@@ -558,6 +718,7 @@ class Consumer:
             kind=KIND_MCP_JOB,
             agent_view_id=job.agent_view_id,
             job_id=job.id,
+            execution_id=job.execution_id,
             ttl_seconds=MCP_CAPABILITY_TTL_SECONDS,
             allowed_transports=["http"],
             commit=False,
@@ -574,6 +735,9 @@ class Consumer:
                 ttl_seconds=REST_CAPABILITY_TTL_SECONDS,
                 allowed_transports=["http"],
                 subject_id="service:consumer",
+                # NO execution_id: this is the SERVICE's capability, not the run's, and an
+                # `internal_rest` row carrying one fails verification by design - the
+                # channel's discovery call is not the agent acting inside an execution.
                 commit=False,
             )
         conn.commit()
@@ -654,12 +818,25 @@ class Consumer:
                     if job.agent_view_id is not None else None
                 )
 
+                # The execution id first, on the same connection and before the
+                # capabilities, so the run's capability rows carry it and every tool call
+                # this attempt makes is attributable to the attempt. With no provider
+                # registered it is None and nothing below changes (§5.1).
+                job.execution_id = mint_execution_id(
+                    conn=conn, job_id=job.id, attempt=job.attempt,
+                )
+
                 # Mint the run's capabilities inside the SAME open connection — a
                 # closed connection cannot issue.
                 mint = self._issue_run_capabilities(conn, job)
                 if mint is None:
                     return None
                 capability_token, rest_capability_token = mint
+                # After the capability commit, which is also the execution row's: an
+                # observer must not see an attempt a rollback never started.
+                em.dispatch("execution_start_after", ExecutionEvent(
+                    execution_id=job.execution_id, job_id=job.id, attempt=job.attempt,
+                ))
             finally:
                 conn.close()
 
@@ -765,6 +942,7 @@ class Consumer:
                 runner.observe(
                     on_pid=lambda pid: self._save_pid(job.id, pid),
                     on_session_id=_on_session_id,
+                    on_line=_delta_callback(harness_entry, job.execution_id, self.logger),
                 )
 
                 should_resume = _should_resume(
@@ -805,11 +983,23 @@ class Consumer:
                         if agent_config_svc is not None
                         else None
                     ) or get_module_config(job.source)
+                # §5.2's third seam. The resolver's answer is honoured ONLY when the
+                # harness declares `resume`: handing a session id to a CLI that cannot
+                # take one would drop the turn. With no resolver registered this is None
+                # and the workflow builds the same prompt it builds today.
+                resume_session_id = None
+                if harness_entry.descriptor.capabilities.resume:
+                    with get_connection(self._db_config) as resume_conn:
+                        resume_session_id = resolve_resume_session(
+                            conn=resume_conn, job_id=job.id, attempt=job.attempt,
+                        )
+
                 context = JobContext(
                     config=module_config,
                     logger=self.logger,
                     update_reference_id=self._update_job_reference_id,
                     capability_token=rest_capability_token,
+                    resume_session_id=resume_session_id,
                 )
                 result = workflow.execute_job(channel, job, context)
 
@@ -1104,6 +1294,48 @@ class Consumer:
         finally:
             conn.close()
 
+    def _write_job_failed(self, conn, job: Job, error_class: str) -> None:
+        """The `job.failed` outbox row, in the SAME transaction as the failure (§6.4.2).
+
+        Written by the FRAMEWORK, not by a module: this is a framework job transition, and
+        a module that owns it would make the module-disabled guarantee silently exclude the
+        one event a waiting reader most needs. The payload is ids and a coarse kind - no
+        exception text, no agent output, because every reader of the outbox would otherwise
+        read both (SEC-6).
+        """
+        with conn.cursor() as cur:
+            write_outbox(
+                cur, job_id=job.id, kind="job.failed",
+                execution_id=job.execution_id,
+                payload={"job_id": job.id, "attempt": job.attempt,
+                         "kind": failure_kind(error_class),
+                         "execution_id": job.execution_id},
+            )
+
+    def _end_execution(self, conn, *, job_id: int, attempt: int,
+                       execution_id: str | None, outcome: str,
+                       job_terminal: bool) -> Callable[[], None]:
+        """Close this attempt's execution on the framework's OWN open connection (§5.3).
+
+        Called from every transition that ends an attempt, not only from the ones that end
+        the job: a retried attempt closes its execution while its job goes back to `TODO`.
+        With no finalizer registered this writes nothing and the transition is today's.
+
+        `execution_id` is `None` on the recovery paths, which see another process's run and
+        never held its id - the finalizer resolves those by `(job_id, attempt)`.
+
+        Returns the announcement, to be called AFTER the caller commits: an observer must
+        not see an execution a rollback un-ends. Runs are concurrent, so the pending event
+        lives on the caller's stack, never on the consumer.
+        """
+        finalize_execution(conn=conn, job_id=job_id, attempt=attempt,
+                           execution_id=execution_id, outcome=outcome,
+                           job_terminal=job_terminal)
+        name = ("execution_abandon_after" if outcome == "abandoned"
+                else "execution_finish_after")
+        event = ExecutionEvent(execution_id=execution_id, job_id=job_id, attempt=attempt)
+        return lambda: get_event_manager().dispatch(name, event)
+
     def _finalize_job(
         self,
         job: Job,
@@ -1148,6 +1380,17 @@ class Consumer:
                 else:
                     current_status = row[0]
                 if current_status != "RUNNING":
+                    # The job is no longer ours to finalize - a CLI pause committed
+                    # PAUSED while the process ran, or another worker re-claimed it. The
+                    # JOB row stays untouched; this attempt's execution is abandoned,
+                    # because the process it described has exited (§5.3).
+                    announce = self._end_execution(
+                        conn, job_id=job.id, attempt=job.attempt,
+                        execution_id=job.execution_id,
+                        outcome="abandoned", job_terminal=False,
+                    )
+                    conn.commit()
+                    announce()
                     self.logger.info(
                         "Job finalize skipped (status changed during run)",
                         extra={
@@ -1193,7 +1436,13 @@ class Consumer:
                     # the status back too, leaving the job RUNNING for
                     # _recover_stale_jobs — which revokes as well.
                     revoke_job_capabilities(conn, job.id, commit=False)
+                    announce = self._end_execution(
+                        conn, job_id=job.id, attempt=job.attempt,
+                        execution_id=job.execution_id,
+                        outcome="succeeded", job_terminal=True,
+                    )
                     conn.commit()
+                    announce()
                     self.logger.info(
                         "Job succeeded",
                         extra={
@@ -1298,7 +1547,13 @@ class Consumer:
                                     session_id, scheduled_after, job.id,
                                 ),
                             )
+                        announce = self._end_execution(
+                            conn, job_id=job.id, attempt=job.attempt,
+                            execution_id=job.execution_id,
+                            outcome="abandoned", job_terminal=False,
+                        )
                         conn.commit()
+                        announce()
                         self.logger.info(
                             "Job waiting for pool to recover: whole pool throttled or "
                             f"busy, rescheduled for {scheduled_after} (UTC)",
@@ -1340,7 +1595,14 @@ class Consumer:
                                 ),
                             )
                         revoke_job_capabilities(conn, job.id, commit=False)
+                        announce = self._end_execution(
+                            conn, job_id=job.id, attempt=job.attempt,
+                            execution_id=job.execution_id,
+                            outcome="failed", job_terminal=False,
+                        )
+                        self._write_job_failed(conn, job, error_class)
                         conn.commit()
+                        announce()
                         self.logger.info(
                             f"Job scheduled for retry: {decision.reason}",
                             extra={
@@ -1373,7 +1635,14 @@ class Consumer:
                                 """,
                                 (error_msg, error_class, agent_output, session_id, job.id),
                             )
+                        announce = self._end_execution(
+                            conn, job_id=job.id, attempt=job.attempt,
+                            execution_id=job.execution_id,
+                            outcome="failed", job_terminal=True,
+                        )
+                        self._write_job_failed(conn, job, error_class)
                         conn.commit()
+                        announce()
                         self.logger.warning(
                             f"Job blocked (configuration/infrastructure fault, no retry): {decision.reason}",
                             extra={
@@ -1402,7 +1671,14 @@ class Consumer:
                                 (error_msg, error_class, agent_output, session_id, job.id),
                             )
                         revoke_job_capabilities(conn, job.id, commit=False)
+                        announce = self._end_execution(
+                            conn, job_id=job.id, attempt=job.attempt,
+                            execution_id=job.execution_id,
+                            outcome="failed", job_terminal=True,
+                        )
+                        self._write_job_failed(conn, job, error_class)
                         conn.commit()
+                        announce()
                         self.logger.warning(
                             f"Job dead-lettered: {decision.reason}",
                             extra={
@@ -1423,7 +1699,8 @@ class Consumer:
                 if db_attempt < max_db_retries:
                     self.logger.warning(
                         f"Failed to finalize job {job.id} "
-                        f"(DB attempt {db_attempt}/{max_db_retries}), retrying..."
+                        f"(DB attempt {db_attempt}/{max_db_retries}), retrying...",
+                        exc_info=True
                     )
                     time.sleep(1)
                 else:

@@ -7,10 +7,16 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
+from .config_validation import MAX_LENGTH_TYPES
+
+# The job-type grammar is the registry's, not a second copy of it (PRD E3-E5 §4.2).
+from .job_types import BUILTIN_JOB_TYPES
+from .job_types import JOB_TYPE_GRAMMAR as _JOB_TYPE_GRAMMAR
+
 # `is_confined_class_path` is the single source of truth for "inside the module" —
 # the validator reports at setup time what the loader refuses at boot.
-from .config_validation import MAX_LENGTH_TYPES
 from .module_loader import is_confined_class_path
+from .route_rules import declaration_error, route_key
 
 # `{module/field}` — the same shape the toolbox interpolates (config-tests.js).
 # Keep the `/` separator out of the segment class so it matches unambiguously;
@@ -183,6 +189,224 @@ def _literal_server_tool_names(module_dir: Path) -> dict[str, str]:
         for name in _scan_server_tool_literals(js.read_text()):
             found.setdefault(name, js.name)
     return found
+
+
+def effective_declarations(module_dir: Path, manifest: dict) -> dict:
+    """What the loader actually loads as ``provides`` — di.json, else module.json.
+
+    ``module_loader.scan_modules`` reads ``_read_json(di.json) or data["provides"]``, so an
+    absent, unreadable OR EMPTY di.json falls back to the manifest. Every reader below goes
+    through this one helper: a reader with its own fallback validates a source nothing
+    loads, and lets the other source through unchecked.
+    """
+    di = _read_json_quietly(Path(module_dir) / "di.json")
+    provides = di or manifest.get("provides")
+    return provides if isinstance(provides, dict) else {}
+
+
+def job_type_declarations(module_dir: Path, manifest: dict) -> list[str]:
+    """The job types a module declares, read the way bootstrap reads them.
+
+    ``module_loader`` takes ``di.json`` when it exists and falls back to module.json's
+    ``provides``; validating the other source would check a file nothing loads.
+
+    Its own ``job_types`` key, not the ``type`` of a ``workflows`` entry: a module
+    providing a workflow for ``cron`` is REPLACING a built-in's workflow, which is
+    shipped behaviour (``modules/jira_periodic_tasks``), not declaring a new type.
+    """
+    provides = effective_declarations(module_dir, manifest)
+    declared = provides.get("job_types")
+    if not isinstance(declared, list):
+        return []
+    return [v for v in declared if isinstance(v, str) and v]
+
+
+
+def route_declarations(module_dir: Path, manifest: dict) -> list[dict]:
+    """The routes a module declares, read the way the route registry reads them."""
+    provides = effective_declarations(module_dir, manifest)
+    declared = provides.get("routes")
+    return declared if isinstance(declared, list) else []
+
+
+def declaration_shape_errors(module_dir: Path, manifest: dict) -> list[str]:
+    """The CONTAINER and element types of the three declaration keys, when each is present.
+
+    The three readers above deliberately mirror the loader, which is lenient: a malformed
+    declaration reads as an absent one so a bad manifest cannot crash bootstrap. That
+    leniency must not reach validation, or `"job_types": "conversation"`, `"routes": {}` and
+    `"execution_hooks": []` all pass `module:validate` and then fail or silently do nothing at
+    web/consumer startup - which is the pre-install gate not gating (PRD E3-E5 §11, §4.2).
+
+    Present means checked; absent means absent. A key nobody wrote is not an error.
+    """
+    provides = effective_declarations(module_dir, manifest)
+    errors: list[str] = []
+    if "job_types" in provides:
+        declared = provides["job_types"]
+        if not isinstance(declared, list):
+            errors.append("di.json: 'job_types' must be a list of strings")
+        else:
+            errors += [f"di.json: job type {v!r} is not a non-empty string"
+                       for v in declared if not (isinstance(v, str) and v)]
+    if "routes" in provides and not isinstance(provides["routes"], list):
+        errors.append("di.json: 'routes' must be a list of route declarations")
+    if "execution_hooks" in provides:
+        declared = provides["execution_hooks"]
+        if not isinstance(declared, dict):
+            errors.append("di.json: 'execution_hooks' must be an object of seam -> class path")
+        else:
+            errors += [f"di.json: execution hook {k!r} must map a string seam to a string "
+                       "class path"
+                       for k, v in declared.items()
+                       if not (isinstance(k, str) and isinstance(v, str))]
+    return errors
+
+
+def validate_route_grammar(module_name: str, routes: Iterable[object]) -> list[str]:
+    """Per-module: the declaration grammar, the module's own `/api/<name>/` prefix, and
+    no duplicate inside one manifest.
+
+    The prefix rule is what keeps a module off every built-in path - none of them lives
+    under another module's name - and it is also why there is no cross-module collision
+    pass here: two modules cannot name one path (PRD E3-E5 §11).
+    """
+    errors: list[str] = []
+    seen: set[str] = set()
+    for route in routes:
+        problem = declaration_error(module_name, route)
+        if problem is not None:
+            errors.append(f"di.json: {problem}")
+            continue
+        key = route_key(route)
+        if key in seen:
+            errors.append(f"di.json: route '{key}' is declared twice")
+        seen.add(key)
+    return errors
+
+
+def validate_job_type_grammar(job_types: Iterable[str]) -> list[str]:
+    """Per-module: the identifier grammar, and no redeclaring a built-in (PRD E3-E5 §4.2)."""
+    errors: list[str] = []
+    for value in job_types:
+        if value in BUILTIN_JOB_TYPES:
+            errors.append(
+                f"di.json: job type '{value}' is a framework built-in and cannot be redeclared"
+            )
+        elif not _JOB_TYPE_GRAMMAR.match(value):
+            errors.append(
+                f"di.json: job type '{value}' is invalid — lowercase letters and underscores, "
+                "starting with a letter, at most 32 characters"
+            )
+    return errors
+
+
+def validate_job_types(
+    declarations: Iterable[tuple[str, list[str]]],
+) -> dict[str, list[str]]:
+    """Cross-manifest job-type collisions. Returns ``{module_name: [errors]}``.
+
+    ``job.type`` is one column and one registry: two modules claiming one value would
+    have the load order decide whose workflow runs a job. Same-module duplicates are
+    harmless (one value, one registration), so only CROSS-module collisions are reported.
+    """
+    results: dict[str, list[str]] = {}
+    owner: dict[str, str] = {}
+    for module_name, job_types in declarations:
+        for value in job_types:
+            other = owner.get(value)
+            if other is not None and other != module_name:
+                results.setdefault(module_name, []).append(
+                    f"di.json: job type '{value}' is already declared by module '{other}'"
+                )
+                continue
+            owner.setdefault(value, module_name)
+    return results
+
+
+def execution_hook_declarations(module_dir: Path, manifest: dict) -> dict[str, str]:
+    """The `execution_hooks` a module declares, read the way bootstrap reads them."""
+    provides = effective_declarations(module_dir, manifest)
+    declared = provides.get("execution_hooks")
+    if not isinstance(declared, dict):
+        return {}
+    return {k: v for k, v in declared.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def validate_execution_hooks(
+    declarations: Iterable[tuple[str, dict[str, str]]],
+) -> dict[str, list[str]]:
+    """At most one implementation of each execution seam, across every module (§5.1).
+
+    Checked here rather than at load time because a second provider is a deployment
+    mistake, not a runtime condition: `setup:upgrade` must refuse it before it applies a
+    single schema change, and the load-time raise is the second line of defence.
+    """
+    from .execution_hooks import SEAMS
+
+    results: dict[str, list[str]] = {}
+    owner: dict[str, str] = {}
+    for module_name, hooks in declarations:
+        for seam in hooks:
+            if seam not in SEAMS:
+                results.setdefault(module_name, []).append(
+                    f"di.json: unknown execution hook '{seam}' — one of {', '.join(sorted(SEAMS))}"
+                )
+                continue
+            other = owner.get(seam)
+            if other is not None and other != module_name:
+                results.setdefault(module_name, []).append(
+                    f"di.json: execution hook '{seam}' is already provided by module '{other}'"
+                )
+                continue
+            owner.setdefault(seam, module_name)
+    return results
+
+
+def validate_config_defaults(module_dir: Path) -> list[str]:
+    """Every numeric ``config.json`` default is inside its ``system.json`` bounds (SEC-9).
+
+    There is no second default to fall back to - ``system.json`` carries field metadata
+    only - so the runtime substitution that protects a limiter from an out-of-bounds ENV
+    or legacy DB row lands on THIS value. That makes it the one that has to be checked
+    statically, before ``setup:upgrade`` touches the database.
+    """
+    from .config_schema import numeric_bound_error
+
+    module_dir = Path(module_dir)
+    system = _read_json_quietly(module_dir / "system.json")
+    config = _read_json_quietly(module_dir / "config.json")
+    if not isinstance(system, dict) or not isinstance(config, dict):
+        return []
+
+    errors: list[str] = []
+    for field_name, field_def in system.items():
+        if not isinstance(field_def, dict) or field_def.get("type") not in ("integer", "number"):
+            continue
+        if field_def.get("min") is None and field_def.get("max") is None:
+            continue
+        if field_name not in config:
+            # A bounded field with no default has nothing to fall back to: resolve_field
+            # raises rather than serving an unvalidated value, so catch it here instead.
+            errors.append(
+                f"config.json: bounded field '{field_name}' has no default; "
+                "a bounded field must ship the value its fallback uses"
+            )
+            continue
+        error = numeric_bound_error(field_name, field_def, config[field_name])
+        if error is not None:
+            errors.append(f"config.json: {error}")
+    return errors
+
+
+def _read_json_quietly(path: Path) -> object | None:
+    """Parse a JSON file, or None. Malformed JSON is reported by its own check."""
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
 
 
 def validate_tool_namespace(
@@ -536,7 +760,10 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
             errors.append(f"di.json: invalid JSON — {e}")
             di = None
 
-        if di is not None and isinstance(di, dict):
+        if di is not None and not isinstance(di, dict):
+            errors.append("di.json: root must be an object")
+
+        if isinstance(di, dict):
             if "agent_harnesses" in di:
                 errors.extend(_validate_agent_harnesses(module_dir, di["agent_harnesses"]))
             for section in ("channels", "workflows", "commands"):
@@ -566,6 +793,15 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                             errors.append(
                                 f"di.json: regex_identity_types[{i}] must match ^[a-z][a-z0-9_]{{0,31}}$"
                             )
+
+    # The declarations the loader actually loads — di.json OR module.json's `provides`, so
+    # these run whether or not di.json exists. The SHAPE first: the readers mirror the lenient
+    # loader, so a malformed declaration reads as an absent one and would else pass the gate.
+    errors.extend(declaration_shape_errors(module_dir, manifest))
+    errors.extend(validate_job_type_grammar(job_type_declarations(module_dir, manifest)))
+    errors.extend(
+        validate_route_grammar(module_dir.name, route_declarations(module_dir, manifest))
+    )
 
     # events.json
     events_path = module_dir / "events.json"
@@ -607,6 +843,8 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
                         f"config.json: '{key}' sets a default for a tool this module does not "
                         "declare in module.json tools[]"
                     )
+
+    errors.extend(validate_config_defaults(module_dir))
 
     # system.json
     system_path = module_dir / "system.json"
@@ -817,12 +1055,12 @@ def validate_all(core_dir: Path, user_dir: Path) -> dict[str, list[str]]:
     here (as this did) let a container extension load and run while ``agento module:validate``
     and ``bin/test`` silently skipped its manifest.
     """
-    from .module_discovery import module_dirs_for_validation
+    from .module_discovery import module_dirs_by_name
 
     results: dict[str, list[str]] = {}
     all_modules: dict[str, dict] = {}  # name -> manifest
 
-    candidates = module_dirs_for_validation(core_dir, user_dir)
+    candidates = module_dirs_by_name(core_dir, user_dir)
     for name, entry in candidates:
         errors, manifest = _validate_module(entry)
         if errors:
@@ -835,6 +1073,18 @@ def validate_all(core_dir: Path, user_dir: Path) -> dict[str, list[str]]:
 
     for module_name, errs in validate_tool_namespace(
         (name, manifest.get("tools", [])) for name, manifest in all_modules.items()
+    ).items():
+        results.setdefault(module_name, []).extend(errs)
+
+    for module_name, errs in validate_job_types(
+        (name, job_type_declarations(entry, all_modules.get(name, {})))
+        for name, entry in candidates
+    ).items():
+        results.setdefault(module_name, []).extend(errs)
+
+    for module_name, errs in validate_execution_hooks(
+        (name, execution_hook_declarations(entry, all_modules.get(name, {})))
+        for name, entry in candidates
     ).items():
         results.setdefault(module_name, []).extend(errs)
 
