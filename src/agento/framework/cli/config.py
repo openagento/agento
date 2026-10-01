@@ -66,12 +66,12 @@ def _config_get_tree(conn, prefix: str) -> None:
     from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
     from ..config_resolver import read_config_defaults
     from ..core_config import config_get_tree
-    from ..module_loader import scan_modules
+    from ..module_discovery import scan_all_modules
 
     rows = config_get_tree(conn, prefix + "/")
 
     # Also load config.json defaults for the module
-    manifests = scan_modules(CORE_MODULES_DIR) + scan_modules(USER_MODULES_DIR)
+    manifests = scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR)
     manifest = next((m for m in manifests if m.name == prefix.replace("-", "_")), None)
     config_defaults = read_config_defaults(manifest.path) if manifest else {}
 
@@ -334,14 +334,14 @@ class ConfigListCommand:
             resolve_tool_field,
         )
         from ..core_config import config_list
-        from ..module_loader import scan_modules
+        from ..module_discovery import scan_all_modules
 
         db_config, _, _ = _load_framework_config()
         conn = get_connection_or_exit(db_config)
         try:
             prefix = args.prefix or ""
 
-            manifests = scan_modules(CORE_MODULES_DIR) + scan_modules(USER_MODULES_DIR)
+            manifests = scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR)
             db_overrides = load_db_overrides(conn)
             shown_module_config = False
 
@@ -404,9 +404,9 @@ class ConfigSchemaCommand:
 
     def execute(self, args: argparse.Namespace) -> None:
         from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
-        from ..module_loader import scan_modules
+        from ..module_discovery import scan_all_modules
 
-        manifests = scan_modules(CORE_MODULES_DIR) + scan_modules(USER_MODULES_DIR)
+        manifests = scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR)
 
         if args.module:
             manifests = [m for m in manifests if m.name == args.module]
@@ -500,9 +500,9 @@ class ConfigResolveCommand:
     def execute(self, args: argparse.Namespace) -> None:
         from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
         from ..config_resolver import ScopedConfigService, read_config_defaults
-        from ..module_loader import scan_modules
+        from ..module_discovery import scan_all_modules
 
-        manifests = scan_modules(CORE_MODULES_DIR) + scan_modules(USER_MODULES_DIR)
+        manifests = scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR)
         manifest = next((m for m in manifests if m.name == args.module), None)
         if manifest is None:
             print(f"Error: Module '{args.module}' not found.")

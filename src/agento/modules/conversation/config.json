@@ -1,0 +1,16 @@
+{
+  "claim/defer_backoff_ms": 1000,
+  "stream/poll_interval_ms": 500,
+  "stream/max_per_user": 4,
+  "stream/heartbeat_seconds": 15,
+  "stream/max_duration_seconds": 900,
+  "stream/max_deltas_per_execution": 2000,
+  "stream/max_delta_bytes_per_execution": 1048576,
+  "history/page_size": 100,
+  "sweep/pending_grace_seconds": 60,
+  "limits/max_message_bytes": 32768,
+  "retention/event_days": 90,
+  "retention/outbox_days": 7,
+  "retention/archived_days": 365,
+  "retention/idle_days": 90
+}

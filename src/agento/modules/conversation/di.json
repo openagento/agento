@@ -1,0 +1,86 @@
+{
+  "job_types": [
+    "conversation"
+  ],
+  "channels": [
+    {
+      "name": "conversation",
+      "class": "src.channel.ConversationChannel"
+    }
+  ],
+  "workflows": [
+    {
+      "type": "conversation",
+      "class": "src.workflow.ConversationWorkflow"
+    }
+  ],
+  "commands": [
+    {
+      "name": "conversation:sweep",
+      "class": "src.commands.ConversationSweepCommand"
+    },
+    {
+      "name": "conversation:relay",
+      "class": "src.commands.ConversationRelayCommand"
+    },
+    {
+      "name": "conversation:retention",
+      "class": "src.commands.ConversationRetentionCommand"
+    }
+  ],
+  "routes": [
+    {
+      "method": "POST",
+      "path": "/api/conversation/threads",
+      "handler": "src.routes.create",
+      "json_body": true
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversation/threads",
+      "handler": "src.routes.index"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})",
+      "handler": "src.routes.show"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})",
+      "handler": "src.routes.destroy"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/messages",
+      "handler": "src.routes.messages"
+    },
+    {
+      "method": "POST",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/messages",
+      "handler": "src.routes.send",
+      "json_body": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/messages/(?P<message_id>[0-9]{1,19})/unblock",
+      "handler": "src.routes.unblock"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/events",
+      "handler": "src.routes.events"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/events/stream",
+      "handler": "src.stream.open_stream"
+    }
+  ],
+  "execution_hooks": {
+    "execution_id_provider": "src.hooks.ConversationExecutionIds",
+    "resume_session_resolver": "src.hooks.ConversationResumeSessions",
+    "execution_finalizer": "src.finalizer.ConversationFinalizer",
+    "execution_delta_sink": "src.deltas.ConversationDeltaSink"
+  }
+}

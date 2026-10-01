@@ -17,6 +17,14 @@ trusted with every agent_view that the agents can reach.** Do not use panel role
 users who must not see each other's agent data. This is an open item in
 [ROADMAP.md](../../ROADMAP.md).
 
+**This covers conversations too.** A thread is owned by a user and readable only by its owner or
+an admin, and the stream re-checks that on every tick — but the agent answering it runs as the same
+`agent` UID, on the same workspace mount, as every other agent_view's runs on the host. So the
+conversation ACL separates users in the **API**, not in the process. Two users' threads against
+agent_views on one host are not isolated from each other at the process level, whatever the ACL
+says, and a shell-capable agent in either thread can read what the other's run left on the mount.
+Deploy accordingly: the rule above is the whole rule.
+
 ## Hosts and ports
 
 `proxy` publishes one port on the loopback interface, `127.0.0.1:${AGENTO_PROXY_PORT:-8443}`,

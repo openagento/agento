@@ -22,9 +22,9 @@ export const CONSUME_CAPABILITY_SQL =
   'WHERE id = ? AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()';
 
 const INSERT_AUDIT_SQL =
-  'INSERT INTO tool_invocation (execution_id, capability_id, transport, actor, subject_id, on_behalf_of, ' +
-  'tool_name, args_sha256, agent_view_id, workspace_id, app_artifact_code, app_version_id, app_launch_id, outcome) ' +
-  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')";
+  'INSERT INTO tool_invocation (execution_id, run_execution_id, capability_id, transport, actor, subject_id, ' +
+  'on_behalf_of, tool_name, args_sha256, agent_view_id, workspace_id, app_artifact_code, app_version_id, ' +
+  "app_launch_id, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')";
 const FINALIZE_AUDIT_SQL = 'UPDATE tool_invocation SET outcome = ? WHERE execution_id = ?';
 
 function canonical(value) {
@@ -44,7 +44,8 @@ export function createAuditStore(query) {
   return {
     async insert(row) {
       await query(INSERT_AUDIT_SQL, [
-        row.execution_id, row.capability_id, row.transport, row.actor, row.subject_id, row.on_behalf_of,
+        row.execution_id, row.run_execution_id, row.capability_id, row.transport, row.actor, row.subject_id,
+        row.on_behalf_of,
         row.tool_name, row.args_sha256, row.agent_view_id, row.workspace_id,
         row.app?.artifact_code ?? null, row.app?.version_id ?? null, row.app?.launch_id ?? null,
       ]);
@@ -145,6 +146,9 @@ export async function executeTool(authContext, toolName, args, deps) {
   try {
     await audit.insert({
       execution_id: executionId,
+      // The RUN's execution id, copied off the capability. `executionId` above is this
+      // call's own UUID and is UNIQUE, so it can never carry the run (§6.4.2).
+      run_execution_id: authContext.execution_id ?? null,
       capability_id: authContext.capability_id,
       transport: ENDPOINT_TRANSPORT[endpoint],
       actor: authContext.actor,

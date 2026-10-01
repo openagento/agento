@@ -54,12 +54,17 @@ class TestIssueRunCapabilities:
         assert "FOR UPDATE" in sql
 
     def test_a_paused_job_gets_no_capability(self, consumer):
-        conn, _ = _conn(status="PAUSED")
+        """It commits rather than rolls back: the execution row minted just before this
+        check describes an attempt that really was claimed and is now abandoned (§5.3), and
+        the commit releases the FOR UPDATE lock the rollback used to release. No job row is
+        written either way."""
+        conn, cur = _conn(status="PAUSED")
         with patch("agento.framework.consumer.issue_capability") as mint:
             assert consumer._issue_run_capabilities(conn, _job()) is None
         mint.assert_not_called()
-        conn.rollback.assert_called_once()
-        conn.commit.assert_not_called()
+        conn.commit.assert_called_once()
+        conn.rollback.assert_not_called()
+        assert not [c for c in cur.execute.call_args_list if "UPDATE job" in c[0][0]]
 
     def test_a_vanished_job_gets_no_capability(self, consumer):
         conn, _ = _conn(status=None)
