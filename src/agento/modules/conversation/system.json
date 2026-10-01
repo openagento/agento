@@ -1,0 +1,89 @@
+{
+  "claim/defer_backoff_ms": {
+    "type": "integer",
+    "label": "Defer backoff (ms)",
+    "description": "How long a job that lost the per-conversation claim waits before it is offered again.",
+    "min": 250,
+    "max": 30000
+  },
+  "stream/poll_interval_ms": {
+    "type": "integer",
+    "label": "Stream poll interval (ms)",
+    "description": "How often an open stream looks for new events.",
+    "min": 100
+  },
+  "stream/max_per_user": {
+    "type": "integer",
+    "label": "Concurrent streams per user",
+    "min": 1,
+    "max": 16
+  },
+  "stream/heartbeat_seconds": {
+    "type": "integer",
+    "label": "Stream heartbeat (s)",
+    "description": "Idle interval after which the stream sends a comment frame so a proxy does not close it.",
+    "min": 1
+  },
+  "stream/max_duration_seconds": {
+    "type": "integer",
+    "label": "Maximum stream duration (s)",
+    "description": "A stream is closed after this long; the client reconnects with its cursor.",
+    "min": 1
+  },
+  "stream/max_deltas_per_execution": {
+    "type": "integer",
+    "label": "Maximum deltas per execution",
+    "description": "Deltas past this count are dropped and the stream reports a gap.",
+    "min": 1,
+    "max": 20000
+  },
+  "stream/max_delta_bytes_per_execution": {
+    "type": "integer",
+    "label": "Maximum delta bytes per execution",
+    "min": 1024,
+    "max": 8388608
+  },
+  "history/page_size": {
+    "type": "integer",
+    "label": "History page size",
+    "min": 1,
+    "max": 500
+  },
+  "sweep/pending_grace_seconds": {
+    "type": "integer",
+    "label": "Pending submission grace (s)",
+    "description": "How old a `pending` message must be before the sweep finishes it - long enough that a submission still in flight is never raced.",
+    "min": 5,
+    "max": 3600
+  },
+  "limits/max_message_bytes": {
+    "type": "integer",
+    "label": "Maximum message size (bytes)",
+    "min": 1024,
+    "max": 49152
+  },
+  "retention/event_days": {
+    "type": "integer",
+    "label": "Event retention (days)",
+    "description": "A conversation_event older than this is pruned. Clock: created_at.",
+    "min": 1
+  },
+  "retention/outbox_days": {
+    "type": "integer",
+    "label": "Outbox retention (days)",
+    "description": "A relayed outbox row older than this is pruned. Clock: created_at.",
+    "min": 1
+  },
+  "retention/archived_days": {
+    "type": "integer",
+    "label": "Archived conversation retention (days)",
+    "description": "An archived conversation is deleted this long after it was last updated. Clock: conversation.updated_at.",
+    "min": 30
+  },
+  "retention/idle_days": {
+    "type": "integer",
+    "label": "Idle conversation retention (days)",
+    "description": "A conversation whose newest message is older than this is archived (not deleted; the archived window then decides the delete). Clock: that message's created_at, or the conversation's own when it has no messages.",
+    "min": 7
+  }
+}

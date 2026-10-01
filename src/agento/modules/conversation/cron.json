@@ -1,0 +1,19 @@
+{
+  "jobs": [
+    {
+      "name": "conversation_sweep",
+      "schedule": "* * * * *",
+      "command": "conversation:sweep"
+    },
+    {
+      "name": "conversation_relay",
+      "schedule": "* * * * *",
+      "command": "conversation:relay"
+    },
+    {
+      "name": "conversation_retention",
+      "schedule": "17 3 * * *",
+      "command": "conversation:retention"
+    }
+  ]
+}

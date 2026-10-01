@@ -351,6 +351,30 @@ class StreamRenderer(Protocol):
 
 
 @runtime_checkable
+class StreamEventMapper(Protocol):
+    """Turns one event of a harness's stdout event stream into a framework-shaped fragment.
+
+    The sibling of ``StreamRenderer``: that one produces terminal text for a human, this one
+    produces ``{"kind", "text", "tool_name"}`` for the delta seam (PRD E3-E5 §8.2). Same
+    rule behind both — the framework **never parses** a harness's stream format, it asks the
+    harness. ``kind`` is the framework's own vocabulary, so a reader never has to know which
+    CLI produced the run.
+
+    **Optional, like ``stream_renderer``.** A harness that declares no mapper streams nothing
+    extra and its users get §8.1's behaviour; it is read with
+    ``getattr(adapter, "stream_event_mapper", None)`` and is deliberately not a member of
+    ``AgentHarnessAdapter``, which is ``runtime_checkable`` and would then refuse every
+    harness written before this existed.
+    """
+
+    def map_event(self, event: dict) -> dict | None:
+        """Return ``{"kind": "delta", "text": str, "tool_name": str | None}``, or ``None``
+        to suppress the event. Raising is allowed: the caller logs and drops the fragment,
+        so a mapper bug costs a delta and never the run."""
+        ...
+
+
+@runtime_checkable
 class CredentialAuthenticator(Protocol):
     """How credentials for one credential scope are obtained.
 
@@ -406,6 +430,9 @@ class AgentHarnessAdapter(Protocol):
 
     @property
     def transcript_reader(self) -> TranscriptReader | None: ...
+
+    # ``stream_event_mapper`` (-> StreamEventMapper | None) is omitted here for exactly
+    # the same reason as ``stream_renderer`` below, and read the same way.
 
     # ``stream_renderer`` (-> StreamRenderer | None) is deliberately NOT declared
     # here. ``AgentHarnessAdapter`` is ``runtime_checkable`` and ``register_harness``

@@ -347,5 +347,27 @@ def can_reach(conn, user: User, *, workspace_id: int | None, agent_view_id: int 
         return cur.fetchone() is not None
 
 
+def scope_is_active(conn, agent_view_id: int | None) -> bool:
+    """Is the scope still live — the view and the workspace holding it?
+
+    A second predicate beside `can_reach()`, never folded into it: E2's admin screens call
+    `can_reach()`/`visible_agent_views()` precisely in order to administer a deactivated
+    view, so an active check inside them would make such a view unreactivatable. A caller
+    that must not act on a dead scope calls the pair.
+
+    `agent_view_id is None` is True: there is no scope left to deactivate. That is the
+    deleted-view case (`ON DELETE SET NULL`), not the deactivated-view case.
+    """
+    if agent_view_id is None:
+        return True
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM agent_view v JOIN workspace w ON w.id = v.workspace_id "
+            "WHERE v.id = %s AND v.is_active = 1 AND w.is_active = 1",
+            (agent_view_id,),
+        )
+        return cur.fetchone() is not None
+
+
 def may(user: User, operation: str) -> bool:
     return user.role == "admin" and user.is_active and operation in ADMIN_OPERATIONS

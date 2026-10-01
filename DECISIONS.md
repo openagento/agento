@@ -30,6 +30,91 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+## 2026-09-28 — E3–E5: the job-type contract, the outbox, and the four execution protocols
+
+- **A job type is declared in a module manifest, never in a framework enum (§4.2).** The framework
+  resolves `agent_type` through a registry the modules fill, so `conversation` naming its own type
+  costs the framework no knowledge of it (PLC-2). The column widened to `VARCHAR` (migration `043`)
+  for the same reason: an `ENUM` is a framework-side list of every module that will ever exist.
+
+- **The consumer reaches a module table through an outbox, never directly (§6.4.1).** The consumer
+  runs in the cron container and its transaction cannot name `conversation_event` without the
+  framework knowing a module's schema. So it writes `job_event_outbox` — framework-owned, module-
+  agnostic — and `conversation:relay` moves those rows into threads. **One** relay process, by
+  contract: two would interleave and invert the order that `conversation_event.id` is supposed to
+  give a thread. `UNIQUE (source_kind, source_id)` on the event table is what makes the relay
+  idempotent, so a crashed tick re-runs instead of duplicating.
+
+- **Four seams, not one execution hook (§5.1–§5.3, §8.2).** `ExecutionIdProvider`,
+  `ExecutionFinalizer`, `ResumeSessionResolver` and `ExecutionDeltaSink` are separate because they
+  fire at different moments and a module may want one without the others — a module that records
+  executions need not also stream deltas. Each seam holds **at most one** implementation, checked by
+  one generic validator: two finalizers would each believe they owned the terminal write. Every seam
+  falls back to today's behaviour when nothing registers it (MOD-2), which is what lets the whole
+  `conversation` module be disabled.
+
+- **The framework never parses a harness's stream format.** The delta path asks the harness through
+  an optional `stream_event_mapper` and carries the result over a bounded queue to the module's sink;
+  the framework side holds no SQL and the module side holds every `INSERT`. An import-layering test
+  enforces it. Three things must all be true or a run streams nothing extra: a registered sink, an
+  `execution_id`, and a harness that declares the mapper. Any one missing attaches no callback, so
+  nothing is buffered and nothing is dropped.
+
+---
+
+## 2026-09-28 — E3–E5: the panel paths are `/api/conversation/threads…`, not `/api/conversations/…`
+
+The PRD and the plan both write the routes as `/api/conversations/{id}` while also calling them
+"a **module** route under the conversation prefix (§11)". The two cannot both hold, and §11 is the
+one that is a rule: a module owns `/api/<its own module name>/` and nothing else
+(`framework/route_rules.py`), which is what keeps one module out of another's URL space and out of
+every built-in path. The module is named `conversation`, so:
+
+- the prefix is `/api/conversation/` — singular, because the module directory is;
+- the prefix ends in `/`, so a route needs a segment under it: there is no `/api/conversation`
+  collection route to declare. `threads` is that segment.
+
+Renaming the module to `conversations` to recover the PRD's spelling was rejected: the name is also
+the config namespace (`conversation/retention/*`), the event prefix and the module directory, so the
+URL's plural would be paid for in every other contract. The alternative — exempting this module from
+the prefix rule — trades a URL's spelling for the rule that bounds every module's reach.
+
+So the shipped paths are `/api/conversation/threads`, `/api/conversation/threads/{id}`,
+`…/{id}/messages`, `…/{id}/messages/{message_id}/unblock`, `…/{id}/events` and `…/{id}/events/stream`.
+Nothing has shipped under the other spelling, so there is no compatibility route to keep (CODE-5).
+
+---
+
+## 2026-09-28 — E3–E5: migration numbers, and E7 as a prerequisite of E4
+
+- **Framework migrations `043`–`047` belong to this epic; E7 starts at `048`.** Both neighbouring PRDs
+  defer: E6 takes no framework numbers (`PRD-E6…md:65` — its own tables live in its module sequence),
+  and E7 says explicitly (`PRD-E7…md:450`) that "PRD E3–E5 §3.4 is the controlling list … and takes
+  `043` onward for all of them". Coordinating the range once, here, is what stops two epics from
+  writing `043` in parallel branches and discovering it at merge.
+
+- **E7 §4.3.1 and §8.1 are prerequisites of the E4 slice, not later integrations.** E4's gate needs
+  `job_stop_request`, all three of its acknowledging paths (the consumer monitor, the pre-spawn status
+  re-check, the stop-request pass) and the `admin_audit` migration in place; without them a paused
+  turn cannot be proved unblockable end to end. The dependency runs that way round because this epic
+  owns the `ExecutionFinalizer` seam and E7 calls it, not the reverse.
+
+- **The §4.5 audit row is written inside the unblock transaction, never by an observer.** Observer
+  failures are swallowed and logged (`framework/event_manager.py:40-50`), so an audit row dispatched as
+  an event is an audit row that can silently not exist. E7 calls the framework's audit writer from
+  inside `service.unblock()`'s transaction; the two commit together or neither does.
+
+- **E3–E5 ships first; the unblock route carries no audit write today.** `service.unblock()` is
+  implemented, guarded, evented and tested here, and `conversation` writes **no SQL against
+  `admin_audit`** — a test greps the module for it. `admin_audit`, its writer and its retention are
+  framework-owned (PRD E7 §14: "one table several components write") and `conversation` therefore
+  declares **no** E7 dependency in `sequence` (MOD-1). When E7 §8.1's migration lands it adds one call
+  from `service.unblock()` to the framework's transaction-aware writer, on that transaction's own
+  cursor, with `meta = {conversation_id, message_id}`. This is ordering, not a runtime branch: there is
+  no "does the table exist?" check anywhere in the code.
+
+---
+
 ## 2026-09-26 — Toolbox rate limits: failures per address, requests per capability
 
 - **`express-rate-limit`, declared directly.** It was already installed through the MCP SDK, and

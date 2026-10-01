@@ -82,8 +82,14 @@
 | `job:list [--status S] [--source SRC] [--agent-view C] [--limit N]` | List recent jobs; surfaces failed/dead jobs with their error ([details](job-pause-resume.md)) |
 | `job:pause <job_id>` | Pause a running job (SIGTERM, keep session) ([details](job-pause-resume.md)) |
 | `job:resume <job_id>` | Resume a paused job (re-queue for consumer) ([details](job-pause-resume.md)) |
+| **Conversations** (the `conversation` module; all three are cron passes an operator can also run by hand) | |
+| `conversation:sweep` (`co:sw`) | Finish stranded submissions and reconcile finished jobs ([details](../modules/conversation.md)) |
+| `conversation:relay` (`co:rel`) | Relay framework job events into conversation threads, and prune the relayed rows. ONE process by contract: a second would invert a thread's event order |
+| `conversation:retention` (`co:ret`) | Prune conversation events, auto-archive idle threads, delete archived ones, sweep executions no thread owns — in that order ([details](../modules/conversation.md)) |
 | **Operations** | |
 | `consumer` | Start job consumer loop |
+| `limits:prune` (`li:pr`) | Delete expired rate-limit buckets |
+| `outbox:prune` (`ou:pr`) | Delete job-event outbox rows and closed defer stretches past `core/outbox/retention_days` |
 | `jira:periodic:sync` | Sync Jira recurring tasks to crontab |
 | `jira:periodic:configure [--check] [--project K]... [K ...]` | Create/verify the periodic status + Frequency field and sync its options from `frequency_map` across projects (setup command; uses the Jira admin token — `jira/jira_admin_token` paired with `jira/jira_admin_user`, falling back to `jira/jira_user`). Project keys may be given positionally or via `--project`. `--check` = read-only report, exit 1 on any inconsistency or if it could not be verified |
 | `publish <kind> [--agent-view C]` | Publish a job (jira-cron, jira-todo, jira-mention). Publishing is **per-view**: a deployment with no active agent_view fails with an actionable message instead of publishing on global config |

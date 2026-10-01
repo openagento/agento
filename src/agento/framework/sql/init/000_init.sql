@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS schedule (
 CREATE TABLE IF NOT EXISTS job (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     schedule_id     BIGINT UNSIGNED NULL,
-    type            ENUM('cron', 'todo', 'followup', 'blank') NOT NULL,
+    type            VARCHAR(32)  NOT NULL,   -- open vocabulary (PRD E3-E5 §4.2)
     source          VARCHAR(50) NOT NULL DEFAULT 'jira',
     agent_view_id   INT UNSIGNED NULL,
     priority        TINYINT UNSIGNED NOT NULL DEFAULT 50,
@@ -228,6 +228,9 @@ CREATE TABLE toolbox_capability (
 CREATE TABLE tool_invocation (
     id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     execution_id      CHAR(36)        NOT NULL,
+    -- 047: the RUN's execution id (§6.4.2). Not `execution_id` above, which is a fresh
+    -- per-call UUID and is UNIQUE.
+    run_execution_id  VARCHAR(64)     NULL,
     -- The capability by id, never its value. No FK: expired capabilities are purged,
     -- and the audit record outlives them.
     capability_id     BIGINT UNSIGNED NULL,
@@ -246,9 +249,12 @@ CREATE TABLE tool_invocation (
     -- pending until the dispatcher finalizes it; a row left pending is itself a signal.
     outcome           VARCHAR(24)     NOT NULL,
     created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- 047: the projection's checkpoint, on the producer row (§6.4.2).
+    conversation_relayed_at DATETIME  NULL,
     UNIQUE KEY uk_tool_invocation_execution (execution_id),
     KEY idx_tool_invocation_capability (capability_id),
-    KEY idx_tool_invocation_created (created_at)
+    KEY idx_tool_invocation_created (created_at),
+    KEY idx_tool_invocation_conversation_relay (conversation_relayed_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Platform users (E1.5, PRD E2 §5). Login and RBAC logic are E2's.
@@ -336,6 +342,61 @@ CREATE TABLE IF NOT EXISTS role_grant (
         REFERENCES agent_view (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- PRD E3-E5 §7.5 — the request limiter's counters. DB-backed, because an in-process
+-- counter limits one replica each and the panel may run several.
+-- No FK: a bucket key is a hash, and a bucket must outlive whatever it was derived from.
+CREATE TABLE IF NOT EXISTS limit_bucket (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    bucket_key CHAR(64) NOT NULL,             -- always sha256 hex, never the credential
+    bucket_kind VARCHAR(16) NOT NULL,         -- user | session | launch | address | fallback
+    window_start DATETIME NOT NULL,
+    request_count INT UNSIGNED NOT NULL DEFAULT 0,
+    auth_failures INT UNSIGNED NOT NULL DEFAULT 0,
+    held_until DATETIME NULL,
+    -- max(window_end, held_until) + core/limits/bucket_retention_seconds: the retention is
+    -- a floor on the sweep interval, never a cap on a live row's life.
+    expires_at DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_bucket (bucket_kind, bucket_key),
+    KEY idx_expires_at (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- PRD E3-E5 §6.4.1 — the framework's transactional outbox.
+-- A row is written through the CALLER's cursor, so it commits with the transition it
+-- describes: either both are there or neither is.
+-- No FK on job_id: jobs are pruned on their own schedule, and §6.4.1 specifies what a
+-- relay does when the job is gone.
+-- No conversation_id: the framework does not know about conversations. The relay resolves
+-- one, which is what keeps this table module-agnostic (PLC-2).
+CREATE TABLE IF NOT EXISTS job_event_outbox (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    job_id BIGINT UNSIGNED NOT NULL,
+    execution_id VARCHAR(64) NULL,
+    kind VARCHAR(32) NOT NULL,
+    payload JSON NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    relayed_at DATETIME NULL,
+    PRIMARY KEY (id),
+    KEY idx_relayed_id (relayed_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 046: one row per unbroken run of deferrals on one job (PRD E3-E5 §4.4, §10.1).
+--
+-- A conversation blocked behind its own earlier turn is offered and deferred once per poll
+-- tick. Announcing every deferral would put hundreds of identical events in a thread; the
+-- stretch collapses them into one, announced when the stretch CLOSES with the final count.
+-- `closed_at IS NULL` means "still blocked", which is why the prune never touches such a row.
+CREATE TABLE IF NOT EXISTS job_defer_stretch (
+    id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    job_id      BIGINT UNSIGNED NOT NULL,   -- no FK: jobs are pruned on their own schedule
+    stretch_seq INT UNSIGNED NOT NULL,
+    defer_count INT UNSIGNED NOT NULL DEFAULT 0,
+    opened_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    closed_at   DATETIME NULL,
+    UNIQUE KEY uq_job_stretch (job_id, stretch_seq),
+    KEY idx_closed_id (closed_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Mark all framework migrations as applied so setup:upgrade skips them
 INSERT INTO schema_migration (version) VALUES
     ('001_create_tables'),
@@ -380,4 +441,9 @@ INSERT INTO schema_migration (version) VALUES
     ('039_session'),
     ('040_launch'),
     ('041_role_grant'),
-    ('042_app_version_id_varchar');
+    ('042_app_version_id_varchar'),
+    ('043_job_type_varchar'),
+    ('044_limit_bucket'),
+    ('045_job_event_outbox'),
+    ('046_job_defer_stretch'),
+    ('047_tool_invocation_run_execution');

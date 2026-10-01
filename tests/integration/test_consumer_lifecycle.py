@@ -12,6 +12,19 @@ from agento.modules.claude.src.runner import ClaudeSubprocessRunner
 from .conftest import fetch_job, insert_primary_token, insert_queued_job, update_job
 
 
+def _outbox(job_id: int) -> list[dict]:
+    """The durable job-transition rows, read on a fresh connection like every other helper."""
+    from .conftest import _test_connection
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT kind FROM job_event_outbox WHERE job_id = %s ORDER BY id",
+                        (job_id,))
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
 class TestRetryFlow:
 
     def test_retryable_error_requeues_with_backoff(self, int_db_config, int_consumer_config):
@@ -203,6 +216,33 @@ class TestResumeOnTimeout:
         assert row["status"] == "TODO"
         assert row["error_class"] == "StaleJobRecovery"
         assert "pid=99999" in row["error_message"]
+
+    def test_the_claim_writes_its_own_outbox_row(self, int_db_config, int_consumer_config):
+        """PRD E3-E5 §6.4.2: `job.claimed` is written by the FRAMEWORK, in the consumer's
+        claim transaction. In it, not after it - a row written on a second commit is a
+        transition a crash between the two loses for ever."""
+        logger = logging.getLogger("test")
+        job_id = insert_queued_job(reference_id="AI-CLAIM-1", idempotency_key="claim:1")
+
+        job = Consumer(int_db_config, int_consumer_config, logger)._try_dequeue()
+
+        assert job is not None and job.id == job_id
+        # The newest row for this id: the suite recycles job ids, the outbox keeps history.
+        assert _outbox(job_id)[-1]["kind"] == "job.claimed"
+
+    def test_stale_recovery_to_dead_writes_job_failed(self, int_db_config,
+                                                      int_consumer_config):
+        """The same table §6.4.2 names for a fail/dead transition. A job the consumer buries
+        because its process died is a transition the thread must still be able to show."""
+        logger = logging.getLogger("test")
+        job_id = insert_queued_job(reference_id="AI-STALE-3", idempotency_key="stale:3",
+                                   max_attempts=1)
+        update_job(job_id, status="RUNNING", attempt=1, pid=99999)
+
+        Consumer(int_db_config, int_consumer_config, logger)._recover_stale_jobs()
+
+        assert fetch_job(job_id)["status"] == "DEAD"
+        assert _outbox(job_id)[-1]["kind"] == "job.failed"
 
     def test_stale_recovery_dead_pid_max_attempts(self, int_db_config, int_consumer_config):
         """RUNNING job with dead PID and max attempts exhausted -> DEAD."""

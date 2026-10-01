@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from dataclasses import fields as dataclass_fields
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum, StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -199,6 +199,124 @@ class JobPublishedEvent:
     agent_view_id: int | None = None
     priority: int = 50
     requester: JobRequester | None = None
+    job_id: int | None = None  # set by publish_service; None from publisher.publish()
+
+
+class ClaimVerdict(Enum):
+    """What `job_claim_before` observers decided about one claim (PRD E3-E5 §4.4)."""
+
+    ALLOW = "allow"
+    DEFER = "defer"
+
+
+@dataclass
+class JobClaimBeforeEvent:
+    """Dispatched inside the claim transaction, BEFORE the row goes RUNNING.
+
+    An observer may set `verdict = DEFER` to send the job back to the queue untouched -
+    same attempt count, no RUNNING row, no execution. `delay_ms` is how long the module
+    wants it held; the framework clamps it, because a 0 would leave the row immediately
+    eligible and restore the starvation the deferral exists to remove.
+
+    This is the one dispatch in the framework that is **not fail-open**: an observer that
+    raises defers the job. A claim is a decision about ordering, and an ordering rule that
+    silently stops applying when its observer breaks is worse than a delayed job.
+    """
+
+    job_id: int
+    verdict: ClaimVerdict = ClaimVerdict.ALLOW
+    delay_ms: int | None = None
+
+
+@dataclass
+class JobDeferAfterEvent:
+    """One unbroken run of deferrals, announced when it ENDS - never per deferral."""
+
+    job_id: int
+    stretch_seq: int
+    defer_count: int
+    reason: str = ""
+
+
+@dataclass
+class ExecutionEvent:
+    """One attempt, starting, finishing or abandoned (PRD E3-E5 §5.3).
+
+    The payload is deliberately three ids and nothing else: an observer that needs the
+    outcome reads the module's own row, and an event that carried the error would put agent
+    output and exception text in front of every observer of every run (SEC-6).
+    """
+
+    execution_id: str | None
+    job_id: int
+    attempt: int
+
+
+# --- Conversation lifecycle events (PRD E3-E5 §6.4) ---
+#
+# Ids only, never content. A thread's title is user text and a message is user text; an
+# event carrying either would put raw external input in front of every observer of every
+# thread (EVT-3, SEC-6). An observer that needs the text reads the row it is told about.
+#
+# Nothing in-tree observes these, and that is not a reason to delete them (EVT-7): an event
+# that marks a state change is the seam `app/code` and E7 extend. The durable writes are
+# elsewhere - the `conversation_event` row and the outbox - so losing one of these
+# notifications degrades a reaction, never the thread.
+
+
+@dataclass
+class ConversationCreatedEvent:
+    """A new thread."""
+
+    conversation_id: int
+    agent_view_id: int | None
+    user_id: int
+
+
+@dataclass
+class ConversationMessageEvent:
+    """A user turn accepted and published."""
+
+    conversation_id: int
+    message_id: int
+    job_id: int
+
+
+@dataclass
+class ConversationArchivedEvent:
+    """A thread archived. ONE event for both paths - the owner archiving it by hand and
+    §10.1 retiring it for idleness - because both go through one service function.
+    `actor_id` is None exactly when no human did it."""
+
+    conversation_id: int
+    actor_id: int | None
+    reason: str  # 'manual' | 'idle'
+
+
+@dataclass
+class ConversationReactivatedEvent:
+    """An archived thread brought back."""
+
+    conversation_id: int
+    actor_id: int
+
+
+@dataclass
+class ConversationDeletedEvent:
+    """A thread deleted, dispatched AFTER the delete commits. Notification only: the row and
+    everything cascading from it are already gone, so an observer has nothing to read and
+    nothing it does can affect the outcome."""
+
+    conversation_id: int
+
+
+@dataclass
+class ConversationUnblockedEvent:
+    """An operator released a thread blocked on a paused turn (PRD E3-E5 §4.5)."""
+
+    conversation_id: int
+    message_id: int
+    actor_id: int
 
 
 # --- Worker pool lifecycle events (Phase 9.5) ---
