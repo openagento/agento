@@ -1,0 +1,12 @@
+{
+  "name": "miniapps",
+  "version": "1.0.0",
+  "description": "Miniapps — activated artifact versions that call their declared toolbox tools through the panel",
+  "sequence": ["versioned_artifacts", "web"],
+  "order": 110,
+  "tools": [
+    {"type": "mcp", "name": "miniapp", "description": "Miniapps toolset master switch — every miniapp_* tool additionally requires its own key", "toolset": "miniapps"},
+    {"type": "mcp", "name": "miniapp_get_launch_spec", "description": "Tell the panel whether an artifact version is an activated miniapp, and which actions it may call", "toolset": "miniapps", "requires": "miniapp"},
+    {"type": "mcp", "name": "miniapp_list", "description": "List the activated miniapps whose current version this scope may launch", "toolset": "miniapps", "requires": "miniapp"}
+  ]
+}

@@ -56,6 +56,19 @@ describe('discoverAuthSources', () => {
     expect(logs.join('\n')).toMatch(/malformed authSources/);
   });
 
+  it('leaves out the source of a module that module:disable turned off', async () => {
+    moduleWith('sessions', "export const authSources = [['session', async () => null]];\n");
+    moduleWith('launches', "export const authSources = [['launch', async () => null]];\n");
+    fs.mkdirSync(path.join(tmpDir, '_etc_'));
+    fs.writeFileSync(path.join(tmpDir, '_etc_', 'modules.json'), JSON.stringify({ launches: false }));
+    process.env.APP_ETC_DIR = path.join(tmpDir, '_etc_');
+    try {
+      expect((await discover()).map(([kind]) => kind)).toEqual(['session']);
+    } finally {
+      delete process.env.APP_ETC_DIR;
+    }
+  });
+
   it('finds nothing when no module exports authSources (E1 ships none)', async () => {
     moduleWith('plain', 'export function register() {}\n');
     expect(await discover()).toEqual([]);

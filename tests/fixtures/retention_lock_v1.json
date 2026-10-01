@@ -1,0 +1,9 @@
+{
+  "_comment": "The MySQL named lock web create_launch and the toolbox prune share (PRD E6 \u00a75): 'va_ret:' + sha1(artifact_code).",
+  "cases": {
+    "site": "va_ret:c099a42a5555825cdb50df0c04932bcd29613457",
+    "demo-site": "va_ret:4a685c9e79ee8ad67c1aafbf7691de7a87b82055"
+  },
+  "live_launch_versions_sql": "SELECT DISTINCT version_id FROM launch WHERE artifact_code = ? AND revoked_at IS NULL AND expires_at > NOW()",
+  "_comment_sql": "The live-launch query the prune runs under the lock; tests/integration/test_retention_lock.py runs it against the real schema."
+}

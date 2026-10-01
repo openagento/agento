@@ -610,6 +610,45 @@ describe('toolbox discovery', () => {
     const modules = scanModules();
     expect(modules.map(m => m.name)).toContain('core-mod');
   });
+
+  // A module turned off with `module:disable` is gone from every toolbox path — tools,
+  // auth sources, REST routes, config defaults — because they all start from scanModules().
+  describe('app/etc/modules.json', () => {
+    const etc = () => path.join(tmpDir, '_etc_');
+    const mods = (...names) => {
+      for (const name of names) {
+        fs.mkdirSync(path.join(tmpDir, name), { recursive: true });
+        fs.writeFileSync(path.join(tmpDir, name, 'module.json'), JSON.stringify({ name }));
+      }
+    };
+    const status = (text) => { fs.mkdirSync(etc(), { recursive: true }); fs.writeFileSync(path.join(etc(), 'modules.json'), text); };
+    beforeEach(() => { process.env.APP_ETC_DIR = etc(); mods('on-mod', 'off-mod'); });
+    afterEach(() => { delete process.env.APP_ETC_DIR; });
+    const names = () => scanModules().map(m => m.name).sort();
+
+    it('leaves out a module set to false', () => {
+      status(JSON.stringify({ 'off-mod': false, 'on-mod': true }));
+      expect(names()).toEqual(['on-mod']);
+    });
+
+    it('keeps a module the file does not list', () => {
+      status(JSON.stringify({ 'off-mod': false }));
+      expect(names()).toEqual(['on-mod']);
+    });
+
+    it('keeps every module when the file is absent or unparseable', () => {
+      expect(names()).toEqual(['off-mod', 'on-mod']);
+      status('{not json');
+      expect(names()).toEqual(['off-mod', 'on-mod']);
+    });
+
+    it('applies a change without a restart', () => {
+      status(JSON.stringify({}));
+      expect(names()).toEqual(['off-mod', 'on-mod']);
+      status(JSON.stringify({ 'off-mod': false }));
+      expect(names()).toEqual(['on-mod']);
+    });
+  });
 });
 
 describe('isToolEnabled', () => {

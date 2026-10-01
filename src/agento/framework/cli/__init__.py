@@ -57,6 +57,7 @@ _MAYBE_INTERACTIVE_COMMANDS = frozenset({
 # argparse would report it as unknown.
 _LOCAL_MODULE_COMMANDS = frozenset({
     "artifact:init", "artifact:list", "artifact:publish", "artifact:delete", "artifact:auth",
+    "miniapp:activate", "miniapp:deactivate", "miniapp:list",
 })
 
 

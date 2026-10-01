@@ -1,0 +1,7 @@
+{
+  "commands": [
+    {"name": "miniapp:activate", "class": "src.commands.activate.MiniappActivateCommand"},
+    {"name": "miniapp:deactivate", "class": "src.commands.deactivate.MiniappDeactivateCommand"},
+    {"name": "miniapp:list", "class": "src.commands.list.MiniappListCommand"}
+  ]
+}

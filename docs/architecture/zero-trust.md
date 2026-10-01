@@ -96,8 +96,10 @@ a `job_id` on the URL may only agree with the capability's job.
 | `miniapp` | the Web API, for a miniapp launch | invoke only | `core/auth/capability_ttl`, single use |
 
 Invoke is `POST /internal/tools/{name}:invoke`. The two user kinds need a live source (session or
-launch) on every call. The `web` module ships the `session` checker (E2); `miniapp` is refused until
-E6 adds the `launch` checker. Every
+launch) on every call. The `web` module ships the `session` checker (E2) and the `miniapps` module
+the `launch` checker (E6). A `miniapp` capability also carries a `tool_ceiling` — the launch's
+allowed actions — and the app triple, which every `tool_invocation` row records
+([../modules/miniapps.md](../modules/miniapps.md)). Every
 tool call on every transport goes through one dispatcher that authorizes it per call and writes a
 `tool_invocation` audit row — see [auth-context.md](auth-context.md).
 

@@ -63,3 +63,25 @@ def test_pass_still_works_but_warns_it_lands_in_shell_history(capsys, toolbox):
     (_cmd_argv, kw), = toolbox
     assert json.loads(kw["input"])["password"] == "legacy-pass"
     assert "--pass-stdin" in capsys.readouterr().err
+
+
+def _toolbox_body(monkeypatch, tmp_path, body):
+    monkeypatch.setattr("agento.framework.cli._project.find_project_root", lambda: tmp_path, raising=False)
+    monkeypatch.setattr("agento.framework.cli._project.compose_file_flags",
+                        lambda _root: ["-f", "docker-compose.yml"], raising=False)
+    monkeypatch.setattr(subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(body), stderr=""))
+
+
+def test_show_prints_the_share_url(monkeypatch, tmp_path, capsys):
+    _toolbox_body(monkeypatch, tmp_path, {"auth_enabled": True, "auth_user": "u", "password": "p",
+                                          "share_url": "https://t.share.localhost:8443/"})
+    _cmd().execute(_parse(["demo-site", "--show"]))
+    assert "share:    https://t.share.localhost:8443/" in capsys.readouterr().out
+
+
+def test_show_says_when_shares_are_not_configured(monkeypatch, tmp_path, capsys):
+    _toolbox_body(monkeypatch, tmp_path, {"auth_enabled": True, "auth_user": "u", "password": "p",
+                                          "share_url": None})
+    _cmd().execute(_parse(["demo-site", "--show"]))
+    assert "not configured" in capsys.readouterr().out

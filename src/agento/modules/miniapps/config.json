@@ -1,0 +1,5 @@
+{
+  "tools/miniapp/is_enabled": "0",
+  "tools/miniapp_get_launch_spec/is_enabled": "0",
+  "tools/miniapp_list/is_enabled": "0"
+}

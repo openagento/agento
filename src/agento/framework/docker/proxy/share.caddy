@@ -1,0 +1,18 @@
+# One origin per share (PRD E6 §9.1), labelled by the share's opaque token. The artifacts
+# server maps the token to its artifact and checks the Basic credential (DECISIONS
+# 2026-09-27); nothing here reaches web. Appended to the Caddyfile by entrypoint.sh only
+# when AGENTO_SHARE_HOST is set and valid, so an empty value serves no share at all.
+*.{$AGENTO_SHARE_HOST} {
+	tls internal
+	import access_log
+	import strip_identity
+	header Referrer-Policy no-referrer
+	@share header_regexp share Host ^([0-9a-f]{32})\.
+	handle @share {
+		rewrite * /s/{re.share.1}{uri}
+		reverse_proxy artifacts:8080
+	}
+	handle {
+		respond 404
+	}
+}
