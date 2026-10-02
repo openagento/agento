@@ -462,6 +462,7 @@ Modal dialog on a native <dialog>. Use the `<ag-dialog>` element, which opens an
   border: 0;
   border-radius: var(--ag-radius-md);
 }
+/* Mantine's Overlay default (Overlay.css), not a theme variable. */
 .ag-dialog::backdrop { background: rgb(0 0 0 / 0.6); }
 .ag-dialog__title { margin: 0 0 var(--ag-space-3); font-size: var(--ag-font-size-md); font-weight: 500; }
 

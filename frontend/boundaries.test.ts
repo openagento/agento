@@ -63,6 +63,13 @@ describe("import boundaries", () => {
     expect(check(walk(KIT.root).filter((f) => !f.includes(`${sep}scripts${sep}`)), () => KIT)).toEqual([]);
   });
 
+  it("nothing imports the lookbook (RULES.md UI-5)", () => {
+    const lookbook = join(ROOT, "lookbook");
+    const files = [...walk(join(ROOT, "panel")), ...walk(join(ROOT, "packages")), ...panels.flatMap(walk)];
+    expect(files.flatMap((f) => importsOf(f).filter((s) => s.startsWith(".") && inside(resolve(dirname(f), s), lookbook))
+      .map((s) => `${relative(ROOT, f)} → ${s}`))).toEqual([]);
+  });
+
   describe("the checker refuses", () => {
     const panel = join(MODULES, "conversation/panel");
     const rule = { ...MODULE_PANEL, root: panel };
