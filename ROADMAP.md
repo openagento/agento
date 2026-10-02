@@ -118,7 +118,7 @@ E2 shipped the panel API: users, sessions, `admin`/`user` roles with per-scope g
 `user_session` capabilities, and the launch exchange that authorizes files on the apps origin
 ([docs/architecture/panel.md](docs/architecture/panel.md)). Left out of E2:
 
-- the panel frontend (E2 ships the API only) and an admin-TUI users screen;
+- an admin-TUI users screen (the panel frontend shipped in E8, below);
 - per-user grants (visibility is per role), and `operation` grants beyond `artifact.launch`;
 - a DB-backed login throttle (the current one is per process);
 - rate limits for the launch redeem and `/internal/authz/app` (RULES.md SEC-12; see the zero-trust.md debt row);
@@ -126,6 +126,23 @@ E2 shipped the panel API: users, sessions, `admin`/`user` roles with per-scope g
 - **per-run UID or container isolation (OPEN)**: until it exists, panel roles do not separate users
   from what a shell-capable agent can read on the shared mount
   ([docs/deployment/panel.md](docs/deployment/panel.md)).
+
+E8 shipped the composable frontend: a static React panel served by `proxy`, the `@agento/ui`
+components over one token source, the miniapp kit at `/_ui/<version>/` and the generated
+`miniapp-ui` skill ([docs/development/frontend.md](docs/development/frontend.md)). It added no
+backend route, so these gaps stay open, each needing a route first:
+
+- **conversation messages are not paged**: the messages route answers the oldest 100 rows and takes
+  no `after`, so a long thread shows only its start;
+- **no module list for the panel**: there is no `GET /api/admin/modules`, so the navigation knows a
+  module only through its own probe route (fail closed: a module with no GET route has no screen);
+- **no config screen**: there is no `GET /api/admin/config`, so the config, secret and
+  `toolbox_only` forms wait for an admin config API (E7);
+- **no `job.succeeded` event**: a turn's success is read from the assistant message that follows it;
+- **no snapshot watermark**: a REST snapshot carries no stream event id, so the panel refetches on
+  every stream (re)open instead of resuming exactly;
+- **the release must build the frontend**: CI and `release.yml` run `npm ci && npm run build`
+  before `uv build`, and the wheel hook refuses a wheel without the panel.
 
 ### 🟡 Conversations, history and chat (E3–E5)
 

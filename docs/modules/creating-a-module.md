@@ -458,6 +458,12 @@ Onboarding runs as the last step of `setup:upgrade` — after migrations and dat
 
 See [di.json onboarding](module-json.md#onboarding) for the full protocol reference.
 
+## 17. Panel Screens (Core Modules Only)
+
+A core module under `src/agento/modules/` may add screens to the panel with `panel/index.ts`.
+A module in `app/code/` or from PyPI cannot: no user module ships JavaScript into the panel
+origin. See [Adding a module screen](../development/frontend.md#adding-a-module-screen).
+
 ## Module Structure (Final)
 
 ```
@@ -481,6 +487,7 @@ modules/my-crm/
       sync.py                 # CLI command classes (optional)
   toolbox/                    # JS code (runs in toolbox container)
     crm-api.js                # Custom MCP tools (optional)
+  panel/                      # Panel screens — CORE modules only (see docs/development/frontend.md)
   knowledge/
     README.md                 # System overview + schema docs
   prompts/

@@ -391,7 +391,7 @@ class OutlookPublishCommand:
 
     @property
     def shortcut(self) -> str:
-        return ""
+        return "ou:pu"
 
     @property
     def help(self) -> str:

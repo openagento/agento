@@ -6,6 +6,8 @@ List the versioned artifacts the store holds, with their metadata and preview UR
 uv run bin/agento artifact:list [--actor <who>]
 ```
 
+Shortcut: `ar:li`.
+
 One row per artifact: `artifact_code`, current version, title, owner, `created_at`,
 preview URL. Any missing metadata prints as `-`. The preview URL is built from
 `serving/public_base_url`. Since E1.5 the `artifacts` container publishes no host port, so

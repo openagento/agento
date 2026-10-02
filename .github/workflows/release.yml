@@ -52,6 +52,8 @@ jobs:
       # non-root run here is the one the root container cannot give us.
       - run: sudo mkdir -p /workspace/artifacts && sudo chown -R "$(id -u):$(id -g)" /workspace
       - run: cd src/agento/toolbox && npm ci && npm test
+      # Panel, ui kit and miniapp kit: build, lint, types, unit tests and every story in Chromium.
+      - run: cd frontend && npm ci && npm test
 
   build:
     needs: test
@@ -59,7 +61,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # The built panel and kit are gitignored; the wheel ships them (hatch_build.py refuses a wheel without).
+      - run: cd frontend && npm ci && npm run build
       - run: uv build --no-sources
+      - run: uv run python tests/check_wheel_frontend.py dist/*.whl
       - uses: actions/upload-artifact@v4
         with:
           name: dist

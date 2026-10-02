@@ -7,6 +7,8 @@ Remove an artifact from every place it lives: the served pages, the store, and t
 uv run bin/agento artifact:delete <artifact_code> [--actor <who>]
 ```
 
+Shortcut: `ar:de`.
+
 | Flag | Meaning |
 |---|---|
 | `--actor <who>` | Recorded in the audit row (default `admin`) |

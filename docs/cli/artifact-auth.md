@@ -6,6 +6,8 @@ Set, rotate, show or disable an artifact's HTTP Basic auth.
 uv run bin/agento artifact:auth <artifact_code> [--user <u>] [--pass-stdin] [--disable] [--show] [--actor <who>]
 ```
 
+Shortcut: `ar:au`.
+
 | Flag | Meaning |
 |---|---|
 | `--user <u>` | Basic auth user. Empty defaults to the artifact code |
