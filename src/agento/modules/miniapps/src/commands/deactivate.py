@@ -13,7 +13,7 @@ class MiniappDeactivateCommand:
 
     @property
     def shortcut(self) -> str:
-        return ""
+        return "mi:de"
 
     @property
     def help(self) -> str:

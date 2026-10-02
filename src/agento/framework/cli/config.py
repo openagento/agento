@@ -482,7 +482,7 @@ class ConfigResolveCommand:
 
     @property
     def shortcut(self) -> str:
-        return ""
+        return "co:res"
 
     @property
     def help(self) -> str:
