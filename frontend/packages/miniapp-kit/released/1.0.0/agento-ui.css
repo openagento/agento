@@ -24,21 +24,50 @@
 
 :root {
   color-scheme: light dark;
-  --ag-color-background: #f7f8fa;
-  --ag-color-surface: #ffffff;
-  --ag-color-surface-elevated: #ffffff;
-  --ag-color-text: #111827;
-  --ag-color-text-muted: #4b5563;
-  --ag-color-border: #d1d5db;
-  --ag-color-primary: #4338ca;
-  --ag-color-primary-text: #ffffff;
-  --ag-color-success: #15803d;
-  --ag-color-warning: #a16207;
-  --ag-color-error: #b91c1c;
-  --ag-color-info: #1d4ed8;
-  --ag-radius-sm: 4px;
-  --ag-radius-md: 8px;
-  --ag-radius-lg: 12px;
+  --ag-color-background: #fff;
+  --ag-color-surface: #fff;
+  --ag-color-surface-hover: #f8f9fa;
+  --ag-color-surface-text: #000;
+  --ag-color-border: #ced4da;
+  --ag-color-divider: #dee2e6;
+  --ag-color-text: #000;
+  --ag-color-text-muted: #495057;
+  --ag-color-placeholder: #adb5bd;
+  --ag-color-link: #1971c2;
+  --ag-color-primary: #1971c2;
+  --ag-color-primary-hover: #1864ab;
+  --ag-color-primary-text: #fff;
+  --ag-color-primary-light: #d0ebff;
+  --ag-color-primary-light-hover: #a5d8ff;
+  --ag-color-primary-light-text: #1864ab;
+  --ag-color-error: #e03131;
+  --ag-color-chevron: #868e96;
+  --ag-color-neutral: #343a40;
+  --ag-color-neutral-light: #f1f3f5;
+  --ag-color-neutral-light-hover: #e9ecef;
+  --ag-color-neutral-light-text: #212529;
+  --ag-color-info: #1971c2;
+  --ag-color-info-light: #d0ebff;
+  --ag-color-info-light-hover: #a5d8ff;
+  --ag-color-info-light-text: #1864ab;
+  --ag-color-success: #237032;
+  --ag-color-success-light: #d3f9d8;
+  --ag-color-success-light-hover: #b2f2bb;
+  --ag-color-success-light-text: #237032;
+  --ag-color-warning: #8a5700;
+  --ag-color-warning-light: #fff3bf;
+  --ag-color-warning-light-hover: #ffec99;
+  --ag-color-warning-light-text: #8a5700;
+  --ag-color-danger: #e03131;
+  --ag-color-danger-light: #ffe3e3;
+  --ag-color-danger-light-hover: #ffc9c9;
+  --ag-color-danger-light-text: #c92a2a;
+  --ag-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath fill='%23868e96' fill-rule='evenodd' d='M4.93179 5.43179C4.75605 5.60753 4.75605 5.89245 4.93179 6.06819C5.10753 6.24392 5.39245 6.24392 5.56819 6.06819L7.49999 4.13638L9.43179 6.06819C9.60753 6.24392 9.89245 6.24392 10.0682 6.06819C10.2439 5.89245 10.2439 5.60753 10.0682 5.43179L7.81819 3.18179C7.73379 3.0974 7.61933 3.04999 7.49999 3.04999C7.38064 3.04999 7.26618 3.0974 7.18179 3.18179L4.93179 5.43179ZM10.0682 9.56819C10.2439 9.39245 10.2439 9.10753 10.0682 8.93179C9.89245 8.75606 9.60753 8.75606 9.43179 8.93179L7.49999 10.8636L5.56819 8.93179C5.39245 8.75606 5.10753 8.75606 4.93179 8.93179C4.75605 9.10753 4.75605 9.39245 4.93179 9.56819L7.18179 11.8182C7.35753 11.9939 7.64245 11.9939 7.81819 11.8182L10.0682 9.56819Z'/%3E%3C/svg%3E");
+  --ag-radius-xs: 0.125rem;
+  --ag-radius-sm: 0.25rem;
+  --ag-radius-md: 0.5rem;
+  --ag-radius-lg: 1rem;
+  --ag-radius-xl: 2rem;
   --ag-space-1: 4px;
   --ag-space-2: 8px;
   --ag-space-3: 12px;
@@ -49,46 +78,103 @@
   --ag-space-8: 40px;
   --ag-font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --ag-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --ag-font-size-sm: 13px;
-  --ag-font-size-md: 14px;
-  --ag-font-size-lg: 16px;
-  --ag-font-size-xl: 20px;
+  --ag-font-size-xs: 0.75rem;
+  --ag-font-size-sm: 0.875rem;
+  --ag-font-size-md: 1rem;
+  --ag-font-size-lg: 1.125rem;
+  --ag-font-size-xl: 1.25rem;
+  --ag-line-height: 1.55;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ag-color-background: #0f1115;
-    --ag-color-surface: #171a21;
-    --ag-color-surface-elevated: #1f2330;
-    --ag-color-text: #e5e7eb;
-    --ag-color-text-muted: #9ca3af;
-    --ag-color-border: #374151;
-    --ag-color-primary: #a5b4fc;
-    --ag-color-primary-text: #111827;
-    --ag-color-success: #4ade80;
-    --ag-color-warning: #facc15;
-    --ag-color-error: #f87171;
-    --ag-color-info: #93c5fd;
+    --ag-color-background: #242424;
+    --ag-color-surface: #2e2e2e;
+    --ag-color-surface-hover: #3b3b3b;
+    --ag-color-surface-text: #fff;
+    --ag-color-border: #424242;
+    --ag-color-divider: #424242;
+    --ag-color-text: #C9C9C9;
+    --ag-color-text-muted: #9a9a9a;
+    --ag-color-placeholder: #696969;
+    --ag-color-link: #4dabf7;
+    --ag-color-primary: #1971c2;
+    --ag-color-primary-hover: #1864ab;
+    --ag-color-primary-text: #fff;
+    --ag-color-primary-light: rgba(12, 50, 86, 1);
+    --ag-color-primary-light-hover: rgba(17, 70, 120, 1);
+    --ag-color-primary-light-text: #e7f5ff;
+    --ag-color-error: #ff8787;
+    --ag-color-chevron: #696969;
+    --ag-color-neutral: #ced4da;
+    --ag-color-neutral-light: rgba(17, 19, 21, 1);
+    --ag-color-neutral-light-hover: rgba(23, 26, 29, 1);
+    --ag-color-neutral-light-text: #f8f9fa;
+    --ag-color-info: #4dabf7;
+    --ag-color-info-light: rgba(12, 50, 86, 1);
+    --ag-color-info-light-hover: rgba(17, 70, 120, 1);
+    --ag-color-info-light-text: #e7f5ff;
+    --ag-color-success: #69db7c;
+    --ag-color-success-light: rgba(22, 69, 31, 1);
+    --ag-color-success-light-hover: rgba(30, 97, 43, 1);
+    --ag-color-success-light-text: #ebfbee;
+    --ag-color-warning: #ffd43b;
+    --ag-color-warning-light: rgba(115, 60, 0, 1);
+    --ag-color-warning-light-hover: rgba(161, 83, 0, 1);
+    --ag-color-warning-light-text: #fff9db;
+    --ag-color-danger: #ff8787;
+    --ag-color-danger-light: rgba(101, 21, 21, 1);
+    --ag-color-danger-light-hover: rgba(141, 29, 29, 1);
+    --ag-color-danger-light-text: #fff5f5;
+    --ag-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath fill='%23696969' fill-rule='evenodd' d='M4.93179 5.43179C4.75605 5.60753 4.75605 5.89245 4.93179 6.06819C5.10753 6.24392 5.39245 6.24392 5.56819 6.06819L7.49999 4.13638L9.43179 6.06819C9.60753 6.24392 9.89245 6.24392 10.0682 6.06819C10.2439 5.89245 10.2439 5.60753 10.0682 5.43179L7.81819 3.18179C7.73379 3.0974 7.61933 3.04999 7.49999 3.04999C7.38064 3.04999 7.26618 3.0974 7.18179 3.18179L4.93179 5.43179ZM10.0682 9.56819C10.2439 9.39245 10.2439 9.10753 10.0682 8.93179C9.89245 8.75606 9.60753 8.75606 9.43179 8.93179L7.49999 10.8636L5.56819 8.93179C5.39245 8.75606 5.10753 8.75606 4.93179 8.93179C4.75605 9.10753 4.75605 9.39245 4.93179 9.56819L7.18179 11.8182C7.35753 11.9939 7.64245 11.9939 7.81819 11.8182L10.0682 9.56819Z'/%3E%3C/svg%3E");
   }
 }
 
 :root[data-theme="dark"] {
-  --ag-color-background: #0f1115;
-  --ag-color-surface: #171a21;
-  --ag-color-surface-elevated: #1f2330;
-  --ag-color-text: #e5e7eb;
-  --ag-color-text-muted: #9ca3af;
-  --ag-color-border: #374151;
-  --ag-color-primary: #a5b4fc;
-  --ag-color-primary-text: #111827;
-  --ag-color-success: #4ade80;
-  --ag-color-warning: #facc15;
-  --ag-color-error: #f87171;
-  --ag-color-info: #93c5fd;
+  --ag-color-background: #242424;
+  --ag-color-surface: #2e2e2e;
+  --ag-color-surface-hover: #3b3b3b;
+  --ag-color-surface-text: #fff;
+  --ag-color-border: #424242;
+  --ag-color-divider: #424242;
+  --ag-color-text: #C9C9C9;
+  --ag-color-text-muted: #9a9a9a;
+  --ag-color-placeholder: #696969;
+  --ag-color-link: #4dabf7;
+  --ag-color-primary: #1971c2;
+  --ag-color-primary-hover: #1864ab;
+  --ag-color-primary-text: #fff;
+  --ag-color-primary-light: rgba(12, 50, 86, 1);
+  --ag-color-primary-light-hover: rgba(17, 70, 120, 1);
+  --ag-color-primary-light-text: #e7f5ff;
+  --ag-color-error: #ff8787;
+  --ag-color-chevron: #696969;
+  --ag-color-neutral: #ced4da;
+  --ag-color-neutral-light: rgba(17, 19, 21, 1);
+  --ag-color-neutral-light-hover: rgba(23, 26, 29, 1);
+  --ag-color-neutral-light-text: #f8f9fa;
+  --ag-color-info: #4dabf7;
+  --ag-color-info-light: rgba(12, 50, 86, 1);
+  --ag-color-info-light-hover: rgba(17, 70, 120, 1);
+  --ag-color-info-light-text: #e7f5ff;
+  --ag-color-success: #69db7c;
+  --ag-color-success-light: rgba(22, 69, 31, 1);
+  --ag-color-success-light-hover: rgba(30, 97, 43, 1);
+  --ag-color-success-light-text: #ebfbee;
+  --ag-color-warning: #ffd43b;
+  --ag-color-warning-light: rgba(115, 60, 0, 1);
+  --ag-color-warning-light-hover: rgba(161, 83, 0, 1);
+  --ag-color-warning-light-text: #fff9db;
+  --ag-color-danger: #ff8787;
+  --ag-color-danger-light: rgba(101, 21, 21, 1);
+  --ag-color-danger-light-hover: rgba(141, 29, 29, 1);
+  --ag-color-danger-light-text: #fff5f5;
+  --ag-select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 15 15'%3E%3Cpath fill='%23696969' fill-rule='evenodd' d='M4.93179 5.43179C4.75605 5.60753 4.75605 5.89245 4.93179 6.06819C5.10753 6.24392 5.39245 6.24392 5.56819 6.06819L7.49999 4.13638L9.43179 6.06819C9.60753 6.24392 9.89245 6.24392 10.0682 6.06819C10.2439 5.89245 10.2439 5.60753 10.0682 5.43179L7.81819 3.18179C7.73379 3.0974 7.61933 3.04999 7.49999 3.04999C7.38064 3.04999 7.26618 3.0974 7.18179 3.18179L4.93179 5.43179ZM10.0682 9.56819C10.2439 9.39245 10.2439 9.10753 10.0682 8.93179C9.89245 8.75606 9.60753 8.75606 9.43179 8.93179L7.49999 10.8636L5.56819 8.93179C5.39245 8.75606 5.10753 8.75606 4.93179 8.93179C4.75605 9.10753 4.75605 9.39245 4.93179 9.56819L7.18179 11.8182C7.35753 11.9939 7.64245 11.9939 7.81819 11.8182L10.0682 9.56819Z'/%3E%3C/svg%3E");
 }
 
 /* The `.ag-*` component rules (PRD E8 §10.3). Written against the `--ag-*` variables only;
-   no literal color here. Every block opens with a `@catalogue` comment: the authoring skill is
+   no literal color here. Each rule copies the look of its Mantine twin at size `sm` (the
+   acceptance stories compare their computed styles), so a miniapp looks like the panel. Every block opens with a `@catalogue` comment: the authoring skill is
    generated from these comments, and `npm test` fails when a block has none. */
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -101,10 +187,13 @@ Page root. Put it on <body>: it sets the font, the text color and the background
   margin: 0;
   font-family: var(--ag-font-family);
   font-size: var(--ag-font-size-md);
-  line-height: 1.5;
+  line-height: var(--ag-line-height);
   color: var(--ag-color-text);
   background: var(--ag-color-background);
 }
+/* Zero specificity, so a class on the link (`.ag-button`, a Mantine component) wins. */
+:where(.ag-app) a { color: var(--ag-color-link); text-decoration: none; }
+:where(.ag-app) a:hover { text-decoration: underline; }
 
 /* @catalogue .ag-page
 Centered page column with side gutters. Full width at 320px, at most 960px wide.
@@ -148,7 +237,7 @@ Section title inside a page.
 */
 .ag-section-header {
   margin: var(--ag-space-5) 0 var(--ag-space-3);
-  font-size: var(--ag-font-size-lg);
+  font-size: var(--ag-font-size-md);
   font-weight: 600;
 }
 
@@ -161,10 +250,10 @@ Bordered surface for one item. Header, body and an optional meta line.
   display: block;
   padding: var(--ag-space-4);
   font-family: var(--ag-font-family);
-  font-size: var(--ag-font-size-md);
+  font-size: var(--ag-font-size-sm);
   color: var(--ag-color-text);
-  background: var(--ag-color-surface);
-  border: 1px solid var(--ag-color-border);
+  background: var(--ag-color-background);
+  border: 1px solid var(--ag-color-divider);
   border-radius: var(--ag-radius-md);
 }
 .ag-card__head {
@@ -173,17 +262,17 @@ Bordered surface for one item. Header, body and an optional meta line.
   justify-content: space-between;
   gap: var(--ag-space-2);
 }
-.ag-card__title { margin: 0; font-size: var(--ag-font-size-lg); font-weight: 600; }
+.ag-card__title { margin: 0; font-size: var(--ag-font-size-md); font-weight: 600; }
 .ag-card__body { margin-top: var(--ag-space-2); }
 .ag-card__body--pre { white-space: pre-wrap; overflow-wrap: anywhere; }
-.ag-card__meta { margin: var(--ag-space-2) 0 0; font-size: var(--ag-font-size-sm); color: var(--ag-color-text-muted); }
+.ag-card__meta { margin: var(--ag-space-2) 0 0; font-size: var(--ag-font-size-xs); color: var(--ag-color-text-muted); }
 
 /* @catalogue .ag-job
 Job status card: an `.ag-card` with a state badge. States: pending, published, running, succeeded, failed, blocked.
 <article class="ag-card ag-job"><header class="ag-card__head"><h3 class="ag-card__title">Nightly import</h3><span class="ag-badge ag-badge--running">Running</span></header><p class="ag-card__body">Step 2 of 4</p><p class="ag-card__meta">Updated 10:42</p></article>
 */
 .ag-job { border-left-width: 4px; }
-.ag-job:has(.ag-badge--failed) { border-left-color: var(--ag-color-error); }
+.ag-job:has(.ag-badge--failed) { border-left-color: var(--ag-color-danger); }
 .ag-job:has(.ag-badge--succeeded) { border-left-color: var(--ag-color-success); }
 .ag-job:has(.ag-badge--blocked) { border-left-color: var(--ag-color-warning); }
 .ag-job:has(.ag-badge--running) { border-left-color: var(--ag-color-info); }
@@ -193,23 +282,29 @@ Short status label. Modifiers: --pending, --published, --running, --succeeded, -
 <span class="ag-badge ag-badge--succeeded">Succeeded</span>
 */
 .ag-badge {
-  display: inline-flex;
+  display: inline-grid;
   align-items: center;
-  padding: 0 var(--ag-space-2);
-  font-size: var(--ag-font-size-sm);
-  font-weight: 500;
-  line-height: 22px;
+  justify-content: center;
+  width: fit-content;
+  height: 20px;
+  padding: 0 10px;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  letter-spacing: 0.25px;
+  text-transform: uppercase;
   white-space: nowrap;
-  color: var(--ag-color-text-muted);
-  background: transparent;
-  border: 1px solid currentColor;
-  border-radius: var(--ag-radius-sm);
+  text-overflow: ellipsis;
+  color: var(--ag-color-neutral-light-text);
+  background: var(--ag-color-neutral-light);
+  border: 1px solid transparent;
+  border-radius: 1000px;
 }
-.ag-badge--pending, .ag-badge--published, .ag-badge--neutral { color: var(--ag-color-text-muted); }
-.ag-badge--running, .ag-badge--info { color: var(--ag-color-info); }
-.ag-badge--succeeded { color: var(--ag-color-success); }
-.ag-badge--failed { color: var(--ag-color-error); }
-.ag-badge--blocked { color: var(--ag-color-warning); }
+.ag-badge--running, .ag-badge--info { color: var(--ag-color-info-light-text); background: var(--ag-color-info-light); }
+.ag-badge--succeeded { color: var(--ag-color-success-light-text); background: var(--ag-color-success-light); }
+.ag-badge--failed { color: var(--ag-color-danger-light-text); background: var(--ag-color-danger-light); }
+.ag-badge--blocked { color: var(--ag-color-warning-light-text); background: var(--ag-color-warning-light); }
 
 /* @catalogue .ag-button
 Button. Modifiers: --primary, --subtle, --danger. Use a real <button>.
@@ -220,61 +315,98 @@ Button. Modifiers: --primary, --subtle, --danger. Use a real <button>.
   align-items: center;
   justify-content: center;
   gap: var(--ag-space-2);
-  min-height: 36px;
-  padding: 0 var(--ag-space-4);
-  font: inherit;
-  font-weight: 500;
-  color: var(--ag-color-text);
+  height: 36px;
+  padding: 0 18px;
+  overflow: hidden;
+  font-family: var(--ag-font-family);
+  font-size: var(--ag-font-size-sm);
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--ag-color-surface-text);
   background: var(--ag-color-surface);
   border: 1px solid var(--ag-color-border);
   border-radius: var(--ag-radius-md);
   cursor: pointer;
+  user-select: none;
 }
+.ag-button:hover { background: var(--ag-color-surface-hover); }
+.ag-button:active { transform: translateY(1px); }
 .ag-button:focus-visible { outline: 2px solid var(--ag-color-primary); outline-offset: 2px; }
-.ag-button:disabled { opacity: 0.55; cursor: not-allowed; }
-.ag-button--primary { color: var(--ag-color-primary-text); background: var(--ag-color-primary); border-color: var(--ag-color-primary); }
-.ag-button--subtle { background: transparent; border-color: transparent; }
-.ag-button--danger { color: var(--ag-color-error); border-color: var(--ag-color-error); }
+.ag-button:disabled { color: var(--ag-color-text-muted); background: var(--ag-color-surface-hover); border-color: transparent; cursor: not-allowed; transform: none; }
+.ag-button--primary { color: var(--ag-color-primary-text); background: var(--ag-color-primary); border-color: transparent; }
+.ag-button--primary:hover { background: var(--ag-color-primary-hover); }
+.ag-button--subtle { color: var(--ag-color-primary-light-text); background: transparent; border-color: transparent; }
+.ag-button--subtle:hover { background: var(--ag-color-primary-light); }
+.ag-button--danger { color: var(--ag-color-danger-light-text); background: var(--ag-color-danger-light); border-color: transparent; }
+.ag-button--danger:hover { background: var(--ag-color-danger-light-hover); }
 
 /* @catalogue .ag-field
 Labelled form field with an optional hint or error. Keep the hint outside the <label> and link it with aria-describedby, so it is not read as part of the name.
+A `<select class="ag-field__input">` gets the same box and chevron as a text input; its open list is drawn by the browser.
+Modifier --contained puts the label inside the box, in small text above the value.
 <div class="ag-field"><label class="ag-field__label" for="name">Name</label><input class="ag-field__input" id="name" name="name" aria-describedby="name-hint"><span class="ag-field__hint" id="name-hint">As on the invoice.</span></div>
+<div class="ag-field"><label class="ag-field__label" for="role">Role</label><select class="ag-field__input" id="role" name="role"><option>user</option><option>admin</option></select></div>
+<div class="ag-field ag-field--contained"><label class="ag-field__label" for="city">City</label><input class="ag-field__input" id="city" name="city"></div>
 */
-.ag-field { display: flex; flex-direction: column; gap: var(--ag-space-1); }
-.ag-field__label { font-weight: 500; }
+.ag-field { display: block; }
+.ag-field__label { display: inline-block; font-size: var(--ag-font-size-sm); font-weight: 600; line-height: var(--ag-line-height); }
 .ag-field__input {
+  display: block;
+  width: 100%;
+  height: 36px;
   min-height: 36px;
-  padding: 0 var(--ag-space-3);
-  font: inherit;
+  padding: 0 12px;
+  font-family: var(--ag-font-family);
+  font-size: var(--ag-font-size-sm);
+  line-height: 34px;
   color: var(--ag-color-text);
   background: var(--ag-color-surface);
   border: 1px solid var(--ag-color-border);
   border-radius: var(--ag-radius-md);
+  transition: border-color 100ms ease;
 }
-.ag-field__input:focus-visible { outline: 2px solid var(--ag-color-primary); outline-offset: 1px; }
-.ag-field__hint { font-size: var(--ag-font-size-sm); color: var(--ag-color-text-muted); }
-.ag-field__error { font-size: var(--ag-font-size-sm); color: var(--ag-color-error); }
+textarea.ag-field__input { height: auto; padding-top: 8px; padding-bottom: 8px; line-height: var(--ag-line-height); }
+.ag-field__input::placeholder { color: var(--ag-color-placeholder); }
+.ag-field__input:focus { border-color: var(--ag-color-primary); outline: none; }
+.ag-field__input[aria-invalid="true"] { color: var(--ag-color-error); border-color: var(--ag-color-error); }
+select.ag-field__input {
+  appearance: none;
+  padding-right: 34px;
+  background-image: var(--ag-select-chevron);
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 18px 18px;
+}
+.ag-field--contained { position: relative; }
+.ag-field--contained .ag-field__label {
+  position: absolute;
+  z-index: 1;
+  padding: 6px 0 0 12px;
+  font-size: var(--ag-font-size-xs);
+  pointer-events: none;
+}
+.ag-field--contained .ag-field__input { height: 54px; padding-top: 18px; }
+.ag-field__hint, .ag-field__error { display: block; margin-top: 5px; font-size: var(--ag-font-size-xs); line-height: 1.2; }
+.ag-field__hint { color: var(--ag-color-text-muted); }
+.ag-field__error { color: var(--ag-color-error); }
 
 /* @catalogue .ag-table
 Data table. Wrap it in `.ag-table` so it scrolls sideways on a narrow screen, or use the `<ag-table>` element.
 <div class="ag-table"><table><thead><tr><th>Name</th></tr></thead><tbody><tr><td>Alpha</td></tr></tbody></table></div>
 */
-.ag-table {
-  display: block;
-  overflow-x: auto;
-  background: var(--ag-color-surface);
-  border: 1px solid var(--ag-color-border);
-  border-radius: var(--ag-radius-md);
+.ag-table { display: block; overflow-x: auto; }
+.ag-table table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--ag-font-size-sm);
+  line-height: var(--ag-line-height);
 }
-.ag-table table { width: 100%; border-collapse: collapse; }
-.ag-table th, .ag-table td {
-  padding: var(--ag-space-2) var(--ag-space-3);
-  text-align: left;
-  border-bottom: 1px solid var(--ag-color-border);
-}
-.ag-table th { font-weight: 600; color: var(--ag-color-text-muted); white-space: nowrap; }
+.ag-table th, .ag-table td { padding: 7px 10px; text-align: start; }
+.ag-table tr { border-bottom: 1px solid var(--ag-color-divider); }
+.ag-table th { font-weight: 700; white-space: nowrap; }
 .ag-table th button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
-.ag-table tbody tr:last-child td { border-bottom: 0; }
+.ag-table tbody tr:last-child { border-bottom: 0; }
 .ag-table tbody tr:focus-visible { outline: 2px solid var(--ag-color-primary); outline-offset: -2px; }
 
 /* @catalogue .ag-state
@@ -299,10 +431,10 @@ Monospace block for code, ids or JSON. Scrolls sideways; never wraps a long toke
   padding: var(--ag-space-3);
   overflow-x: auto;
   font-family: var(--ag-font-mono);
-  font-size: var(--ag-font-size-sm);
+  font-size: var(--ag-font-size-xs);
   color: var(--ag-color-text);
-  background: var(--ag-color-surface-elevated);
-  border: 1px solid var(--ag-color-border);
+  background: var(--ag-color-surface-hover);
+  border: 0;
   border-radius: var(--ag-radius-sm);
 }
 
@@ -326,12 +458,12 @@ Modal dialog on a native <dialog>. Use the `<ag-dialog>` element, which opens an
   max-width: min(480px, calc(100vw - 32px));
   padding: var(--ag-space-5);
   color: var(--ag-color-text);
-  background: var(--ag-color-surface-elevated);
-  border: 1px solid var(--ag-color-border);
-  border-radius: var(--ag-radius-lg);
+  background: var(--ag-color-background);
+  border: 0;
+  border-radius: var(--ag-radius-md);
 }
-.ag-dialog::backdrop { background: rgb(0 0 0 / 0.45); }
-.ag-dialog__title { margin: 0 0 var(--ag-space-3); font-size: var(--ag-font-size-lg); font-weight: 600; }
+.ag-dialog::backdrop { background: rgb(0 0 0 / 0.6); }
+.ag-dialog__title { margin: 0 0 var(--ag-space-3); font-size: var(--ag-font-size-md); font-weight: 500; }
 
 /* @catalogue .ag-visually-hidden
 Text for screen readers only.

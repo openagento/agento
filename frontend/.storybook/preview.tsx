@@ -1,8 +1,11 @@
 import "@mantine/core/styles.css";
 import "@agento/miniapp-kit/agento-ui.css";
-import { MantineProvider } from "@mantine/core";
+// The lookbook (frontend/lookbook): the Mantine logo in its headers, and the carousel and dropzone patterns.
+import "@mantinex/mantine-logo/styles.css";
+import "@mantine/carousel/styles.css";
+import "@mantine/dropzone/styles.css";
 import type { Preview } from "@storybook/react-vite";
-import { agentoTheme } from "../packages/ui/src/theme";
+import { AgentoUiProvider } from "../packages/ui/src/Provider";
 
 const preview: Preview = {
   globalTypes: {
@@ -19,9 +22,9 @@ const preview: Preview = {
       document.documentElement.dataset.theme = scheme;
       document.body.className = "ag-app";
       return (
-        <MantineProvider theme={agentoTheme} forceColorScheme={scheme}>
+        <AgentoUiProvider forceColorScheme={scheme}>
           <Story />
-        </MantineProvider>
+        </AgentoUiProvider>
       );
     },
   ],

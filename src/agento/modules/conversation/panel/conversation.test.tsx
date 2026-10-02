@@ -2,6 +2,7 @@ import { act, fireEvent, render, renderHook, screen } from "@testing-library/rea
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { endSession, hub, login, queryClient as qc, QueryClientProvider, type StreamEvent, type StreamHandlers } from "@agento/api";
+import { AgentoUiProvider } from "@agento/ui";
 import { Composer } from "./ConversationsPage";
 import { IDLE_POLL_MS, RUN_POLL_MS, type Message } from "./model";
 import { MAX_EXECUTIONS, MAX_TEXT_BYTES, MAX_TOOL_ROWS, TransientStore } from "./transient";
@@ -61,7 +62,9 @@ const row = (job_state: Message["job_state"]): Message => ({
   id: 1, role: "user", content: "hi", client_message_id: null, job_id: 1, job_state, created_at: null,
   blocked: false, blocked_reason: null,
 });
-const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <AgentoUiProvider><QueryClientProvider client={qc}>{children}</QueryClientProvider></AgentoUiProvider>
+);
 
 describe("useConversation reconcile", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); qc.clear(); });

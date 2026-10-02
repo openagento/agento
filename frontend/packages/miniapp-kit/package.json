@@ -2,6 +2,5 @@
   "name": "@agento/miniapp-kit",
   "version": "1.0.0",
   "private": true,
-  "type": "module",
-  "exports": { "./tokens": "./src/tokens.ts" }
+  "type": "module"
 }

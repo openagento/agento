@@ -29,7 +29,7 @@ function Rail({ current }: { current: number | null }) {
   return (
     <nav className="ag-stack" aria-label="Conversations">
       {(views.data?.length ?? 0) > 1 && (
-        <SelectField label="Agent view" name="thread-view" value={String(viewId)} onChange={(e) => setView(e.target.value)}
+        <SelectField label="Agent view" name="thread-view" value={String(viewId)} onChange={setView}
           options={(views.data ?? []).map((v) => ({ value: String(v.id), label: v.label || v.code }))} />
       )}
       <Button variant="primary" disabled={!viewId || create.isPending} onClick={() => create.mutate()}>New conversation</Button>

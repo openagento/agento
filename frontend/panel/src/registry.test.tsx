@@ -1,9 +1,9 @@
-import { MantineProvider } from "@mantine/core";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClientProvider, queryClient, type PanelModule } from "@agento/api";
+import { AgentoUiProvider } from "@agento/ui";
 import { ModuleRoute } from "./ModuleRoute";
 import { ModuleNav } from "./Shell";
 
@@ -13,7 +13,7 @@ const mod: PanelModule = {
 };
 const Screen = () => <p>demo screen</p>;
 const wrap = (ui: ReactNode) => render(
-  <MantineProvider><QueryClientProvider client={queryClient}><MemoryRouter>{ui}</MemoryRouter></QueryClientProvider></MantineProvider>,
+  <AgentoUiProvider><QueryClientProvider client={queryClient}><MemoryRouter>{ui}</MemoryRouter></QueryClientProvider></AgentoUiProvider>,
 );
 
 let fetchMock: ReturnType<typeof vi.fn>;
