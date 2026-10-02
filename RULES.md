@@ -414,6 +414,43 @@ of a defective helper. It puts the whole repo in scope, including files the diff
 every instance and the search that found them. The fixer sweeps the whole class and adds one guard
 test for it.
 
+## UI — Panel and miniapp kit
+
+Scope: `frontend/**` and `src/agento/modules/*/panel/**`.
+
+**UI-1 One source of visual values (P1).** A color, radius, font, or spacing value comes from
+`packages/ui/src/theme.ts`. The kit gets it as an `--ag-*` variable that `scripts/tokens.ts`
+generates. No color literal in `components.css` or in `packages/ui` outside `theme.ts`. A value that
+Mantine sets in its component CSS, not in a theme variable, is copied once with a comment that names
+the Mantine source (the divider and chevron in `tokens.ts`, the dialog backdrop). No `style` or
+`styles` prop in `packages/ui` (ESLint enforces this). A Mantine default that fails WCAG AA is raised once, in
+`agentoCssVariables`, never per component. A new text color pair gets a contrast check in
+`kit.test.ts`.
+
+**UI-2 Twins stay equal (P1).** A `@agento/ui` component that a miniapp can also show has an `.ag-*`
+twin with a `@catalogue` block, and a pair in `acceptance/Parity.stories.tsx` that compares computed
+styles in light and dark. A change to one side changes the other in the same change. What the kit
+cannot copy (the open list of a native select) is written in the catalogue text.
+
+**UI-3 A released kit is immutable (P1).** A change to the built `agento-ui.css` (from
+`components.css`, `theme.ts`, `tokens.ts`, or a Mantine upgrade) is a new kit version. Only the owner
+can approve a re-cut of an unreleased version, and the plan records that approval (PLN-4). Nobody
+edits `released/` by hand.
+
+**UI-4 The agent-facing kit names no vendor (P1).** `agento-ui.css`, `agento-ui.js`, and the
+`miniapp-ui` skill use only `ag-` names. Mantine stays inside `packages/ui` and the panel (PLC-2 in
+spirit).
+
+**UI-5 Lookbook is a catalogue (P2).** Nothing imports `frontend/lookbook/` (`boundaries.test.ts`
+checks this), and its packages are devDependencies. To use a pattern, move it into `@agento/ui` or
+the panel and adapt it (UI-1, UI-2). Its stories stay `!test`.
+
+**UI-6 Stable component identity (P1).** Do not create a component type during a render (a function
+passed as a component, or a component declared inside another one): React remounts it on each
+render. Call a render-prop function directly. A key handler on a container (row, list) ignores
+events from interactive elements inside it. Incident: `DataTable` remounted every cell, so an open
+Select closed when its row took focus.
+
 ## TST — Tests
 
 **TST-1 Red first (P1).** Each behaviour change has a test that fails without it: pytest + respx for
@@ -441,6 +478,7 @@ wrong (a command, flag, path, default, security step, runbook, contract) is a `D
 | Event | `docs/architecture/events.md` (EVT-6) |
 | Tool | `docs/tools/` |
 | Roadmap item done or moved | `ROADMAP.md` |
+| UI component, kit class, or frontend rule | `docs/development/frontend.md`; the `@catalogue` block (it regenerates the `miniapp-ui` skill) |
 | A rule | this file, in the same change |
 
 **DOC-2 Record decisions (P2).** Add each non-obvious technical choice to DECISIONS.md. Do not rewrite
