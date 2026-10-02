@@ -116,9 +116,13 @@ Button. Modifiers: --primary, --subtle, --danger. Use a real <button>.
 ### `.ag-field`
 
 Labelled form field with an optional hint or error. Keep the hint outside the <label> and link it with aria-describedby, so it is not read as part of the name.
+A `<select class="ag-field__input">` gets the same box and chevron as a text input; its open list is drawn by the browser.
+Modifier --contained puts the label inside the box, in small text above the value.
 
 ```html
 <div class="ag-field"><label class="ag-field__label" for="name">Name</label><input class="ag-field__input" id="name" name="name" aria-describedby="name-hint"><span class="ag-field__hint" id="name-hint">As on the invoice.</span></div>
+<div class="ag-field"><label class="ag-field__label" for="role">Role</label><select class="ag-field__input" id="role" name="role"><option>user</option><option>admin</option></select></div>
+<div class="ag-field ag-field--contained"><label class="ag-field__label" for="city">City</label><input class="ag-field__input" id="city" name="city"></div>
 ```
 
 ### `.ag-table`

@@ -60,7 +60,7 @@ export function Miniapps() {
     <div className="ag-stack">
       <PageHeader title="Miniapps" description="Apps an agent published. Each one opens in its own window." />
       {(views.data?.length ?? 0) > 1 && (
-        <SelectField label="Agent view" name="agent-view" value={String(viewId)} onChange={(e) => setPicked(e.target.value)}
+        <SelectField label="Agent view" name="agent-view" value={String(viewId)} onChange={setPicked}
           options={(views.data ?? []).map((v) => ({ value: String(v.id), label: v.label || v.code }))} />
       )}
       <DataTable caption="Miniapps" columns={appColumns} rows={viewId > 0 ? apps.data : []} rowKey={(m) => m.artifact_code}

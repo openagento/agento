@@ -31,9 +31,6 @@
       "@agento/api": [
         "./packages/api/src/index.ts"
       ],
-      "@agento/miniapp-kit/tokens": [
-        "./packages/miniapp-kit/src/tokens.ts"
-      ],
       "vitest": ["./node_modules/vitest"],
       "@testing-library/react": ["./node_modules/@testing-library/react"],
       "@agento/miniapp-bridge": [
@@ -53,6 +50,7 @@
   "include": [
     "packages",
     "panel",
+    "lookbook",
     ".storybook",
     "*.ts",
     "../src/agento/modules/*/panel"
