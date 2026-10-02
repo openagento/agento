@@ -9,6 +9,8 @@ Manage role grants: what a role may do, and where. The model is in
 | `grant:list [--role R]` | List grants with id, role, kind, name and scope. |
 | `grant:remove <grant_id>` | Remove a grant. Ends the launches of that role in the grant's scope. |
 
+Shortcuts: `gr:ad`, `gr:li`, `gr:re`.
+
 - `--tool` must name a tool that some module declares in `module.json` `tools[]` (enabled or
   not). `--operation` accepts only `artifact.launch`. `admin` has `users.manage`,
   `grants.manage` and `config.write` built in; they are not grants.

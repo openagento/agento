@@ -9,6 +9,8 @@ uv run bin/agento miniapp:deactivate <artifact_code> <version_id> [--actor <who>
 uv run bin/agento miniapp:list
 ```
 
+Shortcuts: `mi:ac`, `mi:de`, `mi:li`.
+
 | Flag | Meaning |
 |---|---|
 | `--actions a,b` | The actions launches of this version may call. Each must be in the version's `miniapp.json`. Default: every action in it |

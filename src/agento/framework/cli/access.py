@@ -57,6 +57,7 @@ class _Command:
 
 class UserCreateCommand(_Command):
     name = "user:create"
+    shortcut = "us:cr"
     help = "Create a panel user (password from stdin or a prompt, never argv)"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
@@ -79,6 +80,7 @@ class UserCreateCommand(_Command):
 
 class UserListCommand(_Command):
     name = "user:list"
+    shortcut = "us:li"
     help = "List panel users"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
@@ -91,6 +93,7 @@ class UserListCommand(_Command):
 
 class UserSetRoleCommand(_Command):
     name = "user:set-role"
+    shortcut = "us:sr"
     help = "Change a user's role (ends that user's sessions and launches)"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
@@ -104,6 +107,7 @@ class UserSetRoleCommand(_Command):
 
 class UserActivateCommand(_Command):
     name = "user:activate"
+    shortcut = "us:ac"
     help = "Allow a user to log in again"
     active = True
 
@@ -117,12 +121,14 @@ class UserActivateCommand(_Command):
 
 class UserDeactivateCommand(UserActivateCommand):
     name = "user:deactivate"
+    shortcut = "us:de"
     help = "Stop a user from logging in (ends that user's sessions and launches)"
     active = False
 
 
 class UserPasswordCommand(_Command):
     name = "user:password"
+    shortcut = "us:pa"
     help = "Set a user's password (stdin or a prompt; ends that user's sessions)"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
@@ -155,6 +161,7 @@ def _scope_ids(conn, args) -> tuple[int | None, int | None]:
 
 class GrantAddCommand(_Command):
     name = "grant:add"
+    shortcut = "gr:ad"
     help = "Grant a role a tool or an operation in one workspace or agent_view"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
@@ -176,6 +183,7 @@ class GrantAddCommand(_Command):
 
 class GrantRemoveCommand(_Command):
     name = "grant:remove"
+    shortcut = "gr:re"
     help = "Remove a grant (ends that role's launches in its scope)"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
@@ -188,6 +196,7 @@ class GrantRemoveCommand(_Command):
 
 class GrantListCommand(_Command):
     name = "grant:list"
+    shortcut = "gr:li"
     help = "List role grants"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:

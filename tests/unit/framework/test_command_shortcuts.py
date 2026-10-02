@@ -4,12 +4,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
 import agento
 from agento.framework.commands import (
+    _segment_code,
     clear,
     get_commands,
     get_shortcuts,
@@ -132,6 +134,10 @@ def _all_real_commands() -> list:
     return instances
 
 
+def _derived_shortcut(name: str) -> str:
+    return ":".join(_segment_code(seg, is_first=i == 0) for i, seg in enumerate(name.split(":")))
+
+
 class TestShortcutPatternCompliance:
     """Guards: every shipped shortcut follows the documented derivation rule."""
 
@@ -154,6 +160,38 @@ class TestShortcutPatternCompliance:
             else:
                 seen[cmd.shortcut] = cmd.name
         assert collisions == [], f"Duplicate shortcuts: {collisions}"
+
+
+    def test_every_namespaced_command_has_a_shortcut(self):
+        """Exempt only a pair whose derived code collides (publish-comments / publish-changes)."""
+        commands = _all_real_commands()
+        derived = Counter(_derived_shortcut(cmd.name) for cmd in commands)
+        missing = [
+            cmd.name
+            for cmd in commands
+            if ":" in cmd.name and not cmd.shortcut and not getattr(cmd, "hidden", False)
+            and derived[_derived_shortcut(cmd.name)] == 1
+        ]
+        assert missing == [], f"Commands without a shortcut: {missing}"
+
+    def test_shortcut_routes_like_its_command(self):
+        """The host routes by the raw argv string, before any shortcut is resolved."""
+        from agento.framework import cli
+
+        sets = {
+            "_LOCAL_COMMANDS": cli._LOCAL_COMMANDS,
+            "_LOCAL_MODULE_COMMANDS": cli._LOCAL_MODULE_COMMANDS,
+            "_INTERACTIVE_COMMANDS": cli._INTERACTIVE_COMMANDS,
+            "_MAYBE_INTERACTIVE_COMMANDS": cli._MAYBE_INTERACTIVE_COMMANDS,
+        }
+        drift = [
+            (set_name, cmd.name, cmd.shortcut)
+            for cmd in _all_real_commands()
+            if cmd.shortcut
+            for set_name, names in sets.items()
+            if (cmd.name in names) != (cmd.shortcut in names)
+        ]
+        assert drift == [], f"Shortcut routed differently from its command: {drift}"
 
 
 class TestIsValidShortcut:
