@@ -13,6 +13,8 @@ no actor check.
 | `user:activate <username>` | Let the user sign in again. |
 | `user:password <username>` | Set a new password. Ends every session of that user. |
 
+Shortcuts: `us:cr`, `us:li`, `us:sr`, `us:de`, `us:ac`, `us:pa`.
+
 A username matches `^[a-z0-9][a-z0-9._-]{0,63}$`. A password has 12 to 1024 characters.
 
 ## Passwords never come from argv

@@ -14,7 +14,7 @@ agento tool:list
 agento tool:list --agent-view developer
 ```
 
-Shortcut: `to:li`
+Shortcut: `tl:li`
 
 ### Options
 
@@ -49,7 +49,7 @@ agento tool:enable mysql_reporting --agent-view developer
 agento tool:enable mysql_reporting --scope workspace --scope-id 1
 ```
 
-Shortcut: `to:en`
+Shortcut: `tl:en`
 
 > **Gate key vs. tool name.** For adapter tools (mysql/mssql/opensearch) the gate key *is* the tool name. Some JS-implemented modules gate their tools under one module key — e.g. most tools in the `jira` module are gated by `tools/jira/is_enabled`, so you enable that group with `agento tool:enable jira`. Exception: `jira_get_attachment` is individually opt-in gated as `tools/jira_get_attachment/is_enabled` (enable with `agento tool:enable jira_get_attachment`).
 
@@ -77,7 +77,7 @@ agento tool:disable jira_search
 agento tool:disable jira_search --agent-view developer
 ```
 
-Shortcut: `to:di`
+Shortcut: `tl:di`
 
 ### Options
 

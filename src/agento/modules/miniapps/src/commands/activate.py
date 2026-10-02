@@ -13,7 +13,7 @@ class MiniappActivateCommand:
 
     @property
     def shortcut(self) -> str:
-        return ""
+        return "mi:ac"
 
     @property
     def help(self) -> str:

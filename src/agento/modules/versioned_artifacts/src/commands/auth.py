@@ -15,8 +15,7 @@ class VersionedArtifactAuthCommand:
 
     @property
     def shortcut(self) -> str:
-        # No alias: see artifact:list.
-        return ""
+        return "ar:au"
 
     @property
     def help(self) -> str:

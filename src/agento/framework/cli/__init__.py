@@ -45,7 +45,7 @@ _MAYBE_INTERACTIVE_COMMANDS = frozenset({
     # getpass needs the TTY.
     "user:create", "user:password",
     # Shortcuts
-    "co:se", "co:re", "cr:reg",
+    "co:se", "co:re", "cr:reg", "us:cr", "us:pa",
     # Legacy aliases, one cycle (ROADMAP.md) — `getpass` needs the TTY.
     "token:register", "to:reg",
 })
@@ -58,6 +58,8 @@ _MAYBE_INTERACTIVE_COMMANDS = frozenset({
 _LOCAL_MODULE_COMMANDS = frozenset({
     "artifact:init", "artifact:list", "artifact:publish", "artifact:delete", "artifact:auth",
     "miniapp:activate", "miniapp:deactivate", "miniapp:list",
+    # Shortcuts
+    "ar:in", "ar:li", "ar:pu", "ar:de", "ar:au", "mi:ac", "mi:de", "mi:li",
 })
 
 

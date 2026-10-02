@@ -79,10 +79,7 @@ class VersionedArtifactInitCommand:
 
     @property
     def shortcut(self) -> str:
-        # No alias: every name the CLI accepts for this command must also sit in
-        # _LOCAL_MODULE_COMMANDS or it gets proxied into cron, which has neither
-        # the docker socket nor the compose file.
-        return ""
+        return "ar:in"
 
     @property
     def help(self) -> str:
