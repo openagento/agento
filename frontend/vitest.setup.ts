@@ -11,4 +11,7 @@ if (!window.matchMedia) {
   });
 }
 
+// jsdom has no ResizeObserver; the Mantine Select (combobox) observes its dropdown.
+window.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
+
 afterEach(() => cleanup());

@@ -45,6 +45,17 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
   `.ag-*` markup a miniapp writes by hand, and a story asserts the computed styles of the panel card
   and the miniapp card are equal in light and dark. Mantine is kept to the shell, modal, tabs and
   notifications, where a11y behaviour is costly to rewrite.
+  - *2026-10-02, reversed with owner approval* ("ok, lookbook w Storybooku, rób cały plan", "nic
+    nie jest jeszcze wydane"): the source is now the Mantine theme (`packages/ui/src/theme.ts`),
+    so the panel looks like ui.mantine.dev. `packages/miniapp-kit/scripts/tokens.ts` resolves the
+    theme's CSS variables to literals and emits them under the `--ag-*` names, so the agent-facing
+    CSS names no vendor. `Button`, `StatusBadge`, `TextField`, `SelectField` and `DataTable`
+    render Mantine components with the same props; the cards, headers and states stay `.ag-*`. The
+    "same markup" proof becomes a parity story (`Acceptance/Mantine parity`) that compares the
+    computed styles of each Mantine component and its `.ag-*` twin in light and dark, so a theme
+    change or a Mantine upgrade the kit does not follow fails a test. Kit 1.0.0 was re-cut. The
+    ui.mantine.dev patterns (MIT) are copied into `frontend/lookbook/` as a Storybook catalogue,
+    not as exported components ([plan](docs/plans/2026-10-02-mantine-look-and-lookbook.md)).
 
 - **A released kit version is immutable.** `/_ui/<version>/` is served `immutable`, so its bytes
   can never change under a cached URL: the released copy is committed and the build fails on a

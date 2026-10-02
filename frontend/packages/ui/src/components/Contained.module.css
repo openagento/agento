@@ -1,0 +1,12 @@
+/* The ContainedInputs pattern from ui.mantine.dev (frontend/lookbook/ContainedInputs): the label sits
+   inside the box. `.ag-field--contained` in agento-ui.css is its twin; the parity story compares them. */
+.root { position: relative; }
+.label {
+  position: absolute;
+  z-index: 1;
+  padding-left: var(--mantine-spacing-sm);
+  padding-top: calc(var(--mantine-spacing-sm) / 2);
+  font-size: var(--mantine-font-size-xs);
+  pointer-events: none;
+}
+.input { height: 54px; padding-top: 18px; }

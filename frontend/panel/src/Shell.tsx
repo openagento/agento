@@ -1,10 +1,15 @@
 import { useEffect } from "react";
-import { AppShell, Burger, Group, NavLink, useComputedColorScheme, useMantineColorScheme } from "@mantine/core";
+import type { ComponentType } from "react";
+import { AppShell, Burger, Group, NavLink, Text, useComputedColorScheme, useMantineColorScheme } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { NavLink as RouterLink, Outlet, useLocation, useNavigate } from "react-router";
 import { logout, useSession, type PanelModule } from "@agento/api";
-import { Button } from "@agento/ui";
+import { AppWindow, Blocks, House, LogOut, Moon, Sun, Users } from "lucide-react";
 import { useAvailable } from "./availability";
+
+// The NavbarSimple pattern from ui.mantine.dev (frontend/lookbook/NavbarSimple): icon links, and
+// the session actions in a footer under the links.
+const icon = (Icon: ComponentType<{ size?: number; strokeWidth?: number }>) => <Icon size={20} strokeWidth={1.5} aria-hidden />;
 
 export function ModuleNav({ module, onNavigate }: { module: PanelModule; onNavigate: () => void }) {
   const location = useLocation();
@@ -12,7 +17,9 @@ export function ModuleNav({ module, onNavigate }: { module: PanelModule; onNavig
   return (
     <>
       {module.routes.filter((r) => r.nav).map((r) => (
-        <NavLink key={r.path} component={RouterLink} to={r.path} label={r.nav} onClick={onNavigate}
+        <NavLink key={r.path} component={RouterLink} to={r.path} label={r.nav} onClick={onNavigate} fw={500}
+          // ponytail: one icon for every module screen; add `icon` to the route contract when a module needs its own.
+          leftSection={icon(Blocks)}
           active={location.pathname === r.path || location.pathname.startsWith(r.path + "/")} />
       ))}
     </>
@@ -29,8 +36,8 @@ export function Shell({ modules }: { modules: PanelModule[] }) {
   // agento-ui.css reads data-theme; Mantine reads its own attribute. Keep them equal.
   useEffect(() => { document.documentElement.dataset.theme = scheme; }, [scheme]);
 
-  const item = (to: string, label: string) => (
-    <NavLink component={RouterLink} to={to} label={label} onClick={close}
+  const item = (to: string, label: string, Icon: Parameters<typeof icon>[0]) => (
+    <NavLink component={RouterLink} to={to} label={label} onClick={close} fw={500} leftSection={icon(Icon)}
       active={to === "/" ? location.pathname === "/" : location.pathname.startsWith(to)} />
   );
   return (
@@ -42,21 +49,24 @@ export function Shell({ modules }: { modules: PanelModule[] }) {
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" aria-label="Toggle navigation" />
             <strong>Agento</strong>
           </Group>
-          <Group gap="xs">
-            <Button variant="subtle" onClick={() => setColorScheme(scheme === "dark" ? "light" : "dark")}>
-              {scheme === "dark" ? "Light theme" : "Dark theme"}
-            </Button>
-            <span className="ag-muted">{user?.username}</span>
-            <Button onClick={async () => { await logout().catch(() => undefined); navigate("/login"); }}>Sign out</Button>
-          </Group>
+          <Text size="sm" c="dimmed">{user?.username}</Text>
         </Group>
       </AppShell.Header>
-      <AppShell.Navbar p="xs" aria-label="Main">
-        {item("/", "Home")}
-        {modules.map((m) => <ModuleNav key={m.id} module={m} onNavigate={close} />)}
-        {item("/miniapps", "Miniapps")}
-        {/* A convenience only: the API refuses a user-role session (403). */}
-        {user?.role === "admin" && item("/users", "Users")}
+      <AppShell.Navbar p="md" aria-label="Main">
+        <AppShell.Section grow>
+          {item("/", "Home", House)}
+          {modules.map((m) => <ModuleNav key={m.id} module={m} onNavigate={close} />)}
+          {item("/miniapps", "Miniapps", AppWindow)}
+          {/* A convenience only: the API refuses a user-role session (403). */}
+          {user?.role === "admin" && item("/users", "Users", Users)}
+        </AppShell.Section>
+        <AppShell.Section pt="md" style={{ borderTop: "1px solid var(--mantine-color-default-border)" }}>
+          <NavLink component="button" fw={500} leftSection={icon(scheme === "dark" ? Sun : Moon)}
+            label={scheme === "dark" ? "Light theme" : "Dark theme"}
+            onClick={() => setColorScheme(scheme === "dark" ? "light" : "dark")} />
+          <NavLink component="button" fw={500} leftSection={icon(LogOut)} label="Sign out"
+            onClick={async () => { await logout().catch(() => undefined); navigate("/login"); }} />
+        </AppShell.Section>
       </AppShell.Navbar>
       <AppShell.Main><Outlet /></AppShell.Main>
     </AppShell>

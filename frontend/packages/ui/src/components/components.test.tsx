@@ -1,7 +1,6 @@
-import { MantineProvider } from "@mantine/core";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { agentoTheme } from "../theme";
+import { AgentoUiProvider } from "../Provider";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 
@@ -12,7 +11,8 @@ const columns: Column<Row>[] = [{ id: "name", header: "Name", cell: (r) => r.nam
 describe("DataTable keyboard", () => {
   it("one row is in the tab order; arrows, Home and End move focus; Enter activates", () => {
     const onRowActivate = vi.fn();
-    render(<DataTable caption="Rows" columns={columns} rows={rows} rowKey={(r) => r.id} onRowActivate={onRowActivate} />);
+    render(<DataTable caption="Rows" columns={columns} rows={rows} rowKey={(r) => r.id} onRowActivate={onRowActivate} />,
+      { wrapper: AgentoUiProvider });
     const body = screen.getAllByRole("row").slice(1);
     expect(body.map((r) => r.tabIndex)).toEqual([0, -1, -1]);
     body[0].focus();
@@ -27,6 +27,27 @@ describe("DataTable keyboard", () => {
     fireEvent.keyDown(body[0], { key: "Enter" });
     expect(onRowActivate).toHaveBeenCalledWith(rows[0]);
   });
+
+  it("leaves the keys of a control in a cell to that control", () => {
+    const onRowActivate = vi.fn();
+    const withButton: Column<Row>[] = [...columns, { id: "act", header: "Actions", cell: (r) => <button type="button">Edit {r.name}</button> }];
+    render(<DataTable caption="Rows" columns={withButton} rows={rows} rowKey={(r) => r.id} onRowActivate={onRowActivate} />,
+      { wrapper: AgentoUiProvider });
+    const button = screen.getByRole("button", { name: "Edit Alpha" });
+    button.focus();
+    fireEvent.keyDown(button, { key: "ArrowDown" });
+    fireEvent.keyDown(button, { key: "Enter" });
+    expect(document.activeElement).toBe(button);
+    expect(onRowActivate).not.toHaveBeenCalled();
+  });
+
+  it("keeps a cell mounted when a row takes focus, so a cell control keeps its state", () => {
+    const withInput: Column<Row>[] = [...columns, { id: "note", header: "Note", cell: (r) => <input aria-label={`Note ${r.name}`} /> }];
+    render(<DataTable caption="Rows" columns={withInput} rows={rows} rowKey={(r) => r.id} />, { wrapper: AgentoUiProvider });
+    const input = screen.getByRole("textbox", { name: "Note Beta" });
+    fireEvent.focus(input);
+    expect(screen.getByRole("textbox", { name: "Note Beta" })).toBe(input);
+  });
 });
 
 describe("ConfirmDialog", () => {
@@ -34,9 +55,9 @@ describe("ConfirmDialog", () => {
     const onCancel = vi.fn();
     const onConfirm = vi.fn();
     render(
-      <MantineProvider theme={agentoTheme}>
+      <AgentoUiProvider>
         <ConfirmDialog opened title="Delete user?" onConfirm={onConfirm} onCancel={onCancel} confirmLabel="Delete" />
-      </MantineProvider>,
+      </AgentoUiProvider>,
     );
     const dialog = await screen.findByRole("dialog");
     expect(dialog).toHaveAccessibleName("Delete user?");

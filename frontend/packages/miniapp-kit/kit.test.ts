@@ -3,16 +3,18 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ELEMENTS } from "./src/agento-ui.js";
 import { CATALOGUE } from "./src/catalogue";
-import { dark, light, type ColorName } from "./src/tokens";
+import { dark, light, TONES } from "./scripts/tokens";
 import { blocks, main, SKILL, uncatalogued } from "./scripts/gen-skill";
 import { diffDirs, KIT_VERSION } from "./scripts/build-kit";
 
 const css = readFileSync(join(__dirname, "src/components.css"), "utf8");
 
-// WCAG 2.x relative luminance and contrast ratio.
-const lum = (hex: string) => {
-  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
-    .map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+// WCAG 2.x relative luminance and contrast ratio, of a `#rgb`, `#rrggbb` or `rgba()` literal.
+const channels = (c: string) => (c.startsWith("#")
+  ? (c.length === 4 ? [...c.slice(1)].map((h) => h + h) : [1, 3, 5].map((i) => c.slice(i, i + 2))).map((h) => parseInt(h, 16))
+  : c.match(/[\d.]+/g)!.slice(0, 3).map(Number));
+const lum = (c: string) => {
+  const [r, g, b] = channels(c).map((v) => v / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 };
 const ratio = (a: string, b: string) => {
@@ -21,10 +23,11 @@ const ratio = (a: string, b: string) => {
 };
 
 describe("tokens", () => {
-  const pairs: [ColorName, ColorName][] = [
-    ["text", "background"], ["text", "surface"], ["text", "surfaceElevated"], ["textMuted", "surface"],
-    ["textMuted", "background"], ["primaryText", "primary"], ["success", "surface"], ["warning", "surface"],
-    ["error", "surface"], ["info", "surface"],
+  const pairs: [string, string][] = [
+    ["text", "background"], ["text", "surface"], ["surfaceText", "surface"], ["textMuted", "background"], ["textMuted", "surface"],
+    ["link", "background"], ["primaryText", "primary"], ["primaryLightText", "primaryLight"], ["primaryLightText", "background"],
+    ["error", "background"], ["error", "surface"],
+    ...Object.keys(TONES).flatMap((t): [string, string][] => [[t, "background"], [`${t}LightText`, `${t}Light`]]),
   ];
   it.each([["light", light], ["dark", dark]] as const)("%s mode meets WCAG AA for text", (_, map) => {
     for (const [fg, bg] of pairs) expect(ratio(map[fg], map[bg]), `${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);

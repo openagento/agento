@@ -9,7 +9,7 @@
 import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { variablesCss } from "../src/tokens.ts";
+import { variablesCss } from "./tokens.ts";
 
 const KIT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = resolve(KIT, "../../..");
