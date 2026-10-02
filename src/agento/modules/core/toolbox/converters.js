@@ -23,6 +23,26 @@ async function loadXlsx() {
   return m.default || m;
 }
 
+// sheet_to_csv walks the declared range (ws['!ref']), which inflated exports
+// blow up to ~1.7e10 cells, blocking the single-threaded toolbox. Bound the work.
+const MAX_CELLS = 5_000_000;
+
+function clampSheetRange(XLSX, ws) {
+  let maxRow = 0;
+  let maxCol = 0;
+  for (const key of Object.keys(ws)) {
+    if (key[0] === '!') continue;
+    const cell = XLSX.utils.decode_cell(key);
+    if (cell.r > maxRow) maxRow = cell.r;
+    if (cell.c > maxCol) maxCol = cell.c;
+  }
+  const cellCount = (maxRow + 1) * (maxCol + 1);
+  if (cellCount > MAX_CELLS) {
+    throw new Error(`XLSX sheet range too large to convert (${cellCount} cells)`);
+  }
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxRow, c: maxCol } });
+}
+
 async function convertXlsx(inputPath) {
   const XLSX = await loadXlsx();
   const buf = await readFile(inputPath);
@@ -32,6 +52,7 @@ async function convertXlsx(inputPath) {
   const results = [];
 
   for (const name of wb.SheetNames) {
+    clampSheetRange(XLSX, wb.Sheets[name]);
     const csv = XLSX.utils.sheet_to_csv(wb.Sheets[name]);
     const dest = wb.SheetNames.length === 1
       ? join(dir, `${base}.csv`)
