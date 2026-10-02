@@ -139,6 +139,12 @@ sandbox runs), the address limit counts failures only, so one caller cannot thro
 authorized traffic. A limit is never the only guard: authentication still runs on every request. A
 server that only a test starts is exempt.
 
+**SEC-13 Secret fields are `obscure`.** A `system.json` field that holds a password, token, API key,
+client secret, private key, or other credential has `"type": "obscure"`, so the value is stored
+encrypted and shown masked. A `string`, `textarea`, or `json` field never holds a secret. A field that
+only looks like one by its name (`outlook/summon_token`, a trigger word) is not a secret. Where the
+toolbox must keep the secret from Python, add `"access": "toolbox_only"` too (SEC-2).
+
 ## TBX — Toolbox and tools
 
 **TBX-1 Session isolation (P0).** Trigger: a change under `src/agento/toolbox/**` or
@@ -388,6 +394,17 @@ text input uses `input()` with the default in brackets.
 loop where one batch query does the same work; a per-item idempotent insert on a unique key is fine.
 The consumer poll loop makes no call to a third-party service and no wait without a timeout.
 
+**CODE-9 CLI shortcuts (P1).** A new `ns:verb` command has a shortcut. Derive it as
+`is_valid_shortcut()` in `framework/commands.py` says: 2 letters per segment, the initials of each part
+of a hyphenated segment, a longer prefix only to break a collision (`co:res`). A single-word command
+needs none. A command has no shortcut only when its derived code collides with a sibling's
+(`bitbucket:publish-comments` / `publish-changes`). The host routes by the raw argv string before it
+resolves a shortcut, so a shortcut goes into each set in `framework/cli/__init__.py` that holds its
+command (`_LOCAL_COMMANDS`, `_LOCAL_MODULE_COMMANDS`, `_INTERACTIVE_COMMANDS`,
+`_MAYBE_INTERACTIVE_COMMANDS`). If not, the shortcut runs in the wrong container or without a TTY.
+`tests/unit/framework/test_command_shortcuts.py` guards both. Show the shortcut in the command's
+`docs/cli/` page.
+
 ## CLS — Defect classes
 
 **CLS-1 Close the class (P1).** A class is a rename, a removed flow, a renamed config key, a changed
@@ -417,7 +434,7 @@ wrong (a command, flag, path, default, security step, runbook, contract) is a `D
 
 | Change | Update |
 |---|---|
-| CLI command added, removed, renamed | `docs/cli/`; `README.md` where it shows that command |
+| CLI command added, removed, renamed | `docs/cli/` with its shortcut (CODE-9); `README.md` where it shows that command |
 | Config path, or the fallback itself | `docs/config/`; AGENTS.md for a change to the fallback |
 | Module added, renamed, removed | `docs/modules/`, the `README.md` module list |
 | Container or trust boundary | `docs/architecture/` (incl. zero-trust.md), AGENTS.md, SECURITY.md |
