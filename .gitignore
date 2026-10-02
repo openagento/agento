@@ -76,6 +76,7 @@ docker/docker-compose.yml
 .codex/
 
 /.mcp.json
+.playwright-mcp/
 
 # Built frontend (E8): `cd frontend && npm run build` writes them; the wheel ships them.
 src/agento/framework/web/panel/
