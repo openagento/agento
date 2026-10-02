@@ -13,7 +13,7 @@ class MiniappListCommand:
 
     @property
     def shortcut(self) -> str:
-        return ""
+        return "mi:li"
 
     @property
     def help(self) -> str:

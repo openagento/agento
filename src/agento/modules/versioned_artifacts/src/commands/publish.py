@@ -14,8 +14,7 @@ class VersionedArtifactPublishCommand:
 
     @property
     def shortcut(self) -> str:
-        # No alias: see artifact:list.
-        return ""
+        return "ar:pu"
 
     @property
     def help(self) -> str:

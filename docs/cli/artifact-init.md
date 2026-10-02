@@ -6,6 +6,8 @@ Create a versioned artifact, optionally importing a directory as its first versi
 uv run bin/agento artifact:init <artifact_code> [--source <dir>] [--title <text>] [--owner <who>] [--actor <who>]
 ```
 
+Shortcut: `ar:in`.
+
 | Flag | Meaning |
 |---|---|
 | `--source <dir>` | Host directory to import as version 1. Omit for an empty artifact |
