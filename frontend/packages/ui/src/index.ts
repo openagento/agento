@@ -1,4 +1,4 @@
-export { agentoTheme } from "./theme";
+export { AgentoUiProvider } from "./Provider";
 export { Button, type ButtonVariant } from "./components/Button";
 export { StatusBadge, type BadgeTone } from "./components/StatusBadge";
 export { Card } from "./components/Card";

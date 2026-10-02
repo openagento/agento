@@ -1,4 +1,6 @@
-import { useId, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes } from "react";
+import { Select, TextInput } from "@mantine/core";
+import type { InputHTMLAttributes, ReactNode } from "react";
+import contained from "./Contained.module.css";
 
 export function FormSection({ title, children, onSubmit, error }: {
   title: string; children: ReactNode; onSubmit: () => void; error?: string | null;
@@ -14,31 +16,23 @@ export function FormSection({ title, children, onSubmit, error }: {
   );
 }
 
-type FieldProps = { label: string; hint?: string; error?: string | null };
+/** `contained` puts the label inside the box (`.ag-field--contained` in a miniapp). */
+type FieldProps = { label: string; hint?: string; error?: string | null; contained?: boolean };
 
-export function TextField({ label, hint, error, ...input }: FieldProps & InputHTMLAttributes<HTMLInputElement>) {
-  const id = useId();
-  return (
-    <div className="ag-field">
-      <label className="ag-field__label" htmlFor={id}>{label}</label>
-      <input id={id} className="ag-field__input" aria-invalid={error ? true : undefined}
-        aria-describedby={error || hint ? `${id}-d` : undefined} {...input} />
-      {(error || hint) && <span id={`${id}-d`} className={error ? "ag-field__error" : "ag-field__hint"}>{error ?? hint}</span>}
-    </div>
-  );
+// The hint goes under the input, as `.ag-field__hint` does in a miniapp.
+const ORDER = ["label", "input", "description", "error"] as ("label" | "input" | "description" | "error")[];
+
+export function TextField({ label, hint, error, contained: inside, ...input }: FieldProps & Omit<InputHTMLAttributes<HTMLInputElement>, "size">) {
+  return <TextInput label={label} description={hint} error={error} inputWrapperOrder={ORDER} classNames={inside ? contained : undefined} {...input} />;
 }
 
-export function SelectField({ label, hint, error, options, ...select }: FieldProps
-  & SelectHTMLAttributes<HTMLSelectElement> & { options: { value: string; label: string }[] }) {
-  const id = useId();
+// A Mantine combobox, so the open list has the theme's look (a native list is drawn by the OS).
+export function SelectField({ label, hint, error, contained: inside, options, value, onChange, name, disabled }: FieldProps & {
+  options: { value: string; label: string }[]; value?: string; onChange?: (value: string) => void;
+  name?: string; disabled?: boolean;
+}) {
   return (
-    <div className="ag-field">
-      <label className="ag-field__label" htmlFor={id}>{label}</label>
-      <select id={id} className="ag-field__input" aria-invalid={error ? true : undefined}
-        aria-describedby={error || hint ? `${id}-d` : undefined} {...select}>
-        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-      {(error || hint) && <span id={`${id}-d`} className={error ? "ag-field__error" : "ag-field__hint"}>{error ?? hint}</span>}
-    </div>
+    <Select label={label} description={hint} error={error} data={options} inputWrapperOrder={ORDER} name={name} classNames={inside ? contained : undefined}
+      disabled={disabled} value={value} onChange={(v) => v !== null && onChange?.(v)} allowDeselect={false} />
   );
 }

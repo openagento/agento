@@ -1,7 +1,7 @@
 // Users and grants (PRD E2 §5): admin only. The API enforces the role; this screen only
 // renders what the routes answer.
 import { useState } from "react";
-import { Tabs } from "@mantine/core";
+import { Avatar, Group, Select, Tabs, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { apiFetch, ApiError, useMutation, useQuery, useQueryClient, useSession, type User } from "@agento/api";
 import {
@@ -32,7 +32,7 @@ function CreateUser() {
   return (
     <FormSection title="Add a user" onSubmit={() => create.mutate()} error={create.error ? message(create.error) : null}>
       <TextField label="User name" name="new-username" required value={username} onChange={(e) => setUsername(e.target.value)} />
-      <SelectField label="Role" name="new-role" options={ROLES} value={role} onChange={(e) => setRole(e.target.value)} />
+      <SelectField label="Role" name="new-role" options={ROLES} value={role} onChange={setRole} />
       <TextField label="Password" name="new-password" type="password" autoComplete="new-password"
         hint="Leave empty to create the user without a password." value={password}
         onChange={(e) => setPassword(e.target.value)} />
@@ -57,23 +57,28 @@ function UserTable() {
     onError: (e) => notifications.show({ color: "red", message: message(e) }),
   });
 
+  // The UsersRolesTable pattern from ui.mantine.dev (frontend/lookbook/UsersRolesTable): the role is
+  // changed in its cell. A user cannot change their own role or deactivate themselves here.
   const columns: Column<User>[] = [
-    { id: "username", header: "User name", cell: (u) => u.username, sortValue: (u) => u.username },
-    { id: "role", header: "Role", sortValue: (u) => u.role,
-      cell: (u) => <StatusBadge tone={u.role === "admin" ? "info" : "neutral"}>{u.role}</StatusBadge> },
-    { id: "active", header: "Status", sortValue: (u) => (u.is_active ? 1 : 0),
-      cell: (u) => <StatusBadge tone={u.is_active ? "succeeded" : "neutral"}>{u.is_active ? "Active" : "Inactive"}</StatusBadge> },
-    { id: "actions", header: "Actions", cell: (u) => u.id === me?.id ? <span className="ag-muted">You</span> : (
-      <div className="ag-row">
-        <Button variant="subtle" disabled={update.isPending}
-          onClick={() => update.mutate({ id: u.id, patch: { role: u.role === "admin" ? "user" : "admin" } })}>
-          Make {u.role === "admin" ? "user" : "admin"}
-        </Button>
-        {u.is_active
-          ? <Button variant="danger" onClick={() => setDeactivate(u)}>Deactivate</Button>
-          : <Button onClick={() => update.mutate({ id: u.id, patch: { is_active: true } })}>Activate</Button>}
-      </div>
+    { id: "username", header: "User", sortValue: (u) => u.username, cell: (u) => (
+      <Group gap="sm" wrap="nowrap">
+        <Avatar name={u.username} color="initials" radius="xl" aria-hidden />
+        <div>
+          <Text fz="sm" fw={500}>{u.username}</Text>
+          {u.id === me?.id && <Text fz="xs" c="dimmed">You</Text>}
+        </div>
+      </Group>
     ) },
+    { id: "role", header: "Role", sortValue: (u) => u.role, cell: (u) => u.id === me?.id ? <Text fz="sm">{u.role}</Text> : (
+      <Select data={ROLES} value={u.role} variant="unstyled" allowDeselect={false} aria-label={`Role of ${u.username}`}
+        disabled={update.isPending} w={120}
+        onChange={(role) => role && role !== u.role && update.mutate({ id: u.id, patch: { role: role as User["role"] } })} />
+    ) },
+    { id: "active", header: "Status", sortValue: (u) => (u.is_active ? 1 : 0),
+      cell: (u) => <StatusBadge tone={u.is_active ? "info" : "neutral"}>{u.is_active ? "Active" : "Inactive"}</StatusBadge> },
+    { id: "actions", header: "Actions", cell: (u) => u.id === me?.id ? null : u.is_active
+      ? <Button variant="danger" onClick={() => setDeactivate(u)}>Deactivate</Button>
+      : <Button disabled={update.isPending} onClick={() => update.mutate({ id: u.id, patch: { is_active: true } })}>Activate</Button> },
   ];
 
   return (

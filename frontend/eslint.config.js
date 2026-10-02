@@ -5,7 +5,7 @@ import jsxA11y from "eslint-plugin-jsx-a11y";
 import globals from "globals";
 
 export default tseslint.config(
-  { ignores: ["**/dist/**", "node_modules/**", "panel/src/generated/**", "packages/miniapp-kit/released/**", "storybook-static/**"] },
+  { ignores: ["**/dist/**", "node_modules/**", "panel/src/generated/**", "packages/miniapp-kit/released/**", "storybook-static/**", "lookbook/**"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -19,8 +19,8 @@ export default tseslint.config(
     },
   },
   {
-    // A component gets its look from agento-ui.css classes only (PRD E8 §10.3): a Mantine
-    // Styles API object would be a second source of style the miniapp kit cannot share.
+    // A component gets its look from the theme only (theme.ts, which also generates agento-ui.css):
+    // a style or Styles API override would be a value the miniapp kit cannot follow.
     files: ["packages/ui/**/*.tsx"],
     ignores: ["**/*.stories.tsx"],
     rules: {

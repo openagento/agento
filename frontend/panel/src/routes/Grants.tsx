@@ -22,6 +22,7 @@ export function Grants() {
   const grants = useQuery({ queryKey: ["grants"], queryFn: ({ signal }) => apiFetch<Grant[]>("/api/admin/grants", { signal }) });
   const [form, setForm] = useState({ role: "user", kind: "tool", name: "", workspace: "", view: "" });
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value });
+  const pick = (k: keyof typeof form) => (value: string) => setForm({ ...form, [k]: value });
   const done = (text: string) => {
     notifications.show({ message: text });
     void qc.invalidateQueries({ queryKey: ["grants"] });
@@ -66,9 +67,9 @@ export function Grants() {
         loading={grants.isPending} error={grants.error ? message(grants.error) : null}
         onRetry={() => void grants.refetch()} emptyTitle="No grants" emptyText="A role can do nothing that is not granted." />
       <FormSection title="Add a grant" onSubmit={submit} error={invalid ?? (add.error ? message(add.error) : null)}>
-        <SelectField label="Role" name="grant-role" value={form.role} onChange={set("role")}
+        <SelectField label="Role" name="grant-role" value={form.role} onChange={pick("role")}
           options={[{ value: "user", label: "user" }, { value: "admin", label: "admin" }]} />
-        <SelectField label="Kind" name="grant-kind" value={form.kind} onChange={set("kind")}
+        <SelectField label="Kind" name="grant-kind" value={form.kind} onChange={pick("kind")}
           options={[{ value: "tool", label: "tool" }, { value: "operation", label: "operation" }]} />
         <TextField label="Name" name="grant-name" required value={form.name} onChange={set("name")}
           hint="A declared tool name, or an operation such as artifact.launch." />

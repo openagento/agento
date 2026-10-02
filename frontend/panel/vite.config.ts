@@ -29,7 +29,6 @@ export const aliases = {
   "@agento/ui": here("../packages/ui/src/index.ts"),
   "@agento/api": here("../packages/api/src/index.ts"),
   "@agento/miniapp-kit/agento-ui.css": here(`../packages/miniapp-kit/dist/${KIT_VERSION}/agento-ui.css`),
-  "@agento/miniapp-kit/tokens": here("../packages/miniapp-kit/src/tokens.ts"),
   "@agento/miniapp-bridge": `${modules}/miniapps/sdk/bridge.js`,
   // A core module's panel/ lives outside frontend/, where Node resolution cannot find
   // frontend/node_modules: point the one runtime it needs at the workspace copy.

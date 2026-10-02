@@ -1,6 +1,7 @@
 // A server-paged table: it sorts the rows it has and never pages on the client (the
 // API bounds the page). Rows take focus with the arrow keys; Enter calls `onRowActivate`.
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { Table, UnstyledButton } from "@mantine/core";
 import {
   createColumnHelper, createSortedRowModel, rowSortingFeature, tableFeatures, useTable, type RowData,
 } from "@tanstack/react-table";
@@ -30,8 +31,10 @@ export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, e
     id: c.id,
     header: c.header,
     enableSorting: Boolean(c.sortValue),
-    cell: (ctx) => c.cell(ctx.row.original),
   })));
+  // Called, not rendered through FlexRender: a cell function made here is a new component type on
+  // every render, so React would remount every cell (an open select closes when a row takes focus).
+  const cellOf = new Map(columns.map((c) => [c.id, c.cell]));
   const table = useTable({ features, columns: defs, data, getRowId: (r: T) => rowKey(r) });
 
   if (loading) return <LoadingState />;
@@ -45,6 +48,7 @@ export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, e
     (body.current?.rows[next] as HTMLElement | undefined)?.focus();
   };
   const onKey = (e: KeyboardEvent<HTMLTableRowElement>, i: number, row: T) => {
+    if (e.target !== e.currentTarget) return; // a control in a cell (select, button) owns its keys
     if (e.key === "ArrowDown") { e.preventDefault(); focusRow(i + 1); }
     else if (e.key === "ArrowUp") { e.preventDefault(); focusRow(i - 1); }
     else if (e.key === "Home") { e.preventDefault(); focusRow(0); }
@@ -53,36 +57,36 @@ export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, e
   };
 
   return (
-    <div className="ag-table">
-      <table>
+    <Table.ScrollContainer minWidth={0} type="native">
+      <Table>
         <caption className="ag-visually-hidden">{caption}</caption>
-        <thead>
+        <Table.Thead>
           {table.getHeaderGroups().map((g) => (
-            <tr key={g.id}>
+            <Table.Tr key={g.id}>
               {g.headers.map((h) => {
                 const sorted = h.column.getIsSorted();
                 return (
-                  <th key={h.id} scope="col"
+                  <Table.Th key={h.id} scope="col"
                     aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}>
                     {h.column.getCanSort()
-                      ? <button type="button" onClick={h.column.getToggleSortingHandler()}><table.FlexRender header={h} /></button>
+                      ? <UnstyledButton fz="inherit" fw="inherit" onClick={h.column.getToggleSortingHandler()}><table.FlexRender header={h} /></UnstyledButton>
                       : <table.FlexRender header={h} />}
-                  </th>
+                  </Table.Th>
                 );
               })}
-            </tr>
+            </Table.Tr>
           ))}
-        </thead>
-        <tbody ref={body}>
+        </Table.Thead>
+        <Table.Tbody ref={body}>
           {tableRows.map((r, i) => (
-            <tr key={r.id} tabIndex={i === Math.min(active, tableRows.length - 1) ? 0 : -1}
+            <Table.Tr key={r.id} tabIndex={i === Math.min(active, tableRows.length - 1) ? 0 : -1}
               onKeyDown={(e) => onKey(e, i, r.original)} onFocus={() => setActive(i)}>
-              {r.getAllCells().map((c) => <td key={c.id}><table.FlexRender cell={c} /></td>)}
-            </tr>
+              {r.getAllCells().map((c) => <Table.Td key={c.id}>{cellOf.get(c.column.id)?.(r.original)}</Table.Td>)}
+            </Table.Tr>
           ))}
-        </tbody>
-      </table>
-    </div>
+        </Table.Tbody>
+      </Table>
+    </Table.ScrollContainer>
   );
 }
 

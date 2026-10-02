@@ -1,7 +1,7 @@
-import { MantineProvider } from "@mantine/core";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { endSession, login, QueryClientProvider, queryClient } from "@agento/api";
+import { AgentoUiProvider } from "@agento/ui";
 import { Grants } from "./Grants";
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -18,7 +18,7 @@ const posts = () => fetchMock.mock.calls.filter(([u, i]) => String(u).endsWith("
 
 describe("Grants form", () => {
   it("refuses a mistyped scope id and sends nothing; a valid id is sent", async () => {
-    render(<MantineProvider><QueryClientProvider client={queryClient}><Grants /></QueryClientProvider></MantineProvider>);
+    render(<AgentoUiProvider><QueryClientProvider client={queryClient}><Grants /></QueryClientProvider></AgentoUiProvider>);
     fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "miniapp_list" } });
     const view = screen.getByRole("textbox", { name: "Agent view id" });
     fireEvent.change(view, { target: { value: "abc" } });
