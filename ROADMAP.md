@@ -136,8 +136,20 @@ backend route, so these gaps stay open, each needing a route first:
   no `after`, so a long thread shows only its start;
 - **no module list for the panel**: there is no `GET /api/admin/modules`, so the navigation knows a
   module only through its own probe route (fail closed: a module with no GET route has no screen);
-- **no config screen**: there is no `GET /api/admin/config`, so the config, secret and
-  `toolbox_only` forms wait for an admin config API (E7);
+- ~~**no config screen**~~ — done 2026-10-02: the admin TUI screens are in the panel
+  (`/api/admin/*`, [docs/architecture/panel.md](docs/architecture/panel.md#admin-screens)). Left
+  TUI-only, each a follow-up:
+  - **secret writes** (`obscure`, `toolbox_only`): `web` holds no key; needs the credential broker
+    below, or a toolbox write route;
+  - **`CONFIG__*` ENV visibility**: `web` does not load the cron store, so the panel cannot show an
+    `env` source;
+  - **job replay and workspace build**: both run in the cron container; a panel button needs a
+    queued request that cron picks up;
+  - **`local`-kind testers**: `web` does not load module code;
+  - **a `config_delete_after` event**: no remove path dispatches one (CLI, TUI, panel);
+  - **kit `.ag-badge` in a narrow table cell**: like `StatusBadge`, it is cut to "S…" (`overflow:
+    hidden` in a grid); the panel keeps its table badges whole at the cell (`whole()`), the kit needs
+    `min-width: max-content` on both twins in a new kit version (UI-2, UI-3);
 - **no `job.succeeded` event**: a turn's success is read from the assistant message that follows it;
 - **no snapshot watermark**: a REST snapshot carries no stream event id, so the panel refetches on
   every stream (re)open instead of resuming exactly;

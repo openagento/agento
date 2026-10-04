@@ -4,6 +4,25 @@
 
 ![Admin Config Screen](../images/admin-config.png)
 
+The same screens are in the web panel for an admin (`https://panel.<host>/`, the
+**Administration** group): see [Panel admin screens](../architecture/panel.md#admin-screens). The
+TUI stays as the fallback. It is the only place for what the `web` container cannot do:
+
+| Action | Why only here |
+|---|---|
+| Replay a job (`p`) | it runs the agent CLI in the cron container |
+| Build a workspace (`b`) | it writes `workspace/build/` in the cron container |
+| Set or edit a secret (`obscure` or `toolbox_only`) | `web` holds no encryption key |
+| See an `env` source and a `CONFIG__*` value | `web` does not load the cron credential store |
+| Read a credential's error message | `web` sends no error text to the browser |
+| Run a `local`-kind config tester | `web` does not load module code |
+
+A secret's editor opens empty, because neither the TUI nor the panel reads the stored secret to
+show it. Save with an empty box keeps the stored secret; type a new value to replace it.
+
+The panel shows the CLI command for the first two (`bin/agento replay <id>`,
+`bin/agento workspace:build --agent-view <code>`) with a copy button.
+
 ## Usage
 
 ```bash
