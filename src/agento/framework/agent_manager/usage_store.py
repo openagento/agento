@@ -65,9 +65,39 @@ def get_usage_summary(
         row = cur.fetchone()
     return UsageSummary(
         credential_id=credential_id,
-        total_tokens=row["total_tokens"],
+        total_tokens=int(row["total_tokens"]),
         call_count=row["call_count"],
     )
+
+
+def get_usage_by_credential(
+    conn: pymysql.Connection,
+    ids: list[int],
+    window_hours: int = 24,
+) -> dict[int, UsageSummary]:
+    """Usage of each listed credential in one grouped query. A credential with no usage is absent."""
+    if not ids:
+        return {}
+    placeholders = ",".join(["%s"] * len(ids))
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT credential_id, COALESCE(SUM(tokens_used), 0) AS total_tokens,
+                   COUNT(*) AS call_count
+            FROM usage_log
+            WHERE credential_id IN ({placeholders})
+              AND created_at >= NOW() - INTERVAL %s HOUR
+            GROUP BY credential_id
+            """,
+            (*ids, window_hours),
+        )
+        rows = cur.fetchall()
+    return {
+        r["credential_id"]: UsageSummary(
+            credential_id=r["credential_id"], total_tokens=int(r["total_tokens"]), call_count=r["call_count"],
+        )
+        for r in rows
+    }
 
 
 def get_usage_summaries(
@@ -101,7 +131,7 @@ def get_usage_summaries(
     return [
         UsageSummary(
             credential_id=r["credential_id"],
-            total_tokens=r["total_tokens"],
+            total_tokens=int(r["total_tokens"]),
             call_count=r["call_count"],
         )
         for r in rows
@@ -138,7 +168,7 @@ def get_credentialless_usage(
         CredentiallessUsage(
             harness=r["harness"],
             provider=r["provider"],
-            total_tokens=r["total_tokens"],
+            total_tokens=int(r["total_tokens"]),
             call_count=r["call_count"],
         )
         for r in rows

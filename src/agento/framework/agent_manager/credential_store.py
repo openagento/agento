@@ -193,13 +193,26 @@ def deregister_credential(
     return found
 
 
+_NO_PAYLOAD_COLUMNS = (
+    "id, agent_type, scope, type, label, token_limit, enabled, status, priority, error_msg, "
+    "error_source, expires_at, throttled_until, lease_owner, leased_until, used_at, created_at, updated_at"
+)
+
+
 def list_credentials(
     conn: pymysql.Connection,
     scope: str | None = None,
     enabled_only: bool = True,
+    *,
+    include_credentials: bool = True,
 ) -> list[CredentialRecord]:
-    """List credentials, optionally filtered by scope and enabled status."""
-    sql = "SELECT * FROM credential WHERE 1=1"
+    """List credentials, optionally filtered by scope and enabled status.
+
+    ``include_credentials=False`` never reads the encrypted payload, so nothing is
+    decrypted and ``credentials`` is ``None``: the form for a reader that shows a row's
+    status only (the admin screens; ``web`` holds no key).
+    """
+    sql = f"SELECT {'*' if include_credentials else _NO_PAYLOAD_COLUMNS} FROM credential WHERE 1=1"
     params: list = []
     if scope is not None:
         sql += " AND scope = %s"

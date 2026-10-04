@@ -15,7 +15,7 @@ a panel button and a miniapp button look the same.
 | `frontend/packages/ui/` (`@agento/ui`) | The Mantine theme and `AgentoUiProvider`, React components (Mantine or `.ag-*`), and the stories |
 | `frontend/lookbook/` | The ui.mantine.dev patterns, copied as a Storybook catalogue (see [Lookbook](#lookbook)) |
 | `frontend/packages/api/` (`@agento/api`) | `apiFetch`, the session, the query client, the stream hub, the panel module contract |
-| `frontend/panel/` | The app: shell, router, login, users and grants, miniapp launches |
+| `frontend/panel/` | The app: shell, router, login, users and grants, miniapp launches, the admin screens (`src/routes/admin/`) |
 | `src/agento/modules/<core module>/panel/` | A core module's screens (today: `conversation`) |
 | `frontend/miniapps/examples/` | Hand-written example miniapps |
 
@@ -65,6 +65,24 @@ npm test            # build, lint, then every unit test and every story in headl
   text and tool rows are built from it, in a bounded store (64 KiB, 200 rows, 8 executions).
 - **One teardown.** Logout, the first 401 and a new login call `endSession()`: it clears the query
   cache, closes the stream and closes every launch window.
+
+## Admin screens
+
+The admin TUI's screens are in the panel under the **Administration** group, for an admin only:
+Dashboard (`/`), Jobs, Agents, Credentials, Tools, Skills and Config (`/admin/<name>`), plus Users.
+Each is a lazy route in `panel/src/routes/admin/`, so the entry chunk stays inside its budget. They
+call `/api/admin/*` ([panel.md](../architecture/panel.md#admin-screens)).
+
+- **The scope is in the URL.** `ScopePicker` (Default / Workspace / Agent view) writes
+  `?scope=&scope_id=`, so a reload or a link from Agents ("Open config") keeps it. Tools, Skills
+  and Config use it.
+- **A secret is never shown.** A secret config row shows `Set` or `Not set` and the editor is
+  disabled with the CLI hint. A credential shows that it has an error, never the message.
+- **What the panel cannot do, it names.** Replay and build show the CLI command with a copy
+  button; the Config screen says that `CONFIG__*` ENV overrides are not visible there
+  ([docs/cli/admin.md](../cli/admin.md)).
+- **Mouse and keyboard.** `DataTable` activates a row on Enter; each admin table also has a button
+  column (Details, Usage, Edit) for the mouse.
 
 ## Adding a module screen
 
