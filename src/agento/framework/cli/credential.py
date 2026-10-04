@@ -64,8 +64,8 @@ class CredentialRegisterCommand:
         )
 
     def execute(self, args: argparse.Namespace) -> None:
-        from ..agent_manager import CredentialLeasedError, register_credential
-        from ..events import CredentialRegisteredEvent, dispatch_credential_event
+        from ..agent_manager import CredentialLeasedError
+        from ..agent_manager.credential_store import register_credential_and_dispatch
 
         db_config, _, _ = _load_framework_config()
         logger = get_logger("agent-manager")
@@ -77,7 +77,7 @@ class CredentialRegisterCommand:
         try:
             _warn_on_duplicate_account(conn, scope, args.label, credentials)
             try:
-                credential = register_credential(
+                credential = register_credential_and_dispatch(
                     conn,
                     scope=scope,
                     label=args.label,
@@ -87,28 +87,15 @@ class CredentialRegisterCommand:
                     logger=logger,
                 )
             except CredentialLeasedError as exc:
-                # A duplicate label is an upsert, so this can refuse here too. Roll back so
-                # no partial transaction survives, and refuse rather than wait: an
-                # interactive OAuth round-trip is already spent by now, and blocking a TTY
-                # for minutes is worse than telling the operator to retry.
-                conn.rollback()
+                # A duplicate label is an upsert, so this can refuse here too (rolled back).
+                # Refuse rather than wait: an interactive OAuth round-trip is already spent
+                # by now, and blocking a TTY for minutes is worse than telling the operator
+                # to retry.
                 print(f"Refusing to overwrite a credential in use: {exc}", file=sys.stderr)
                 sys.exit(1)
-            conn.commit()
             print(f"Registered credential: id={credential.id} label={credential.label} type={credential.type}")
         finally:
             conn.close()
-
-        dispatch_credential_event(
-            "credential_register_after",
-            CredentialRegisteredEvent(
-                scope=scope,
-                credential_id=credential.id,
-                label=credential.label,
-                credentials=credentials,
-                type=credential.type,
-            ),
-        )
 
 
 def _validate_scope(scope: str) -> str:
@@ -198,7 +185,7 @@ def _require_mode(scope: str, mode, what: str) -> None:
 
 def _resolve_credentials(args: argparse.Namespace, scope: str, logger) -> tuple[dict, str]:
     """Resolve registration input to (credentials_dict, type)."""
-    from ..agent_manager.auth import AuthenticationError, authenticate_interactive
+    from ..agent_manager.auth import AuthenticationError, authenticate_interactive, credentials_from_auth
     from ..harness import (
         CredentialRegistrationMode,
         get_authenticator,
@@ -246,15 +233,7 @@ def _resolve_credentials(args: argparse.Namespace, scope: str, logger) -> tuple[
     except AuthenticationError as exc:
         print(f"Authentication failed: {exc}", file=sys.stderr)
         sys.exit(1)
-    credentials = {
-        "subscription_key": auth_result.subscription_key,
-        "refresh_token": auth_result.refresh_token,
-        "expires_at": auth_result.expires_at,
-        "subscription_type": auth_result.subscription_type,
-        "id_token": auth_result.id_token,
-        "raw_auth": auth_result.raw_auth,
-    }
-    return credentials, "oauth"
+    return credentials_from_auth(auth_result), "oauth"
 
 
 class CredentialRefreshCommand:
@@ -275,7 +254,7 @@ class CredentialRefreshCommand:
 
     def execute(self, args: argparse.Namespace) -> None:
         from ..agent_manager import CredentialLeasedError, register_credential
-        from ..agent_manager.auth import AuthenticationError, authenticate_interactive
+        from ..agent_manager.auth import AuthenticationError, authenticate_interactive, credentials_from_auth
         from ..agent_manager.credential_store import get_credential
         from ..harness import CredentialRegistrationMode
 
@@ -315,14 +294,7 @@ class CredentialRefreshCommand:
             print(f"Authentication failed: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        credentials = {
-            "subscription_key": auth_result.subscription_key,
-            "refresh_token": auth_result.refresh_token,
-            "expires_at": auth_result.expires_at,
-            "subscription_type": auth_result.subscription_type,
-            "id_token": auth_result.id_token,
-            "raw_auth": auth_result.raw_auth,
-        }
+        credentials = credentials_from_auth(auth_result)
 
         conn = get_connection_or_exit(db_config)
         try:
@@ -742,5 +714,110 @@ class CredentialUsageCommand:
                         f"used={entry.total_tokens:>10} calls={entry.call_count:>5} "
                         f"limit=n/a"
                     )
+        finally:
+            conn.close()
+
+
+def _limits_json(limits) -> str | None:
+    """The stored form of a ``CredentialLimits``; ``None`` when there is nothing to show.
+
+    Every vendor reader's answer passes here, so the contract is checked once: a ``used_pct``
+    outside 0-100 raises ``ValueError``, and so does a value that is not finite
+    (``allow_nan=False``), which the JSON column would refuse."""
+    from ..harness import CredentialLimits
+
+    if not isinstance(limits, CredentialLimits) or (not limits.windows and limits.balance_usd is None):
+        return None
+    if any(not 0 <= w.used_pct <= 100 for w in limits.windows):  # NaN fails this too
+        raise ValueError("used_pct is not in 0-100")
+    return json.dumps({
+        "windows": [
+            {"label": w.label, "used_pct": w.used_pct,
+             "resets_at": w.resets_at.astimezone(UTC).isoformat().replace("+00:00", "Z") if w.resets_at else None}
+            for w in limits.windows
+        ],
+        "balance_usd": limits.balance_usd,
+    }, allow_nan=False)
+
+
+def refresh_credential_limits(conn, logger) -> None:
+    """Store each enabled, healthy credential's provider limits (``credential.limits``).
+
+    Skips an OAuth credential past ``expires_at``: renewing it is the refresh lease's job.
+    Any failure stores ``NULL`` (the panel shows a dash) and logs the credential id and the
+    exception class only (SEC-6)."""
+    from ..agent_manager import list_credentials
+    from ..harness import get_authenticator
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    for c in list_credentials(conn, enabled_only=True):
+        if c.status.value != "ok" or (c.type == "oauth" and c.expires_at is not None and c.expires_at <= now):
+            continue
+        # `fetch_limits` is an optional member of CredentialAuthenticator (protocols.py).
+        fetch = getattr(get_authenticator(c.scope), "fetch_limits", None)
+        limits = None
+        if fetch is not None:
+            try:
+                limits = _limits_json(fetch(c.credentials or {}, c.type))
+            except Exception as exc:
+                logger.warning("credential:limits: credential id=%s failed (%s)", c.id, type(exc).__name__)
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE credential SET limits = %s, limits_at = UTC_TIMESTAMP(), updated_at = updated_at "
+                "WHERE id = %s",
+                (limits, c.id),
+            )
+        conn.commit()
+
+
+class CredentialLimitsCommand:
+    @property
+    def name(self) -> str:
+        return "credential:limits"
+
+    @property
+    def shortcut(self) -> str:
+        # `cr:li` is credential:list.
+        return "cr:lim"
+
+    @property
+    def help(self) -> str:
+        return "Read each credential's provider limits (usage windows, balance) for the admin panel"
+
+    def configure(self, parser: argparse.ArgumentParser) -> None:
+        pass
+
+    def execute(self, args: argparse.Namespace) -> None:
+        db_config, _, _ = _load_framework_config()
+        conn = get_connection_or_exit(db_config)
+        try:
+            refresh_credential_limits(conn, get_logger("agent-manager"))
+        finally:
+            conn.close()
+
+
+class CredentialWebLoginCommand:
+    @property
+    def name(self) -> str:
+        return "credential:web-login"
+
+    @property
+    def shortcut(self) -> str:
+        return "cr:wl"
+
+    @property
+    def help(self) -> str:
+        return "Run the re-login requests made in the admin panel (cron)"
+
+    def configure(self, parser: argparse.ArgumentParser) -> None:
+        pass
+
+    def execute(self, args: argparse.Namespace) -> None:
+        from ..agent_manager.credential_login import run_worker
+
+        db_config, _, _ = _load_framework_config()
+        conn = get_connection_or_exit(db_config)
+        try:
+            run_worker(conn, get_logger("agent-manager"))
         finally:
             conn.close()

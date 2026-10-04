@@ -10,6 +10,7 @@ import inspect
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -408,6 +409,63 @@ class CredentialAuthenticator(Protocol):
     #         '''Human-facing account identity (e.g. the OAuth e-mail) recorded in the
     #         decrypted ``credentials`` payload, or ``None`` when the payload carries no
     #         account (API-key credentials) or it cannot be extracted.'''
+    #
+    # ``fetch_limits`` and ``start_web_login`` are optional for the same reason, and the
+    # framework reads them the same way (``getattr(authenticator, name, None)``): an
+    # authenticator without ``fetch_limits`` shows no limits, and one without
+    # ``start_web_login`` cannot re-login from the panel (``unsupported``).
+    #
+    #     def fetch_limits(self, credentials: dict, credential_type: str) -> CredentialLimits | None:
+    #         '''The provider's usage windows or balance for one decrypted credential, or
+    #         ``None`` when this credential has none to show (an API key with no balance
+    #         endpoint). May raise on any HTTP or shape error: ``credential:limits`` then
+    #         stores no limits for the row.'''
+    #
+    #     def start_web_login(self, tmp_home: str, logger: logging.Logger) -> InteractiveLogin:
+    #         '''Start the vendor CLI login in ``tmp_home`` and return once the login URL
+    #         is known. Raises ``AuthenticationError`` when the CLI does not start.'''
+
+
+@dataclass(frozen=True)
+class LimitWindow:
+    """One provider usage window of a credential (``credential:limits``)."""
+
+    label: str  # "5h", "Week": the module names the window
+    used_pct: float  # 0-100
+    resets_at: datetime | None  # aware UTC
+
+
+@dataclass(frozen=True)
+class CredentialLimits:
+    """What ``fetch_limits`` read: usage windows (a subscription) or a balance (an API key)."""
+
+    windows: tuple[LimitWindow, ...] = ()
+    balance_usd: float | None = None
+
+
+@dataclass(frozen=True)
+class LoginPrompt:
+    """What the operator needs to finish a web login started by ``start_web_login``."""
+
+    url: str  # the framework accepts https only
+    user_code: str | None  # shown to the operator (device flow)
+    needs_code: bool  # the operator pastes a code back
+
+
+class InteractiveLogin(Protocol):
+    """A vendor CLI login in progress (``start_web_login``)."""
+
+    prompt: LoginPrompt
+
+    def submit_code(self, code: str) -> None: ...
+
+    def poll(self) -> AuthResult | None:
+        """``None`` while the login runs. Raises ``AuthenticationError`` on failure."""
+        ...
+
+    def close(self) -> None:
+        """Stop the CLI. Removes nothing outside ``tmp_home``."""
+        ...
 
 
 @runtime_checkable

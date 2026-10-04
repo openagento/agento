@@ -208,6 +208,18 @@ receives a capability or a bearer — the miniapp bridge relays only `{status, b
 The panel and miniapp kit files are static and hold no data. See
 [../development/frontend.md](../development/frontend.md).
 
+**Re-login from the panel** keeps this model. The path is browser → `web` → DB → cron:
+`web` only writes a `credential_login` row; the `credential:web-login` worker in cron runs
+the vendor CLI in a PTY with a temp `HOME` and a minimal environment (no
+`AGENTO_ENCRYPTION_KEY`, no `MYSQL_PASSWORD`), and encrypts the new payload into the
+`credential` row as `credential:register` does. A Claude login needs a code pasted from the
+browser: the worker makes an RSA-3072 key pair per login, puts only the public key in the row,
+and keeps the private key in memory. `web` seals the code with that public key (OAEP-SHA256)
+and stores the sealed bytes; it never decrypts and holds no key that opens them. The worker
+clears the sealed code and the key when it ends the login, and the temp `HOME` is removed. The
+panel reads only the URL, the user code, the status and an error code — never the payload, the
+pasted code or the CLI output. See DECISIONS.md 2026-10-04 (D-PANEL-LOGIN-1).
+
 ## What the Agent CAN Access
 
 - Its own OAuth credential (Claude/Codex/Pi) — written into its per-run HOME from the encrypted `credential` row

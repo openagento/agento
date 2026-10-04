@@ -214,6 +214,58 @@ agento credential:usage             # Show usage stats across all scopes
 agento credential:usage --scope claude --window 72
 ```
 
+## Usage Limits
+
+```bash
+agento credential:limits    # shortcut: cr:lim
+```
+
+Asks each vendor how much of its usage limits every credential has used, and stores the answer
+in `credential.limits` (JSON) and `credential.limits_at`. Cron runs it every 10 minutes
+(`core/cron.json`). It skips a credential that is disabled, in `status='error'`, or an OAuth
+credential past `expires_at`. A harness that has no `fetch_limits` member, a credential type
+the vendor has no endpoint for, or a failed call store `NULL`: the panel shows "no data". A
+failure logs the credential id and the exception class only, never the payload or the vendor's
+answer. The update does not change `updated_at`.
+
+| Harness | Credential type | Endpoint | Stored |
+|---|---|---|---|
+| `claude` | `oauth` | `api.anthropic.com/api/oauth/usage` | windows `5h`, `Week` |
+| `codex` | `oauth` | `chatgpt.com/backend-api/wham/usage` | windows `5h`, `Week` (other lengths `<n>h`) |
+| `pi` | `openrouter_api_key` | `openrouter.ai/api/v1/credits` | `balance_usd` |
+
+The stored shape is `{"windows": [{"label", "used_pct", "resets_at"}], "balance_usd"}`.
+These endpoints are not public API: if a vendor changes one, the credential shows "no data"
+until the harness module is fixed.
+
+## Re-login From the Panel
+
+```bash
+agento credential:web-login    # shortcut: cr:wl
+```
+
+The worker for a re-login that an admin starts in the panel. Cron runs it every minute; it
+claims new logins for up to 55 s. A login it has claimed runs to its end, even past
+55 s, but after 55 s it claims no other login and exits. It first sweeps: a login past `expires_at` fails with
+`expired`, a running login whose heartbeat is older than 30 s fails with `abandoned`,
+finished rows older than one day are deleted, and stale temp homes under
+`$TMPDIR/agento-web-login/` are removed. Then it claims each `pending` row and runs the
+harness's `start_web_login` in a PTY with a temp `HOME` and a minimal environment
+(`PATH`, `HOME`, `LANG`, `TERM`), never the cron environment.
+
+- **Claude** (`claude auth login --claudeai`): the panel shows the URL; the admin pastes the
+  code from the browser. The panel seals the code with the login's own RSA-3072 public key;
+  only the worker holds the private key, in memory.
+- **Codex** (`codex login --device-auth`): the panel shows the URL and the user code; no code
+  is pasted back.
+
+On success the worker saves the new payload through the same function as
+`credential:register` (`register_credential_and_dispatch`), so `credential_register_after` is
+dispatched. A login fails with `cli_failed`, `bad_url`, `busy` (a refresh lease is live),
+`disabled`, `unsupported`, `expired` or `abandoned`; a cancel in the panel wins over a save
+that has not committed. API-key credentials are not re-logged from the panel: use
+`credential:register --with-api-key`.
+
 ## Deregister
 
 ```bash
@@ -247,6 +299,6 @@ once via the `SplitProviderIntoHarness` data patch.
 ## Requirements
 
 - `AGENTO_ENCRYPTION_KEY` must be set (same key used for `core_config_data` obscure fields). See [encryption.md](../config/encryption.md).
-- The `credential` schema is maintained by framework migrations beginning with `019_oauth_token_inline_credentials.sql`; the rename plus the `scope` column land in `030_credential_scope_and_rename.sql`, and `error_source` / `lease_owner` / `leased_until` in `034_credential_error_source_and_refresh_lease.sql`. `agento setup:upgrade` applies pending migrations.
+- The `credential` schema is maintained by framework migrations beginning with `019_oauth_token_inline_credentials.sql`; the rename plus the `scope` column land in `030_credential_scope_and_rename.sql`, and `error_source` / `lease_owner` / `leased_until` in `034_credential_error_source_and_refresh_lease.sql`, and `limits` / `limits_at` plus the `credential_login` table in `048_credential_login.sql`. `agento setup:upgrade` applies pending migrations.
 
 Source: [src/agento/framework/cli/credential.py](../../src/agento/framework/cli/credential.py) (deprecated aliases: [credential_aliases.py](../../src/agento/framework/cli/credential_aliases.py))
