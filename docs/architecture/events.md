@@ -223,7 +223,7 @@ stretches with the same retention as the outbox; an open stretch is never pruned
 
 | Event | Data Class | Fields | When |
 |-------|-----------|--------|------|
-| `credential_register_after` | `CredentialRegisteredEvent` | `scope, credential_id, label, credentials, type` | A credential was registered via `credential:register` |
+| `credential_register_after` | `CredentialRegisteredEvent` | `scope, credential_id, label, credentials, type` | A credential was registered via `credential:register`, or re-logged from the panel by the `credential:web-login` worker (one shared function, `register_credential_and_dispatch`) |
 | `credential_refresh_after` | `CredentialRefreshedEvent` | `scope, credential_id, label, credentials, type` | A credential was re-authenticated via `credential:refresh` |
 | `credential_auth_failed_after` | `CredentialAuthFailedEvent` | `scope, credential_id, error_msg, job_id` | A runtime auth failure flips a credential to `status='error'` (permanent poison) |
 | `credential_usage_limited_after` | `CredentialUsageLimitedEvent` | `scope, credential_id, error_msg, reset_at, job_id` | A session/usage/rate limit throttles a credential via `throttled_until` (temporary cooldown; `status` stays `'ok'`) |

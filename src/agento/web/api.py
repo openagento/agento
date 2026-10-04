@@ -258,6 +258,11 @@ def admin_list_grants(req: Request) -> Response:
         200, [_grant_json(g) for g in accounts.list_grants(req.conn)])
 
 
+def admin_grant_options(req: Request) -> Response:
+    return _forbidden_unless(req, "grants.manage") or Response(
+        200, {"roles": list(accounts.ROLES), "operations": sorted(accounts.GRANTABLE_OPERATIONS)})
+
+
 def admin_add_grant(req: Request) -> Response:
     if denied := _forbidden_unless(req, "grants.manage"):
         return denied
@@ -535,6 +540,7 @@ ROUTES: list[Route] = [
     _r("POST", "/api/admin/users", admin_create_user, json_body=True),
     _r("PATCH", r"/api/admin/users/(?P<id>[0-9]{1,10})", admin_update_user, json_body=True),
     _r("GET", "/api/admin/grants", admin_list_grants),
+    _r("GET", "/api/admin/grants/options", admin_grant_options),
     _r("POST", "/api/admin/grants", admin_add_grant, json_body=True),
     _r("DELETE", r"/api/admin/grants/(?P<id>[0-9]{1,19})", admin_remove_grant),
 ]

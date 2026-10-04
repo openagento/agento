@@ -96,6 +96,16 @@ def test_admin_grants(web, monkeypatch):
     assert r.status_code == 400 and "declares" in r.json()["error"]
 
 
+def test_admin_grant_options(web, monkeypatch):
+    """One source for roles and grantable operations: the panel hardcodes neither."""
+    _as(monkeypatch, ADMIN)
+    r = _call(web, "GET", "/api/admin/grants/options")
+    assert r.status_code == 200
+    assert r.json() == {"roles": list(accounts.ROLES), "operations": sorted(accounts.GRANTABLE_OPERATIONS)}
+    _as(monkeypatch, USER)
+    assert _call(web, "GET", "/api/admin/grants/options").status_code == 403
+
+
 def test_admin_config_uses_the_web_form(web, monkeypatch):
     _as(monkeypatch, ADMIN)
     save = MagicMock(return_value=(False, [("agent_view/provider", "openai")]))
@@ -254,14 +264,17 @@ def test_credentials_send_only_the_allow_list(web, monkeypatch):
     row = {"id": 1, "scope": "claude", "label": "main", "status": "error", "enabled": True,
            "error_msg": "refresh failed: sk-ant-oat01-SECRET", "error_source": "operator", "used_at": T,
            "expires_at": T, "token_limit": 1000, "tokens_used": 250, "call_count": 3, "pct_free": 75.0,
-           "token": "t", "access_token": "a", "refresh_token": "r", "credentials": {"x": 1}}
+           "token": "t", "access_token": "a", "refresh_token": "r", "credentials": {"x": 1}, "type": "oauth",
+           "limits": {"windows": [{"label": "5h", "used_pct": 20.0, "resets_at": None}], "balance_usd": None},
+           "limits_at": T}
     monkeypatch.setattr(data, "get_credentials_with_usage", lambda conn: [row])
     body = _call(web, "GET", "/api/admin/credentials").json()
     assert "SECRET" not in str(body)
     assert body == [{"id": 1, "scope": "claude", "label": "main", "status": "error", "enabled": True,
                      "error_source": "operator", "used_at": "2026-10-02T12:00:00Z",
                      "expires_at": "2026-10-02T12:00:00Z", "token_limit": 1000, "tokens_used": 250,
-                     "call_count": 3, "pct_free": 75.0}]
+                     "call_count": 3, "pct_free": 75.0, "type": "oauth", "limits": row["limits"],
+                     "limits_at": "2026-10-02T12:00:00Z"}]
 
 
 @pytest.mark.parametrize(("action", "fn"), [("clear-error", "do_reset_credential_error"),
@@ -434,3 +447,26 @@ def test_config_test_refuses_a_local_tester(web, toolbox, monkeypatch):
 def test_config_test_refuses_a_field_with_no_tester(web, toolbox):
     r = _test(web, "app_monitor/alerts/no_such_field")
     assert r.status_code == 400 and not toolbox.called
+
+
+@pytest.mark.parametrize(("code", "status"), [("x" * 300, 204), ("x" * 301, 400), ("", 400), ("a b", 400),
+                                              ("ż", 400), (7, 400)])
+def test_login_code_is_1_to_300_printable_characters(web, monkeypatch, code, status):
+    from agento.framework.agent_manager import credential_login
+
+    _as(monkeypatch, ADMIN)
+    put = MagicMock(return_value=None)
+    monkeypatch.setattr(credential_login, "put_code", put)
+    assert _call(web, "POST", "/api/admin/credential-logins/3/code", {"code": code}).status_code == status
+    assert put.called == (status == 204)
+
+
+@pytest.mark.parametrize(("refused", "status"), [("not_found", 404), ("unsupported", 400), ("disabled", 409),
+                                                 ("not_oauth", 409), ("active", 409)])
+def test_login_request_refusals(web, monkeypatch, refused, status):
+    from agento.framework.agent_manager import credential_login
+
+    _as(monkeypatch, ADMIN)
+    monkeypatch.setattr(credential_login, "request_login", lambda *a: refused)
+    r = _call(web, "POST", "/api/admin/credentials/4/login")
+    assert r.status_code == status and set(r.json()) == {"error"}

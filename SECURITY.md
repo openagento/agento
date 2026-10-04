@@ -47,5 +47,6 @@ Agento uses a zero-trust container architecture:
   inside the `cron` container. Known gaps: [zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt).
 - The **toolbox** is designed to be the only container that holds tool credentials (known gaps: [zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt)), exposed via controlled MCP tool interfaces. The SSH exception above is the one credential that does not come from it.
 - Config encryption uses AES-256-CBC for sensitive fields, with the key derived from `AGENTO_ENCRYPTION_KEY` by scrypt and a per-value salt.
+- A harness credential re-login started in the panel runs in `cron`; `web` never sees the new credential and only seals the pasted code with a per-login RSA key ([zero-trust.md](docs/architecture/zero-trust.md#what-web-holds), DECISIONS.md D-PANEL-LOGIN-1).
 
 See [docs/architecture/zero-trust.md](docs/architecture/zero-trust.md) for the credential model and its known exceptions, and [docs/architecture/](docs/architecture/) for full details.
