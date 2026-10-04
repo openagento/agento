@@ -79,8 +79,14 @@ call `/api/admin/*` ([panel.md](../architecture/panel.md#admin-screens)).
 - **A secret is never shown.** A secret config row shows `Set` or `Not set` and the editor is
   disabled with the CLI hint. A credential shows that it has an error, never the message.
 - **What the panel cannot do, it names.** Replay and build show the CLI command with a copy
-  button; the Config screen says that `CONFIG__*` ENV overrides are not visible there
-  ([docs/cli/admin.md](../cli/admin.md)).
+  button ([docs/cli/admin.md](../cli/admin.md)).
+- **ENV overrides are not shown.** `CONFIG__*` ENV overrides are not visible on the Config screen;
+  `bin/agento config:resolve <path>` shows the effective value. The module list shows a title made
+  from the key (`agent_view` → "Agent View"); the URL keeps the key.
+- **Pick by name, never by id.** The Users → Grants tab gives access in a "Give access" sheet: Who
+  (role), Where (a workspace or agent view, by name, required), What (tools of that place, or
+  operations), then one `POST` per name. A tool that is off at that place is marked "(off here)",
+  because a grant does not enable a tool.
 - **Mouse and keyboard.** `DataTable` activates a row on Enter; each admin table also has a button
   column (Details, Usage, Edit) for the mouse.
 
@@ -142,7 +148,7 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 | CSRF in memory only, A → logout → B leaves nothing, a stale response is dropped | `packages/api/src/api.test.ts` |
 | Stream reconnect, refused stream, `cursor_expired`, backoff | `packages/api/src/hub.test.ts` |
 | Popup blocked, API refusal closes the window, bridge before POST, code in no URL or cache | `panel/src/launch.test.ts` |
-| A mistyped grant scope id sends nothing | `panel/src/routes/Grants.test.tsx` |
+| The grant sheet cannot send without a place, one POST per name, a refusal names the item | `panel/src/routes/Grants.test.tsx` |
 | Probe 404 / 2xx / network error → nav and NotAvailable | `panel/src/registry.test.tsx` |
 | The example miniapp decodes the toolbox action envelope | `packages/miniapp-kit/kit.test.ts` |
 | Dialog focus trap and focus return | `packages/ui/src/components/Forms.stories.tsx` (`DialogFocus`) |

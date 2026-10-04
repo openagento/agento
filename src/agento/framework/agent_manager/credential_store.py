@@ -119,6 +119,46 @@ def register_credential(
     return CredentialRecord.from_row(row)
 
 
+def register_credential_and_dispatch(
+    conn: pymysql.Connection,
+    scope: str,
+    label: str,
+    credentials: dict,
+    token_limit: int = 0,
+    type: str = "oauth",
+    logger: logging.Logger | None = None,
+) -> CredentialRecord:
+    """``register_credential``, commit, then dispatch ``credential_register_after``.
+
+    The one path for every caller that registers a credential (EVT-2): ``credential:register``
+    and the panel re-login worker. A write the caller made on ``conn`` before this call
+    commits with the credential. On ``CredentialLeasedError`` it rolls back (that write too)
+    and raises.
+    """
+    from ..events import CredentialRegisteredEvent, dispatch_credential_event
+
+    try:
+        credential = register_credential(
+            conn, scope=scope, label=label, credentials=credentials,
+            token_limit=token_limit, type=type, logger=logger,
+        )
+    except CredentialLeasedError:
+        conn.rollback()
+        raise
+    conn.commit()
+    dispatch_credential_event(
+        "credential_register_after",
+        CredentialRegisteredEvent(
+            scope=scope,
+            credential_id=credential.id,
+            label=credential.label,
+            credentials=credentials,
+            type=credential.type,
+        ),
+    )
+    return credential
+
+
 def update_refreshed_credentials(
     conn: pymysql.Connection,
     credential_id: int,
@@ -195,7 +235,8 @@ def deregister_credential(
 
 _NO_PAYLOAD_COLUMNS = (
     "id, agent_type, scope, type, label, token_limit, enabled, status, priority, error_msg, "
-    "error_source, expires_at, throttled_until, lease_owner, leased_until, used_at, created_at, updated_at"
+    "error_source, expires_at, throttled_until, lease_owner, leased_until, used_at, created_at, updated_at, "
+    "limits, limits_at"
 )
 
 

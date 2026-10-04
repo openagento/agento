@@ -253,6 +253,9 @@ def get_credentials_with_usage(conn, *, window_hours: int = 24) -> list[dict]:
                 "tokens_used": usage.total_tokens,
                 "call_count": usage.call_count,
                 "pct_free": round(pct_free, 1),
+                "type": t.type,
+                "limits": t.limits,
+                "limits_at": t.limits_at,
             })
         return results
     except Exception:

@@ -7,7 +7,6 @@ vi.mock("@agento/miniapp-bridge", () => ({
 
 import { endSession, login, queryClient } from "@agento/api";
 import { openLaunch, reconcileLaunches, trackedLaunchIds } from "./launch";
-import { scopeId } from "./routes/Grants";
 import { safeNext } from "./safeNext";
 
 const CODE = "exch-code-SECRET";
@@ -102,11 +101,6 @@ describe("reconcileLaunches", () => {
     expect(popup.close).toHaveBeenCalled();
     expect(bridge.close).toHaveBeenCalled();
   });
-});
-
-describe("grant scope ids", () => {
-  it.each([["", undefined], [" 7 ", 7], ["abc", null], ["0", null], ["-1", null], ["1.5", null], ["1e3", null],
-    ["99999999999999999999", null]])("%j → %j", (v, out) => expect(scopeId(v)).toBe(out));
 });
 
 describe("safeNext", () => {

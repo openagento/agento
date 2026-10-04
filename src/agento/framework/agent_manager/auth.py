@@ -28,6 +28,7 @@ __all__ = [
     "AuthResult",
     "AuthenticationError",
     "authenticate_interactive",
+    "credentials_from_auth",
     "get_available_scopes",
     "save_credentials",
 ]
@@ -68,9 +69,10 @@ def authenticate_interactive(
         _log.debug(f"Cleaned up temp HOME: {tmp_home}")
 
 
-def save_credentials(auth_result: AuthResult, output_path: str) -> None:
-    """Save normalised credentials to a JSON file. Creates parent dirs if needed."""
-    data = {
+def credentials_from_auth(auth_result: AuthResult) -> dict:
+    """The stored ``oauth`` credential payload of an interactive login: one shape for every
+    caller (``credential:register``, ``credential:refresh``, the panel re-login worker)."""
+    return {
         "subscription_key": auth_result.subscription_key,
         "refresh_token": auth_result.refresh_token,
         "expires_at": auth_result.expires_at,
@@ -78,9 +80,13 @@ def save_credentials(auth_result: AuthResult, output_path: str) -> None:
         "id_token": auth_result.id_token,
         "raw_auth": auth_result.raw_auth,
     }
+
+
+def save_credentials(auth_result: AuthResult, output_path: str) -> None:
+    """Save normalised credentials to a JSON file. Creates parent dirs if needed."""
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
+    path.write_text(json.dumps(credentials_from_auth(auth_result), indent=2))
 
 
 # ---------------------------------------------------------------------------
