@@ -34,6 +34,34 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+---
+
+## 2026-10-04 — Credential limits and re-login from the panel
+
+Plan: `~/.claude/plans/web-admin-panel-improvements-664a27.md` (Phases 3–4).
+
+- **D-PANEL-LOGIN-1: a key pair per login, not the shared key in `web`.** A Claude re-login needs
+  the code the admin pastes from the browser. `web` must not hold `AGENTO_ENCRYPTION_KEY`
+  ([zero-trust.md](docs/architecture/zero-trust.md#what-web-holds)), and a plaintext code in the
+  DB would be readable by anything that reads the table for up to 15 minutes. So the cron worker
+  makes an RSA-3072 key pair for each login, writes only the public key to `credential_login`,
+  and keeps the private key in memory. `web` seals the code (OAEP-SHA256, at most 300 printable
+  ASCII characters) and cannot open it again. A worker that dies loses the key, and the login
+  fails `abandoned` — the admin starts a new one. The vendor CLI runs in cron, not in `web`,
+  because cron already writes credentials and has the CLIs; the CLI gets a temp `HOME` and a
+  minimal environment, never the cron environment.
+- **D-PANEL-LOGIN-1: one save path.** The worker saves through
+  `register_credential_and_dispatch`, the function `credential:register` uses (EVT-2), so the
+  refresh lease, the encryption and `credential_register_after` are the same on both paths. A
+  cancel or a sweep that lands before the save commits wins: the save is fenced on
+  `status='verifying'`, and the credential row is locked before the login row on every path.
+- **D-PANEL-LIMITS-1: vendor usage endpoints, read from cron.** `credential:limits` calls
+  each vendor's usage endpoint with the stored credential (Claude and Codex OAuth usage,
+  OpenRouter credits) every 10 minutes and stores the numbers; `web` only reads them. These
+  endpoints are not public API: a failure stores `NULL` ("no data") and logs only the exception
+  class, so a changed endpoint degrades the panel and never a run. A live check of each endpoint
+  is a ROADMAP follow-up.
+
 ## 2026-10-02 — Admin TUI screens in the panel; the TUI stays the fallback
 
 The owner asked (2026-10-02): "implement all screens from TUI admin in the React Mantine admin panel.

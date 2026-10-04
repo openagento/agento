@@ -142,6 +142,7 @@ def _register_framework_commands() -> None:
     from .config_test_cmd import ConfigTestCommand
     from .credential import (
         CredentialDeregisterCommand,
+        CredentialLimitsCommand,
         CredentialListCommand,
         CredentialMarkErrorCommand,
         CredentialRefreshCommand,
@@ -149,6 +150,7 @@ def _register_framework_commands() -> None:
         CredentialResetCommand,
         CredentialSetPriorityCommand,
         CredentialUsageCommand,
+        CredentialWebLoginCommand,
     )
     from .credential_aliases import LEGACY_TOKEN_COMMANDS
     from .cron import CronRunCommand
@@ -187,6 +189,7 @@ def _register_framework_commands() -> None:
         CredentialRegisterCommand, CredentialRefreshCommand, CredentialListCommand,
         CredentialDeregisterCommand, CredentialMarkErrorCommand, CredentialResetCommand,
         CredentialSetPriorityCommand, CredentialUsageCommand,
+        CredentialLimitsCommand, CredentialWebLoginCommand,
         CapabilityMintCommand, CapabilityRevokeCommand,
         LimitsPruneCommand, OutboxPruneCommand,
         *ACCESS_COMMANDS,

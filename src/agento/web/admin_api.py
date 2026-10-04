@@ -129,7 +129,9 @@ def credentials(req: Request) -> Response:
     if denied := _forbidden_unless(req, "admin.read"):
         return denied
     usage = ("token_limit", "tokens_used", "call_count", "pct_free")
-    return Response(200, [{**_credential_head(t), **{k: t[k] for k in usage}}
+    # `limits` is what credential:limits read from the provider: windows and a balance, no secret.
+    return Response(200, [{**_credential_head(t), **{k: t[k] for k in usage}, "type": t.get("type"),
+                           "limits": t.get("limits"), "limits_at": _ts(t.get("limits_at"))}
                           for t in data.get_credentials_with_usage(req.conn)])
 
 
@@ -156,6 +158,78 @@ def clear_credential_error(req: Request) -> Response:
 
 def disable_credential(req: Request) -> Response:
     return _credential_write(req, data.do_deregister_credential)
+
+
+def _interactive_oauth_scopes() -> set[str]:
+    # From the di.json declarations, without importing a harness module (web loads none).
+    from agento.framework.harness import CredentialRegistrationMode, enumerate_harness_declarations
+    from agento.framework.module_discovery import resolve_module_root
+
+    return {p.credential_scope for d in enumerate_harness_declarations(resolve_module_root())
+            for p in d.descriptor.providers
+            if p.credential_scope and CredentialRegistrationMode.INTERACTIVE_OAUTH in p.registration_modes}
+
+
+_LOGIN_REFUSED = {
+    "not_found": (404, "not found"),
+    "unsupported": (400, "this credential cannot sign in from the panel"),
+    "disabled": (409, "the credential is disabled"),
+    "not_oauth": (409, "only a subscription (OAuth) credential can sign in again"),
+    "active": (409, "a sign-in for this credential is already running"),
+}
+# Printable ASCII with no space; RSA-3072 OAEP-SHA256 seals at most 318 bytes.
+_LOGIN_CODE = re.compile(r"[!-~]{1,300}")
+
+
+def start_credential_login(req: Request) -> Response:
+    from agento.framework.agent_manager import credential_login
+
+    if denied := _forbidden_unless(req, "credentials.manage"):
+        return denied
+    result = credential_login.request_login(req.conn, int(req.params["id"]), req.session.user.id,
+                                            _interactive_oauth_scopes())
+    if isinstance(result, str):
+        return error(*_LOGIN_REFUSED[result])
+    return Response(201, {"id": result})
+
+
+def credential_login_state(req: Request) -> Response:
+    from agento.framework.agent_manager import credential_login
+
+    if denied := _forbidden_unless(req, "credentials.manage"):
+        return denied
+    row = credential_login.get_login(req.conn, int(req.params["id"]))
+    if row is None:
+        return error(404, "not found")
+    return Response(200, {"status": row["status"], "verify_url": row["verify_url"], "user_code": row["user_code"],
+                          "needs_code": bool(row["needs_code"]), "error_code": row["error_code"],
+                          "expires_at": _ts(row["expires_at"])})
+
+
+def credential_login_code(req: Request) -> Response:
+    from agento.framework.agent_manager import credential_login
+
+    if denied := _forbidden_unless(req, "credentials.manage"):
+        return denied
+    code = _body(req).get("code")
+    if not isinstance(code, str) or not _LOGIN_CODE.fullmatch(code):
+        return error(400, "the code must be 1 to 300 printable characters with no space")
+    refused = credential_login.put_code(req.conn, int(req.params["id"]), code)
+    if refused == "not_found":
+        return error(404, "not found")
+    if refused:
+        return error(409, "this sign-in does not wait for a code")
+    return Response(204)
+
+
+def cancel_credential_login(req: Request) -> Response:
+    from agento.framework.agent_manager import credential_login
+
+    if denied := _forbidden_unless(req, "credentials.manage"):
+        return denied
+    if not credential_login.cancel_login(req.conn, int(req.params["id"])):
+        return error(404, "not found")
+    return Response(204)
 
 
 def _scoped(req: Request, operation: str) -> tuple[str, int] | Response:
@@ -293,6 +367,10 @@ ROUTES: list[Route] = [
     _r("GET", "/api/admin/credentials", credentials),
     _r("POST", r"/api/admin/credentials/(?P<id>[0-9]{1,10})/clear-error", clear_credential_error),
     _r("POST", r"/api/admin/credentials/(?P<id>[0-9]{1,10})/disable", disable_credential),
+    _r("POST", r"/api/admin/credentials/(?P<id>[0-9]{1,10})/login", start_credential_login),
+    _r("GET", r"/api/admin/credential-logins/(?P<id>[0-9]{1,19})", credential_login_state),
+    _r("POST", r"/api/admin/credential-logins/(?P<id>[0-9]{1,19})/code", credential_login_code, json_body=True),
+    _r("POST", r"/api/admin/credential-logins/(?P<id>[0-9]{1,19})/cancel", cancel_credential_login),
     _r("GET", "/api/admin/tools", tools),
     _r("GET", "/api/admin/skills", skills),
     _r("GET", "/api/admin/config/modules", config_modules),

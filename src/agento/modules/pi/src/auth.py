@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import logging
 
+import httpx
+
 from agento.framework.agent_manager.auth import AuthenticationError, AuthResult
 from agento.framework.harness import (
+    CredentialLimits,
     CredentialRegistrationMode,
     UnsupportedRegistrationMode,
 )
 
 CREDENTIAL_TYPE = "openrouter_api_key"
+_CREDITS_URL = "https://openrouter.ai/api/v1/credits"
 
 
 class PiOpenRouterAuthenticator:
@@ -47,3 +51,16 @@ class PiOpenRouterAuthenticator:
         """OpenRouter authenticates with a bare API key that carries no account
         identity, so there is nothing to show next to the label."""
         return None
+
+    def fetch_limits(self, credentials: dict, credential_type: str) -> CredentialLimits | None:
+        """The USD balance of an OpenRouter key: credits bought minus credits used."""
+        if credential_type != CREDENTIAL_TYPE:
+            return None
+        resp = httpx.get(
+            _CREDITS_URL,
+            headers={"Authorization": f"Bearer {credentials['api_key']}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()["data"]
+        return CredentialLimits(balance_usd=float(data["total_credits"]) - float(data["total_usage"]))

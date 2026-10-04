@@ -40,6 +40,8 @@
 | `credential:reset <id>` | Clear error status without re-auth |
 | `credential:deregister <id>` | Disable credential |
 | `credential:usage` | Show credential usage (incl. credential-less runs by `(harness, provider)`) |
+| `credential:limits` | Fetch each credential's vendor usage limits into `credential.limits` (cron, every 10 min) |
+| `credential:web-login` | Run panel re-logins in a PTY (cron, every minute) |
 | **Ingress** | |
 | `ingress:bind <type> <value> <agent_view> [--priority N]` | Bind inbound identity to agent_view. For regex identity types (e.g. `outlook_sender`), `<value>` is a case-insensitive `fullmatch` regex and `--priority` selects the winner (higher wins; ties between different views are ambiguous). |
 | `ingress:list [--type <type>] [--json]` | List all identity bindings |

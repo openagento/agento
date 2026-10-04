@@ -245,6 +245,21 @@ Per-workspace and per-agent_view control of the language agents reply in — `pr
 
 Group multiple tokens from the same provider into pools with capacity-based rotation and per-agent_view pool assignment, replacing direct per-provider token selection. `TokenResolver` stays the single extension point, so pool-aware selection needs no consumer changes.
 
+### ⚪ Credential limits and panel re-login — follow-ups
+
+Phases 3–4 of the panel improvements (DECISIONS.md 2026-10-04) shipped OAuth re-login and
+limits. Still open:
+
+- **API-key re-login from the panel.** Today an API key is replaced only with
+  `credential:register --with-api-key`. A panel form needs the same per-login sealing as the code.
+- **TUI module titles.** The admin TUI shows module ids where the panel shows titles.
+- **`codex_access_token` limits.** `fetch_limits` covers Codex `oauth` only; an access-token
+  credential stores "no data".
+- **Live check of the usage endpoints.** The Claude, Codex and OpenRouter usage endpoints are
+  tested only against mocks. Check each against a live account, and check that Claude writes
+  its credentials into the temp `HOME` and that the PTY works for uid `agent` under `setpriv`
+  in the cron container.
+
 ### ⚪ Distribution & installation model
 
 `agento install && agento up` should start a working system from pre-built, versioned images with no local Docker build. This decouples the lean cron image from the full agent sandbox, makes builds reproducible via lockfiles and digest-pinned base images, and separates the dev compose (bind-mounts, local builds) from the customer compose (GHCR images, data-only mounts). Independent of the other milestones — it can land in parallel with any of them.

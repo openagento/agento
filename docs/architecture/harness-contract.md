@@ -302,6 +302,32 @@ the process it spawns can never end up on two different credentials.
 A provider needing no credential still records usage: `usage_log.credential_id` is
 nullable and the row is attributed by `(harness, provider)`.
 
+### Optional authenticator members: limits and panel re-login
+
+`CredentialAuthenticator` has two **optional** members. The framework reads them with
+`getattr`, like `account_label`, so an out-of-tree authenticator without them keeps working:
+its credentials show "no data" for limits, and a panel re-login of its credential ends as
+`failed` with `unsupported`. `web` loads no harness module, so it cannot see the member: it
+answers 400 only when the scope's `di.json` provider declares no `interactive_oauth`
+registration mode. A scope that declares the mode but whose authenticator has no
+`start_web_login` gets 201, and the worker then ends the login with `unsupported`.
+
+| Member | Called by | Returns |
+|---|---|---|
+| `fetch_limits(credentials, credential_type)` | `credential:limits` (cron, every 10 min) | `CredentialLimits(windows, balance_usd)` of `LimitWindow(label, used_pct, resets_at)`, or `None` when this type has no endpoint. Raise on a failed call; the framework stores `NULL` and logs the exception class only. It also stores `NULL` when a `used_pct` is outside 0–100 or a number is not finite. Use `httpx` with a 10 s timeout. |
+| `start_web_login(tmp_home, logger)` | `credential:web-login` (cron, every minute) | an `InteractiveLogin`: `prompt: LoginPrompt(url, user_code, needs_code)`, `submit_code(code)`, `poll() -> AuthResult \| None`, `close()` |
+
+`start_web_login` starts the vendor CLI with `HOME=tmp_home`, a fresh temp dir. The framework's
+`pty_login.spawn(cmd, home)` and `PtyLogin(proc, prompt, parse)` do the PTY work (minimal
+environment, wide terminal, ANSI stripping, the CLI dies with the worker); the module gives
+only the command, the patterns, and `parse`, which reads the files the CLI wrote into
+`tmp_home`. `PtyProcess.read_until(pattern, timeout)` returns a match only once more output
+follows it or the CLI ended, so a pattern may end in an open token (`\S+`) and still get the
+whole URL or code when the CLI writes it in parts. `poll()` raises `AuthenticationError` when the CLI fails. The worker checks that
+`prompt.url` is `https`, keeps the code in memory only, and saves the result through
+`register_credential_and_dispatch`, the same function as `credential:register`. See
+[credentials.md](../cli/credentials.md#re-login-from-the-panel).
+
 ## Scoped config
 
 Two `agent_view` config paths, both `select` fields whose options come from the

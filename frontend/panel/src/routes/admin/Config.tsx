@@ -7,7 +7,6 @@ import {
   Text, Textarea, TextInput,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { Info } from "lucide-react";
 import { useSearchParams } from "react-router";
 import { apiFetch, useMutation, useQuery, useQueryClient } from "@agento/api";
 import { Button, ConfirmDialog, DataTable, EmptyState, ErrorState, LoadingState, PageHeader, type Column } from "@agento/ui";
@@ -24,6 +23,9 @@ interface TestResult { status: "ok" | "fail" | "error" | "not_configured"; code?
 const SOURCE_COLOR: Record<string, string> = { env: "blue", db: "green", "db:inherited": "teal", json: "gray", none: "gray" };
 const TEST_COLOR: Record<TestResult["status"], string> = { ok: "green", fail: "red", error: "orange", not_configured: "gray" };
 export const SECRET_HINT = "Set secrets with bin/agento config:set or the admin TUI.";
+
+/** No module declares a title (module.json has `name` only): "agent_view" → "Agent View". */
+const moduleTitle = (name: string) => name.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 
 const valueCell = (f: Field) => f.secret
   ? <Text size="sm">{f.is_set ? "Set" : "Not set"}</Text>
@@ -177,10 +179,6 @@ export function Config() {
     <AdminOnly>
       <div className="ag-stack">
         <PageHeader title="Config" description="Module and tool settings at a scope." />
-        <Alert color="blue" icon={<Info size={16} aria-hidden />}>
-          CONFIG__* ENV overrides are not visible here. <code>bin/agento config:resolve &lt;path&gt;</code> shows the
-          effective value.
-        </Alert>
         <ScopePicker />
         {modules.isPending ? <LoadingState /> : modules.error
           ? <ErrorState message={message(modules.error)} onRetry={() => void modules.refetch()} />
@@ -189,7 +187,7 @@ export function Config() {
               <Grid.Col span={{ base: 12, md: 3 }}>
                 <nav aria-label="Modules">
                   {list.map((m) => (
-                    <NavLink key={m.name} label={m.name} active={m.name === module && !tool} defaultOpened={m.name === module}
+                    <NavLink key={m.name} label={moduleTitle(m.name)} active={m.name === module && !tool} defaultOpened={m.name === module}
                       onClick={() => pick(m.name)} childrenOffset="md">
                       {m.tools.length ? m.tools.map((t) => (
                         <NavLink key={t} label={t} active={m.name === module && t === tool} onClick={() => pick(m.name, t)} />

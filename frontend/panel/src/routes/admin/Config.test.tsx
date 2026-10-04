@@ -32,7 +32,16 @@ describe("Config", () => {
     expect(screen.queryByText("URL")).toBeNull();
     const q = api.calls("GET", "/api/admin/config")[0].url.searchParams;
     expect([q.get("module"), q.get("scope"), q.get("scope_id")]).toEqual(["jira", "agent_view", "3"]);
-    expect(screen.getByText(/ENV overrides are not visible here/)).toBeInTheDocument();
+    expect(screen.queryByText(/ENV overrides/)).toBeNull();
+  });
+
+  it("lists a module by its title and keeps its key in the URL", async () => {
+    const api = await stubApi({ ...base, "/api/admin/config/modules": [{ name: "jira", tools: [] }, { name: "agent_view", tools: [] }] });
+    renderAt("/admin/config", <Config />);
+    fireEvent.click(await screen.findByText("Agent View"));
+    await vi.waitFor(() => expect(api.calls("GET", "/api/admin/config").map((c) => c.url.searchParams.get("module")))
+      .toContain("agent_view"));
+    expect(screen.queryByText("agent_view")).toBeNull();
   });
 
   it("a secret row shows Set, never the value, and its editor is disabled", async () => {

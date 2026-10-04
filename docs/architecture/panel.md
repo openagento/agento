@@ -110,6 +110,11 @@ toolbox (`src/agento/toolbox/capability.js` `GRANTS_SQL`, handed to every auth s
 `grants`); the fixture
 `tests/fixtures/role_grant_v1.json` holds both to it.
 
+`GET /api/admin/grants/options` (`grants.manage`) answers `{roles, operations}` from
+`accounts.ROLES` and `accounts.GRANTABLE_OPERATIONS`, so the panel hardcodes neither. The Grants
+screen picks the scope and the names from lists (scopes, tools at that scope, these options) and
+sends one `POST /api/admin/grants` per name, so it cannot send a grant without a scope.
+
 Grants are **per role**, not per user (the PRD asks for per-user visibility; see DECISIONS.md).
 A `user` sees the agent_views its role's grants reach. A scope that it cannot reach answers 404,
 not 403.
@@ -195,9 +200,13 @@ the CSRF controls above. A scope is `?scope=default|workspace|agent_view&scope_i
 | GET | `/api/admin/jobs[?status=]` | `admin.read` | the newest 50 jobs; status `TODO`, `RUNNING`, `SUCCESS`, `FAILED` or `DEAD` |
 | GET | `/api/admin/jobs/<id>` | `admin.read` | the job, with prompt, output, summary and error cut to 500 chars |
 | GET | `/api/admin/agents` | `admin.read` | agent_views with workspace, ingress count and last build status |
-| GET | `/api/admin/credentials` | `admin.read` | credentials with 24 h usage; `status` and `error_source`, never the error message or the token |
+| GET | `/api/admin/credentials` | `admin.read` | credentials with 24 h usage, `type`, `limits` and `limits_at`; `status` and `error_source`, never the error message or the token |
 | POST | `/api/admin/credentials/<id>/clear-error` | `credentials.manage` | 204 |
 | POST | `/api/admin/credentials/<id>/disable` | `credentials.manage` | 204 (the same as `credential:deregister`) |
+| POST | `/api/admin/credentials/<id>/login` | `credentials.manage` | 201 `{id}`; 404 no credential; 400 the scope declares no `interactive_oauth` mode (a harness without `start_web_login` gets 201, then `failed: unsupported`); 409 disabled, not `oauth`, or a login already active |
+| GET | `/api/admin/credential-logins/<id>` | `credentials.manage` | `{status, verify_url, user_code, needs_code, error_code, expires_at}`; 404 no login |
+| POST | `/api/admin/credential-logins/<id>/code` | `credentials.manage` | `{code}`, 1–300 printable ASCII characters, no space; 204; 400 a bad code; 409 not `waiting`, no code expected, or a code already sent |
+| POST | `/api/admin/credential-logins/<id>/cancel` | `credentials.manage` | 204; 404 no active login |
 | GET | `/api/admin/tools` | `admin.read` | tools per toolset with `enabled`, `explicit_here`, `blocked_by` |
 | GET | `/api/admin/skills` | `admin.read` | skills with `enabled`, `explicit_here` |
 | GET | `/api/admin/config/modules` | `admin.read` | modules with config, and their tools that have fields |
@@ -211,6 +220,20 @@ or `toolbox_only`, `config_schema.is_secret_field`) is reported by presence only
 calls no decryptor: credentials are listed without their payload. A tester's `error` and a
 credential's error text do not reach the browser, because both can name an internal host or quote
 CLI output. See DECISIONS.md 2026-10-02 (D-PANEL-ADMIN-1, D-PANEL-ADMIN-2).
+
+**Re-login.** `POST …/login` only writes a `pending` `credential_login` row (15 minutes to
+live). The `credential:web-login` worker in cron claims it, runs the vendor CLI in a PTY and moves
+it through `starting` → `waiting` → `verifying` → `done`, or to `failed` with an `error_code`
+(`cli_failed`, `bad_url`, `busy`, `disabled`, `unsupported`, `expired`, `abandoned`) or
+`cancelled`. The panel polls the GET. When `needs_code` is true (Claude), `web` seals the pasted
+code with the login's RSA-3072 public key (OAEP-SHA256) and stores only the sealed bytes; `web`
+cannot open them, and no answer ever carries `code_key` or `code_box`. See
+[credentials.md](../cli/credentials.md#re-login-from-the-panel) and DECISIONS.md 2026-10-04
+(D-PANEL-LOGIN-1).
+
+**Limits.** `limits` is what `credential:limits` last stored: `{windows: [{label, used_pct,
+resets_at}], balance_usd}`, or `null` for "no data"; `limits_at` is when it was fetched. `web`
+calls no vendor ([credentials.md](../cli/credentials.md#usage-limits)).
 
 **What stays in the TUI**: [docs/cli/admin.md](../cli/admin.md). `web` caches the module schemas
 for its process life, like the module routes: restart `web` after `module:enable` or
