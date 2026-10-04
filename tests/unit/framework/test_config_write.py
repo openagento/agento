@@ -27,6 +27,7 @@ def modules(tmp_path, monkeypatch):
     (fake / "system.json").write_text(json.dumps({
         "limit": {"type": "integer", "label": "Limit"},
         "mode": {"type": "select", "options": [{"value": "a"}, {"value": "b"}]},
+        "modes": {"type": "multiselect", "options": [{"value": "a"}, {"value": "b"}]},
         "secret": {"type": "obscure"},
         "hidden": {"type": "string", "access": "toolbox_only"},
         "identity/ssh_private_key": {"type": "obscure"},
@@ -41,8 +42,17 @@ def modules(tmp_path, monkeypatch):
     return core
 
 
-def _web(path, value="1", scope="default", scope_id=0):
-    validate_config_write(None, path, value, scope, scope_id, allow_secret=False)
+def _web(path, value="1", scope="default", scope_id=0, conn=None):
+    validate_config_write(conn, path, value, scope, scope_id, allow_secret=False)
+
+
+def _registry(*names):
+    """A connection whose skill_registry holds ``names`` (the table's collation ignores case)."""
+    conn, cur = MagicMock(), MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cur
+    cur.fetchone.side_effect = lambda: next(
+        ({"name": n} for n in names if n.lower() == cur.execute.call_args.args[1][0].lower()), None)
+    return conn
 
 
 @pytest.mark.parametrize("path", [
@@ -73,6 +83,17 @@ def test_web_form_still_validates_the_value(modules):
         _web("fake/mode", "c")
 
 
+@pytest.mark.parametrize("value", ["", "a", "a,b"])
+def test_multiselect_takes_each_option_once(modules, value):
+    _web("fake/modes", value)
+
+
+@pytest.mark.parametrize("value", ["a,c", "a,,b", "a,a"])
+def test_multiselect_refuses_an_unknown_empty_or_repeated_member(modules, value):
+    with pytest.raises(ConfigWriteError, match="multiselect"):
+        _web("fake/modes", value)
+
+
 def test_gate_key_for_declared_tools_and_requires_keys(modules):
     _web("tools/fake_tool/is_enabled", "1", "agent_view", 3)
     _web("tools/fake_switch/is_enabled", "0")
@@ -82,9 +103,24 @@ def test_gate_key_for_declared_tools_and_requires_keys(modules):
         _web("tools/fake_tool/is_enabled", "yes")
 
 
-def test_cli_form_keeps_refusing_the_gate_key(modules):
-    with pytest.raises(ConfigWriteError, match="Module 'tools' not found"):
-        validate_config_write(None, "tools/fake_tool/is_enabled", "1", "default", 0, allow_secret=True)
+def test_gate_key_for_registered_skills(modules):
+    conn = _registry("git-workflow")
+    _web("skill/git-workflow/is_enabled", "1", "agent_view", 3, conn=conn)
+    _web("skill/git-workflow/is_enabled", "0", conn=conn)
+    for name in ("other", "Git-Workflow"):
+        with pytest.raises(ConfigWriteError, match="no skill"):
+            _web(f"skill/{name}/is_enabled", conn=conn)
+    with pytest.raises(ConfigWriteError, match="0 or 1"):
+        _web("skill/git-workflow/is_enabled", "true", conn=conn)
+    with pytest.raises(ConfigWriteError, match="no skill"):
+        _web("skill/git-workflow/is_enabled")  # no connection: nothing is proven registered
+
+
+@pytest.mark.parametrize(("path", "module"), [("tools/fake_tool/is_enabled", "tools"),
+                                              ("skill/git-workflow/is_enabled", "skill")])
+def test_cli_form_keeps_refusing_the_gate_key(modules, path, module):
+    with pytest.raises(ConfigWriteError, match=f"Module '{module}' not found"):
+        validate_config_write(_registry("git-workflow"), path, "1", "default", 0, allow_secret=True)
 
 
 def test_cli_form_may_write_a_secret_field(modules):

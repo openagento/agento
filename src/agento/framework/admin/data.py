@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,7 +16,7 @@ from agento.framework.config_resolver import (
     read_config_defaults,
 )
 from agento.framework.config_schema import allowed_scopes as get_allowed_scopes
-from agento.framework.config_schema import is_scope_allowed
+from agento.framework.config_schema import env_allowed, is_scope_allowed, is_secret_field
 from agento.framework.config_test.manifest import tester_label
 from agento.framework.config_validation import max_length_of
 from agento.framework.harness import HARNESS_OPTION_KEY
@@ -64,6 +65,9 @@ class ResolvedField:
     # does. A normalized value rather than the raw system.json dict — ResolvedField is a
     # view model, not a second copy of the schema.
     max_length: int | None = None
+    # A secret (config_schema.is_secret_field) has value None and is_set from presence only.
+    secret: bool = False
+    is_set: bool = False
 
 
 def _count_modules() -> int:
@@ -121,7 +125,7 @@ def get_dashboard_data(conn) -> DashboardData:
     with contextlib.suppress(Exception):
         from ..agent_manager.credential_store import list_credentials
 
-        tokens = list_credentials(conn, enabled_only=False)
+        tokens = list_credentials(conn, enabled_only=False, include_credentials=False)
         data.tokens = [
             {
                 "id": t.id,
@@ -129,6 +133,7 @@ def get_dashboard_data(conn) -> DashboardData:
                 "label": t.label,
                 "status": t.status.value,
                 "error_msg": t.error_msg,
+                "error_source": t.error_source,
                 "used_at": t.used_at,
                 "expires_at": t.expires_at,
                 "enabled": t.enabled,
@@ -223,12 +228,14 @@ def get_credentials_with_usage(conn, *, window_hours: int = 24) -> list[dict]:
     try:
         _ensure_conn(conn)
         from ..agent_manager.credential_store import list_credentials
-        from ..agent_manager.usage_store import get_usage_summary
+        from ..agent_manager.models import UsageSummary
+        from ..agent_manager.usage_store import get_usage_by_credential
 
-        tokens = list_credentials(conn, enabled_only=False)
+        tokens = list_credentials(conn, enabled_only=False, include_credentials=False)
+        by_id = get_usage_by_credential(conn, [t.id for t in tokens], window_hours)
         results = []
         for t in tokens:
-            usage = get_usage_summary(conn, t.id, window_hours)
+            usage = by_id.get(t.id) or UsageSummary(credential_id=t.id, total_tokens=0, call_count=0)
             pct_free = 100.0
             if t.token_limit > 0:
                 pct_free = max(0.0, (1 - usage.total_tokens / t.token_limit) * 100)
@@ -238,6 +245,7 @@ def get_credentials_with_usage(conn, *, window_hours: int = 24) -> list[dict]:
                 "label": t.label,
                 "status": t.status.value,
                 "error_msg": t.error_msg,
+                "error_source": t.error_source,
                 "used_at": t.used_at,
                 "expires_at": t.expires_at,
                 "token_limit": t.token_limit,
@@ -368,8 +376,8 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
     config_defaults = read_config_defaults(target.module_path) if target.module_path else {}
 
     # Single resolver owns the ENV -> scoped DB -> config.json fallback-order
-    # decision (incl. db:inherited). Value extraction below stays raw — no
-    # decryption (obscure secrets show as ****), no type coercion.
+    # decision (incl. db:inherited). Value extraction below stays raw — no type
+    # coercion. A secret is never resolved at all (see _secret_source).
     svc = ScopedConfigService(conn, scope, scope_id)
 
     def _display_source(rv_source: str, inherited: bool) -> str:
@@ -379,6 +387,33 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
             return "db:inherited"
         return rv_source
 
+    def _field(path: str, field_name: str, field_schema: dict, value, source: str, *, secret: bool,
+               tester: str) -> ResolvedField:
+        field_type = field_schema.get("type", "string")
+        is_set = source != "none"
+        display_value = "****" if secret and is_set else (value if value is not None else "")
+        editable = is_scope_allowed(field_schema, scope)
+        if not editable:
+            display_value = f"{display_value} [readonly]" if display_value else "[readonly]"
+        return ResolvedField(
+            path=path,
+            field_name=field_name,
+            value=value,
+            display_value=display_value,
+            source=source,
+            field_type=field_type,
+            label=field_schema.get("label", field_name),
+            obscure=field_type == "obscure",
+            options=_field_options(field_schema, svc) if field_type in ("select", "multiselect") else None,
+            editable_at_scope=editable,
+            allowed_scopes=get_allowed_scopes(field_schema),
+            description=field_schema.get("description", ""),
+            tester=tester,
+            max_length=max_length_of(field_schema),
+            secret=secret,
+            is_set=is_set,
+        )
+
     results: list[ResolvedField] = []
 
     def _collect(owner: str, owner_schema: ModuleSchema, defaults: dict, *, borrowed: bool = False) -> None:
@@ -387,51 +422,27 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
                 continue
             if not borrowed and _hidden_provider_option(field_schema, svc):
                 continue
-            field_type = field_schema.get("type", "string")
-            label = field_schema.get("label", field_name)
-            description = field_schema.get("description", "")
-            tester = tester_label(owner, owner_schema.module_path, field_schema)
-            obscure = field_type == "obscure"
             db_path = _db_path(owner, field_name)
             env_key = _env_key(owner, field_name)
-
-            rv, inherited = svc.resolve_field_with_source(owner, field_name, field_schema, defaults)
-            source = _display_source(rv.source, inherited)
-            if source == "env":
-                value = store_env.get(env_key)
-            elif source in ("db", "db:inherited"):
-                value = svc.overrides.get(db_path, (None, False))[0]
-            elif source == "json":
-                value = str(defaults[field_name])
-            else:
+            secret = is_secret_field(field_schema)
+            if secret:
                 value = None
-
-            display_value = "****" if obscure and value else (value if value is not None else "")
-            editable = is_scope_allowed(field_schema, scope)
-            scopes_list = get_allowed_scopes(field_schema)
-            if not editable:
-                display_value = f"{display_value} [readonly]" if display_value else "[readonly]"
-            options = (
-                _field_options(
-                    field_schema, overrides=svc.overrides, resolved=_resolved_all(svc),
-                )
-                if field_type in ("select", "multiselect") else None
-            )
-            results.append(ResolvedField(
-                path=f"{owner}/{field_name}",
-                field_name=field_name,
-                value=value,
-                display_value=display_value,
-                source=source,
-                field_type=field_type,
-                label=label,
-                obscure=obscure,
-                options=options,
-                editable_at_scope=editable,
-                allowed_scopes=scopes_list,
-                description=description,
-                tester=tester,
-                max_length=max_length_of(field_schema),
+                source = _secret_source(svc, db_path, env_key if env_allowed(field_schema) else None,
+                                        defaults.get(field_name) is not None)
+            else:
+                rv, inherited = svc.resolve_field_with_source(owner, field_name, field_schema, defaults)
+                source = _display_source(rv.source, inherited)
+                if source == "env":
+                    value = store_env.get(env_key)
+                elif source in ("db", "db:inherited"):
+                    value = svc.overrides.get(db_path, (None, False))[0]
+                elif source == "json":
+                    value = _json_text(defaults[field_name])
+                else:
+                    value = None
+            results.append(_field(
+                f"{owner}/{field_name}", field_name, field_schema, value, source, secret=secret,
+                tester=tester_label(owner, owner_schema.module_path, field_schema),
             ))
 
     _collect(module, target, config_defaults)
@@ -453,55 +464,48 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
     for tool_name, tool_fields in target.tools.items():
         tool_json = tool_defaults.get(tool_name, {})
         for field_name, field_schema in tool_fields.items():
-            field_type = field_schema.get("type", "string")
-            label = field_schema.get("label", field_name)
-            description = field_schema.get("description", "")
-            obscure = field_type == "obscure"
             db_path = _db_path_tool(module, tool_name, field_name)
             env_key = _env_key_tool(module, tool_name, field_name)
-
-            rv, inherited = svc.resolve_tool_field_with_source(
-                module, tool_name, field_name, field_schema, config_defaults
-            )
-            source = _display_source(rv.source, inherited)
-            if source == "env":
-                value = store_env.get(env_key)
-            elif source in ("db", "db:inherited"):
-                value = svc.overrides.get(db_path, (None, False))[0]
-            elif source == "json":
-                value = str(tool_json[field_name])
-            else:
+            secret = is_secret_field(field_schema)
+            if secret:
                 value = None
-
-            display_value = "****" if obscure and value else (value if value is not None else "")
-            editable = is_scope_allowed(field_schema, scope)
-            scopes_list = get_allowed_scopes(field_schema)
-            if not editable:
-                display_value = f"{display_value} [readonly]" if display_value else "[readonly]"
-            options = (
-                _field_options(
-                    field_schema, overrides=svc.overrides, resolved=_resolved_all(svc),
+                # A tool field has no allowEnv: the resolver always reads its ENV key.
+                source = _secret_source(svc, db_path, env_key, tool_json.get(field_name) is not None)
+            else:
+                rv, inherited = svc.resolve_tool_field_with_source(
+                    module, tool_name, field_name, field_schema, config_defaults
                 )
-                if field_type in ("select", "multiselect") else None
-            )
-            results.append(ResolvedField(
-                path=f"{module}/tools/{tool_name}/{field_name}",
-                field_name=field_name,
-                value=value,
-                display_value=display_value,
-                source=source,
-                field_type=field_type,
-                label=label,
-                obscure=obscure,
-                options=options,
-                editable_at_scope=editable,
-                allowed_scopes=scopes_list,
-                description=description,
-                tester="",   # tool fields are gated by is_enabled, never tested
-                max_length=max_length_of(field_schema),
+                source = _display_source(rv.source, inherited)
+                if source == "env":
+                    value = store_env.get(env_key)
+                elif source in ("db", "db:inherited"):
+                    value = svc.overrides.get(db_path, (None, False))[0]
+                elif source == "json":
+                    value = _json_text(tool_json[field_name])
+                else:
+                    value = None
+            results.append(_field(
+                f"{module}/tools/{tool_name}/{field_name}", field_name, field_schema, value, source,
+                secret=secret, tester="",   # tool fields are gated by is_enabled, never tested
             ))
 
     return results
+
+
+def _json_text(value) -> str:
+    """A config.json default as the text a DB value would hold: ``true``, not Python's ``True``."""
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def _secret_source(svc, db_path: str, env_key: str | None, has_default: bool) -> str:
+    """Where a secret resolves from, by presence alone, in the resolver's order (ENV, DB,
+    config.json). Its value is never read, so nothing is decrypted (SEC-2). ``env_key`` is
+    None when the field refuses the ENV source."""
+    if env_key is not None and store_env.get(env_key) is not None:
+        return "env"
+    if svc.overrides.get(db_path, (None, False))[0] is not None:
+        return "db" if svc.is_set_at_scope(db_path) else "db:inherited"
+    return "json" if has_default else "none"
 
 
 def get_workspaces(conn) -> list[dict]:
@@ -699,16 +703,14 @@ def do_deregister_credential(conn, credential_id: int) -> bool:
     return result
 
 
-def _resolved_all(svc) -> dict:
-    """Fully-resolved effective config for this scope, cached per service instance."""
-    cached = getattr(svc, "_admin_resolved_cache", None)
-    if cached is None:
-        try:
-            cached = svc.resolve_all() or {}
-        except Exception:
-            cached = {}
-        svc._admin_resolved_cache = cached
-    return cached
+def _dependency_value(svc, path: str) -> str | None:
+    """The effective value of one non-secret path this screen depends on: a per-path read,
+    never ``resolve_all()``, which decrypts every secret in the scope (SEC-2). A read that
+    fails leaves the dependent unnarrowed (or shown), never broken."""
+    try:
+        return svc.get(path)
+    except Exception:
+        return None
 
 
 AGENT_VIEW_MODULE = "agent_view"
@@ -725,50 +727,38 @@ def _hidden_harness_option(field_schema: dict, owner: str, svc) -> bool:
     if not field_schema.get(HARNESS_OPTION_KEY):
         return True
     return is_harness_option_hidden(
-        field_schema, module=owner, harness=_resolved_all(svc).get("agent_view/harness"),
+        field_schema, module=owner, harness=_dependency_value(svc, "agent_view/harness"),
     )
 
 
 def _hidden_provider_option(field_schema: dict, svc) -> bool:
     """Skip a provider-option field the selected provider does not declare.
 
-    Same "effective value" source as ``_field_options``: ``resolve_all()`` sees a
-    harness/provider inherited from a broader scope or set via ``CONFIG__*``, which raw
-    DB rows at this scope do not. Resolution failures leave the field visible — see
-    ``is_provider_option_hidden``.
+    The harness and provider are the effective values (ENV, a broader scope, config.json),
+    which raw DB rows at this scope do not show. Resolution failures leave the field
+    visible — see ``is_provider_option_hidden``.
     """
     from ..harness import PROVIDER_OPTION_KEY, is_provider_option_hidden
 
     if not field_schema.get(PROVIDER_OPTION_KEY):
         return False
-    resolved = _resolved_all(svc)
     return is_provider_option_hidden(
         field_schema,
-        harness=resolved.get("agent_view/harness"),
-        provider=resolved.get("agent_view/provider"),
+        harness=_dependency_value(svc, "agent_view/harness"),
+        provider=_dependency_value(svc, "agent_view/provider"),
     )
 
 
-def _field_options(
-    field_schema: dict, *, overrides: dict | None = None, resolved: dict | None = None,
-) -> list[dict] | None:
+def _field_options(field_schema: dict, svc) -> list[dict] | None:
     """Select options for the TUI: literal, or resolved from ``options_source``.
 
     A dependent select (provider depends on harness) is narrowed by the **effective**
-    value of the field it depends on. ``resolved`` (from ``ScopedConfigService.resolve_all``)
-    is preferred over ``overrides`` because the latter holds only raw DB rows at this
-    scope: a view inheriting its harness from the default scope, or one set purely via
-    ``CONFIG__AGENT_VIEW__HARNESS``, would otherwise appear to have no harness and get the
-    unnarrowed union of every harness's providers.
+    value of the field it depends on: a view inheriting its harness from the default
+    scope, or one set purely via ``CONFIG__AGENT_VIEW__HARNESS``, would otherwise appear
+    to have no harness and get the unnarrowed union of every harness's providers.
     """
     from ..config_schema_options import field_options
 
     depends_on = field_schema.get("depends_on")
-    depends_value = None
-    if depends_on:
-        if resolved and depends_on in resolved:
-            depends_value = resolved[depends_on]
-        elif overrides:
-            entry = overrides.get(depends_on)
-            depends_value = entry[0] if isinstance(entry, tuple) else entry
+    depends_value = _dependency_value(svc, depends_on) if depends_on else None
     return field_options(field_schema, depends_on_value=depends_value) or None

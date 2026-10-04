@@ -32,6 +32,32 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+---
+
+## 2026-10-02 — Admin TUI screens in the panel; the TUI stays the fallback
+
+The owner asked (2026-10-02): "implement all screens from TUI admin in the React Mantine admin panel.
+Leave TUI as fallback mechanism." Plan: `~/.claude/plans/tui-admin-screens-mantine-panel-0b52dd.md`.
+
+- **D-PANEL-ADMIN-1: `web` reads config but never a secret value.** `GET /api/admin/config` sends
+  `secret`, `is_set` and `source` for a secret field (one predicate, `config_schema.is_secret_field`,
+  shared with the write side's `_prove_not_secret`) and never its value. The read path takes a
+  secret's source from presence (ENV test, raw DB rows, `config.json`) and never calls the
+  decryptor; dependent select options read each non-secret path with `get(path)` in place of
+  `resolve_all()`. The TUI uses the same path, so it no longer decrypts to show `****`.
+- **D-PANEL-ADMIN-1: what stays TUI-only.** Job replay and workspace build need the cron container;
+  secret writes need the key; `CONFIG__*` ENV is in the cron store only; a `local` tester would load
+  module code into `web`. The panel shows each one with the CLI command or a hint
+  ([docs/cli/admin.md](docs/cli/admin.md)). No error text from a subprocess or the toolbox (a
+  credential's `error_msg`, a tester's ERROR message) goes to the browser: the panel gets
+  `status`/`error_source`, or a fixed message per tester code. Job content (`prompt`, `output`,
+  `error_message`, cut to 500 chars as in the TUI) is shown to an admin; this exception waits for
+  the owner's confirmation.
+- **D-PANEL-ADMIN-2: `web` mints the tester's `internal_rest` capability on the server side.** It
+  calls `config_test.run_config_test`, which mints a two-minute `internal_rest` token for one
+  `/config-test` request and revokes it. The token never reaches the browser; the route is
+  `config.write`, admin only.
+
 ## 2026-10-01 — E8 composable frontend: a static panel, one token source, an immutable miniapp kit
 
 - **The panel is static files on `proxy`, mounted read-only from the installed package.** No Node

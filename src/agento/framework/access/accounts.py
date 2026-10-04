@@ -17,7 +17,7 @@ from .passwords import dummy_verify, hash_password, verify_password
 
 ROLES = ("admin", "user")
 GRANT_KINDS = ("tool", "operation")
-ADMIN_OPERATIONS = frozenset({"users.manage", "grants.manage", "config.write"})
+ADMIN_OPERATIONS = frozenset({"users.manage", "grants.manage", "config.write", "admin.read", "credentials.manage"})
 GRANTABLE_OPERATIONS = frozenset({"artifact.launch"})
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _GRANT_LOCK = "agento.role_grant"

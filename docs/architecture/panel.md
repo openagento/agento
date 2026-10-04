@@ -99,7 +99,7 @@ panel page                      web                                  proxy / app
 ## Roles and grants
 
 Two roles: `admin` and `user`. `admin` has the built-in operations `users.manage`,
-`grants.manage` and `config.write`. Everything else comes from `role_grant` rows:
+`grants.manage`, `config.write`, `admin.read` and `credentials.manage`. Everything else comes from `role_grant` rows:
 
 - `grant_kind = 'tool'`: the role may call that tool, if it is enabled there;
 - `grant_kind = 'operation'`: the one grantable operation is `artifact.launch`.
@@ -179,6 +179,42 @@ A core module may also ship `panel/index.ts`, its screens in the panel app. The 
 them; the panel shows a module's screens only while its `availability.probe` (a GET under its own
 `/api/<module>/`) answers 2xx, so a disabled module's screens are hidden. A user or PyPI module
 never ships panel JavaScript. See [../development/frontend.md](../development/frontend.md#adding-a-module-screen).
+
+## Admin screens
+
+The admin TUI's screens, for an admin in the panel ([frontend.md](../development/frontend.md#admin-screens)).
+The handlers are in `src/agento/web/admin_api.py` and read through `framework/admin/data.py`, the
+TUI's read layer. Every route needs a session and its operation; a `user` gets 403. Writes pass
+the CSRF controls above. A scope is `?scope=default|workspace|agent_view&scope_id=N` on a GET, and
+`{scope, scope_id}` in a body; a bad one is 400, and an id that does not exist is 404.
+
+| Method | Path | Operation | Answer |
+|---|---|---|---|
+| GET | `/api/admin/scopes` | `admin.read` | workspaces and agent_views, for the scope picker |
+| GET | `/api/admin/dashboard` | `admin.read` | health, version, module count, recent jobs, credentials, agent views |
+| GET | `/api/admin/jobs[?status=]` | `admin.read` | the newest 50 jobs; status `TODO`, `RUNNING`, `SUCCESS`, `FAILED` or `DEAD` |
+| GET | `/api/admin/jobs/<id>` | `admin.read` | the job, with prompt, output, summary and error cut to 500 chars |
+| GET | `/api/admin/agents` | `admin.read` | agent_views with workspace, ingress count and last build status |
+| GET | `/api/admin/credentials` | `admin.read` | credentials with 24 h usage; `status` and `error_source`, never the error message or the token |
+| POST | `/api/admin/credentials/<id>/clear-error` | `credentials.manage` | 204 |
+| POST | `/api/admin/credentials/<id>/disable` | `credentials.manage` | 204 (the same as `credential:deregister`) |
+| GET | `/api/admin/tools` | `admin.read` | tools per toolset with `enabled`, `explicit_here`, `blocked_by` |
+| GET | `/api/admin/skills` | `admin.read` | skills with `enabled`, `explicit_here` |
+| GET | `/api/admin/config/modules` | `admin.read` | modules with config, and their tools that have fields |
+| GET | `/api/admin/config?module=` | `admin.read` | the module's fields: source, editable, options, tester; `secret` and `is_set`, and `value` only when not secret |
+| PUT | `/api/admin/config` | `config.write` | `{path, reset}`; a secret path is refused |
+| DELETE | `/api/admin/config` | `config.write` | 204; a secret path is refused, no override is 404 |
+| POST | `/api/admin/config/test` | `config.write` | `{status, code, message}`; an `error` has a fixed message per code |
+
+**Never a secret, never the decryptor.** `web` holds no encryption key. A secret field (`obscure`
+or `toolbox_only`, `config_schema.is_secret_field`) is reported by presence only, and the read path
+calls no decryptor: credentials are listed without their payload. A tester's `error` and a
+credential's error text do not reach the browser, because both can name an internal host or quote
+CLI output. See DECISIONS.md 2026-10-02 (D-PANEL-ADMIN-1, D-PANEL-ADMIN-2).
+
+**What stays in the TUI**: [docs/cli/admin.md](../cli/admin.md). `web` caches the module schemas
+for its process life, like the module routes: restart `web` after `module:enable` or
+`module:disable`.
 
 ## Rate limiting
 

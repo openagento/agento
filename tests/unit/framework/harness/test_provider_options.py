@@ -169,8 +169,12 @@ class TestAdminHidesTheField:
         ), patch(
             "agento.framework.scoped_config.load_scoped_db_overrides", return_value={}
         ), patch(
+            # A per-path read of each dependency, never resolve_all() (SEC-2).
+            "agento.framework.config_resolver.ScopedConfigService.get",
+            side_effect=lambda path, **kw: resolved.get(path),
+        ), patch(
             "agento.framework.config_resolver.ScopedConfigService.resolve_all",
-            return_value=resolved,
+            side_effect=AssertionError("resolve_all decrypts every secret in scope"),
         ):
             conn = MagicMock()
             cursor = MagicMock()

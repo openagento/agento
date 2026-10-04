@@ -50,6 +50,13 @@ def is_toolbox_only(field_schema: dict) -> bool:
     return field_schema.get("access") == "toolbox_only"
 
 
+def is_secret_field(field_schema) -> bool:
+    """True for a field that no reader outside the toolbox shows, and that ``web`` never writes:
+    a schema that is not an object (nothing proves it plain), ``obscure`` (a private-key field is
+    one too), or ``toolbox_only``."""
+    return not isinstance(field_schema, dict) or field_schema.get("type") == "obscure" or is_toolbox_only(field_schema)
+
+
 def env_allowed(field_schema: dict) -> bool:
     """True when a ``CONFIG__*`` environment variable may supply this field.
 

@@ -286,34 +286,6 @@ def admin_remove_grant(req: Request) -> Response:
     return Response(204)
 
 
-_SCOPES = ("default", "workspace", "agent_view")
-
-
-def admin_set_config(req: Request) -> Response:
-    from agento.framework.config_write import ConfigWriteError, save_config
-
-    if denied := _forbidden_unless(req, "config.write"):
-        return denied
-    body = _body(req)
-    scope, scope_id = body.get("scope", "default"), body.get("scope_id", 0)
-    if scope not in _SCOPES:
-        return error(400, f"scope must be one of {', '.join(_SCOPES)}")
-    if scope == "default":
-        scope_id = 0
-    elif not _positive_int(scope_id):
-        return error(400, "scope_id must be a positive integer")
-    try:
-        # web holds no encryption key: allow_secret=False writes only a provably plain field.
-        _encrypted, reset = save_config(
-            req.conn, body.get("path"), body.get("value"), scope=scope, scope_id=scope_id,
-            allow_secret=False, actor_id=req.session.user.id,
-        )
-    except ConfigWriteError as exc:
-        return error(403, "forbidden") if str(exc) == "not allowed" else error(400, str(exc))
-    # No admin route returns a config value; a repaired dependent is named, not shown.
-    return Response(200, {"path": body.get("path"), "reset": [p for p, _v in reset]})
-
-
 _TOOLBOX_DOWN = error(503, "toolbox unavailable")
 
 
@@ -565,5 +537,8 @@ ROUTES: list[Route] = [
     _r("GET", "/api/admin/grants", admin_list_grants),
     _r("POST", "/api/admin/grants", admin_add_grant, json_body=True),
     _r("DELETE", r"/api/admin/grants/(?P<id>[0-9]{1,19})", admin_remove_grant),
-    _r("PUT", "/api/admin/config", admin_set_config, json_body=True),
 ]
+
+# Last: admin_api imports the request types above and adds its routes to ROUTES. Its own module
+# body does the add, so the routes are there whichever of the two modules is imported first.
+from . import admin_api  # noqa: E402, F401
