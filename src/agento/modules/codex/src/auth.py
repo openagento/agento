@@ -114,6 +114,9 @@ class CodexCredentialAuthenticator:
             headers={
                 "Authorization": f"Bearer {credentials['subscription_key']}",
                 "ChatGPT-Account-Id": account_id,
+                "Accept": "application/json",
+                # chatgpt.com refuses the default python-httpx agent; CodexBar sends its own name.
+                "User-Agent": "agento",
             },
             timeout=10,
         )

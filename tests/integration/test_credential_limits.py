@@ -101,8 +101,10 @@ def test_stores_nulls_and_skips(db, caplog):
         "balance_usd": None,
     }
     assert row["limits_at"] is not None and row["updated_at"] == datetime(2026, 1, 1)
-    for cid in (failing, api_key, no_member):
-        assert (_limits(db, cid)["limits"], _limits(db, cid)["limits_at"] is not None) == (None, True)
+    # A failed check is NULL with a check time; nothing to show is NULL with none.
+    assert (_limits(db, failing)["limits"], _limits(db, failing)["limits_at"] is not None) == (None, True)
+    for cid in (api_key, no_member):
+        assert (_limits(db, cid)["limits"], _limits(db, cid)["limits_at"]) == (None, None)
     for cid in (disabled, errored, expired):
         assert _limits(db, cid)["limits_at"] is None  # skipped: the old value stays
     assert f"id={failing}" in caplog.text and "RuntimeError" in caplog.text
@@ -138,3 +140,25 @@ def test_a_malformed_value_stores_no_limits_and_the_next_credential_still_refres
     assert (_limits(db, first)["limits"], _limits(db, first)["limits_at"] is not None) == (None, True)
     assert json.loads(_limits(db, after)["limits"])["windows"][0]["label"] == "5h"
     assert f"id={first}" in caplog.text and "ValueError" in caplog.text
+
+
+def test_a_token_the_harness_reports_expired_is_skipped(db, monkeypatch):
+    """Codex keeps no ``expires_at``: the owning harness's TTL decides, as for the resolver."""
+    class Adapter:
+        def credential_ttl_seconds(self, credential):
+            return -5 if credential.label == "lim-ttl-gone" else 3600
+
+    class Owner:
+        class adapter:
+            workspace_adapter = Adapter()
+
+    monkeypatch.setattr("agento.framework.harness.registry.get_harness_for_scope", lambda scope: Owner())
+    gone = _insert(db, "lim-ttl-gone")
+    live = _insert(db, "lim-ttl-live")
+    conn = _test_connection()
+    try:
+        refresh_credential_limits(conn, logging.getLogger("lim-test"))
+    finally:
+        conn.close()
+    assert _limits(db, gone)["limits_at"] is None  # skipped: the last result stays
+    assert _limits(db, live)["limits_at"] is not None

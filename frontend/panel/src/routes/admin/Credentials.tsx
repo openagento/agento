@@ -47,7 +47,14 @@ function FreeCell({ c }: { c: Credential }) {
       ))}
     </Stack>
   );
-  return c.limits?.balance_usd != null ? `$${c.limits.balance_usd.toFixed(2)}` : "—";
+  if (c.limits?.balance_usd != null) return `$${c.limits.balance_usd.toFixed(2)}`;
+  // `limits_at` with no limits: the check ran and failed (the cron log names the HTTP status).
+  if (c.limits == null && c.limits_at) return (
+    <Tooltip label={<>Checked <Timestamp value={c.limits_at} />. The vendor refused; see the cron log.</>}>
+      <Text size="xs" c="dimmed">Check failed</Text>
+    </Tooltip>
+  );
+  return "—";
 }
 
 interface Login {

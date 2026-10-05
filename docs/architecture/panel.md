@@ -232,7 +232,9 @@ cannot open them, and no answer ever carries `code_key` or `code_box`. See
 (D-PANEL-LOGIN-1).
 
 **Limits.** `limits` is what `credential:limits` last stored: `{windows: [{label, used_pct,
-resets_at}], balance_usd}`, or `null` for "no data"; `limits_at` is when it was fetched. `web`
+resets_at}], balance_usd}`, or `null`; `limits_at` is when it was last checked. `null` with a
+`limits_at` is a failed check (the panel shows "Check failed"); `null` without one has nothing to
+show ("—"). `web`
 calls no vendor ([credentials.md](../cli/credentials.md#usage-limits)).
 
 **What stays in the TUI**: [docs/cli/admin.md](../cli/admin.md). `web` caches the module schemas

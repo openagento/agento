@@ -58,7 +58,8 @@ describe("Credentials", () => {
       cred(1, { limits: two, limits_at: "2026-10-04T12:00:00Z" }),
       cred(2, { type: "openrouter_api_key", limits: { windows: [], balance_usd: 12.3456 } }),
       cred(3, { type: "anthropic_api_key", used_at: "2026-10-04T11:00:00Z", expires_at: "2026-11-04T11:00:00Z" }),
-      cred(4, { limits: { windows: [], balance_usd: null } })] });
+      cred(4, { limits: { windows: [], balance_usd: null } }),
+      cred(5, { limits: null, limits_at: "2026-10-05T08:00:00Z" })] });
     renderAt("/admin/credentials", <Credentials />);
     expect(await screen.findByRole("progressbar", { name: "c1 5h free" })).toHaveAttribute("aria-valuenow", "75");
     expect(screen.getByRole("progressbar", { name: "c1 Week free" })).toHaveAttribute("aria-valuenow", "8");
@@ -67,6 +68,8 @@ describe("Credentials", () => {
     expect(screen.getByText("$12.35")).toBeInTheDocument();
     // rows[0] is the header; c3 has no limits, and its Free cell is its only dash.
     expect(within(screen.getAllByRole("row")[3]).getAllByText("—")).toHaveLength(1);
+    // A check that ran and failed is not "does not apply".
+    expect(within(screen.getAllByRole("row")[5]).getByText("Check failed")).toBeInTheDocument();
     // The local 24h share is no longer a column.
     expect(screen.queryByText("90%")).toBeNull();
   });
