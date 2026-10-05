@@ -8,7 +8,7 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useSearchParams } from "react-router";
-import { apiFetch, useMutation, useQuery, useQueryClient } from "@agento/api";
+import { apiFetch, refreshDisplay, useMutation, useQuery, useQueryClient } from "@agento/api";
 import { Button, ConfirmDialog, DataTable, EmptyState, ErrorState, LoadingState, PageHeader, type Column } from "@agento/ui";
 import { ScopePicker } from "./ScopePicker";
 import { AdminOnly, message, useConfigWrite, useScope, whole } from "./shared";
@@ -42,7 +42,7 @@ function FieldInput({ field, value, onChange, disabled }: {
       return <Switch label="Enabled" disabled={disabled} checked={value === "true" || value === "1"}
         onChange={(e) => onChange(e.currentTarget.checked ? "true" : "false")} />;
     case "select":
-      return <Select label="Value" disabled={disabled} data={options} value={value || null} allowDeselect={false}
+      return <Select label="Value" disabled={disabled} data={options} value={value || null} allowDeselect={false} searchable
         onChange={(v) => onChange(v ?? "")} />;
     case "multiselect":
       return <MultiSelect label="Value" disabled={disabled} data={options} value={value ? value.split(",") : []}
@@ -116,7 +116,7 @@ function Fields({ module, tool }: { module: string; tool: string | null }) {
     mutationFn: (f: Field) => apiFetch("/api/admin/config", { method: "DELETE", json: { path: f.path, scope, scope_id: scopeId } }),
     onSuccess: (_r, f) => { notifications.show({ message: `Override of ${f.path} removed.` }); setRemoving(null); },
     onError: (e) => notifications.show({ color: "red", message: message(e) }),
-    onSettled: () => void qc.invalidateQueries({ queryKey: ["admin-config"] }),
+    onSettled: () => { void qc.invalidateQueries({ queryKey: ["admin-config"] }); void refreshDisplay(); },
   });
 
   if (!ready) return <EmptyState title="Choose a scope" />;

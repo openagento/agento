@@ -5,9 +5,12 @@ import { apiFetch } from "./apiFetch";
 import { ApiError } from "./errors";
 
 export interface User { id: number; username: string; role: "admin" | "user"; is_active: boolean }
+/** The panel display settings (`admin/locale/*`); null when the `admin` module is disabled. */
+export interface Display { date_format: "us" | "eu" | "iso"; timezone: string }
 
 let csrf: string | null = null;
 let user: User | null = null;
+let display: Display | null = null;
 let epoch = 0;
 let expiredEpoch = -1;
 const teardowns = new Set<() => void>();
@@ -19,6 +22,7 @@ const notify = () => listeners.forEach((l) => l());
 export const getCsrf = () => csrf;
 export const getEpoch = () => epoch;
 export const getUser = () => user;
+export const getDisplay = () => display;
 
 /** For `useSyncExternalStore`. */
 export function subscribeUser(l: () => void): () => void {
@@ -42,6 +46,7 @@ export function endSession(): void {
   epoch += 1;
   csrf = null;
   user = null;
+  display = null;
   teardowns.forEach((fn) => fn());
   notify();
 }
@@ -54,11 +59,12 @@ export function expire(atEpoch: number): void {
   expiredListeners.forEach((fn) => fn());
 }
 
-interface SessionBody { user: User; csrf_token: string; expires_at: string }
+interface SessionBody { user: User; csrf_token: string; expires_at: string; display?: Display | null }
 
 function adopt(body: SessionBody): User {
   csrf = body.csrf_token;
   user = body.user;
+  display = body.display ?? null;
   notify();
   return body.user;
 }
@@ -70,6 +76,20 @@ export async function boot(): Promise<User | null> {
   } catch (e) {
     if (e instanceof ApiError && e.status === 401) return null;
     throw e;
+  }
+}
+
+/** Re-read the display settings after a Config change, so a mounted page shows the new
+ *  format without a reload. A failure keeps the old settings; a newer session wins. */
+export async function refreshDisplay(): Promise<void> {
+  const at = epoch;
+  try {
+    const body = await apiFetch<SessionBody>("/api/session", { quiet401: true });
+    if (at !== epoch) return;
+    display = body.display ?? null;
+    notify();
+  } catch {
+    // The old settings stay; a 401 is handled by apiFetch like any other request.
   }
 }
 
