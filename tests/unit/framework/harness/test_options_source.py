@@ -79,23 +79,44 @@ class TestProviderOptions:
         assert resolve_options("agent_harness_providers", depends_on_value="nope") == []
 
 
+class TestTimezoneOptions:
+    def test_browser_comes_first_then_every_zone_sorted(self):
+        import zoneinfo
+
+        options = resolve_options("timezones")
+        assert options[0] == {"value": "browser", "label": "Browser time zone"}
+        zones = [o["value"] for o in options[1:]]
+        assert zones == sorted(zoneinfo.available_timezones())
+        assert "Europe/Warsaw" in zones
+
+    def test_reads_no_harness_declaration(self, monkeypatch):
+        """A time zone list is not harness work: it must not scan module manifests."""
+        from agento.framework.harness import manifest
+
+        monkeypatch.setattr(manifest, "enumerate_harness_declarations",
+                            lambda *a, **kw: pytest.fail("scanned harness declarations"))
+        assert resolve_options("timezones")[0]["value"] == "browser"
+
+
 class TestSourceValidation:
     def test_unknown_source_is_rejected_and_names_the_supported_ones(self):
         with pytest.raises(ValueError, match="Unknown options_source"):
             resolve_options("agent_something_else")
 
-    def test_supported_sources_are_exactly_the_two_declared(self):
+    def test_supported_sources_are_exactly_the_three_declared(self):
         assert set(SUPPORTED_SOURCES) == {
-            "agent_harness_registry", "agent_harness_providers",
+            "agent_harness_registry", "agent_harness_providers", "timezones",
         }
 
-    def test_agent_view_system_json_uses_only_supported_sources(self):
+    @pytest.mark.parametrize("system", sorted(Path("src/agento/modules").glob("*/system.json")),
+                             ids=lambda p: p.parent.name)
+    def test_core_system_json_uses_only_supported_sources(self, system):
         """A typo in ``system.json`` must be caught by ``module:validate``, not at runtime
         when an operator opens the config picker."""
-        system = Path("src/agento/modules/agent_view/system.json")
         fields = json.loads(system.read_text())
         sources = {
-            f["options_source"] for f in fields.values() if "options_source" in f
+            f["options_source"] for f in fields.values()
+            if isinstance(f, dict) and "options_source" in f
         }
         assert sources <= set(SUPPORTED_SOURCES)
 

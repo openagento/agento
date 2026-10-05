@@ -55,6 +55,10 @@ npm test            # build, lint, then every unit test and every story in headl
   story checks them), and the browser draws its open list. `contained` on `TextField` and
   `SelectField` puts the label inside the box, as `.ag-field--contained` does. The shell nav
   follows the `NavbarSimple` pattern and the user list follows `UsersRolesTable`.
+- **A date goes through `Timestamp`.** It formats with `formatTimestamp` (`us`, `eu` or `iso`,
+  in a fixed `en-US` locale and the configured zone) from the `DisplayFormatProvider` that the
+  panel fills from the session's `display` ([admin.md](../modules/admin.md)). With no provider it
+  shows `toLocaleString()`. Do not call `toLocaleString` or `Intl.DateTimeFormat` in a screen.
 - **A `DataTable` cell is a plain function, called on each render.** Do not render it as a component:
   a new component type per render remounts the cell, and an open select in it closes.
 - **No credential in the UI.** The CSRF token lives in a module closure in `session.ts`: never in
@@ -154,6 +158,7 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 | Dialog focus trap and focus return | `packages/ui/src/components/Forms.stories.tsx` (`DialogFocus`) |
 | Transient caps, persisted events refetch and never write the cache, 10 s / 30 s reconcile polls | `modules/conversation/panel/conversation.test.tsx` |
 | WCAG AA contrast, catalogue completeness, skill drift, kit immutability | `packages/miniapp-kit/kit.test.ts` |
+| The three date formats in a fixed zone, the provider, `Timestamp` with no provider | `packages/ui/src/components/Timestamp.test.tsx`, `panel/src/DisplayFormat.test.tsx` |
 | Import boundaries, bundle budget | `boundaries.test.ts` |
 | Every story renders with no a11y violation; panel card = miniapp card in light and dark | `packages/ui/src/**/*.stories.tsx` |
 | Each Mantine component = its `.ag-*` twin (computed styles and layout), light and dark | `packages/ui/src/acceptance/Parity.stories.tsx` |

@@ -23,7 +23,7 @@ export const inError = (c: Pick<Credential, "status">) => c.status === "error";
 export const credentialBadge = (c: Pick<Credential, "status" | "enabled">) => !c.enabled
   ? <StatusBadge tone="neutral">disabled</StatusBadge>
   : <StatusBadge tone={inError(c) ? "failed" : "succeeded"}>{c.status}</StatusBadge>;
-const freeColor = (pct: number) => (pct < 10 ? "red" : pct < 30 ? "yellow" : "green");
+export const freeColor = (pct: number) => (pct >= 50 ? "green" : pct >= 20 ? "yellow" : "red");
 const when = (v: string | null) => (v ? <Timestamp value={v} /> : "—");
 const freeOf = (w: LimitWindow) => Math.round(100 - w.used_pct);
 /** The smallest free share of the vendor windows; a credential with none sorts first. */
