@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { Box } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { apiFetch, ApiError, useMutation, useQueryClient, useSession } from "@agento/api";
+import { apiFetch, ApiError, refreshDisplay, useMutation, useQueryClient, useSession } from "@agento/api";
 import { EmptyState, type BadgeTone } from "@agento/ui";
 
 export const message = (e: unknown) => (e instanceof ApiError ? e.message : "The request failed.");
@@ -54,7 +54,8 @@ export function useConfigWrite(invalidate: string) {
       if (reset.length) notifications.show({ color: "yellow", message: `Also reset: ${reset.join(", ")}` });
     },
     onError: (e) => notifications.show({ color: "red", message: e instanceof WriteError ? e.message : message(e) }),
-    onSettled: () => void qc.invalidateQueries({ queryKey: [invalidate] }),
+    // Any write may be an `admin/locale/*` field: the session re-reads its display settings.
+    onSettled: () => { void qc.invalidateQueries({ queryKey: [invalidate] }); void refreshDisplay(); },
   });
 }
 

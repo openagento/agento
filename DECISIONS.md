@@ -4,6 +4,22 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-05 — Panel display settings in an `admin` module
+
+- **A core module, not `web` and not `core`.** The date format and time zone are panel meaning
+  with their own Config tab, so they are an `admin` module (PLC-1 q7 in spirit) with no Python,
+  shaped like `web`. Disabling it gives `display: null`, and the panel falls back to
+  `toLocaleString()`.
+- **`timezones` sits in `harness/options_source.py`.** That file holds the one `options_source`
+  registry that `module:validate`, `config:set` and the Config screen read; the name is historical.
+  A time zone list names no vendor (PLC-2).
+- **`web` resolves `display` with the Config screen's resolver** (`admin/data.get_resolved_fields`),
+  not the `launches.max_concurrent` path: it returns each field's `options` (the allowed set) and
+  the module path (the `config.json` default for a value that is not an option). Enablement is
+  read per request, as for `miniapps`, because the schema list is cached for the process.
+
+---
+
 ## 2026-10-04 — Credential limits and re-login from the panel
 
 Plan: `~/.claude/plans/web-admin-panel-improvements-664a27.md` (Phases 3–4).

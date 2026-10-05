@@ -30,6 +30,15 @@ overwrite each other: the file check accepts the request when **any** live launc
 path's `(code, version)`. At most 20 launch cookies are read from one request; the same 20 are checked and cleared, and any
 others are ignored.
 
+## Session
+
+`POST /api/session` (login) and `GET /api/session` answer
+`{user, csrf_token, expires_at, display}`. `display` is `{date_format, timezone}`: the `admin`
+module's `admin/locale/date_format` (`us`, `eu` or `iso`) and `admin/locale/timezone` (`browser`
+or an IANA zone), resolved at the default scope; a value that is not an option gets the
+`config.json` default. It is `null` when the `admin` module is disabled
+([admin.md](../modules/admin.md)). The panel formats every `Timestamp` with it.
+
 ## CSRF controls
 
 Every `POST`, `PUT`, `PATCH` and `DELETE` on `/api/*` needs all of these:

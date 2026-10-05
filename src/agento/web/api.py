@@ -124,20 +124,46 @@ def login(req: Request) -> Response:
         return error(401, _INVALID)
     THROTTLE.reset(username)
     session, token = signed_in
-    user = session.user
     return Response(
         200,
-        {"user": user_json(user), "csrf_token": sessions.csrf_token(token), "expires_at": _iso(session.expires_at)},
+        _session_json(req.conn, session, token),
         [("Set-Cookie", security.session_cookie(token, _seconds_until(session.expires_at)))],
     )
 
 
+_DISPLAY_FIELDS = {"date_format": "locale/date_format", "timezone": "locale/timezone"}
+
+
+def display_settings(conn) -> dict[str, str] | None:
+    """The ``admin`` module's panel display settings at the default scope, or None when the
+    module is disabled. The Config screen's resolver (ENV -> DB -> config.json); a value
+    that is not one of the field's options gets the config.json default."""
+    from agento.framework import module_status
+    from agento.framework.admin import data
+    from agento.framework.config_resolver import read_config_defaults
+
+    # Per request, as _miniapps_enabled: get_module_schemas() is cached for the process.
+    if not module_status.is_enabled("admin", module_status.read_module_status()):
+        return None
+    schema = next((m for m in data.get_module_schemas() if m.name == "admin"), None)
+    if schema is None or schema.module_path is None:
+        return None
+    defaults = read_config_defaults(schema.module_path)
+    fields = {f.field_name: f for f in data.get_resolved_fields(conn, "admin")}
+    out = {}
+    for key, name in _DISPLAY_FIELDS.items():
+        f = fields[name]
+        out[key] = f.value if f.value in {o["value"] for o in f.options or []} else defaults[name]
+    return out
+
+
+def _session_json(conn, session: sessions.Session, token: str) -> dict:
+    return {"user": user_json(session.user), "csrf_token": sessions.csrf_token(token),
+            "expires_at": _iso(session.expires_at), "display": display_settings(conn)}
+
+
 def get_session(req: Request) -> Response:
-    return Response(200, {
-        "user": user_json(req.session.user),
-        "csrf_token": sessions.csrf_token(req.session_token),
-        "expires_at": _iso(req.session.expires_at),
-    })
+    return Response(200, _session_json(req.conn, req.session, req.session_token))
 
 
 def logout(req: Request) -> Response:

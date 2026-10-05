@@ -142,3 +142,62 @@ def test_access_log_has_no_password_or_cookie(web, auth, capfd):
     err = capfd.readouterr().err
     assert "POST /api/session 401" in err
     assert "wrong password" not in err and TOKEN not in err and "x=1" not in err
+
+
+@pytest.fixture
+def config_rows(monkeypatch):
+    """`core_config_data` rows at the default scope, as {path: value}; no database."""
+    from agento.framework import scoped_config
+    from agento.framework.admin import data
+
+    rows: dict[str, str] = {}
+    monkeypatch.setattr(scoped_config, "build_scoped_overrides",
+                        lambda conn, **kw: {p: (v, False) for p, v in rows.items()})
+    monkeypatch.setattr(scoped_config, "load_scoped_db_overrides",
+                        lambda conn, scope, scope_id, **kw: {p: (v, False) for p, v in rows.items()})
+    for name in ("CONFIG__ADMIN__LOCALE__DATE_FORMAT", "CONFIG__ADMIN__LOCALE__TIMEZONE"):
+        monkeypatch.delenv(name, raising=False)
+    data.clear_module_schema_cache()
+    yield rows
+    data.clear_module_schema_cache()
+
+
+def _display(web):
+    r = httpx.get(f"{web}/api/session", cookies={"__Host-agento-session": TOKEN})
+    assert r.status_code == 200
+    return r.json()["display"]
+
+
+def test_session_display_defaults_come_from_the_admin_config_json(web, signed_in, config_rows):
+    assert _display(web) == {"date_format": "us", "timezone": "browser"}
+
+
+def test_session_display_reads_the_default_scope_db_value(web, signed_in, config_rows):
+    config_rows.update({"admin/locale/date_format": "eu", "admin/locale/timezone": "Europe/Warsaw"})
+    assert _display(web) == {"date_format": "eu", "timezone": "Europe/Warsaw"}
+
+
+def test_session_display_env_wins_over_db(web, signed_in, config_rows, monkeypatch):
+    config_rows["admin/locale/date_format"] = "eu"
+    monkeypatch.setenv("CONFIG__ADMIN__LOCALE__DATE_FORMAT", "iso")
+    assert _display(web)["date_format"] == "iso"
+
+
+def test_session_display_unknown_value_falls_back_to_the_default(web, signed_in, config_rows):
+    config_rows.update({"admin/locale/date_format": "dd/mm", "admin/locale/timezone": "Mars/Olympus"})
+    assert _display(web) == {"date_format": "us", "timezone": "browser"}
+
+
+def test_session_display_is_null_when_the_admin_module_is_disabled(web, signed_in, config_rows, monkeypatch):
+    """Read per request, like miniapps: the module schema list is cached for the process."""
+    from agento.framework import module_status
+
+    assert _display(web) is not None  # fills the schema cache while enabled
+    monkeypatch.setattr(module_status, "read_module_status", lambda *a, **kw: {"admin": False})
+    assert _display(web) is None
+
+
+def test_login_carries_the_display_too(web, auth, config_rows):
+    """The panel boots once; after a login it does not GET the session again."""
+    config_rows["admin/locale/date_format"] = "iso"
+    assert _login(web).json()["display"] == {"date_format": "iso", "timezone": "browser"}

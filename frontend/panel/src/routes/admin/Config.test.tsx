@@ -72,6 +72,17 @@ describe("Config", () => {
     expect(await screen.findByText("Also reset: jira/project")).toBeInTheDocument();
   });
 
+  it("a select is searchable, so a long list (time zones) can be typed into", async () => {
+    const zones = [{ value: "browser", label: "Browser time zone" }, { value: "Europe/Warsaw", label: "Europe/Warsaw" }];
+    await stubApi({ ...base, "/api/admin/config": [field({ path: "admin/locale/timezone", label: "Time zone", type: "select",
+      options: zones, value: "browser" })] });
+    renderAt("/admin/config", <Config />);
+    await screen.findByText("Time zone");
+    editOf("Time zone");
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("combobox", { name: "Value" })).not.toHaveAttribute("readonly");
+  });
+
   it("Remove override asks first, then DELETEs the path at the scope", async () => {
     const api = await stubApi({ ...base, "DELETE /api/admin/config": null });
     renderAt("/admin/config", <Config />);

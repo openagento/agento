@@ -1,0 +1,20 @@
+{
+  "locale/date_format": {
+    "type": "select",
+    "label": "Date format",
+    "description": "How the panel shows a date and time.",
+    "options": [
+      {"value": "us", "label": "USA — 10/5/2026, 8:23:44 AM"},
+      {"value": "eu", "label": "European — 5.10.2026, 8:23:44 AM"},
+      {"value": "iso", "label": "ISO / MySQL — 2026-10-05 08:23:44"}
+    ],
+    "showInDefault": true, "showInWorkspace": false, "showInAgentView": false
+  },
+  "locale/timezone": {
+    "type": "select",
+    "label": "Time zone",
+    "description": "The time zone the panel shows a time in. \"Browser time zone\" uses the zone of each viewer's browser.",
+    "options_source": "timezones",
+    "showInDefault": true, "showInWorkspace": false, "showInAgentView": false
+  }
+}
