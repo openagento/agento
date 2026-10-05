@@ -255,10 +255,13 @@ limits. Still open:
 - **TUI module titles.** The admin TUI shows module ids where the panel shows titles.
 - **`codex_access_token` limits.** `fetch_limits` covers Codex `oauth` only; an access-token
   credential stores "no data".
-- **Live check of the usage endpoints.** The Claude, Codex and OpenRouter usage endpoints are
-  tested only against mocks. Check each against a live account, and check that Claude writes
-  its credentials into the temp `HOME` and that the PTY works for uid `agent` under `setpriv`
-  in the cron container.
+- **Limits for an idle OAuth credential.** Only a run renews an OAuth access token, so
+  `credential:limits` skips a credential whose token has expired and keeps its last result. To show
+  fresh limits with no runs, the job must renew the token itself under the same exclusive refresh
+  lease a run takes (refresh tokens are single-use), as CodexBar does.
+- **Live check of re-login.** The usage endpoints were checked live on 2026-10-05 (Claude and
+  Codex OAuth, OpenRouter). A finished re-login is not: check that Claude writes its credentials
+  into the temp `HOME` after a pasted code.
 
 ### ⚪ Distribution & installation model
 
