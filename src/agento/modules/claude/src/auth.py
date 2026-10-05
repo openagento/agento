@@ -116,6 +116,9 @@ class ClaudeCredentialAuthenticator:
             headers={
                 "Authorization": f"Bearer {credentials['subscription_key']}",
                 "anthropic-beta": "oauth-2025-04-20",
+                "Accept": "application/json",
+                # The OAuth usage endpoint answers only a Claude Code client (as CodexBar sends it).
+                "User-Agent": "claude-code/2.1.0",
             },
             timeout=10,
         )

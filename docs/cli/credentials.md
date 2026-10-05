@@ -223,10 +223,16 @@ agento credential:limits    # shortcut: cr:lim
 Asks each vendor how much of its usage limits every credential has used, and stores the answer
 in `credential.limits` (JSON) and `credential.limits_at`. Cron runs it every 10 minutes
 (`core/cron.json`). It skips a credential that is disabled, in `status='error'`, or an OAuth
-credential past `expires_at`. A harness that has no `fetch_limits` member, a credential type
-the vendor has no endpoint for, or a failed call store `NULL`: the panel shows "no data". A
-failure logs the credential id and the exception class only, never the payload or the vendor's
-answer. The update does not change `updated_at`.
+credential whose access token has expired (the harness's `credential_ttl_seconds`, else
+`expires_at`); a skipped credential keeps its last result and `limits_at`. A harness that has no
+`fetch_limits` member, or a credential type the vendor has no endpoint for, stores `NULL` with
+no `limits_at`: the panel shows "—". A failed call stores `NULL` with `limits_at` set: the panel
+shows "Check failed". A failure logs the credential id, the exception class and the HTTP status
+only, never the payload or the vendor's answer. The update does not change `updated_at`.
+
+The usage endpoints check the client: `claude` sends `User-Agent: claude-code/<version>` and
+`codex` sends its own agent name, because `chatgpt.com` refuses the default `python-httpx`
+agent (as CodexBar does).
 
 | Harness | Credential type | Endpoint | Stored |
 |---|---|---|---|
@@ -235,7 +241,7 @@ answer. The update does not change `updated_at`.
 | `pi` | `openrouter_api_key` | `openrouter.ai/api/v1/credits` | `balance_usd` |
 
 The stored shape is `{"windows": [{"label", "used_pct", "resets_at"}], "balance_usd"}`.
-These endpoints are not public API: if a vendor changes one, the credential shows "no data"
+These endpoints are not public API: if a vendor changes one, the credential shows "Check failed"
 until the harness module is fixed.
 
 ## Re-login From the Panel

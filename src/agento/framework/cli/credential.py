@@ -740,32 +740,63 @@ def _limits_json(limits) -> str | None:
     }, allow_nan=False)
 
 
+def _token_expired(c) -> bool:
+    """True when an OAuth credential's access token has expired. The lifetime comes from the
+    owning harness (``WorkspaceAdapter.credential_ttl_seconds``, as the credential resolver
+    reads it): Codex keeps no ``expires_at``. ``expires_at`` is the fallback."""
+    if c.type != "oauth":
+        return False
+    ttl = None
+    try:
+        from ..harness.registry import get_harness_for_scope
+
+        owner = get_harness_for_scope(c.scope)
+        adapter = owner.adapter.workspace_adapter if owner is not None else None
+        ttl = adapter.credential_ttl_seconds(c) if adapter is not None else None
+    except Exception:
+        ttl = None
+    if ttl is not None:
+        return ttl <= 0
+    return c.expires_at is not None and c.expires_at <= datetime.now(UTC).replace(tzinfo=None)
+
+
 def refresh_credential_limits(conn, logger) -> None:
     """Store each enabled, healthy credential's provider limits (``credential.limits``).
 
-    Skips an OAuth credential past ``expires_at``: renewing it is the refresh lease's job.
-    Any failure stores ``NULL`` (the panel shows a dash) and logs the credential id and the
-    exception class only (SEC-6)."""
+    Skips an OAuth credential whose access token has expired (the harness's
+    ``credential_ttl_seconds``, else ``expires_at``): renewing it is the refresh lease's job,
+    so the last result and its ``limits_at`` stay. A credential with nothing to show (no
+    ``fetch_limits``, or it answers ``None``) stores ``NULL`` with no ``limits_at``. A failed
+    check stores ``NULL`` with ``limits_at`` set (the panel says the check failed) and logs the
+    credential id, the exception class and the HTTP status only (SEC-6)."""
     from ..agent_manager import list_credentials
     from ..harness import get_authenticator
 
-    now = datetime.now(UTC).replace(tzinfo=None)
     for c in list_credentials(conn, enabled_only=True):
-        if c.status.value != "ok" or (c.type == "oauth" and c.expires_at is not None and c.expires_at <= now):
+        if c.status.value != "ok" or _token_expired(c):
             continue
         # `fetch_limits` is an optional member of CredentialAuthenticator (protocols.py).
         fetch = getattr(get_authenticator(c.scope), "fetch_limits", None)
         limits = None
+        checked = False
         if fetch is not None:
             try:
-                limits = _limits_json(fetch(c.credentials or {}, c.type))
+                result = fetch(c.credentials or {}, c.type)
+                checked = result is not None
+                limits = _limits_json(result) if result is not None else None
             except Exception as exc:
-                logger.warning("credential:limits: credential id=%s failed (%s)", c.id, type(exc).__name__)
+                checked = True
+                # The HTTP status is not a secret; the response body may be, so it is never logged.
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                logger.warning(
+                    "credential:limits: credential id=%s failed (%s%s)",
+                    c.id, type(exc).__name__, f" HTTP {status}" if status else "",
+                )
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE credential SET limits = %s, limits_at = UTC_TIMESTAMP(), updated_at = updated_at "
-                "WHERE id = %s",
-                (limits, c.id),
+                "UPDATE credential SET limits = %s, limits_at = IF(%s, UTC_TIMESTAMP(), NULL), "
+                "updated_at = updated_at WHERE id = %s",
+                (limits, checked, c.id),
             )
         conn.commit()
 

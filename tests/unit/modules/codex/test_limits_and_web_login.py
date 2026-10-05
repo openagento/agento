@@ -38,6 +38,9 @@ def test_two_windows_from_a_200():
     req = route.calls.last.request
     assert req.headers["Authorization"] == "Bearer at-x"
     assert req.headers["ChatGPT-Account-Id"] == "acc-1"
+    # chatgpt.com refuses the default python-httpx agent (live check, 2026-10-05).
+    assert not req.headers["User-Agent"].startswith("python-httpx")
+    assert req.headers["Accept"] == "application/json"
 
 
 @respx.mock
