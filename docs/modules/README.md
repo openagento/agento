@@ -75,4 +75,5 @@ bin/agento config:set my_system/tools/mysql_my_prod/pass
 - [Miniapps](miniapps.md) — activate a versioned artifact version as a panel-launched app with a fixed action set
 - [Versioned artifacts](versioned-artifacts.md) — drafts, immutable versions, and an atomic current pointer for file trees
 - [Web](web.md) — panel launch limit and the toolbox `session` auth source
+- [Admin](admin.md) — panel display settings: date format and time zone
 - [Conversation](conversation.md) — chat threads, message history, executions and the event log

@@ -1,0 +1,8 @@
+{
+  "name": "admin",
+  "version": "1.0.0",
+  "description": "Panel display settings — the date format and the time zone of every timestamp",
+  "sequence": [],
+  "order": 100,
+  "tools": []
+}

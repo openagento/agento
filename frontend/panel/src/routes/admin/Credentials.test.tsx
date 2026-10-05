@@ -1,6 +1,6 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Credentials } from "./Credentials";
+import { Credentials, freeColor } from "./Credentials";
 import { renderAt, stubApi, teardown } from "./testing";
 
 const cred = (id: number, over: object = {}) => ({
@@ -16,6 +16,13 @@ const two = { windows: [
   { label: "5h", used_pct: 25, resets_at: "2026-10-04T15:00:00Z" },
   { label: "Week", used_pct: 92.4, resets_at: null }], balance_usd: null };
 afterEach(teardown);
+
+describe("freeColor", () => {
+  it("is green from 50% free, yellow from 20% to 49%, red below 20%", () => {
+    expect([100, 50, 49, 45, 20, 19, 0].map(freeColor))
+      .toEqual(["green", "green", "yellow", "yellow", "yellow", "red", "red"]);
+  });
+});
 
 describe("Credentials", () => {
   it("Clear error shows only on an error row and POSTs after the confirm", async () => {

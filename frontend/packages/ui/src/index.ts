@@ -3,7 +3,9 @@ export { Button, type ButtonVariant } from "./components/Button";
 export { StatusBadge, type BadgeTone } from "./components/StatusBadge";
 export { Card } from "./components/Card";
 export { JobStatusCard, JOB_STATE_LABEL, type JobState } from "./components/JobStatusCard";
-export { Timestamp } from "./components/Timestamp";
+export {
+  DisplayFormatProvider, formatTimestamp, Timestamp, type DateFormat, type DisplayFormat,
+} from "./components/Timestamp";
 export { PageHeader, SectionHeader } from "./components/Headers";
 export { EmptyState, ErrorState, LoadingState } from "./components/States";
 export { CodeBlock, JsonViewer } from "./components/CodeBlock";

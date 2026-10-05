@@ -212,6 +212,18 @@ SSH keypair), so the framework never decrypts a secret in order to test one. Res
 claim as "your credential is wrong".
 
 See [Config Testers](testers.md).
+## `options_source` on select fields
+
+A `select` or `multiselect` field declares exactly one of literal `options` or an
+`options_source` that the framework resolves (`framework/harness/options_source.py`;
+`module:validate` rejects an unknown name):
+
+| Source | Options |
+|---|---|
+| `agent_harness_registry` | every installed harness ([harness-contract.md](../architecture/harness-contract.md#scoped-config)) |
+| `agent_harness_providers` | the providers of the harness named by `depends_on` |
+| `timezones` | `browser` ("Browser time zone"), then every IANA zone, sorted (`zoneinfo.available_timezones()`) |
+
 ## `maxLength` on text fields
 
 A `system.json` field may declare a byte ceiling on its value:

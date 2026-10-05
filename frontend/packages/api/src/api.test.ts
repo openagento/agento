@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as pkg from "./index";
 import { apiFetch, sameOriginUrl } from "./apiFetch";
 import { ApiError, CsrfMissingError, SessionChangedError } from "./errors";
-import { endSession, getCsrf, getUser, login, logout, onEndSession, onExpired } from "./session";
+import { boot, endSession, getCsrf, getDisplay, getUser, login, logout, onEndSession, onExpired } from "./session";
 import { queryClient } from "./query";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
@@ -89,6 +89,18 @@ describe("session", () => {
     await login("b", "pw");
     expect(getCsrf()).toBe("tok-B");
     expect(getUser()?.id).toBe(2);
+  });
+
+  it("keeps the display settings of the session and drops them at its end", async () => {
+    const display = { date_format: "eu", timezone: "Europe/Warsaw" };
+    fetchMock.mockResolvedValueOnce(json(200, { ...sessionBody(1, "tok-D"), display }));
+    await boot();
+    expect(getDisplay()).toEqual(display);
+    endSession();
+    expect(getDisplay()).toBeNull();
+    fetchMock.mockResolvedValueOnce(json(200, { ...sessionBody(1, "tok-D"), display: null }));
+    await login("a", "pw");
+    expect(getDisplay()).toBeNull();
   });
 
   it("stores nothing in browser storage or cookies", async () => {
