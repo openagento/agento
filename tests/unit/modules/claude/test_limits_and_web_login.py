@@ -34,6 +34,9 @@ def test_two_windows_from_a_200():
     req = route.calls.last.request
     assert req.headers["Authorization"] == "Bearer sk-ant-oat-x"
     assert req.headers["anthropic-beta"] == "oauth-2025-04-20"
+    # The usage endpoint answered only once a Claude Code agent was sent (live check, 2026-10-05).
+    assert req.headers["User-Agent"].startswith("claude-code/")
+    assert req.headers["Accept"] == "application/json"
 
 
 @respx.mock
