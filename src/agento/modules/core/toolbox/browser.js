@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { readFile, writeFile, mkdir, copyFile, unlink } from 'fs/promises';
-import { resolve } from 'path';
+import { readFile, writeFile, mkdir, copyFile, unlink } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 // --- Session cookie injection ---
 let sessionCookies = [];
