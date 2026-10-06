@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentoUiProvider } from "../Provider";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
+import { Markdown } from "./Markdown";
 
 interface Row { id: string; name: string }
 const rows: Row[] = [{ id: "a", name: "Alpha" }, { id: "b", name: "Beta" }, { id: "c", name: "Gamma" }];
@@ -68,3 +69,18 @@ describe("ConfirmDialog", () => {
   });
 });
 
+
+describe("Markdown", () => {
+  it("renders a code fence, a GFM table and a safe link; raw HTML stays text", async () => {
+    const md = "```js\nconst a = 1;\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n[site](https://example.com)\n\n<script>window.pwned = 1</script>\n\n<b>bold</b>";
+    const { container } = render(<Markdown>{md}</Markdown>, { wrapper: AgentoUiProvider });
+    // The renderer is a lazy chunk; a cold transform under a full run can take seconds.
+    expect(await screen.findByRole("table", {}, { timeout: 10_000 })).toBeInTheDocument();
+    expect(container.querySelector("pre code")!.textContent).toBe("const a = 1;\n");
+    expect(screen.getByRole("link", { name: "site" })).toHaveAttribute("rel", "noopener noreferrer");
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.textContent).toContain("<script>window.pwned = 1</script>");
+    expect(container.querySelector("b")).toBeNull();
+    expect((window as { pwned?: number }).pwned).toBeUndefined();
+  }, 15_000);
+});

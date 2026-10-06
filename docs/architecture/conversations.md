@@ -170,6 +170,40 @@ boundary or the handover waits for it. A bounded `join()` is never treated as pr
 stopped: if a worker outlives it, no replacement starts. The sink's own statement timeout
 (`core/sql_timeout_seconds`) is what bounds the handover's wait.
 
+## Every job has a thread (E9)
+
+**Channel threads.** At claim, `ConversationExecutionIds.mint` gives the new `execution` row its
+`conversation_id` (`service.link_execution`). A panel job is in the thread of the message it
+answers. Any other job (Jira, Outlook, cron) is in its **channel thread**: `user_id` NULL,
+`channel` = `job.source`, `external_ref` = `job.reference_id`, and a unique `external_key` =
+sha1 of `source|view|reference` (`job:<id>` when there is no reference). The next run on the same
+issue, and a follow-up that copies its parent's source and reference, land in the same thread; an
+archived one is reactivated. Each run adds `run.started`, and the finalizer adds `run.finished`
+and, on success, the answer (`assistant.message`). Channel threads are read-only and an admin's
+only (DECISIONS.md D-E9-3).
+
+**The vocabulary.** A harness's `StreamEventMapper` turns its stdout into canonical fragments:
+`assistant.text`, `tool.started`, `tool.completed`, `error`, plus the markers `gap` and `truncated`
+(see [harness-contract.md](harness-contract.md#adding-live-timeline-events)). The sink stores the
+kind as the event kind, with payload `{seq, text, tool_name, data}`. Older rows say
+`assistant.delta`; a reader treats them as `assistant.text`.
+
+**Commit-ordered append.** The event id is a global AUTO_INCREMENT, so two writers of one thread
+could commit ids out of order and a reader at `id > cursor` would skip one. `service.append_event`
+is the one writer: it takes the thread's row lock (an `UPDATE` that also moves
+`last_activity_at`) before the insert. A transaction that writes several threads (sink batch,
+relay batch) locks them all first, in ascending id. The lock comes before any child write, also
+the `message` insert, whose FK check would otherwise take a shared lock first and deadlock.
+
+**One projection.** `service.project_events` builds the client shape for the timeline, the replay
+and the stream: it fills `message.created` with the message text, and `run.started` with the
+job's prompt (admins only), one query each per page. It drops tool `data.input` / `data.output`
+for a non-admin.
+
+**The timeline route.** `GET …/threads/{id}/timeline?before=<id>` pages back from the newest
+event; the panel then opens the stream with `?after=<newest_id>`, so the page and the stream leave
+no window between them.
+
 ## Retention
 
 `conversation:retention` (cron, nightly) runs three passes in one order that matters: prune, then
@@ -206,8 +240,9 @@ and a post serialize instead of racing.
 **The delete is an explicit ordered delete, not a cascade.** One transaction per conversation:
 lock the `conversation` row `FOR UPDATE`, re-check under that lock that it is still archived and
 still past the window, then delete events, `execution_delta`, `execution`, messages, the watermark
-and the conversation — in that order. `execution` and `execution_delta` hang off `job`, so no
-cascade reaches them and dropping the conversation row alone would orphan them for ever. A
+and the conversation — in that order. `execution` and `execution_delta` are found through
+`execution.conversation_id`; no cascade reaches them, and dropping the conversation row alone
+would leave them for ever. A
 reactivation racing the pass either wins (the thread survives whole) or loses (the delete
 completes), never half of each, and a crash mid-delete leaves a still-archived conversation the
 next run finishes. `service.delete_conversation` (the operator path, no route yet) runs the same function, so it cannot fall back to the cascade either.

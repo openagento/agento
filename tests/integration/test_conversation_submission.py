@@ -288,8 +288,9 @@ def test_the_next_turn_is_not_blocked_for_ever_by_a_missing_finalizer(conn, worl
 # --- the routes ------------------------------------------------------------
 
 class _Req:
-    def __init__(self, conn, user, params=None, json=None):
+    def __init__(self, conn, user, params=None, json=None, query=None):
         self.conn, self.session, self.params, self.json = conn, _Session(user), params or {}, json
+        self.query = query or {}
 
 
 class _Session:
@@ -481,18 +482,18 @@ def test_the_revival_and_the_new_turn_commit_together(conn, world, monkeypatch):
     conn.commit()
 
     ran: list = []
-    real_event = service._event
+    real_event = service.append_event
 
-    def barrier(cur, **kwargs):
+    def barrier(cur, conversation_id, **kwargs):
         """Called inside the post's transaction, right after the message insert."""
-        real_event(cur, **kwargs)
+        real_event(cur, conversation_id, **kwargs)
         outside = _test_connection(autocommit=False)
         try:
             ran.append(retention.auto_archive(outside, idle_days=30))
         finally:
             outside.close()
 
-    monkeypatch.setattr(service, "_event", barrier)
+    monkeypatch.setattr(service, "append_event", barrier)
     service.submit_message(conn, conversation_id=cid, user_id=world["owner"].id,
                            client_message_id="c1", content="hi", reactivate_actor_id=1)
 

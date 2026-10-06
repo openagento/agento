@@ -356,7 +356,7 @@ class StreamEventMapper(Protocol):
     """Turns one event of a harness's stdout event stream into a framework-shaped fragment.
 
     The sibling of ``StreamRenderer``: that one produces terminal text for a human, this one
-    produces ``{"kind", "text", "tool_name"}`` for the delta seam (PRD E3-E5 §8.2). Same
+    produces canonical fragments for the delta seam (PRD E3-E5 §8.2, E9 §3.2). Same
     rule behind both — the framework **never parses** a harness's stream format, it asks the
     harness. ``kind`` is the framework's own vocabulary, so a reader never has to know which
     CLI produced the run.
@@ -368,9 +368,18 @@ class StreamEventMapper(Protocol):
     harness written before this existed.
     """
 
-    def map_event(self, event: dict) -> dict | None:
-        """Return ``{"kind": "delta", "text": str, "tool_name": str | None}``, or ``None``
-        to suppress the event. Raising is allowed: the caller logs and drops the fragment,
+    def map_event(self, event: dict) -> dict | list[dict] | None:
+        """Return one fragment, a list of them (one native event may hold text and two tool
+        calls), or ``None`` to suppress the event. A fragment is one of:
+
+        - ``{"kind": "assistant.text", "text": str}`` — one assistant message's prose;
+        - ``{"kind": "tool.started", "tool_name": str, "data": {"call_id", "input": str}}``;
+        - ``{"kind": "tool.completed", "tool_name": str | None,
+          "data": {"call_id", "output": str, "is_error": bool}}``;
+        - ``{"kind": "error", "text": str}``.
+
+        ``{"kind": "delta", ...}`` (the pre-E9 shape) still means ``assistant.text``; any
+        other kind is dropped. Raising is allowed: the caller logs and drops the fragment,
         so a mapper bug costs a delta and never the run."""
         ...
 

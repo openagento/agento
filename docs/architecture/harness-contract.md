@@ -187,6 +187,36 @@ raise if you must — the caller prints the raw line on any exception, so a rend
 never swallow a run's output. Do not return raw JSON for an event type you do not know; a
 short dim line keeps a silent format change visible.
 
+### Adding live timeline events
+
+`StreamEventMapper` turns one parsed stdout event into **canonical fragments**, so the panel
+timeline shows every harness the same way. It is optional, like `stream_renderer`: a harness
+exposes it as a `stream_event_mapper` property, and a harness without one still runs (its thread
+gets `run.started`, `run.finished` and the answer, but no live events).
+
+```python
+# src/agento/modules/<harness>/src/stream_event_mapper.py
+class MyStreamEventMapper:
+    def map_event(self, event: dict) -> dict | list[dict] | None:
+        ...   # one fragment, several, or None to skip the event
+```
+
+| `kind` | Fields | Meaning |
+| --- | --- | --- |
+| `assistant.text` | `text` | assistant text, one message or one part of it |
+| `tool.started` | `tool_name`, `data.call_id`, `data.input` | the harness calls a tool |
+| `tool.completed` | `tool_name` (optional), `data.call_id`, `data.output`, `data.is_error` | the call's result |
+| `error` | `text` | an error the harness reported |
+
+The framework adds `gap` and `truncated` itself. It drops an unknown kind (DEBUG log), reads a
+kindless fragment or the pre-E9 `delta` kind as `assistant.text`, redacts the run's capability
+tokens from `text` and from every string in `data`, and cuts each string at 64 KiB. Pair a
+`tool.started` and its `tool.completed` by the same `call_id`; use `""` when the harness gives
+none. The mapper names no other harness and does no I/O: it runs on the stdout drain thread.
+
+A harness's `raw_output` is the **final answer text** — the last assistant message — never the
+stream: it is what the answer bubble shows (DECISIONS.md D-E9-4).
+
 ### A command is argv *plus* stdin
 
 `stdin_payload(ctx, request)` returns the text written to the process's stdin, which is

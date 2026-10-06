@@ -9,6 +9,7 @@ export {
 export { PageHeader, SectionHeader } from "./components/Headers";
 export { EmptyState, ErrorState, LoadingState } from "./components/States";
 export { CodeBlock, JsonViewer } from "./components/CodeBlock";
+export { Markdown } from "./components/Markdown";
 export { CopyButton } from "./components/CopyButton";
 export { DataTable, type Column } from "./components/DataTable";
 export { ConfirmDialog } from "./components/ConfirmDialog";

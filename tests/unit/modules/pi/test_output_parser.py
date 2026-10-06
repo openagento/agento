@@ -48,9 +48,18 @@ class TestStreamFolding:
         assert parsed.input_tokens == 2000        # 1200 + 800
         assert parsed.output_tokens == 460        # 340 + 120
         assert parsed.num_turns == 2              # turn_end events, not messages
-        assert "Done." in parsed.text
+        assert parsed.text == "Done."   # the last assistant message, not every message
         assert parsed.provider == "openrouter"
         assert parsed.model == "anthropic/claude-sonnet-4.5"
+
+    def test_the_answer_never_holds_user_or_tool_text(self):
+        assert parse_stream(fixture("run_poison_bait")).text == (
+            "The ticket mentions 401 Unauthorized and quota exceeded.")
+
+    def test_an_assistant_message_with_no_text_does_not_erase_the_answer(self):
+        raw = fixture("run_success") + (
+            '\n{"type":"message_end","message":{"role":"assistant","content":[]}}\n')
+        assert parse_stream(raw).text == "Done."
 
     def test_an_entry_appended_init_record_is_read_when_present(self):
         """The parser still honours a stream-borne record, but production does NOT emit

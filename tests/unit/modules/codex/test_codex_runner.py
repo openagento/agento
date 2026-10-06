@@ -52,3 +52,11 @@ def test_codex_transient_only_matches_structured_turn_failed():
 ])
 def test_codex_revoked_without_credential_context_is_not_transient(msg):
     assert _parse(_turn_failed(msg)) is not None
+
+
+def test_codex_answer_is_the_last_agent_message_only():
+    """Earlier agent_message items are progress notes, not the answer (E9 §3.1)."""
+    raw = "".join(json.dumps({"type": "item.completed", "item": {
+        "id": f"i{n}", "type": "agent_message", "text": text}}) + "\n"
+        for n, text in enumerate(["I will check X.", "X is fine."]))
+    assert _parse(raw).raw_output == "X is fine."

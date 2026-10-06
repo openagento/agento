@@ -41,6 +41,7 @@ config levels — see [the config README](../config/README.md#numeric-bounds-min
 | `conversation/stream/max_duration_seconds` | 900 | 1 – |
 | `conversation/stream/max_deltas_per_execution` | 2000 | 1 – 20000 |
 | `conversation/stream/max_delta_bytes_per_execution` | 1048576 | 1024 – 8388608 |
+| `conversation/stream/max_fragment_bytes` | 8192 | 256 – 65536 |
 | `conversation/history/page_size` | 100 | 1 – 500 |
 | `conversation/sweep/pending_grace_seconds` | 60 | 5 – 3600 |
 | `conversation/limits/max_message_bytes` | 32768 | 1024 – 49152 |
@@ -51,18 +52,21 @@ config levels — see [the config README](../config/README.md#numeric-bounds-min
 
 Each retention field reads a different clock: `event_days` and `outbox_days` from the row's
 `created_at`, `archived_days` from `conversation.updated_at`, and `idle_days` from the newest
-message's `created_at`. All four comparisons are strict.
+message's `created_at` (a channel thread: its `last_activity_at`). All four comparisons are
+strict. `stream/max_fragment_bytes` cuts each string field of one live fragment (its text, a
+tool's input or output) before the per-run byte cap counts it.
 
 ## REST
 
 | Method | Path | Answers |
 | --- | --- | --- |
 | POST | `/api/conversation/threads` | `201 {id}` |
-| GET | `/api/conversation/threads` | the caller's active threads |
-| GET | `/api/conversation/threads/{id}` | one thread |
+| GET | `/api/conversation/threads` | the caller's active threads; `?scope=channels[&channel=<source>][&before=<cursor>]` lists the channel threads instead (admins only, a non-admin gets `[]`), newest activity first, each row with a `cursor` for the next page |
+| GET | `/api/conversation/threads/{id}` | one thread, with `live` and its newest 50 `runs` |
+| GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&limit=<n>`: one page of events, oldest first, `{events, has_older, newest_id}`; a `before` at or below the prune watermark is `409 cursor_expired` |
 | DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path) |
 | GET | `/api/conversation/threads/{id}/messages` | its messages |
-| POST | `/api/conversation/threads/{id}/messages` | `201` on the first submission, `200` on a repeat |
+| POST | `/api/conversation/threads/{id}/messages` | `201` on the first submission, `200` on a repeat, `409 read_only` in a channel thread |
 
 The PRD writes these under `/api/conversations`. A module owns `/api/<its own module name>/`
 and nothing else ([panel.md](../architecture/panel.md#module-routes)), so a module named
@@ -332,16 +336,16 @@ than in an observer.
 ## Retention
 
 `conversation:retention` (`co:ret`, cron `17 3 * * *`) runs four passes in one order that
-matters: prune, then retire, then delete, then sweep the executions no thread owns. Pruning first keeps every thread's watermark current,
+matters: prune, then retire, then delete, then remove old runs. Pruning first keeps every thread's watermark current,
 including ones this pass is about to archive; deleting after them means a thread archived seconds ago
 is not also deleted in the same run.
 
 | Pass | Config | What it does |
 |---|---|---|
 | Prune | `conversation/retention/event_days` (90) | Removes `conversation_event` rows past the window, per conversation, and raises that conversation's prune watermark. Floor: 1 day. |
-| Auto-archive | `conversation/retention/idle_days` (90) | Archives a thread whose newest message is older than the window (a thread with no messages falls back to its own `created_at`; `conversation.updated_at` does not vote), through `service.archive(..., reason="idle")`. Skips one whose newest **user** turn is not `terminal`. Re-checked per thread under the conversation row lock the posting path takes, so a post that lands mid-pass keeps the thread. |
+| Auto-archive | `conversation/retention/idle_days` (90) | Archives a panel thread whose newest message is older than the window (a thread with no messages falls back to its own `created_at`; `conversation.updated_at` does not vote), through `service.archive(..., reason="idle")`. Skips one whose newest **user** turn is not `terminal`. Re-checked per thread under the conversation row lock the posting path takes, so a post that lands mid-pass keeps the thread. A **channel** thread uses `COALESCE(last_activity_at, created_at)` instead (every timeline write moves it) and is skipped while one of its runs is `running`. |
 | Delete | `conversation/retention/archived_days` (365) | Deletes an archived thread and everything under it, one transaction each. |
-| Orphan executions | `conversation/retention/event_days` (90) | Deletes `execution` rows, and their `execution_delta` rows, that **no `message` points at** and that started past the window — 500 per batch, oldest first. The execution provider mints a row for every job, not only a conversation's, while the delete above reaches `execution` through `message.job_id`; without this pass a Jira or Outlook job's execution rows are reachable by nothing (CODE-8). |
+| Old runs | `conversation/retention/event_days` (90) | Deletes every `execution` row that is not `running` and **finished** past the window, with its `execution_delta` rows — oldest first, in batches. One age bound for every run, because an active channel thread lives as long as its issue keeps running (CODE-8). The clock is `finished_at`: a run's events age by `created_at`, so a run that started long ago and finished today keeps its row as long as its events. A run with a finished toolbox call that the relay has not projected yet is kept, because the relay finds the thread through the run's row. |
 
 `conversation/retention/outbox_days` is the relay's own, faster cleanup and belongs to
 `conversation:relay`, not to this pass.

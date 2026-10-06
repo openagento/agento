@@ -209,7 +209,23 @@ def failure_kind(error_class: str | None) -> str:
     return "internal"
 
 
-def _delta_callback(harness_entry, execution_id: str | None, logger):
+# The fragment vocabulary a mapper may emit (E9 §3.2). "gap"/"truncated" are the framework's
+# own markers, added by the sink, never by a mapper.
+FRAGMENT_KINDS = frozenset({"assistant.text", "tool.started", "tool.completed", "error"})
+# A memory bound for the queue, not meaning: one tool output must not hold megabytes in RAM.
+MAX_FRAGMENT_FIELD_BYTES = 65536
+
+
+def _bound(value: str, secrets: tuple[str | None, ...]) -> str:
+    value = redact_secret(value, *secrets) or ""
+    raw = value.encode()
+    if len(raw) <= MAX_FRAGMENT_FIELD_BYTES:
+        return value
+    return raw[:MAX_FRAGMENT_FIELD_BYTES].decode(errors="ignore")
+
+
+def _delta_callback(harness_entry, execution_id: str | None, logger,
+                    secrets: tuple[str | None, ...] = ()):
     """The optional stdout->delta seam (PRD E3-E5 §8.2), or None to attach nothing.
 
     Three independent conditions, and all three must hold: a module registered a sink, the
@@ -241,16 +257,25 @@ def _delta_callback(harness_entry, execution_id: str | None, logger):
         if not isinstance(event, dict):
             return
         try:
-            fragment = mapper.map_event(event)
+            mapped = mapper.map_event(event)
         except Exception as exc:
             logger.debug("stream_event_mapper failed: %s", type(exc).__name__)
             return
-        if not fragment:
-            return
-        execution_deltas.submit(DeltaRecord(
-            execution_id=execution_id, seq=next(seq),
-            kind=fragment.get("kind") or "delta",
-            text=fragment.get("text"), tool_name=fragment.get("tool_name")))
+        fragments = mapped if isinstance(mapped, list) else [mapped] if mapped else []
+        for fragment in fragments:
+            # A pre-E9 mapper says "delta" (or nothing): that was always assistant prose.
+            kind = fragment.get("kind") or "delta"
+            kind = "assistant.text" if kind == "delta" else kind
+            if kind not in FRAGMENT_KINDS:
+                logger.debug("stream_event_mapper: unknown fragment kind dropped")
+                continue
+            text, data = fragment.get("text"), fragment.get("data")
+            execution_deltas.submit(DeltaRecord(
+                execution_id=execution_id, seq=next(seq), kind=kind,
+                text=_bound(text, secrets) if isinstance(text, str) else None,
+                tool_name=fragment.get("tool_name"),
+                data={k: _bound(v, secrets) if isinstance(v, str) else v
+                      for k, v in data.items()} if isinstance(data, dict) else None))
 
     return on_line
 
@@ -942,7 +967,8 @@ class Consumer:
                 runner.observe(
                     on_pid=lambda pid: self._save_pid(job.id, pid),
                     on_session_id=_on_session_id,
-                    on_line=_delta_callback(harness_entry, job.execution_id, self.logger),
+                    on_line=_delta_callback(harness_entry, job.execution_id, self.logger,
+                                            (capability_token, rest_capability_token)),
                 )
 
                 should_resume = _should_resume(

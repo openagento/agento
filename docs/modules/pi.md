@@ -288,6 +288,24 @@ Pi supports 40+ providers, but a credential scope has exactly **one** owning har
 `pi` cannot claim the `claude` or `codex` scopes (`DuplicateCredentialScopeError`).
 Further providers need their own scopes — `pi_anthropic`, and so on. Out of scope here.
 
+## Final answer and live timeline fragments
+
+The final answer is the text of the **last assistant message** that has text (its text
+blocks joined with `\n`). User and tool-result text is never part of the answer, so a
+prompt or a Jira comment that a tool returned cannot appear as the agent's words.
+
+`stream_event_mapper` (`src/stream_event_mapper.py`) turns each NDJSON event into
+framework fragments:
+
+| Event | Fragments |
+|---|---|
+| `message_end`, `role` = `assistant` | `assistant.text` (skipped when empty); `error` when `errorMessage` is set |
+| `tool_execution_start` | `tool.started`, `call_id` = `toolCallId`, `tool_name` = `toolName`, `input` = JSON of `args` |
+| `tool_execution_end` | `tool.completed`, `output` = text blocks of `result.content`, `is_error` = `isError` or `result.isError` |
+
+An older Pi that sends no `tool_execution_start` or no `toolCallId` still gives a
+`tool.completed` fragment, with an empty `call_id`.
+
 ## See also
 
 - [../architecture/harness-contract.md](../architecture/harness-contract.md) — the contract

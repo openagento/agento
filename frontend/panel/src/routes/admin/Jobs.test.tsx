@@ -43,4 +43,13 @@ describe("Jobs", () => {
     expect(within(drawer).getByText(/Runs in the cron container/)).toBeInTheDocument();
     expect(within(drawer).getByRole("button", { name: "Copy" })).toBeInTheDocument();
   });
+
+  it("?job=<id> opens that job's drawer (the link from a conversation's runs)", async () => {
+    await stubApi({
+      "/api/admin/jobs": [],
+      "/api/admin/jobs/9": { ...row(9, "DONE", "AG-9"), model: "m", error_message: null, result_summary: null, prompt: "p9", output: "o9" },
+    });
+    renderAt("/admin/jobs?job=9", <Jobs />);
+    expect(await within(await screen.findByRole("dialog")).findByText("p9")).toBeInTheDocument();
+  });
 });

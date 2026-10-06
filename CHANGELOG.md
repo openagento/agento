@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CliInvoker.interactive_command()` gained a `yolo` keyword; each agent module decides its own flag.
 
 ### Changed
+- **The final answer is the last assistant message, for every harness.** `job.output` (and
+  what a channel posts back) is now the text of the last assistant message. **Codex:** earlier
+  `agent_message` items are progress notes and are no longer joined into the answer, so a Jira
+  comment holds the answer only. **Claude:** `job.output` is the `result` text, not the full
+  stream-json (a run with no `result` still keeps the raw stream). **Pi:** user and tool text
+  no longer leaks into the answer. Each harness also ships a `stream_event_mapper` for the live
+  timeline (`docs/modules/{claude,codex,pi}.md`).
 - **Shared Outlook mailbox behavior changed (breaking for any pre-existing shared-mailbox
   deployment).** Previously a shared UPN silently collapsed to "lowest `agent_view.id` wins, others
   skipped". It is now **routed by sender**. A mailbox owned by exactly one view is unchanged

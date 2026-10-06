@@ -1,6 +1,23 @@
+import type { StreamEvent } from "@agento/api";
 import type { JobState } from "@agento/ui";
 
-export interface Thread { id: number; agent_view_id: number | null; title: string | null; status: string; updated_at: string | null }
+/** `channel` is "panel" or the job source of a channel thread (read-only, admins only). */
+export interface Thread {
+  id: number; agent_view_id: number | null; title: string | null; status: string; created_at: string | null;
+  updated_at: string | null; channel: string; external_ref: string | null; last_activity_at: string | null; live: boolean;
+}
+
+export interface RunRow {
+  execution_id: string; job_id: number; attempt: number; status: string; started_at: string | null;
+  finished_at: string | null; type: string; agent_type: string | null; model: string | null;
+  input_tokens: number | null; output_tokens: number | null;
+}
+
+/** The newest runs come first. */
+export interface ThreadDetail extends Thread { runs: RunRow[] }
+
+/** Events oldest first. */
+export interface TimelinePage { events: StreamEvent[]; has_older: boolean; newest_id: number | null }
 
 export interface Message {
   id: number; role: "user" | "assistant"; content: string; client_message_id: string | null;

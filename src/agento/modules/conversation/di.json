@@ -73,6 +73,11 @@
     },
     {
       "method": "GET",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/timeline",
+      "handler": "src.routes.timeline"
+    },
+    {
+      "method": "GET",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/events/stream",
       "handler": "src.stream.open_stream"
     }

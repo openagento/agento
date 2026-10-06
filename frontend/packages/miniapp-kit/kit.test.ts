@@ -27,6 +27,7 @@ describe("tokens", () => {
     ["text", "background"], ["text", "surface"], ["surfaceText", "surface"], ["textMuted", "background"], ["textMuted", "surface"],
     ["link", "background"], ["primaryText", "primary"], ["primaryLightText", "primaryLight"], ["primaryLightText", "background"],
     ["error", "background"], ["error", "surface"],
+    ["code", "codeBackground"], ["text", "preBackground"], ["link", "preBackground"],
     ...Object.keys(TONES).flatMap((t): [string, string][] => [[t, "background"], [`${t}LightText`, `${t}Light`]]),
   ];
   it.each([["light", light], ["dark", dark]] as const)("%s mode meets WCAG AA for text", (_, map) => {

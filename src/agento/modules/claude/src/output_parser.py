@@ -208,8 +208,11 @@ def parse_claude_output(raw: str, logger: logging.Logger | None = None) -> RunRe
             raise _classify_error(msg)
 
         usage = result_event.get("usage", {})
+        # The answer is claude's `result`: the last assistant message's text (E9 §3.1). The
+        # full stream lives in the timeline and the transcript on disk.
+        answer = result_event.get("result")
         return RunResult(
-            raw_output=raw,
+            raw_output=answer if isinstance(answer, str) and answer else raw,
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
             cost_usd=result_event.get("total_cost_usd"),

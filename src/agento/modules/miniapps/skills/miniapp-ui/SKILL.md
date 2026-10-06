@@ -1,6 +1,6 @@
 # Miniapp UI
 
-Use when you write a miniapp page: hand-written HTML over the Agento kit 1.0.0 (`.ag-*` classes, `<ag-*>` elements). Generated from frontend/packages/miniapp-kit; do not edit.
+Use when you write a miniapp page: hand-written HTML over the Agento kit 1.1.0 (`.ag-*` classes, `<ag-*>` elements). Generated from frontend/packages/miniapp-kit; do not edit.
 
 ## Page skeleton
 
@@ -13,13 +13,13 @@ Load the kit from the apps origin. Write plain HTML; set every text with `textCo
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>My app</title>
-  <link rel="stylesheet" href="/_ui/1.0.0/agento-ui.css">
-  <script type="module" src="/_ui/1.0.0/agento-ui.js"></script>
+  <link rel="stylesheet" href="/_ui/1.1.0/agento-ui.css">
+  <script type="module" src="/_ui/1.1.0/agento-ui.js"></script>
 </head>
 <body class="ag-app">
   <main class="ag-page ag-stack">…</main>
   <script type="module">
-    import { createAgentoSdk } from "/_ui/1.0.0/agento-bridge.js";
+    import { createAgentoSdk } from "/_ui/1.1.0/agento-bridge.js";
     const sdk = createAgentoSdk({ panelOrigin: "https://<panel host>" });
     // sdk.callAction("<tool listed in miniapp.json actions>", { ... }) returns a Promise.
   </script>
@@ -147,6 +147,16 @@ Monospace block for code, ids or JSON. Scrolls sideways; never wraps a long toke
 
 ```html
 <pre class="ag-code">{"ok": true}</pre>
+```
+
+### `.ag-prose`
+
+Formatted text: headings, paragraphs, links, lists, inline code, code blocks, tables, quotes and rules. The panel shows an agent's Markdown with the same look.
+The kit does not parse Markdown: write the HTML inside `.ag-prose` yourself, and set user text with `textContent`. Not copied: `<mark>`, `<kbd>` and `<details>` keep the browser look.
+
+```html
+<div class="ag-prose"><h2>Summary</h2><p>The import <strong>finished</strong>. Run <code>bin/agento replay 42</code>.</p><ul><li>120 rows read</li></ul><pre><code>{"ok": true}</code></pre></div>
+<div class="ag-prose"><table><thead><tr><th>Step</th><th>State</th></tr></thead><tbody><tr><td>Read</td><td>done</td></tr></tbody></table><blockquote><p>Next run at 02:00.</p></blockquote></div>
 ```
 
 ### `.ag-list`

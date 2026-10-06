@@ -70,6 +70,9 @@ class ConversationExecutionIds:
     two real attempts of one job can carry the same number, and an id built from the pair
     would collide on the table's own unique key. The row is written on the framework's open
     connection and NOT committed here - it commits with the transition that produced it.
+
+    Every run also gets its thread here (E9 §3.5): a panel run its message's, any other
+    run its channel thread, plus a `run.started` event - in the same uncommitted write.
     """
 
     def mint(self, *, conn, job_id: int, attempt: int) -> str | None:
@@ -80,6 +83,8 @@ class ConversationExecutionIds:
                 "VALUES (%s, %s, %s, 'running')",
                 (execution_id, job_id, attempt),
             )
+            service.link_execution(cur, execution_row_id=cur.lastrowid,
+                                   execution_id=execution_id, job_id=job_id, attempt=attempt)
         return execution_id
 
 
