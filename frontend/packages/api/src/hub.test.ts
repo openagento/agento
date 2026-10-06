@@ -41,6 +41,26 @@ describe("EventSourceHub", () => {
     expect(h.onEvent).toHaveBeenCalledTimes(1);
   });
 
+  it("passes the caller's newest id as ?after=, and a hub reopen resumes after the last delivered event", () => {
+    vi.useFakeTimers();
+    const h = handlers();
+    hub.open(3, h, 42);
+    expect(FakeES.all[0].url).toBe("/api/conversation/threads/3/events/stream?after=42");
+    FakeES.all[0].emit("assistant.text", { id: 50, kind: "assistant.text", execution_id: "e", payload: {} });
+    FakeES.all[0].readyState = 2;
+    FakeES.all[0].onerror!();
+    hub.reconnect();
+    vi.advanceTimersByTime(BACKOFF_CEILING_MS);
+    expect(FakeES.all[1].url).toBe("/api/conversation/threads/3/events/stream?after=50");
+  });
+
+  it("listens for every timeline kind", () => {
+    hub.open(1, handlers());
+    for (const k of ["assistant.text", "tool.started", "tool.completed", "error", "gap", "truncated", "run.started", "run.finished"]) {
+      expect(FakeES.all[0].listeners.has(k), k).toBe(true);
+    }
+  });
+
   it("does not retry a refused stream until asked, then waits the backoff", () => {
     vi.useFakeTimers();
     const h = handlers();
@@ -57,10 +77,11 @@ describe("EventSourceHub", () => {
   });
 
   it("reopens with no cursor on cursor_expired", () => {
-    hub.open(1, handlers());
+    hub.open(1, handlers(), 9);
     FakeES.all[0].listeners.get("cursor_expired")!(new MessageEvent("cursor_expired"));
     expect(FakeES.all[0].closed).toBe(true);
     expect(FakeES.all).toHaveLength(2);
+    expect(FakeES.all[1].url).toBe("/api/conversation/threads/1/events/stream");
   });
 
   it("ignores events from a closed stream", () => {

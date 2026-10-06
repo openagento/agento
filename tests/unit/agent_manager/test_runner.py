@@ -626,7 +626,7 @@ class TestCodexSubprocessRunnerJsonOutput:
         assert result.input_tokens == 101854
         # output_tokens (1904) + reasoning_output_tokens (833)
         assert result.output_tokens == 1904 + 833
-        # raw_output is the concatenated agent_message text(s) from item.completed
+        # raw_output is the LAST agent_message text from item.completed
         assert "353043085362789" in result.raw_output
         # codex emits no session-level MCP init self-report (only per-call
         # mcp_tool_call items), so the connection signal stays unknown.

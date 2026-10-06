@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 
+from . import service
 from .workflow import ReferenceUnusable, parse_reference
 
 logger = logging.getLogger(__name__)
@@ -59,8 +60,9 @@ def relay_outbox(conn, *, limit: int = 500) -> int:
         )
         rows = list(cur.fetchall())
         owners = _owning_conversations(cur, rows)
-        for row in rows:
-            conversation_id = _classify(row, owners)
+        targets = [(row, _classify(row, owners)) for row in rows]
+        service.lock_conversations(cur, [c for _, c in targets if c is not None])
+        for row, conversation_id in targets:
             if conversation_id is not None:
                 _write_event(cur, row, conversation_id)
         if rows:
@@ -133,16 +135,10 @@ def _classify(row, owners: dict[int, int]) -> int | None:
 
 def _write_event(cur, row, conversation_id: int) -> None:
     payload = row["payload"]
-    cur.execute(
-        # INSERT IGNORE, not a pre-read: the uniqueness is the idempotency, and a check
-        # followed by an insert is the same race written out longhand.
-        "INSERT IGNORE INTO conversation_event "
-        "(conversation_id, execution_id, kind, payload, source_kind, source_id) "
-        "VALUES (%s, %s, %s, %s, %s, %s)",
-        (conversation_id, row["execution_id"], row["kind"],
-         payload if isinstance(payload, str) else json.dumps(payload),
-         SOURCE_KIND, row["id"]),
-    )
+    service.append_event(
+        cur, conversation_id, kind=row["kind"], execution_id=row["execution_id"],
+        payload=json.loads(payload) if isinstance(payload, str) else payload,
+        source_kind=SOURCE_KIND, source_id=row["id"], locked=True)
 
 
 def prune_relayed(conn, *, retention_days: int) -> int:
@@ -171,13 +167,12 @@ TOOL_EVENT_KIND = "tool.called"
 # conversation event, and none may.
 _TOOL_BATCH_SQL = (
     "SELECT t.id, t.run_execution_id, t.tool_name, t.outcome, "
-    "       t.agent_view_id, t.workspace_id, j.source, j.reference_id "
+    "       t.agent_view_id, t.workspace_id, e.conversation_id "
     "FROM tool_invocation t "
-    # `execution` is the only bridge from a run's execution id to its job. Joining through
-    # `toolbox_capability` instead would lose every call whose capability has been purged,
-    # and the audit deliberately outlives its capability.
+    # `execution` is the only bridge from a run's execution id to its thread (E9 §3.5).
+    # Joining through `toolbox_capability` instead would lose every call whose capability
+    # has been purged, and the audit deliberately outlives its capability.
     "JOIN execution e ON e.execution_id = t.run_execution_id "
-    "LEFT JOIN job j ON j.id = e.job_id "
     "WHERE t.conversation_relayed_at IS NULL AND t.run_execution_id IS NOT NULL "
     # A call still running has no outcome yet. Leaving it unclaimed is not "pending
     # forever": the dispatcher finalizes every exit, so the next tick projects it with the
@@ -198,11 +193,12 @@ def project_tool_calls(conn, *, limit: int = 500) -> int:
     with conn.cursor() as cur:
         cur.execute(_TOOL_BATCH_SQL, (limit,))
         rows = list(cur.fetchall())
-        owners = _owning_conversations(cur, rows)
+        # A run with no thread (minted before runs were linked) yields no event.
+        service.lock_conversations(cur, [r["conversation_id"] for r in rows
+                                         if r["conversation_id"] is not None])
         for row in rows:
-            conversation_id = _classify(row, owners)
-            if conversation_id is not None:
-                _write_tool_event(cur, row, conversation_id)
+            if row["conversation_id"] is not None:
+                _write_tool_event(cur, row, row["conversation_id"])
         if rows:
             cur.execute(
                 f"UPDATE tool_invocation SET conversation_relayed_at = NOW() "
@@ -214,21 +210,17 @@ def project_tool_calls(conn, *, limit: int = 500) -> int:
 
 
 def _write_tool_event(cur, row, conversation_id: int) -> None:
-    cur.execute(
-        "INSERT IGNORE INTO conversation_event "
-        "(conversation_id, execution_id, kind, payload, source_kind, source_id) "
-        "VALUES (%s, %s, %s, %s, %s, %s)",
-        (conversation_id, row["run_execution_id"], TOOL_EVENT_KIND,
-         # The name, the scope and the outcome - never an argument or a result. The audit
-         # itself only ever held a digest of the arguments, and this is one hop closer to a
-         # browser than the audit is.
-         json.dumps({
-             "tool_name": row["tool_name"],
-             "outcome": row["outcome"],
-             "tool_invocation_id": row["id"],
-             "execution_id": row["run_execution_id"],
-             "agent_view_id": row["agent_view_id"],
-             "workspace_id": row["workspace_id"],
-         }),
-         TOOL_SOURCE_KIND, row["id"]),
-    )
+    service.append_event(
+        cur, conversation_id, kind=TOOL_EVENT_KIND, execution_id=row["run_execution_id"],
+        source_kind=TOOL_SOURCE_KIND, source_id=row["id"], locked=True,
+        # The name, the scope and the outcome - never an argument or a result. The audit
+        # itself only ever held a digest of the arguments, and this is one hop closer to a
+        # browser than the audit is.
+        payload={
+            "tool_name": row["tool_name"],
+            "outcome": row["outcome"],
+            "tool_invocation_id": row["id"],
+            "execution_id": row["run_execution_id"],
+            "agent_view_id": row["agent_view_id"],
+            "workspace_id": row["workspace_id"],
+        })

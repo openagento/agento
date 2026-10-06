@@ -6,6 +6,7 @@
   "stream/max_duration_seconds": 900,
   "stream/max_deltas_per_execution": 2000,
   "stream/max_delta_bytes_per_execution": 1048576,
+  "stream/max_fragment_bytes": 8192,
   "history/page_size": 100,
   "sweep/pending_grace_seconds": 60,
   "limits/max_message_bytes": 32768,

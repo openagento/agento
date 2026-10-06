@@ -124,16 +124,25 @@ def _prune_one(conn, conversation_id: int, days: int, *, budget: int) -> int:
 # ever. A thread with no messages at all has no message clock, and falls back to its own
 # `created_at`, which is the only activity it has ever had. A non-terminal user turn is
 # never idle whatever either clock says: it is waiting for an answer.
+#
+# A CHANNEL thread (`user_id IS NULL`, E9 §3.5) has no user turns: its clock is the newest
+# event (`last_activity_at`), so a later run's events keep it alive past an old answer, and
+# it is never idle while one of its runs is still running.
 _IDLE = (
     "c.status = 'active' "
-    "AND COALESCE("
-    "      (SELECT MAX(m.created_at) FROM message m WHERE m.conversation_id = c.id), "
-    "      c.created_at"
-    "    ) < (NOW() - INTERVAL %s DAY) "
-    "AND NOT EXISTS ("
-    "      SELECT 1 FROM message m WHERE m.conversation_id = c.id "
-    "        AND m.role = 'user' AND m.job_state <> 'terminal'"
-    ")"
+    "AND ((c.user_id IS NOT NULL "
+    "  AND COALESCE("
+    "        (SELECT MAX(m.created_at) FROM message m WHERE m.conversation_id = c.id), "
+    "        c.created_at"
+    "      ) < (NOW() - INTERVAL %s DAY) "
+    "  AND NOT EXISTS ("
+    "        SELECT 1 FROM message m WHERE m.conversation_id = c.id "
+    "          AND m.role = 'user' AND m.job_state <> 'terminal')) "
+    "OR (c.user_id IS NULL "
+    "  AND COALESCE(c.last_activity_at, c.created_at) < (NOW() - INTERVAL %s DAY) "
+    "  AND NOT EXISTS ("
+    "        SELECT 1 FROM execution e WHERE e.conversation_id = c.id "
+    "          AND e.status = 'running')))"
 )
 
 
@@ -146,7 +155,7 @@ def still_idle(conn, conversation_id: int, *, idle_days: int) -> bool:
     """
     with conn.cursor() as cur:
         cur.execute(f"SELECT c.id FROM conversation c WHERE c.id = %s AND {_IDLE} "
-                    "FOR UPDATE", (conversation_id, idle_days))
+                    "FOR UPDATE", (conversation_id, idle_days, idle_days))
         return cur.fetchone() is not None
 
 
@@ -165,7 +174,7 @@ def auto_archive(conn, *, idle_days: int, limit: int = MAX_PER_RUN) -> int:
     with conn.cursor() as cur:
         # Oldest first, `limit` per run - see MAX_PER_RUN.
         cur.execute(f"SELECT c.id FROM conversation c WHERE {_IDLE} ORDER BY c.id LIMIT %s",
-                    (idle_days, limit))
+                    (idle_days, idle_days, limit))
         ids = [row["id"] for row in cur.fetchall()]
     conn.commit()
     archived = 0
@@ -177,17 +186,19 @@ def auto_archive(conn, *, idle_days: int, limit: int = MAX_PER_RUN) -> int:
     return archived
 
 
-# --- the executions no conversation owns ------------------------------------
+# --- old runs -----------------------------------------------------------------
 
-def prune_orphan_executions(conn, *, event_days: int, limit: int = 100,
-                            max_rows: int = MAX_PER_RUN) -> int:
-    """Delete `execution` rows (and their deltas) that no conversation message owns.
+def prune_old_executions(conn, *, event_days: int, limit: int = 100,
+                         max_rows: int = MAX_PER_RUN) -> int:
+    """Delete finished `execution` rows (and their deltas) past the event window.
 
-    The execution provider mints a row for EVERY job, not only a conversation's, while the
-    conversation delete reaches `execution` through `message.job_id` - so a Jira or Outlook
-    job's execution and its deltas are reachable by no pass at all and the two tables grow
-    for ever (CODE-8). This is their retention contract: past the event window, an execution
-    with no message pointing at its job is removed, oldest first and `limit` per pass, so one
+    One age bound for every run, linked to a thread or not (E9 §3.5): an active channel
+    thread lives for as long as its issue keeps running, and its runs must not grow with
+    it for ever (CODE-8). The clock is `finished_at` - the run's last event - because the
+    event prune ages by `created_at`: a run that started long ago and finished today keeps
+    its row while its events live. A running run is never pruned, nor one with a finished
+    tool call the relay has not projected yet (the relay needs the row to find the thread;
+    the predicate is `relay._TOOL_BATCH_SQL`'s). Oldest first, `limit` per pass, so one
     sweep cannot lock the table behind a backlog.
     """
     days = max(MIN_EVENT_DAYS, event_days)
@@ -196,8 +207,11 @@ def prune_orphan_executions(conn, *, event_days: int, limit: int = 100,
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT execution_id FROM execution e "
-                "WHERE e.started_at < (NOW() - INTERVAL %s DAY) "
-                "AND NOT EXISTS (SELECT 1 FROM message m WHERE m.job_id = e.job_id) "
+                "WHERE e.status <> 'running' "
+                "AND e.finished_at < (NOW() - INTERVAL %s DAY) "
+                "AND NOT EXISTS (SELECT 1 FROM tool_invocation t "
+                "  WHERE t.run_execution_id = e.execution_id "
+                "    AND t.conversation_relayed_at IS NULL AND t.outcome <> 'pending') "
                 "ORDER BY e.id LIMIT %s", (days, min(limit, max_rows - removed)))
             ids = [row["execution_id"] for row in cur.fetchall()]
             if not ids:
@@ -254,13 +268,8 @@ def delete_tree(conn, conversation_id: int, *, require_archived_days: int | None
         cur.execute(
             "DELETE d FROM execution_delta d "
             "JOIN execution e ON e.execution_id = d.execution_id "
-            "JOIN message m ON m.job_id = e.job_id "
-            "WHERE m.conversation_id = %s", (conversation_id,))
-        cur.execute(
-            # `execution` is reached through `message.job_id`: there is no conversation
-            # column on it, and a DELETE by conversation would silently match nothing.
-            "DELETE e FROM execution e JOIN message m ON m.job_id = e.job_id "
-            "WHERE m.conversation_id = %s", (conversation_id,))
+            "WHERE e.conversation_id = %s", (conversation_id,))
+        cur.execute("DELETE FROM execution WHERE conversation_id = %s", (conversation_id,))
         cur.execute("DELETE FROM message WHERE conversation_id = %s", (conversation_id,))
         cur.execute("DELETE FROM conversation_prune_watermark WHERE conversation_id = %s",
                     (conversation_id,))

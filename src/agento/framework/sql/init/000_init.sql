@@ -256,7 +256,8 @@ CREATE TABLE tool_invocation (
     UNIQUE KEY uk_tool_invocation_execution (execution_id),
     KEY idx_tool_invocation_capability (capability_id),
     KEY idx_tool_invocation_created (created_at),
-    KEY idx_tool_invocation_conversation_relay (conversation_relayed_at, id)
+    KEY idx_tool_invocation_conversation_relay (conversation_relayed_at, id),
+    KEY idx_tool_invocation_run_execution (run_execution_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Platform users (E1.5, PRD E2 §5). Login and RBAC logic are E2's.
@@ -476,4 +477,5 @@ INSERT INTO schema_migration (version) VALUES
     ('045_job_event_outbox'),
     ('046_job_defer_stretch'),
     ('047_tool_invocation_run_execution'),
-    ('048_credential_login');
+    ('048_credential_login'),
+    ('049_tool_invocation_run_execution_index');

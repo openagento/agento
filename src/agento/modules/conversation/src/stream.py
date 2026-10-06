@@ -113,16 +113,9 @@ def newest_event_id(conn, conversation_id: int) -> int:
         return int(cur.fetchone()["newest"])
 
 
-def event_frame(row: dict) -> bytes:
-    payload = row["payload"]
-    return frame(
-        data=json.dumps({
-            "id": row["id"], "kind": row["kind"], "execution_id": row["execution_id"],
-            "payload": json.loads(payload) if isinstance(payload, str) else payload,
-        }),
-        event=row["kind"],
-        event_id=row["id"],
-    )
+def event_frame(event: dict) -> bytes:
+    """One projected event (`service.project_events`) - the timeline's shape, exactly."""
+    return frame(data=json.dumps(event), event=event["kind"], event_id=event["id"])
 
 
 def frames(conn, *, conversation_id: int, session_token: str, cursor: int | None,
@@ -172,9 +165,9 @@ def _tick(conn, *, conversation_id, session_token, cursor, slot, poll, heartbeat
             return
         rows = service.list_events(conn, conversation_id=conversation_id,
                                    after_id=cursor, limit=page)
-        for row in rows:
-            cursor = row["id"]
-            yield event_frame(row)
+        for event in service.project_events(conn, rows, session.user):
+            cursor = event["id"]
+            yield event_frame(event)
         if rows:
             last_sent = now()
         elif now() - last_sent >= heartbeat:

@@ -46,8 +46,11 @@ def _execution(conn, job_id, *, execution_id=None, attempt=1) -> str:
     execution_id = execution_id or str(uuid.uuid4())
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO execution (execution_id, job_id, attempt, status) "
-            "VALUES (%s, %s, %s, 'running')", (execution_id, job_id, attempt))
+            # The thread is linked at claim (E9 §3.5); a hand-made run links it here.
+            "INSERT INTO execution (execution_id, job_id, attempt, status, conversation_id) "
+            "VALUES (%s, %s, %s, 'running', "
+            "        (SELECT conversation_id FROM message WHERE job_id = %s LIMIT 1))",
+            (execution_id, job_id, attempt, job_id))
     conn.commit()
     return execution_id
 

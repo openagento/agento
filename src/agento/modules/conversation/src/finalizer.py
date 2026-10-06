@@ -13,8 +13,11 @@ What it writes, per call:
   to prevent.
 * `message.job_state = 'terminal'` — **only** when `job_terminal`. That is §3.2's rule
   expressed as an argument rather than as a list of call sites.
-* the assistant `message` row and its `assistant.message` outbox event — only when the run
-  actually produced an answer.
+* the assistant `message` row and its `assistant.message` event — only when the run
+  actually produced an answer. A panel thread gets the event through the outbox, in order
+  with its `job.*` events; a channel thread (E9 §3.5) has no `job.*` events and gets it
+  directly.
+* a `run.finished` event in the run's thread, for every outcome.
 
 It deliberately does **not** write `job.failed`: that is a framework job transition, and a
 module that owned it would quietly drop it from the module-disabled guarantee.
@@ -57,12 +60,25 @@ class ConversationFinalizer:
 
     def finalize(self, *, conn, job_id: int, attempt: int, execution_id: str | None,
                  outcome: str, job_terminal: bool) -> None:
+        from . import service
+
         with conn.cursor() as cur:
             resolved = self._close_execution(cur, job_id, attempt, execution_id, outcome)
+            run = self._run(cur, resolved)
+            if run is not None:
+                # Takes the thread's row lock first: the lock-order invariant (E9 §3.4).
+                service.append_event(
+                    cur, run["conversation_id"], kind="run.finished", execution_id=resolved,
+                    source_kind="execution_end", source_id=run["id"],
+                    payload={"job_id": job_id, "attempt": attempt, "outcome": outcome})
             reference = self._conversation_reference(cur, job_id)
             if reference is None:
+                if run is not None and outcome == "succeeded":
+                    self._write_answer(cur, run["conversation_id"], job_id, resolved,
+                                       channel=True)
                 return
             conversation_id, message_id = reference
+            service.lock_conversations(cur, [conversation_id])
             if job_terminal:
                 cur.execute(
                     "UPDATE message SET job_state = 'terminal' WHERE id = %s", (message_id,))
@@ -94,6 +110,15 @@ class ConversationFinalizer:
 
     # --- the thread -------------------------------------------------------
 
+    def _run(self, cur, execution_id: str | None) -> dict | None:
+        """The execution row with its thread, or None when it has none."""
+        if execution_id is None:
+            return None
+        cur.execute("SELECT id, conversation_id FROM execution WHERE execution_id = %s",
+                    (execution_id,))
+        row = cur.fetchone()
+        return row if row is not None and row["conversation_id"] is not None else None
+
     def _conversation_reference(self, cur, job_id: int) -> tuple[int, int] | None:
         """`(conversation_id, message_id)` for a conversation job, else None.
 
@@ -121,7 +146,7 @@ class ConversationFinalizer:
     # --- the answer -------------------------------------------------------
 
     def _write_answer(self, cur, conversation_id: int, job_id: int,
-                      execution_id: str) -> None:
+                      execution_id: str, *, channel: bool = False) -> None:
         """The assistant row and its event, or nothing.
 
         The two writes have DIFFERENT uniqueness: the message row is pinned by
@@ -152,6 +177,11 @@ class ConversationFinalizer:
         if cur.rowcount != 1:
             return
         message_id = cur.lastrowid
+        payload = {"message_id": message_id, "content": answer}
+        if channel:
+            service.append_event(cur, conversation_id, kind="assistant.message",
+                                 execution_id=execution_id, source_kind="answer",
+                                 source_id=message_id, payload=payload)
+            return
         write_outbox(cur, job_id=job_id, execution_id=execution_id,
-                     kind="assistant.message",
-                     payload={"message_id": message_id, "content": answer})
+                     kind="assistant.message", payload=payload)
