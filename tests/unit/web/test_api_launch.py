@@ -118,8 +118,9 @@ def test_end_someone_elses_launch_is_404(web, monkeypatch, signed_in):
 
 def _redeem(web, launch_id=LID, code="the-code", cookies=None, **headers):
     base = {"Origin": PANEL, "Sec-Fetch-Site": "same-site", "Content-Type": "application/x-www-form-urlencoded"}
+    sent = {k: v for k, v in {**base, **headers}.items() if v is not None}
     return httpx.post(f"{web}/internal/launch/redeem", content=f"launch_id={launch_id}&code={code}",
-                      headers={**base, **headers}, cookies=cookies or {})
+                      headers=sent, cookies=cookies or {})
 
 
 @pytest.mark.parametrize("method", ["GET", "HEAD", "PUT"])
@@ -149,8 +150,16 @@ def test_two_launches_get_two_cookie_names(web, monkeypatch):
     assert names == {f"__Host-agento-launch-{LID}", f"__Host-agento-launch-{LID2}"}
 
 
+@pytest.mark.parametrize("site", ["same-site", "cross-site", None])
+def test_redeem_accepts_the_panel_origin_whatever_the_site(web, monkeypatch, site):
+    """panel.localhost and apps.localhost are two sites to a browser: the exact Origin is the check."""
+    monkeypatch.setattr(launches, "redeem", lambda conn, lid, code: (_launch(lid), "launch-token"))
+    monkeypatch.setattr(launches, "live_launch_ids", lambda conn, ids: set())
+    assert _redeem(web, **{"Sec-Fetch-Site": site}).status_code == 303
+
+
 @pytest.mark.parametrize("headers", [
-    {"Origin": APPS}, {"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"},
+    {"Origin": APPS}, {"Origin": "https://evil.example"}, {"Origin": None},
 ])
 def test_redeem_requires_the_panel_page(web, monkeypatch, headers):
     monkeypatch.setattr(launches, "redeem", MagicMock(side_effect=AssertionError("must not be called")))
@@ -427,10 +436,12 @@ def test_agent_view_miniapps_failures(web, monkeypatch, signed_in, result, expec
         assert r.json() == expected[1]
 
 
-def test_agent_view_miniapps_without_the_operation_is_404(web, monkeypatch, signed_in):
+def test_agent_view_miniapps_without_the_operation_lists_nothing(web, monkeypatch, signed_in):
+    """The view is reachable (it is in the caller's list), so an empty list discloses nothing."""
     monkeypatch.setattr(accounts, "has_operation", lambda *a: False)
     invoke = _list_answers(monkeypatch, None)
-    assert _miniapps(web).status_code == 404
+    r = _miniapps(web)
+    assert (r.status_code, r.json()) == (200, [])
     invoke.assert_not_called()
 
 
