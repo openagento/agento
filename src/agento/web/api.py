@@ -462,8 +462,9 @@ def agent_view_miniapps(req: Request) -> Response:
     if isinstance(scope, Response):
         return scope
     workspace_id, view_id = scope
+    # The view is reachable, so it is already disclosed: no launch right means nothing to list, not 404.
     if not accounts.has_operation(req.conn, req.session.user.role, "artifact.launch", workspace_id, view_id):
-        return error(404, "not found")
+        return Response(200, [])
     if not _miniapps_enabled():
         return Response(200, [])
     result = invoke_tool(req.conn, req.session, "miniapp_list", {}, workspace_id=workspace_id, agent_view_id=view_id)
@@ -501,12 +502,14 @@ def redeem_launch(req: Request) -> Response:
     """POST /launch on the apps origin (proxied to /internal/launch/redeem).
 
     The exchange code is the credential, so the proxy secret is not required here: a stolen
-    code is equally usable from anywhere. The form must come from the panel page.
+    code is equally usable from anywhere. The form must come from the panel page: the exact
+    panel Origin, which a page cannot forge. Sec-Fetch-Site is not checked, because panel and
+    apps may be two sites (``panel.localhost`` and ``apps.localhost`` are) and it adds nothing
+    to an exact Origin.
     """
     from urllib.parse import parse_qs
 
-    site = req.headers.get("Sec-Fetch-Site")
-    if req.headers.get("Origin") != req.origins.panel or site not in (None, "same-site", "same-origin"):
+    if req.headers.get("Origin") != req.origins.panel:
         return error(403, "forbidden")
     ctype = (req.headers.get("Content-Type") or "").split(";")[0].strip().lower()
     if ctype != "application/x-www-form-urlencoded":
