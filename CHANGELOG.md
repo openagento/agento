@@ -29,10 +29,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one error per turn with a retry, collapsed reasoning, code highlight and a phone drawer.
 - **ACL resources declared by modules.** `di.json` `acl_resources: [{id, title}]` makes an
   operation grantable (`grant:add --operation`, the panel Grants screen); `admin` has all. The
-  conversation module declares `conversation.run_details`: prompts, tool input and output, model,
-  tokens and job links are shown to a non-admin only with this grant.
+  conversation module declares `conversation.run_details`: prompts, tool input and output, harness,
+  provider, credential label, model, tokens and job links are shown to a non-admin only with this
+  grant. Each attempt records its harness, provider, model and credential id at mint
+  (`RunProfile`, migration `conversation/003`), so a failed run shows them too.
 - A thread with no title takes one from its first message. `run.started` carries `max_attempts`.
 - RULES.md SCL-1: the target is 100–200 parallel jobs per deployment.
+- RULES.md UI-7: a row, header or copy action is an icon with a hover title (`IconAction`,
+  `ArchiveAction`); `CopyButton` and the panel's row actions are icons now.
 
 - **Regex + priority sender routing for shared Outlook mailboxes.** A mailbox UPN shared by two or
   more agent_views is now polled once and each message routed to a view by matching the normalized
@@ -59,7 +63,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - `GET /api/conversation/threads/{id}` adds `run_details`; without it, `runs` rows omit `model`,
-  tokens, `job_id`, `type` and `agent_type` (they were shown to every reader before).
+  tokens, `job_id`, `type` and `agent_type` (they were shown to every reader before). With it,
+  `agent_type` is replaced by `harness`, `provider` and `credential`.
 - `accounts.GRANTABLE_OPERATIONS` is replaced by `accounts.grantable_operations()`.
 - **Codex CLI pinned to 0.157.0** (was 0.137.0) in the sandbox image, the dev compose build arg and
   the `codex` harness declaration's `default_range`.

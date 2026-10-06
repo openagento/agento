@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { notifications } from "@mantine/notifications";
+import { CircleStop, ExternalLink } from "lucide-react";
 import { apiFetch, ApiError, useQuery } from "@agento/api";
-import { Button, DataTable, PageHeader, SectionHeader, SelectField, Timestamp, type Column } from "@agento/ui";
+import { DataTable, IconAction, PageHeader, SectionHeader, SelectField, Timestamp, type Column } from "@agento/ui";
 import { endLaunch, openLaunch, reconcileLaunches } from "../launch";
 
 interface AgentView { id: number; code: string; label: string; workspace_id: number }
@@ -44,15 +45,13 @@ export function Miniapps() {
   const appColumns: Column<Miniapp>[] = [
     { id: "title", header: "Miniapp", cell: (m) => m.title, sortValue: (m) => m.title },
     { id: "code", header: "Code", cell: (m) => <code>{m.artifact_code}</code>, sortValue: (m) => m.artifact_code },
-    { id: "open", header: "Actions", cell: (m) => <Button variant="primary" onClick={() => open(m)}>Open</Button> },
+    { id: "open", header: "Actions", cell: (m) => <IconAction label="Open" icon={<ExternalLink size={16} />} onClick={() => open(m)} /> },
   ];
   const launchColumns: Column<Launch>[] = [
     { id: "code", header: "Miniapp", cell: (l) => <code>{l.artifact_code}</code>, sortValue: (l) => l.artifact_code },
     { id: "expires", header: "Expires", cell: (l) => <Timestamp value={l.expires_at} />, sortValue: (l) => l.expires_at },
     { id: "end", header: "Actions", cell: (l) => (
-      <Button variant="danger" onClick={() => endLaunch(l.launch_id).catch((e) => notifications.show({ color: "red", message: message(e) }))}>
-        End
-      </Button>
+      <IconAction danger label="End" icon={<CircleStop size={16} />} onClick={() => endLaunch(l.launch_id).catch((e) => notifications.show({ color: "red", message: message(e) }))} />
     ) },
   ];
 

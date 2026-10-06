@@ -4,7 +4,9 @@ import { AgentoUiProvider } from "../Provider";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 import { Markdown } from "./Markdown";
-import { ChatComposer, ChatError, ToolCall } from "./Chat";
+import { ChatComposer, ChatError, RunInfo, ToolCall } from "./Chat";
+import { ArchiveAction } from "./IconAction";
+import { CopyButton } from "./CopyButton";
 import { MenuButton, ThreadList } from "./ChatShell";
 
 interface Row { id: string; name: string }
@@ -140,6 +142,28 @@ describe("ToolCall and ChatError", () => {
     render(<ChatError title="The agent could not answer." details="raw" onRetry={onRetry} />, { wrapper: AgentoUiProvider });
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("icon actions (RULES.md UI-7)", () => {
+  it("an action is an icon: no text, its name is the accessible name and the hover title", async () => {
+    const onClick = vi.fn();
+    render(<><ArchiveAction onClick={onClick} /><CopyButton value="x" /></>, { wrapper: AgentoUiProvider });
+    const archive = screen.getByRole("button", { name: "Archive" });
+    expect(archive).toHaveTextContent("");
+    expect(screen.getByRole("button", { name: "Copy" })).toHaveTextContent("");
+    fireEvent.mouseEnter(archive);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Archive");
+    fireEvent.click(archive);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("the run details icon opens its rows", async () => {
+    render(<RunInfo rows={[{ label: "Harness", value: "codex · openai" }, { label: "Credential", value: "team-1" }]} />,
+      { wrapper: AgentoUiProvider });
+    fireEvent.click(screen.getByRole("button", { name: "Run details" }));
+    expect(await screen.findByText("codex · openai")).toBeInTheDocument();
+    expect(screen.getByText("team-1")).toBeInTheDocument();
   });
 });
 

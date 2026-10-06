@@ -10,11 +10,12 @@ import logging
 import pytest
 
 from agento.framework.consumer import Consumer
-from agento.framework.execution_hooks import clear as clear_hooks
 from agento.framework.execution_hooks import (
+    RunProfile,
     mint_execution_id,
     register_execution_id_provider,
 )
+from agento.framework.execution_hooks import clear as clear_hooks
 from agento.framework.job_types import clear_job_types, register_job_type
 from agento.modules.conversation.src.hooks import ConversationExecutionIds
 
@@ -94,6 +95,20 @@ def test_the_row_is_not_committed_by_the_provider(conn, provider):
     assert _rows(conn, "SELECT id FROM execution WHERE job_id = %s", (job_id,)) == []
 
 
+def test_the_profile_is_written_on_the_row(conn, provider):
+    job_id = _job(conn)
+
+    mint_execution_id(conn=conn, job_id=job_id, attempt=1, profile=RunProfile(
+        harness="codex", provider="openai", model="gpt-x", credential_id=9))
+    mint_execution_id(conn=conn, job_id=job_id, attempt=2)
+    conn.commit()
+
+    rows = _rows(conn, "SELECT harness, provider, model, credential_id FROM execution "
+                       "WHERE job_id = %s ORDER BY attempt", (job_id,))
+    assert rows == [{"harness": "codex", "provider": "openai", "model": "gpt-x", "credential_id": 9},
+                    {"harness": None, "provider": None, "model": None, "credential_id": None}]
+
+
 def test_with_no_provider_nothing_is_written(conn):
     clear_hooks()
     job_id = _job(conn)
@@ -134,3 +149,11 @@ def test_a_run_stamps_its_execution_id_on_the_capability_it_mints(
     assert len(executions) == 1
     assert capabilities and {c["execution_id"] for c in capabilities} == {
         executions[0]["execution_id"]}
+    # Run details (E9): the attempt records what drove it, read back through list_runs.
+    from agento.modules.conversation.src.service import list_runs
+    with conn.cursor() as cur:
+        cur.execute("UPDATE execution SET conversation_id = 424242 WHERE job_id = %s", (job_id,))
+    conn.commit()
+    [run] = list_runs(conn, conversation_id=424242)
+    assert (run["harness"], run["provider"], run["credential"]) == ("claude", "anthropic", "test-claude")
+

@@ -10,7 +10,8 @@ export interface Thread {
 /** Without `run_details` a row carries only the first five fields (B8). */
 export interface RunRow {
   execution_id: string; attempt: number; status: string; started_at: string | null; finished_at: string | null;
-  job_id?: number; type?: string; agent_type?: string | null; model?: string | null;
+  job_id?: number; type?: string; harness?: string | null; provider?: string | null; credential?: string | null;
+  model?: string | null;
   input_tokens?: number | null; output_tokens?: number | null;
 }
 

@@ -1,11 +1,12 @@
 // Users and grants (PRD E2 §5): admin only. The API enforces the role; this screen only
 // renders what the routes answer.
 import { useState } from "react";
+import { UserCheck, UserX } from "lucide-react";
 import { Avatar, Group, Select, Tabs, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { apiFetch, ApiError, useMutation, useQuery, useQueryClient, useSession, type User } from "@agento/api";
 import {
-  Button, ConfirmDialog, DataTable, EmptyState, FormSection, PageHeader, SelectField, StatusBadge, TextField,
+  Button, ConfirmDialog, IconAction, DataTable, EmptyState, FormSection, PageHeader, SelectField, StatusBadge, TextField,
   type Column,
 } from "@agento/ui";
 import { Grants } from "./Grants";
@@ -77,8 +78,8 @@ function UserTable() {
     { id: "active", header: "Status", sortValue: (u) => (u.is_active ? 1 : 0),
       cell: (u) => <StatusBadge tone={u.is_active ? "info" : "neutral"}>{u.is_active ? "Active" : "Inactive"}</StatusBadge> },
     { id: "actions", header: "Actions", cell: (u) => u.id === me?.id ? null : u.is_active
-      ? <Button variant="danger" onClick={() => setDeactivate(u)}>Deactivate</Button>
-      : <Button disabled={update.isPending} onClick={() => update.mutate({ id: u.id, patch: { is_active: true } })}>Activate</Button> },
+      ? <IconAction danger label="Deactivate" icon={<UserX size={16} />} onClick={() => setDeactivate(u)} />
+      : <IconAction label="Activate" icon={<UserCheck size={16} />} disabled={update.isPending} onClick={() => update.mutate({ id: u.id, patch: { is_active: true } })} /> },
   ];
 
   return (

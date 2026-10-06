@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
+import { Eye } from "lucide-react";
 import { Drawer, Group, SegmentedControl, Stack, Table, Text, TextInput } from "@mantine/core";
 import { useSearchParams } from "react-router";
 import { apiFetch, useQuery } from "@agento/api";
 import {
-  Button, CodeBlock, DataTable, ErrorState, LoadingState, PageHeader, SectionHeader, StatusBadge, Timestamp, type Column,
+  CodeBlock, IconAction, DataTable, ErrorState, LoadingState, PageHeader, SectionHeader, StatusBadge, Timestamp, type Column,
 } from "@agento/ui";
 import { AdminOnly, durationOf, jobTone, message, whole, type JobHead, type JobRow } from "./shared";
 
@@ -26,7 +27,7 @@ export const jobColumns = (open?: (j: JobHead) => void): Column<JobHead>[] => [
   { id: "ref", header: "Reference", cell: (j) => <Text size="sm" lineClamp={2} style={{ overflowWrap: "anywhere" }}>{j.reference_id ?? "—"}</Text>, sortValue: (j) => j.reference_id ?? "" },
   { id: "created", header: "Created", cell: (j) => when(j.created_at), sortValue: (j) => j.created_at ?? "" },
   { id: "duration", header: "Duration", cell: seconds, sortValue: (j) => durationOf(j) ?? -1 },
-  ...(open ? [{ id: "actions", header: "Actions", cell: (j: JobHead) => <Button variant="subtle" onClick={() => open(j)}>Details</Button> }] : []),
+  ...(open ? [{ id: "actions", header: "Actions", cell: (j: JobHead) => <IconAction label="Details" icon={<Eye size={16} />} onClick={() => open(j)} /> }] : []),
 ];
 
 function JobDrawer({ id, onClose }: { id: number | null; onClose: () => void }) {

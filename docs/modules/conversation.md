@@ -19,7 +19,7 @@ the four identifiers and the event contract. This page is the module's operation
 | --- | --- |
 | `conversation` | One thread: its owner, its agent_view, `active` or `archived`. |
 | `message` | One turn. A `user` row carries the job bookkeeping (`job_id`, `execution_id`, `job_state`); a CHECK keeps that off an `assistant` row. |
-| `execution` | One attempt at answering a turn. `execution_id` is unique; `(job_id, attempt)` is **not** — the pool-wait path refunds an attempt, so two real attempts can carry one number. |
+| `execution` | One attempt at answering a turn. `execution_id` is unique; `(job_id, attempt)` is **not** — the pool-wait path refunds an attempt, so two real attempts can carry one number. The mint writes the attempt's harness, provider, model and `credential_id` (an id; the label is read through a join). |
 | `conversation_event` | The append-only log a stream replays. Its `id` is the cursor, and it is global, not per-thread. `UNIQUE (source_kind, source_id)` makes the relay idempotent. |
 | `execution_delta` | Per-execution streamed output, bounded by the `stream/max_delta*` limits. |
 | `conversation_prune_watermark` | How far retention has pruned each thread. |
@@ -62,7 +62,7 @@ tool's input or output) before the per-run byte cap counts it.
 | --- | --- | --- |
 | POST | `/api/conversation/threads` | `201 {id}` |
 | GET | `/api/conversation/threads` | the caller's active threads; `?scope=channels[&channel=<source>][&before=<cursor>]` lists the channel threads instead (admins only, a non-admin gets `[]`), newest activity first, each row with a `cursor` for the next page |
-| GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (model, tokens and job id only with `run_details`) |
+| GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (harness, provider, credential label, model, tokens and job id only with `run_details`) |
 | GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&limit=<n>`: one page of events, oldest first, `{events, has_older, newest_id}`; a `before` at or below the prune watermark is `409 cursor_expired` |
 | DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path) |
 | GET | `/api/conversation/threads/{id}/messages` | its messages |
@@ -93,10 +93,11 @@ removing the role's grant, hides the thread from the next one.
 ### Run details (ACL resource)
 
 The module declares the ACL resource `conversation.run_details` in `di.json`. It covers the trigger
-prompt, tool input and output, and a run's model, tokens and job id. `admin` has it built in; a
+prompt, tool input and output, the error text, and a run's harness, provider, credential label,
+model, tokens and job id. `admin` has it built in; a
 `user` gets it only by a grant on the thread's workspace or view
 (`bin/agento grant:add --role user --operation conversation.run_details --workspace <code>`).
-Tool names, statuses and errors stay visible to everyone who reads the thread.
+Tool names, statuses and the fact of an error stay visible to everyone who reads the thread.
 
 ### Title
 
@@ -204,7 +205,7 @@ refuses a second before `setup:upgrade` applies a single schema change.
 
 | Seam | Implemented by | With none registered |
 | --- | --- | --- |
-| `execution_id_provider` | `ConversationExecutionIds` | the execution id is `None` |
+| `execution_id_provider` | `ConversationExecutionIds` (records the `RunProfile`: harness, provider, model, credential id) | the execution id is `None` |
 | `execution_finalizer` | `ConversationFinalizer` | no finalize write; the transition is today's |
 | `resume_session_resolver` | `ConversationResumeSessions` | the shipped attempt-based resume rule |
 | `execution_delta_sink` | `ConversationDeltaSink` | deltas are discarded |

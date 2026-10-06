@@ -156,13 +156,17 @@ MAX_RUNS = 50
 
 
 def list_runs(conn, *, conversation_id: int) -> list[dict]:
-    """The thread's runs, newest first, with what the job row knows about each."""
+    """The thread's runs, newest first. Harness, provider and credential are the attempt's own
+    (written at mint); the model is the one the CLI reported, else the configured one."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT e.execution_id, e.job_id, e.attempt, e.status, e.started_at, "
-            "       e.finished_at, j.type, j.agent_type, j.model, j.input_tokens, "
-            "       j.output_tokens "
+            "       e.finished_at, j.type, COALESCE(e.harness, j.agent_type) AS harness, "
+            "       COALESCE(e.provider, j.provider) AS provider, "
+            "       COALESCE(j.model, e.model) AS model, c.label AS credential, "
+            "       j.input_tokens, j.output_tokens "
             "FROM execution e LEFT JOIN job j ON j.id = e.job_id "
+            "LEFT JOIN credential c ON c.id = e.credential_id "
             "WHERE e.conversation_id = %s ORDER BY e.id DESC LIMIT %s",
             (conversation_id, MAX_RUNS))
         return list(cur.fetchall())

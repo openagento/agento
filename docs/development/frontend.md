@@ -59,6 +59,11 @@ npm test            # build, lint, then every unit test and every story in headl
   in a fixed `en-US` locale and the configured zone) from the `DisplayFormatProvider` that the
   panel fills from the session's `display` ([admin.md](../modules/admin.md)). With no provider it
   shows `toLocaleString()`. Do not call `toLocaleString` or `Intl.DateTimeFormat` in a screen.
+- **An action is an icon with a title (UI-7).** A row, header or copy action is `IconAction`
+  (`ArchiveAction`, `CopyButton`): a lucide icon in a Mantine `ActionIcon` inside a `Tooltip`, its
+  name as the title and the `aria-label` (tests find it by name, as before), `danger` for a
+  destructive one. A form submit, a dialog footer, a state's Retry and a page's create action stay
+  text `Button`s.
 - **A `DataTable` cell is a plain function, called on each render.** Do not render it as a component:
   a new component type per render remounts the cell, and an open select in it closes.
 - **No credential in the UI.** The CSRF token lives in a module closure in `session.ts`: never in
@@ -105,7 +110,8 @@ npm test            # build, lint, then every unit test and every story in headl
   status line under the newest turn says Queued / Starting / Thinking / Running `<tool>`. A tool
   call is one line from `tools.ts` (`toolSummary`): the verb and its argument, or the verb alone
   for a reader without `conversation.run_details` (the server strips the input). Run details
-  (`RunInfo`) show only when the thread's `run_details` is true; the job link only for an admin. A
+  (`RunInfo`: status, attempt, harness · provider, credential, model, tokens, job) show only when
+  the thread's `run_details` is true; the job link only for an admin. A
   channel run starts with an incoming message "From `<source>` · `<reference>`"; its trigger text
   only when the server sent `prompt`. The composer always takes typing; only Send waits.
 - **One teardown.** Logout, the first 401 and a new login call `endSession()`: it clears the query

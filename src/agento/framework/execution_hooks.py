@@ -14,16 +14,28 @@ the transition that produced them - and the framework itself writes no module ta
 """
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
+
+
+@dataclass(frozen=True)
+class RunProfile:
+    """What drives one attempt: ids and a model name, never a credential value (SEC-6)."""
+
+    harness: str
+    provider: str
+    model: str | None
+    credential_id: int | None
 
 
 @runtime_checkable
 class ExecutionIdProvider(Protocol):
     """Mints the id one attempt is known by. Returns None to decline this run."""
 
-    def mint(self, *, conn, job_id: int, attempt: int) -> str | None: ...
+    def mint(self, *, conn, job_id: int, attempt: int,
+             profile: RunProfile | None = None) -> str | None: ...
 
 
 @runtime_checkable
@@ -129,10 +141,15 @@ def clear() -> None:
         slot.clear()
 
 
-def mint_execution_id(*, conn, job_id: int, attempt: int) -> str | None:
+def mint_execution_id(*, conn, job_id: int, attempt: int,
+                      profile: RunProfile | None = None) -> str | None:
     provider = _EXECUTION_ID_PROVIDER.get()
     if provider is None:
         return None
+    # `profile` came after the seam shipped: a provider without the parameter still mints
+    # (CODE-3 signature check), it only records no profile.
+    if profile is not None and "profile" in inspect.signature(provider.mint).parameters:
+        return provider.mint(conn=conn, job_id=job_id, attempt=attempt, profile=profile)
     return provider.mint(conn=conn, job_id=job_id, attempt=attempt)
 
 
