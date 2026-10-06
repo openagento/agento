@@ -95,7 +95,7 @@ panel page                      web                                  proxy / app
 - The retention lock is the one the toolbox prune takes, so a launch never pins a version the
   prune is deleting ([../modules/versioned-artifacts.md](../modules/versioned-artifacts.md)).
   Busy for 5 s: `503`.
-- The redeem does not need the proxy secret: the exchange code is the credential.
+- The redeem does not need the proxy secret: the exchange code is the credential. It needs the exact panel `Origin`. It does not check `Sec-Fetch-Site`: panel and apps can be two sites (`panel.localhost` and `apps.localhost` are), so the browser sends `cross-site`.
 - A 403 from `/internal/authz/app` clears every presented launch cookie whose launch is no longer
   live. Caddy returns the deny response, headers included, to the client (measured).
 - A version that is not an activated miniapp gets the no-manifest constants in `launch`:
@@ -103,7 +103,7 @@ panel page                      web                                  proxy / app
   action. An activated one pins its fingerprint and actions; see
   [../modules/miniapps.md](../modules/miniapps.md). A toolbox failure while reading the spec is
   `503`, never a files-only guess.
-- `GET /api/agent-views/<id>/miniapps` lists the activated miniapps the user may launch there.
+- `GET /api/agent-views/<id>/miniapps` lists the activated miniapps the user may launch there. A reachable view without `artifact.launch` answers an empty list, not 404: the view is already in the user's list.
 
 ## Roles and grants
 
