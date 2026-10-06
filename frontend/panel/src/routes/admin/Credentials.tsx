@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Ban, ChartColumn, Eraser, LogIn } from "lucide-react";
 import { Anchor, Drawer, Group, Modal, Progress, Stack, Table, Text, Tooltip } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { apiFetch, useMutation, useQuery, useQueryClient } from "@agento/api";
 import {
-  Button, ConfirmDialog, CopyButton, DataTable, PageHeader, StatusBadge, TextField, Timestamp, type Column,
+  Button, ConfirmDialog, CopyButton, DataTable, IconAction, PageHeader, StatusBadge, TextField, Timestamp, type Column,
 } from "@agento/ui";
 import { AdminOnly, CREDENTIAL_ERROR_HINT, message, whole } from "./shared";
 
@@ -231,10 +232,10 @@ export function Credentials() {
     { id: "free", header: "Free", sortValue: minFree, cell: (c) => <FreeCell c={c} /> },
     { id: "actions", header: "Actions", cell: (c) => (
       <Group gap="xs" wrap="nowrap">
-        <Button variant="subtle" onClick={() => setDetail(c)}>Usage</Button>
-        {c.enabled && c.type === "oauth" && <Button onClick={() => beginLogin(c)}>Re-login</Button>}
-        {inError(c) && <Button onClick={() => setAction({ kind: "clear-error", credential: c })}>Clear error</Button>}
-        {c.enabled && <Button variant="danger" onClick={() => setAction({ kind: "disable", credential: c })}>Disable</Button>}
+        <IconAction label="Usage" icon={<ChartColumn size={16} />} onClick={() => setDetail(c)} />
+        {c.enabled && c.type === "oauth" && <IconAction label="Re-login" icon={<LogIn size={16} />} onClick={() => beginLogin(c)} />}
+        {inError(c) && <IconAction label="Clear error" icon={<Eraser size={16} />} onClick={() => setAction({ kind: "clear-error", credential: c })} />}
+        {c.enabled && <IconAction danger label="Disable" icon={<Ban size={16} />} onClick={() => setAction({ kind: "disable", credential: c })} />}
       </Group>
     ) },
   ];

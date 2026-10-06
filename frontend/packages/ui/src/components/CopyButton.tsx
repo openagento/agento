@@ -1,15 +1,15 @@
-import { useState } from "react";
-import { Button } from "./Button";
+import { CopyButton as MantineCopyButton } from "@mantine/core";
+import { Check, Copy } from "lucide-react";
+import { IconAction } from "./IconAction";
 
+/** Copies `value`. An icon whose title says "Copied" for a moment after the click. */
 export function CopyButton({ value, label = "Copy" }: { value: string; label?: string }) {
-  const [status, setStatus] = useState("");
   return (
-    <>
-      <Button variant="subtle" onClick={async () => {
-        try { await navigator.clipboard.writeText(value); setStatus("Copied"); }
-        catch { setStatus("Copy failed"); }
-      }}>{label}</Button>
-      <span className="ag-visually-hidden" role="status">{status}</span>
-    </>
+    <MantineCopyButton value={value} timeout={1500}>
+      {({ copied, copy }) => (
+        <IconAction label={copied ? "Copied" : label} onClick={copy}
+          icon={copied ? <Check size={16} /> : <Copy size={16} />} />
+      )}
+    </MantineCopyButton>
   );
 }
