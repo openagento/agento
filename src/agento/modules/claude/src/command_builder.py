@@ -30,6 +30,9 @@ class ClaudeCommandBuilder:
             *_MCP_FLAGS,
             "--output-format", "stream-json",
             "--verbose",
+            # Live text for the conversation timeline (E9 chat UX); --pretty and the
+            # output parser ignore the extra `stream_event` lines.
+            "--include-partial-messages",
         ]
         model = req.model or ctx.model
         if model:

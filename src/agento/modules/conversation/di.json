@@ -87,5 +87,11 @@
     "resume_session_resolver": "src.hooks.ConversationResumeSessions",
     "execution_finalizer": "src.finalizer.ConversationFinalizer",
     "execution_delta_sink": "src.deltas.ConversationDeltaSink"
-  }
+  },
+  "acl_resources": [
+    {
+      "id": "conversation.run_details",
+      "title": "See run details: prompts, tool input and output, model, tokens, job links"
+    }
+  ]
 }

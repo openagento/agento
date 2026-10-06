@@ -141,7 +141,8 @@ def test_a_timeline_page_costs_the_same_reads_whatever_its_length(conn, world, s
 
     def page():
         rows, _ = service.list_timeline(conn, conversation_id=cid, before_id=None, limit=100)
-        service.project_events(conn, rows, world["admin"])
+        service.project_events(conn, rows, world["admin"],
+                               service.load_visible(conn, conversation_id=cid, user=world["admin"]))
 
     selects.clear()
     page()

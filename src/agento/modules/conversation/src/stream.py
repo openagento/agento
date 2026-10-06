@@ -160,12 +160,13 @@ def _tick(conn, *, conversation_id, session_token, cursor, slot, poll, heartbeat
         session = sessions.lookup_session(conn, session_token)
         if session is None:
             return
-        if service.load_visible(conn, conversation_id=conversation_id,
-                                user=session.user) is None:
+        conversation = service.load_visible(conn, conversation_id=conversation_id,
+                                            user=session.user)
+        if conversation is None:
             return
         rows = service.list_events(conn, conversation_id=conversation_id,
                                    after_id=cursor, limit=page)
-        for event in service.project_events(conn, rows, session.user):
+        for event in service.project_events(conn, rows, session.user, conversation):
             cursor = event["id"]
             yield event_frame(event)
         if rows:

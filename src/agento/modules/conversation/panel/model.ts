@@ -7,14 +7,15 @@ export interface Thread {
   updated_at: string | null; channel: string; external_ref: string | null; last_activity_at: string | null; live: boolean;
 }
 
+/** Without `run_details` a row carries only the first five fields (B8). */
 export interface RunRow {
-  execution_id: string; job_id: number; attempt: number; status: string; started_at: string | null;
-  finished_at: string | null; type: string; agent_type: string | null; model: string | null;
-  input_tokens: number | null; output_tokens: number | null;
+  execution_id: string; attempt: number; status: string; started_at: string | null; finished_at: string | null;
+  job_id?: number; type?: string; agent_type?: string | null; model?: string | null;
+  input_tokens?: number | null; output_tokens?: number | null;
 }
 
-/** The newest runs come first. */
-export interface ThreadDetail extends Thread { runs: RunRow[] }
+/** The newest runs come first. `run_details`: the reader holds `conversation.run_details`. */
+export interface ThreadDetail extends Thread { runs: RunRow[]; run_details?: boolean }
 
 /** Events oldest first. */
 export interface TimelinePage { events: StreamEvent[]; has_older: boolean; newest_id: number | null }
@@ -44,4 +45,15 @@ export function turnState(rows: Message[], index: number, streaming: boolean): J
   const end = next.findIndex((r) => r.role === "user");
   const answered = (end === -1 ? next : next.slice(0, end)).some((r) => r.role === "assistant");
   return answered ? "succeeded" : "failed";
+}
+
+export const DAY_GROUPS = ["Today", "Yesterday", "Previous 7 days", "Older"] as const;
+
+/** The list group of a thread's last activity, by the reader's local calendar day. */
+export function dayGroup(iso: string | null, now = new Date()): (typeof DAY_GROUPS)[number] {
+  if (!iso) return "Older";
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const day = (n: number) => new Date(start.getFullYear(), start.getMonth(), start.getDate() - n).getTime();
+  const t = Date.parse(iso);
+  return t >= day(0) ? "Today" : t >= day(1) ? "Yesterday" : t >= day(7) ? "Previous 7 days" : "Older";
 }

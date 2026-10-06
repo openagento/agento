@@ -155,6 +155,14 @@ either stops the deltas for that execution and records **one** `truncated` marke
 truncation on one execution are two distinct events. **The final assistant message is never
 truncated**: a cap on the live stream is not a cap on the answer.
 
+**Partials and the budget.** Partial rows count against the same caps, but the sink stops taking
+partials once a run has used half of either cap, without a marker, so the complete fragments
+(answer, tools, errors) of a long streaming run always have room. Live text at scale: 250 parallel
+runs commit in a handful of transactions a second, each takes one row lock per thread in ascending
+id, and no statement takes a table lock (`innodb_autoinc_lock_mode=2`), so runs never wait on one
+another's AUTO_INCREMENT. `tests/integration/test_delta_scale.py` asserts the transaction rate,
+the commit delay (p95 ≤ 1 s, max ≤ 2 s), order and no loss (RULES.md SCL-1).
+
 The writer thread is reconciled on every `bootstrap()`, and the key is **the declaration**
 (`module name`, declared class path), never the object — the loader builds a new sink on every
 pass and the consumer bootstraps every idle poll tick, so keying on identity would restart the
@@ -183,8 +191,10 @@ and, on success, the answer (`assistant.message`). Channel threads are read-only
 only (DECISIONS.md D-E9-3).
 
 **The vocabulary.** A harness's `StreamEventMapper` turns its stdout into canonical fragments:
-`assistant.text`, `tool.started`, `tool.completed`, `error`, plus the markers `gap` and `truncated`
-(see [harness-contract.md](harness-contract.md#adding-live-timeline-events)). The sink stores the
+`assistant.text`, `assistant.reasoning`, `tool.started`, `tool.completed`, `error`, the
+coalesced live kinds `assistant.partial` and `reasoning.partial`, plus the markers `gap` and
+`truncated` (see [harness-contract.md](harness-contract.md#adding-live-timeline-events)). A reader
+shows a partial row until the complete fragment of its kind arrives in the same run, then drops it. The sink stores the
 kind as the event kind, with payload `{seq, text, tool_name, data}`. Older rows say
 `assistant.delta`; a reader treats them as `assistant.text`.
 
@@ -197,8 +207,11 @@ the `message` insert, whose FK check would otherwise take a shared lock first an
 
 **One projection.** `service.project_events` builds the client shape for the timeline, the replay
 and the stream: it fills `message.created` with the message text, and `run.started` with the
-job's prompt (admins only), one query each per page. It drops tool `data.input` / `data.output`
-for a non-admin.
+job's prompt, one query each per page. The prompt and tool `data.input` / `data.output` are
+**run details**: an admin sees them, and another role only with the `conversation.run_details`
+grant on the thread's workspace or view (`service.can_see_run_details`, DECISIONS.md D-E9-6).
+`GET …/threads/{id}` says `run_details: true|false`; without it each run keeps its fields
+`execution_id`, `status`, `attempt`, `started_at`, `finished_at` and omits model, tokens and job id.
 
 **The timeline route.** `GET …/threads/{id}/timeline?before=<id>` pages back from the newest
 event; the panel then opens the stream with `?after=<newest_id>`, so the page and the stream leave

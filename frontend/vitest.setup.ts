@@ -14,4 +14,9 @@ if (!window.matchMedia) {
 // jsdom has no ResizeObserver; the Mantine Select (combobox) observes its dropdown.
 window.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
 
+// jsdom has no FontFaceSet; the Mantine Textarea (autosize) listens for loaded fonts.
+if (!document.fonts) {
+  Object.defineProperty(document, "fonts", { value: { addEventListener() {}, removeEventListener() {} } });
+}
+
 afterEach(() => cleanup());

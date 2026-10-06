@@ -117,6 +117,10 @@ def test_a_valid_route_declaration_passes(tmp_path: Path):
     ({"routes": "/api/x"}, "'routes' must be a list"),
     ({"execution_hooks": []}, "'execution_hooks' must be an object"),
     ({"execution_hooks": {"sink": 5}}, "must map a string seam"),
+    ({"acl_resources": {}}, "'acl_resources' must be a list"),
+    ({"acl_resources": [{"id": "other.run", "title": "x"}]}, "needs an id 'shapes.<name>'"),
+    ({"acl_resources": [{"id": "shapes.Run", "title": "x"}]}, "needs an id 'shapes.<name>'"),
+    ({"acl_resources": [{"id": "shapes.run"}]}, "and a title"),
 ])
 def test_a_malformed_declaration_is_refused_not_ignored(tmp_path: Path, di, expected):
     """PLN-3. The three readers mirror the LOADER, which is lenient so a bad manifest cannot
@@ -130,7 +134,8 @@ def test_a_malformed_declaration_is_refused_not_ignored(tmp_path: Path, di, expe
     assert any(expected in e for e in validate_module(mod)), "module:validate must surface it"
 
 
-@pytest.mark.parametrize("di", [{}, {"job_types": []}, {"routes": []}, {"execution_hooks": {}}])
+@pytest.mark.parametrize("di", [{}, {"job_types": []}, {"routes": []}, {"execution_hooks": {}},
+                                {"acl_resources": [{"id": "fine.run_details", "title": "Run"}]}])
 def test_an_absent_or_empty_declaration_is_not_an_error(tmp_path: Path, di):
     """Present means checked; absent means absent. A key nobody wrote is not a violation."""
     assert declaration_shape_errors(_module(tmp_path, "fine", di), {}) == []

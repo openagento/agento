@@ -191,9 +191,18 @@ Known gaps, each deliberate:
   - Channel threads for non-admins through role grants, a `conversation:raw` permission split,
     and full-text search (D-E9-3 is a proposal the owner has not decided).
   - Writing into a channel thread from the panel (reply to Jira/Outlook, resume a channel run).
-  - Token-level partial deltas (`--include-partial-messages`) and a coalescer.
   - Per-harness feature flags (disabling a module or shipping no mapper is the off switch today).
   - Long-polling: the REST poll stays the fallback.
+- **E9 chat UX left out (2026-10-06).** The chat UX pass shipped token streaming for claude and pi
+  (coalesced partials), the reasoning fragment, tool summaries, the status line, the
+  `conversation.run_details` ACL resource and server titles. Left out:
+  - A Stop button and edit-and-resend (they need the E7 stop request), and regenerate.
+  - Per-user grants (grants stay per role).
+  - Lighter Markdown tables (they need `.ag-prose` and a new kit version).
+  - Codex token streaming: `codex exec --json` sends no partial text.
+  - Deleting partial rows after a run: retention prunes them with the rest of the thread.
+  - Claude reasoning text: the claude CLI sends thinking blocks with empty text, so the panel
+    shows "Thought" with no body until the CLI gives a way to show it.
 - **The `§4.5` audit ordering is E7's.** The framework's audit writer must be called from inside
   `service.unblock()`'s transaction, not from an observer and not with module SQL.
 
@@ -251,6 +260,15 @@ A minimal but real control plane so operators can create workspaces and agent_vi
 ### ⚪ Credential broker / key vault
 
 A dedicated broker service that owns secret storage: admin writes secrets, toolbox reads them with scoped broker tokens, and agent-execution runtimes never get direct vault access by default. Config stores secret references rather than raw values, and external backends like Azure Key Vault stay optional adapters, not MVP requirements.
+
+### ⚪ Multi-language platform
+
+The admin panel, the TUI and the agent output in more than one language. Today the panel and the
+CLI speak English and the prompts that conversations and channels send to the agent are Polish
+(`=== WĄTEK ===`, `Użytkownik`/`Asystent` in `modules/conversation/src/workflow.py`); the owner
+keeps them Polish until this milestone (2026-10-06). Scope: message catalogues for the panel and
+`system.json` labels, a per-user UI locale, and prompt templates per locale. The agent's reply
+language is the [Response locale policy](#-response-locale-policy) below.
 
 ### ⚪ Response locale policy
 

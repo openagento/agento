@@ -9,6 +9,7 @@ export type StreamState = "connecting" | "live" | "reconnecting" | "refused";
 /** Every kind the stream sends. A frame is a named SSE event, and the browser drops a name
  *  nobody listens for, so a new kind must be added here. */
 const STREAM_KINDS = ["message.created", "assistant.message", "assistant.text", "assistant.delta",
+  "assistant.partial", "reasoning.partial", "assistant.reasoning",
   "tool.started", "tool.completed", "tool.called", "error", "gap", "truncated", "run.started", "run.finished",
   "job.queued", "job.claimed", "job.failed", "job.deferred"];
 

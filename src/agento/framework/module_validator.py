@@ -229,6 +229,23 @@ def route_declarations(module_dir: Path, manifest: dict) -> list[dict]:
     return declared if isinstance(declared, list) else []
 
 
+ACL_RESOURCE_ID = re.compile(r"^[a-z_]+\.[a-z_]+$")
+
+
+def acl_resource_declarations(module_dir: Path, manifest: dict) -> dict[str, str]:
+    """``{id: title}`` of the ACL resources a module declares (Magento ``acl.xml``).
+
+    A resource is an operation an admin may grant to another role; admin has it built in.
+    Malformed entries read as absent, like the readers above; validation reports them.
+    """
+    declared = effective_declarations(module_dir, manifest).get("acl_resources")
+    if not isinstance(declared, list):
+        return {}
+    return {d["id"]: d["title"] for d in declared
+            if isinstance(d, dict) and isinstance(d.get("id"), str) and isinstance(d.get("title"), str)
+            and ACL_RESOURCE_ID.match(d["id"])}
+
+
 def declaration_shape_errors(module_dir: Path, manifest: dict) -> list[str]:
     """The CONTAINER and element types of the three declaration keys, when each is present.
 
@@ -251,6 +268,17 @@ def declaration_shape_errors(module_dir: Path, manifest: dict) -> list[str]:
                        for v in declared if not (isinstance(v, str) and v)]
     if "routes" in provides and not isinstance(provides["routes"], list):
         errors.append("di.json: 'routes' must be a list of route declarations")
+    if "acl_resources" in provides:
+        declared = provides["acl_resources"]
+        prefix = f"{manifest.get('name') or Path(module_dir).name}."
+        if not isinstance(declared, list):
+            errors.append("di.json: 'acl_resources' must be a list of {id, title}")
+        else:
+            errors += [f"di.json: acl resource {d!r} needs an id '{prefix}<name>' and a title"
+                       for d in declared
+                       if not (isinstance(d, dict) and isinstance(d.get("id"), str)
+                               and ACL_RESOURCE_ID.match(d["id"]) and d["id"].startswith(prefix)
+                               and isinstance(d.get("title"), str) and d["title"].strip())]
     if "execution_hooks" in provides:
         declared = provides["execution_hooks"]
         if not isinstance(declared, dict):

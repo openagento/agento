@@ -82,3 +82,13 @@ def test_the_adapter_exposes_the_mapper():
     mapper = CodexHarnessAdapter().stream_event_mapper
     assert isinstance(mapper, CodexStreamEventMapper)
     assert isinstance(mapper, StreamEventMapper)
+
+
+def test_a_reasoning_summary_maps_to_reasoning():
+    """codex 0.160 with `-c model_reasoning_summary=auto` (spike 2026-10-06)."""
+    item = {"id": "item_2", "type": "reasoning", "text": "**Plan**\n\nSort first."}
+    mapper = CodexStreamEventMapper()
+
+    assert mapper.map_event({"type": "item.started", "item": item}) is None
+    assert mapper.map_event({"type": "item.completed", "item": item}) == {
+        "kind": "assistant.reasoning", "text": "**Plan**\n\nSort first."}

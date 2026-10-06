@@ -19,11 +19,26 @@ class PiStreamEventMapper:
         tool_name = str(event.get("toolName") or "")
         call_id = str(event.get("toolCallId") or "")
 
+        if kind == "message_update":
+            # Live text: delta-only events, sent before the message's `message_end`, which
+            # supersedes them (docs/json.md of the pinned pi; plan F20).
+            update = event.get("assistantMessageEvent")
+            delta = update.get("delta") if isinstance(update, dict) else None
+            if not isinstance(delta, str):
+                return None
+            partial = {"text_delta": "assistant.partial", "thinking_delta": "reasoning.partial"}
+            return {"kind": partial[update["type"]], "text": delta} \
+                if update.get("type") in partial else None
+
         if kind == "message_end":
             message = event.get("message")
             if not isinstance(message, dict) or message.get("role") != "assistant":
                 return None
-            out: list[dict] = []
+            out: list[dict] = [
+                {"kind": "assistant.reasoning", "text": block["thinking"]}
+                for block in message.get("content") or []
+                if isinstance(block, dict) and block.get("type") == "thinking"
+                and isinstance(block.get("thinking"), str)]
             if text := message_text(message):
                 out.append({"kind": "assistant.text", "text": text})
             if error := message.get("errorMessage"):

@@ -414,6 +414,18 @@ of a defective helper. It puts the whole repo in scope, including files the diff
 every instance and the search that found them. The fixer sweeps the whole class and adds one guard
 test for it.
 
+## SCL — Scale
+
+**SCL-1 Parallel runs (P1).** The target is 100–200 jobs running at the same time in one
+deployment (`AGENTO_CONSUMER_MAX_WORKERS`). A change to a per-run hot path (claim, delta, event,
+credential, capability) adds no lock, counter row or serial step that all runs share. Per-run
+writes are batched or coalesced, so the write rate does not grow with the token rate. One
+transaction takes its row locks in one order (ascending id) and never a table lock. Every per-run
+buffer and queue has a size bound and says what it drops when full. The change comes with a test at
+`CONCURRENT_WORKERS_STRESS_TEST` scale (`tests/integration/conftest.py`, 100) or larger that
+asserts the bound, not only that the runs pass (`tests/integration/test_delta_scale.py` runs
+250). Owner: 2026-10-06.
+
 ## UI — Panel and miniapp kit
 
 Scope: `frontend/**` and `src/agento/modules/*/panel/**`.

@@ -15,3 +15,7 @@ export { DataTable, type Column } from "./components/DataTable";
 export { ConfirmDialog } from "./components/ConfirmDialog";
 export { FormSection, TextField, SelectField } from "./components/Form";
 export { ConnectionStatus, type ConnectionState } from "./components/ConnectionStatus";
+export {
+  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, RunInfo, ToolCall, ToolGroup,
+} from "./components/Chat";
+export { MenuButton, SplitView, ThreadList, type ThreadLink } from "./components/ChatShell";
