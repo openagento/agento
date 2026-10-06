@@ -1,23 +1,23 @@
 // One live stream, for the conversation on screen (PRD E8 §9). The browser's EventSource
 // reconnects by itself and sends `Last-Event-ID`; the hub adds only what it cannot do:
 // a pruned cursor reopens with no cursor, a refused stream is not retried in a loop, and
-// logout or `pagehide` closes everything. Persisted state is never built from the stream:
-// `onResync` and persisted kinds tell the caller to refetch over REST.
+// logout or `pagehide` closes everything. `onResync` tells the caller to refetch over REST.
 import { onEndSession } from "./session";
 
 export type StreamState = "connecting" | "live" | "reconnecting" | "refused";
 
-/** Kinds that mark a persisted change: refetch, never append. */
-export const PERSISTED_KINDS = ["message.created", "assistant.message", "job.queued", "job.claimed",
-  "job.failed", "job.deferred"] as const;
-/** Kinds that exist only in the stream (the in-flight text and tool rows). */
-export const TRANSIENT_KINDS = ["assistant.delta", "tool.called"] as const;
+/** Every kind the stream sends. A frame is a named SSE event, and the browser drops a name
+ *  nobody listens for, so a new kind must be added here. */
+const STREAM_KINDS = ["message.created", "assistant.message", "assistant.text", "assistant.delta",
+  "tool.started", "tool.completed", "tool.called", "error", "gap", "truncated", "run.started", "run.finished",
+  "job.queued", "job.claimed", "job.failed", "job.deferred"];
 
 export interface StreamEvent {
   id: number;
   kind: string;
   execution_id: string | null;
   payload: Record<string, unknown>;
+  created_at?: string | null;
 }
 
 export interface StreamHandlers {
@@ -40,15 +40,19 @@ export function backoff(attempt: number, random = Math.random): number {
 export class EventSourceHub {
   private es: EventSource | null = null;
   private threadId: string | null = null;
+  /** The newest id delivered (or the caller's page): a reopen by the hub resumes there. */
+  private after: number | undefined;
   private handlers: StreamHandlers | null = null;
   private attempt = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly create: (url: string) => EventSource = (url) => new EventSource(url)) {}
 
-  open(threadId: string | number, handlers: StreamHandlers): void {
+  /** `after`: the newest event id the caller already holds, so the stream leaves no window. */
+  open(threadId: string | number, handlers: StreamHandlers, after?: number): void {
     this.close();
     this.threadId = String(threadId);
+    this.after = after;
     this.handlers = handlers;
     this.attempt = 0;
     this.connect();
@@ -74,7 +78,8 @@ export class EventSourceHub {
   private connect(): void {
     const h = this.handlers;
     if (!h || !this.threadId) return;
-    const es = this.create(`/api/conversation/threads/${encodeURIComponent(this.threadId)}/events/stream`);
+    const query = this.after === undefined ? "" : `?after=${this.after}`;
+    const es = this.create(`/api/conversation/threads/${encodeURIComponent(this.threadId)}/events/stream${query}`);
     this.es = es;
     h.onState("connecting");
     const current = () => this.es === es;
@@ -97,14 +102,18 @@ export class EventSourceHub {
     };
     const deliver = (m: MessageEvent) => {
       if (!current()) return;
-      try { h.onEvent(JSON.parse(m.data) as StreamEvent); } catch { /* a malformed frame is dropped */ }
+      let e: StreamEvent;
+      try { e = JSON.parse(m.data) as StreamEvent; } catch { return; /* a malformed frame is dropped */ }
+      if (typeof e.id === "number" && e.id > (this.after ?? 0)) this.after = e.id;
+      h.onEvent(e);
     };
-    for (const kind of [...PERSISTED_KINDS, ...TRANSIENT_KINDS]) es.addEventListener(kind, deliver as EventListener);
+    for (const kind of STREAM_KINDS) es.addEventListener(kind, deliver as EventListener);
     es.addEventListener("cursor_expired", () => {
       if (!current()) return;
       // The cursor was pruned: a new EventSource carries no Last-Event-ID, so it starts at
       // the newest event; `onopen` then makes the caller refetch the snapshot.
       es.close();
+      this.after = undefined;
       this.connect();
     });
   }

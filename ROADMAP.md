@@ -177,8 +177,23 @@ Known gaps, each deliberate:
   writes to `job` directly from the toolbox, so a job scheduled by a tool never reaches
   `publish_service` and never dispatches `job_publish_after`. Nothing relays it into a thread. Give
   the toolbox a publish path that goes through the framework, or have it write the outbox row too.
-- **Nothing streams live deltas yet.** No shipped harness declares a `stream_event_mapper`, so the
-  `§8.2` seam is registered and unused — every run falls back to `§8.1`'s per-event behaviour.
+- **E9 left out (PRD `E9-conversations-deep-research-report.md`).** E9 shipped the live path:
+  a `stream_event_mapper` per harness, channel threads for every non-panel job, the timeline
+  route and the panel timeline ([docs/architecture/conversations.md](docs/architecture/conversations.md)).
+  Deferred, each with its PRD section:
+  - `SessionReader`: import of native session files (`~/.claude/projects`, codex rollouts, pi
+    sessions), lazy backfill and "discover unmanaged sessions" ("Historical read-through
+    fallback"). Runs before E9 keep their stored messages only.
+  - Pi branch UI and the `native_parent_id` tree ("Pi branches").
+  - Replay mode at 0.5×/1×/2× ("Replay").
+  - Row virtualization past 100k events (the panel keeps at most 5000 loaded events).
+  - Metrics and OpenTelemetry counters ("Observability").
+  - Channel threads for non-admins through role grants, a `conversation:raw` permission split,
+    and full-text search (D-E9-3 is a proposal the owner has not decided).
+  - Writing into a channel thread from the panel (reply to Jira/Outlook, resume a channel run).
+  - Token-level partial deltas (`--include-partial-messages`) and a coalescer.
+  - Per-harness feature flags (disabling a module or shipping no mapper is the off switch today).
+  - Long-polling: the REST poll stays the fallback.
 - **The `§4.5` audit ordering is E7's.** The framework's audit writer must be called from inside
   `service.unblock()`'s transaction, not from an observer and not with module SQL.
 

@@ -264,6 +264,66 @@ Monospace block for code, ids or JSON. Scrolls sideways; never wraps a long toke
   border-radius: var(--ag-radius-sm);
 }
 
+/* @catalogue .ag-prose
+Formatted text: headings, paragraphs, links, lists, inline code, code blocks, tables, quotes and rules. The panel shows an agent's Markdown with the same look.
+The kit does not parse Markdown: write the HTML inside `.ag-prose` yourself, and set user text with `textContent`. Not copied: `<mark>`, `<kbd>` and `<details>` keep the browser look.
+<div class="ag-prose"><h2>Summary</h2><p>The import <strong>finished</strong>. Run <code>bin/agento replay 42</code>.</p><ul><li>120 rows read</li></ul><pre><code>{"ok": true}</code></pre></div>
+<div class="ag-prose"><table><thead><tr><th>Step</th><th>State</th></tr></thead><tbody><tr><td>Read</td><td>done</td></tr></tbody></table><blockquote><p>Next run at 02:00.</p></blockquote></div>
+*/
+/* Mantine's Typography.css selectors, so the specificity (which margin wins) is the same too. */
+.ag-prose :first-child { margin-top: 0; }
+.ag-prose :last-child { margin-bottom: 0; }
+.ag-prose :where(h1, h2, h3, h4, h5, h6) { margin-bottom: var(--ag-spacing-xs); text-wrap: wrap; font-family: var(--ag-font-family-headings); }
+.ag-prose :where(h1) { margin-top: calc(1.5 * var(--ag-spacing-xl)); font-size: var(--ag-h1-font-size); line-height: var(--ag-h1-line-height); font-weight: var(--ag-h1-font-weight); }
+.ag-prose :where(h2) { margin-top: var(--ag-spacing-xl); font-size: var(--ag-h2-font-size); line-height: var(--ag-h2-line-height); font-weight: var(--ag-h2-font-weight); }
+.ag-prose :where(h3) { margin-top: calc(0.8 * var(--ag-spacing-xl)); font-size: var(--ag-h3-font-size); line-height: var(--ag-h3-line-height); font-weight: var(--ag-h3-font-weight); }
+.ag-prose :where(h4) { margin-top: calc(0.8 * var(--ag-spacing-xl)); font-size: var(--ag-h4-font-size); line-height: var(--ag-h4-line-height); font-weight: var(--ag-h4-font-weight); }
+.ag-prose :where(h5) { margin-top: calc(0.5 * var(--ag-spacing-xl)); font-size: var(--ag-h5-font-size); line-height: var(--ag-h5-line-height); font-weight: var(--ag-h5-font-weight); }
+.ag-prose :where(h6) { margin-top: calc(0.5 * var(--ag-spacing-xl)); font-size: var(--ag-h6-font-size); line-height: var(--ag-h6-line-height); font-weight: var(--ag-h6-font-weight); }
+.ag-prose :where(img) { max-width: 100%; margin-bottom: var(--ag-spacing-xs); }
+.ag-prose :where(p) { margin-top: 0; margin-bottom: var(--ag-spacing-lg); }
+/* Underlined, unlike Mantine's default: color alone fails WCAG in dark mode (Markdown.module.css). */
+.ag-prose :where(a) { color: var(--ag-color-link); text-decoration: underline; }
+.ag-prose :where(hr) { margin-top: var(--ag-spacing-md); margin-bottom: var(--ag-spacing-md); border: 0; border-top: 1px solid var(--ag-color-rule); }
+.ag-prose :where(pre) {
+  padding: var(--ag-spacing-xs);
+  line-height: var(--ag-line-height);
+  margin: 0;
+  margin-top: var(--ag-spacing-md);
+  margin-bottom: var(--ag-spacing-md);
+  overflow-x: auto;
+  font-family: var(--ag-font-mono);
+  font-size: var(--ag-font-size-xs);
+  background-color: var(--ag-color-pre-background);
+  border-radius: var(--ag-radius-sm);
+}
+.ag-prose :where(pre) :where(code) { background-color: transparent; padding: 0; border-radius: 0; color: inherit; border: 0; }
+.ag-prose :where(code) {
+  line-height: var(--ag-line-height);
+  padding: 1px 5px;
+  border-radius: var(--ag-radius-sm);
+  font-family: var(--ag-font-mono);
+  font-size: var(--ag-font-size-xs);
+  color: var(--ag-color-code);
+  background-color: var(--ag-color-code-background);
+}
+.ag-prose :where(ul, ol):not([data-type="taskList"]) { margin-bottom: var(--ag-spacing-md); padding-inline-start: var(--ag-spacing-xl); list-style-position: outside; }
+.ag-prose :where(table) { width: 100%; border-collapse: collapse; caption-side: bottom; margin-bottom: var(--ag-spacing-md); }
+.ag-prose :where(table) :where(caption) { margin-top: var(--ag-spacing-xs); font-size: var(--ag-font-size-sm); color: var(--ag-color-text-muted); }
+.ag-prose :where(table) :where(th) { text-align: start; font-weight: bold; font-size: var(--ag-font-size-sm); padding: var(--ag-spacing-xs) var(--ag-spacing-sm); }
+.ag-prose :where(table) :where(thead th) { border-bottom: 1px solid var(--ag-color-divider); }
+.ag-prose :where(table) :where(tfoot th) { border-top: 1px solid var(--ag-color-divider); }
+.ag-prose :where(table) :where(td) { padding: var(--ag-spacing-xs) var(--ag-spacing-sm); border-bottom: 1px solid var(--ag-color-divider); font-size: var(--ag-font-size-sm); }
+.ag-prose :where(table) :where(tr:last-of-type td) { border-bottom: 0; }
+.ag-prose :where(blockquote) {
+  font-size: var(--ag-font-size-lg);
+  line-height: var(--ag-line-height);
+  margin: var(--ag-spacing-md) 0;
+  border-radius: var(--ag-radius-sm);
+  padding: var(--ag-spacing-md) var(--ag-spacing-lg);
+  background-color: var(--ag-color-pre-background);
+}
+
 /* @catalogue .ag-list
 A list with no bullets and a gap between items.
 <ul class="ag-list"><li>One</li><li>Two</li></ul>

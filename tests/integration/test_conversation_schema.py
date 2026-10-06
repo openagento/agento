@@ -75,6 +75,12 @@ def test_the_table_exists(table):
         ("conversation_event", "conversation_id,id"),
         ("conversation_event", "created_at"),
         ("execution", "job_id,attempt"),
+        # E9: the channel-thread dedupe key, the channel list, a thread's runs, and the
+        # run's toolbox calls the relay and the run prune both look up.
+        ("conversation", "external_key"),
+        ("conversation", "channel,last_activity_at,id"),
+        ("execution", "conversation_id,id"),
+        ("tool_invocation", "run_execution_id"),
     ],
 )
 def test_the_index_exists(table, columns):
@@ -218,3 +224,17 @@ def test_one_source_row_yields_one_event(scope):
                 "source_id) VALUES (%s, 'message.created', '{}', 'message', 7)",
                 (refs["conversation"],),
             )
+
+
+def test_a_channel_thread_has_no_owner_and_one_row_per_key(scope):
+    """E9 §3.4: `user_id` NULL is a channel thread; `external_key` is unique."""
+    conn, ids = scope
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO conversation (agent_view_id, user_id, title, channel, "
+                    "external_key) VALUES (%s, NULL, 'j', 'jira', %s)",
+                    (ids["agent_view"], "k" * 40))
+        with pytest.raises(pymysql.err.IntegrityError):
+            cur.execute("INSERT INTO conversation (agent_view_id, user_id, title, channel, "
+                        "external_key) VALUES (%s, NULL, 'j', 'jira', %s)",
+                        (ids["agent_view"], "k" * 40))
+        cur.execute("DELETE FROM conversation WHERE external_key = %s", ("k" * 40,))

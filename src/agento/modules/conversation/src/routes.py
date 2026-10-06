@@ -9,7 +9,7 @@ and the rule wins over the spelling.
 """
 from __future__ import annotations
 
-import json
+import re
 
 from agento.web.api import Request, Response, error
 
@@ -23,7 +23,17 @@ def _iso(value) -> str | None:
 def _conversation_json(row: dict) -> dict:
     return {"id": row["id"], "agent_view_id": row["agent_view_id"], "title": row["title"],
             "status": row["status"], "created_at": _iso(row["created_at"]),
-            "updated_at": _iso(row["updated_at"])}
+            "updated_at": _iso(row["updated_at"]), "channel": row["channel"],
+            "external_ref": row["external_ref"],
+            "last_activity_at": _iso(row["last_activity_at"]), "live": bool(row.get("live"))}
+
+
+def _run_json(row: dict) -> dict:
+    return {"execution_id": row["execution_id"], "job_id": row["job_id"],
+            "attempt": row["attempt"], "status": row["status"],
+            "started_at": _iso(row["started_at"]), "finished_at": _iso(row["finished_at"]),
+            "type": row["type"], "agent_type": row["agent_type"], "model": row["model"],
+            "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]}
 
 
 def _message_json(row: dict) -> dict:
@@ -33,15 +43,6 @@ def _message_json(row: dict) -> dict:
             "job_state": row["job_state"], "created_at": _iso(row["created_at"]),
             # A reader must be able to tell "waiting" from "stuck" (§4.5).
             "blocked": reason is not None, "blocked_reason": reason}
-
-
-def _event_json(row: dict) -> dict:
-    # `payload` is stored as JSON and read back as text; it is re-parsed here so the body
-    # carries an object, not a string holding one.
-    payload = row["payload"]
-    return {"id": row["id"], "kind": row["kind"], "execution_id": row["execution_id"],
-            "payload": json.loads(payload) if isinstance(payload, str) else payload,
-            "created_at": _iso(row["created_at"])}
 
 
 def _visible(req: Request) -> dict | None:
@@ -78,14 +79,35 @@ def create(req: Request) -> Response:
 
 
 def index(req: Request) -> Response:
+    """`?scope=mine` (default) or `?scope=channels[&channel=<source>]` - admins only."""
+    scope = req.query.get("scope", "mine")
+    if scope not in ("mine", "channels"):
+        return error(400, "scope must be mine or channels")
+    before = None
+    if req.query.get("before"):
+        if scope != "channels" or not re.fullmatch(r"[0-9]{1,12}:[0-9]{1,19}", req.query["before"]):
+            return error(400, "before must be a cursor from a channels page")
+        ts, _, rid = req.query["before"].partition(":")
+        before = (int(ts), int(rid))
     limit = service.config(req.conn, "history/page_size")
-    rows = service.list_visible(req.conn, user=req.session.user, limit=limit)
-    return Response(200, [_conversation_json(r) for r in rows])
+    rows = service.list_visible(req.conn, user=req.session.user, limit=limit,
+                                channels=scope == "channels",
+                                channel=req.query.get("channel") or None, before=before)
+    body = [_conversation_json(r) for r in rows]
+    if scope == "channels":
+        for item, row in zip(body, rows, strict=True):
+            item["cursor"] = service.channel_cursor(row)
+    return Response(200, body)
 
 
 def show(req: Request) -> Response:
     row = _visible(req)
-    return error(404, "not found") if row is None else Response(200, _conversation_json(row))
+    if row is None:
+        return error(404, "not found")
+    body = _conversation_json(
+        dict(row, live=service.is_live(req.conn, conversation_id=row["id"])))
+    body["runs"] = [_run_json(r) for r in service.list_runs(req.conn, conversation_id=row["id"])]
+    return Response(200, body)
 
 
 def destroy(req: Request) -> Response:
@@ -128,7 +150,31 @@ def events(req: Request) -> Response:
         return error(409, "cursor_expired")
     rows = service.list_events(req.conn, conversation_id=row["id"], after_id=int(after),
                                limit=service.config(req.conn, "history/page_size"))
-    return Response(200, [_event_json(r) for r in rows])
+    return Response(200, service.project_events(req.conn, rows, req.session.user))
+
+
+def timeline(req: Request) -> Response:
+    """One page of the thread's timeline, newest first in paging, oldest first in the body.
+
+    `before` is the oldest id the client holds; without it the page is the newest. A
+    `before` at or below the prune watermark is 409, like replay: the page under it is gone.
+    """
+    row = _visible(req)
+    if row is None:
+        return error(404, "not found")
+    before, limit = req.query.get("before"), req.query.get("limit")
+    if (before is not None and not before.isdigit()) or (limit is not None and not limit.isdigit()):
+        return error(400, "before and limit must be non-negative integers")
+    if before is not None and retention.cursor_expired(
+            req.conn, conversation_id=row["id"], cursor=int(before)):
+        return error(409, "cursor_expired")
+    rows, has_older = service.list_timeline(
+        req.conn, conversation_id=row["id"],
+        before_id=None if before is None else int(before),
+        limit=int(limit) if limit else service.config(req.conn, "history/page_size"))
+    return Response(200, {"events": service.project_events(req.conn, rows, req.session.user),
+                          "has_older": has_older,
+                          "newest_id": rows[-1]["id"] if rows else None})
 
 
 def unblock(req: Request) -> Response:
@@ -155,6 +201,10 @@ def send(req: Request) -> Response:
     row = _visible(req)
     if row is None:
         return error(404, "not found")
+    if row["user_id"] is None:
+        # A channel thread mirrors a Jira issue or a mailbox; a panel post would not reach
+        # it (E9 §2 out of scope), so it is refused rather than silently queued.
+        return error(409, "read_only")
     if row["agent_view_id"] is None:
         # The view is gone: the thread is readable history, and there is nothing left to
         # run the turn.

@@ -2,16 +2,58 @@
 // Each pair below is the same widget in both runtimes; their computed styles must be equal, in
 // light and dark, so a theme change or a Mantine upgrade that the kit does not follow fails here.
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect } from "storybook/test";
+import { expect, waitFor } from "storybook/test";
 import { Button, type ButtonVariant } from "../components/Button";
 import { DataTable } from "../components/DataTable";
 import { SelectField, TextField } from "../components/Form";
+import { Markdown } from "../components/Markdown";
 import { StatusBadge, type BadgeTone } from "../components/StatusBadge";
 
 const BOX = ["background-color", "color", "border-top-color", "border-top-width", "border-top-left-radius",
   "height", "padding-left", "font-family", "font-size", "font-weight", "line-height"];
 const TEXT = ["color", "font-family", "font-size", "font-weight", "line-height", "display"];
 const CELL = ["color", "font-size", "font-weight", "line-height", "padding-top", "padding-left", "text-align"];
+
+const SPACE = ["margin-top", "margin-bottom", "padding-top", "padding-left"];
+/** [selector inside the prose pair, compared properties]: what react-markdown + GFM emits. */
+const PROSE: [string, string[]][] = [
+  ["h2", [...TEXT, ...SPACE]],
+  ["p", [...TEXT, ...SPACE]],
+  ["a", [...TEXT, "text-decoration-line"]],
+  ["p > code", [...BOX, ...SPACE, "border-top-left-radius"]],
+  ["ul", [...TEXT, ...SPACE, "list-style-position"]],
+  ["pre", [...BOX, ...SPACE, "overflow-x"]],
+  ["pre code", [...BOX, ...SPACE]],
+  ["th", [...CELL, "border-bottom-color", "border-bottom-width", "padding-bottom"]],
+  ["td", [...CELL, "border-bottom-color", "border-bottom-width", "padding-bottom"]],
+  ["blockquote", [...BOX, ...SPACE]],
+  ["hr", ["border-top-color", "border-top-width", "border-top-style", ...SPACE]],
+];
+const PROSE_MD = `## Summary
+
+The import **finished**. See [the log](https://example.com/log) and run \`bin/agento replay 42\`.
+
+- 120 rows read
+- 3 rows skipped
+
+\`\`\`json
+{"ok": true}
+\`\`\`
+
+| Step | State |
+|---|---|
+| Read | done |
+| Write | done |
+
+> Next run at 02:00.
+
+---
+
+Last line.`;
+const PROSE_HTML = `<h2>Summary</h2><p>The import <strong>finished</strong>. See <a href="https://example.com/log" target="_blank" rel="noopener noreferrer">the log</a> and run <code>bin/agento replay 42</code>.</p>
+<ul><li>120 rows read</li><li>3 rows skipped</li></ul><pre><code class="language-json">{"ok": true}
+</code></pre><table><thead><tr><th>Step</th><th>State</th></tr></thead><tbody><tr><td>Read</td><td>done</td></tr><tr><td>Write</td><td>done</td></tr></tbody></table>
+<blockquote><p>Next run at 02:00.</p></blockquote><hr><p>Last line.</p>`;
 
 const ROLES = [{ value: "user", label: "user" }, { value: "admin", label: "admin" }];
 const BUTTONS: ButtonVariant[] = ["default", "primary", "subtle", "danger"];
@@ -42,6 +84,9 @@ function pairs(root: Element): Pair[] {
   out.push(["table td", panel.querySelector("[data-pair=table] td")!, kit.querySelector("[data-pair=table] td")!, CELL]);
   out.push(["table row", panel.querySelector("[data-pair=table] tbody tr")!, kit.querySelector("[data-pair=table] tbody tr")!,
     ["border-bottom-color", "border-bottom-width", "border-bottom-style"]]);
+  for (const [sel, props] of PROSE) {
+    out.push([`prose ${sel}`, panel.querySelector(`[data-pair=prose] ${sel}`)!, kit.querySelector(`[data-pair=prose] ${sel}`)!, props]);
+  }
   return out;
 }
 
@@ -71,7 +116,8 @@ const KIT_HTML = `
   <div class="ag-field ag-field--contained" data-pair="contained"><label class="ag-field__label" for="k-city">City</label>
     <input class="ag-field__input" id="k-city"></div>
   <div class="ag-table" data-pair="table"><table><caption class="ag-visually-hidden">Jobs</caption>
-    <thead><tr><th scope="col">Name</th></tr></thead><tbody><tr><td>Alpha</td></tr><tr><td>Beta</td></tr></tbody></table></div>`;
+    <thead><tr><th scope="col">Name</th></tr></thead><tbody><tr><td>Alpha</td></tr><tr><td>Beta</td></tr></tbody></table></div>
+  <div data-pair="prose"><div class="ag-prose">${PROSE_HTML}</div></div>`;
 
 function SideBySide() {
   return (
@@ -86,6 +132,7 @@ function SideBySide() {
           <DataTable caption="Jobs" rows={[{ n: "Alpha" }, { n: "Beta" }]} rowKey={(r) => r.n}
             columns={[{ id: "n", header: "Name", cell: (r) => r.n }]} />
         </div>
+        <div data-pair="prose"><Markdown>{PROSE_MD}</Markdown></div>
       </section>
       <section aria-label="Miniapp markup" data-side="miniapp" className="ag-stack" style={{ width: 420 }}
         dangerouslySetInnerHTML={{ __html: KIT_HTML }} />
@@ -97,6 +144,8 @@ const meta: Meta = { title: "Acceptance/Mantine parity", render: () => <SideBySi
 export default meta;
 
 const play: StoryObj["play"] = async ({ canvasElement }) => {
+  // Markdown loads its renderer lazily: compare once the panel side has rendered.
+  await waitFor(() => expect(canvasElement.querySelector('[data-side="panel"] [data-pair=prose] table')).not.toBeNull(), { timeout: 10_000 });
   await expect(diff(canvasElement)).toEqual([]);
 };
 

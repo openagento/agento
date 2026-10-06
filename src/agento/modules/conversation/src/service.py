@@ -15,6 +15,7 @@ Two things carry the weight here:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -63,10 +64,8 @@ def config(conn, path: str) -> int:
 
 # --- reads -----------------------------------------------------------------
 
-_SELECT = (
-    "SELECT c.*, v.workspace_id FROM conversation c "
-    "LEFT JOIN agent_view v ON v.id = c.agent_view_id "
-)
+_FROM = "FROM conversation c LEFT JOIN agent_view v ON v.id = c.agent_view_id "
+_SELECT = "SELECT c.*, v.workspace_id " + _FROM
 
 
 def _reachable(conn, row: dict, user: User, *, scopes: dict | None = None) -> bool:
@@ -105,23 +104,75 @@ def load_visible(conn, *, conversation_id: int, user: User) -> dict | None:
     return row if _reachable(conn, row, user) else None
 
 
-def list_visible(conn, *, user: User, limit: int) -> list[dict]:
+_LIVE = ("EXISTS (SELECT 1 FROM execution e WHERE e.conversation_id = c.id "
+         "AND e.status = 'running') AS live ")
+
+
+def channel_cursor(row: dict) -> str:
+    """The keyset position of a channel-list row: pass it back as `before` for the next page."""
+    return f"{row['activity_ts']}:{row['id']}"
+
+
+def list_visible(conn, *, user: User, limit: int, channels: bool = False,
+                 channel: str | None = None, before: tuple[int, int] | None = None) -> list[dict]:
     """The caller's conversations, newest first, filtered by the same gate.
+
+    `channels` lists the channel threads (`user_id IS NULL`) instead, newest activity
+    first. They are admin-only (E9 §3.6): `_reachable` already refuses a row with no owner
+    to a non-admin, and a non-admin is answered an empty list before any query. `before`
+    is the `(activity_ts, id)` of the last row of the previous page (keyset, E9 §3.7).
 
     ponytail: the reach check is per row (up to `history/page_size` rows), not folded into
     the SQL, so there is one gate and not a second copy of it in a WHERE clause. The scope
     half of it is memoized per agent_view for the call, so the page costs one pair of reach
     queries per distinct view and not per row.
     """
+    select = "SELECT c.*, v.workspace_id, " + _LIVE + _FROM
+    if channels:
+        if user.role != "admin":
+            return []
+        select = ("SELECT c.*, v.workspace_id, UNIX_TIMESTAMP(COALESCE(c.last_activity_at, "
+                  "c.created_at)) AS activity_ts, " + _LIVE + _FROM)
+        where, params = "WHERE c.user_id IS NULL AND c.status = 'active' ", []
+        if channel:
+            where += "AND c.channel = %s "
+            params.append(channel)
+        if before is not None:
+            where += ("AND (COALESCE(c.last_activity_at, c.created_at), c.id) "
+                      "< (FROM_UNIXTIME(%s), %s) ")
+            params.extend(before)
+        order = "ORDER BY COALESCE(c.last_activity_at, c.created_at) DESC, c.id DESC "
+    else:
+        where, params = "WHERE c.user_id = %s AND c.status = 'active' ", [user.id]
+        order = "ORDER BY c.updated_at DESC, c.id DESC "
     with conn.cursor() as cur:
-        cur.execute(
-            _SELECT + "WHERE c.user_id = %s AND c.status = 'active' "
-            "ORDER BY c.updated_at DESC, c.id DESC LIMIT %s",
-            (user.id, limit),
-        )
+        cur.execute(select + where + order + "LIMIT %s", (*params, limit))
         rows = list(cur.fetchall())
     scopes: dict[int, bool] = {}
     return [r for r in rows if _reachable(conn, r, user, scopes=scopes)]
+
+
+MAX_RUNS = 50
+
+
+def list_runs(conn, *, conversation_id: int) -> list[dict]:
+    """The thread's runs, newest first, with what the job row knows about each."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT e.execution_id, e.job_id, e.attempt, e.status, e.started_at, "
+            "       e.finished_at, j.type, j.agent_type, j.model, j.input_tokens, "
+            "       j.output_tokens "
+            "FROM execution e LEFT JOIN job j ON j.id = e.job_id "
+            "WHERE e.conversation_id = %s ORDER BY e.id DESC LIMIT %s",
+            (conversation_id, MAX_RUNS))
+        return list(cur.fetchall())
+
+
+def is_live(conn, *, conversation_id: int) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM execution WHERE conversation_id = %s "
+                    "AND status = 'running' LIMIT 1", (conversation_id,))
+        return cur.fetchone() is not None
 
 
 def list_messages(conn, *, conversation_id: int, limit: int, after_id: int = 0) -> list[dict]:
@@ -163,6 +214,79 @@ def list_events(conn, *, conversation_id: int, after_id: int, limit: int) -> lis
             (conversation_id, after_id, min(limit, MAX_EVENT_PAGE)),
         )
         return list(cur.fetchall())
+
+
+def list_timeline(conn, *, conversation_id: int, before_id: int | None,
+                  limit: int) -> tuple[list[dict], bool]:
+    """The newest page of events (or the page before `before_id`), oldest first, and
+    whether older events exist. Keyset on the global id: a page never overlaps the next."""
+    limit = max(1, min(limit, MAX_EVENT_PAGE))
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, kind, payload, execution_id, created_at FROM conversation_event "
+            "WHERE conversation_id = %s AND id < %s ORDER BY id DESC LIMIT %s",
+            (conversation_id, before_id if before_id is not None else 2**63, limit + 1))
+        rows = list(cur.fetchall())
+    return rows[:limit][::-1], len(rows) > limit
+
+
+# --- the client shape of an event (E9 §3.6) ----------------------------------
+
+# Tool payloads can carry customer data from tools a panel user holds no grant on, so they
+# are an admin's only. The name, the call id and the error flag stay for everyone.
+_ADMIN_ONLY_DATA = ("input", "output")
+_PROMPTED = ("run.started", "run.finished")
+
+
+def project_events(conn, rows: list[dict], user: User) -> list[dict]:
+    """The ONE client shape of an event, for the timeline, the replay and the stream.
+
+    Batch reads, one query per page each (CODE-8): the text of `message.created`, and the
+    trigger prompt of `run.started` and `run.finished` (admins only). The consumer writes
+    `job.prompt` in its terminal update, the transaction that also writes `run.finished`,
+    so a client that already holds `run.started` reads the prompt from `run.finished`.
+    """
+    def payload_of(row: dict) -> dict:
+        payload = row["payload"]
+        return dict(json.loads(payload) if isinstance(payload, str) else payload or {})
+
+    payloads = [payload_of(r) for r in rows]
+    message_ids = {p["message_id"] for r, p in zip(rows, payloads, strict=True)
+                   if r["kind"] == "message.created" and p.get("message_id")}
+    contents: dict[int, str] = {}
+    if message_ids:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, content FROM message WHERE id IN "
+                        f"({','.join(['%s'] * len(message_ids))})", list(message_ids))
+            contents = {m["id"]: m["content"] for m in cur.fetchall()}
+    admin = user.role == "admin"
+    job_ids = {p["job_id"] for r, p in zip(rows, payloads, strict=True)
+               if admin and r["kind"] in _PROMPTED and p.get("job_id")}
+    prompts: dict[int, str] = {}
+    if job_ids:
+        from .finalizer import truncate_utf8
+
+        cap = config(conn, "limits/max_message_bytes")
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, prompt FROM job WHERE id IN "
+                        f"({','.join(['%s'] * len(job_ids))})", list(job_ids))
+            prompts = {j["id"]: truncate_utf8(j["prompt"], cap)
+                       for j in cur.fetchall() if j["prompt"]}
+
+    out = []
+    for row, payload in zip(rows, payloads, strict=True):
+        if row["kind"] == "message.created" and payload.get("message_id") in contents:
+            payload["content"] = contents[payload["message_id"]]
+        if row["kind"] in _PROMPTED and payload.get("job_id") in prompts:
+            payload["prompt"] = prompts[payload["job_id"]]
+        if not admin and isinstance(payload.get("data"), dict):
+            payload["data"] = {k: v for k, v in payload["data"].items()
+                               if k not in _ADMIN_ONLY_DATA}
+        created = row.get("created_at")
+        out.append({"id": row["id"], "kind": row["kind"], "execution_id": row["execution_id"],
+                    "payload": payload,
+                    "created_at": None if created is None else created.isoformat() + "Z"})
+    return out
 
 
 def blocked_reason(message: dict) -> str | None:
@@ -348,20 +472,94 @@ def delete_conversation(conn, conversation_id: int) -> bool:
     return True
 
 
-def _event(cur, *, conversation_id: int, kind: str, payload: dict, source_id: int,
-           source_kind: str = "message", execution_id: str | None = None) -> None:
-    """A conversation event written directly, not through the outbox.
+def lock_conversations(cur, conversation_ids) -> None:
+    """Take the threads' row locks, in ascending id - the lock-order invariant (E9 §3.4) -
+    and move their activity clock. One UPDATE does both: it locks the primary-key rows in
+    index order, and every caller is about to write the threads' timeline."""
+    ids = sorted(set(conversation_ids))
+    if ids:
+        cur.execute("UPDATE conversation SET last_activity_at = NOW() "
+                    f"WHERE id IN ({','.join(['%s'] * len(ids))})", ids)
 
-    The outbox exists for a transaction that cannot reach this table (the consumer's).
-    This one can, so a second hop would only add a window in which the thread is behind
-    its own message.
+
+def append_event(cur, conversation_id: int, *, kind: str, payload: dict, source_kind: str,
+                 source_id: int, execution_id: str | None = None,
+                 locked: bool = False) -> int | None:
+    """The ONE writer of `conversation_event`. Returns the new id, or None for a repeat.
+
+    The cursor is a global AUTO_INCREMENT, so two writers of one thread could take ids 10
+    and 11 and commit 11 first - and a reader polling `id > cursor` would then move past 10
+    for ever. The thread's row lock, taken before the insert and held to the commit, makes
+    ids of one thread commit in the order they were allocated. A caller that writes several
+    threads locks them all first with `lock_conversations` and passes `locked=True`.
+
+    INSERT IGNORE: `uq_source` is the idempotency, and a re-delivery costs nothing.
     """
+    if not locked:
+        lock_conversations(cur, [conversation_id])
     cur.execute(
-        "INSERT INTO conversation_event "
+        "INSERT IGNORE INTO conversation_event "
         "(conversation_id, execution_id, kind, payload, source_kind, source_id) "
         "VALUES (%s, %s, %s, %s, %s, %s)",
         (conversation_id, execution_id, kind, json.dumps(payload), source_kind, source_id),
     )
+    return cur.lastrowid if cur.rowcount == 1 else None
+
+
+# --- channel threads (E9 §3.5) ------------------------------------------------
+
+def channel_key(source: str, agent_view_id: int | None, reference_id: str | None,
+                job_id: int) -> str:
+    """The dedupe key of a channel thread: one per (source, view, reference)."""
+    ref = reference_id or f"job:{job_id}"
+    return hashlib.sha1(f"{source}|{agent_view_id or ''}|{ref}".encode()).hexdigest()
+
+
+def link_execution(cur, *, execution_row_id: int, execution_id: str, job_id: int,
+                   attempt: int) -> int | None:
+    """Give a freshly minted run its thread, and announce it there. Returns the thread.
+
+    A panel job (`source = 'conversation'`) is in the thread of the message it answers.
+    Every other job is in its **channel thread**, keyed by `(source, view, reference)` and
+    created or reactivated here - so the next run on the same Jira issue, and a follow-up
+    that copies its parent's source and reference, land in the same thread.
+    """
+    cur.execute("SELECT type, source, reference_id, agent_view_id FROM job WHERE id = %s",
+                (job_id,))
+    job = cur.fetchone()
+    if job is None:
+        return None
+    if job["source"] == SOURCE:
+        from .workflow import ReferenceUnusable, parse_reference
+        try:
+            _, message_id = parse_reference(job["reference_id"])
+        except ReferenceUnusable:
+            return None
+        cur.execute("SELECT conversation_id FROM message WHERE id = %s", (message_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        conversation_id = row["conversation_id"]
+    else:
+        ref = job["reference_id"]
+        title = f"{job['source']} {ref or f'job {job_id}'}"[:MAX_TITLE]
+        cur.execute(
+            # The view through a sub-select: a job may outlive its view, and the FK would
+            # then refuse the insert and with it the claim.
+            "INSERT INTO conversation (user_id, agent_view_id, title, channel, external_ref, "
+            "                          external_key, last_activity_at) "
+            "VALUES (NULL, (SELECT id FROM agent_view WHERE id = %s), %s, %s, %s, %s, NOW()) "
+            "ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), status = 'active'",
+            (job["agent_view_id"], title, job["source"], ref,
+             channel_key(job["source"], job["agent_view_id"], ref, job_id)))
+        conversation_id = cur.lastrowid
+    cur.execute("UPDATE execution SET conversation_id = %s WHERE id = %s",
+                (conversation_id, execution_row_id))
+    append_event(cur, conversation_id, kind="run.started", execution_id=execution_id,
+                 source_kind="execution", source_id=execution_row_id,
+                 payload={"job_id": job_id, "attempt": attempt, "type": job["type"],
+                          "source": job["source"], "reference_id": job["reference_id"]})
+    return conversation_id
 
 
 def _utf8(value: str, what: str) -> bytes:
@@ -418,8 +616,13 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
     revived = False
     try:
         with conn.cursor() as cur:
+            # The thread's row lock BEFORE the message insert (E9 §3.4). The insert's FK
+            # check takes a shared lock on the same row, so two posts that each hold one
+            # and then ask `append_event` for the exclusive lock would deadlock.
             if reactivate_actor_id is not None:
                 revived = _reactivate_locked(cur, conversation_id)
+            else:
+                lock_conversations(cur, [conversation_id])
             cur.execute(
                 "INSERT INTO message (conversation_id, role, content, client_message_id, job_state) "
                 "VALUES (%s, 'user', %s, %s, 'pending')",
@@ -429,8 +632,10 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
             # Only the winner announces the turn: the re-read path below is a replay of a
             # turn the thread has already announced, and the event row has no uniqueness
             # of its own that would save it from a second announcement.
-            _event(cur, conversation_id=conversation_id, kind="message.created",
-                   payload={"message_id": message_id, "role": "user"}, source_id=message_id)
+            append_event(cur, conversation_id, kind="message.created",
+                         payload={"message_id": message_id, "role": "user"},
+                         source_kind="message", source_id=message_id,
+                         locked=reactivate_actor_id is None)
         conn.commit()
     except pymysql.err.IntegrityError:
         conn.rollback()                 # the revival rolls back with it

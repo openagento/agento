@@ -6,7 +6,7 @@ export {
 } from "./session";
 export { queryClient } from "./query";
 export {
-  hub, EventSourceHub, backoff, PERSISTED_KINDS, TRANSIENT_KINDS,
+  hub, EventSourceHub, backoff,
   type StreamEvent, type StreamHandlers, type StreamState,
 } from "./hub";
 export { useDisplay, useSession } from "./useSession";

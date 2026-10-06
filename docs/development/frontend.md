@@ -65,8 +65,26 @@ npm test            # build, lint, then every unit test and every story in headl
   storage, a cookie the page can read, a URL or a log. A write with no token is not sent. The
   launch exchange code is used once, in a hidden form POST, and is never in a URL, a cache, React
   state or the window name.
-- **Persisted rows come from REST only.** The stream (`hub.ts`) says "refetch"; only the in-flight
-  text and tool rows are built from it, in a bounded store (64 KiB, 200 rows, 8 executions).
+- **A conversation is one timeline store.** `timeline.ts` keys every event by id: the newest
+  timeline page, an older page ("Load older") and each stream frame merge into it, so an event seen
+  twice renders once. The hub opens the stream with `?after=<newest id of the page>`, so there is no
+  window between them; a stream frame that changes a message or a run also refetches the messages
+  and the runs over REST (debounced). The turn state and Unblock still come from the messages. When
+  the stream is down, the REST poll (10 s while a run is in flight, 30 s idle) is the fallback:
+  each tick pages the timeline forward through `GET …/events?after=<cursor>` and refetches the
+  runs. The cursor is the highest id up to which every event is held: only replay pages (or the
+  newest page a 409 reloads) move it, never a stream frame or a reconnect page. Messages whose
+  events retention pruned show as plain bubbles before the timeline. Every merge has an origin:
+  `older` ("Load older") never trims; `auto` (stream, replay, reconnect, newest page) trims the
+  store to the newest 5000 while the page follows live output. Scrolled up, `auto` events are not
+  held, only counted in "N new events", and replay paging stops; following again resets the store
+  to the newest page and the replay cursor to its newest id, the same reset a 409 does. A reload
+  whose page arrives after the operator scrolled up again changes nothing. The hub listens for each event kind by name: a new kind goes
+  into `STREAM_KINDS` in `hub.ts`, or the browser drops it.
+- **Agent text is Markdown.** `Markdown` (`react-markdown` + `remark-gfm`, loaded lazily so the
+  entry chunk stays in budget) renders it in Mantine's `Typography`; raw HTML is shown as text, and
+  links open with `rel="noopener noreferrer"`. Its kit twin is `.ag-prose` (kit 1.1.0): the kit does
+  not parse Markdown, the miniapp writes the HTML.
 - **One teardown.** Logout, the first 401 and a new login call `endSession()`: it clears the query
   cache, closes the stream and closes every launch window.
 
@@ -150,13 +168,15 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 | What | Where |
 |---|---|
 | CSRF in memory only, A → logout → B leaves nothing, a stale response is dropped | `packages/api/src/api.test.ts` |
-| Stream reconnect, refused stream, `cursor_expired`, backoff | `packages/api/src/hub.test.ts` |
+| Stream reconnect, refused stream, `cursor_expired`, backoff, `?after=` | `packages/api/src/hub.test.ts` |
 | Popup blocked, API refusal closes the window, bridge before POST, code in no URL or cache | `panel/src/launch.test.ts` |
 | The grant sheet cannot send without a place, one POST per name, a refusal names the item | `panel/src/routes/Grants.test.tsx` |
 | Probe 404 / 2xx / network error → nav and NotAvailable | `panel/src/registry.test.tsx` |
 | The example miniapp decodes the toolbox action envelope | `packages/miniapp-kit/kit.test.ts` |
 | Dialog focus trap and focus return | `packages/ui/src/components/Forms.stories.tsx` (`DialogFocus`) |
-| Transient caps, persisted events refetch and never write the cache, 10 s / 30 s reconcile polls | `modules/conversation/panel/conversation.test.tsx` |
+| Stream opens after the page's newest id, persisted events refetch and never write the cache, 10 s / 30 s reconcile polls, follow-live and "N new events", reset to the newest page on resume, older-page anchor, read-only channel thread | `modules/conversation/panel/conversation.test.tsx` |
+| Dedupe by id, tool pairing, runs grouped by execution, the final-answer rule over split pages | `modules/conversation/panel/timeline.test.ts` |
+| `Markdown` renders a code fence and a table; raw HTML stays text | `packages/ui/src/components/components.test.tsx` |
 | WCAG AA contrast, catalogue completeness, skill drift, kit immutability | `packages/miniapp-kit/kit.test.ts` |
 | The three date formats in a fixed zone, the provider, `Timestamp` with no provider | `packages/ui/src/components/Timestamp.test.tsx`, `panel/src/DisplayFormat.test.tsx` |
 | Import boundaries, bundle budget | `boundaries.test.ts` |
