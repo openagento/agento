@@ -119,6 +119,15 @@ def _is_transient_credential_rejection(msg: str) -> bool:
     return bool(_401_CODE_RE.search(msg) or _REVOKED_RE.search(msg))
 
 
+def error_text(event: dict) -> str:
+    """The message of an ``is_error`` result. Claude puts it in ``result`` or, when the run
+    never started (a resumed session it cannot find), only in ``errors``."""
+    if isinstance(event.get("result"), str) and event["result"]:
+        return event["result"]
+    errors = [str(e) for e in event.get("errors") or [] if e]
+    return "; ".join(errors) or "unknown error"
+
+
 def _classify_error(msg: str):
     """Return the exception to raise for a Claude ``is_error`` result message.
 
@@ -204,8 +213,7 @@ def parse_claude_output(raw: str, logger: logging.Logger | None = None) -> RunRe
 
     if result_event:
         if result_event.get("is_error"):
-            msg = result_event.get("result", "unknown error")
-            raise _classify_error(msg)
+            raise _classify_error(error_text(result_event))
 
         usage = result_event.get("usage", {})
         # The answer is claude's `result`: the last assistant message's text (E9 §3.1). The
@@ -267,8 +275,7 @@ def _parse_single_json(raw: str, _log: logging.Logger) -> RunResult:
         return RunResult(raw_output=raw)
 
     if data.get("is_error"):
-        msg = data.get("result", "unknown error")
-        raise _classify_error(msg)
+        raise _classify_error(error_text(data))
 
     cr = RunResult(
         raw_output=raw,

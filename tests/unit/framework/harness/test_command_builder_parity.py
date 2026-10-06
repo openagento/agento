@@ -108,3 +108,22 @@ class TestSecretsNeverInArgv:
 def _contiguous(haystack: list[str], needle: tuple[str, ...]) -> bool:
     n = len(needle)
     return any(tuple(haystack[i:i + n]) == needle for i in range(len(haystack) - n + 1))
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "pi"])
+class TestResumeCarriesTheTurn:
+    """A conversation's next turn resumes the previous turn's session WITH a new message.
+    claude and codex used to send a fixed "continue" text instead, so the message was lost."""
+
+    def _sent(self, harness: str, req: RunRequest) -> tuple[list[str], str | None]:
+        ctx = _ctx(harness, model="m")
+        b = _builder(harness)
+        return b.headless(ctx, req), b.stdin_payload(ctx, req)
+
+    def test_the_new_turn_reaches_the_cli(self, harness):
+        cmd, stdin = self._sent(harness, RunRequest(prompt="the new turn", session_id="s-1"))
+        assert "the new turn" in cmd or stdin == "the new turn"
+
+    def test_a_retry_with_no_prompt_still_sends_text(self, harness):
+        cmd, stdin = self._sent(harness, RunRequest(prompt="", session_id="s-1"))
+        assert "" not in cmd and stdin != ""

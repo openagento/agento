@@ -83,7 +83,7 @@ from .runtime import (
     RunResult,
     ToolboxConnectionSpec,
 )
-from .subprocess_runner import SubprocessRunner
+from .subprocess_runner import SESSION_ID, SubprocessRunner, move_session_into
 
 _MCP_PATHS = ("/mcp", "/sse")
 
@@ -123,6 +123,7 @@ def is_toolbox_endpoint(url: str, target: tuple[str, str, int]) -> bool:
 __all__ = [
     "AGENT_CONFIG_PREFIX",
     "PROVIDER_OPTION_KEY",
+    "SESSION_ID",
     "SUPPORTED_SOURCES",
     "AgentHarnessAdapter",
     "AuthResult",
@@ -176,6 +177,7 @@ __all__ = [
     "list_credential_scopes",
     "list_descriptors",
     "list_harnesses",
+    "move_session_into",
     "owned_paths_for",
     "parse_harness_declarations",
     "persistent_home_paths_for",

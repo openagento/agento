@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 
+from agento.modules.claude.src.output_parser import error_text
+
 
 def _text(blocks: object) -> str:
     if not isinstance(blocks, list):
@@ -50,5 +52,5 @@ class ClaudeStreamEventMapper:
             ]
 
         if kind == "result" and event.get("is_error"):
-            return {"kind": "error", "text": str(event.get("result") or "unknown error")}
+            return {"kind": "error", "text": error_text(event)}
         return None

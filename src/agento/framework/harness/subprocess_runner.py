@@ -13,16 +13,38 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import subprocess
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from pathlib import Path
 
 from ..credential_store_env import without_credential_store_env
 from ..ssh_identity import without_run_owned_ssh_env
 from ..ssh_prelude import wrap_with_ssh_prelude
 from .protocols import CommandBuilder
 from .runtime import HarnessRunContext, RunRequest, RunResult
+
+# A session id goes into a glob: no `*`, `?`, `[`, `/` or `..`.
+SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
+def move_session_into(store: Path, bucket: str, name_glob: str) -> bool:
+    """Move the newest ``<store>/*/<name_glob>`` into ``<store>/<bucket>``.
+
+    For a CLI that files sessions under a slug of its cwd. Moved, not copied: one file per
+    session, so a transcript reader finds one match. ``False`` when no such file exists.
+    """
+    target = store / bucket
+    if any(target.glob(name_glob)):
+        return True
+    found = sorted(store.glob(f"*/{name_glob}"), key=lambda p: p.stat().st_mtime)
+    if not found:
+        return False
+    target.mkdir(parents=True, exist_ok=True)
+    found[-1].rename(target / found[-1].name)
+    return True
 
 
 class SubprocessRunner(ABC):
@@ -72,6 +94,18 @@ class SubprocessRunner(ABC):
         return None
 
     # -- public entry point ---------------------------------------------------
+
+    def prepare_resume(self, session_id: str) -> bool:
+        """Make ``session_id`` resumable by THIS run. ``False``: the session is gone.
+
+        An optional hook, not part of the ``Runner`` protocol: a caller treats a runner
+        without it as "found". A conversation's next turn is a new job in a new working
+        directory, and some CLIs file a session under a slug of the directory it was made
+        in; a harness runner overrides this to move it here. On ``False`` the caller starts
+        a fresh session and sends the whole history. Default: the CLI finds a session
+        wherever it was made (codex keys its store by id alone).
+        """
+        return True
 
     def execute(self, request: RunRequest) -> RunResult:
         """Run headlessly. ``request.session_id`` set resumes that session."""

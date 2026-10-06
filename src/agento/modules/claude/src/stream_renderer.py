@@ -6,6 +6,7 @@ member. One event in, one printable block out (or ``None`` to hide it).
 from __future__ import annotations
 
 from agento.framework.harness.stream_style import BRANCH, BULLET, bold, dim, truncate
+from agento.modules.claude.src.output_parser import error_text
 
 # Argument worth showing next to a tool name, most specific first. A tool whose
 # input has none of these falls back to the first short string value it carries.
@@ -127,7 +128,7 @@ class ClaudeStreamRenderer:
 
     def _result(self, event: dict) -> str:
         if event.get("is_error"):
-            return f"✗ {truncate(event.get('result') or 'unknown error', 400)}"
+            return f"✗ {truncate(error_text(event), 400)}"
         parts = []
         turns = event.get("num_turns")
         if isinstance(turns, int):

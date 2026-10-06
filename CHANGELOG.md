@@ -46,6 +46,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them as regexes (`ingress:list` shows existing rows) — this is a note, not a migration.
 
 ### Fixed
+- **Conversation follow-ups on claude, codex and pi.** The next turn of a thread lost the new
+  message on claude and codex (the resume sent a fixed "continue" text), could not find the
+  session on claude (it is filed under the earlier job's run dir: "No conversation found"),
+  and silently started an empty session on pi. The runner now moves the session into the new
+  run dir; a session that is gone starts a fresh one with the whole thread.
+- A claude error with no `result` text now shows claude's `errors[]` instead of "unknown error".
+- The panel stream badge no longer sticks on RECONNECTING after a run's error event.
 - **Jobs no longer dead-letter on `401 OAuth access token has been revoked` while healthy tokens sit
   unused in the pool.** The message previously matched no known phrase, degraded to a generic
   `RuntimeError`, and so never poisoned or throttled the token nor set `retry_with_other_token` —

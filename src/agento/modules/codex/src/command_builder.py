@@ -8,6 +8,8 @@ _EXEC_FLAGS = [
     "--dangerously-bypass-approvals-and-sandbox",
     "--skip-git-repo-check",
 ]
+# A retry resumes its own interrupted session with an empty prompt; a conversation's next
+# turn resumes the previous turn's session WITH the new message, which must reach the CLI.
 _RESUME_PROMPT = "Continue working from where you left off."
 
 
@@ -18,7 +20,7 @@ class CodexCommandBuilder:
         if req.session_id:
             # Non-interactive resume is `codex exec resume <id> <prompt>` —
             # `codex resume` needs a TTY.
-            cmd = ["codex", "exec", "resume", req.session_id, _RESUME_PROMPT]
+            cmd = ["codex", "exec", "resume", req.session_id, req.prompt or _RESUME_PROMPT]
         else:
             cmd = ["codex", "exec", req.prompt]
         cmd += _EXEC_FLAGS
