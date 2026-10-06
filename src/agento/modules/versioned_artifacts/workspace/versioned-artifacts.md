@@ -92,6 +92,10 @@ Either way, know what saving does: **a saved version is already readable over HT
 own `preview_path`. Publishing only decides which version the artifact's main address shows.
 Do not save anything to an artifact you would not want read.
 
+A version is served as static files. Nothing in it runs on a server — no build, no `npm`, no
+process. Do not put a secret, a token or a password in a file: a saved version is readable over
+HTTP.
+
 `publish` requires `expected_current_version`: the version you believe is live, taken
 from `versioned_artifact_get_current`. If the artifact moved on since you read it, publish
 fails with `CURRENT_VERSION_CHANGED`. **Do not retry blindly.** Read `get_current`

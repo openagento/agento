@@ -24,6 +24,33 @@ class SyncResult:
     unchanged: int
 
 
+def _frontmatter_description(lines: list[str]) -> tuple[int, str | None]:
+    """Return (index of the first body line, frontmatter `description` or None).
+
+    Reads only a leading `---` block: `description: text`, or a `>` / `|` block whose
+    indented lines are joined with one space. No frontmatter -> (0, None).
+    """
+    if not lines or lines[0].strip() != "---":
+        return 0, None
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+    if end is None:
+        return 0, None
+    for i in range(1, end):
+        key, sep, value = lines[i].partition(":")
+        if not sep or key.strip() != "description":
+            continue
+        value = value.strip()
+        if value[:1] in (">", "|"):
+            folded = []
+            for nxt in lines[i + 1:end]:
+                if nxt and not nxt[0].isspace():
+                    break
+                folded.append(nxt.strip())
+            value = " ".join(p for p in folded if p)
+        return end + 1, value.strip("'\"")[:500] or None
+    return end + 1, None
+
+
 def scan_skills(skills_dir: Path) -> list[SkillInfo]:
     """Scan disk for skill directories containing SKILL.md."""
     if not skills_dir.is_dir():
@@ -37,13 +64,16 @@ def scan_skills(skills_dir: Path) -> list[SkillInfo]:
             continue
         content = skill_file.read_text()
         checksum = hashlib.sha256(content.encode()).hexdigest()
-        # Description: first non-empty line after optional # heading
-        description = ""
-        for line in content.splitlines():
-            stripped = line.strip()
-            if stripped and not stripped.startswith("#"):
-                description = stripped[:500]
-                break
+        lines = content.splitlines()
+        body_start, description = _frontmatter_description(lines)
+        if description is None:
+            # Description: first non-empty body line after optional # heading
+            description = ""
+            for line in lines[body_start:]:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    description = stripped[:500]
+                    break
         skills.append(SkillInfo(
             name=entry.name,
             path=str(skill_file),
@@ -92,7 +122,7 @@ def _upsert_skills(conn, scanned: list[SkillInfo]) -> SyncResult:
 
     with conn.cursor() as cur:
         for skill in scanned:
-            cur.execute("SELECT id, checksum FROM skill_registry WHERE name = %s", (skill.name,))
+            cur.execute("SELECT id, checksum, description FROM skill_registry WHERE name = %s", (skill.name,))
             row = cur.fetchone()
             if row is None:
                 cur.execute(
@@ -103,7 +133,9 @@ def _upsert_skills(conn, scanned: list[SkillInfo]) -> SyncResult:
                 new += 1
             else:
                 existing_checksum = row["checksum"] if isinstance(row, dict) else row[1]
-                if existing_checksum != skill.checksum:
+                existing_description = row.get("description") if isinstance(row, dict) else row[2]
+                # The description is derived, so a parser change can move it without a file change.
+                if existing_checksum != skill.checksum or existing_description != skill.description:
                     cur.execute(
                         "UPDATE skill_registry SET path=%s, description=%s, checksum=%s, synced_at=NOW() "
                         "WHERE name=%s",

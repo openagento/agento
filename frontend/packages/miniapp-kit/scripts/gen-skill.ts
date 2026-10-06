@@ -37,6 +37,12 @@ export function uncatalogued(css: string): string[] {
 export function render(css: string): string {
   const ui = `/_ui/${VERSION}`;
   const out = [
+    // Codex refuses a SKILL.md without this frontmatter (DECISIONS.md, module skills carry frontmatter).
+    "---",
+    "name: miniapp-ui",
+    "description: Use when you write the HTML of a miniapp page — the Agento kit classes, elements and layout rules. For the build steps, use the miniapp-build skill.",
+    "---",
+    "",
     "# Miniapp UI",
     "",
     `Use when you write a miniapp page: hand-written HTML over the Agento kit ${VERSION} (\`.ag-*\` classes, \`<ag-*>\` elements). Generated from frontend/packages/miniapp-kit; do not edit.`,
