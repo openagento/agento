@@ -91,7 +91,7 @@
   "acl_resources": [
     {
       "id": "conversation.run_details",
-      "title": "See run details: prompts, tool input and output, model, tokens, job links"
+      "title": "See run details: prompts, tool input and output, harness, credential, model, tokens, job links"
     }
   ]
 }

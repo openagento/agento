@@ -2,7 +2,8 @@
 // PUT /api/admin/config of the item's own gate path at the picked scope. The marks follow the
 // TUI (framework/admin/screens/_enablement.py prompt_label).
 import { Badge, Checkbox, Group, Stack, Tooltip } from "@mantine/core";
-import { Button, Card } from "@agento/ui";
+import { ListChecks, ListX } from "lucide-react";
+import { Card, IconAction } from "@agento/ui";
 import type { useConfigWrite } from "./shared";
 
 export interface EnablementItem { name: string; path: string; enabled: boolean; explicit_here: boolean; blocked_by?: string | null }
@@ -18,8 +19,8 @@ export function EnablementGroup({ title, items, write }: {
   return (
     <Card title={title} actions={
       <Group gap="xs">
-        <Button variant="subtle" disabled={write.isPending} onClick={() => all(true)}>Enable all</Button>
-        <Button variant="subtle" disabled={write.isPending} onClick={() => all(false)}>Disable all</Button>
+        <IconAction label="Enable all" icon={<ListChecks size={16} />} disabled={write.isPending} onClick={() => all(true)} />
+        <IconAction label="Disable all" icon={<ListX size={16} />} disabled={write.isPending} onClick={() => all(false)} />
       </Group>
     }>
       <Stack gap="xs">

@@ -1,13 +1,15 @@
 // The chat building blocks (U1-U8): Mantine components, themed by theme.ts only. The panel's
 // conversation screen composes them; it may not import Mantine itself (boundaries.test.ts).
 import {
-  ActionIcon, Alert, Button, Code, Collapse, CopyButton, Group, Loader, Paper, Popover, ScrollArea, Spoiler, Stack,
+  ActionIcon, Alert, Button, Code, Collapse, Group, Loader, Paper, Popover, ScrollArea, Spoiler, Stack,
   Text, Textarea, Title, Tooltip, UnstyledButton,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
-import { Brain, Check, ChevronRight, CircleAlert, Copy, Info, Layers, RotateCcw, SendHorizontal, Wrench } from "lucide-react";
+import { Brain, ChevronRight, CircleAlert, Info, Layers, RotateCcw, SendHorizontal, Wrench } from "lucide-react";
 import type { FormEvent, KeyboardEvent, ReactNode, Ref, UIEvent } from "react";
 import classes from "./Chat.module.css";
+import { CopyButton } from "./CopyButton";
+import { IconAction } from "./IconAction";
 import { Markdown } from "./Markdown";
 import { Timestamp } from "./Timestamp";
 
@@ -43,20 +45,6 @@ export function ChatList({ children }: { children: ReactNode }) {
   return <ol className={classes.list} aria-live="polite">{children}</ol>;
 }
 
-function CopyAction({ value, label }: { value: string; label: string }) {
-  return (
-    <CopyButton value={value} timeout={1500}>
-      {({ copied, copy }) => (
-        <Tooltip label={copied ? "Copied" : label} withArrow position="top">
-          <ActionIcon variant="subtle" color="gray" size="sm" aria-label={label} onClick={copy}>
-            {copied ? <Check size={14} /> : <Copy size={14} />}
-          </ActionIcon>
-        </Tooltip>
-      )}
-    </CopyButton>
-  );
-}
-
 /** One message. `user`: a bubble on the right, plain text. `assistant`: full width Markdown.
  *  `incoming`: what a channel sent (a trigger), plain text on the left under its `label`. The
  *  time and a copy button show on hover. */
@@ -66,7 +54,7 @@ export function ChatMessage({ author, text, time, label }: {
   const actions = (
     <Group gap={TIGHT} className={classes.actions}>
       {time && <Text size="xs" c="dimmed"><Timestamp value={time} /></Text>}
-      <CopyAction value={text} label="Copy message" />
+      <CopyButton value={text} label="Copy message" />
     </Group>
   );
   if (author === "assistant") {
@@ -199,9 +187,11 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error }: 
           <Textarea className={classes.grow} aria-label="Message" placeholder="Message the agent…" autosize minRows={1}
             maxRows={8} value={value} onChange={(e) => onChange(e.currentTarget.value)} onKeyDown={onKey}
             aria-describedby={hint ? "composer-hint" : undefined} />
-          <ActionIcon type="submit" size="input-sm" variant="filled" aria-label="Send" disabled={!ready}>
-            <SendHorizontal size={16} />
-          </ActionIcon>
+          <Tooltip label="Send" withArrow>
+            <ActionIcon type="submit" size="input-sm" variant="filled" aria-label="Send" disabled={!ready}>
+              <SendHorizontal size={16} />
+            </ActionIcon>
+          </Tooltip>
         </Group>
         {hint && <Text id="composer-hint" size="xs" c="dimmed">{hint}</Text>}
         {error && <Text size="xs" c="red" role="alert">{error}</Text>}
@@ -215,7 +205,7 @@ export function RunInfo({ rows }: { rows: { label: string; value: ReactNode }[] 
   return (
     <Popover width={300} position="bottom-end" withArrow shadow="md">
       <Popover.Target>
-        <ActionIcon variant="subtle" color="gray" aria-label="Run details"><Info size={16} /></ActionIcon>
+        <IconAction label="Run details" icon={<Info size={16} />} />
       </Popover.Target>
       <Popover.Dropdown>
         <Stack gap={TIGHT}>

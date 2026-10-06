@@ -1,10 +1,11 @@
 // Grants (plan G1): a place and a name are picked from lists, never typed as ids, so the sheet
 // cannot send what the API refuses (one scope, a declared tool, a grantable operation).
 import { useState } from "react";
+import { Trash2 } from "lucide-react";
 import { Alert, Group, Modal, MultiSelect, SegmentedControl, Select, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { apiFetch, useMutation, useQuery, useQueryClient } from "@agento/api";
-import { Button, ConfirmDialog, DataTable, StatusBadge, type Column } from "@agento/ui";
+import { Button, ConfirmDialog, IconAction, DataTable, StatusBadge, type Column } from "@agento/ui";
 import { useScopes, type Scopes } from "./admin/ScopePicker";
 import { message, whole } from "./admin/shared";
 
@@ -138,7 +139,7 @@ export function Grants() {
       <div><Text size="sm" fw={500}>{g.name}</Text><Text size="xs" c="dimmed">{g.grant_kind}</Text></div>
     ) },
     { id: "where", header: "Where", sortValue: place, cell: place },
-    { id: "remove", header: "Actions", cell: (g) => <Button variant="danger" onClick={() => setRemoving(g)}>Remove</Button> },
+    { id: "remove", header: "Actions", cell: (g) => <IconAction danger label="Remove" icon={<Trash2 size={16} />} onClick={() => setRemoving(g)} /> },
   ];
 
   return (

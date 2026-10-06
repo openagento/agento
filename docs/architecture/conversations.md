@@ -211,7 +211,10 @@ job's prompt, one query each per page. The prompt and tool `data.input` / `data.
 **run details**: an admin sees them, and another role only with the `conversation.run_details`
 grant on the thread's workspace or view (`service.can_see_run_details`, DECISIONS.md D-E9-6).
 `GET …/threads/{id}` says `run_details: true|false`; without it each run keeps its fields
-`execution_id`, `status`, `attempt`, `started_at`, `finished_at` and omits model, tokens and job id.
+`execution_id`, `status`, `attempt`, `started_at`, `finished_at` and omits harness, provider,
+credential label, model, tokens and job id. The harness, provider, model and credential id are
+written when the attempt is minted (`RunProfile`), so a failed run shows them too; the model is
+the one the CLI reported when the job finished, else the configured one.
 
 **The timeline route.** `GET …/threads/{id}/timeline?before=<id>` pages back from the newest
 event; the panel then opens the stream with `?after=<newest_id>`, so the page and the stream leave
