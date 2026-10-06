@@ -51,6 +51,13 @@ class ConversationWorkflow(Workflow):
         alone (§5.2); a fresh one is sent the assembled history as well."""
         reference_id = job.reference_id or ""
         session_id = context.resume_session_id
+        # Optional on a runner (SubprocessRunner has it); absent means "found".
+        prepare = getattr(self.runner, "prepare_resume", None)
+        if session_id is not None and prepare is not None and not prepare(session_id):
+            # The session is gone (pruned, or made under another HOME): a fresh one with
+            # the whole thread, not a turn the agent has no context for.
+            self.logger.warning(f"ref={reference_id} session not found; starting a fresh one")
+            session_id = None
         prompt = self.build_prompt(channel, reference_id, history=session_id is None)
         result = self.runner.execute(RunRequest(prompt=prompt, session_id=session_id))
         result.prompt = prompt

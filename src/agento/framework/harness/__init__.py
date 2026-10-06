@@ -88,7 +88,7 @@ from .runtime import (
     RunResult,
     ToolboxConnectionSpec,
 )
-from .subprocess_runner import SubprocessRunner
+from .subprocess_runner import SESSION_ID, SubprocessRunner, move_session_into
 
 _MCP_PATHS = ("/mcp", "/sse")
 
@@ -129,6 +129,7 @@ __all__ = [
     "AGENT_CONFIG_PREFIX",
     "HARNESS_OPTION_KEY",
     "PROVIDER_OPTION_KEY",
+    "SESSION_ID",
     "SUPPORTED_SOURCES",
     "AgentHarnessAdapter",
     "AuthResult",
@@ -184,6 +185,7 @@ __all__ = [
     "list_descriptors",
     "list_harnesses",
     "modules_declaring",
+    "move_session_into",
     "owned_paths_for",
     "parse_harness_declarations",
     "persistent_home_paths_for",
