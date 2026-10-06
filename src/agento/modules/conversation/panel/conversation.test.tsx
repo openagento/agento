@@ -51,6 +51,7 @@ describe("useConversation", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const setData = vi.spyOn(qc, "setQueryData");
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
     const { result } = renderHook(() => useConversation(5), { wrapper });
     await act(async () => { await vi.advanceTimersByTimeAsync(10); });
     expect(opened).toHaveLength(1);
@@ -66,6 +67,7 @@ describe("useConversation", () => {
     act(() => { opened[0].handlers.onEvent(ev("assistant.message", "e", {}, 9)); opened[0].handlers.onEvent(ev("job.claimed", "e", {}, 10)); });
     await act(async () => { await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS + 10); });
     expect(calls(fetchMock, "/api/conversation/threads/5/messages")).toBe(before + 1);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["threads"] });   // the list moves too
     expect(setData).not.toHaveBeenCalled();
   });
 
@@ -472,21 +474,81 @@ describe("the thread view, history and triggers", () => {
       "/api/conversation/threads/5": () => thread("jira"),
     }));
     render(<View threadId={5} />, { wrapper });
-    const sep = (await screen.findByText(/job 3/)).closest("li")!;
+    const sep = (await screen.findByText("From jira")).closest("li")!;
     act(() => { opened[0].handlers.onEvent(ev("run.finished", "x", { job_id: 3, outcome: "succeeded", prompt: "PROJ-2 is due" }, 2)); });
     expect(screen.getByText("PROJ-2 is due")).toBeInTheDocument();
-    expect(screen.getByText(/job 3/).closest("li")).toBe(sep);
+    expect(screen.getByText("PROJ-2 is due").closest("li")).toBe(sep);
+  });
+});
+
+describe("the chat turn", () => {
+  afterEach(() => { endSession(); });
+  const msg = (id: number, content: string, job_state: Message["job_state"]): Message => ({
+    id, role: "user", content, client_message_id: null, job_id: 7, job_state, created_at: null,
+    blocked: false, blocked_reason: null,
+  });
+  const routes = (events: StreamEvent[], rows: Message[]) => api({
+    "/api/conversation/threads/5/timeline": () => page(events),
+    "/api/conversation/threads/5/messages": () => rows,
+    "/api/conversation/threads/5": () => thread(),
+  });
+
+  it("a queued turn says Queued; a running tool is one summary line and the status names it", async () => {
+    const opened = captureHub();
+    let rows = [msg(1, "list files", "pending")];
+    vi.stubGlobal("fetch", vi.fn(async (url: URL | string) => routes([ev("message.created", null, { message_id: 1, content: "list files" }, 1)], rows)(url)));
+    render(<View threadId={5} />, { wrapper });
+    expect(await screen.findByText("Queued…")).toBeInTheDocument();
+
+    rows = [msg(1, "list files", "published")];
+    act(() => {
+      opened[0].handlers.onEvent(ev("run.started", "x", { job_id: 7, attempt: 1, max_attempts: 3 }, 2));
+      opened[0].handlers.onEvent(ev("tool.started", "x", { tool_name: "Bash", data: { call_id: "c1", input: JSON.stringify({ command: "ls -1" }) } }, 3));
+    });
+    await screen.findByText("Running ls -1…");
+    expect(screen.getByRole("button", { name: /Running ls -1/ })).toBeInTheDocument();
+    act(() => { opened[0].handlers.onEvent(ev("tool.completed", "x", { tool_name: "Bash", data: { call_id: "c1", output: "a\nb" } }, 4)); });
+    expect(screen.getByRole("button", { name: /Ran ls -1/ })).toBeInTheDocument();
+
+    act(() => { opened[0].handlers.onEvent(ev("assistant.partial", "x", { text: "Two fi" }, 5)); });
+    expect(screen.getByText("Two fi")).toBeInTheDocument();
+  });
+
+  it("a turn that failed on its last attempt shows one error, and Retry sends the question again", async () => {
+    captureHub();
+    const fetchMock = vi.fn(async (url: URL | string, init?: RequestInit) => {
+      if (String(url).endsWith("/api/session")) return new Response(JSON.stringify({ user: { id: 1 }, csrf_token: "t", expires_at: "x" }), { status: 200 });
+      if (init?.method === "POST") return new Response("{}", { status: 201 });
+      return routes([
+        ev("message.created", null, { message_id: 1, content: "why?" }, 1),
+        ev("run.started", "x", { job_id: 7, attempt: 3, max_attempts: 3 }, 2),
+        ev("error", "x", { text: "rate limited" }, 3),
+        ev("job.failed", "x", { job_id: 7, attempt: 3, kind: "harness" }, 4),
+      ], [msg(1, "why?", "terminal")])(url);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await login("a", "b");
+    render(<View threadId={5} />, { wrapper });
+    expect(await screen.findByText("The agent could not answer.")).toBeInTheDocument();
+    expect(screen.getByText("The run failed after 3 of 3 attempts.")).toBeInTheDocument();
+    expect(screen.getAllByText("The agent could not answer.")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([u, i]) => i?.method === "POST" && String(u).includes("/messages"))).toBe(true));
+    const [url, init] = fetchMock.mock.calls.find(([u, i]) => i?.method === "POST" && String(u).includes("/messages"))!;
+    expect(String(url)).toContain("/api/conversation/threads/5/messages");
+    expect(JSON.parse(String(init!.body))).toMatchObject({ content: "why?" });
   });
 });
 
 describe("Composer", () => {
   afterEach(() => { endSession(); });
 
-  it("Enter sends once; Shift+Enter does not send; busy disables it", async () => {
+  it("Enter sends once; Shift+Enter does not send; busy keeps typing and disables Send", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ user: { id: 1 }, csrf_token: "t", expires_at: "x" }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     await login("a", "b");
     fetchMock.mockClear();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
     const { rerender } = render(<Composer threadId={3} busy={false} />, { wrapper });
     const box = screen.getByRole("textbox", { name: "Message" });
     fireEvent.change(box, { target: { value: "hello" } });
@@ -497,7 +559,15 @@ describe("Composer", () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [URL, RequestInit];
     expect(String(url)).toContain("/api/conversation/threads/3/messages");
     expect(JSON.parse(String(init.body))).toMatchObject({ content: "hello" });
+    // The list refetches: the first message titles the thread on the server (review impl-1 F5).
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["threads"] }));
     rerender(<Composer threadId={3} busy />);
-    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    const busyBox = screen.getByRole("textbox", { name: "Message" });
+    expect(busyBox).toBeEnabled();
+    fireEvent.change(busyBox, { target: { value: "next" } });
+    expect(busyBox).toHaveValue("next");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    fireEvent.keyDown(busyBox, { key: "Enter" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

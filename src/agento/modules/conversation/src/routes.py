@@ -28,7 +28,12 @@ def _conversation_json(row: dict) -> dict:
             "last_activity_at": _iso(row["last_activity_at"]), "live": bool(row.get("live"))}
 
 
-def _run_json(row: dict) -> dict:
+def _run_json(row: dict, details: bool) -> dict:
+    """Without run details a run keeps its shape; model, tokens and job link are omitted."""
+    if not details:
+        return {"execution_id": row["execution_id"], "attempt": row["attempt"],
+                "status": row["status"], "started_at": _iso(row["started_at"]),
+                "finished_at": _iso(row["finished_at"])}
     return {"execution_id": row["execution_id"], "job_id": row["job_id"],
             "attempt": row["attempt"], "status": row["status"],
             "started_at": _iso(row["started_at"]), "finished_at": _iso(row["finished_at"]),
@@ -106,7 +111,10 @@ def show(req: Request) -> Response:
         return error(404, "not found")
     body = _conversation_json(
         dict(row, live=service.is_live(req.conn, conversation_id=row["id"])))
-    body["runs"] = [_run_json(r) for r in service.list_runs(req.conn, conversation_id=row["id"])]
+    details = service.can_see_run_details(req.conn, req.session.user, row)
+    body["run_details"] = details
+    body["runs"] = [_run_json(r, details)
+                    for r in service.list_runs(req.conn, conversation_id=row["id"])]
     return Response(200, body)
 
 
@@ -150,7 +158,7 @@ def events(req: Request) -> Response:
         return error(409, "cursor_expired")
     rows = service.list_events(req.conn, conversation_id=row["id"], after_id=int(after),
                                limit=service.config(req.conn, "history/page_size"))
-    return Response(200, service.project_events(req.conn, rows, req.session.user))
+    return Response(200, service.project_events(req.conn, rows, req.session.user, row))
 
 
 def timeline(req: Request) -> Response:
@@ -172,7 +180,7 @@ def timeline(req: Request) -> Response:
         req.conn, conversation_id=row["id"],
         before_id=None if before is None else int(before),
         limit=int(limit) if limit else service.config(req.conn, "history/page_size"))
-    return Response(200, {"events": service.project_events(req.conn, rows, req.session.user),
+    return Response(200, {"events": service.project_events(req.conn, rows, req.session.user, row),
                           "has_older": has_older,
                           "newest_id": rows[-1]["id"] if rows else None})
 

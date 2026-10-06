@@ -66,3 +66,26 @@ def test_the_adapter_exposes_the_mapper():
     mapper = PiHarnessAdapter().stream_event_mapper
     assert isinstance(mapper, PiStreamEventMapper)
     assert isinstance(mapper, StreamEventMapper)
+
+
+def _update(kind: str, delta: str) -> dict:
+    return {"type": "message_update",
+            "assistantMessageEvent": {"type": kind, "contentIndex": 0, "delta": delta}}
+
+
+def test_live_deltas_then_the_whole_message_in_stream_order():
+    """docs/json.md of the pinned pi: delta-only `message_update`, then `message_end`."""
+    mapper = PiStreamEventMapper()
+    events = [_update("thinking_delta", "plan"), _update("text_delta", "Hel"),
+              _update("text_delta", "lo"), _update("toolcall_delta", "{"),
+              {"type": "message_end", "message": {"role": "assistant", "content": [
+                  {"type": "thinking", "thinking": "plan"}, {"type": "text", "text": "Hello"}]}},
+              _update("text_delta", "cut")]                # a second message, cut off
+    out = []
+    for e in events:
+        mapped = mapper.map_event(e)
+        out += mapped if isinstance(mapped, list) else [mapped] if mapped else []
+
+    assert [(f["kind"], f["text"]) for f in out] == [
+        ("reasoning.partial", "plan"), ("assistant.partial", "Hel"), ("assistant.partial", "lo"),
+        ("assistant.reasoning", "plan"), ("assistant.text", "Hello"), ("assistant.partial", "cut")]

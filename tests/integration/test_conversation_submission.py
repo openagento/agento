@@ -40,6 +40,24 @@ def _rows(conn, sql, params=()) -> list[dict]:
     return rows
 
 
+# --- the title (E9 chat UX, U9) ---------------------------------------------
+
+def test_an_untitled_thread_is_named_by_its_first_message_only(conn, world):
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title=None)
+    _submit(conn, cid, world, content="  Napraw   stronę\nlogowania  ")
+    _submit(conn, cid, world, cmid="c2", content="a second message")
+
+    assert _rows(conn, "SELECT title FROM conversation WHERE id = %s", (cid,))[0]["title"] \
+        == "Napraw stronę logowania"
+
+
+def test_a_long_first_message_is_cut_on_a_word():
+    title = service.derive_title("word " * 30)
+
+    assert len(title) <= service.TITLE_CHARS and title.endswith("word…")
+
+
 # --- the three-step contract ----------------------------------------------
 
 def test_a_submission_publishes_one_job_and_announces_one_turn(conn, world):
@@ -551,3 +569,26 @@ def test_a_lone_surrogate_is_refused_at_every_text_input(conn, world):
                             json={"client_message_id": bad, "content": "ok"})).status == 400
     assert routes.send(_Req(conn, world["owner"], params={"id": cid},
                             json={"client_message_id": "c1", "content": bad})).status == 400
+
+
+def test_a_thread_created_with_a_title_keeps_it(conn, world):
+    cid = _conversation(conn, world)
+    _submit(conn, cid, world, content="something else")
+
+    assert _rows(conn, "SELECT title FROM conversation WHERE id = %s", (cid,))[0]["title"] == "t"
+
+
+def test_show_says_whether_the_caller_sees_run_details(conn, world):
+    """`conversation.run_details` (owner decision D4): a `user` role sees them only with the
+    grant; without it a run keeps its shape but omits model, tokens and the job link."""
+    cid = str(_conversation(conn, world))
+    assert routes.show(_Req(conn, world["owner"], params={"id": cid})).body["run_details"] is False
+    accounts.add_grant(conn, "user", "operation", service.RUN_DETAILS, agent_view_id=world["view"])
+    assert routes.show(_Req(conn, world["owner"], params={"id": cid})).body["run_details"] is True
+
+    run = {"execution_id": "e", "job_id": 7, "attempt": 1, "status": "done", "started_at": None,
+           "finished_at": None, "type": "conversation", "agent_type": "claude", "model": "m",
+           "input_tokens": 1, "output_tokens": 2}
+    assert set(routes._run_json(run, False)) == {"execution_id", "attempt", "status",
+                                                 "started_at", "finished_at"}
+    assert routes._run_json(run, True)["model"] == "m"

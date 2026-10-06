@@ -12,7 +12,8 @@ Manage role grants: what a role may do, and where. The model is in
 Shortcuts: `gr:ad`, `gr:li`, `gr:re`.
 
 - `--tool` must name a tool that some module declares in `module.json` `tools[]` (enabled or
-  not). `--operation` accepts only `artifact.launch`. `admin` has `users.manage`,
+  not). `--operation` accepts `artifact.launch` and every ACL resource a
+  module declares in `di.json` `acl_resources` (today `conversation.run_details`); `--help` lists them with their titles. `admin` has `users.manage`,
   `grants.manage` and `config.write` built in; they are not grants.
 - Exactly one scope: a workspace grant reaches the workspace and every agent_view in it; an
   agent_view grant reaches only that view.

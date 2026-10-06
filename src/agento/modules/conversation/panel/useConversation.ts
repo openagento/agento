@@ -90,6 +90,8 @@ export function useConversation(threadId: number) {
         timer.current = null;
         void qc.invalidateQueries({ queryKey: messagesKey(threadId) });
         void qc.invalidateQueries({ queryKey: threadKey(threadId) });
+        // The list's live dot, activity group and title move with the thread (U9).
+        void qc.invalidateQueries({ queryKey: ["threads"] });
       }, REFETCH_DEBOUNCE_MS);
     };
     let opened = false;

@@ -204,6 +204,9 @@ class MyStreamEventMapper:
 | `kind` | Fields | Meaning |
 | --- | --- | --- |
 | `assistant.text` | `text` | assistant text, one message or one part of it |
+| `assistant.partial` | `text` | a token-level piece of assistant text (coalesced, see below) |
+| `assistant.reasoning` | `text` | the model's complete reasoning block (may be empty) |
+| `reasoning.partial` | `text` | a token-level piece of reasoning (coalesced) |
 | `tool.started` | `tool_name`, `data.call_id`, `data.input` | the harness calls a tool |
 | `tool.completed` | `tool_name` (optional), `data.call_id`, `data.output`, `data.is_error` | the call's result |
 | `error` | `text` | an error the harness reported |
@@ -213,6 +216,18 @@ kindless fragment or the pre-E9 `delta` kind as `assistant.text`, redacts the ru
 tokens from `text` and from every string in `data`, and cuts each string at 64 KiB. Pair a
 `tool.started` and its `tool.completed` by the same `call_id`; use `""` when the harness gives
 none. The mapper names no other harness and does no I/O: it runs on the stdout drain thread.
+
+**Partials are coalesced, not written one per token.** The framework keeps one buffer per run and
+flushes it as one row every 250 ms or 4 KiB, and the delta writer commits at most 4 times a second
+(plus one per 200 rows), so 200 parallel streaming runs do not multiply the write rate by the token
+rate (RULES.md SCL-1). The complete fragment supersedes the buffer of its kind
+(`assistant.text` ends `assistant.partial`, `assistant.reasoning` ends `reasoning.partial`); a
+fragment of another kind flushes it first, so the rows keep stream order. Redaction runs on the
+joined buffer and holds back a tail that could be the start of a secret, so a token split over two
+deltas never reaches a row. A full queue drops partials without a gap marker: the complete fragment
+follows. Emit partials only when the harness streams text and also sends the complete message
+(claude `--include-partial-messages`, pi `message_update`); codex sends whole items only
+(DECISIONS.md D-E9-5).
 
 A harness's `raw_output` is the **final answer text** — the last assistant message — never the
 stream: it is what the answer bubble shows (DECISIONS.md D-E9-4).

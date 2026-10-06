@@ -1,0 +1,25 @@
+{"type": "stream_event", "event": {"type": "message_start", "message": {"role": "assistant", "content": []}}, "parent_tool_use_id": null, "ttft_ms": 714, "thinking_display": "updates"}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}, "parent_tool_use_id": null, "thinking_display": "updates"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 50}}, "parent_tool_use_id": null, "thinking_display": "updates"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": null}}, "parent_tool_use_id": null, "thinking_display": "updates"}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "SIG"}}, "parent_tool_use_id": null}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "", "signature": ""}]}, "parent_tool_use_id": null, "timestamp": "2026-10-06T09:00:41.240Z", "request_id": "req_011Cfki9zhi98vyE3F3C1G5p", "thinking_duration_ms": 775}
+{"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "H"}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "ello! I'm "}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "ready to help with your"}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": " Agento spike, but the"}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": " Atlassian MCP server"}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": " needs auth"}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "orizing ("}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "via `claude mcp`"}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": " or `/mcp` in"}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": " an interactive session) before I"}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": " can use it"}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "."}}, "parent_tool_use_id": null}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hello! I'm ready to help with your Agento spike, but the Atlassian MCP server needs authorizing (via `claude mcp` or `/mcp` in an interactive session) before I can use it."}]}, "parent_tool_use_id": null, "timestamp": "2026-10-06T09:00:42.378Z", "request_id": "req_011Cfki9zhi98vyE3F3C1G5p"}
+{"type": "stream_event", "event": {"type": "content_block_stop", "index": 1}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null, "stop_details": null, "container": null}, "context_management": {"applied_edits": []}}, "parent_tool_use_id": null}
+{"type": "stream_event", "event": {"type": "message_stop"}, "parent_tool_use_id": null}
+{"type": "result", "subtype": "success", "is_error": false, "result": "Hello! I'm ready to help with your Agento spike, but the Atlassian MCP server needs authorizing (via `claude mcp` or `/mcp` in an interactive session) before I can use it."}

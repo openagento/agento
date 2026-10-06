@@ -81,6 +81,8 @@ class ClaudeStreamRenderer:
             return self._user(event)
         if kind == "result":
             return self._result(event)
+        if kind == "stream_event":
+            return None         # live text; its block's `assistant` event renders it whole
         # An event type this renderer does not know still gets one dim line —
         # never raw JSON, and never silence that hides a stream format change.
         return dim(f"· {kind}") if kind else None

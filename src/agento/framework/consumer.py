@@ -211,7 +211,8 @@ def failure_kind(error_class: str | None) -> str:
 
 # The fragment vocabulary a mapper may emit (E9 §3.2). "gap"/"truncated" are the framework's
 # own markers, added by the sink, never by a mapper.
-FRAGMENT_KINDS = frozenset({"assistant.text", "tool.started", "tool.completed", "error"})
+FRAGMENT_KINDS = frozenset({"assistant.text", "tool.started", "tool.completed", "error",
+                            "assistant.reasoning", "assistant.partial", "reasoning.partial"})
 # A memory bound for the queue, not meaning: one tool output must not hold megabytes in RAM.
 MAX_FRAGMENT_FIELD_BYTES = 65536
 
@@ -247,6 +248,9 @@ def _delta_callback(harness_entry, execution_id: str | None, logger,
         return None
 
     seq = itertools.count(1)
+    # Live text is joined, redacted and flushed per execution by the writer (B2); `close`
+    # in the run's `finally` writes the tail.
+    execution_deltas.open(execution_id, seq, secrets)
 
     def on_line(line: str) -> None:
         # On the harness's drain thread: map, enqueue, return. No DB work, ever.
@@ -270,6 +274,11 @@ def _delta_callback(harness_entry, execution_id: str | None, logger,
                 logger.debug("stream_event_mapper: unknown fragment kind dropped")
                 continue
             text, data = fragment.get("text"), fragment.get("data")
+            if kind in execution_deltas.SUPERSEDED_BY:
+                # Redacted on the joined text, not per piece: a secret can span two pieces.
+                if isinstance(text, str):
+                    execution_deltas.submit_partial(execution_id, kind, text)
+                continue
             execution_deltas.submit(DeltaRecord(
                 execution_id=execution_id, seq=next(seq), kind=kind,
                 text=_bound(text, secrets) if isinstance(text, str) else None,
@@ -1060,6 +1069,9 @@ class Consumer:
                 redact_exception(exc, capability_token, rest_capability_token)
                 raise
             finally:
+                if job.execution_id is not None:
+                    from . import execution_deltas
+                    execution_deltas.close(job.execution_id)
                 em.dispatch("agent_view_run_finish_after", AgentViewRunFinishedEvent(
                     job=job,
                     agent_view_id=job.agent_view_id,

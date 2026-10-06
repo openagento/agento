@@ -7,6 +7,8 @@ _EXEC_FLAGS = [
     "--json",
     "--dangerously-bypass-approvals-and-sandbox",
     "--skip-git-repo-check",
+    # A reasoning summary as an `item.completed` `reasoning` item (E9 chat UX, shown collapsed).
+    "-c", "model_reasoning_summary=auto",
 ]
 # A retry resumes its own interrupted session with an empty prompt; a conversation's next
 # turn resumes the previous turn's session WITH the new message, which must reach the CLI.

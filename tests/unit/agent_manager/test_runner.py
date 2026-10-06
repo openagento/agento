@@ -222,6 +222,7 @@ class TestClaudeSubprocessRunner:
             "--strict-mcp-config",
             "--output-format", "stream-json",
             "--verbose",
+            "--include-partial-messages",
         ]
 
     def test_build_command_with_model(self):
@@ -234,6 +235,7 @@ class TestClaudeSubprocessRunner:
             "--strict-mcp-config",
             "--output-format", "stream-json",
             "--verbose",
+            "--include-partial-messages",
             "--model", "claude-sonnet-4-20250514",
         ]
 
@@ -253,6 +255,7 @@ class TestClaudeSubprocessRunner:
             "--strict-mcp-config",
             "--output-format", "stream-json",
             "--verbose",
+            "--include-partial-messages",
         ]
 
     def test_build_resume_command_with_model(self):
@@ -391,6 +394,7 @@ class TestCodexSubprocessRunner:
             "--json",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            "-c", "model_reasoning_summary=auto",
         ]
 
     def test_build_command_with_model(self):
@@ -401,6 +405,7 @@ class TestCodexSubprocessRunner:
             "--json",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            "-c", "model_reasoning_summary=auto",
             "--model", "o3",
         ]
 
@@ -413,6 +418,7 @@ class TestCodexSubprocessRunner:
             "--json",
             "--dangerously-bypass-approvals-and-sandbox",
             "--skip-git-repo-check",
+            "-c", "model_reasoning_summary=auto",
         ]
 
     def test_build_resume_command_with_model(self):

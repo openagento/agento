@@ -4,6 +4,8 @@ import { AgentoUiProvider } from "../Provider";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 import { Markdown } from "./Markdown";
+import { ChatComposer, ChatError, ToolCall } from "./Chat";
+import { MenuButton, ThreadList } from "./ChatShell";
 
 interface Row { id: string; name: string }
 const rows: Row[] = [{ id: "a", name: "Alpha" }, { id: "b", name: "Beta" }, { id: "c", name: "Gamma" }];
@@ -83,4 +85,87 @@ describe("Markdown", () => {
     expect(container.querySelector("b")).toBeNull();
     expect((window as { pwned?: number }).pwned).toBeUndefined();
   }, 15_000);
+});
+
+describe("Markdown highlight", () => {
+  it("opt-in: a fenced block gets its language label and a copy button; the text stays", async () => {
+    const { container } = render(<Markdown highlight>{"```python\nprint(1)\n```"}</Markdown>, { wrapper: AgentoUiProvider });
+    expect(await screen.findByRole("button", { name: "Copy code" }, { timeout: 10_000 })).toBeInTheDocument();
+    expect(screen.getByText("python")).toBeInTheDocument();
+    expect(container.textContent).toContain("print(1)");
+  }, 15_000);
+});
+
+describe("ChatComposer", () => {
+  function setup(canSend = true) {
+    const onSend = vi.fn();
+    const onChange = vi.fn();
+    render(<ChatComposer value="hi" onChange={onChange} onSend={onSend} canSend={canSend} />, { wrapper: AgentoUiProvider });
+    return { onSend, onChange, box: screen.getByRole("textbox", { name: "Message" }) };
+  }
+
+  it("Enter sends; Shift+Enter and an IME composition do not", () => {
+    const { onSend, box } = setup();
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("while it cannot send, typing works and Send is disabled", () => {
+    const { onSend, onChange, box } = setup(false);
+    expect(box).toBeEnabled();
+    fireEvent.change(box, { target: { value: "more" } });
+    expect(onChange).toHaveBeenCalledWith("more");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+describe("ToolCall and ChatError", () => {
+  it("a tool row opens its input and output; with nothing to show it does not open", () => {
+    render(<><ToolCall summary="Ran ls" running={false} input="ls" output="a" /><ToolCall summary="Read a file" running={false} /></>,
+      { wrapper: AgentoUiProvider });
+    const row = screen.getByRole("button", { name: /Ran ls/ });
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /Read a file/ })).toBeDisabled();
+  });
+
+  it("Retry calls back", () => {
+    const onRetry = vi.fn();
+    render(<ChatError title="The agent could not answer." details="raw" onRetry={onRetry} />, { wrapper: AgentoUiProvider });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ThreadList and MenuButton", () => {
+  it("shows day groups that have threads; the open thread is aria-current", () => {
+    const onSelect = vi.fn();
+    render(<ThreadList groups={[
+      { label: "Today", threads: [{ id: 1, title: "First", active: true, onSelect }, { id: 2, title: "Second", onSelect }] },
+      { label: "Older", threads: [] },
+    ]} />, { wrapper: AgentoUiProvider });
+    expect(screen.getByText("Today")).toBeInTheDocument();
+    expect(screen.queryByText("Older")).toBeNull();
+    expect(screen.getByRole("button", { name: "First" })).toHaveAttribute("aria-current", "page");
+    fireEvent.click(screen.getByRole("button", { name: "Second" }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("one choice is a plain button; more open a menu", async () => {
+    const onSelect = vi.fn();
+    const { rerender } = render(<MenuButton label="New conversation" items={[{ value: "1", label: "Support" }]} onSelect={onSelect} />,
+      { wrapper: AgentoUiProvider });
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    expect(onSelect).toHaveBeenLastCalledWith("1");
+    rerender(<MenuButton label="New conversation" items={[{ value: "1", label: "Support" }, { value: "2", label: "Sales" }]} onSelect={onSelect} />);
+    fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sales" }));
+    expect(onSelect).toHaveBeenLastCalledWith("2");
+  });
 });

@@ -299,7 +299,8 @@ framework fragments:
 
 | Event | Fragments |
 |---|---|
-| `message_end`, `role` = `assistant` | `assistant.text` (skipped when empty); `error` when `errorMessage` is set |
+| `message_update` `text_delta` / `thinking_delta` | `assistant.partial` / `reasoning.partial` (coalesced by the framework) |
+| `message_end`, `role` = `assistant` | `assistant.reasoning` per thinking block, then `assistant.text` (skipped when empty); `error` when `errorMessage` is set |
 | `tool_execution_start` | `tool.started`, `call_id` = `toolCallId`, `tool_name` = `toolName`, `input` = JSON of `args` |
 | `tool_execution_end` | `tool.completed`, `output` = text blocks of `result.content`, `is_error` = `isError` or `result.isError` |
 
