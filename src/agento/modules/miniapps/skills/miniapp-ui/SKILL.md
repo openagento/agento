@@ -1,3 +1,8 @@
+---
+name: miniapp-ui
+description: Use when you write the HTML of a miniapp page — the Agento kit classes, elements and layout rules. For the build steps, use the miniapp-build skill.
+---
+
 # Miniapp UI
 
 Use when you write a miniapp page: hand-written HTML over the Agento kit 1.1.0 (`.ag-*` classes, `<ag-*>` elements). Generated from frontend/packages/miniapp-kit; do not edit.

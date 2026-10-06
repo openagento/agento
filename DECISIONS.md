@@ -38,6 +38,30 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+---
+
+## 2026-10-06 — Module skills carry YAML frontmatter; a `miniapp-build` skill
+
+Plan: `~/.claude/plans/miniapp-agent-skill-0ca4e7.md`.
+
+- **The problem.** An agent asked for a miniapp wrote an Express server with Jira credentials in
+  env vars and never saved a version. The only agent guide, the generated `miniapp-ui` skill,
+  covers the kit, not the lifecycle or the limits. And Codex never loaded it: Codex 0.160.0
+  refuses a `SKILL.md` without frontmatter (`failed to load skill …: missing YAML frontmatter
+  delimited by ---`), and `miniapp-ui` had none.
+- **Every module `SKILL.md` starts with `name` + `description` frontmatter.** `name` equals the
+  directory. `tests/unit/modules/skill/test_module_skills_contract.py` discovers every
+  `src/agento/modules/*/skills/*/SKILL.md` and enforces it. `gen-skill.ts` emits it for
+  `miniapp-ui`.
+- **The registry reads `description` from the frontmatter**, and `skill:sync` also updates a row
+  whose description changed with the same checksum: the description is derived, so a parser change
+  moves it without a file change. No PyYAML: a leading `---` block, an inline value or a `>`/`|`
+  block.
+- **`miniapp-build` is hand-written and lives in `miniapps`**, beside the generated `miniapp-ui`.
+  It points to `miniapp-ui` for the kit and copies no class list. `versioned_artifacts` does not
+  name it (VA has no dependency on `miniapps`); its workspace guide states the VA-native fact
+  instead: a version is static files, nothing in it runs on a server.
+
 ## 2026-10-06 — E9 chat UX: coalesced token streaming, run details as an ACL resource
 
 Plan: `~/.claude/plans/e9-chat-ux-03532f.md`.
