@@ -194,6 +194,11 @@ refuses a second before `setup:upgrade` applies a single schema change.
 | `resume_session_resolver` | `ConversationResumeSessions` | the shipped attempt-based resume rule |
 | `execution_delta_sink` | `ConversationDeltaSink` | deltas are discarded |
 
+A follow-up turn resumes the previous turn's session and is sent the new turn alone. Before
+that, the workflow asks the runner's optional `prepare_resume`, which moves the session into
+the new run dir; when the session is gone, the turn runs fresh with the whole thread instead
+of failing every later turn (see [harness contract](../architecture/harness-contract.md)).
+
 The provider mints a **UUID**, not `{job_id}-{attempt}`: the pool-wait path refunds an
 attempt, so two real attempts of one job can carry one number and an id built from the pair
 would collide on `execution.uq_execution_id`. It writes the row on the framework's open

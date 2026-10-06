@@ -3,12 +3,15 @@ from __future__ import annotations
 import re
 import subprocess
 import time
+from pathlib import Path
 
 from agento.framework.harness import (
+    SESSION_ID,
     McpInitReport,
     McpServerStatus,
     RunResult,
     SubprocessRunner,
+    move_session_into,
 )
 
 from .output_parser import classify_error, parse_session_id, parse_stream
@@ -33,6 +36,22 @@ class PiSubprocessRunner(SubprocessRunner):
 
     def _try_parse_session_id(self, line: str) -> str | None:
         return parse_session_id(line)
+
+    def prepare_resume(self, session_id: str) -> bool:
+        """Pi files a session as ``<ts>_<id>.jsonl`` under
+        ``~/.pi/agent/sessions/--<cwd without its leading />--`` (``/`` and ``:`` as ``-``).
+        ``--session-id`` looks only there and silently CREATES an empty session when absent,
+        so a turn in a new run dir would lose the thread without an error."""
+        if not SESSION_ID.fullmatch(session_id):
+            return False
+        if self.context.home_dir is None:
+            return True
+        cwd = re.sub(r"[/\\:]", "-", self.context.working_dir.lstrip("/\\"))
+        return move_session_into(
+            Path(self.context.home_dir) / ".pi" / "agent" / "sessions",
+            f"--{cwd}--",
+            f"*_{session_id}.jsonl",
+        )
 
     def _extract_raw(self, proc: subprocess.CompletedProcess) -> str:
         """stdout ONLY.

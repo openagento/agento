@@ -9,9 +9,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from agento.framework.harness.protocols import StreamEventMapper
 from agento.modules.claude.src.adapter import ClaudeHarnessAdapter
+from agento.modules.claude.src.output_parser import parse_claude_output
 from agento.modules.claude.src.stream_event_mapper import ClaudeStreamEventMapper
+from agento.modules.claude.src.stream_renderer import ClaudeStreamRenderer
 
 FIXTURE = Path(__file__).resolve().parents[3] / "fixtures" / "claude" / "stream_tool_use.jsonl"
 
@@ -52,3 +56,22 @@ def test_the_adapter_exposes_the_mapper():
     mapper = ClaudeHarnessAdapter().stream_event_mapper
     assert isinstance(mapper, ClaudeStreamEventMapper)
     assert isinstance(mapper, StreamEventMapper)
+
+
+# A resume of a session claude cannot find: no `result`, the message only in `errors`.
+# The exact event seen on a dev stack (job 26983), which showed as "unknown error".
+_NO_SESSION = {
+    "type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 0,
+    "session_id": "a8390dba-a29e-4f18-9498-79b7ccc4bbdc",
+    "errors": ["No conversation found with session ID: a8390dba-a29e-4f18-9498-79b7ccc4bbdc"],
+}
+
+
+def test_an_error_without_result_text_shows_claudes_errors_everywhere():
+    want = "No conversation found with session ID"
+    assert want in ClaudeStreamEventMapper().map_event(_NO_SESSION)["text"]
+    assert want in (ClaudeStreamRenderer().render(_NO_SESSION) or "")
+    single = {k: v for k, v in _NO_SESSION.items() if k != "type"}  # old --output-format json
+    for raw in (json.dumps(_NO_SESSION), json.dumps(single)):
+        with pytest.raises(Exception, match=want):
+            parse_claude_output(raw)

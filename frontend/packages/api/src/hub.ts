@@ -89,8 +89,11 @@ export class EventSourceHub {
       h.onState("live");
       h.onResync();
     };
-    es.onerror = () => {
+    es.onerror = (ev: Event) => {
       if (!current()) return;
+      // The browser fires `onerror` for EVERY event of type `error`, and a run's error card
+      // arrives as one (delivered below). Only a plain Event is a lost connection.
+      if (ev instanceof MessageEvent) return;
       if (es.readyState === CLOSED) {
         // A refused answer (401, 404, 429): the browser stopped, and so does the hub.
         es.close();

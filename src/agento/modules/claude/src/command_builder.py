@@ -12,6 +12,8 @@ from agento.framework.harness import HarnessRunContext, RunRequest
 # .mcp.json is resolved relative to the subprocess cwd (the per-job artifacts dir),
 # and --strict-mcp-config stops the CLI from also loading a user-level MCP config.
 _MCP_FLAGS = ["--mcp-config", ".mcp.json", "--strict-mcp-config"]
+# A retry resumes its own interrupted session with an empty prompt; a conversation's next
+# turn resumes the previous turn's session WITH the new message, which must reach the CLI.
 _RESUME_PROMPT = "Continue working from where you left off."
 
 
@@ -20,7 +22,7 @@ class ClaudeCommandBuilder:
 
     def headless(self, ctx: HarnessRunContext, req: RunRequest) -> list[str]:
         if req.session_id:
-            cmd = ["claude", "--resume", req.session_id, "-p", _RESUME_PROMPT]
+            cmd = ["claude", "--resume", req.session_id, "-p", req.prompt or _RESUME_PROMPT]
         else:
             cmd = ["claude", "-p", req.prompt]
         cmd += [

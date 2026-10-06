@@ -7,12 +7,17 @@ class FakeES {
   readyState = 0;
   closed = false;
   onopen: (() => void) | null = null;
-  onerror: (() => void) | null = null;
+  onerror: ((e: Event) => void) | null = null;
   listeners = new Map<string, (e: MessageEvent) => void>();
   constructor(public url: string) { FakeES.all.push(this); }
   addEventListener(k: string, fn: (e: MessageEvent) => void) { this.listeners.set(k, fn); }
   close() { this.closed = true; this.readyState = 2; }
-  emit(kind: string, data: unknown) { this.listeners.get(kind)?.(new MessageEvent(kind, { data: JSON.stringify(data) })); }
+  /** Like a browser: a server event named `error` also reaches `onerror`. */
+  emit(kind: string, data: unknown) {
+    const e = new MessageEvent(kind, { data: JSON.stringify(data) });
+    this.listeners.get(kind)?.(e);
+    if (kind === "error") this.onerror?.(e);
+  }
 }
 
 const handlers = (): StreamHandlers & Record<string, ReturnType<typeof vi.fn>> =>
@@ -48,7 +53,7 @@ describe("EventSourceHub", () => {
     expect(FakeES.all[0].url).toBe("/api/conversation/threads/3/events/stream?after=42");
     FakeES.all[0].emit("assistant.text", { id: 50, kind: "assistant.text", execution_id: "e", payload: {} });
     FakeES.all[0].readyState = 2;
-    FakeES.all[0].onerror!();
+    FakeES.all[0].onerror!(new Event("error"));
     hub.reconnect();
     vi.advanceTimersByTime(BACKOFF_CEILING_MS);
     expect(FakeES.all[1].url).toBe("/api/conversation/threads/3/events/stream?after=50");
@@ -61,13 +66,24 @@ describe("EventSourceHub", () => {
     }
   });
 
+  it("a run's error event is delivered and is not a lost connection", () => {
+    const h = handlers();
+    hub.open(1, h);
+    const es = FakeES.all[0];
+    es.readyState = 1;
+    es.onopen!();
+    es.emit("error", { id: 3, kind: "error", execution_id: "e", payload: { text: "429" } });
+    expect(h.onEvent).toHaveBeenCalledWith(expect.objectContaining({ id: 3, kind: "error" }));
+    expect(h.onState).toHaveBeenLastCalledWith("live");
+  });
+
   it("does not retry a refused stream until asked, then waits the backoff", () => {
     vi.useFakeTimers();
     const h = handlers();
     hub.open(1, h);
     const es = FakeES.all[0];
     es.readyState = 2;
-    es.onerror!();
+    es.onerror!(new Event("error"));
     expect(h.onState).toHaveBeenLastCalledWith("refused");
     vi.advanceTimersByTime(60_000);
     expect(FakeES.all).toHaveLength(1);

@@ -37,8 +37,12 @@ from .test_conversation_submission import _job_type, _Req  # noqa: F401
 
 
 class SpyRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, session_found: bool = True) -> None:
         self.requests: list[RunRequest] = []
+        self.session_found = session_found
+
+    def prepare_resume(self, session_id: str) -> bool:
+        return self.session_found
 
     def execute(self, request: RunRequest) -> RunResult:
         self.requests.append(request)
@@ -76,8 +80,9 @@ def _answer(conn, cid, job_id, *, session_id, text="odpowiedź") -> None:
     conn.commit()
 
 
-def _run(conn, job_id, reference_id, *, resume: str | None) -> RunRequest:
-    runner = SpyRunner()
+def _run(conn, job_id, reference_id, *, resume: str | None,
+         session_found: bool = True) -> RunRequest:
+    runner = SpyRunner(session_found=session_found)
     workflow = ConversationWorkflow(runner=runner, logger=logging.getLogger("test"))
 
     class _Job:
@@ -180,6 +185,23 @@ def test_a_fresh_follow_up_is_sent_the_assembled_history(conn, world):
     assert request.session_id is None
     assert "pytanie jeden" in request.prompt
     assert "odpowiedź" in request.prompt
+    assert "pytanie dwa" in request.prompt
+
+
+def test_a_follow_up_whose_session_is_gone_starts_fresh_with_the_history(conn, world):
+    """A session the harness cannot find (pruned, or filed under another run dir) must not
+    fail every later turn of the thread: the turn runs fresh, with the whole thread."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    _, first_job = _turn(conn, cid, world, "c1", "pytanie jeden")
+    _answer(conn, cid, first_job, session_id="session-one")
+    second_msg, second_job = _turn(conn, cid, world, "c2", "pytanie dwa")
+
+    request = _run(conn, second_job, f"{cid}:{second_msg}", resume="session-one",
+                   session_found=False)
+
+    assert request.session_id is None
+    assert "pytanie jeden" in request.prompt
     assert "pytanie dwa" in request.prompt
 
 
