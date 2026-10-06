@@ -101,7 +101,7 @@ def test_admin_grant_options(web, monkeypatch):
     _as(monkeypatch, ADMIN)
     r = _call(web, "GET", "/api/admin/grants/options")
     assert r.status_code == 200
-    assert r.json() == {"roles": list(accounts.ROLES), "operations": sorted(accounts.GRANTABLE_OPERATIONS)}
+    assert r.json() == {"roles": list(accounts.ROLES), "operations": ["artifact.launch", "conversation.run_details"]}
     _as(monkeypatch, USER)
     assert _call(web, "GET", "/api/admin/grants/options").status_code == 403
 

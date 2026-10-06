@@ -155,6 +155,7 @@ class TestAgentViewRuntimeCommand:
         assert payload["headless_command"] == [
             "claude", "-p", "hi there", "--dangerously-skip-permissions",
             *_MCP_FLAGS, "--output-format", "stream-json", "--verbose",
+            "--include-partial-messages",
             "--model", "claude-opus-4-6",
         ]
 

@@ -168,7 +168,9 @@ class GrantAddCommand(_Command):
         parser.add_argument("--role", required=True, choices=accounts.ROLES)
         what = parser.add_mutually_exclusive_group(required=True)
         what.add_argument("--tool")
-        what.add_argument("--operation", choices=sorted(accounts.GRANTABLE_OPERATIONS))
+        operations = accounts.grantable_operations()
+        what.add_argument("--operation", choices=sorted(operations),
+                          help="; ".join(f"{k}: {v}" for k, v in sorted(operations.items())))
         where = parser.add_mutually_exclusive_group(required=True)
         where.add_argument("--workspace", help="Workspace code")
         where.add_argument("--agent-view", dest="agent_view", help="Agent view code")

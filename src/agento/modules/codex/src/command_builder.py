@@ -5,7 +5,12 @@ from agento.framework.harness import HarnessRunContext, RunRequest
 
 from .config import parse_toml_blob
 
-_EXEC_FLAGS = ["--json", "--skip-git-repo-check"]
+_EXEC_FLAGS = [
+    "--json",
+    "--skip-git-repo-check",
+    # A reasoning summary as an `item.completed` `reasoning` item (E9 chat UX, shown collapsed).
+    "-c", "model_reasoning_summary=auto",
+]
 _BYPASS_FLAG = "--dangerously-bypass-approvals-and-sandbox"
 # A retry resumes its own interrupted session with an empty prompt; a conversation's next
 # turn resumes the previous turn's session WITH the new message, which must reach the CLI.

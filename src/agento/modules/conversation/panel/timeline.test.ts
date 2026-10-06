@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StreamEvent } from "@agento/api";
-import { buildItems, MAX_EVENTS, TimelineStore, type Item, type Run } from "./timeline";
+import { buildItems, foldTools, MAX_EVENTS, TimelineStore, turns, type Item, type Run, type Turn } from "./timeline";
 
 const ev = (id: number, kind: string, execution_id: string | null, payload: Record<string, unknown> = {}): StreamEvent =>
   ({ id, kind, execution_id, payload, created_at: null });
@@ -140,5 +140,67 @@ describe("buildItems", () => {
       s.merge("older", [ev(2, "gap", "e"), ev(3, "truncated", "e"), text(4, "X")]);
       expect(shown(s.events())).toEqual(["marker", "marker", "text:X", "answer:X"]);
     });
+  });
+});
+
+describe("partial segments (B1)", () => {
+  const part = (id: number, t: string, kind = "assistant.partial") => ev(id, kind, "e", { text: t });
+  const items = (events: StreamEvent[]) => run(buildItems(events)).items;
+
+  it("partials grow one live text; the complete fragment takes its place", () => {
+    expect(items([part(1, "Hel"), part(2, "lo")])).toEqual([{ type: "text", key: "1", text: "Hello", live: true }]);
+    expect(items([part(1, "Hel"), part(2, "lo"), text(3, "Hello.")])).toEqual([{ type: "text", key: "1", text: "Hello.", live: false }]);
+  });
+
+  it("a complete fragment opens a new segment: later partials are a new text", () => {
+    expect(shown([part(1, "a"), text(2, "a"), part(3, "b")])).toEqual(["text:a", "text:b"]);
+  });
+
+  it("a segment whose complete fragment equals the answer is hidden with its partials", () => {
+    expect(shown([part(1, "Do"), part(2, "ne"), text(3, "Done"), answer(4, "Done")])).toEqual(["answer:Done"]);
+  });
+
+  it("reasoning partials close on assistant.reasoning; text and reasoning segments are separate", () => {
+    expect(items([part(1, "hm", "reasoning.partial"), part(2, "Hi"), ev(3, "assistant.reasoning", "e", { text: "hmm" })]))
+      .toEqual([
+        { type: "reasoning", key: "1", text: "hmm", live: false },
+        { type: "text", key: "2", text: "Hi", live: true },
+      ]);
+  });
+
+  it("partials left by an ended run stay as its text, no longer live", () => {
+    const left = items([part(1, "cut", "reasoning.partial"), part(2, "cut off"), ev(3, "run.finished", "e", { outcome: "failed" })]);
+    expect(left).toMatchObject([{ type: "reasoning", live: false }, { type: "text", text: "cut off", live: false }]);
+  });
+});
+
+describe("foldTools and turns", () => {
+  const tool = (id: number, x = "e") => ev(id, "tool.started", x, { tool_name: "Bash", data: { call_id: `c${id}` } });
+  const started = (id: number, x: string, attempt: number) => ev(id, "run.started", x, { job_id: 7, attempt, max_attempts: 3 });
+  const failed = (id: number, x: string, attempt: number) => ev(id, "job.failed", x, { job_id: 7, attempt, kind: "harness" });
+  const turn = (events: StreamEvent[]) => turns(buildItems(events)).find((i): i is Turn => i.type === "turn")!;
+
+  it("two or more tools in a row fold into one group; a lone tool stays", () => {
+    const folded = foldTools(run(buildItems([tool(1), tool(2), text(3, "x"), tool(4)])).items);
+    expect(folded.map((i) => (i.type === "tools" ? `tools:${i.tools.length}` : i.type))).toEqual(["tools:2", "text", "tool"]);
+  });
+
+  it("the attempts of one job are one turn: the newest attempt's items, attempt n of m", () => {
+    const t = turn([started(1, "a", 1), text(2, "first", "a"), failed(3, "a", 1), started(4, "b", 2), text(5, "second", "b")]);
+    expect(t.items.map((i) => i.type === "text" && i.text)).toEqual(["second"]);
+    expect([t.attempt, t.maxAttempts, t.failure]).toEqual([2, 3, null]);
+  });
+
+  it("a failed attempt with attempts left is retrying; the last one is a failure with every error counted", () => {
+    expect(turn([started(1, "a", 1), ev(2, "error", "a", { text: "boom" }), failed(3, "a", 1)]).failure)
+      .toEqual({ text: "The run failed (harness).", count: 2, failed: true, retrying: true });
+    const last = turn([started(1, "a", 1), failed(2, "a", 1), started(3, "b", 3), ev(4, "error", "b", { text: "boom" }), failed(5, "b", 3)]);
+    expect(last.failure).toMatchObject({ failed: true, retrying: false, count: 3 });
+    expect(last.items).toEqual([]);
+  });
+
+  it("an error in a run that did not fail is reported, not a failure", () => {
+    expect(turn([started(1, "a", 1), ev(2, "error", "a", { text: "warn" }), ev(3, "run.finished", "a", { job_id: 7, outcome: "succeeded" })]).failure)
+      .toEqual({ text: "warn", count: 1, failed: false, retrying: false });
   });
 });

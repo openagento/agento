@@ -62,7 +62,7 @@ tool's input or output) before the per-run byte cap counts it.
 | --- | --- | --- |
 | POST | `/api/conversation/threads` | `201 {id}` |
 | GET | `/api/conversation/threads` | the caller's active threads; `?scope=channels[&channel=<source>][&before=<cursor>]` lists the channel threads instead (admins only, a non-admin gets `[]`), newest activity first, each row with a `cursor` for the next page |
-| GET | `/api/conversation/threads/{id}` | one thread, with `live` and its newest 50 `runs` |
+| GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (model, tokens and job id only with `run_details`) |
 | GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&limit=<n>`: one page of events, oldest first, `{events, has_older, newest_id}`; a `before` at or below the prune watermark is `409 cursor_expired` |
 | DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path) |
 | GET | `/api/conversation/threads/{id}/messages` | its messages |
@@ -89,6 +89,21 @@ only when the caller owns it (or is `admin`), **and** `can_reach()` covers its
 returns `None`, which every route renders as **404, never 403** — a 403 would confirm the
 thread exists. Reach is therefore re-evaluated on every request: deactivating the view, or
 removing the role's grant, hides the thread from the next one.
+
+### Run details (ACL resource)
+
+The module declares the ACL resource `conversation.run_details` in `di.json`. It covers the trigger
+prompt, tool input and output, and a run's model, tokens and job id. `admin` has it built in; a
+`user` gets it only by a grant on the thread's workspace or view
+(`bin/agento grant:add --role user --operation conversation.run_details --workspace <code>`).
+Tool names, statuses and errors stay visible to everyone who reads the thread.
+
+### Title
+
+A thread created with no title takes one from its first message: whitespace collapsed, cut on a
+word boundary at 60 characters with `…`. It is set in the submit transaction
+(`UPDATE … WHERE title IS NULL`), so a thread created with a title keeps it and an old untitled
+thread takes the title of its next message.
 
 `scope_is_active()` is a **new** framework predicate beside `can_reach()`, never folded into
 it: E2's admin screens call `can_reach()`/`visible_agent_views()` precisely in order to

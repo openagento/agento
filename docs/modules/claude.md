@@ -7,8 +7,17 @@ At workspace-build time the adapter writes `.claude.json` (model, login state) a
 `.claude/settings.json` (permissions and everything else Claude Code reads from its
 settings file), plus `.mcp.json` for the Toolbox.
 
-Runs Claude Code headless with `--output-format stream-json --verbose`. The contract it
-implements is in [../architecture/harness-contract.md](../architecture/harness-contract.md).
+Runs Claude Code headless with `--output-format stream-json --verbose --include-partial-messages`.
+The contract it implements is in [../architecture/harness-contract.md](../architecture/harness-contract.md).
+
+## Live timeline fragments
+
+`--include-partial-messages` adds `stream_event` lines. `stream_event_mapper` maps a
+`content_block_delta` `text_delta` to `assistant.partial` and a `thinking_delta` to
+`reasoning.partial`; the framework coalesces them (one row per 250 ms or 4 KiB). The complete
+`assistant` message then gives, in content order, `assistant.reasoning` per thinking block,
+`tool.started` per tool call and one `assistant.text` (its text blocks joined with `\n`). The
+claude CLI sends thinking with empty text, so the panel shows "Thought" with no body.
 
 ## Final answer
 

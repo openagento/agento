@@ -8,6 +8,7 @@ launch sees either the old access (and is revoked with the rest) or the new one.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -18,7 +19,7 @@ from .passwords import dummy_verify, hash_password, verify_password
 ROLES = ("admin", "user")
 GRANT_KINDS = ("tool", "operation")
 ADMIN_OPERATIONS = frozenset({"users.manage", "grants.manage", "config.write", "admin.read", "credentials.manage"})
-GRANTABLE_OPERATIONS = frozenset({"artifact.launch"})
+_BUILTIN_OPERATIONS = {"artifact.launch": "Launch a miniapp"}
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _GRANT_LOCK = "agento.role_grant"
 
@@ -220,14 +221,32 @@ def declared_tools() -> set[str]:
     return {t["name"] for m in scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR) for t in m.tools if t.get("name")}
 
 
+def grantable_operations() -> dict[str, str]:
+    """``{id: title}`` of the operations an admin may grant: the built-in ones plus every
+    ``acl_resources`` entry a module declares in ``di.json`` (Magento ``acl.xml``). Admin has
+    them all built in (``may``/``can_see_*`` check the role first)."""
+    from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
+    from ..module_discovery import module_dirs_by_name
+    from ..module_validator import acl_resource_declarations
+
+    out = dict(_BUILTIN_OPERATIONS)
+    for _name, module_dir in module_dirs_by_name(CORE_MODULES_DIR, USER_MODULES_DIR):
+        try:
+            manifest = json.loads((module_dir / "module.json").read_text())
+        except (OSError, ValueError):
+            continue
+        out.update(acl_resource_declarations(module_dir, manifest if isinstance(manifest, dict) else {}))
+    return out
+
+
 def _check_grant(role: str, kind: str, name: str, workspace_id, agent_view_id) -> None:
     _check_role(role)
     if kind not in GRANT_KINDS:
         raise AccessError(f"grant kind must be one of {', '.join(GRANT_KINDS)}")
     if (workspace_id is None) == (agent_view_id is None):
         raise AccessError("set exactly one of workspace or agent_view")
-    if kind == "operation" and name not in GRANTABLE_OPERATIONS:
-        raise AccessError(f"operation must be one of {', '.join(sorted(GRANTABLE_OPERATIONS))}")
+    if kind == "operation" and name not in (operations := grantable_operations()):
+        raise AccessError(f"operation must be one of {', '.join(sorted(operations))}")
     if kind == "tool" and name not in declared_tools():
         raise AccessError(f"no module declares tool {name!r}")
 
