@@ -123,7 +123,10 @@ panel → `{type: "agento.result", launch_id, id, status, body}`.
 A miniapp page is hand-written HTML over the shared kit, served by `proxy` at `/_ui/<version>/`
 on the apps origin: `agento-ui.css` (the same tokens as the panel), `agento-ui.js` (`<ag-table>`,
 `<ag-dialog>`, `<ag-copy>`, `<ag-json>`) and `agento-bridge.js` (this SDK, byte for byte). The
-`miniapp-ui` skill tells an agent how to write one; enable it per scope. An example is in
+`miniapp-build` skill tells an agent the steps and the limits (no server, no credential, no
+external call, AI text written at build time, the hand-over an operator needs), and the generated
+`miniapp-ui` skill tells it the kit classes; enable both per scope
+(`skill:enable miniapp-build`, `skill:enable miniapp-ui`). An example is in
 `frontend/miniapps/examples/job-status/`. See [../development/frontend.md](../development/frontend.md#the-miniapp-kit).
 
 ## Enable checklist
@@ -132,7 +135,12 @@ on the apps origin: `agento-ui.css` (the same tokens as the panel), `agento-ui.j
 uv run bin/agento module:enable miniapps && uv run bin/agento setup:upgrade
 uv run bin/agento tool:enable miniapp --agent-view <view>
 uv run bin/agento tool:enable miniapp_get_launch_spec --agent-view <view>
+uv run bin/agento tool:enable miniapp_list --agent-view <view>
+uv run bin/agento tool:enable versioned_artifact --agent-view <view>
+uv run bin/agento tool:enable versioned_artifact_get_current --agent-view <view>
 uv run bin/agento grant:add --role user --tool miniapp_get_launch_spec --agent-view <view>
+uv run bin/agento grant:add --role user --tool miniapp_list --agent-view <view>
+uv run bin/agento grant:add --role user --tool versioned_artifact_get_current --agent-view <view>
 uv run bin/agento grant:add --role user --operation artifact.launch --agent-view <view>
 # plus a grant and a tool gate for each action the manifest names
 uv run bin/agento miniapp:activate <artifact_code> <version_id>
