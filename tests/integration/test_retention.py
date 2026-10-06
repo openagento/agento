@@ -491,8 +491,10 @@ def _execution(conn, *, job_id: int) -> str:
     execution_id = str(uuid.uuid4())
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO execution (execution_id, job_id, attempt, status) "
-            "VALUES (%s, %s, 1, 'succeeded')", (execution_id, job_id))
+            "INSERT INTO execution (execution_id, job_id, attempt, status, conversation_id) "
+            "VALUES (%s, %s, 1, 'succeeded', "
+            "        (SELECT conversation_id FROM message WHERE job_id = %s LIMIT 1))",
+            (execution_id, job_id, job_id))
         cur.execute(
             "INSERT INTO execution_delta (execution_id, seq, kind) VALUES (%s, 1, 'delta')",
             (execution_id,))
@@ -622,60 +624,94 @@ def test_the_operator_delete_runs_the_same_ordered_delete(conn, loaded):
                  (execution_id,)) == []
 
 
-def test_an_execution_no_message_owns_is_pruned_with_its_deltas(conn, thread, world):
-    """The provider mints an `execution` for EVERY job; the conversation delete reaches
-    `execution` only through `message.job_id`. Without this pass a Jira or Outlook job's
-    execution and deltas are reachable by nothing and grow for ever (CODE-8).
-
-    The conversation's own execution must survive: it is the thread's history, and its
-    retention is the thread's delete.
-    """
-    orphan, owned = str(uuid.uuid4()), str(uuid.uuid4())
-    message_id, job_id, _ = service.submit_message(
-        conn, conversation_id=thread, user_id=world["owner"].id,
-        client_message_id=str(uuid.uuid4())[:16], content="pytanie")
-    with conn.cursor() as cur:
-        for execution_id, jid in ((orphan, 999_000_001), (owned, job_id)):
-            cur.execute(
-                "INSERT INTO execution (execution_id, job_id, attempt, status, started_at) "
-                "VALUES (%s, %s, 1, 'succeeded', NOW() - INTERVAL 30 DAY)",
-                (execution_id, jid))
-            cur.execute("INSERT INTO execution_delta (execution_id, seq, kind) "
-                        "VALUES (%s, 1, 'delta')", (execution_id,))
-    conn.commit()
-
-    removed = retention.prune_orphan_executions(conn, event_days=7)
-
-    alive = {r["execution_id"] for r in
-             _rows(conn, "SELECT execution_id FROM execution WHERE execution_id IN (%s, %s)",
-                   (orphan, owned))}
-    deltas = {r["execution_id"] for r in
-              _rows(conn, "SELECT execution_id FROM execution_delta "
-                          "WHERE execution_id IN (%s, %s)", (orphan, owned))}
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM execution_delta WHERE execution_id = %s", (owned,))
-        cur.execute("DELETE FROM execution WHERE execution_id = %s", (owned,))
-        cur.execute("DELETE FROM message WHERE id = %s", (message_id,))
-    conn.commit()
-
-    assert removed == 1
-    assert alive == {owned}
-    assert deltas == {owned}
-
-
-def test_a_young_orphan_execution_is_left_alone(conn):
-    """The window is the contract: a running job's rows are not swept out from under it."""
+def _run(conn, *, status="succeeded", started_days=0, finished_days=0,
+         conversation_id=None) -> str:
     execution_id = str(uuid.uuid4())
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO execution (execution_id, job_id, attempt, status) "
-                    "VALUES (%s, 999000002, 1, 'running')", (execution_id,))
+        cur.execute(
+            "INSERT INTO execution (execution_id, job_id, attempt, status, started_at, "
+            "                       finished_at, conversation_id) "
+            "VALUES (%s, 999000001, 1, %s, NOW() - INTERVAL %s DAY, "
+            "        IF(%s = 'running', NULL, NOW() - INTERVAL %s DAY), %s)",
+            (execution_id, status, started_days, status, finished_days, conversation_id))
+        cur.execute("INSERT INTO execution_delta (execution_id, seq, kind) "
+                    "VALUES (%s, 1, 'assistant.text')", (execution_id,))
     conn.commit()
+    return execution_id
 
-    assert retention.prune_orphan_executions(conn, event_days=7) == 0
 
+def _alive(conn, *ids) -> set[str]:
+    marks = ", ".join(["%s"] * len(ids))
+    runs = {r["execution_id"] for r in _rows(
+        conn, f"SELECT execution_id FROM execution WHERE execution_id IN ({marks})", ids)}
+    deltas = {r["execution_id"] for r in _rows(
+        conn, f"SELECT execution_id FROM execution_delta WHERE execution_id IN ({marks})", ids)}
+    assert runs == deltas            # a run and its ledger go together
+    return runs
+
+
+def _drop(conn, *ids) -> None:
+    marks = ", ".join(["%s"] * len(ids))
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM execution WHERE execution_id = %s", (execution_id,))
+        cur.execute(f"DELETE FROM execution_delta WHERE execution_id IN ({marks})", ids)
+        cur.execute(f"DELETE FROM execution WHERE execution_id IN ({marks})", ids)
+        cur.execute(f"DELETE FROM tool_invocation WHERE run_execution_id IN ({marks})", ids)
     conn.commit()
+
+
+def test_an_old_finished_run_of_an_active_thread_is_pruned_with_its_ledger(conn, thread):
+    """One age bound for every run (E9 §3.5): an active channel thread lives as long as its
+    issue keeps running, and its runs must not grow with it for ever (CODE-8)."""
+    old = _run(conn, started_days=30, finished_days=30, conversation_id=thread)
+    young = _run(conn, started_days=1, finished_days=1, conversation_id=thread)
+    try:
+        assert retention.prune_old_executions(conn, event_days=7) == 1
+        assert _alive(conn, old, young) == {young}
+    finally:
+        _drop(conn, old, young)
+
+
+def test_a_running_run_is_never_pruned(conn):
+    running = _run(conn, status="running", started_days=30)
+    try:
+        assert retention.prune_old_executions(conn, event_days=7) == 0
+        assert _alive(conn, running) == {running}
+    finally:
+        _drop(conn, running)
+
+
+def test_the_clock_is_when_the_run_finished_not_when_it_started(conn):
+    """Events age by `created_at`; a run that started long ago and finished today still has
+    young events, so its row must stay as long as they do."""
+    late = _run(conn, started_days=30, finished_days=0)
+    try:
+        assert retention.prune_old_executions(conn, event_days=7) == 0
+        assert _alive(conn, late) == {late}
+    finally:
+        _drop(conn, late)
+
+
+def test_a_run_with_an_unprojected_tool_call_waits_for_the_relay(conn):
+    """The relay finds a call's thread through the run's row, so the row stays until every
+    finished call is projected - then it goes."""
+    old = _run(conn, started_days=30, finished_days=30)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO tool_invocation (execution_id, run_execution_id, capability_id, "
+            "transport, actor, subject_id, tool_name, args_sha256, workspace_id, outcome) "
+            "VALUES (%s, %s, 1, 'http', 'agent', '7', 'x', %s, 3, 'ok')",
+            (str(uuid.uuid4()), old, "a" * 64))
+    conn.commit()
+    try:
+        assert retention.prune_old_executions(conn, event_days=7) == 0
+        with conn.cursor() as cur:
+            cur.execute("UPDATE tool_invocation SET conversation_relayed_at = NOW() "
+                        "WHERE run_execution_id = %s", (old,))
+        conn.commit()
+        assert retention.prune_old_executions(conn, event_days=7) == 1
+        assert _alive(conn, old) == set()
+    finally:
+        _drop(conn, old)
 
 
 def test_every_pass_stops_at_its_per_run_cap(conn, world):
@@ -692,14 +728,7 @@ def test_every_pass_stops_at_its_per_run_cap(conn, world):
         threads.append(cid)
         _event(conn, cid, age_days=400)
         _age_conversation(conn, cid, 400)
-    orphans = [str(uuid.uuid4()) for _ in range(3)]
-    with conn.cursor() as cur:
-        for i, execution_id in enumerate(orphans):
-            cur.execute(
-                "INSERT INTO execution (execution_id, job_id, attempt, status, started_at) "
-                "VALUES (%s, %s, 1, 'succeeded', NOW() - INTERVAL 40 DAY)",
-                (execution_id, 999_100_000 + i))
-    conn.commit()
+    orphans = [_run(conn, started_days=40, finished_days=40) for _ in range(3)]
 
     try:
         assert retention.prune_events(conn, event_days=7, limit=2) == 2
@@ -707,12 +736,10 @@ def test_every_pass_stops_at_its_per_run_cap(conn, world):
         for cid in threads:
             _age_archive(conn, cid, 400)
         assert retention.delete_archived(conn, archived_days=30, limit=1) == 1
-        assert retention.prune_orphan_executions(conn, event_days=7, limit=1,
-                                                 max_rows=2) == 2
+        assert retention.prune_old_executions(conn, event_days=7, limit=1,
+                                              max_rows=2) == 2
     finally:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM execution WHERE execution_id IN (%s, %s, %s)", orphans)
-        conn.commit()
+        _drop(conn, *orphans)
         for cid in threads:
             _wipe(conn, cid)
             retention.delete_tree(conn, cid)

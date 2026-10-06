@@ -17,6 +17,7 @@ from .auth import PiOpenRouterAuthenticator
 from .command_builder import PiCommandBuilder
 from .config import PiWorkspaceAdapter
 from .runner import PiSubprocessRunner
+from .stream_event_mapper import PiStreamEventMapper
 from .transcript_reader import PiTranscriptReader
 
 # One scope per credential-requiring provider. `ollama` requires none, so it has no
@@ -30,6 +31,7 @@ class PiHarnessAdapter:
         self._command_builder = PiCommandBuilder()
         self._workspace_adapter = PiWorkspaceAdapter()
         self._transcript_reader = PiTranscriptReader()
+        self._stream_event_mapper = PiStreamEventMapper()
         self._authenticators: dict[CredentialScope, CredentialAuthenticator] = {
             CREDENTIAL_SCOPE: PiOpenRouterAuthenticator(),
         }
@@ -45,6 +47,10 @@ class PiHarnessAdapter:
     @property
     def transcript_reader(self) -> PiTranscriptReader:
         return self._transcript_reader
+
+    @property
+    def stream_event_mapper(self) -> PiStreamEventMapper:
+        return self._stream_event_mapper
 
     @property
     def authenticators(self) -> Mapping[CredentialScope, CredentialAuthenticator]:

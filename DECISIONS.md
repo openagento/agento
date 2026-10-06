@@ -36,6 +36,33 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+## 2026-10-06 — E9: one timeline for every conversation
+
+Plan: `~/.claude/plans/e9-unified-conversations-552df5.md`.
+
+- **D-E9-1: the store is `conversation_event`.** The PRD proposes `conversation_session`, a
+  per-conversation `seq` and `conversation_source`. They are not added: `execution` already is the
+  run row (job, attempt, harness session, model), the global `conversation_event.id` is a valid
+  keyset cursor, and the source lives on `conversation` (`channel`, `external_ref`,
+  `external_key`). The live path decodes the harness's stdout through the existing
+  `StreamEventMapper` seam; reading native session files is deferred (ROADMAP.md).
+- **D-E9-2: a commit-ordered append.** The cursor is a global AUTO_INCREMENT, so two writers of one
+  thread could take ids 10 and 11 and commit 11 first, and a reader at `id > 10` would never see
+  10. Every insert goes through `service.append_event`, which takes the thread's row lock first
+  (one `UPDATE conversation SET last_activity_at`, which also moves the idle clock). A writer of
+  several threads locks them in ascending id. An AST test allows no second INSERT site.
+- **D-E9-3 (proposal, the owner has not decided): channel threads and tool payloads are an
+  admin's only.** A job that is not a panel turn gets a thread with no owner; only an admin reads
+  it, and a non-admin gets 404. Tool `input`/`output` are stripped for a non-admin even in their
+  own panel thread: a tool can return customer data the user holds no grant on. Admins already
+  read every job's prompt and output (`/api/admin/jobs/{id}`); the timeline shows them a longer
+  excerpt of the same data. Channel threads are read-only (409 `read_only`).
+- **D-E9-4: the answer is the last assistant message.** A harness's `raw_output` is the final
+  answer text (claude `result`, codex last `agent_message`, pi last assistant message), never the
+  stream-json. That is what `job.output` stores and the answer bubble shows.
+
+---
+
 ## 2026-10-05 — Panel display settings in an `admin` module
 
 - **A core module, not `web` and not `core`.** The date format and time zone are panel meaning

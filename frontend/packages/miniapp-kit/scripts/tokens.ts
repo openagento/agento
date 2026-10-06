@@ -46,6 +46,11 @@ const SOURCE: Record<string, string | Record<Mode, string>> = {
   error: "--mantine-color-error",
   // The select chevron: Mantine sets this in the Combobox CSS, not in a theme variable.
   chevron: { light: "--mantine-color-gray-6", dark: "--mantine-color-dark-3" },
+  // Prose (`.ag-prose`, the twin of `Markdown`): Mantine sets these in Typography.css, not in a theme variable.
+  code: { light: "--mantine-color-black", dark: "--mantine-color-white" },
+  codeBackground: { light: "--mantine-color-gray-0", dark: "--mantine-color-dark-5" },
+  preBackground: { light: "--mantine-color-gray-0", dark: "--mantine-color-dark-8" },
+  rule: { light: "--mantine-color-gray-3", dark: "--mantine-color-dark-3" },
 };
 
 /** The status tones and the Mantine color of each: text, and the `light` variant of a badge. */
@@ -71,6 +76,8 @@ const pick = (o: Record<string, string>) => Object.fromEntries(Object.entries(o)
 
 export const radius = pick(theme.radius);
 export const fontSize = pick(theme.fontSizes);
+/** Mantine's spacing scale, which prose margins use (`space` below is the kit's own). */
+export const spacing = pick(theme.spacing);
 /** The kit's own layout steps for gaps and padding (Mantine has no numeric scale). */
 export const space = { 1: "4px", 2: "8px", 3: "12px", 4: "16px", 5: "20px", 6: "24px", 7: "32px", 8: "40px" } as const;
 
@@ -96,6 +103,10 @@ export function variablesCss(): string {
     `  --ag-font-mono: ${theme.fontFamilyMonospace};`,
     ...Object.entries(fontSize).map(([k, v]) => `  --ag-font-size-${k}: ${v};`),
     `  --ag-line-height: ${theme.lineHeights.md};`,
+    ...Object.entries(spacing).map(([k, v]) => `  --ag-spacing-${k}: ${v};`),
+    `  --ag-font-family-headings: ${theme.headings.fontFamily};`,
+    ...Object.entries(theme.headings.sizes).flatMap(([h, s]) => [`  --ag-${h}-font-size: ${unscaled(s.fontSize)};`,
+      `  --ag-${h}-line-height: ${s.lineHeight};`, `  --ag-${h}-font-weight: ${s.fontWeight ?? theme.headings.fontWeight};`]),
   ].join("\n");
   return [
     `:root {\n  color-scheme: light dark;\n${colorBlock(light)}\n${rest}\n}`,

@@ -213,7 +213,8 @@ def _parse_reset_at(msg: str, now: datetime | None = None) -> datetime | None:
 
 
 def _extract_agent_text(events: list[dict]) -> str:
-    parts: list[str] = []
+    """The text of the LAST ``agent_message`` (E9 §3.1); earlier ones are progress notes."""
+    answer = ""
     for ev in events:
         if ev.get("type") != "item.completed":
             continue
@@ -222,8 +223,8 @@ def _extract_agent_text(events: list[dict]) -> str:
             continue
         text = item.get("text")
         if isinstance(text, str) and text:
-            parts.append(text)
-    return "\n".join(parts)
+            answer = text
+    return answer
 
 
 def _populate_session(events: list[dict], result: RunResult) -> None:

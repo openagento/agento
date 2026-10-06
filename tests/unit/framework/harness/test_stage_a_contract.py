@@ -631,6 +631,10 @@ class TestProductionWiring:
             mcp_init=None, stats_line="", raw="",
         )
         monkeypatch.setattr(cons, "get_workflow_class", lambda t: workflow)
+        # A module's execution hooks (registered by an earlier suite's bootstrap) write rows
+        # through the claim connection; this test is about the harness ctx, not about them.
+        monkeypatch.setattr(cons, "mint_execution_id", lambda **kw: None)
+        monkeypatch.setattr(cons, "finalize_execution", lambda **kw: None)
 
         c = cons.Consumer.__new__(cons.Consumer)
         c.logger = MagicMock()

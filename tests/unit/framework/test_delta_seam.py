@@ -212,3 +212,76 @@ def test_the_consumer_stops_the_delta_worker_on_its_way_out():
 
     assert len(calls) == 1
     assert calls[0].lineno < plain[0].lineno       # drain while the sink is still live
+
+
+# --- the canonical fragment vocabulary (E9 §3.2) ---------------------------
+
+def _held(mapper, *, secrets=()):
+    """A callback whose queue is held, so the records it enqueues can be read."""
+    import logging
+    execution_deltas.sync(_Sink(), module="conversation", class_path="src.deltas.Sink")
+    callback = consumer._delta_callback(_Entry(_Adapter(mapper)), "e1",
+                                        logging.getLogger("t"), secrets)
+    worker = execution_deltas._worker
+    worker.stop()
+    worker.thread.join(2)
+    return callback, worker._queue
+
+
+def test_a_mapper_may_return_several_fragments_for_one_event():
+    callback, queue = _held(_Mapper([
+        {"kind": "assistant.text", "text": "hi"},
+        {"kind": "tool.started", "tool_name": "Read", "data": {"call_id": "c1", "input": "{}"}},
+    ]))
+
+    callback('{"type": "assistant"}')
+
+    assert [(r.seq, r.kind) for r in queue] == [(1, "assistant.text"), (2, "tool.started")]
+    assert queue[1].data == {"call_id": "c1", "input": "{}"}
+
+
+@pytest.mark.parametrize("fragment", [{"kind": "delta", "text": "hi"}, {"text": "hi"}])
+def test_the_pre_e9_fragment_shape_still_means_assistant_text(fragment):
+    """CODE-5: an out-of-tree mapper written to the old docstring keeps working."""
+    callback, queue = _held(_Mapper(fragment))
+
+    callback('{"type": "text"}')
+
+    assert [(r.kind, r.text) for r in queue] == [("assistant.text", "hi")]
+
+
+def test_an_unknown_kind_is_dropped():
+    callback, queue = _held(_Mapper([{"kind": "thinking", "text": "x"},
+                                     {"kind": "error", "text": "boom"}]))
+
+    callback('{"type": "x"}')
+
+    assert [r.kind for r in queue] == ["error"]
+
+
+def test_both_capability_tokens_are_redacted_from_text_and_data():
+    """The stream must not be a way around the redaction `job.output` gets (SEC-6)."""
+    callback, queue = _held(_Mapper({
+        "kind": "tool.completed", "text": "t TOKMCP",
+        "data": {"call_id": "c1", "output": "TOKREST and TOKMCP", "is_error": False}}),
+        secrets=("TOKMCP", "TOKREST"))
+
+    callback('{"type": "x"}')
+
+    record = queue[0]
+    assert "TOK" not in record.text
+    assert "TOK" not in record.data["output"]
+    assert record.data["is_error"] is False
+
+
+def test_every_string_field_is_bounded():
+    big = "é" * consumer.MAX_FRAGMENT_FIELD_BYTES
+    callback, queue = _held(_Mapper({"kind": "tool.started", "tool_name": "x",
+                                     "text": big, "data": {"call_id": "c", "input": big}}))
+
+    callback('{"type": "x"}')
+
+    record = queue[0]
+    assert len(record.text.encode()) <= consumer.MAX_FRAGMENT_FIELD_BYTES
+    assert len(record.data["input"].encode()) <= consumer.MAX_FRAGMENT_FIELD_BYTES
+    record.data["input"].encode().decode()      # cut on a codepoint

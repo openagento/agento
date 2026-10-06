@@ -69,7 +69,8 @@ export function Jobs() {
   const [params, setParams] = useSearchParams();
   const status = STATUSES.includes(params.get("status") ?? "") ? params.get("status")! : "All";
   const [search, setSearch] = useState("");
-  const [openId, setOpenId] = useState<number | null>(null);
+  // `?job=<id>` opens that job (a conversation's runs link here).
+  const [openId, setOpenId] = useState<number | null>(() => Number(params.get("job")) || null);
   const jobs = useQuery({
     queryKey: ["admin-jobs", status],
     queryFn: ({ signal }) => apiFetch<JobRow[]>(`/api/admin/jobs${status === "All" ? "" : `?status=${status}`}`, { signal }),
