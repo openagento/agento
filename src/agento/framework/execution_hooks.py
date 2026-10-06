@@ -49,7 +49,7 @@ class DeltaRecord:
 
     execution_id: str
     seq: int
-    kind: str                 # "assistant.text" | "tool.started" | "tool.completed" | "error" | "gap" | "truncated"
+    kind: str                 # FRAGMENT_KINDS (consumer.py) | "gap" | "truncated"
     text: str | None
     tool_name: str | None
     data: Mapping[str, str | bool] | None = None   # tool fields: call_id, input, output, is_error

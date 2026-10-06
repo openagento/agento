@@ -285,3 +285,32 @@ def test_every_string_field_is_bounded():
     assert len(record.text.encode()) <= consumer.MAX_FRAGMENT_FIELD_BYTES
     assert len(record.data["input"].encode()) <= consumer.MAX_FRAGMENT_FIELD_BYTES
     record.data["input"].encode().decode()      # cut on a codepoint
+
+
+def test_a_partial_fragment_is_coalesced_not_queued_one_per_token(monkeypatch):
+    """E9 B2: a token-level fragment goes to `submit_partial` (one row per flush), never to
+    the per-record queue - that is what keeps 200 parallel runs to a paced write rate."""
+    partials = []
+    monkeypatch.setattr(execution_deltas, "submit_partial",
+                        lambda execution_id, kind, text: partials.append((execution_id, kind, text)))
+    callback, queue = _held(_Mapper([{"kind": "assistant.partial", "text": "He"},
+                                     {"kind": "reasoning.partial", "text": "hm"}]))
+
+    callback('{"type": "stream_event"}')
+
+    assert partials == [("e1", "assistant.partial", "He"), ("e1", "reasoning.partial", "hm")]
+    assert list(queue) == []
+
+
+def test_the_consumer_closes_the_partial_buffer_of_every_run():
+    """A run's held-back tail is flushed by `close`, from the consumer's per-job `finally`,
+    so an error turn loses no streamed text. A call-graph check on the consumer."""
+    tree = ast.parse((FRAMEWORK / "consumer.py").read_text())
+    closes = [n for n in ast.walk(tree)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+              and n.func.attr == "close"
+              and isinstance(n.func.value, ast.Name) and n.func.value.id == "execution_deltas"]
+    finals = [n for n in ast.walk(tree) if isinstance(n, ast.Try)
+              for f in n.finalbody for c in ast.walk(f) if c in closes]
+
+    assert len(closes) == 1 and finals

@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selector, and only for the harness this view uses — a `system.json` field asks for that with
   `"harness_option": true`, the same shape as `provider_option` one axis up. The config path is
   unchanged (`{module}/{field}`), so `config:set` and `runtime_config_fields` are untouched.
+- **Chat UX for conversations (E9).** Claude (`--include-partial-messages`) and pi stream text and
+  reasoning live: new fragment kinds `assistant.partial`, `reasoning.partial` and
+  `assistant.reasoning`, coalesced per run (one row per 250 ms or 4 KiB, at most 4 writer commits
+  a second) and proven at 250 parallel runs. Codex passes `-c model_reasoning_summary=auto` and
+  shows its reasoning summary. The panel shows the chat layout, tool summaries, one status line,
+  one error per turn with a retry, collapsed reasoning, code highlight and a phone drawer.
+- **ACL resources declared by modules.** `di.json` `acl_resources: [{id, title}]` makes an
+  operation grantable (`grant:add --operation`, the panel Grants screen); `admin` has all. The
+  conversation module declares `conversation.run_details`: prompts, tool input and output, model,
+  tokens and job links are shown to a non-admin only with this grant.
+- A thread with no title takes one from its first message. `run.started` carries `max_attempts`.
+- RULES.md SCL-1: the target is 100–200 parallel jobs per deployment.
 
 - **Regex + priority sender routing for shared Outlook mailboxes.** A mailbox UPN shared by two or
   more agent_views is now polled once and each message routed to a view by matching the normalized
@@ -46,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CliInvoker.interactive_command()` gained a `yolo` keyword; each agent module decides its own flag.
 
 ### Changed
+- `GET /api/conversation/threads/{id}` adds `run_details`; without it, `runs` rows omit `model`,
+  tokens, `job_id`, `type` and `agent_type` (they were shown to every reader before).
+- `accounts.GRANTABLE_OPERATIONS` is replaced by `accounts.grantable_operations()`.
 - **Codex CLI pinned to 0.157.0** (was 0.137.0) in the sandbox image, the dev compose build arg and
   the `codex` harness declaration's `default_range`.
 - **BREAKING — an invalid `agent_view/claude/permissions` now fails the workspace build.** It used

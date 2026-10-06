@@ -111,7 +111,10 @@ Two roles: `admin` and `user`. `admin` has the built-in operations `users.manage
 `grants.manage`, `config.write`, `admin.read` and `credentials.manage`. Everything else comes from `role_grant` rows:
 
 - `grant_kind = 'tool'`: the role may call that tool, if it is enabled there;
-- `grant_kind = 'operation'`: the one grantable operation is `artifact.launch`.
+- `grant_kind = 'operation'`: an ACL resource — the built-in `artifact.launch`, or one a module
+  declares in `di.json` (`"acl_resources": [{"id": "<module>.<name>", "title": "…"}]`, the Magento
+  `acl.xml` pattern). `admin` has every resource built in; another role gets one only by a grant.
+  The conversation module declares `conversation.run_details` (DECISIONS.md D-E9-6).
 
 A row has exactly one scope. A workspace grant reaches the workspace and every view in it. A view
 grant reaches only that view. The same SQL rule is used in Python (`accounts._granted`) and in the
@@ -120,7 +123,7 @@ toolbox (`src/agento/toolbox/capability.js` `GRANTS_SQL`, handed to every auth s
 `tests/fixtures/role_grant_v1.json` holds both to it.
 
 `GET /api/admin/grants/options` (`grants.manage`) answers `{roles, operations}` from
-`accounts.ROLES` and `accounts.GRANTABLE_OPERATIONS`, so the panel hardcodes neither. The Grants
+`accounts.ROLES` and `accounts.grantable_operations()`, so the panel hardcodes neither. The Grants
 screen picks the scope and the names from lists (scopes, tools at that scope, these options) and
 sends one `POST /api/admin/grants` per name, so it cannot send a grant without a scope.
 

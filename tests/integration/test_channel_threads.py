@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from agento.framework.access import accounts
 from agento.framework.execution_hooks import DeltaRecord
 from agento.modules.conversation.src import retention, routes, service, stream
 from agento.modules.conversation.src.deltas import ConversationDeltaSink
@@ -83,6 +84,15 @@ def test_a_jira_job_gets_an_ownerless_channel_thread_with_its_run(conn, world):
     assert (thread["user_id"], thread["channel"], thread["external_ref"]) == (None, "jira", "AI-7")
     assert thread["agent_view_id"] == world["view"]
     assert _kinds(conn, thread["id"]) == ["run.started"]
+
+
+def test_run_started_says_which_attempt_of_how_many(conn, world):
+    """The panel shows "Attempt n of m" on a failed turn (E9 chat UX, U4)."""
+    execution_id = _claim(conn, _job(conn, view=world["view"]))
+
+    payload = json.loads(_rows(conn, "SELECT payload FROM conversation_event "
+                                     "WHERE execution_id = %s", (execution_id,))[0]["payload"])
+    assert (payload["attempt"], payload["max_attempts"]) == (1, 3)
 
 
 def test_the_next_job_on_the_same_issue_and_a_follow_up_reuse_the_thread(conn, world):
@@ -278,6 +288,7 @@ def test_an_admin_lists_and_reads_a_channel_thread_but_cannot_post_into_it(conn,
     assert listed.body[0]["live"] is True                 # its run is still running
     shown = routes.show(_Req(conn, admin, params={"id": cid}))
     assert shown.status == 200 and len(shown.body["runs"]) == 1
+    assert shown.body["run_details"] is True and "model" in shown.body["runs"][0]
     page = routes.timeline(_Req(conn, admin, params={"id": cid}))
     assert [e["kind"] for e in page.body["events"]] == ["run.started"]
 
@@ -433,10 +444,52 @@ def test_the_trigger_prompt_rides_on_run_finished_for_a_live_admin_only(conn, wo
     cid = _thread_of(conn, execution_id)["id"]
     rows, _ = service.list_timeline(conn, conversation_id=cid, before_id=None, limit=10)
 
+    thread = service.load_visible(conn, conversation_id=cid, user=world["admin"])
     shown = {e["kind"]: e["payload"].get("prompt")
-             for e in service.project_events(conn, rows, world["admin"])}
+             for e in service.project_events(conn, rows, world["admin"], thread)}
     hidden = {e["kind"]: e["payload"].get("prompt")
-              for e in service.project_events(conn, rows, world["owner"])}
+              for e in service.project_events(conn, rows, world["owner"], thread)}
 
     assert shown == {"run.started": "Fix the login page", "run.finished": "Fix the login page"}
     assert hidden == {"run.started": None, "run.finished": None}
+
+
+def test_a_role_granted_run_details_sees_them_on_that_scope_only(conn, world):
+    """`conversation.run_details` is an ACL resource: admin has it, a `user` role only with
+    the grant on the thread's view or workspace (owner decision D4, 2026-10-06)."""
+    job_id = _job(conn, view=world["view"], prompt="Fix the login page")
+    execution_id = _claim(conn, job_id)
+    ConversationFinalizer().finalize(conn=conn, job_id=job_id, attempt=1,
+                                     execution_id=execution_id, outcome="failed",
+                                     job_terminal=True)
+    conn.commit()
+    thread = service.load_visible(conn, conversation_id=_thread_of(conn, execution_id)["id"],
+                                  user=world["admin"])
+    with conn.cursor() as cur:
+        service.append_event(cur, thread["id"], kind="error", execution_id=execution_id,
+                             payload={"seq": 1, "text": "raw harness error"},
+                             source_kind="delta", source_id=1)
+    conn.commit()
+    owner = world["owner"]
+    assert owner.role == "user"
+    assert not service.can_see_run_details(conn, owner, thread)
+
+    def errors(user):
+        rows, _ = service.list_timeline(conn, conversation_id=thread["id"], before_id=None,
+                                        limit=10)
+        return [e["payload"]["text"] for e in service.project_events(conn, rows, user, thread)
+                if e["kind"] == "error"]
+
+    assert errors(owner) == [None]                 # the raw error is a run detail (U4)
+
+    accounts.add_grant(conn, "user", "operation", service.RUN_DETAILS,
+                       agent_view_id=world["other_view"])
+    assert not service.can_see_run_details(conn, owner, thread)     # another view's grant
+    accounts.add_grant(conn, "user", "operation", service.RUN_DETAILS,
+                       workspace_id=thread["workspace_id"])
+    assert service.can_see_run_details(conn, owner, thread)
+    assert service.can_see_run_details(conn, world["admin"], thread)
+    rows, _ = service.list_timeline(conn, conversation_id=thread["id"], before_id=None, limit=10)
+    assert {e["payload"].get("prompt") for e in service.project_events(conn, rows, owner, thread)
+            if e["kind"] == "run.started"} == {"Fix the login page"}
+    assert errors(owner) == ["raw harness error"]

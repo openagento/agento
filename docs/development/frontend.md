@@ -84,7 +84,30 @@ npm test            # build, lint, then every unit test and every story in headl
 - **Agent text is Markdown.** `Markdown` (`react-markdown` + `remark-gfm`, loaded lazily so the
   entry chunk stays in budget) renders it in Mantine's `Typography`; raw HTML is shown as text, and
   links open with `rel="noopener noreferrer"`. Its kit twin is `.ag-prose` (kit 1.1.0): the kit does
-  not parse Markdown, the miniapp writes the HTML.
+  not parse Markdown, the miniapp writes the HTML. `<Markdown highlight>` is opt-in: a fenced block
+  renders with `@mantine/code-highlight` and the `highlight.js` common languages (language label,
+  copy button), both in their own lazy chunk. The kit has no syntax highlighting, so only the chat
+  passes `highlight`; the default `Markdown` stays what the parity story compares with `.ag-prose`.
+  (The `@catalogue` text of `.ag-prose` is part of the released kit bytes, UI-3: it says so only
+  when the next kit version is cut.)
+- **The chat is panel-only.** `ChatLayout`, `ChatList`, `ChatMessage`, `ToolCall`, `ToolGroup`,
+  `Reasoning`, `ChatStatus`, `ChatError`, `ChatComposer`, `RunInfo`, `SplitView`, `ThreadList` and
+  `MenuButton` (`packages/ui/src/components/Chat*.tsx`) are Mantine components with no `.ag-*`
+  twin: a miniapp shows no chat (UI-2). The timeline fills the shell's main area; below `sm` the
+  thread list is a `Drawer`. Each rendered timeline item is exactly one `li` of `ChatList`.
+- **A conversation shows turns, not runs.** `buildItems` keeps the partial segments of a run
+  (`assistant.partial` / `reasoning.partial` grow one live item; the next complete
+  `assistant.text` / `assistant.reasoning` replaces it in place, B1). `turns()` merges the runs
+  (attempts) of one job into one turn: it shows the newest attempt's items, two or more tools in a
+  row fold into "Used N tools", and the errors fold into one failure — "Retrying (attempt n of m)"
+  while attempts are left (`run.started.max_attempts`, `job.failed.attempt`), else one "The agent
+  could not answer." with Retry, which posts the turn's question again as a new message. One
+  status line under the newest turn says Queued / Starting / Thinking / Running `<tool>`. A tool
+  call is one line from `tools.ts` (`toolSummary`): the verb and its argument, or the verb alone
+  for a reader without `conversation.run_details` (the server strips the input). Run details
+  (`RunInfo`) show only when the thread's `run_details` is true; the job link only for an admin. A
+  channel run starts with an incoming message "From `<source>` · `<reference>`"; its trigger text
+  only when the server sent `prompt`. The composer always takes typing; only Send waits.
 - **One teardown.** Logout, the first 401 and a new login call `endSession()`: it clears the query
   cache, closes the stream and closes every launch window.
 
@@ -175,8 +198,10 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 | The example miniapp decodes the toolbox action envelope | `packages/miniapp-kit/kit.test.ts` |
 | Dialog focus trap and focus return | `packages/ui/src/components/Forms.stories.tsx` (`DialogFocus`) |
 | Stream opens after the page's newest id, persisted events refetch and never write the cache, 10 s / 30 s reconcile polls, follow-live and "N new events", reset to the newest page on resume, older-page anchor, read-only channel thread | `modules/conversation/panel/conversation.test.tsx` |
-| Dedupe by id, tool pairing, runs grouped by execution, the final-answer rule over split pages | `modules/conversation/panel/timeline.test.ts` |
-| `Markdown` renders a code fence and a table; raw HTML stays text | `packages/ui/src/components/components.test.tsx` |
+| Dedupe by id, tool pairing, runs grouped by execution, the final-answer rule over split pages, partial segments, tool groups, attempts folded into one turn | `modules/conversation/panel/timeline.test.ts` |
+| Queued / Running status line, live partial text, one failure with Retry, typing while busy | `modules/conversation/panel/conversation.test.tsx` |
+| Tool summary per tool and without input, durations; thread day groups | `modules/conversation/panel/tools.test.ts`, `modules/conversation/panel/model.test.ts` |
+| `Markdown` renders a code fence and a table; raw HTML stays text; opt-in highlight; composer keys, tool row, Retry, thread list, menu button | `packages/ui/src/components/components.test.tsx` |
 | WCAG AA contrast, catalogue completeness, skill drift, kit immutability | `packages/miniapp-kit/kit.test.ts` |
 | The three date formats in a fixed zone, the provider, `Timestamp` with no provider | `packages/ui/src/components/Timestamp.test.tsx`, `panel/src/DisplayFormat.test.tsx` |
 | Import boundaries, bundle budget | `boundaries.test.ts` |

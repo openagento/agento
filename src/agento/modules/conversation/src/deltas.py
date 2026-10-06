@@ -11,8 +11,10 @@ Two rows per fragment, in one transaction:
   what makes a re-delivered fragment harmless.
 * `conversation_event` — what a reader actually sees, keyed `('delta', <the ledger row id>)`
   so the same uniqueness carries into the stream. Its `kind` is the fragment's own canonical
-  kind (`assistant.text`, `tool.started`, `tool.completed`, `error`) or a marker (`gap`,
-  `truncated`); older rows say `assistant.delta` and a reader treats them as text (E9 §3.2).
+  kind (`FRAGMENT_KINDS` in the framework consumer) or a marker (`gap`, `truncated`); older
+  rows say `assistant.delta` and a reader treats them as text (E9 §3.2). Live text
+  (`assistant.partial`, `reasoning.partial`) spends at most half of each cap and is dropped
+  silently past it.
 
 Every string field is first cut to `stream/max_fragment_bytes`, so one huge tool output
 spends a bounded share of the per-execution byte cap and the timeline stays readable.
@@ -33,6 +35,7 @@ import pymysql
 
 from agento.framework.database_config import DatabaseConfig
 from agento.framework.db import get_connection
+from agento.framework.execution_deltas import SUPERSEDED_BY
 from agento.framework.execution_hooks import DeltaRecord
 
 from . import service
@@ -155,6 +158,10 @@ class ConversationDeltaSink:
             return
         text, data = _cut(record, caps[2])
         size = _size(text, data)
+        if record.kind in SUPERSEDED_BY and self._over_half(budget, size, caps):
+            # Live text gets half the budget and is dropped silently past it: its complete
+            # fragment follows, and live text must never push a tool call or the answer out.
+            return
         if record.kind not in MARKERS and self._over_cap(budget, size, caps):
             budget.truncated = True
             marker, _ = self._ledger(cur, record.execution_id, record.seq, "truncated")
@@ -174,6 +181,10 @@ class ConversationDeltaSink:
         self._event(cur, budget, record, record.kind,
                     {"seq": record.seq, "text": text, "tool_name": record.tool_name,
                      "data": data}, ledger_id=row_id)
+
+    def _over_half(self, budget: _Budget, size: int, caps: tuple[int, int, int]) -> bool:
+        max_deltas, max_bytes, _ = caps
+        return budget.count + 1 > max_deltas // 2 or budget.bytes + size > max_bytes // 2
 
     def _over_cap(self, budget: _Budget, size: int, caps: tuple[int, int, int]) -> bool:
         max_deltas, max_bytes, _ = caps

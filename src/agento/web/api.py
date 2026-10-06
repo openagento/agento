@@ -286,7 +286,7 @@ def admin_list_grants(req: Request) -> Response:
 
 def admin_grant_options(req: Request) -> Response:
     return _forbidden_unless(req, "grants.manage") or Response(
-        200, {"roles": list(accounts.ROLES), "operations": sorted(accounts.GRANTABLE_OPERATIONS)})
+        200, {"roles": list(accounts.ROLES), "operations": sorted(accounts.grantable_operations())})
 
 
 def admin_add_grant(req: Request) -> Response:

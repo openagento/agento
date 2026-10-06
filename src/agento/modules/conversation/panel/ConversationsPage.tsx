@@ -1,12 +1,14 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { apiFetch, ApiError, useMutation, useQuery, useQueryClient, useSession, type StreamEvent } from "@agento/api";
 import {
-  Button, ConnectionStatus, EmptyState, ErrorState, JobStatusCard, JsonViewer, LoadingState, Markdown, PageHeader,
-  SelectField, StatusBadge, Timestamp, type BadgeTone,
+  Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
+  LoadingState, MenuButton, PageHeader, Reasoning, RunInfo, SelectField, SplitView, ThreadList, ToolCall, ToolGroup,
+  type ThreadLink,
 } from "@agento/ui";
-import { inFlight, turnState, type Message, type RunRow, type Thread } from "./model";
-import { buildItems, type Item } from "./timeline";
+import { DAY_GROUPS, dayGroup, inFlight, turnState, type Message, type Thread, type ThreadDetail } from "./model";
+import { buildItems, turns, type Item, type Shown, type Tool, type Turn } from "./timeline";
+import { duration, liveSummary, toolSummary } from "./tools";
 import { fetchPage, messagesKey, useConversation } from "./useConversation";
 
 interface AgentView { id: number; code: string; label: string }
@@ -15,14 +17,12 @@ const message = (e: unknown) => (e instanceof ApiError ? e.message : "The reques
 /** Within this many px of the bottom, the timeline follows new events. */
 const FOLLOW_PX = 80;
 
-const tone = (status: string | undefined): BadgeTone =>
-  status === "running" ? "running" : status === "succeeded" ? "succeeded"
-    : status === "failed" || status === "dead" ? "failed" : "neutral";
-
 const threadsUrl = (scope: string) => (scope === "mine" ? "/api/conversation/threads"
   : `/api/conversation/threads?scope=channels${scope === "channels" ? "" : `&channel=${encodeURIComponent(scope.slice("channel:".length))}`}`);
 
-function Rail({ current }: { current: number | null }) {
+const useViews = () => useQuery({ queryKey: ["agent-views"], queryFn: ({ signal }) => apiFetch<AgentView[]>("/api/agent-views", { signal }) });
+
+function Rail({ current, close }: { current: number | null; close: () => void }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const admin = useSession()?.role === "admin";
@@ -35,54 +35,44 @@ function Rail({ current }: { current: number | null }) {
     queryFn: ({ signal }) => apiFetch<Thread[]>(threadsUrl("channels"), { signal }),
   });
   const seen = [...new Set((all.data ?? []).map((t) => t.channel))];
-  const views = useQuery({ queryKey: ["agent-views"], queryFn: ({ signal }) => apiFetch<AgentView[]>("/api/agent-views", { signal }) });
-  const [view, setView] = useState("");
-  const viewId = Number(view || views.data?.[0]?.id || 0);
+  const views = useViews();
+  const viewName = new Map((views.data ?? []).map((v) => [v.id, v.label || v.code]));
   const create = useMutation({
-    mutationFn: () => apiFetch<{ id: number }>("/api/conversation/threads", { method: "POST", json: { agent_view_id: viewId } }),
-    onSuccess: (t) => { void qc.invalidateQueries({ queryKey: ["threads"] }); navigate(`/conversations/${t.id}`); },
-  });
-  const archive = useMutation({
-    mutationFn: (id: number) => apiFetch(`/api/conversation/threads/${id}`, { method: "DELETE" }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["threads"] }); navigate("/conversations"); },
+    mutationFn: (viewId: number) => apiFetch<{ id: number }>("/api/conversation/threads", { method: "POST", json: { agent_view_id: viewId } }),
+    onSuccess: (t) => { void qc.invalidateQueries({ queryKey: ["threads"] }); close(); navigate(`/conversations/${t.id}`); },
   });
 
+  const link = (t: Thread): ThreadLink => ({
+    id: t.id,
+    title: t.title || `Conversation ${t.id}`,
+    description: [t.channel !== "panel" ? t.channel : null, t.agent_view_id ? viewName.get(t.agent_view_id) : null,
+      t.status === "archived" ? "archived" : null].filter(Boolean).join(" · ") || undefined,
+    live: t.live, active: t.id === current,
+    onSelect: () => { close(); navigate(`/conversations/${t.id}`); },
+  });
+  const list = threads.data ?? [];
   return (
-    <nav className="ag-stack" aria-label="Conversations">
+    <div className="ag-stack">
+      <PageHeader title="Conversations" />
+      <MenuButton label="New conversation" disabled={create.isPending}
+        items={(views.data ?? []).map((v) => ({ value: String(v.id), label: v.label || v.code }))}
+        onSelect={(v) => create.mutate(Number(v))} />
+      {create.error && <p className="ag-field__error" role="alert">{message(create.error)}</p>}
       {admin && (
         <SelectField label="Show" name="thread-scope" value={scope} onChange={setScope}
           options={[{ value: "mine", label: "Mine" }, { value: "channels", label: "All channels" },
             ...seen.map((c) => ({ value: `channel:${c}`, label: c }))]} />
       )}
-      {(views.data?.length ?? 0) > 1 && (
-        <SelectField label="Agent view" name="thread-view" value={String(viewId)} onChange={setView}
-          options={(views.data ?? []).map((v) => ({ value: String(v.id), label: v.label || v.code }))} />
-      )}
-      <Button variant="primary" disabled={!viewId || create.isPending} onClick={() => create.mutate()}>New conversation</Button>
-      {create.error && <p className="ag-field__error" role="alert">{message(create.error)}</p>}
       {threads.isPending ? <LoadingState /> : threads.error ? <ErrorState message={message(threads.error)} /> : (
-        <ul className="ag-list">
-          {(threads.data ?? []).map((t) => (
-            <li key={t.id} className="ag-row">
-              <Button variant={t.id === current ? "primary" : "subtle"} aria-current={t.id === current ? "page" : undefined}
-                onClick={() => navigate(`/conversations/${t.id}`)}>
-                {t.title || `Conversation ${t.id}`}
-              </Button>
-              <StatusBadge tone="neutral">{t.channel}</StatusBadge>
-              {t.live && <StatusBadge tone="running">live</StatusBadge>}
-              {t.status === "archived" && <span className="ag-muted">archived</span>}
-              {t.id === current && t.status !== "archived" && t.channel === "panel" && (
-                <Button variant="subtle" onClick={() => archive.mutate(t.id)} disabled={archive.isPending}>Archive</Button>
-              )}
-            </li>
-          ))}
-          {threads.data?.length === 0 && <li><EmptyState title="No conversations yet" /></li>}
-        </ul>
+        <ThreadList groups={DAY_GROUPS.map((label) => ({
+          label, threads: list.filter((t) => dayGroup(t.last_activity_at ?? t.created_at) === label).map(link),
+        }))} />
       )}
-    </nav>
+    </div>
   );
 }
 
+/** The composer: typing is always allowed; only Send waits for the agent (U8). */
 export function Composer({ threadId, busy }: { threadId: number; busy: boolean }) {
   const qc = useQueryClient();
   const [text, setText] = useState("");
@@ -90,26 +80,13 @@ export function Composer({ threadId, busy }: { threadId: number; busy: boolean }
     mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
       method: "POST", json: { content, client_message_id: crypto.randomUUID() },
     }),
-    onSuccess: () => { setText(""); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); },
+    // The list too: the first message gives the thread its server title (U9).
+    onSuccess: () => { setText(""); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
   });
-  const submit = () => { if (text.trim() && !send.isPending && !busy) send.mutate(text); };
-  const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter sends; Shift+Enter is a new line.
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
-  };
   return (
-    <form className="ag-stack" onSubmit={(e) => { e.preventDefault(); submit(); }}>
-      <div className="ag-field">
-        <label className="ag-field__label" htmlFor="composer-text">Message</label>
-        <textarea id="composer-text" className="ag-field__input" rows={3} value={text} onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKey} disabled={busy} aria-describedby="composer-hint" />
-        <span id="composer-hint" className="ag-field__hint">
-          {busy ? "Wait for the agent to answer." : "Enter sends. Shift+Enter adds a new line."}
-        </span>
-      </div>
-      {send.error && <p className="ag-field__error" role="alert">{message(send.error)}</p>}
-      <div className="ag-row"><Button type="submit" variant="primary" disabled={busy || send.isPending || !text.trim()}>Send</Button></div>
-    </form>
+    <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
+      hint={busy ? "The agent is answering…" : "Enter sends. Shift+Enter adds a new line."}
+      error={send.error ? message(send.error) : undefined} />
   );
 }
 
@@ -131,114 +108,97 @@ function retained(rows: Message[], events: StreamEvent[]): Item[] {
       : { type: "answer", key: `message-${m.id}`, content: m.content }));
 }
 
-/** One timeline item. A plain function, so no component type is made during a render (UI-6). */
-function itemView(item: Item, channel: string | null) {
+const raw = (v: unknown) => (v === undefined ? undefined : typeof v === "string" ? v : JSON.stringify(v, null, 2));
+
+/** A plain function, so no component type is made during a render (UI-6). */
+function toolView(t: Tool) {
+  return (
+    <ToolCall key={t.key} summary={t.done ? toolSummary(t.name, t.input) : liveSummary(toolSummary(t.name, t.input))} running={!t.done} isError={t.isError}
+      duration={duration(t.startedAt, t.endedAt)} input={raw(t.input)} output={raw(t.output)} />
+  );
+}
+
+function shownView(item: Shown) {
   switch (item.type) {
     case "user":
-      return (
-        <li key={item.key}>
-          <article className="ag-card">
-            <header className="ag-card__head">
-              <h3 className="ag-card__title">You</h3>
-              {item.createdAt && <span className="ag-muted"><Timestamp value={item.createdAt} /></span>}
-            </header>
-            <div className="ag-card__body ag-card__body--pre">{item.content}</div>
-          </article>
-        </li>
-      );
+      return <li key={item.key}><ChatMessage author="user" text={item.content} time={item.createdAt} /></li>;
     case "text":
+      return <li key={item.key}><ChatMessage author="assistant" text={item.text} /></li>;
     case "answer":
+      return <li key={item.key}><ChatMessage author="assistant" text={item.content} /></li>;
+    case "reasoning":
+      return <li key={item.key}><Reasoning text={item.text} live={item.live} /></li>;
+    case "tool":
+      return <li key={item.key}>{toolView(item)}</li>;
+    case "tools":
       return (
         <li key={item.key}>
-          <article className="ag-card">
-            <header className="ag-card__head"><h3 className="ag-card__title">Agent</h3></header>
-            <div className="ag-card__body"><Markdown>{item.type === "text" ? item.text : item.content}</Markdown></div>
-          </article>
-        </li>
-      );
-    case "tool": {
-      const state = !item.done ? "running" : item.isError ? "failed" : "succeeded";
-      return (
-        <li key={item.key}>
-          <details className="ag-card">
-            <summary>
-              Tool <code>{item.name || "unknown"}</code>{" "}
-              <StatusBadge tone={state}>{!item.done ? "running" : item.isError ? "error" : "done"}</StatusBadge>
-            </summary>
-            {item.input === undefined && item.output === undefined && <p className="ag-muted">No input or output to show.</p>}
-            {item.input !== undefined && <><p className="ag-muted">Input</p><JsonViewer value={item.input} /></>}
-            {item.output !== undefined && <><p className="ag-muted">Output</p><JsonViewer value={item.output} /></>}
-          </details>
-        </li>
-      );
-    }
-    case "error":
-      return (
-        <li key={item.key}>
-          <article className="ag-card">
-            <header className="ag-card__head"><h3 className="ag-card__title">Error</h3><StatusBadge tone="failed">error</StatusBadge></header>
-            <div className="ag-card__body ag-card__body--pre">{item.text}</div>
-          </article>
+          <ToolGroup count={item.tools.length} running={item.tools.some((t) => !t.done)}>{item.tools.map(toolView)}</ToolGroup>
         </li>
       );
     case "marker":
       return <li key={item.key} className="ag-muted">{MARKER[item.kind]}</li>;
-    case "run": {
-      const outcome = item.finished ? String(item.finished.outcome ?? "") : undefined;
-      // The server knows the trigger once the run ends, so a live viewer gets it on run.finished.
-      const trigger = item.started?.prompt ?? item.finished?.prompt;
-      const prompt = channel && typeof trigger === "string" ? trigger : null;
-      return (
-        <li key={item.key} className="ag-stack">
-          <div className="ag-row">
-            <span className="ag-muted">Run{item.started ? ` · ${String(item.started.source ?? item.started.type ?? "")} · job ${String(item.started.job_id)}` : ""}</span>
-            <StatusBadge tone={outcome === undefined ? "running" : tone(outcome)}>{outcome ?? "running"}</StatusBadge>
-          </div>
-          {prompt && (
-            <article className="ag-card">
-              <header className="ag-card__head"><h3 className="ag-card__title">Trigger</h3></header>
-              <div className="ag-card__body ag-card__body--pre">{prompt}</div>
-            </article>
-          )}
-          <ol className="ag-list">{item.items.map((i) => itemView(i, channel))}</ol>
-        </li>
-      );
-    }
+    case "error": // a failure no run holds (its execution is unknown); text only with run details
+      return <li key={item.key}><ChatError title="The agent reported an error." details={item.text || undefined} /></li>;
   }
 }
 
-function Runs({ runs, events, admin }: { runs: RunRow[]; events: StreamEvent[]; admin: boolean }) {
+/** The incoming message a channel run answers: its source and reference; the trigger text
+ *  only for a reader with run details (the server sends `prompt` to that reader alone). */
+function triggerView(turn: Turn, detail: ThreadDetail) {
+  const p = turn.first ?? {};
+  const from = [String(p.source ?? detail.channel), p.reference_id ?? detail.external_ref].filter(Boolean).join(" · ");
+  const prompt = turn.first?.prompt ?? turn.finished?.prompt;
   return (
-    <details className="ag-card">
-      <summary>Runs ({runs.length})</summary>
-      <ul className="ag-list">
-        {runs.map((r) => {
-          const calls = events.filter((e) => e.kind === "tool.called" && e.execution_id === r.execution_id);
-          return (
-            <li key={r.execution_id} className="ag-stack">
-              <div className="ag-row">
-                <StatusBadge tone={tone(r.status)}>{r.status}</StatusBadge>
-                <span>{r.agent_type ?? "—"} · {r.model ?? "—"} · tokens {r.input_tokens ?? 0} / {r.output_tokens ?? 0}</span>
-                {admin && <Link to={`/admin/jobs?job=${r.job_id}`}>Job {r.job_id}</Link>}
-              </div>
-              {calls.length > 0 && (
-                <div>
-                  <p className="ag-muted">Toolbox calls</p>
-                  <ul className="ag-list">
-                    {calls.map((c) => <li key={c.id}><code>{String(c.payload.tool_name ?? "")}</code>: {String(c.payload.outcome ?? "")}</li>)}
-                  </ul>
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </details>
+    <li key={`${turn.key}-trigger`}>
+      {typeof prompt === "string"
+        ? <ChatMessage author="incoming" label={`From ${from}`} text={prompt} />
+        : <p className="ag-muted">From {from}</p>}
+    </li>
   );
+}
+
+function failureView(turn: Turn, details: boolean, onRetry?: () => void) {
+  const f = turn.failure!;
+  const attempts = turn.maxAttempts ? ` after ${turn.attempt ?? f.count} of ${turn.maxAttempts} attempts` : "";
+  return (
+    <li key={`${turn.key}-error`}>
+      <ChatError title={f.failed ? "The agent could not answer." : "The agent reported an error."}
+        details={details ? (f.count > 1 ? `${f.text}\n(${f.count} errors)` : f.text) : undefined} onRetry={onRetry}>
+        {f.failed ? `The run failed${attempts}.` : undefined}
+      </ChatError>
+    </li>
+  );
+}
+
+/** The one status line of the newest turn (U3), or null when nothing is pending. An open run
+ *  speaks for itself; before it, the message row's job state does. */
+function statusText(rows: Message[], turn: Turn | null): string | null {
+  const last = rows.map((m) => m.role).lastIndexOf("user");
+  const state = last === -1 ? null : turnState(rows, last, false);
+  if (state === "blocked") {
+    return rows[last].blocked_reason === "paused_unrecoverable" ? "This turn cannot resume by itself."
+      : "This turn is paused and resumes by itself.";
+  }
+  if (state === "succeeded" || state === "failed") return null;
+  if (turn?.failure?.retrying) return `Retrying (attempt ${(turn.attempt ?? 1) + 1} of ${turn.maxAttempts})…`;
+  if (turn?.started && !turn.finished) {
+    const tail = turn.items.at(-1);
+    const open = tail?.type === "tool" ? (tail.done ? undefined : tail)
+      : tail?.type === "tools" ? tail.tools.findLast((t) => !t.done) : undefined;
+    if (open) return `${liveSummary(toolSummary(open.name, open.input))}…`;
+    if (tail?.type === "text" && tail.live) return null;
+    const of = turn.attempt && turn.attempt > 1 && turn.maxAttempts ? ` (attempt ${turn.attempt} of ${turn.maxAttempts})` : "";
+    return `Thinking…${of}`;
+  }
+  if (state === "pending") return "Queued…";
+  if (state === "published") return "Starting…";
+  return null;
 }
 
 export function View({ threadId }: { threadId: number }) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const admin = useSession()?.role === "admin";
   const { messages, thread, store, version, stream, loaded, loadError, retry, reconnect, resume } = useConversation(threadId);
   const box = useRef<HTMLDivElement>(null);
@@ -248,6 +208,17 @@ export function View({ threadId }: { threadId: number }) {
   const unblock = useMutation({
     mutationFn: (id: number) => apiFetch(`/api/conversation/threads/${threadId}/messages/${id}/unblock`, { method: "POST" }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: messagesKey(threadId) }),
+  });
+  // Retry re-sends the failed turn's text as a new message: no new route (U4).
+  const resend = useMutation({
+    mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
+      method: "POST", json: { content, client_message_id: crypto.randomUUID() },
+    }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
+  });
+  const archive = useMutation({
+    mutationFn: () => apiFetch(`/api/conversation/threads/${threadId}`, { method: "DELETE" }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["threads"] }); navigate("/conversations"); },
   });
   const older = useMutation({
     mutationFn: () => fetchPage(threadId, store.oldestId()),
@@ -290,49 +261,87 @@ export function View({ threadId }: { threadId: number }) {
   const unseen = following ? 0 : store.unseen;
   const events = store.events();
   const rows: Message[] = messages.data ?? [];
-  const items = [...retained(rows, events), ...buildItems(events)];
+  const top = turns([...retained(rows, events), ...buildItems(events)]);
   const detail = thread.data;
   const channel = detail && detail.channel !== "panel" ? detail.channel : null;
-  const last = rows.map((m) => m.role).lastIndexOf("user");
-  const state = last === -1 ? null : turnState(rows, last, detail?.runs.some((r) => r.status === "running") ?? false);
+  const details = detail?.run_details ?? admin;
+  const busy = inFlight(rows);
+  const newest = top.findLast((i): i is Turn => i.type === "turn") ?? null;
+  const status = statusText(rows, newest);
   const blocked = rows.filter((m) => m.blocked_reason === "paused_unrecoverable");
+  const lastUser = rows.map((m) => m.role).lastIndexOf("user");
+  // A terminal turn with no answer and no loaded failure still gets its error and Retry.
+  const unanswered = !channel && lastUser !== -1 && turnState(rows, lastUser, false) === "failed" && !newest?.failure?.failed;
+
+  const list: ReactNode[] = [];
+  let asked = "";
+  for (const item of top) {
+    if (item.type !== "turn") {
+      if (item.type === "user") asked = item.content;
+      list.push(shownView(item)!);
+      continue;
+    }
+    if (channel) list.push(triggerView(item, detail!));
+    for (const i of item.items) list.push(shownView(i)!);
+    if (item.failure && !item.failure.retrying) {
+      const text = asked;
+      const retryable = !channel && item === newest && item.failure.failed && !busy && text !== "";
+      list.push(failureView(item, details, retryable ? () => resend.mutate(text) : undefined));
+    }
+  }
+  const run = detail?.runs[0];
 
   return (
-    <section className="ag-stack" aria-label="Conversation">
-      <div className="ag-row"><ConnectionStatus state={stream} onReconnect={reconnect} /></div>
-      {detail && detail.runs.length > 0 && <Runs runs={detail.runs} events={events} admin={admin} />}
+    <ChatLayout
+      title={detail?.title || `Conversation ${threadId}`}
+      actions={<>
+        {stream !== "live" && <ConnectionStatus state={stream} onReconnect={reconnect} />}
+        {details && run && (
+          <RunInfo rows={[
+            { label: "Status", value: run.status },
+            { label: "Attempt", value: newest?.maxAttempts ? `${run.attempt} of ${newest.maxAttempts}` : String(run.attempt) },
+            ...(run.model ? [{ label: "Model", value: run.model }] : []),
+            ...(run.input_tokens != null ? [{ label: "Tokens in / out", value: `${run.input_tokens} / ${run.output_tokens ?? 0}` }] : []),
+            ...(admin && run.job_id ? [{ label: "Job", value: <Link to={`/admin/jobs?job=${run.job_id}`}>{run.job_id}</Link> }] : []),
+          ]} />
+        )}
+        {detail && !channel && detail.status !== "archived" && (
+          <Button variant="subtle" onClick={() => archive.mutate()} disabled={archive.isPending}>Archive</Button>
+        )}
+      </>}
+      viewportRef={box} onScroll={onScroll}
+      overlay={unseen > 0 && <Button variant="primary" onClick={jump}>{unseen} new events ↓</Button>}
+      footer={detail && (channel
+        ? <p className="ag-muted">Read-only: this conversation comes from {channel}.</p>
+        : <Composer threadId={threadId} busy={busy} />)}
+    >
       {store.hasOlder && (
-        <div className="ag-row"><Button onClick={() => older.mutate()} disabled={older.isPending}>Load older</Button></div>
+        <div className="ag-row"><Button variant="subtle" onClick={() => older.mutate()} disabled={older.isPending}>Load older</Button></div>
       )}
       {older.error && (
         <p className="ag-field__error" role="alert">
           {older.error instanceof ApiError && older.error.status === 409 ? "Older events were removed." : message(older.error)}
         </p>
       )}
-      {/* The scroll box is focusable, so a keyboard user can scroll it. */}
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <div ref={box} onScroll={onScroll} tabIndex={0} role="region" aria-label="Timeline" style={{ maxHeight: "65vh", overflowY: "auto" }}>
-        <ol className="ag-list" aria-live="polite">{items.map((i) => itemView(i, channel))}</ol>
-        {items.length === 0 && (
-          <EmptyState title="No messages yet">{channel ? undefined : "Write the first message below."}</EmptyState>
-        )}
-      </div>
-      {unseen > 0 && <div className="ag-row"><Button variant="primary" onClick={jump}>{unseen} new events ↓</Button></div>}
-      {state && state !== "succeeded" && (
-        <JobStatusCard title="Agent turn" state={state}
-          detail={rows[last].blocked_reason === "paused_unrecoverable" ? "This turn cannot resume by itself."
-            : rows[last].blocked_reason === "paused" ? "This turn is paused and resumes by itself." : undefined} />
+      <ChatList>{list}</ChatList>
+      {list.length === 0 && (
+        <EmptyState title="No messages yet">{channel ? undefined : "Write the first message below."}</EmptyState>
+      )}
+      {unanswered && (
+        <ChatError title="The agent could not answer."
+          onRetry={busy ? undefined : () => resend.mutate(rows[lastUser].content)} />
+      )}
+      {status && (
+        <ChatStatus busy={!status.startsWith("This turn")}>{status}</ChatStatus>
       )}
       {blocked.map((m) => (
         <div key={m.id} className="ag-row">
           <Button onClick={() => unblock.mutate(m.id)} disabled={unblock.isPending}>Unblock the conversation</Button>
         </div>
       ))}
+      {resend.error && <p className="ag-field__error" role="alert">{message(resend.error)}</p>}
       {thread.error && <ErrorState message={message(thread.error)} onRetry={() => void thread.refetch()} />}
-      {detail && (channel
-        ? <p className="ag-muted">Read-only: this conversation comes from {channel}.</p>
-        : <Composer threadId={threadId} busy={inFlight(rows)} />)}
-    </section>
+    </ChatLayout>
   );
 }
 
@@ -340,14 +349,8 @@ export default function ConversationsPage() {
   const { threadId } = useParams();
   const id = threadId && /^[0-9]{1,19}$/.test(threadId) ? Number(threadId) : null;
   return (
-    <div className="ag-stack">
-      <PageHeader title="Conversations" description="Talk to an agent. Each message starts one run." />
-      <div className="ag-row" style={{ alignItems: "flex-start" }}>
-        <div style={{ flex: "1 1 220px", maxWidth: 320 }}><Rail current={id} /></div>
-        <div style={{ flex: "3 1 320px", minWidth: 0 }}>
-          {id === null ? <EmptyState title="Pick a conversation">Or start a new one.</EmptyState> : <View key={id} threadId={id} />}
-        </div>
-      </div>
-    </div>
+    <SplitView navLabel="Conversations" nav={(close) => <Rail current={id} close={close} />}>
+      {id === null ? <EmptyState title="Pick a conversation">Or start a new one.</EmptyState> : <View key={id} threadId={id} />}
+    </SplitView>
   );
 }

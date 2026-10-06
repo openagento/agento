@@ -36,6 +36,33 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+---
+
+## 2026-10-06 — E9 chat UX: coalesced token streaming, run details as an ACL resource
+
+Plan: `~/.claude/plans/e9-chat-ux-03532f.md`.
+
+- **D-E9-5: partials are coalesced per run, then written by the one delta writer.** Claude
+  (`--include-partial-messages`) and pi send text and thinking token by token. The mapper emits
+  `assistant.partial` / `reasoning.partial`; the framework keeps one pending buffer per run and
+  flushes it as one row every 250 ms or 4 KiB, and the writer commits at most 4 times a second
+  plus one per 200 rows. The complete fragment (`assistant.text`, `assistant.reasoning`)
+  supersedes the buffer of its kind; stream order decides segments. Redaction runs on the joined
+  buffer and holds back a tail that could be a secret's prefix, so a token split across two
+  deltas never reaches a row. A full queue drops partials silently (no gap marker: the complete
+  fragment follows), and the sink keeps partials under half of the per-run budget. No table
+  lock: rows take the thread's row lock in ascending id (D-E9-2) and AUTO_INCREMENT runs with
+  `innodb_autoinc_lock_mode=2`. Proven at 250 parallel runs (`test_delta_scale.py`). Owner
+  approval: D1, 2026-10-06 ("Make sure this is not trade off", RULES.md SCL-1).
+- **D-E9-6: an operation a role can be granted is a module-declared ACL resource.** A module
+  lists `acl_resources: [{id, title}]` in `di.json` (the Magento `acl.xml` pattern); the
+  grantable set is the built-in `artifact.launch` plus every declared id, read from the module
+  directories like `declared_tools()`, so `web`, the CLI and validation agree with no runtime
+  registry. Admin has every resource built in. The conversation module declares
+  `conversation.run_details` (prompts, tool input and output, model, tokens, job links). Owner
+  approval: D4, 2026-10-06 ("by default only for admin role … assign this resource to any other
+  role").
+
 ## 2026-10-06 — E9: one timeline for every conversation
 
 Plan: `~/.claude/plans/e9-unified-conversations-552df5.md`.

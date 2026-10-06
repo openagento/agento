@@ -412,3 +412,28 @@ def test_a_write_blocked_on_a_row_lock_gives_up_inside_the_timeout(conn, sink, r
 
     assert caught.value.args[0] == 1205                # lock wait timeout exceeded
     assert elapsed < 20                                # not the 50-second server default
+
+
+def test_live_text_spends_half_the_budget_and_never_truncates(conn, sink, run, monkeypatch):
+    """Past half of the count cap, partials are dropped silently; the complete fragments
+    keep the other half, and only they end in a `truncated` marker (E9 chat UX, B4)."""
+    _cap(monkeypatch, count=10)
+
+    sink.write([_delta(run, i, kind="assistant.partial") for i in range(1, 9)]
+               + [_delta(run, 9 + i, kind="tool.started", tool_name="Bash") for i in range(8)])
+
+    kinds = [r["kind"] for r in _ledger(conn, run)]
+    assert kinds.count("assistant.partial") == 5
+    assert kinds.count("tool.started") == 5
+    assert kinds.count("truncated") == 1
+    assert kinds.index("truncated") > kinds.index("tool.started")
+
+
+def test_live_text_is_capped_by_half_the_bytes_too(conn, sink, run, monkeypatch):
+    _cap(monkeypatch, size=100)
+
+    sink.write([_delta(run, i, "x" * 20, kind="reasoning.partial") for i in range(1, 6)]
+               + [_delta(run, 6, "y" * 40, kind="assistant.text")])
+
+    kinds = [r["kind"] for r in _ledger(conn, run)]
+    assert kinds == ["reasoning.partial", "reasoning.partial", "assistant.text"]

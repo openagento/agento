@@ -35,6 +35,12 @@ class CodexStreamEventMapper:
             text = item.get("text")
             return None if started or not text else {"kind": "assistant.text", "text": str(text)}
 
+        if item_type == "reasoning":
+            # Present only with `model_reasoning_summary` set (the builder sets it).
+            text = item.get("text")
+            return None if started or not isinstance(text, str) \
+                else {"kind": "assistant.reasoning", "text": text}
+
         if item_type == "command_execution":
             if started:
                 return {"kind": "tool.started", "tool_name": "shell",

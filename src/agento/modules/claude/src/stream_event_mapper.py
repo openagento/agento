@@ -29,15 +29,34 @@ class ClaudeStreamEventMapper:
         content = message.get("content") if isinstance(message, dict) else None
         blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
 
+        if kind == "stream_event":
+            # `--include-partial-messages`: live text. The CLI sends the block's complete
+            # `assistant` event after its deltas (plan F20), which supersedes them.
+            inner = event.get("event")
+            delta = inner.get("delta") if isinstance(inner, dict) else None
+            if not isinstance(delta, dict) or inner.get("type") != "content_block_delta":
+                return None
+            if delta.get("type") == "text_delta" and isinstance(delta.get("text"), str):
+                return {"kind": "assistant.partial", "text": delta["text"]}
+            if delta.get("type") == "thinking_delta" and isinstance(delta.get("thinking"), str):
+                return {"kind": "reasoning.partial", "text": delta["thinking"]}
+            return None
+
         if kind == "assistant":
+            # In content order: a thought, then what it said, then the tools it called.
             out: list[dict] = []
-            if text := _text(blocks):
-                out.append({"kind": "assistant.text", "text": text})
-            out += [
-                {"kind": "tool.started", "tool_name": str(b.get("name") or ""),
-                 "data": {"call_id": str(b.get("id") or ""), "input": json.dumps(b.get("input"))}}
-                for b in blocks if b.get("type") == "tool_use"
-            ]
+            for b in blocks:
+                if b.get("type") == "thinking":
+                    out.append({"kind": "assistant.reasoning", "text": str(b.get("thinking") or "")})
+                elif b.get("type") == "tool_use":
+                    out.append({"kind": "tool.started", "tool_name": str(b.get("name") or ""),
+                                "data": {"call_id": str(b.get("id") or ""),
+                                         "input": json.dumps(b.get("input"))}})
+                elif text := _text([b]):
+                    if out and out[-1]["kind"] == "assistant.text":
+                        out[-1]["text"] += "\n" + text
+                    else:
+                        out.append({"kind": "assistant.text", "text": text})
             return out
 
         if kind == "user":

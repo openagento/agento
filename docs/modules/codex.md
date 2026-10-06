@@ -28,9 +28,13 @@ which becomes `call_id`.
 | `item.started` `command_execution` | `tool.started`, `tool_name` = `shell`, `input` = `command` |
 | `item.started` `mcp_tool_call` | `tool.started`, `tool_name` = `tool`, `input` = JSON of `arguments` |
 | `item.completed` `agent_message` | `assistant.text` |
+| `item.completed` `reasoning` | `assistant.reasoning` (the builder passes `-c model_reasoning_summary=auto`, so the item carries a summary) |
 | `item.completed` `command_execution` | `tool.completed`, `output` = `aggregated_output`, `is_error` when `exit_code` is not 0 |
 | `item.completed` `mcp_tool_call` | `tool.completed`, `output` = text blocks of `result.content` (or the error message), `is_error` when `error` is set |
 | `turn.failed`, `error` | `error` |
+
+`codex exec --json` sends whole items only, so codex emits no `assistant.partial`: its text
+appears when the message completes.
 
 ## `codex/config` — native config.toml passthrough
 

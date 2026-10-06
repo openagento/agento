@@ -30,6 +30,7 @@ def fragments(raw: str) -> list[dict]:
 
 def test_tool_use_run_maps_to_the_exact_fragment_list():
     assert fragments(FIXTURE.read_text()) == [
+        {"kind": "assistant.reasoning", "text": "Read the ticket first."},
         {"kind": "assistant.text", "text": "I will read the ticket."},
         {"kind": "tool.started", "tool_name": "mcp__toolbox__jira_get_issue",
          "data": {"call_id": "toolu_01", "input": json.dumps({"key": "DEMO-1"})}},
@@ -75,3 +76,49 @@ def test_an_error_without_result_text_shows_claudes_errors_everywhere():
     for raw in (json.dumps(_NO_SESSION), json.dumps(single)):
         with pytest.raises(Exception, match=want):
             parse_claude_output(raw)
+
+
+PARTIAL = FIXTURE.parent / "partial_messages.jsonl"
+
+
+def test_partial_messages_map_to_live_text_then_the_complete_block():
+    """Trimmed from a live `--include-partial-messages` run (claude 2.1.291): the deltas
+    come first and the block's complete `assistant` event after them (plan F20)."""
+    out = fragments(PARTIAL.read_text())
+    kinds = [f["kind"] for f in out]
+
+    assert kinds[:3] == ["reasoning.partial", "reasoning.partial", "assistant.reasoning"]
+    assert set(kinds[3:-1]) == {"assistant.partial"} and kinds[-1] == "assistant.text"
+    assert "".join(f["text"] for f in out if f["kind"] == "assistant.partial") == out[-1]["text"]
+
+
+def test_successive_blocks_and_a_cut_off_block_keep_stream_order():
+    def delta(kind, text):
+        field = "text" if kind == "text_delta" else "thinking"
+        return {"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
+                                                  "delta": {"type": kind, field: text}}}
+    raw = [delta("thinking_delta", "a"),
+           {"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "a"}]}},
+           delta("text_delta", "Hi"),
+           {"type": "assistant", "message": {"content": [{"type": "text", "text": "Hi"}]}},
+           delta("text_delta", "cut")]                     # the run ends mid-block
+    out = fragments("\n".join(json.dumps(e) for e in raw))
+
+    assert [(f["kind"], f["text"]) for f in out] == [
+        ("reasoning.partial", "a"), ("assistant.reasoning", "a"),
+        ("assistant.partial", "Hi"), ("assistant.text", "Hi"), ("assistant.partial", "cut")]
+
+
+def test_other_stream_events_map_to_nothing():
+    for event in ({"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+                  {"type": "content_block_delta", "delta": {"type": "signature_delta"}},
+                  {"type": "message_stop"}):
+        assert ClaudeStreamEventMapper().map_event({"type": "stream_event", "event": event}) is None
+
+
+def test_the_parser_and_renderer_ignore_partial_lines():
+    raw = PARTIAL.read_text()
+    assert parse_claude_output(raw).raw_output == parse_claude_output(
+        "\n".join(line for line in raw.splitlines() if '"stream_event"' not in line)).raw_output
+    partials = [json.loads(line) for line in raw.splitlines() if '"stream_event"' in line]
+    assert not any(ClaudeStreamRenderer().render(e) for e in partials)

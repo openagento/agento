@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pymysql
 
-from agento.framework.access.accounts import User, can_reach, scope_is_active
+from agento.framework.access.accounts import User, can_reach, has_operation, scope_is_active
 from agento.framework.events import (
     ConversationArchivedEvent,
     ConversationCreatedEvent,
@@ -233,16 +233,30 @@ def list_timeline(conn, *, conversation_id: int, before_id: int | None,
 # --- the client shape of an event (E9 §3.6) ----------------------------------
 
 # Tool payloads can carry customer data from tools a panel user holds no grant on, so they
-# are an admin's only. The name, the call id and the error flag stay for everyone.
-_ADMIN_ONLY_DATA = ("input", "output")
+# are run details: admin, or a role granted `conversation.run_details` on the thread's
+# scope, as are the trigger prompt and the raw text of an `error` event. The tool name, the
+# call id and the error flag stay for everyone.
+RUN_DETAILS = "conversation.run_details"
+_RUN_DETAIL_DATA = ("input", "output")
 _PROMPTED = ("run.started", "run.finished")
 
 
-def project_events(conn, rows: list[dict], user: User) -> list[dict]:
+def can_see_run_details(conn, user: User, conversation: dict) -> bool:
+    """Admin always; another role only with the `conversation.run_details` grant on the
+    thread's workspace or view (the Magento ACL pattern: the module declares the resource)."""
+    if user.role == "admin":
+        return True
+    if conversation["agent_view_id"] is None:
+        return False
+    return has_operation(conn, user.role, RUN_DETAILS, conversation["workspace_id"],
+                         conversation["agent_view_id"])
+
+
+def project_events(conn, rows: list[dict], user: User, conversation: dict) -> list[dict]:
     """The ONE client shape of an event, for the timeline, the replay and the stream.
 
     Batch reads, one query per page each (CODE-8): the text of `message.created`, and the
-    trigger prompt of `run.started` and `run.finished` (admins only). The consumer writes
+    trigger prompt of `run.started` and `run.finished` (run details only). The consumer writes
     `job.prompt` in its terminal update, the transaction that also writes `run.finished`,
     so a client that already holds `run.started` reads the prompt from `run.finished`.
     """
@@ -259,9 +273,9 @@ def project_events(conn, rows: list[dict], user: User) -> list[dict]:
             cur.execute("SELECT id, content FROM message WHERE id IN "
                         f"({','.join(['%s'] * len(message_ids))})", list(message_ids))
             contents = {m["id"]: m["content"] for m in cur.fetchall()}
-    admin = user.role == "admin"
+    details = can_see_run_details(conn, user, conversation)
     job_ids = {p["job_id"] for r, p in zip(rows, payloads, strict=True)
-               if admin and r["kind"] in _PROMPTED and p.get("job_id")}
+               if details and r["kind"] in _PROMPTED and p.get("job_id")}
     prompts: dict[int, str] = {}
     if job_ids:
         from .finalizer import truncate_utf8
@@ -279,9 +293,11 @@ def project_events(conn, rows: list[dict], user: User) -> list[dict]:
             payload["content"] = contents[payload["message_id"]]
         if row["kind"] in _PROMPTED and payload.get("job_id") in prompts:
             payload["prompt"] = prompts[payload["job_id"]]
-        if not admin and isinstance(payload.get("data"), dict):
+        if not details and isinstance(payload.get("data"), dict):
             payload["data"] = {k: v for k, v in payload["data"].items()
-                               if k not in _ADMIN_ONLY_DATA}
+                               if k not in _RUN_DETAIL_DATA}
+        if not details and row["kind"] == "error":
+            payload["text"] = None          # the raw harness error is a run detail (U4)
         created = row.get("created_at")
         out.append({"id": row["id"], "kind": row["kind"], "execution_id": row["execution_id"],
                     "payload": payload,
@@ -524,8 +540,8 @@ def link_execution(cur, *, execution_row_id: int, execution_id: str, job_id: int
     created or reactivated here - so the next run on the same Jira issue, and a follow-up
     that copies its parent's source and reference, land in the same thread.
     """
-    cur.execute("SELECT type, source, reference_id, agent_view_id FROM job WHERE id = %s",
-                (job_id,))
+    cur.execute("SELECT type, source, reference_id, agent_view_id, max_attempts FROM job "
+                "WHERE id = %s", (job_id,))
     job = cur.fetchone()
     if job is None:
         return None
@@ -557,7 +573,8 @@ def link_execution(cur, *, execution_row_id: int, execution_id: str, job_id: int
                 (conversation_id, execution_row_id))
     append_event(cur, conversation_id, kind="run.started", execution_id=execution_id,
                  source_kind="execution", source_id=execution_row_id,
-                 payload={"job_id": job_id, "attempt": attempt, "type": job["type"],
+                 payload={"job_id": job_id, "attempt": attempt,
+                          "max_attempts": job["max_attempts"], "type": job["type"],
                           "source": job["source"], "reference_id": job["reference_id"]})
     return conversation_id
 
@@ -629,6 +646,10 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
                 (conversation_id, content, client_message_id),
             )
             message_id = cur.lastrowid
+            # An untitled thread is named by its first message (E9 chat UX, U9); a thread
+            # created with a title keeps it. Under the row lock taken above.
+            cur.execute("UPDATE conversation SET title = %s WHERE id = %s AND title IS NULL",
+                        (derive_title(content), conversation_id))
             # Only the winner announces the turn: the re-read path below is a replay of a
             # turn the thread has already announced, and the event row has no uniqueness
             # of its own that would save it from a second announcement.
@@ -663,6 +684,18 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
     # accepts nothing and publishes nothing - an event for a transition that did not happen.
     job_id = complete_pending(conn, message_id)
     return message_id, job_id, created
+
+
+TITLE_CHARS = 60
+
+
+def derive_title(content: str) -> str:
+    """The first message, whitespace collapsed, cut on a word boundary to TITLE_CHARS."""
+    text = " ".join(content.split())
+    if len(text) <= TITLE_CHARS:
+        return text
+    cut = text[:TITLE_CHARS - 1]
+    return (cut.rsplit(" ", 1)[0] if " " in cut else cut) + "…"
 
 
 def complete_pending(conn, message_id: int) -> int:
