@@ -70,6 +70,7 @@ from .events import (
 )
 from .execution_hooks import (
     DeltaRecord,
+    RunProfile,
     finalize_execution,
     mint_execution_id,
     resolve_resume_session,
@@ -919,6 +920,9 @@ class Consumer:
                 # registered it is None and nothing below changes (§5.1).
                 job.execution_id = mint_execution_id(
                     conn=conn, job_id=job.id, attempt=job.attempt,
+                    profile=RunProfile(harness=harness, provider=provider_desc.id,
+                                       model=model_override,
+                                       credential_id=getattr(credential, "id", None)),
                 )
                 mint = self._issue_run_capabilities(conn, job)
             finally:

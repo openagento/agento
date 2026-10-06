@@ -580,15 +580,19 @@ def test_a_thread_created_with_a_title_keeps_it(conn, world):
 
 def test_show_says_whether_the_caller_sees_run_details(conn, world):
     """`conversation.run_details` (owner decision D4): a `user` role sees them only with the
-    grant; without it a run keeps its shape but omits model, tokens and the job link."""
+    grant; without it a run keeps its shape but omits harness, credential, model, tokens and
+    the job link."""
     cid = str(_conversation(conn, world))
     assert routes.show(_Req(conn, world["owner"], params={"id": cid})).body["run_details"] is False
     accounts.add_grant(conn, "user", "operation", service.RUN_DETAILS, agent_view_id=world["view"])
     assert routes.show(_Req(conn, world["owner"], params={"id": cid})).body["run_details"] is True
 
     run = {"execution_id": "e", "job_id": 7, "attempt": 1, "status": "done", "started_at": None,
-           "finished_at": None, "type": "conversation", "agent_type": "claude", "model": "m",
+           "finished_at": None, "type": "conversation", "harness": "claude",
+           "provider": "anthropic", "credential": "team-1", "model": "m",
            "input_tokens": 1, "output_tokens": 2}
     assert set(routes._run_json(run, False)) == {"execution_id", "attempt", "status",
                                                  "started_at", "finished_at"}
-    assert routes._run_json(run, True)["model"] == "m"
+    shown = routes._run_json(run, True)
+    assert (shown["harness"], shown["provider"], shown["credential"], shown["model"]) == (
+        "claude", "anthropic", "team-1", "m")

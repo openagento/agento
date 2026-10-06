@@ -463,6 +463,12 @@ render. Call a render-prop function directly. A key handler on a container (row,
 events from interactive elements inside it. Incident: `DataTable` remounted every cell, so an open
 Select closed when its row took focus.
 
+**UI-7 An action is an icon with a title (P2).** A row action, a header action, and a copy action
+is `IconAction` from `@agento/ui` (`ArchiveAction` and `CopyButton` build on it): an icon, with the
+action's name as the hover title and the accessible name, and `danger` for a destructive action.
+A text `Button` stays for a form submit, a dialog footer, the call to action of an empty or error
+state (Retry), and a page's create action. Owner: 2026-10-06.
+
 ## TST — Tests
 
 **TST-1 Red first (P1).** Each behaviour change has a test that fails without it: pytest + respx for

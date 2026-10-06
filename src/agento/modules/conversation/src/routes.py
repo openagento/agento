@@ -29,7 +29,8 @@ def _conversation_json(row: dict) -> dict:
 
 
 def _run_json(row: dict, details: bool) -> dict:
-    """Without run details a run keeps its shape; model, tokens and job link are omitted."""
+    """Without run details a run keeps its shape; harness, provider, credential, model, tokens
+    and the job link are omitted."""
     if not details:
         return {"execution_id": row["execution_id"], "attempt": row["attempt"],
                 "status": row["status"], "started_at": _iso(row["started_at"]),
@@ -37,7 +38,8 @@ def _run_json(row: dict, details: bool) -> dict:
     return {"execution_id": row["execution_id"], "job_id": row["job_id"],
             "attempt": row["attempt"], "status": row["status"],
             "started_at": _iso(row["started_at"]), "finished_at": _iso(row["finished_at"]),
-            "type": row["type"], "agent_type": row["agent_type"], "model": row["model"],
+            "type": row["type"], "harness": row["harness"], "provider": row["provider"],
+            "credential": row["credential"], "model": row["model"],
             "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]}
 
 

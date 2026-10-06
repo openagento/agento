@@ -112,7 +112,7 @@ describe("useConversation REST fallback", () => {
     vi.useFakeTimers();
     captureHub();
     const run = (status: string) => ({ ...thread(), runs: [{ execution_id: "x", job_id: 3, attempt: 1, status, started_at: null,
-      finished_at: null, type: "conversation", agent_type: "claude", model: "m", input_tokens: 1, output_tokens: 2 }] });
+      finished_at: null, type: "conversation", harness: "claude", model: "m", input_tokens: 1, output_tokens: 2 }] });
     let detail = run("running");
     let replay: StreamEvent[] = [];
     const fetchMock = api({
@@ -312,6 +312,23 @@ describe("the thread view", () => {
     expect(screen.getByText("PROJ-1 is due")).toBeInTheDocument();
     expect(await screen.findByText("Done.")).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+  });
+
+  it("with run details the info icon names harness, provider, credential and model; Archive is an icon", async () => {
+    captureHub();
+    vi.stubGlobal("fetch", api({
+      "/api/conversation/threads/5/timeline": () => page([]),
+      "/api/conversation/threads/5/messages": () => [],
+      "/api/conversation/threads/5": () => ({ ...thread(), run_details: true, runs: [{ execution_id: "x", attempt: 1,
+        status: "failed", started_at: null, finished_at: null, harness: "codex", provider: "openai",
+        credential: "team-1", model: "gpt-x" }] }),
+    }));
+    render(<View threadId={5} />, { wrapper });
+    expect(await screen.findByRole("button", { name: "Archive" })).toHaveTextContent("");
+    fireEvent.click(screen.getByRole("button", { name: "Run details" }));
+    expect(await screen.findByText("codex · openai")).toBeInTheDocument();
+    expect(screen.getByText("team-1")).toBeInTheDocument();
+    expect(screen.getByText("gpt-x")).toBeInTheDocument();
   });
 });
 
