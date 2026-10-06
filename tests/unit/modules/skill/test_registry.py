@@ -72,6 +72,26 @@ class TestScanSkills:
 
         assert r1[0].checksum != r2[0].checksum
 
+    def test_description_from_frontmatter_inline(self, tmp_path):
+        skill_dir = tmp_path / "fm"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: fm\ndescription: Use when testing frontmatter.\n---\n# Fm\nBody line.")
+        assert scan_skills(tmp_path)[0].description == "Use when testing frontmatter."
+
+    def test_description_from_frontmatter_folded(self, tmp_path):
+        skill_dir = tmp_path / "folded"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: folded\ndescription: >\n  Use when one\n  spans two lines.\nuser-invocable: true\n---\n# F\n")
+        assert scan_skills(tmp_path)[0].description == "Use when one spans two lines."
+
+    def test_frontmatter_without_description_uses_first_body_line(self, tmp_path):
+        skill_dir = tmp_path / "nodesc"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("---\nname: nodesc\n---\n# Nodesc\n\nFirst body line.")
+        assert scan_skills(tmp_path)[0].description == "First body line."
+
 
 # -- DB-backed tests (mocked connection) --
 
@@ -125,12 +145,29 @@ class TestSyncSkills:
 
         import hashlib
         checksum = hashlib.sha256(content.encode()).hexdigest()
-        conn, _cursor = _mock_conn(fetchone={"id": 1, "checksum": checksum})
+        conn, _cursor = _mock_conn(fetchone={"id": 1, "checksum": checksum, "description": "Same content."})
         result = sync_skills(conn, tmp_path)
 
         assert result.new == 0
         assert result.updated == 0
         assert result.unchanged == 1
+
+    def test_same_checksum_stale_description_is_updated(self, tmp_path):
+        # A row stored before the frontmatter parse kept "---" as its description.
+        skill_dir = tmp_path / "fm"
+        skill_dir.mkdir()
+        content = "---\nname: fm\ndescription: Real description.\n---\n# Fm\n"
+        (skill_dir / "SKILL.md").write_text(content)
+
+        import hashlib
+        checksum = hashlib.sha256(content.encode()).hexdigest()
+        conn, cursor = _mock_conn(fetchone={"id": 1, "checksum": checksum, "description": "---"})
+        result = sync_skills(conn, tmp_path)
+
+        assert result.updated == 1
+        update_sql, params = cursor.execute.call_args_list[-1].args
+        assert update_sql.startswith("UPDATE skill_registry")
+        assert params[1] == "Real description."
 
     def test_empty_dir_no_writes(self, tmp_path):
         conn, _cursor = _mock_conn()

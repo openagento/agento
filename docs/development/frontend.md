@@ -171,7 +171,9 @@ A miniapp is hand-written HTML. It links `/_ui/<version>/agento-ui.css`, loads
 `/_ui/<version>/agento-ui.js` (the `<ag-table>`, `<ag-dialog>`, `<ag-copy>`, `<ag-json>` elements),
 and imports `createAgentoSdk` from `/_ui/<version>/agento-bridge.js` (a byte copy of the E6 SDK).
 The agent-facing guide is the `miniapp-ui` skill, generated from the `@catalogue` comments in
-`components.css`; enable it per scope like any skill.
+`components.css`, with the `name`/`description` frontmatter every module skill carries (Codex does
+not load a skill without it); enable it per scope like any skill. The build steps and limits are in
+the hand-written `miniapp-build` skill ([../modules/miniapps.md](../modules/miniapps.md#writing-a-miniapp)).
 
 A released kit version never changes: its URL is served `immutable`. The released bytes are
 committed under `frontend/packages/miniapp-kit/released/<version>/`, and the build fails when the
