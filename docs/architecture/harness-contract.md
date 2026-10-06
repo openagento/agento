@@ -245,6 +245,16 @@ resumes with an **empty** prompt, so a CLI that merely re-opens a session withou
 continuing work would exit successfully having done nothing — a silent false success. A
 harness that declares `resume: false` therefore starts fresh instead.
 
+A conversation's next turn resumes too, but with the new message as the prompt: the
+`CommandBuilder` must send `req.prompt` when it is set, and its own "continue" text only
+when it is empty (a retry). That turn is a new job, so it runs in a new working directory.
+A CLI that files sessions under a slug of its cwd (claude, pi) cannot see the earlier
+session from there, so its runner overrides the optional `SubprocessRunner.prepare_resume(
+session_id) -> bool`: it moves the session file into this run's folder (`move_session_into`),
+or answers `False` when the session is gone. On `False` the conversation workflow starts a
+fresh session with the whole thread. The hook is not part of the `Runner` protocol; a runner
+without it counts as "found".
+
 ### `runtime_config_fields` — the harness's own config, at command-build time
 
 A harness may need one of its **own** module config values to build a command (a flag
