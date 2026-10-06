@@ -66,7 +66,7 @@ export function Miniapps() {
         loading={views.isPending || (viewId > 0 && apps.isPending)}
         error={views.error ? message(views.error) : apps.error ? message(apps.error) : null}
         onRetry={() => void (views.error ? views.refetch() : apps.refetch())}
-        emptyTitle="No miniapps" emptyText="A miniapp shows here when this agent view has one you may open." />
+        emptyTitle="No miniapps" emptyText="You have no miniapp you may open in this agent view. An operator gives access." />
       <SectionHeader>Open launches</SectionHeader>
       <p className="ag-muted">Opening more launches than the limit (web/launch/max_concurrent) ends the oldest one.</p>
       <DataTable caption="Open launches" columns={launchColumns} rows={launches.data?.rows} rowKey={(l) => l.launch_id}

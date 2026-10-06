@@ -4,6 +4,19 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-06 — The launch redeem checks the exact panel Origin only, not Sec-Fetch-Site
+
+- **Problem.** `POST /launch` on the apps origin refused every browser launch on the default
+  hosts. `localhost` is a top-level domain to a browser, so `panel.localhost` and `apps.localhost`
+  are two sites, and the form post carries `Sec-Fetch-Site: cross-site`. The redeem accepted only
+  `same-site` / `same-origin`.
+- **Decision.** The redeem requires the exact panel `Origin` and no longer reads
+  `Sec-Fetch-Site`. A page cannot forge `Origin`, so the exact match already proves the form came
+  from the panel; `Sec-Fetch-Site` added nothing. A non-browser caller can set both headers, and
+  the single-use exchange code stays the credential, as before.
+- **Not changed.** Panel API writes (`security.write_allowed`) still need `Sec-Fetch-Site:
+  same-origin`. Those requests stay on the panel origin.
+
 ## 2026-10-06 — Module skills carry YAML frontmatter; a `miniapp-build` skill
 
 Plan: `~/.claude/plans/miniapp-agent-skill-0ca4e7.md`.
