@@ -29,3 +29,13 @@ export function shareUrl(token, env = process.env, log = null) {
   if (!SHARE_TOKEN_RE.test(token ?? '')) return null;
   return `https://${token}.${host}${Number(port) === 443 ? '' : `:${Number(port)}`}/`;
 }
+
+/** The panel origin, `https://<AGENTO_PANEL_HOST>[:port]`, the same value web checks a
+ *  request's Origin against. A page on the apps origin needs it to reach the panel bridge,
+ *  and an agent has no other trusted source for it. Null when it is not configured. */
+export function panelOrigin(env = process.env) {
+  const host = env.AGENTO_PANEL_HOST ?? '';
+  const port = String(env.AGENTO_PROXY_PORT ?? '443');
+  if (!validShareHost(host) || !/^[0-9]{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) return null;
+  return `https://${host}${Number(port) === 443 ? '' : `:${Number(port)}`}`;
+}

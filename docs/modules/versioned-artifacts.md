@@ -30,7 +30,7 @@ believed was live; rollback is publishing an older version.
 | `versioned_artifact_list` | The artifacts this scope may use, with `current_version` and open drafts |
 | `versioned_artifact_get_current` | Which version the artifact publishes |
 | `versioned_artifact_list_versions` | Versions, newest first, plus `current_version` |
-| `versioned_artifact_create_draft` | Open a draft from `current` or a version, and copy it onto the agent's desk |
+| `versioned_artifact_create_draft` | Open a draft from `current` or a version, and copy it onto the agent's desk. Also returns `panel_origin` (the panel origin from `AGENTO_PANEL_HOST` / `AGENTO_PROXY_PORT`, or `null`), which a miniapp page gives the bridge |
 | `versioned_artifact_materialize` | Copy a draft or a version onto the desk, replacing what is there |
 | `versioned_artifact_save_version` | Copy the desk back and freeze it into a version; the draft stays open |
 | `versioned_artifact_diff` | A draft's SAVED content vs `base`, `current`, or a version — desk edits are invisible until saved |
