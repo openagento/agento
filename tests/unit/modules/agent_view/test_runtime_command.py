@@ -125,6 +125,7 @@ class TestAgentViewRuntimeCommand:
         payload = json.loads(capsys.readouterr().out)
         assert payload["interactive_command"] == [
             *_INTERACTIVE, "--dangerously-skip-permissions",
+            "--settings", '{"skipDangerousModePermissionPrompt":true}',
             "--model", "claude-opus-4-6",
         ]
 

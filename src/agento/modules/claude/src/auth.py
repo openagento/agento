@@ -29,8 +29,10 @@ class ClaudeCredentialAuthenticator:
         # Run full `claude` TUI (not `claude auth login`) — only the TUI
         # has the "Paste code here" prompt needed for headless/Docker auth.
         # Use real HOME because Claude CLI's OAuth polling needs $HOME/.claude/.
+        # --strict-mcp-config with no --mcp-config: a login connects to no MCP server
+        # (no project .mcp.json, no claude.ai connectors).
         real_home = str(Path.home())
-        _run_cli(["claude"], real_home, "Claude")
+        _run_cli(["claude", "--strict-mcp-config"], real_home, "Claude")
 
         creds_path = Path(real_home) / ".claude" / ".credentials.json"
         if not creds_path.is_file():

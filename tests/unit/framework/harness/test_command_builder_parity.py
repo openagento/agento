@@ -38,10 +38,14 @@ class TestClaudeMcpFlagParity:
         cmd = _builder("claude").interactive(_ctx("claude"), yolo=False)
         assert _contiguous(cmd, _CLAUDE_MCP_FLAGS)
 
-    def test_yolo_only_adds_the_bypass_flag(self):
+    def test_yolo_only_adds_the_bypass_flag_and_its_prompt_skip(self):
+        """2.1.x asks to confirm bypass mode (default: exit) unless the setting skips it."""
         plain = _builder("claude").interactive(_ctx("claude"), yolo=False)
         yolo = _builder("claude").interactive(_ctx("claude"), yolo=True)
-        assert set(yolo) - set(plain) == {"--dangerously-skip-permissions"}
+        assert set(yolo) - set(plain) == {
+            "--dangerously-skip-permissions",
+            "--settings", '{"skipDangerousModePermissionPrompt":true}',
+        }
 
     def test_resume_reuses_the_same_flag_set(self):
         fresh = _builder("claude").headless(_ctx("claude"), RunRequest(prompt="hi"))

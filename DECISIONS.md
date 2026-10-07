@@ -4,6 +4,32 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-06 — Claude Code 2.1.291 upgrade: what Agento reads and writes
+
+Owner: the repo owner approved the scope in the AG-27 session on 2026-10-06 ("zaimplementuj
+zaproponowane poprawki 1-5"); the design choices below are the implementer's, reviewed in the loop.
+
+- **Claude multi-result stream.** A background subagent makes the CLI print one `result` event
+  per turn (`result_index` 0, 1, …). Captured on 2.1.291: two results, 2 + 1 turns, 18 + 10 input
+  tokens, 3528 + 2145 ms, and the same `total_cost_usd` (0.0560496) in both. So turns, tokens and
+  duration are per result and are summed; the cost is cumulative and is the `max`, which stays
+  right if a later CLI makes it per turn and cumulative. Any `is_error` result fails the run.
+- **Claude trust pre-accept.** The interactive TUI asks "trust this folder" once per cwd, default
+  "No, exit". Agento writes `projects["<run dir>"].hasTrustDialogAccepted = true` into the run's
+  own `.claude.json` and nothing else: not the developer's captured `projects` map (its
+  `enabledMcpjsonServers: []` turns the toolbox off), not a parent path, and not
+  `CLAUDE_CODE_SANDBOXED`, which turns off more gates than this one dialog. The run dir is HOME
+  and cwd and has the same path in cron and the sandbox, so the key matches.
+- **`claude/personality` removed.** It was written to `.claude.json` `systemPrompt`, which the CLI
+  does not read: with the key set, 2/2 replies ignored it; the same text through
+  `--append-system-prompt` was followed. It is not a declared `system.json` field. `SOUL.md` is
+  the personality mechanism. No alias (CODE-5: an old form that never worked needs none).
+- **`claude/trust_level = full`** now writes `permissions.defaultMode = "bypassPermissions"`; the
+  old `permissions.dangerouslySkipPermissions` is not a settings key (headless init reported
+  `permissionMode: default` with it, `bypassPermissions` with `defaultMode`).
+
+---
+
 ## 2026-09-26 — scrypt key derivation for stored secrets
 
 - **Problem.** The AES key for every `obscure` config value and every `credential` row was a bare

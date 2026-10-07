@@ -90,7 +90,7 @@
 | `replay <job_id>` | Replay a completed job. **Refuses** a job whose `agent_view_id` is NULL (pre-0.15 rows and stubs): the harness's own config — and therefore the exact command — cannot be resolved for it, and a replay that silently differs from the run it claims to reproduce is worse than none |
 | `exec:todo [key] [--agent-view C]` | Execute next TODO task. `--agent-view` names the acting view; it is **required** when more than one active view exists, and there is no global fallback ([details](../architecture/zero-trust.md)) |
 | `replay <job_id>` | Replay a completed job |
-| `e2e` | Run end-to-end tests |
+| `e2e [--credential ID] [--model M] [--agent-view C] [--keep]` | Push one real test job through the consumer (real LLM call). With `--agent-view C` the job runs as that agent_view — its harness, workspace build and toolbox — and two more checks run: `toolbox_mcp_connected = 1` and `toolbox_mcp_calls` set. Those columns are written by the `app_monitor` module, so it must be enabled; without the option the job is a `blank` job with no toolbox and the extra checks do not run. The credential comes from the pool of the job's harness/provider (the agent_view's, else global config), as the consumer selects it; a `--credential` from another scope is rejected |
 
 ## How It Works
 

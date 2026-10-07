@@ -521,6 +521,9 @@ class E2eCommand:
                           help="Keep test jobs in DB (don't clean up)")
         parser.add_argument("--model", type=str, default=None,
                           help="Override the model (e.g. claude-opus-4-20250514)")
+        parser.add_argument("--agent-view", dest="agent_view", default=None,
+                          help="Run the test job as this agent_view (its harness, build and "
+                               "toolbox) and also check the toolbox telemetry columns")
 
     def execute(self, args: argparse.Namespace) -> None:
         from ..e2e import cmd_e2e

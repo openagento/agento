@@ -157,7 +157,7 @@ class ClaudeWorkspaceAdapter:
         captured ``~/.claude.json`` into ``build_dir/.claude.json`` (so Claude
         sees ``oauthAccount`` and considers itself logged in on first run).
         Preserves any agent_view-level keys already in ``.claude.json`` such as
-        ``model``/``systemPrompt`` written by ``prepare_workspace``.
+        ``model`` written by ``prepare_workspace``.
         """
         credentials = credential.credentials or {}
         if credential.type == "anthropic_api_key":
@@ -325,6 +325,7 @@ class ClaudeWorkspaceAdapter:
         # Validate the TRUSTED input first, so a misconfigured core/toolbox/url fails the
         # run whether or not an MCP file happens to exist.
         target = toolbox_origin(toolbox_url) if capability_token else None
+        self._trust_run_dir(artifacts_dir)
         if job_id is None and not run_id and not capability_token:
             return
         mcp_path = artifacts_dir / ".mcp.json"
@@ -355,6 +356,22 @@ class ClaudeWorkspaceAdapter:
                 url = f"{url}{sep}cap={capability_token}"
             server_cfg["url"] = url
         mcp_path.write_text(json.dumps(data, indent=2))
+
+    @staticmethod
+    def _trust_run_dir(artifacts_dir: Path) -> None:
+        """Pre-accept the CLI's "trust this folder" dialog for this run dir only.
+
+        The interactive TUI asks it once per cwd and its default answer exits. The run
+        dir is HOME and cwd in both containers, so the key is the same path string.
+        Only this one entry: never the developer's ``projects`` map, never an ancestor
+        (DECISIONS.md 2026-10-06 "Claude trust pre-accept").
+        """
+        path = artifacts_dir / ".claude.json"
+        data = _load_json(path) if path.is_file() else {}
+        data = _merge_json(
+            data, {"projects": {str(artifacts_dir): {"hasTrustDialogAccepted": True}}}
+        )
+        path.write_text(json.dumps(data, indent=2) + "\n")
 
     def credential_ttl_seconds(self, credential: CredentialRecord) -> int | None:
         """Seconds until this credential's access token expires, or ``None`` if unknown.
@@ -461,10 +478,6 @@ class ClaudeWorkspaceAdapter:
         if model:
             claude_json["model"] = model
 
-        personality = agent_config.get("claude/personality")
-        if personality:
-            claude_json["systemPrompt"] = personality
-
         if claude_json:
             config_path = working_dir / ".claude.json"
             config_path.write_text(json.dumps(claude_json, indent=2) + "\n")
@@ -478,9 +491,11 @@ class ClaudeWorkspaceAdapter:
     ) -> None:
         settings: dict[str, Any] = {}
 
-        trust_level = agent_config.get("claude/trust_level")
-        if trust_level:
-            settings["permissions"] = {"dangerouslySkipPermissions": trust_level == "full"}
+        # The CLI reads bypass mode from ``permissions.defaultMode``; the
+        # skip flag stops the TUI asking to confirm it on every start.
+        if agent_config.get("claude/trust_level") == "full":
+            settings["permissions"] = {"defaultMode": "bypassPermissions"}
+            settings["skipDangerousModePermissionPrompt"] = True
 
         # Legacy passthrough. It used to land in .claude.json, where Claude ignores it.
         permissions = agent_config.get("claude/permissions")

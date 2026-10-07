@@ -55,6 +55,7 @@ class TestAuthenticateInteractiveClaude:
         assert result.refresh_token == "sk-ant-ort01-test-refresh"
         assert result.expires_at == 1800000000000
         assert result.subscription_type == "team"
+        assert mock_run_cli.call_args.args[0] == ["claude", "--strict-mcp-config"]
 
     @patch("agento.modules.claude.src.auth.Path.home")
     @patch("agento.modules.claude.src.auth._run_cli")
@@ -191,6 +192,7 @@ class TestRunCli:
         mock_subprocess.assert_called_once()
         call_env = mock_subprocess.call_args.kwargs["env"]
         assert call_env["HOME"] == "/tmp/test_home"
+        assert mock_subprocess.call_args.kwargs["cwd"] == "/tmp/test_home"
 
     @patch("agento.framework.agent_manager.auth.subprocess.run", side_effect=FileNotFoundError)
     def test_raises_when_cli_not_found(self, mock_subprocess):

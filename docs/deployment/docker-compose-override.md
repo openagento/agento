@@ -92,7 +92,7 @@ The sandbox image installs agent CLIs from npm, one per enabled module's `sandbo
         "package": "@anthropic-ai/claude-code",
         "binary": "claude",
         "version_env_key": "CLAUDE_CODE_VERSION",
-        "default_range": "2.1.165"
+        "default_range": "2.1.291"
       }
     }
   ]

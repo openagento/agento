@@ -278,6 +278,15 @@ def test_agento_run_happy_path_per_credential_type(
             f"stdout={run.stdout[-800:]}\nstderr={run.stderr[:800]}"
         )
         assert run.stdout.strip(), "agent produced no output"
+        if harness == "claude":
+            # What the consumer reads from the same stream: a result and the init report.
+            from agento.modules.claude.src.output_parser import parse_claude_output
+
+            parsed = parse_claude_output(run.stdout)
+            assert parsed.session_id and parsed.num_turns, "no result event parsed"
+            assert parsed.mcp_init is not None and [
+                (s.name, s.status) for s in parsed.mcp_init.servers
+            ] == [("toolbox", "connected")]
     finally:
         # Restore exactly what we changed (best-effort): credential priority and
         # the agent_view-scoped overrides. Harness first again, so restoring the

@@ -142,6 +142,26 @@ def _classify_error(msg: str):
     return RuntimeError(f"Claude CLI error: {msg}")
 
 
+def result_error_message(event: dict) -> str:
+    """The error text of an ``is_error`` result event.
+
+    CLI 2.1.x can put the text only in ``errors[]`` (no ``result`` key), e.g.
+    ``error_during_execution`` for a resume of an unknown session.
+    """
+    result = event.get("result")
+    if isinstance(result, str) and result:
+        return result
+    errors = event.get("errors")
+    if isinstance(errors, list) and errors:
+        return "; ".join(str(e) for e in errors)
+    return str(event.get("subtype") or "unknown error")
+
+
+def _sum(events: list[dict], get) -> int | None:
+    values = [v for v in map(get, events) if isinstance(v, (int, float))]
+    return sum(values) if values else None
+
+
 def parse_claude_output(raw: str, logger: logging.Logger | None = None) -> RunResult:
     """Parse Claude CLI stream-json (JSONL) output into a RunResult.
 
@@ -163,7 +183,7 @@ def parse_claude_output(raw: str, logger: logging.Logger | None = None) -> RunRe
 
     # Parse JSONL events line by line
     session_id: str | None = None
-    result_event: dict | None = None
+    result_events: list[dict] = []
     mcp_init: McpInitReport | None = None
     init_seen = False
 
@@ -200,22 +220,26 @@ def parse_claude_output(raw: str, logger: logging.Logger | None = None) -> RunRe
                 )
 
         if event.get("type") == "result":
-            result_event = event
+            result_events.append(event)
 
-    if result_event:
-        if result_event.get("is_error"):
-            msg = result_event.get("result", "unknown error")
-            raise _classify_error(msg)
+    if result_events:
+        # A background subagent makes the CLI emit one result per turn (2.1.x):
+        # turns, tokens and duration are per result, total_cost_usd is cumulative.
+        # See DECISIONS.md 2026-10-06 "Claude multi-result stream".
+        for ev in result_events:
+            if ev.get("is_error"):
+                raise _classify_error(result_error_message(ev))
 
-        usage = result_event.get("usage", {})
+        costs = [c for c in (ev.get("total_cost_usd") for ev in result_events)
+                 if isinstance(c, (int, float))]
         return RunResult(
             raw_output=raw,
-            input_tokens=usage.get("input_tokens"),
-            output_tokens=usage.get("output_tokens"),
-            cost_usd=result_event.get("total_cost_usd"),
-            num_turns=result_event.get("num_turns"),
-            duration_ms=result_event.get("duration_ms"),
-            session_id=session_id or result_event.get("session_id"),
+            input_tokens=_sum(result_events, lambda e: (e.get("usage") or {}).get("input_tokens")),
+            output_tokens=_sum(result_events, lambda e: (e.get("usage") or {}).get("output_tokens")),
+            cost_usd=max(costs) if costs else None,
+            num_turns=_sum(result_events, lambda e: e.get("num_turns")),
+            duration_ms=_sum(result_events, lambda e: e.get("duration_ms")),
+            session_id=session_id or result_events[-1].get("session_id"),
             mcp_init=mcp_init,
         )
 
@@ -264,8 +288,7 @@ def _parse_single_json(raw: str, _log: logging.Logger) -> RunResult:
         return RunResult(raw_output=raw)
 
     if data.get("is_error"):
-        msg = data.get("result", "unknown error")
-        raise _classify_error(msg)
+        raise _classify_error(result_error_message(data))
 
     cr = RunResult(
         raw_output=raw,

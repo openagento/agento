@@ -3,9 +3,45 @@
 [Claude Code](https://www.npmjs.com/package/@anthropic-ai/claude-code) as an Agento
 harness, with one provider: **Anthropic** (interactive OAuth or API key).
 
-At workspace-build time the adapter writes `.claude.json` (model, system prompt, login
-state) and `.claude/settings.json` (permissions and everything else Claude Code reads
-from its settings file), plus `.mcp.json` for the Toolbox.
+At workspace-build time the adapter writes `.claude.json` (model, login state) and
+`.claude/settings.json` (permissions and everything else Claude Code reads from its
+settings file), plus `.mcp.json` for the Toolbox.
+
+## Per-run setup
+
+Each run gets its own run dir (HOME and cwd). Before the agent starts, Agento writes
+`projects["<run dir>"].hasTrustDialogAccepted = true` into the run's `.claude.json`. The
+interactive TUI (CLI 2.1.x) asks "trust this folder" once per cwd and its default answer
+exits, so without it `agento run <code>` stopped at the dialog. Only that one run dir is
+trusted — never the developer's `projects` map and never a parent path.
+
+`agento run <code> --yolo` also passes `--settings '{"skipDangerousModePermissionPrompt":true}'`,
+because 2.1.x asks to confirm bypass mode on every start (default answer: exit).
+
+## `claude/trust_level`
+
+`agent_view/claude/trust_level = full` writes `permissions.defaultMode =
+"bypassPermissions"` and `skipDangerousModePermissionPrompt: true` into
+`.claude/settings.json`. Any other value writes nothing. Before 2026-10-06 it wrote
+`permissions.dangerouslySkipPermissions`, a key the CLI does not read, so the setting had
+no effect. Headless jobs run with `--dangerously-skip-permissions` anyway; the setting
+matters for an interactive run without `--yolo`.
+
+## `claude/personality` (removed)
+
+Agento used to copy `agent_view/claude/personality` into `.claude.json` as `systemPrompt`.
+The CLI never reads that key (verified on 2.1.291), so the value never reached the model.
+The write is removed. Put an agent_view's personality in `SOUL.md`
+(`agent_view/instructions/soul_md`), which the agent does read.
+
+## Telemetry
+
+`job.toolbox_mcp_calls` counts toolbox tool calls from the session transcript, including
+the transcripts of its subagents (`<session>/subagents/agent-*.jsonl`, CLI 2.1.x). A
+background subagent makes the CLI print one `result` event per turn; turns, tokens and
+duration are summed over them, and the cost is the largest `total_cost_usd` (the CLI
+reports it cumulative). An error result whose text is only in `errors[]` keeps that text,
+so error classification (auth, limit) still sees it.
 
 ## `claude/settings` — native settings.json passthrough
 
@@ -35,7 +71,7 @@ agento config:set claude/settings '{"advisorModel":"fable"}' \
 ```
 
 The merge is nested, so a `permissions` block from the operator does not wipe the
-`permissions.dangerouslySkipPermissions` Agento derives from `claude/trust_level`.
+`permissions.defaultMode` Agento derives from `claude/trust_level`.
 
 In `agento admin` the field is on the **agent_view** node, beside the harness selector —
 it is listed only when this view's harness is `claude` (see
