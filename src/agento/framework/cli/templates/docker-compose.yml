@@ -49,6 +49,8 @@ services:
       - CRONDB_PASSWORD=${MYSQL_PASSWORD:-cronagent_pass}
       # A share's URL (PRD E6 §9.1). `-`, not `:-`: set to empty turns shares off.
       - AGENTO_SHARE_HOST=${AGENTO_SHARE_HOST-share.localhost}
+      # The panel origin a miniapp page gives the bridge; create_draft returns it.
+      - AGENTO_PANEL_HOST=${AGENTO_PANEL_HOST:-panel.localhost}
       - AGENTO_PROXY_PORT=${AGENTO_PROXY_PORT:-8443}
     env_file:
       - path: ../secrets.env
