@@ -42,6 +42,38 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+---
+
+## 2026-10-06 — Roles are rows; admin stays the one code with built-in admin operations
+
+Plan: `~/.claude/plans/panel-roles-acl-tree-85c647.md`. Owner approval, 2026-10-06: "Instead of
+seeing raw grants, we should see Roles tab and inside normal CRUD. Then in Role edit page we should
+see beautiful tree of resources with checkboxes. You can, again inspire by Magento ACL."
+
+- **A `role` table (`code`, `label`) replaces the hardcoded `("admin", "user")` and the two role
+  CHECKs** (migration `050_role`). `user.role` and `role_grant.role` get foreign keys: `user.role`
+  with no action (a role that a user has cannot be deleted — the DB enforces what the API says),
+  `role_grant.role` with `ON DELETE CASCADE` (grants go with their role). The CHECKs are dropped
+  because MySQL refuses an FK with a referential action on a column a CHECK names (ER 3823).
+  Writers still check the code inside their transaction for a clear message; the FK is the backstop
+  (errno 1452 → "unknown role", 1451 on delete → "N users have this role").
+- **`admin` stays the one code with the built-in admin operations** (`users.manage`,
+  `grants.manage`, `config.write`, `admin.read`, `credentials.manage`; `accounts.may`) and with
+  every module-declared ACL resource. They stay not grantable, so a new role is a `user`-like role.
+  Custom admin-like roles would make those operations grantable rows — a larger change to the trust
+  model, left as a ROADMAP.md follow-up. The checks that compare the code `"admin"` (accounts,
+  launches, the conversation service) keep working because `admin` is a seeded row with the same
+  code.
+- **The code is never renamed; the label is.** The code is the key `user.role` and `role_grant.role`
+  hold and the toolbox reads (`GRANTS_SQL`), so the toolbox needed no change.
+- **One write per scope: `set_role_grants` replaces the role's rows at exactly one scope.** The
+  panel tree saves in one request. A name that the view's workspace already grants is not inserted
+  at the view. A row for a tool of a disabled module is outside the tree, so the write keeps it (it
+  works again when the module is enabled).
+- **The raw `/api/admin/grants*` routes are removed with no alias.** They were never in a release
+  (the commit that added them is in no tag), so no shipped contract breaks (CODE-5). `grant:*` stays
+  for the CLI.
+
 ## 2026-10-06 — The launch redeem checks the exact panel Origin only, not Sec-Fetch-Site
 
 - **Problem.** `POST /launch` on the apps origin refused every browser launch on the default

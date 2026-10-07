@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selector, and only for the harness this view uses — a `system.json` field asks for that with
   `"harness_option": true`, the same shape as `provider_option` one axis up. The config path is
   unchanged (`{module}/{field}`), so `config:set` and `runtime_config_fields` are untouched.
+- **Panel roles are rows (Users → Roles).** A `role` table (migration `050_role`) replaces the
+  hardcoded `admin`/`user` pair; both stay built in. An admin creates, renames and deletes roles,
+  and edits a role's tools and operations per scope as a checkbox tree saved by one
+  `PUT /api/admin/roles/{code}/resources`. CLI `role:list` / `role:create` / `role:delete`
+  (`ro:li`, `ro:cr`, `ro:de`); `--role` takes any code in the table.
 - **Chat UX for conversations (E9).** Claude (`--include-partial-messages`) and pi stream text and
   reasoning live: new fragment kinds `assistant.partial`, `reasoning.partial` and
   `assistant.reasoning`, coalesced per run (one row per 250 ms or 4 KiB, at most 4 writer commits
@@ -28,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows its reasoning summary. The panel shows the chat layout, tool summaries, one status line,
   one error per turn with a retry, collapsed reasoning, code highlight and a phone drawer.
 - **ACL resources declared by modules.** `di.json` `acl_resources: [{id, title}]` makes an
-  operation grantable (`grant:add --operation`, the panel Grants screen); `admin` has all. The
+  operation grantable (`grant:add --operation`, the panel role page); `admin` has all. The
   conversation module declares `conversation.run_details`: prompts, tool input and output, harness,
   provider, credential label, model, tokens and job links are shown to a non-admin only with this
   grant. Each attempt records its harness, provider, model and credential id at mint

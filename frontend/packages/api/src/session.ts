@@ -4,7 +4,7 @@
 import { apiFetch } from "./apiFetch";
 import { ApiError } from "./errors";
 
-export interface User { id: number; username: string; role: "admin" | "user"; is_active: boolean }
+export interface User { id: number; username: string; role: string; is_active: boolean }
 /** The panel display settings (`admin/locale/*`); null when the `admin` module is disabled. */
 export interface Display { date_format: "us" | "eu" | "iso"; timezone: string }
 
