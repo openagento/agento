@@ -291,6 +291,17 @@ AG-65 follow-ups:
 - **Proactive refresh:** a scheduled tick that refreshes any enabled OAuth credential below the
   horizon, so jobs almost never meet a near-expiry credential.
 - **`agento run`:** use `refresh_credentials` before an interactive run too.
+### ⚪ Model check — follow-ups
+
+The `agent_view/model` tester (DECISIONS.md 2026-10-07) runs from `config:test` and the TUI only.
+
+- **Panel Test button for `local` testers.** `web` refuses them with 400 because it loads no module
+  code. A panel path needs a web→cron request, the same shape as panel re-login
+  (DECISIONS.md D-PANEL-LOGIN-1).
+- **Run-time `ModelConfigError` for claude and codex.** Pi fails a run with a wrong model at once,
+  with no retry. Claude and Codex do not yet classify a wrong-model answer the same way.
+- **Live check of the Claude OAuth path.** Not verified: if `GET /v1/models/{id}` accepts a Claude
+  subscription token. If it does not, the check answers `MODEL_CHECK_FAILED`.
 
 ### ⚪ Credential limits and panel re-login — follow-ups
 

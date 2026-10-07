@@ -433,6 +433,32 @@ Deleted with the split: `framework/cli_invoker.py`, `framework/config_writer.py`
 registries and five loaders collapsed into one registry and one loader
 (`bootstrap._load_agent_harnesses`).
 
+### Checking a model id
+
+`check_model` is optional, like `stream_renderer`, and read with `getattr`. The `agent_view/model`
+config tester ([testers.md](../config/testers.md#3-a-module-local-python-class)) calls it after it
+has checked the harness, its CLI, the provider and the credential pool:
+
+```python
+def check_model(self, provider: str, model: str, credential: CredentialRecord | None,
+                *, timeout_s: float) -> TestResult | None: ...
+```
+
+- `credential` is the decrypted pool credential, or `None` when the provider needs none.
+- Return `None` when this harness cannot check this provider's models; the tester answers
+  `error` / `MODEL_NOT_CHECKED`.
+- Otherwise return `ok` / `MODEL_OK`, `fail` / `MODEL_UNKNOWN`, `error` / `MODEL_CHECK_FAILED` or
+  `error` / `MODEL_CHECK_TIMEOUT`. Answer `fail` only on proof that the model is unknown; a list that
+  could not be read is `error`.
+- `timeout_s` is a total budget: take one deadline at entry and give each subprocess or request only
+  the time that is left. Run network calls in a child process, so the deadline also covers DNS.
+- Write nothing to the DB. Put no secret, CLI stderr or response body in the message. Start a CLI
+  from `harness_base_env()` in a temporary HOME, never with the secret on argv.
+
+The shipped harnesses: Pi reads `pi --list-models`, Codex reads `codex debug models` (the account's
+list), Claude asks `GET /v1/models/{id}`. A guard test requires `check_model` on every in-tree
+harness.
+
 ## Adding a harness: checklist
 
 1. `module.json` + `di.json` with one `agent_harnesses` entry.
