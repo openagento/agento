@@ -56,6 +56,11 @@ def test_non_retryable_value_error():
     assert "Non-retryable" in decision.reason
 
 
+def test_model_config_error_fails_on_the_first_attempt():
+    decision = evaluate("ModelConfigError", attempt=1, max_attempts=3)
+    assert decision.should_retry is False
+
+
 def test_non_retryable_permission_error():
     decision = evaluate("PermissionError", attempt=1, max_attempts=3)
     assert decision.should_retry is False
