@@ -275,48 +275,6 @@ def admin_update_user(req: Request) -> Response:
     return Response(200, user_json(accounts.get_user(req.conn, user_id)))
 
 
-def _grant_json(g: dict) -> dict:
-    return {**g, "created_at": _iso(g["created_at"]) if g.get("created_at") else None}
-
-
-def admin_list_grants(req: Request) -> Response:
-    return _forbidden_unless(req, "grants.manage") or Response(
-        200, [_grant_json(g) for g in accounts.list_grants(req.conn)])
-
-
-def admin_grant_options(req: Request) -> Response:
-    return _forbidden_unless(req, "grants.manage") or Response(
-        200, {"roles": list(accounts.ROLES), "operations": sorted(accounts.grantable_operations())})
-
-
-def admin_add_grant(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
-    body = _body(req)
-    for key in ("workspace_id", "agent_view_id"):
-        if body.get(key) is not None and not _positive_int(body[key]):
-            return error(400, f"{key} must be a positive integer")
-    try:
-        grant_id = accounts.add_grant(
-            req.conn, body.get("role"), body.get("kind"), body.get("name"),
-            workspace_id=body.get("workspace_id"), agent_view_id=body.get("agent_view_id"),
-            actor_id=req.session.user.id,
-        )
-    except accounts.AccessError as exc:
-        return _access_error(exc)
-    return Response(201, {"id": grant_id})
-
-
-def admin_remove_grant(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
-    try:
-        accounts.remove_grant(req.conn, int(req.params["id"]), actor_id=req.session.user.id)
-    except accounts.AccessError as exc:
-        return _access_error(exc)
-    return Response(204)
-
-
 _TOOLBOX_DOWN = error(503, "toolbox unavailable")
 
 
@@ -568,10 +526,6 @@ ROUTES: list[Route] = [
     _r("GET", "/api/admin/users", admin_list_users),
     _r("POST", "/api/admin/users", admin_create_user, json_body=True),
     _r("PATCH", r"/api/admin/users/(?P<id>[0-9]{1,10})", admin_update_user, json_body=True),
-    _r("GET", "/api/admin/grants", admin_list_grants),
-    _r("GET", "/api/admin/grants/options", admin_grant_options),
-    _r("POST", "/api/admin/grants", admin_add_grant, json_body=True),
-    _r("DELETE", r"/api/admin/grants/(?P<id>[0-9]{1,19})", admin_remove_grant),
 ]
 
 # Last: admin_api imports the request types above and adds its routes to ROUTES. Its own module

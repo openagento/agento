@@ -212,3 +212,153 @@ def test_may():
     assert not accounts.may(admin, "artifact.launch")
     assert not accounts.may(accounts.User(2, "a", "user", True), "config.write")
     assert not accounts.may(accounts.User(3, "b", "admin", False), "config.write")
+
+
+def test_role_crud(conn):
+    root = accounts.create_user(conn, "root", "admin", PASSWORD)
+    plain = accounts.create_user(conn, "alice", "user", PASSWORD)
+    with pytest.raises(AccessError, match="not allowed"):
+        accounts.create_role(conn, "support", "Support", actor_id=plain.id)
+    for code in ("Support", "s", "9lives", "x" * 17, "a-b"):
+        with pytest.raises(AccessError, match="code must match"):
+            accounts.create_role(conn, code, "Support")
+    with pytest.raises(AccessError, match="label"):
+        accounts.create_role(conn, "support", "  ")
+    assert accounts.create_role(conn, "support", " Support ", actor_id=root.id)["label"] == "Support"
+    with pytest.raises(AccessError, match="code already exists"):
+        accounts.create_role(conn, "support", "Other")
+    with pytest.raises(AccessError, match="label already exists"):
+        accounts.create_role(conn, "other", "Support")
+    accounts.rename_role(conn, "support", "Support desk", actor_id=root.id)
+    with pytest.raises(AccessError, match="role not found"):
+        accounts.rename_role(conn, "nobody", "Nobody")
+    with pytest.raises(AccessError, match="label already exists"):
+        accounts.rename_role(conn, "support", "User")
+    roles = {r["code"]: r for r in accounts.list_roles(conn)}
+    assert roles["support"] == {"code": "support", "label": "Support desk", "builtin": False, "users": 0, "scopes": 0}
+    assert roles["admin"]["builtin"] and roles["admin"]["users"] == 1 and roles["user"]["users"] == 1
+
+
+def test_delete_role(conn, scopes):
+    accounts.create_role(conn, "support", "Support")
+    with pytest.raises(AccessError, match="built-in"):
+        accounts.delete_role(conn, "user")
+    with pytest.raises(AccessError, match="role not found"):
+        accounts.delete_role(conn, "nobody")
+    with pytest.raises(AccessError, match="role not found"):
+        accounts.delete_role(conn, "User")  # the column collation is case-insensitive
+    bob = accounts.create_user(conn, "bob", "support", PASSWORD)
+    accounts.add_grant(conn, "support", "operation", "artifact.launch", agent_view_id=scopes["av1"])
+    with pytest.raises(AccessError, match="1 user has this role"):
+        accounts.delete_role(conn, "support")
+    accounts.set_role(conn, bob.id, "user")
+    accounts.delete_role(conn, "support")
+    assert "support" not in {r["code"] for r in accounts.list_roles(conn)}
+    assert accounts.list_grants(conn, "support") == []
+
+
+def test_unknown_role_is_refused_by_every_writer(conn, scopes):
+    with pytest.raises(AccessError, match="unknown role"):
+        accounts.create_user(conn, "bob", "support", PASSWORD)
+    alice = accounts.create_user(conn, "alice", "user", PASSWORD)
+    with pytest.raises(AccessError, match="unknown role"):
+        accounts.set_role(conn, alice.id, "support")
+    with pytest.raises(AccessError, match="unknown role"):
+        accounts.add_grant(conn, "support", "operation", "artifact.launch", agent_view_id=scopes["av1"])
+    with pytest.raises(AccessError, match="unknown role"):
+        accounts.set_role_grants(conn, "support", agent_view_id=scopes["av1"], tools=[], operations=[])
+    accounts.create_role(conn, "support", "Support")
+    accounts.set_role(conn, alice.id, "support")
+    assert accounts.get_user(conn, alice.id).role == "support"
+
+
+def test_role_scopes_and_list_counts(conn, scopes):
+    accounts.create_role(conn, "support", "Support")
+    accounts.add_grant(conn, "support", "operation", "artifact.launch", workspace_id=scopes["ws1"])
+    accounts.add_grant(conn, "support", "tool", "versioned_artifact_get_current", workspace_id=scopes["ws1"])
+    accounts.add_grant(conn, "support", "tool", "versioned_artifact_get_current", agent_view_id=scopes["av2"])
+    _insert_raw_grant(conn, {"role": "support", "grant_kind": "tool", "name": "t", "workspace": None,
+                             "agent_view": None}, scopes)  # no scope: matches nothing, counted nowhere
+    assert accounts.role_scopes(conn, "support") == [
+        {"workspace_id": None, "agent_view_id": scopes["av2"], "tools": 1, "operations": 0},
+        {"workspace_id": scopes["ws1"], "agent_view_id": None, "tools": 1, "operations": 1},
+    ]
+    assert {r["code"]: r["scopes"] for r in accounts.list_roles(conn)}["support"] == 2
+
+
+def _rows(conn, role, scopes, scope):
+    key = "agent_view_id" if scope.startswith("av") else "workspace_id"
+    return sorted((g["grant_kind"], g["name"]) for g in accounts.list_grants(conn, role) if g[key] == scopes[scope])
+
+
+def test_set_role_grants_replaces_one_scope(conn, scopes):
+    root = accounts.create_user(conn, "root", "admin", PASSWORD)
+    alice = accounts.create_user(conn, "alice", "user", PASSWORD)
+    other = accounts.create_user(conn, "carol", "user", PASSWORD)
+    with pytest.raises(AccessError, match="not allowed"):
+        accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=[], operations=[],
+                                 actor_id=alice.id)
+    got = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], actor_id=root.id,
+                                   tools=["versioned_artifact_get_current", "miniapp_list"],
+                                   operations=["artifact.launch"])
+    assert got == {"added": 3, "removed": 0}
+    accounts.add_grant(conn, "user", "tool", "miniapp_list", agent_view_id=scopes["av2"])
+    _session_and_launch(conn, alice.id, scopes["ws1"], scopes["av1"])
+    _session_and_launch(conn, other.id, scopes["ws2"], scopes["av2"])
+    same = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], operations=["artifact.launch"],
+                                    tools=["miniapp_list", "versioned_artifact_get_current"])
+    assert same == {"added": 0, "removed": 0}
+    assert _revoked(conn, alice.id) == (False, False)  # nothing removed: no launch ends
+    got = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=["miniapp_list"],
+                                   operations=[])
+    assert got == {"added": 0, "removed": 2}
+    assert _rows(conn, "user", scopes, "av1") == [("tool", "miniapp_list")]
+    assert _rows(conn, "user", scopes, "av2") == [("tool", "miniapp_list")]  # other scope untouched
+    assert _revoked(conn, alice.id) == (False, True)
+    assert _revoked(conn, other.id) == (False, False)
+
+
+def test_set_role_grants_skips_names_the_workspace_already_grants(conn, scopes):
+    accounts.add_grant(conn, "user", "tool", "miniapp_list", workspace_id=scopes["ws1"])
+    accounts.add_grant(conn, "user", "operation", "artifact.launch", agent_view_id=scopes["av1"])
+    accounts.add_grant(conn, "user", "operation", "artifact.launch", workspace_id=scopes["ws1"])
+    got = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=["miniapp_list"],
+                                   operations=["artifact.launch"])
+    # Not inserted at the view (redundant); the redundant view row already there stays.
+    assert got == {"added": 0, "removed": 0}
+    assert _rows(conn, "user", scopes, "av1") == [("operation", "artifact.launch")]
+    alice = accounts.create_user(conn, "alice", "user", PASSWORD)
+    _session_and_launch(conn, alice.id, scopes["ws1"], scopes["av1"])
+    # The tree never sends a locked (inherited) leaf: the redundant row stays, no launch ends.
+    assert accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=[], operations=[]) == {
+        "added": 0, "removed": 0}
+    assert _rows(conn, "user", scopes, "av1") == [("operation", "artifact.launch")]
+    assert _revoked(conn, alice.id) == (False, False)
+
+
+def test_set_role_grants_keeps_rows_of_a_disabled_module(conn, scopes, monkeypatch):
+    accounts.add_grant(conn, "user", "tool", "miniapp_list", agent_view_id=scopes["av1"])
+    enabled = accounts.declared_tools(enabled_only=True) - {"miniapp_list"}
+    real = accounts.declared_tools
+    monkeypatch.setattr(accounts, "declared_tools", lambda enabled_only=False: enabled if enabled_only else real())
+    assert accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=[], operations=[]) == {
+        "added": 0, "removed": 0}
+    assert _rows(conn, "user", scopes, "av1") == [("tool", "miniapp_list")]
+
+
+@pytest.mark.parametrize("kwargs,message", [
+    ({"tools": [], "operations": []}, "exactly one"),
+    ({"workspace_id": 1, "agent_view_id": 1, "tools": [], "operations": []}, "exactly one"),
+    ({"agent_view_id": 1, "tools": ["no_such_tool"], "operations": []}, "declares"),
+    ({"agent_view_id": 1, "tools": [], "operations": ["users.manage"]}, "operation must be one of"),
+    ({"agent_view_id": 1, "tools": "miniapp_list", "operations": []}, "list of names"),
+    ({"agent_view_id": 1, "tools": [f"t{i}" for i in range(1001)], "operations": []}, "at most 1000"),
+])
+def test_set_role_grants_validation(conn, kwargs, message):
+    with pytest.raises(AccessError, match=message):
+        accounts.set_role_grants(conn, "user", **kwargs)
+
+
+def test_set_role_grants_unknown_view_is_not_found(conn):
+    with pytest.raises(AccessError, match="agent_view not found"):
+        accounts.set_role_grants(conn, "user", agent_view_id=999_999_999, tools=[], operations=[])

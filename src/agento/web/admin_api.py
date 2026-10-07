@@ -9,10 +9,11 @@ import re
 from dataclasses import asdict
 from datetime import datetime
 
+from agento.framework.access import accounts
 from agento.framework.admin import data
 
 from . import api
-from .api import Request, Response, Route, _body, _forbidden_unless, _iso, _positive_int, _r, error
+from .api import Request, Response, Route, _access_error, _body, _forbidden_unless, _iso, _positive_int, _r, error
 
 _SCOPES = ("default", "workspace", "agent_view")
 _SCOPE_TABLES = {"workspace": "workspace", "agent_view": "agent_view"}
@@ -358,6 +359,122 @@ def set_config(req: Request) -> Response:
     return Response(200, {"path": body.get("path"), "reset": [p for p, _v in reset]})
 
 
+def _role(conn, code: str) -> dict | None:
+    return next((r for r in accounts.list_roles(conn) if r["code"] == code), None)
+
+
+def roles(req: Request) -> Response:
+    return _forbidden_unless(req, "grants.manage") or Response(200, accounts.list_roles(req.conn))
+
+
+def role_detail(req: Request) -> Response:
+    if denied := _forbidden_unless(req, "grants.manage"):
+        return denied
+    code = req.params["code"]
+    if not (role := _role(req.conn, code)):
+        return error(404, "not found")
+    return Response(200, {**role, "scopes": accounts.role_scopes(req.conn, code)})
+
+
+def create_role(req: Request) -> Response:
+    if denied := _forbidden_unless(req, "grants.manage"):
+        return denied
+    body = _body(req)
+    try:
+        role = accounts.create_role(req.conn, body.get("code"), body.get("label"), actor_id=req.session.user.id)
+    except accounts.AccessError as exc:
+        return _access_error(exc)
+    return Response(201, role)
+
+
+def update_role(req: Request) -> Response:
+    if denied := _forbidden_unless(req, "grants.manage"):
+        return denied
+    code, body = req.params["code"], _body(req)
+    if "label" not in body:
+        return error(400, "nothing to change")
+    try:
+        accounts.rename_role(req.conn, code, body["label"], actor_id=req.session.user.id)
+    except accounts.AccessError as exc:
+        return _access_error(exc)
+    return Response(200, _role(req.conn, code))
+
+
+def delete_role(req: Request) -> Response:
+    if denied := _forbidden_unless(req, "grants.manage"):
+        return denied
+    try:
+        accounts.delete_role(req.conn, req.params["code"], actor_id=req.session.user.id)
+    except accounts.AccessError as exc:
+        return _access_error(exc)
+    return Response(204)
+
+
+def _role_scope(req: Request, src: dict) -> tuple[str, int] | Response:
+    """A known role and one grant scope (a grant has no default scope)."""
+    if denied := _forbidden_unless(req, "grants.manage"):
+        return denied
+    if not _role(req.conn, req.params["code"]):
+        return error(404, "not found")
+    scope = config_scope(req, src)
+    if not isinstance(scope, Response) and scope[0] == "default":
+        return error(400, "scope must be one of workspace, agent_view")
+    return scope
+
+
+def role_resources(req: Request) -> Response:
+    """The role page tree: each resource ``granted`` at exactly this scope, ``inherited`` from the
+    view's workspace (a workspace grant reaches every view in it), or ``builtin`` (admin)."""
+    scope = _role_scope(req, req.query)
+    if isinstance(scope, Response):
+        return scope
+    code, (kind, scope_id) = req.params["code"], scope
+    view_id, workspace_id = (scope_id, None) if kind == "agent_view" else (None, scope_id)
+    with req.conn.cursor() as cur:
+        if view_id is not None:
+            cur.execute("SELECT workspace_id FROM agent_view WHERE id = %s", (view_id,))
+            workspace_id = cur.fetchone()["workspace_id"]
+        cur.execute(
+            "SELECT grant_kind, name, agent_view_id FROM role_grant WHERE role = %s AND ("
+            "(agent_view_id = %s AND workspace_id IS NULL) OR (agent_view_id IS NULL AND workspace_id = %s))",
+            (code, view_id, workspace_id),
+        )
+        rows = cur.fetchall()
+    granted = {(r["grant_kind"], r["name"]) for r in rows if (r["agent_view_id"] is None) == (view_id is None)}
+    inherited = {(r["grant_kind"], r["name"]) for r in rows if view_id is not None and r["agent_view_id"] is None}
+
+    def flags(kind_: str, name: str) -> dict:
+        return {"granted": (kind_, name) in granted, "inherited": (kind_, name) in inherited}
+
+    return Response(200, {
+        "operations": [{"id": op, "title": title, **flags("operation", op),
+                        "builtin": accounts.is_builtin_resource(code, op)}
+                       for op, title in sorted(accounts.grantable_operations().items())],
+        # `enabled` is effective here: a tool whose `requires` master is off is off.
+        "toolsets": [{"toolset": toolset, "tools": [{"name": t.name, "enabled": t.enabled and not t.blocked_by,
+                                                     **flags("tool", t.name)} for t in items]}
+                     for toolset, items in data.get_tool_states(req.conn, kind, scope_id)],
+    })
+
+
+def set_role_resources(req: Request) -> Response:
+    body = _body(req)
+    scope = _role_scope(req, body)
+    if isinstance(scope, Response):
+        return scope
+    kind, scope_id = scope
+    try:
+        result = accounts.set_role_grants(
+            req.conn, req.params["code"], **{f"{kind}_id": scope_id},
+            tools=body.get("tools"), operations=body.get("operations"), actor_id=req.session.user.id,
+        )
+    except accounts.AccessError as exc:
+        return _access_error(exc)
+    return Response(200, result)
+
+
+_ROLE = r"/api/admin/roles/(?P<code>[a-z][a-z0-9_]{1,15})"
+
 ROUTES: list[Route] = [
     _r("GET", "/api/admin/scopes", scopes),
     _r("GET", "/api/admin/dashboard", dashboard),
@@ -378,5 +495,12 @@ ROUTES: list[Route] = [
     _r("PUT", "/api/admin/config", set_config, json_body=True),
     _r("DELETE", "/api/admin/config", delete_config, json_body=True),
     _r("POST", "/api/admin/config/test", run_tester, json_body=True),
+    _r("GET", "/api/admin/roles", roles),
+    _r("POST", "/api/admin/roles", create_role, json_body=True),
+    _r("GET", _ROLE, role_detail),
+    _r("PATCH", _ROLE, update_role, json_body=True),
+    _r("DELETE", _ROLE, delete_role),
+    _r("GET", _ROLE + "/resources", role_resources),
+    _r("PUT", _ROLE + "/resources", set_role_resources, json_body=True),
 ]
 api.ROUTES.extend(ROUTES)

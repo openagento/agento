@@ -1,6 +1,7 @@
-// Users and grants (PRD E2 §5): admin only. The API enforces the role; this screen only
+// Users and roles (PRD E2 §5): admin only. The API enforces the role; this screen only
 // renders what the routes answer.
 import { useState } from "react";
+import { useLocation, useNavigate } from "react-router";
 import { UserCheck, UserX } from "lucide-react";
 import { Avatar, Group, Select, Tabs, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
@@ -9,16 +10,17 @@ import {
   Button, ConfirmDialog, IconAction, DataTable, EmptyState, FormSection, PageHeader, SelectField, StatusBadge, TextField,
   type Column,
 } from "@agento/ui";
-import { Grants } from "./Grants";
+import { Roles, useRoles } from "./Roles";
 
-const ROLES = [{ value: "user", label: "user" }, { value: "admin", label: "admin" }];
 const message = (e: unknown) => (e instanceof ApiError ? e.message : "The request failed.");
+const useRoleOptions = () => (useRoles().data ?? []).map((r) => ({ value: r.code, label: r.label }));
 
 function CreateUser() {
   const qc = useQueryClient();
   const [username, setUsername] = useState("");
   const [role, setRole] = useState("user");
   const [password, setPassword] = useState("");
+  const roles = useRoleOptions();
   const create = useMutation({
     mutationFn: () => apiFetch<User>("/api/admin/users", {
       method: "POST", json: { username, role, ...(password ? { password } : {}) },
@@ -33,7 +35,7 @@ function CreateUser() {
   return (
     <FormSection title="Add a user" onSubmit={() => create.mutate()} error={create.error ? message(create.error) : null}>
       <TextField label="User name" name="new-username" required value={username} onChange={(e) => setUsername(e.target.value)} />
-      <SelectField label="Role" name="new-role" options={ROLES} value={role} onChange={setRole} />
+      <SelectField label="Role" name="new-role" options={roles} value={role} onChange={setRole} />
       <TextField label="Password" name="new-password" type="password" autoComplete="new-password"
         hint="Leave empty to create the user without a password." value={password}
         onChange={(e) => setPassword(e.target.value)} />
@@ -46,6 +48,7 @@ function UserTable() {
   const me = useSession();
   const qc = useQueryClient();
   const users = useQuery({ queryKey: ["users"], queryFn: ({ signal }) => apiFetch<User[]>("/api/admin/users", { signal }) });
+  const roles = useRoleOptions();
   const [deactivate, setDeactivate] = useState<User | null>(null);
   const update = useMutation({
     mutationFn: ({ id, patch }: { id: number; patch: Partial<Pick<User, "role" | "is_active">> }) =>
@@ -54,6 +57,7 @@ function UserTable() {
       notifications.show({ message: `User ${u.username} updated.` });
       setDeactivate(null);
       void qc.invalidateQueries({ queryKey: ["users"] });
+      void qc.invalidateQueries({ queryKey: ["roles"] });
     },
     onError: (e) => notifications.show({ color: "red", message: message(e) }),
   });
@@ -71,9 +75,9 @@ function UserTable() {
       </Group>
     ) },
     { id: "role", header: "Role", sortValue: (u) => u.role, cell: (u) => u.id === me?.id ? <Text fz="sm">{u.role}</Text> : (
-      <Select data={ROLES} value={u.role} variant="unstyled" allowDeselect={false} aria-label={`Role of ${u.username}`}
+      <Select data={roles} value={u.role} variant="unstyled" allowDeselect={false} aria-label={`Role of ${u.username}`}
         disabled={update.isPending} w={120}
-        onChange={(role) => role && role !== u.role && update.mutate({ id: u.id, patch: { role: role as User["role"] } })} />
+        onChange={(role) => role && role !== u.role && update.mutate({ id: u.id, patch: { role } })} />
     ) },
     { id: "active", header: "Status", sortValue: (u) => (u.is_active ? 1 : 0),
       cell: (u) => <StatusBadge tone={u.is_active ? "info" : "neutral"}>{u.is_active ? "Active" : "Inactive"}</StatusBadge> },
@@ -98,17 +102,19 @@ function UserTable() {
 
 export function Users() {
   const me = useSession();
+  const navigate = useNavigate();
+  const tab = useLocation().pathname.startsWith("/users/roles") ? "roles" : "users";
   if (me?.role !== "admin") return <EmptyState title="Not available">Only an administrator manages users.</EmptyState>;
   return (
     <div className="ag-stack">
       <PageHeader title="Users" description="Who can sign in to the panel, and what each role may do." />
-      <Tabs defaultValue="users">
+      <Tabs value={tab} onChange={(t) => void navigate(t === "roles" ? "/users/roles" : "/users")}>
         <Tabs.List>
           <Tabs.Tab value="users">Users</Tabs.Tab>
-          <Tabs.Tab value="grants">Grants</Tabs.Tab>
+          <Tabs.Tab value="roles">Roles</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="users" pt="md"><div className="ag-stack"><UserTable /><CreateUser /></div></Tabs.Panel>
-        <Tabs.Panel value="grants" pt="md"><Grants /></Tabs.Panel>
+        <Tabs.Panel value="roles" pt="md"><Roles /></Tabs.Panel>
       </Tabs>
     </div>
   );
