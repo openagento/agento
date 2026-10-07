@@ -91,7 +91,9 @@ def _run_cli(cmd: list[str], tmp_home: str, name: str) -> None:
     """Run a CLI command with isolated HOME. Raises on failure."""
     env = {**os.environ, "HOME": tmp_home}
     try:
-        proc = subprocess.run(cmd, env=env)
+        # cwd=HOME: a login needs no project. The inherited cwd (/workspace in the
+        # containers) made the CLI load that project's .mcp.json and try to connect.
+        proc = subprocess.run(cmd, env=env, cwd=tmp_home)
     except FileNotFoundError as exc:
         raise AuthenticationError(f"{name} CLI not found. Is it installed?") from exc
 

@@ -138,3 +138,59 @@ def test_parse_drift_unrecognized_format_yields_no_recognized_records(tmp_path: 
 def test_satisfies_protocol():
     from agento.framework.harness import TranscriptReader
     assert isinstance(ClaudeTranscriptReader(), TranscriptReader)
+
+
+REAL = Path(__file__).resolve().parents[3] / "fixtures" / "claude_2_1_291" / "transcript"
+REAL_SID = "e8a2126f-ea9d-40a4-a452-ccf275aacb73"
+
+
+def test_real_2_1_291_subagent_toolbox_call_is_counted(tmp_path: Path, monkeypatch):
+    """CLI 2.1.291 writes a subagent's transcript to ``<sid>/subagents/agent-*.jsonl``.
+    In this capture only the subagent called the toolbox."""
+    build = tmp_path / "build"
+    # Stored without the ``.claude`` segment, which .gitignore excludes.
+    shutil.copytree(REAL / "projects", build / "support" / "qa_01" / "state" / ".claude" / "projects")
+    monkeypatch.setattr(cl_tr, "BUILD_DIR", str(build))
+
+    names = [u.name for u in ClaudeTranscriptReader().parse(REAL_SID).tool_uses]
+    assert "mcp__toolbox__jira_search" in names
+    assert "Agent" in names  # the main session's spawn call
+
+
+def test_parse_without_subagent_dir_reads_main_file_only(build_root: Path):
+    summary = ClaudeTranscriptReader().parse("good_with_mcp")
+    lines = (FIXTURES / "good_with_mcp.jsonl").read_text().splitlines()
+    assert summary.total_json_lines == sum(1 for line in lines if line.strip())
+
+
+def test_symlinked_build_copies_of_one_transcript_do_not_warn(tmp_path: Path, monkeypatch, caplog):
+    """Each ``builds/<N>/.claude/projects`` points at the same ``state`` dir, so the
+    glob sees one file several times. That is not a collision."""
+    if sys.platform == "win32":
+        pytest.skip("symlink layout is POSIX-only in agento")
+    build = tmp_path / "build"
+    av_dir = build / "acme" / "developer"
+    state_projects = av_dir / "state" / ".claude" / "projects" / "-workspace-x"
+    state_projects.mkdir(parents=True)
+    shutil.copy(FIXTURES / "good_with_mcp.jsonl", state_projects / "sess-dup.jsonl")
+    for n in ("4", "7"):
+        (av_dir / "builds" / n / ".claude").mkdir(parents=True)
+        os.symlink(Path("..") / ".." / ".." / "state" / ".claude" / "projects",
+                   av_dir / "builds" / n / ".claude" / "projects")
+    monkeypatch.setattr(cl_tr, "BUILD_DIR", str(build))
+
+    with caplog.at_level("WARNING", logger=cl_tr.logger.name):
+        path = _find_transcript("sess-dup", build)
+    assert path.resolve() == (state_projects / "sess-dup.jsonl").resolve()
+    assert not caplog.records
+
+
+def test_two_distinct_transcripts_for_one_session_still_warn(tmp_path: Path, caplog):
+    build = tmp_path / "build"
+    for view in ("a", "b"):
+        proj = build / view / ".claude" / "projects" / "-w"
+        proj.mkdir(parents=True)
+        (proj / "sess-clash.jsonl").write_text("{}\n")
+    with caplog.at_level("WARNING", logger=cl_tr.logger.name):
+        _find_transcript("sess-clash", build)
+    assert any("Multiple claude transcripts" in r.getMessage() for r in caplog.records)

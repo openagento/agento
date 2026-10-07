@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +12,7 @@ from agento.modules.claude.src.output_parser import (
     AuthenticationError,
     _parse_reset_at,
     parse_claude_output,
+    result_error_message,
 )
 
 # ---- Legacy single JSON format (backward compat) ----
@@ -431,3 +433,51 @@ def test_plain_runtime_error_is_unchanged():
     with pytest.raises(RuntimeError) as exc:
         parse_claude_output(raw)
     assert type(exc.value) is RuntimeError
+
+
+_REAL = Path(__file__).resolve().parents[3] / "fixtures" / "claude_2_1_291" / "stream"
+
+
+def test_real_2_1_291_background_subagent_stream_sums_both_results():
+    """A background subagent makes the CLI emit two result events (one per turn).
+    Per-turn fields add up; total_cost_usd is cumulative, so it is not summed."""
+    r = parse_claude_output((_REAL / "background_subagent.jsonl").read_text())
+    assert (r.num_turns, r.input_tokens, r.output_tokens, r.duration_ms) == (3, 28, 321, 5673)
+    assert r.cost_usd == pytest.approx(0.0560496)
+    assert r.session_id == "19b2996c-830e-4b51-a6fa-c2bdd99c837b"
+
+
+@pytest.mark.parametrize("name", ["plain.jsonl", "mcp_call.jsonl"])
+def test_real_2_1_291_single_result_stream(name):
+    r = parse_claude_output((_REAL / name).read_text())
+    assert r.num_turns and r.input_tokens and r.cost_usd and r.session_id
+    assert r.mcp_init == McpInitReport(servers=(McpServerStatus("toolbox", "connected"),))
+
+
+def test_real_2_1_291_errors_only_result_raises_with_real_text():
+    with pytest.raises(RuntimeError, match="No conversation found with session ID"):
+        parse_claude_output((_REAL / "errors_only.jsonl").read_text())
+
+
+def test_any_error_result_in_a_multi_result_stream_raises():
+    ok = {"type": "result", "subtype": "success", "is_error": False, "num_turns": 1}
+    bad = {"type": "result", "subtype": "error_during_execution", "is_error": True,
+           "errors": ["boom"]}
+    with pytest.raises(RuntimeError, match="boom"):
+        parse_claude_output("\n".join(json.dumps(e) for e in (bad, ok)))
+
+
+def test_errors_only_auth_text_is_classified():
+    ev = {"type": "result", "is_error": True, "errors": ["OAuth token has expired"]}
+    with pytest.raises(AuthenticationError):
+        parse_claude_output(json.dumps(ev) + "\n")
+
+
+@pytest.mark.parametrize("event,expected", [
+    ({"result": "said", "errors": ["x"]}, "said"),
+    ({"result": "", "errors": ["a", "b"]}, "a; b"),
+    ({"subtype": "error_max_turns"}, "error_max_turns"),
+    ({}, "unknown error"),
+])
+def test_result_error_message(event, expected):
+    assert result_error_message(event) == expected

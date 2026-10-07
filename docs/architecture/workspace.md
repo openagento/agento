@@ -41,7 +41,7 @@ workspace/
 │           │   ├── 3/                      #     Old build (kept for rollback/debug)
 │           │   ├── 4/
 │           │   └── 5/                      #     Most recent
-│           │       ├── .claude.json        #     model, systemPrompt, permissions
+│           │       ├── .claude.json        #     model, login state, trusted run dir
 │           │       ├── .claude/            #     settings.json, skills/<name>/ directories
 │           │       ├── .codex/             #     config.toml (model, [mcp_servers.*])
 │           │       ├── .mcp.json           #     Toolbox URL — no claims (shared by every run)

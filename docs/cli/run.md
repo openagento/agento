@@ -20,6 +20,10 @@ agento run dev_01 --yolo        # interactive, no approval prompts
 agento run --yolo dev_01        # same — flag may precede the code
 ```
 
+The session opens straight at the prompt: for Claude, Agento pre-accepts the "trust this
+folder" dialog for the run dir and, with `--yolo`, skips the bypass-mode confirmation —
+both default to "No, exit" in Claude Code 2.1.x ([details](../modules/claude.md#per-run-setup)).
+
 The agent runs inside the isolated `sandbox` container with no upstream service credentials of its own except one documented exception — the SSH private key used for git, see [DECISIONS.md](../../DECISIONS.md) D-SSH-1 —, and its toolbox capability is scoped to that one agent_view and expires. The toolbox is designed to be the only container that holds tool credentials. Concurrent runs share the `agent` UID and the workspace mount, so this is not a boundary between mutually hostile views — see the co-tenant limit and the other known gaps in [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
 
 ### `--pretty` — human-readable event stream

@@ -186,6 +186,14 @@ class TestResult:
         assert out.startswith("✗")
         assert "credit balance too low" in out
 
+    def test_errors_only_result_shows_the_errors(self, renderer):
+        """CLI 2.1.x: an error result can carry its text only in ``errors[]``."""
+        out = renderer.render({
+            "type": "result", "is_error": True, "subtype": "error_during_execution",
+            "errors": ["No conversation found with session ID: x"],
+        })
+        assert out == "✗ No conversation found with session ID: x"
+
 
 class TestUnknownEvents:
     def test_unknown_type_renders_one_dim_line_not_raw_json(self, renderer):

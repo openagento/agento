@@ -52,13 +52,14 @@ class TestPrepareWorkspace:
         data = json.loads((work_dir / ".claude.json").read_text())
         assert data["model"] == "opus-4"
 
-    def test_generates_system_prompt(self, writer, work_dir):
+    def test_personality_is_not_written(self, writer, work_dir):
+        """The CLI never reads ``.claude.json`` ``systemPrompt`` (2.1.291); SOUL.md is
+        the personality mechanism. DECISIONS.md 2026-10-06."""
         writer.prepare_workspace(
             work_dir, {"model": "sonnet", "claude/personality": "Be concise."},
             toolbox_url=self.TOOLBOX,
         )
-        data = json.loads((work_dir / ".claude.json").read_text())
-        assert data["systemPrompt"] == "Be concise."
+        assert json.loads((work_dir / ".claude.json").read_text()) == {"model": "sonnet"}
 
     def test_legacy_permissions_merge_under_settings_passthrough(self, writer, work_dir):
         writer.prepare_workspace(
@@ -83,15 +84,15 @@ class TestPrepareWorkspace:
         )
         data = json.loads((work_dir / ".claude" / "settings.json").read_text())
         assert data["permissions"]["deny"] == ["WebSearch", "WebFetch"]
-        assert data["permissions"]["dangerouslySkipPermissions"] is True
+        assert data["permissions"]["defaultMode"] == "bypassPermissions"
 
     def test_settings_passthrough_operator_wins_on_collision(self, writer, work_dir):
         writer.prepare_workspace(
             work_dir, {"claude/trust_level": "full"}, toolbox_url=self.TOOLBOX,
-            harness_config={"settings": '{"permissions": {"dangerouslySkipPermissions": false}}'},
+            harness_config={"settings": '{"permissions": {"defaultMode": "plan"}}'},
         )
         data = json.loads((work_dir / ".claude" / "settings.json").read_text())
-        assert data["permissions"]["dangerouslySkipPermissions"] is False
+        assert data["permissions"]["defaultMode"] == "plan"
 
     def test_settings_passthrough_advisor_model(self, writer, work_dir):
         writer.prepare_workspace(
@@ -131,14 +132,17 @@ class TestPrepareWorkspace:
         settings_path = work_dir / ".claude" / "settings.json"
         assert settings_path.exists()
         data = json.loads(settings_path.read_text())
-        assert data["permissions"]["dangerouslySkipPermissions"] is True
+        # The keys the CLI reads; ``permissions.dangerouslySkipPermissions`` is not one.
+        assert data == {
+            "permissions": {"defaultMode": "bypassPermissions"},
+            "skipDangerousModePermissionPrompt": True,
+        }
 
     def test_trust_level_not_full(self, writer, work_dir):
         writer.prepare_workspace(
             work_dir, {"claude/trust_level": "limited"}, toolbox_url=self.TOOLBOX,
         )
-        data = json.loads((work_dir / ".claude" / "settings.json").read_text())
-        assert data["permissions"]["dangerouslySkipPermissions"] is False
+        assert not (work_dir / ".claude" / "settings.json").exists()
 
     def test_empty_config_still_writes_toolbox_mcp(self, writer, work_dir):
         writer.prepare_workspace(work_dir, {}, toolbox_url=self.TOOLBOX)
@@ -314,6 +318,36 @@ class TestInjectRuntimeParams:
 
         data = json.loads((work_dir / ".mcp.json").read_text())
         assert data["mcpServers"]["toolbox"]["url"] == "http://toolbox:3001/sse?cap=tok10"
+
+    def test_pre_accepts_the_trust_dialog_for_this_run_dir_only(self, writer, work_dir):
+        (work_dir / ".claude.json").write_text(json.dumps({"model": "opus"}))
+
+        writer.inject_runtime_params(work_dir, run_id="run-1")
+
+        data = json.loads((work_dir / ".claude.json").read_text())
+        assert data == {
+            "model": "opus",
+            "projects": {str(work_dir): {"hasTrustDialogAccepted": True}},
+        }
+
+    def test_trust_entry_is_written_even_with_nothing_else_to_inject(self, writer, work_dir):
+        writer.inject_runtime_params(work_dir)
+        data = json.loads((work_dir / ".claude.json").read_text())
+        assert data["projects"][str(work_dir)] == {"hasTrustDialogAccepted": True}
+
+    @pytest.mark.parametrize("creds,type_", [
+        ({"subscription_key": "sk-x", "raw_auth": {
+            "credentials": {"claudeAiOauth": {"accessToken": "sk-x"}},
+            "claude_json": {"userID": "abc", "projects": {"/workspace": {}}},
+        }}, "oauth"),
+        ({"api_key": "sk-ant-x"}, "anthropic_api_key"),
+    ])
+    def test_trust_entry_survives_the_credential_write(self, writer, work_dir, creds, type_):
+        """``write_credentials`` runs after the injection (run_preparation)."""
+        writer.inject_runtime_params(work_dir, run_id="run-1")
+        writer.write_credentials(work_dir, _make_token(creds, type_))
+        data = json.loads((work_dir / ".claude.json").read_text())
+        assert data["projects"] == {str(work_dir): {"hasTrustDialogAccepted": True}}
 
     def test_noop_when_no_mcp_json(self, writer, work_dir):
         writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
@@ -536,7 +570,6 @@ class TestWriteCredentials:
         # prepare_workspace has already run and wrote agent_view-level config
         (work_dir / ".claude.json").write_text(json.dumps({
             "model": "opus-4-7",
-            "systemPrompt": "Be concise.",
             "permissions": {"allow": ["Read"]},
         }))
 
@@ -555,7 +588,6 @@ class TestWriteCredentials:
         out = json.loads((work_dir / ".claude.json").read_text())
         # agent_view config survives
         assert out["model"] == "opus-4-7"
-        assert out["systemPrompt"] == "Be concise."
         assert out["permissions"] == {"allow": ["Read"]}
         # oauth state added
         assert out["oauthAccount"] == {"emailAddress": "m@k.com"}
@@ -643,7 +675,6 @@ class TestWriteCredentials:
         # silently override the toolbox enablement if leaked into build_dir.
         (work_dir / ".claude.json").write_text(json.dumps({
             "model": "opus-4-7",
-            "systemPrompt": "Be concise.",
         }))
 
         creds = {
@@ -672,7 +703,6 @@ class TestWriteCredentials:
         assert out["userID"] == "abc"
         # Agent_view config from prepare_workspace survives
         assert out["model"] == "opus-4-7"
-        assert out["systemPrompt"] == "Be concise."
         # Per-CWD developer state did NOT leak
         assert "projects" not in out
 
@@ -684,7 +714,6 @@ class TestWriteCredentials:
         # not write an empty merged file over the prepare_workspace output.
         (work_dir / ".claude.json").write_text(json.dumps({
             "model": "opus-4-7",
-            "systemPrompt": "Be concise.",
         }))
 
         creds = {
@@ -700,14 +729,13 @@ class TestWriteCredentials:
         writer.write_credentials(work_dir, _make_token(creds))
 
         out = json.loads((work_dir / ".claude.json").read_text())
-        assert out == {"model": "opus-4-7", "systemPrompt": "Be concise."}
+        assert out == {"model": "opus-4-7"}
 
     def test_api_key_strips_stale_oauth_state_and_preserves_config(self, writer, work_dir):
         (work_dir / ".claude").mkdir(parents=True)
         (work_dir / ".claude" / ".credentials.json").write_text("oauth")
         (work_dir / ".claude.json").write_text(json.dumps({
             "model": "opus-4-7",
-            "systemPrompt": "Be concise.",
             "permissions": {"allow": ["Read"]},
             "oauthAccount": {"emailAddress": "old@example.com"},
             "userID": "old-user",
@@ -725,7 +753,6 @@ class TestWriteCredentials:
         out = json.loads((work_dir / ".claude.json").read_text())
         assert out == {
             "model": "opus-4-7",
-            "systemPrompt": "Be concise.",
             "permissions": {"allow": ["Read"]},
         }
 

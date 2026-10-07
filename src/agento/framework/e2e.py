@@ -22,18 +22,24 @@ from .database_config import DatabaseConfig
 from .db import get_connection
 
 
-def _insert_test_job(db_config: DatabaseConfig, reference_id: str) -> int:
-    """Insert a TODO job with type/source='blank' and return its id."""
+def _insert_test_job(
+    db_config: DatabaseConfig, reference_id: str, agent_view_id: int | None = None,
+) -> int:
+    """Insert a TODO job with type/source='blank' and return its id.
+
+    With ``agent_view_id`` the job runs as that agent_view: its harness, its workspace
+    build and its toolbox.
+    """
     conn = get_connection(db_config)
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO job (type, source, reference_id,
+                INSERT INTO job (type, source, reference_id, agent_view_id,
                                   idempotency_key, status, attempt, max_attempts)
-                VALUES ('blank', 'blank', %s, %s, 'TODO', 0, 1)
+                VALUES ('blank', 'blank', %s, %s, %s, 'TODO', 0, 1)
                 """,
-                (reference_id, f"e2e:{reference_id}:{int(time.time())}"),
+                (reference_id, agent_view_id, f"e2e:{reference_id}:{int(time.time())}"),
             )
             job_id = cur.lastrowid
         conn.commit()
@@ -104,9 +110,13 @@ def _restore_credentials(db_config: DatabaseConfig, credential_ids: list[int]) -
         conn.close()
 
 
-def _run_checks(row: dict) -> list[tuple[str, bool, str]]:
-    """Return list of (label, passed, detail) for a finished job row."""
-    return [
+def _run_checks(row: dict, *, agent_view: bool = False) -> list[tuple[str, bool, str]]:
+    """Return list of (label, passed, detail) for a finished job row.
+
+    ``agent_view``: the job ran with a toolbox, so the telemetry columns that
+    ``app_monitor`` writes from the run's init event and transcript must be set.
+    """
+    checks = [
         ("status=SUCCESS", row["status"] == "SUCCESS", row["status"]),
         ("agent_type set", row["agent_type"] is not None, str(row["agent_type"])),
         ("model set", row["model"] is not None, str(row["model"])),
@@ -115,6 +125,13 @@ def _run_checks(row: dict) -> list[tuple[str, bool, str]]:
         ("output saved", bool(row["output"]), f"{len(row['output'] or '')} chars"),
         ("result_summary has stats", "session_id=" in (row["result_summary"] or ""), str(row["result_summary"])),
     ]
+    if agent_view:
+        connected, calls = row.get("toolbox_mcp_connected"), row.get("toolbox_mcp_calls")
+        checks += [
+            ("toolbox_mcp_connected = 1", connected == 1, str(connected)),
+            ("toolbox_mcp_calls counted", calls is not None, str(calls)),
+        ]
+    return checks
 
 
 def run_scenario(
@@ -125,6 +142,7 @@ def run_scenario(
     *,
     keep: bool = False,
     model: str | None = None,
+    agent_view_id: int | None = None,
 ) -> bool:
     """Run one e2e scenario for the given credential. True if all checks pass."""
     description = f"{credential.scope} ({credential.label})"
@@ -138,7 +156,7 @@ def run_scenario(
     disabled_peers = _disable_other_credentials(db_config, credential)
 
     try:
-        job_id = _insert_test_job(db_config, ref_id)
+        job_id = _insert_test_job(db_config, ref_id, agent_view_id)
         print(f"  Inserted job id={job_id}, reference_id={ref_id}")
 
         consumer = Consumer(db_config, consumer_config, logger, model_override=model)
@@ -159,7 +177,7 @@ def run_scenario(
             print("  FAIL: job row not found after execution")
             return False
 
-        checks = _run_checks(row)
+        checks = _run_checks(row, agent_view=agent_view_id is not None)
         all_ok = all(ok for _, ok, _ in checks)
 
         for label, ok, detail in checks:
@@ -182,6 +200,42 @@ def run_scenario(
         _restore_credentials(db_config, disabled_peers)
 
 
+def _pick_credential(conn, agent_view_id: int | None, credential_id: int | None) -> CredentialRecord:
+    """The credential the consumer will use for this job — from the pool of the job's
+    harness/provider (agent_view, else global config), exactly as ``Consumer._execute_job``
+    selects. Raises ``ValueError`` with an operator message when there is none.
+    """
+    from .agent_view_runtime import resolve_agent_view_runtime
+    from .harness import resolve_provider
+
+    runtime = resolve_agent_view_runtime(conn, agent_view_id)
+    if runtime.harness is None:
+        raise ValueError("No agent_view/harness configured for this job.")
+    provider = resolve_provider(runtime.harness, runtime.provider)
+    if not provider.credential_required:
+        raise ValueError(
+            f"{runtime.harness}/{runtime.provider} needs no credential — nothing to test."
+        )
+    scope = provider.credential_scope
+    if credential_id:
+        credential = get_credential(conn, credential_id)
+        if credential is None:
+            raise ValueError(f"Credential not found: id={credential_id}")
+        if credential.scope != scope:
+            raise ValueError(
+                f"Credential id={credential_id} is in scope {credential.scope!r}, but the job "
+                f"runs {runtime.harness}/{runtime.provider} (scope {scope!r})."
+            )
+        return credential
+    credential = select_credential(conn, scope)
+    if credential is None:
+        raise ValueError(
+            f"No healthy credential in scope {scope!r}. "
+            f"Register one: bin/agento credential:register {scope} <label>"
+        )
+    return credential
+
+
 def cmd_e2e(args) -> None:
     """CLI entry point for `agent e2e`."""
     from .bootstrap import bootstrap
@@ -198,33 +252,29 @@ def cmd_e2e(args) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
     conn = get_connection(db_config)
+    agent_view_id = None
     try:
-        if args.credential_id:
-            credential = get_credential(conn, args.credential_id)
-            if credential is None:
-                print(f"Credential not found: id={args.credential_id}", file=sys.stderr)
-                sys.exit(1)
-        else:
-            from .harness import list_credential_scopes
+        if getattr(args, "agent_view", None):
+            from .workspace import get_agent_view_by_code
 
-            credential = None
-            for scope in list_credential_scopes():
-                candidate = select_credential(conn, scope)
-                if candidate is not None:
-                    credential = candidate
-                    break
-            if credential is None:
-                print(
-                    "No healthy credentials across any scope. "
-                    "Register one: bin/agento credential:register <scope> <label>",
-                    file=sys.stderr,
-                )
+            view = get_agent_view_by_code(conn, args.agent_view)
+            if view is None:
+                print(f"Agent view not found: {args.agent_view}", file=sys.stderr)
                 sys.exit(1)
+            agent_view_id = view.id
+        try:
+            credential = _pick_credential(conn, agent_view_id, args.credential_id)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
     finally:
         conn.close()
 
     try:
-        ok = run_scenario(credential, db_config, consumer_config, logger, keep=args.keep, model=args.model)
+        ok = run_scenario(
+            credential, db_config, consumer_config, logger,
+            keep=args.keep, model=args.model, agent_view_id=agent_view_id,
+        )
     except Exception as exc:
         print(f"  ERROR: {exc}")
         logger.exception(f"E2E failed for credential {credential.id}")

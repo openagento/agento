@@ -37,7 +37,11 @@ class ClaudeCommandBuilder:
     def interactive(self, ctx: HarnessRunContext, *, yolo: bool = False) -> list[str]:
         cmd = ["claude", *_MCP_FLAGS]
         if yolo:
-            cmd.append("--dangerously-skip-permissions")
+            # The skip setting stops the TUI asking to confirm bypass mode (default: exit).
+            cmd += [
+                "--dangerously-skip-permissions",
+                "--settings", '{"skipDangerousModePermissionPrompt":true}',
+            ]
         if ctx.model:
             cmd += ["--model", ctx.model]
         return cmd

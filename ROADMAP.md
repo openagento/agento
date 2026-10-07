@@ -197,6 +197,15 @@ docker compose restart
   DB-backed capability and not a shared HMAC secret, and why network segmentation alone was rejected)
   is in [DECISIONS.md](DECISIONS.md).
 
+- **Claude Code cloud tools in the sandbox (`RemoteTrigger`)** — **OPEN** (found in the AG-27
+  2.1.291 upgrade review, 2026-10-06; deferred by the owner). The headless init `tools` list carries
+  `RemoteTrigger`, `PushNotification`, `Workflow`, `DesignSync`. A cloud routine keeps the
+  account's claude.ai connectors even with `--strict-mcp-config`, so an agent on an OAuth
+  credential may reach a vendor API around the toolbox. `RemoteTrigger` already existed in 2.1.165,
+  so it is not a regression of the bump. Options: `--disallowedTools`, `permissions.deny`,
+  `disableClaudeAiConnectors`; only `/etc/claude-code/managed-settings.json` in the image holds
+  against an agent that can edit its own HOME settings.
+
 ### Deprecation removals due in v0.17 or later
 
 | Shim | Where | Remove when |
