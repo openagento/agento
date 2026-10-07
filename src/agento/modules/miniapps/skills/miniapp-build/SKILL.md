@@ -43,9 +43,10 @@ Every new version needs a new activation.
 2. **Data.** Which data is fixed when you build (put it in the file) and which must be live (a read
    action)? AI text, summaries and proposals are always fixed: you write them now.
 3. **Writes.** Every write action (comment, transition, create) runs only after a user click.
-4. **Panel origin.** The bridge needs the exact address of the panel. Take it from your agent_view
-   instructions. If it is not there, ask the user: "What address do you open the Agento panel at?"
-   Use its scheme, host and port exactly, for example `https://panel.example.com`. Do not guess.
+4. **Panel origin.** The bridge needs the exact address of the panel. `versioned_artifact_create_draft`
+   returns it as `panel_origin` (build step 4). Use that value exactly. It is never
+   `location.origin`: the page runs on the apps origin, not on the panel. If `panel_origin` is
+   `null`, ask the user: "What address do you open the Agento panel at?" Do not guess.
 
 ## Build steps
 
@@ -55,7 +56,7 @@ Every new version needs a new activation.
    one you asked for.
 3. `versioned_artifact_get_current`. Keep `current_version`.
 4. `versioned_artifact_create_draft` with `base_version: "current"`. Write files in the `path` it
-   returns, with your normal file tools.
+   returns, with your normal file tools. Keep its `panel_origin`.
 5. Write exactly two files:
    - `index.html` — the entry file. Markup plus one inline `<script type="module">`, as in the
      `miniapp-ui` page skeleton. No other script or stylesheet file.
@@ -86,7 +87,7 @@ Load the bridge from the kit, at the kit version the `miniapp-ui` skill names:
 
 ```js
 import { createAgentoSdk } from "/_ui/<kit version>/agento-bridge.js";
-const PANEL_ORIGIN = "https://panel.example.com"; // from "Decide before you write", step 4
+const PANEL_ORIGIN = "https://panel.example.com"; // panel_origin from create_draft; never location.origin
 const AGENT_EMAIL = "agent@example.com"; // your own email from SOUL.md, as when you call the tool
 let sdk;
 try { sdk = createAgentoSdk({ panelOrigin: PANEL_ORIGIN }); }
@@ -186,5 +187,6 @@ button on each row, an "Approve selected" button, comments added one by one.
 | Page calls an LLM API for proposals | Write the proposals yourself and put them in the data block. |
 | Stopped after writing files | Files in a draft are not a version: `save_version`, then `publish`. |
 | No `miniapp.json` | The panel cannot run actions without it. Write it. |
+| `panelOrigin: location.origin` | That is the apps origin: the bridge never gets ready and every action hangs. Use `panel_origin` from `create_draft`. |
 | Gave the preview link as "the app" | The app opens from the panel, after activation. |
 | Said "it works" | Say: saved and published; actions wait for an operator. |

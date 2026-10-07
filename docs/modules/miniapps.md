@@ -109,7 +109,8 @@ All apps share one origin, so `event.origin` cannot tell two apps apart (PRD E6 
 * **App** — `createAgentoSdk({panelOrigin})` → `{ready, callAction(tool, args), close()}`.
   At most `MAX_IN_FLIGHT` (16) calls wait, for the handshake or for an answer; one more resolves `{status: 429}` at
   once and posts nothing.
-  `panelOrigin` is a trusted value the app gives itself (from its agent_view instructions), never
+  `panelOrigin` is a trusted value the app gives itself (the agent writes in the `panel_origin` that
+  `versioned_artifact_create_draft` returns; never `location.origin`, which is the apps origin), never
   one read from a message or the URL. It must be one exact `https:` origin (or `http://localhost`).
   The SDK refuses to start without `window.opener`, accepts messages only from the opener at
   `panelOrigin`, and posts only to `panelOrigin`.

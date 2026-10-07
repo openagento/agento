@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validShareHost, shareUrl } from '../../../modules/versioned_artifacts/toolbox/share-host.js';
+import { validShareHost, shareUrl, panelOrigin } from '../../../modules/versioned_artifacts/toolbox/share-host.js';
 
 // The same fixture drives the proxy entrypoint test (SEC-5, PRD E6 §9.1).
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -35,4 +35,16 @@ describe('share host', () => {
     fresh.shareUrl(TOKEN, { AGENTO_SHARE_HOST: '*.x.y' }, log);
     expect(log).toHaveBeenCalledTimes(1);
   });
+});
+
+// Must equal web's Origins.from_env panel value, or the bridge rejects every message.
+describe('panel origin', () => {
+  it.each([
+    [{ AGENTO_PANEL_HOST: 'panel.localhost', AGENTO_PROXY_PORT: '8444' }, 'https://panel.localhost:8444'],
+    [{ AGENTO_PANEL_HOST: 'panel.example.com', AGENTO_PROXY_PORT: '443' }, 'https://panel.example.com'],
+    [{ AGENTO_PANEL_HOST: 'panel.example.com' }, 'https://panel.example.com'],
+    [{ AGENTO_PROXY_PORT: '8443' }, null],
+    [{ AGENTO_PANEL_HOST: 'evil.com/x', AGENTO_PROXY_PORT: '8443' }, null],
+    [{ AGENTO_PANEL_HOST: 'panel.localhost', AGENTO_PROXY_PORT: '99999' }, null],
+  ])('%j -> %s', (env, want) => expect(panelOrigin(env)).toBe(want));
 });

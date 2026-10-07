@@ -49,3 +49,15 @@ def test_unset_keeps_the_default_and_empty_turns_shares_off(tmp_path):
         assert _share_host(compose, None) == {"proxy": "share.localhost", "toolbox": "share.localhost"}, compose
         assert _share_host(compose, "") == {"proxy": "", "toolbox": ""}, compose
         assert _share_host(compose, "s.example.com") == {"proxy": "s.example.com", "toolbox": "s.example.com"}
+
+
+def test_toolbox_gets_the_same_panel_origin_as_web(tmp_path):
+    """create_draft hands the agent the panel origin; it must be the one web checks."""
+    keys = ("AGENTO_PANEL_HOST", "AGENTO_PROXY_PORT")
+    env = {k: v for k, v in os.environ.items() if k not in keys}
+    for compose in _compose_files(tmp_path):
+        out = subprocess.run(["docker", "compose", "-f", str(compose), "config", "--format", "json"],
+                             env=env, capture_output=True, text=True, check=True, cwd=compose.parent).stdout
+        services = json.loads(out)["services"]
+        web, toolbox = (services[n]["environment"] for n in ("web", "toolbox"))
+        assert {k: toolbox.get(k) for k in keys} == {k: web.get(k) for k in keys}, compose
