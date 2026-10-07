@@ -159,6 +159,29 @@ The class is imported from the declaring module's directory and gets `run(conn, 
 It resolves its own config. Reach for this only when the probe genuinely cannot run in the
 toolbox — `local` is the exception in this design, not the default.
 
+`agent_view/model` declares the second shipped local tester,
+`src.testers.harness_chain.HarnessChainTester`. It checks the chain a run at that scope depends
+on, and the first link that does not hold is the result:
+
+| Code | Status | When |
+|---|---|---|
+| `HARNESS_UNKNOWN` | fail | the harness is not registered (its module is disabled, or a typo) |
+| `HARNESS_NOT_INSTALLED` | fail | the harness CLI (`sandbox_package.binary`) is not on PATH in cron |
+| `PROVIDER_UNKNOWN` | fail | the provider is not one the harness declares |
+| `NO_CREDENTIAL` | fail | the provider needs a credential and its pool has no healthy one |
+| `DECRYPT_FAILED` | error | the chosen credential could not be decrypted |
+| `MODEL_DEFAULT` | ok | no model is set: the harness uses its own default |
+| `MODEL_OK` | ok | the harness accepts the model |
+| `MODEL_UNKNOWN` | fail | the harness does not know the model (with near matches when it has a list) |
+| `MODEL_NOT_CHECKED` | error | the harness cannot check this provider's models (no `check_model`, or Pi + ollama) |
+| `MODEL_CHECK_FAILED` | error | the model list or API could not be read |
+| `MODEL_CHECK_TIMEOUT` | error | the check did not end in 30 s |
+
+It reads the pool without a write (never `select_credential`), and each harness checks the model
+its own way through the optional `check_model` member
+([harness-contract.md](../architecture/harness-contract.md#checking-a-model-id)). Like every local
+tester it runs only from `config:test` and the admin TUI `t` key; the panel refuses local testers.
+
 ## Rules the framework enforces
 
 - **Own-module paths only.** A tester may read its declaring module's config and nothing else

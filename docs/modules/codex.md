@@ -3,6 +3,18 @@
 Runs the OpenAI Codex CLI as `codex exec --json`. The contract it implements is in
 [../architecture/harness-contract.md](../architecture/harness-contract.md).
 
+## Model check
+
+`agento config:test agent_view/model` logs the pool credential into a temporary HOME and reads
+`codex debug models`, the account's own model list. A model not in it is `MODEL_UNKNOWN`, with near
+matches. When that list cannot be read, the check reads `--bundled` and answers
+`MODEL_CHECK_FAILED`, saying whether the model is in the list shipped with the CLI.
+
+The account list is read from `$HOME/.codex/models_cache.json`, which only a successful refresh
+writes. The command's stdout is not used for it: when the refresh fails, codex prints its bundled
+list with exit 0. codex-cli 0.137.0 cannot decode today's account list (`unknown variant max`), so
+with that CLI pin every Codex check answers `MODEL_CHECK_FAILED` until the pin is raised.
+
 ## Final answer
 
 The final answer is the text of the **last** `agent_message` item. Earlier `agent_message`

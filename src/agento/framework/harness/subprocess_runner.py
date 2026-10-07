@@ -26,6 +26,14 @@ from ..ssh_prelude import wrap_with_ssh_prelude
 from .protocols import CommandBuilder
 from .runtime import HarnessRunContext, RunRequest, RunResult
 
+
+def harness_base_env() -> dict[str, str]:
+    """The environment a harness CLI starts from: this process's env without the
+    credential store and the run-owned SSH names. The run and a model check both
+    use it, so a harness CLI never inherits what the consumer holds."""
+    return without_credential_store_env(without_run_owned_ssh_env(dict(os.environ)))
+
+
 # A session id goes into a glob: no `*`, `?`, `[`, `/` or `..`.
 SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
@@ -136,7 +144,7 @@ class SubprocessRunner(ABC):
         # SSH private key — so it is stripped BEFORE the run's own credential is merged
         # in. See credential_store_env: a reduction under one uid, not a boundary.
         env = {
-            **without_credential_store_env(without_run_owned_ssh_env(dict(os.environ))),
+            **harness_base_env(),
             **self._credential_env(ctx.credential),
             **ctx.extra_env,
         }

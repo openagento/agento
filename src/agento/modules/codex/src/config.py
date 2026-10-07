@@ -14,7 +14,12 @@ from typing import TYPE_CHECKING
 
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
 from agento.framework.agent_manager.errors import AuthenticationError
-from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
+from agento.framework.harness import (
+    ToolboxConnectionSpec,
+    harness_base_env,
+    is_toolbox_endpoint,
+    toolbox_origin,
+)
 from agento.framework.harness.run_scope import scope_toolbox_url, toolbox_auth
 
 if TYPE_CHECKING:
@@ -183,8 +188,13 @@ class CodexWorkspaceAdapter:
         # oauth + codex_access_token both rely on .codex/auth.json on disk.
         return {}
 
-    def write_credentials(self, build_dir: Path, credential: CredentialRecord) -> None:
+    def write_credentials(
+        self, build_dir: Path, credential: CredentialRecord, *, timeout_s: float = 30,
+    ) -> None:
         """Materialize Codex auth based on credential.type.
+
+        ``timeout_s`` bounds the ``codex login`` call (a model check passes what is
+        left of its budget).
 
         - codex_access_token: shell out to ``codex login --with-access-token``
           with ``HOME=<target_dir>`` and the JWT on stdin so Codex itself
@@ -202,7 +212,7 @@ class CodexWorkspaceAdapter:
                     f"Credential id={credential.id} label={credential.label!r} is typed "
                     "'codex_access_token' but credentials['access_token'] is missing or empty."
                 )
-            self._login_with_access_token(build_dir, access_token)
+            self._codex_login(build_dir, "--with-access-token", access_token, timeout_s=timeout_s)
             return
 
         if credential.type == "openai_api_key":
@@ -212,7 +222,7 @@ class CodexWorkspaceAdapter:
                     f"Credential id={credential.id} label={credential.label!r} is typed "
                     "'openai_api_key' but credentials['api_key'] is missing or empty."
                 )
-            self._login_with_api_key(build_dir, api_key)
+            self._codex_login(build_dir, "--with-api-key", api_key, timeout_s=timeout_s)
             return
 
         # oauth (default)
@@ -231,77 +241,39 @@ class CodexWorkspaceAdapter:
         os.chmod(path, 0o600)
         logger.debug("Wrote Codex OAuth credentials to %s", path)
 
-    def _login_with_access_token(self, build_dir: Path, token_str: str) -> None:
-        """Run `codex login --with-access-token` with HOME=<target_dir>; the token
-        is piped via stdin so it never appears in argv or env."""
+    def _codex_login(
+        self, build_dir: Path, flag: str, secret: str, *, timeout_s: float = 30,
+    ) -> None:
+        """Run ``codex login <flag>`` with HOME=<build_dir>; the secret is piped via
+        stdin so it never appears in argv or env.
+
+        Only the exit code is logged or raised: the CLI's output can quote what it
+        was given (SEC-6).
+        """
         build_dir.mkdir(parents=True, exist_ok=True)
-        env = {**os.environ, "HOME": str(build_dir)}
+        env = {**harness_base_env(), "HOME": str(build_dir)}
         try:
             result = subprocess.run(
-                ["codex", "login", "--with-access-token"],
-                input=token_str, env=env, text=True,
+                ["codex", "login", flag],
+                input=secret, env=env, text=True,
                 capture_output=True, check=False,
-                timeout=30,
+                timeout=timeout_s,
             )
         except FileNotFoundError as exc:
             raise AuthenticationError(
-                "Codex CLI not found on PATH; cannot materialize access-credential auth.json."
+                f"Codex CLI not found on PATH; cannot run codex login {flag}."
             ) from exc
         except subprocess.TimeoutExpired as exc:
             raise AuthenticationError(
-                "codex login --with-access-token timed out after 30s."
+                f"codex login {flag} timed out after {timeout_s:g}s."
             ) from exc
 
         if result.returncode != 0:
-            stderr_snippet = (result.stderr or "")[:300]
-            logger.warning(
-                "codex login --with-access-token exited %d: %s",
-                result.returncode, stderr_snippet,
-            )
+            logger.warning("codex login %s exited %d", flag, result.returncode)
             raise AuthenticationError(
-                f"codex login --with-access-token failed (exit {result.returncode}): "
-                f"{stderr_snippet}"
+                f"codex login {flag} failed (exit {result.returncode})"
             )
-        logger.debug(
-            "Materialized Codex access-credential auth.json via codex login (HOME=%s)",
-            build_dir,
-        )
-
-    def _login_with_api_key(self, build_dir: Path, api_key: str) -> None:
-        """Run `codex login --with-api-key` with HOME=<target_dir>; key is
-        piped via stdin so it never appears in argv or env."""
-        build_dir.mkdir(parents=True, exist_ok=True)
-        env = {**os.environ, "HOME": str(build_dir)}
-        try:
-            result = subprocess.run(
-                ["codex", "login", "--with-api-key"],
-                input=api_key, env=env, text=True,
-                capture_output=True, check=False,
-                timeout=30,
-            )
-        except FileNotFoundError as exc:
-            raise AuthenticationError(
-                "Codex CLI not found on PATH; cannot materialize API-key auth.json."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise AuthenticationError(
-                "codex login --with-api-key timed out after 30s."
-            ) from exc
-
-        if result.returncode != 0:
-            stderr_snippet = (result.stderr or "")[:300]
-            logger.warning(
-                "codex login --with-api-key exited %d: %s",
-                result.returncode, stderr_snippet,
-            )
-            raise AuthenticationError(
-                f"codex login --with-api-key failed (exit {result.returncode}): "
-                f"{stderr_snippet}"
-            )
-        logger.debug(
-            "Materialized Codex API-key auth.json via codex login (HOME=%s)",
-            build_dir,
-        )
+        logger.debug("Materialized Codex auth.json via codex login %s (HOME=%s)", flag, build_dir)
 
     def migrate_legacy_workspace_config(self, build_dir: Path, workspace_root: Path) -> None:
         """Merge legacy shared-HOME ``workspace/.codex/config.toml`` into the build.
