@@ -260,6 +260,17 @@ CREATE TABLE tool_invocation (
     KEY idx_tool_invocation_run_execution (run_execution_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Roles are rows (050_role). `admin` and `user` are seeded; `admin` stays the one code with the
+-- built-in admin operations (accounts.may).
+CREATE TABLE IF NOT EXISTS role (
+    code       VARCHAR(16) NOT NULL PRIMARY KEY,
+    label      VARCHAR(64) NOT NULL,
+    created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_role_label (label)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO role (code, label) VALUES ('admin', 'Administrator'), ('user', 'User');
+
 -- Platform users (E1.5, PRD E2 §5). Login and RBAC logic are E2's.
 -- `user` is a non-reserved keyword in MySQL 8: always backtick it.
 CREATE TABLE IF NOT EXISTS `user` (
@@ -273,7 +284,7 @@ CREATE TABLE IF NOT EXISTS `user` (
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_user_username (username),
-    CONSTRAINT chk_user_role CHECK (role IN ('admin', 'user'))
+    CONSTRAINT fk_user_role FOREIGN KEY (role) REFERENCES role (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Panel sessions behind the __Host- cookie (E1.5, PRD E2 §4.2). Hashes only.
@@ -337,8 +348,9 @@ CREATE TABLE IF NOT EXISTS role_grant (
     agent_view_id INT UNSIGNED NULL,
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_role_grant_lookup (role, grant_kind, name),
-    CONSTRAINT chk_role_grant_role CHECK (role IN ('admin', 'user')),
     CONSTRAINT chk_role_grant_kind CHECK (grant_kind IN ('tool', 'operation')),
+    CONSTRAINT fk_role_grant_role FOREIGN KEY (role)
+        REFERENCES role (code) ON DELETE CASCADE,
     CONSTRAINT fk_role_grant_workspace FOREIGN KEY (workspace_id)
         REFERENCES workspace (id) ON DELETE CASCADE,
     CONSTRAINT fk_role_grant_agent_view FOREIGN KEY (agent_view_id)
@@ -478,4 +490,5 @@ INSERT INTO schema_migration (version) VALUES
     ('046_job_defer_stretch'),
     ('047_tool_invocation_run_execution'),
     ('048_credential_login'),
-    ('049_tool_invocation_run_execution_index');
+    ('049_tool_invocation_run_execution_index'),
+    ('050_role');

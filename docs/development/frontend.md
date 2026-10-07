@@ -15,7 +15,7 @@ a panel button and a miniapp button look the same.
 | `frontend/packages/ui/` (`@agento/ui`) | The Mantine theme and `AgentoUiProvider`, React components (Mantine or `.ag-*`), and the stories |
 | `frontend/lookbook/` | The ui.mantine.dev patterns, copied as a Storybook catalogue (see [Lookbook](#lookbook)) |
 | `frontend/packages/api/` (`@agento/api`) | `apiFetch`, the session, the query client, the stream hub, the panel module contract |
-| `frontend/panel/` | The app: shell, router, login, users and grants, miniapp launches, the admin screens (`src/routes/admin/`) |
+| `frontend/panel/` | The app: shell, router, login, users and roles, miniapp launches, the admin screens (`src/routes/admin/`) |
 | `src/agento/modules/<core module>/panel/` | A core module's screens (today: `conversation`) |
 | `frontend/miniapps/examples/` | Hand-written example miniapps |
 
@@ -134,10 +134,13 @@ call `/api/admin/*` ([panel.md](../architecture/panel.md#admin-screens)).
 - **ENV overrides are not shown.** `CONFIG__*` ENV overrides are not visible on the Config screen;
   `bin/agento config:resolve <path>` shows the effective value. The module list shows a title made
   from the key (`agent_view` → "Agent View"); the URL keeps the key.
-- **Pick by name, never by id.** The Users → Grants tab gives access in a "Give access" sheet: Who
-  (role), Where (a workspace or agent view, by name, required), What (tools of that place, or
-  operations), then one `POST` per name. A tool that is off at that place is marked "(off here)",
-  because a grant does not enable a tool.
+- **A role's access is a tree.** Users → Roles lists the roles; a role page (`/users/roles/<code>`)
+  has Role info and Role resources. Role resources picks one workspace or agent view by name, then
+  shows the operations and the tools of that place as a Mantine `Tree` of checkboxes, saved with one
+  `PUT`. `useTree` holds only the expanded state: the checked leaves are a `Set` the page holds
+  (`roleTree.ts`), because `useTree`'s own checked state drops the leaves a search hides. A leaf
+  inherited from the workspace or built in for admin is checked and locked, and is never sent. A tool
+  that is off at that place is marked "Off here", because a grant does not enable a tool.
 - **Mouse and keyboard.** `DataTable` activates a row on Enter; each admin table also has a button
   column (Details, Usage, Edit) for the mouse.
 
@@ -201,7 +204,7 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 | CSRF in memory only, A → logout → B leaves nothing, a stale response is dropped | `packages/api/src/api.test.ts` |
 | Stream reconnect, refused stream, `cursor_expired`, backoff, `?after=` | `packages/api/src/hub.test.ts` |
 | Popup blocked, API refusal closes the window, bridge before POST, code in no URL or cache | `panel/src/launch.test.ts` |
-| The grant sheet cannot send without a place, one POST per name, a refusal names the item | `panel/src/routes/Grants.test.tsx` |
+| Roles list, Delete kept for a built-in or used role, Add role; the role tree saves one PUT, locked leaves are never sent, a search keeps hidden checks, a scope switch asks before it discards | `panel/src/routes/Roles.test.tsx`, `panel/src/routes/RoleEdit.test.tsx`, `panel/src/routes/roleTree.test.ts` |
 | Probe 404 / 2xx / network error → nav and NotAvailable | `panel/src/registry.test.tsx` |
 | The example miniapp decodes the toolbox action envelope | `packages/miniapp-kit/kit.test.ts` |
 | Dialog focus trap and focus return | `packages/ui/src/components/Forms.stories.tsx` (`DialogFocus`) |

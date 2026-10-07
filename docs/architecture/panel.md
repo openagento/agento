@@ -2,8 +2,8 @@
 
 `web` (`src/agento/web/`) serves the panel API. `proxy` puts it on the panel origin and asks it,
 per file request, whether a launched artifact may be served on the apps origin. All logic over
-the `user`, `session`, `launch` and `role_grant` tables is in `src/agento/framework/access/`;
-the web API and the `user:*` / `grant:*` CLI call the same functions. Operator page:
+the `role`, `user`, `session`, `launch` and `role_grant` tables is in `src/agento/framework/access/`;
+the web API and the `user:*` / `role:*` / `grant:*` CLI call the same functions. Operator page:
 [../deployment/panel.md](../deployment/panel.md).
 
 ## Origins
@@ -107,28 +107,67 @@ panel page                      web                                  proxy / app
 
 ## Roles and grants
 
-Two roles: `admin` and `user`. `admin` has the built-in operations `users.manage`,
-`grants.manage`, `config.write`, `admin.read` and `credentials.manage`. Everything else comes from `role_grant` rows:
+Roles are rows in the `role` table: a `code` (`^[a-z][a-z0-9_]{1,15}$`, the key that `user.role`
+and `role_grant.role` hold, never renamed) and a unique `label` (the display name). `admin` and
+`user` are seeded and built in: they cannot be deleted. `user.role` has a foreign key with no action,
+so a role that a user has cannot be deleted; `role_grant.role` cascades, so a deleted role's grants
+go with it. Every writer (`create_user`, `update_user`, `add_grant`, `set_role_grants`) checks the
+code against `role` inside its transaction, and the foreign key is the backstop.
+
+`admin` is the one code with the built-in admin operations `users.manage`, `grants.manage`,
+`config.write`, `admin.read` and `credentials.manage` (`accounts.may`); they are not grantable, so a
+new role is a `user`-like role (DECISIONS.md 2026-10-06 Roles are rows). Everything else comes from
+`role_grant` rows:
 
 - `grant_kind = 'tool'`: the role may call that tool, if it is enabled there;
 - `grant_kind = 'operation'`: an ACL resource — the built-in `artifact.launch`, or one a module
   declares in `di.json` (`"acl_resources": [{"id": "<module>.<name>", "title": "…"}]`, the Magento
-  `acl.xml` pattern). `admin` has every resource built in; another role gets one only by a grant.
-  The conversation module declares `conversation.run_details` (DECISIONS.md D-E9-6).
+  `acl.xml` pattern). `admin` has every module-declared resource built in; `artifact.launch` is a
+  grant for every role, `admin` included. The conversation module declares
+  `conversation.run_details` (DECISIONS.md D-E9-6).
 
 A row has exactly one scope. A workspace grant reaches the workspace and every view in it. A view
 grant reaches only that view. The same SQL rule is used in Python (`accounts._granted`) and in the
 toolbox (`src/agento/toolbox/capability.js` `GRANTS_SQL`, handed to every auth source as
 `grants`); the fixture
-`tests/fixtures/role_grant_v1.json` holds both to it.
+`tests/fixtures/role_grant_v1.json` holds both to it. The toolbox reads the role code from `user`
+and needs no list of roles.
 
-`GET /api/admin/grants/options` (`grants.manage`) answers `{roles, operations}` from
-`accounts.ROLES` and `accounts.grantable_operations()`, so the panel hardcodes neither. The Grants
-screen picks the scope and the names from lists (scopes, tools at that scope, these options) and
-sends one `POST /api/admin/grants` per name, so it cannot send a grant without a scope.
+### Panel: Users → Roles
+
+All behind `grants.manage`:
+
+| Method | Path | Answer |
+|---|---|---|
+| GET | `/api/admin/roles` | `[{code, label, builtin, users, scopes}]` — `scopes` counts the scopes with a grant |
+| POST | `/api/admin/roles` | `{code, label}` → 201 the role |
+| GET | `/api/admin/roles/{code}` | the role plus `scopes: [{workspace_id, agent_view_id, tools, operations}]` |
+| PATCH | `/api/admin/roles/{code}` | `{label}` (the code never changes) |
+| DELETE | `/api/admin/roles/{code}` | 204; 400 with the reason (built in, or "3 users have this role") |
+| GET | `/api/admin/roles/{code}/resources?scope=&scope_id=` | the tree, below |
+| PUT | `/api/admin/roles/{code}/resources` | `{scope, scope_id, tools[], operations[]}` → `{added, removed}` (counts) |
+
+`scope` is `workspace` or `agent_view`; a grant has no default scope (400). An unknown role or scope
+id is 404.
+
+The role page shows the role's resources at one scope as a checkbox tree (Magento *Role
+Resources*). `GET …/resources` answers `{operations: [{id, title, granted, inherited, builtin}],
+toolsets: [{toolset, tools: [{name, enabled, granted, inherited}]}]}`: `granted` is a row at exactly
+this scope; `inherited` (agent_view scope only) is a row at the view's workspace, which already
+reaches the view; `builtin` is `admin` with a module-declared resource; `enabled` is the tool's
+effective `is_enabled` at the scope — a grant does not enable a tool. The tools are those of the
+enabled modules (the Tools screen's list).
+
+`PUT …/resources` (`accounts.set_role_grants`) makes the role's rows at **exactly that scope** the
+given names, in one transaction under the `agento.role_grant` named lock, with the role's users and
+the actor locked in id order. It validates like `grant:add` (declared tools, grantable operations,
+at most 1000 names), inserts the added names in one statement, and never inserts at a view a name
+that the view's workspace already grants (a redundant view row that is already there stays). A row
+for a tool of a disabled module is outside the tree, so a PUT keeps it. When anything is removed,
+the role's launches in that scope end, as `grant:remove` does. Rows at other scopes are untouched.
 
 Grants are **per role**, not per user (the PRD asks for per-user visibility; see DECISIONS.md).
-A `user` sees the agent_views its role's grants reach. A scope that it cannot reach answers 404,
+A user who is not `admin` sees the agent_views its role's grants reach. A scope that it cannot reach answers 404,
 not 403.
 
 ## Per-call evaluation

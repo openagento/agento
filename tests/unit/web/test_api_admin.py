@@ -38,7 +38,9 @@ ADMIN_ROUTES = [r for r in api.ROUTES if r.pattern.pattern.startswith("^/api/adm
 
 
 def _path(route):
-    return re.sub(r"\(\?P<\w+>[^)]*\)", "7", route.pattern.pattern.strip("^$"))
+    # A sample each group accepts: a role code starts with a letter, an id is digits.
+    return re.sub(r"\(\?P<\w+>([^)]*)\)", lambda m: "support" if m[1].startswith("[a-z]") else "7",
+                  route.pattern.pattern.strip("^$"))
 
 
 def test_admin_routes_exist():
@@ -49,7 +51,8 @@ def test_admin_routes_exist():
 def test_user_role_gets_403_on_every_admin_route(web, monkeypatch, route):
     _as(monkeypatch, USER)
     for name in ("create_user", "update_user", "set_role", "set_active", "set_password", "add_grant", "remove_grant",
-                 "list_users", "list_grants"):
+                 "list_users", "list_grants", "list_roles", "role_scopes", "create_role", "rename_role", "delete_role",
+                 "set_role_grants"):
         monkeypatch.setattr(accounts, name, MagicMock(side_effect=AssertionError("must not be called")))
     monkeypatch.setattr(config_write, "save_config", MagicMock(side_effect=AssertionError("must not be called")))
     for name in [n for n in vars(data) if n.startswith(("get_", "do_", "delete_"))]:
@@ -81,29 +84,148 @@ def test_admin_write_refused_by_the_service_is_403(web, monkeypatch):
     assert _call(web, "PATCH", "/api/admin/users/9", {"role": "user"}).status_code == 403
 
 
-def test_admin_grants(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
-    add = MagicMock(return_value=5)
-    monkeypatch.setattr(accounts, "add_grant", add)
-    monkeypatch.setattr(accounts, "remove_grant", MagicMock())
-    r = _call(web, "POST", "/api/admin/grants", {"role": "user", "kind": "operation", "name": "artifact.launch",
-                                                 "agent_view_id": 3})
-    assert r.status_code == 201 and r.json() == {"id": 5}
-    assert add.call_args.kwargs["agent_view_id"] == 3
-    assert _call(web, "DELETE", "/api/admin/grants/5").status_code == 204
-    monkeypatch.setattr(accounts, "add_grant", MagicMock(side_effect=accounts.AccessError("no module declares tool 'x'")))
-    r = _call(web, "POST", "/api/admin/grants", {"role": "user", "kind": "tool", "name": "x", "agent_view_id": 3})
-    assert r.status_code == 400 and "declares" in r.json()["error"]
+SUPPORT = {"code": "support", "label": "Support", "builtin": False, "users": 0, "scopes": 1}
 
 
-def test_admin_grant_options(web, monkeypatch):
-    """One source for roles and grantable operations: the panel hardcodes neither."""
+def _roles(monkeypatch, *rows):
+    monkeypatch.setattr(accounts, "list_roles", lambda conn: list(rows))
+
+
+def test_admin_roles_list_detail_and_writes(web, monkeypatch):
     _as(monkeypatch, ADMIN)
-    r = _call(web, "GET", "/api/admin/grants/options")
-    assert r.status_code == 200
-    assert r.json() == {"roles": list(accounts.ROLES), "operations": ["artifact.launch", "conversation.run_details"]}
-    _as(monkeypatch, USER)
-    assert _call(web, "GET", "/api/admin/grants/options").status_code == 403
+    _roles(monkeypatch, SUPPORT)
+    assert _call(web, "GET", "/api/admin/roles").json() == [SUPPORT]
+    scopes = [{"workspace_id": None, "agent_view_id": 3, "tools": 2, "operations": 1}]
+    monkeypatch.setattr(accounts, "role_scopes", lambda conn, code: scopes if code == "support" else [])
+    assert _call(web, "GET", "/api/admin/roles/support").json() == {**SUPPORT, "scopes": scopes}
+    assert _call(web, "GET", "/api/admin/roles/nobody").status_code == 404
+    create = MagicMock(return_value={**SUPPORT, "scopes": 0})
+    monkeypatch.setattr(accounts, "create_role", create)
+    r = _call(web, "POST", "/api/admin/roles", {"code": "support", "label": "Support"})
+    assert r.status_code == 201 and r.json()["code"] == "support"
+    assert create.call_args.args[1:] == ("support", "Support") and create.call_args.kwargs == {"actor_id": ADMIN.id}
+    rename = MagicMock()
+    monkeypatch.setattr(accounts, "rename_role", rename)
+    assert _call(web, "PATCH", "/api/admin/roles/support", {"label": "Support"}).json() == SUPPORT
+    assert rename.call_args.args[1:] == ("support", "Support")
+    assert _call(web, "PATCH", "/api/admin/roles/support", {}).status_code == 400
+    delete = MagicMock()
+    monkeypatch.setattr(accounts, "delete_role", delete)
+    assert _call(web, "DELETE", "/api/admin/roles/support").status_code == 204
+    assert delete.call_args.args[1] == "support"
+
+
+@pytest.mark.parametrize("method,path,body,fn,refusal,status", [
+    ("POST", "/api/admin/roles", {"code": "Bad", "label": "x"}, "create_role",
+     "code must match ^[a-z][a-z0-9_]{1,15}$", 400),
+    ("POST", "/api/admin/roles", {"code": "support", "label": "x"}, "create_role",
+     "a role with this code already exists", 400),
+    ("PATCH", "/api/admin/roles/nobody", {"label": "x"}, "rename_role", "role not found", 404),
+    ("DELETE", "/api/admin/roles/user", None, "delete_role", "a built-in role cannot be deleted", 400),
+    ("DELETE", "/api/admin/roles/support", None, "delete_role", "3 users have this role", 400),
+    ("DELETE", "/api/admin/roles/support", None, "delete_role", "not allowed", 403),
+])
+def test_admin_role_refusals_name_the_reason(web, monkeypatch, method, path, body, fn, refusal, status):
+    _as(monkeypatch, ADMIN)
+    monkeypatch.setattr(accounts, fn, MagicMock(side_effect=accounts.AccessError(refusal)))
+    r = _call(web, method, path, body)
+    assert r.status_code == status
+    assert r.json()["error"] == ("forbidden" if status == 403 else refusal)
+
+
+def test_role_routes_refuse_a_code_outside_the_grammar(web, monkeypatch):
+    _as(monkeypatch, ADMIN)
+    _roles(monkeypatch, SUPPORT)
+    for path in ("/api/admin/roles/Support", "/api/admin/roles/s", "/api/admin/roles/" + "a" * 17):
+        assert _call(web, "GET", path).status_code == 404
+
+
+def test_role_resources_tree_at_an_agent_view(web, monkeypatch):
+    _as(monkeypatch, ADMIN)
+    _roles(monkeypatch, SUPPORT, {**SUPPORT, "code": "admin", "label": "Administrator", "builtin": True})
+    monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: True)
+    monkeypatch.setattr(accounts, "grantable_operations",
+                        lambda: {"artifact.launch": "Launch a miniapp", "conversation.run_details": "Run details"})
+    states = MagicMock(return_value=[("jira", [
+        data.EnablementItem("jira_add_comment", "tools/jira_add_comment/is_enabled", True, False),
+        data.EnablementItem("jira_get_issue", "tools/jira_get_issue/is_enabled", False, False),
+        data.EnablementItem("jira_sub", "tools/jira_sub/is_enabled", True, False, blocked_by="jira_master")])])
+    monkeypatch.setattr(data, "get_tool_states", states)
+    conn = MagicMock(name="conn")
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = {"workspace_id": 4}
+    cur.fetchall.return_value = [
+        {"grant_kind": "tool", "name": "jira_add_comment", "agent_view_id": 3},
+        {"grant_kind": "tool", "name": "jira_get_issue", "agent_view_id": None},
+        {"grant_kind": "operation", "name": "artifact.launch", "agent_view_id": None},
+    ]
+    from agento.web import server
+    monkeypatch.setattr(server, "connect", lambda: conn)
+    body = _call(web, "GET", "/api/admin/roles/support/resources?scope=agent_view&scope_id=3").json()
+    assert states.call_args.args[1:] == ("agent_view", 3)
+    assert cur.execute.call_args.args[1] == ("support", 3, 4)  # the view's own rows and its workspace's
+    assert body == {
+        "operations": [
+            {"id": "artifact.launch", "title": "Launch a miniapp", "granted": False, "inherited": True,
+             "builtin": False},
+            {"id": "conversation.run_details", "title": "Run details", "granted": False, "inherited": False,
+             "builtin": False},
+        ],
+        "toolsets": [{"toolset": "jira", "tools": [
+            {"name": "jira_add_comment", "enabled": True, "granted": True, "inherited": False},
+            {"name": "jira_get_issue", "enabled": False, "granted": False, "inherited": True},
+            {"name": "jira_sub", "enabled": False, "granted": False, "inherited": False},
+        ]}],
+    }
+    admin_ops = _call(web, "GET", "/api/admin/roles/admin/resources?scope=workspace&scope_id=4").json()["operations"]
+    assert [(o["id"], o["builtin"]) for o in admin_ops] == [("artifact.launch", False),
+                                                           ("conversation.run_details", True)]
+
+
+@pytest.mark.parametrize("query,status", [
+    ("", 400), ("?scope=default", 400), ("?scope=agent_view", 400), ("?scope=agent_view&scope_id=x", 400),
+])
+def test_role_resources_need_a_grant_scope(web, monkeypatch, query, status):
+    _as(monkeypatch, ADMIN)
+    _roles(monkeypatch, SUPPORT)
+    assert _call(web, "GET", f"/api/admin/roles/support/resources{query}").status_code == status
+
+
+def test_role_resources_of_an_unknown_role_or_scope_are_404(web, monkeypatch):
+    _as(monkeypatch, ADMIN)
+    _roles(monkeypatch, SUPPORT)
+    monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: False)
+    assert _call(web, "GET", "/api/admin/roles/nobody/resources?scope=workspace&scope_id=1").status_code == 404
+    assert _call(web, "GET", "/api/admin/roles/support/resources?scope=workspace&scope_id=1").status_code == 404
+    assert _call(web, "PUT", "/api/admin/roles/support/resources",
+                 {"scope": "workspace", "scope_id": 1, "tools": [], "operations": []}).status_code == 404
+
+
+def test_put_role_resources_replaces_one_scope(web, monkeypatch):
+    _as(monkeypatch, ADMIN)
+    _roles(monkeypatch, SUPPORT)
+    monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: True)
+    put = MagicMock(return_value={"added": 2, "removed": 1})
+    monkeypatch.setattr(accounts, "set_role_grants", put)
+    r = _call(web, "PUT", "/api/admin/roles/support/resources",
+              {"scope": "agent_view", "scope_id": 3, "tools": ["jira_add_comment"], "operations": ["artifact.launch"]})
+    assert r.status_code == 200 and r.json() == {"added": 2, "removed": 1}
+    assert put.call_args.args[1:] == ("support",)
+    assert put.call_args.kwargs == {"agent_view_id": 3, "tools": ["jira_add_comment"],
+                                    "operations": ["artifact.launch"], "actor_id": ADMIN.id}
+    monkeypatch.setattr(accounts, "set_role_grants",
+                        MagicMock(side_effect=accounts.AccessError("no module declares tool 'x'")))
+    r = _call(web, "PUT", "/api/admin/roles/support/resources",
+              {"scope": "workspace", "scope_id": 3, "tools": ["x"], "operations": []})
+    assert r.status_code == 400 and r.json()["error"] == "no module declares tool 'x'"
+    assert _call(web, "PUT", "/api/admin/roles/support/resources",
+                 {"scope": "default", "tools": [], "operations": []}).status_code == 400
+
+
+def test_the_raw_grants_api_is_gone(web, monkeypatch):
+    _as(monkeypatch, ADMIN)
+    assert not [r for r in api.ROUTES if "/api/admin/grants" in r.pattern.pattern]
+    assert _call(web, "GET", "/api/admin/grants").status_code == 404
 
 
 def test_admin_config_uses_the_web_form(web, monkeypatch):
