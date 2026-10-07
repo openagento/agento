@@ -15,6 +15,7 @@ NON_RETRYABLE_ERRORS = frozenset({
     "UsageLimitError",  # session/usage limit — terminal unless a healthy token remains
     "TransientAuthError",  # stale/revoked credential — terminal unless a healthy token remains
     "InvalidJobRuntime",  # pinned harness unknown / no harness — config fault, not transient
+    "ModelConfigError",  # wrong agent_view/model — the same config fails every attempt
 })
 
 

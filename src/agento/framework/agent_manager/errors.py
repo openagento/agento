@@ -81,6 +81,15 @@ class TransientAuthError(RuntimeError):
         self.retry_with_other_token = False
 
 
+class ModelConfigError(RuntimeError):
+    """Raised when the harness cannot honour the configured provider/model — an
+    unknown model id, or a run that the harness answered with a different model.
+
+    Deterministic: the same config gives the same failure on every attempt, so
+    ``retry_policy`` never retries it. The operator fixes ``agent_view/model``.
+    """
+
+
 class CredentialsBusyError(RuntimeError):
     """Raised by ``CredentialResolver.resolve`` when every credential in a scope is
     *healthy* but none is currently *selectable* — each one is locked by a concurrent
