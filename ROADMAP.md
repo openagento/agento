@@ -284,6 +284,18 @@ Per-workspace and per-agent_view control of the language agents reply in — `pr
 
 Group multiple tokens from the same provider into pools with capacity-based rotation and per-agent_view pool assignment, replacing direct per-provider token selection. `TokenResolver` stays the single extension point, so pool-aware selection needs no consumer changes.
 
+### ⚪ Model check — follow-ups
+
+The `agent_view/model` tester (DECISIONS.md 2026-10-07) runs from `config:test` and the TUI only.
+
+- **Panel Test button for `local` testers.** `web` refuses them with 400 because it loads no module
+  code. A panel path needs a web→cron request, the same shape as panel re-login
+  (DECISIONS.md D-PANEL-LOGIN-1).
+- **Run-time `ModelConfigError` for claude and codex.** Pi fails a run with a wrong model at once,
+  with no retry. Claude and Codex do not yet classify a wrong-model answer the same way.
+- **Live check of the Claude OAuth path.** Not verified: if `GET /v1/models/{id}` accepts a Claude
+  subscription token. If it does not, the check answers `MODEL_CHECK_FAILED`.
+
 ### ⚪ Credential limits and panel re-login — follow-ups
 
 Phases 3–4 of the panel improvements (DECISIONS.md 2026-10-04) shipped OAuth re-login and

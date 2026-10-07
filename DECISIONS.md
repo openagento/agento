@@ -44,6 +44,29 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+---
+
+## 2026-10-07 — A model id is checked by the harness itself, not against a list we keep
+
+Plan: `~/.claude/plans/harness-model-config-tester-08e22f.md`. Owner, 2026-10-07: "i'd like to have
+this test/validate model vs used harness and installed harness to be for all 3 harnesses. So we
+have harness, credentail provider and model - that should be somehow tested."
+
+- **The `agent_view/model` tester asks each harness, through an optional `check_model` member.**
+  Pi matches `--model` against its own catalogue, Codex against the account's list, and the Claude
+  CLI passes any id to the API. Only the harness knows its truth, so a list kept here would drift
+  (the qa_01 incident: `deepseek/deepseek-v4.1-flash` looked valid and was not).
+- **Claude's check is `GET /v1/models/{id}`**: free, no tokens. Any answer other than 200 or 404 is
+  `error`, never `ok` or `MODEL_UNKNOWN`, so an OAuth token the endpoint does not accept gives
+  "could not check".
+- **Network checks run in a child process.** An in-process HTTP client has per-phase timeouts, not a
+  total deadline (DNS, connect, each header read). `subprocess.run(timeout=…)` kills and reaps the
+  child, so the check ends at the deadline. The credential goes to the child on stdin.
+- **The tester never calls `select_credential`.** It stamps `used_at` and takes a lease; the tester
+  reads the pool with `list_credentials` and decrypts only the row a run would take.
+- **CLI and TUI only.** `web` does not load module code, so the panel refuses local testers; a panel
+  button needs a web→cron request (ROADMAP.md).
+
 ## 2026-10-06 — Roles are rows; admin stays the one code with built-in admin operations
 
 Plan: `~/.claude/plans/panel-roles-acl-tree-85c647.md`. Owner approval, 2026-10-06: "Instead of

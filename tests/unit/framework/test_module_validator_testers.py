@@ -181,3 +181,13 @@ def test_the_explicit_named_probe_form_needs_a_name(tmp_path):
     system = {"secret": {"type": "obscure", "label": "S", "tester": {"kind": "toolbox"}}}
     errors = _errors(tmp_path, system)
     assert any("needs a non-empty 'name'" in e for e in errors), errors
+
+
+def test_the_shipped_agent_view_model_tester_validates():
+    """`agent_view/model` declares the harness chain tester; module:validate accepts it."""
+    module_dir = Path(__file__).resolve().parents[3] / "src" / "agento" / "modules" / "agent_view"
+    system = json.loads((module_dir / "system.json").read_text())
+    assert system["model"]["tester"] == {
+        "kind": "local", "class": "src.testers.harness_chain.HarnessChainTester",
+    }
+    assert validate_module(module_dir) == []

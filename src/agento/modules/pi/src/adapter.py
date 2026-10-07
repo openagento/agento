@@ -16,6 +16,7 @@ from agento.framework.harness import (
 from .auth import PiOpenRouterAuthenticator
 from .command_builder import PiCommandBuilder
 from .config import PiWorkspaceAdapter
+from .model_check import check_model
 from .runner import PiSubprocessRunner
 from .stream_event_mapper import PiStreamEventMapper
 from .transcript_reader import PiTranscriptReader
@@ -55,6 +56,9 @@ class PiHarnessAdapter:
     @property
     def authenticators(self) -> Mapping[CredentialScope, CredentialAuthenticator]:
         return self._authenticators
+
+    def check_model(self, provider, model, credential, *, timeout_s):
+        return check_model(provider, model, credential, timeout_s=timeout_s)
 
     def create_runner(self, ctx: HarnessRunContext, **kwargs) -> PiSubprocessRunner:
         return PiSubprocessRunner(

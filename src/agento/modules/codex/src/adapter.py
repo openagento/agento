@@ -15,6 +15,7 @@ from agento.framework.harness import (
 from agento.modules.codex.src.auth import CodexCredentialAuthenticator
 from agento.modules.codex.src.command_builder import CodexCommandBuilder
 from agento.modules.codex.src.config import CodexWorkspaceAdapter
+from agento.modules.codex.src.model_check import check_model
 from agento.modules.codex.src.runner import CodexSubprocessRunner
 from agento.modules.codex.src.stream_event_mapper import CodexStreamEventMapper
 from agento.modules.codex.src.stream_renderer import CodexStreamRenderer
@@ -57,6 +58,9 @@ class CodexHarnessAdapter:
     @property
     def authenticators(self) -> Mapping[CredentialScope, CredentialAuthenticator]:
         return self._authenticators
+
+    def check_model(self, provider, model, credential, *, timeout_s):
+        return check_model(provider, model, credential, timeout_s=timeout_s)
 
     def create_runner(self, ctx: HarnessRunContext, **kwargs) -> CodexSubprocessRunner:
         return CodexSubprocessRunner(

@@ -100,6 +100,13 @@ an ordinary run error, because there is no credential to act on.
 A mismatch is an ordinary run failure, never a credential failure — the credential is
 fine, the configuration is not.
 
+To find a wrong model before a run, run `agento config:test agent_view/model --agent-view <code>`.
+Pi's check reads `pi --list-models` (the whole table, with the pool's key) and looks for the model
+among the rows of the configured provider, with the same `~` alias rule as the run. A miss answers
+`MODEL_UNKNOWN` with up to 3 near matches. An empty table is `MODEL_CHECK_FAILED`, not a miss:
+Pi prints the same "no models" text when it has no key. Ollama has no catalogue to check
+(`MODEL_NOT_CHECKED`).
+
 ### Router models: `pi/allow_model_substitution`
 
 Some OpenRouter models are **routers** that dispatch to a different model by design —

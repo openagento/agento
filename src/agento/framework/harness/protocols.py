@@ -508,6 +508,15 @@ class AgentHarnessAdapter(Protocol):
     # rendering must be opt-in, so it is read with ``getattr(adapter,
     # "stream_renderer", None)`` and a harness that omits it simply streams raw.
 
+    # ``check_model(provider, model, credential, *, timeout_s) -> TestResult | None`` is
+    # optional for the same reason, and read the same way. The ``agent_view/model``
+    # config tester calls it to ask the harness if ``model`` is valid for ``provider``.
+    # ``credential`` is the decrypted pool credential (``None`` when the provider needs
+    # none). ``None`` means "this harness cannot check this provider's models". It
+    # writes nothing to the DB and puts no secret in the result. ``timeout_s`` is a
+    # total budget for everything it does; when it runs out the result is
+    # ``error`` / ``MODEL_CHECK_TIMEOUT``.
+
     @property
     def authenticators(self) -> Mapping[CredentialScope, CredentialAuthenticator]:
         """Authenticator per credential scope.
