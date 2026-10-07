@@ -72,7 +72,7 @@ Agento therefore checks positively rather than watching for a warning:
 
 | Layer | What it does |
 | --- | --- |
-| `PiSubprocessRunner` | compares **both** `provider` and `model` on **every** assistant message (`docs/session-format.md:85-86`) against the request — not just the last, so a mid-run switch cannot hide — and **fails the job** on any mismatch. A stream with **no** assistant identity also fails: absence cannot prove the right model ran |
+| `PiSubprocessRunner` | compares **both** `provider` and `model` on **every** assistant message (`docs/session-format.md:85-86`) against the request — not just the last, so a mid-run switch cannot hide — and **fails the job** on any mismatch, on the first attempt with no retry (`ModelConfigError`). A stream with **no** assistant identity also fails: absence cannot prove the right model ran |
 | the bridge extension | the same comparison in-process, on every spawn path including interactive. A **missing** actual field counts as a mismatch, and a malformed expectation is **rejected** rather than silently disabling the guard. Records an `agento-model-mismatch` entry and sets `process.exitCode = 1` when headless (`ctx.hasUI !== true`), which survives a clean finish so scripts and CI see the failure |
 | stderr scan | Pi's own anchored "not found" warning is also treated as fatal |
 

@@ -5,6 +5,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from agento.framework.agent_manager.errors import ModelConfigError
 from agento.framework.harness import (
     SESSION_ID,
     McpInitReport,
@@ -223,27 +224,27 @@ class PiSubprocessRunner(SubprocessRunner):
 
         for provider, model in parsed.identities:
             if wanted_model and not self._same_model(model, wanted_model):
-                raise RuntimeError(
+                raise ModelConfigError(
                     f"Pi ran model {model!r} but {wanted_model!r} was requested. Pi "
                     f"resolves an unmatched model by silent substring matching, so "
                     f"agent_view/model must be an exact catalogue id."
                 )
             if wanted_provider and provider != wanted_provider:
-                raise RuntimeError(
+                raise ModelConfigError(
                     f"Pi ran provider {provider!r} but {wanted_provider!r} was requested."
                 )
 
         # The bridge performs the same comparison in-process on every spawn path and
         # records it; that entry survives even when this comparison sees no identity.
         if parsed.model_mismatch:
-            raise RuntimeError(
+            raise ModelConfigError(
                 f"Pi reported a model mismatch: {parsed.model_mismatch}. "
                 f"agent_view/model must be an exact catalogue id."
             )
 
         stderr = getattr(self, "_stderr", "") or ""
         if _MODEL_NOT_FOUND_RE.search(stderr):
-            raise RuntimeError(
+            raise ModelConfigError(
                 "Pi could not resolve the requested model and fell back to a synthesised "
                 "one (its context window, token limits and pricing belong to a different "
                 "model). Set agent_view/model to an exact catalogue id."
