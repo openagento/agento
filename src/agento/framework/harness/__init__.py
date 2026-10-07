@@ -88,7 +88,7 @@ from .runtime import (
     RunResult,
     ToolboxConnectionSpec,
 )
-from .subprocess_runner import SESSION_ID, SubprocessRunner, move_session_into
+from .subprocess_runner import SESSION_ID, SubprocessRunner, harness_base_env, move_session_into
 
 _MCP_PATHS = ("/mcp", "/sse")
 
@@ -178,6 +178,7 @@ __all__ = [
     "get_harness",
     "get_harness_config",
     "get_harness_for_scope",
+    "harness_base_env",
     "is_harness_option_hidden",
     "is_provider_option_hidden",
     "is_toolbox_endpoint",
