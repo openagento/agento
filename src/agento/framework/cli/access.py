@@ -1,4 +1,4 @@
-"""CLI commands ``user:*`` and ``grant:*`` — the operator side of PRD E2 §5.
+"""CLI commands ``user:*``, ``role:*`` and ``grant:*`` — the operator side of PRD E2 §5.
 
 Same service functions as the web admin API (``framework/access/accounts.py``). A password
 never comes from argv: it is read from stdin (piped) or ``getpass`` (TTY).
@@ -62,19 +62,15 @@ class UserCreateCommand(_Command):
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("username")
-        parser.add_argument("--role", choices=accounts.ROLES, default=None,
-                            help="Omit to choose interactively")
+        parser.add_argument("--role", default=None, help="Role code (role:list); omit to choose interactively")
 
-    def execute(self, args: argparse.Namespace) -> None:
+    def run(self, conn, args) -> None:
         if args.role is None:
             from .terminal import select
 
-            args.role = accounts.ROLES[select("Role:", list(accounts.ROLES))]
-        args.password = _read_password()
-        super().execute(args)
-
-    def run(self, conn, args) -> None:
-        user = accounts.create_user(conn, args.username, args.role, args.password)
+            codes = [r["code"] for r in accounts.list_roles(conn)]
+            args.role = codes[select("Role:", codes)]
+        user = accounts.create_user(conn, args.username, args.role, _read_password())
         print(f"Created: {user.username} ({user.role})")
 
 
@@ -88,7 +84,7 @@ class UserListCommand(_Command):
 
     def run(self, conn, args) -> None:
         for u in accounts.list_users(conn):
-            print(f"  {u.username:<32} {u.role:<6} {'active' if u.is_active else 'inactive'}")
+            print(f"  {u.username:<32} {u.role:<16} {'active' if u.is_active else 'inactive'}")
 
 
 class UserSetRoleCommand(_Command):
@@ -98,7 +94,7 @@ class UserSetRoleCommand(_Command):
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("username")
-        parser.add_argument("role", choices=accounts.ROLES)
+        parser.add_argument("role", help="Role code (role:list)")
 
     def run(self, conn, args) -> None:
         accounts.set_role(conn, _user_or_fail(conn, args.username).id, args.role)
@@ -165,7 +161,7 @@ class GrantAddCommand(_Command):
     help = "Grant a role a tool or an operation in one workspace or agent_view"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--role", required=True, choices=accounts.ROLES)
+        parser.add_argument("--role", required=True, help="Role code (role:list)")
         what = parser.add_mutually_exclusive_group(required=True)
         what.add_argument("--tool")
         operations = accounts.grantable_operations()
@@ -202,15 +198,57 @@ class GrantListCommand(_Command):
     help = "List role grants"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--role", choices=accounts.ROLES, default=None)
+        parser.add_argument("--role", default=None, help="Role code (role:list)")
 
     def run(self, conn, args) -> None:
         for g in accounts.list_grants(conn, args.role):
             scope = f"agent_view={g['agent_view_id']}" if g["agent_view_id"] else f"workspace={g['workspace_id']}"
-            print(f"  {g['id']:>5}  {g['role']:<6} {g['grant_kind']:<9} {g['name']:<40} {scope}")
+            print(f"  {g['id']:>5}  {g['role']:<16} {g['grant_kind']:<9} {g['name']:<40} {scope}")
+
+
+class RoleListCommand(_Command):
+    name = "role:list"
+    shortcut = "ro:li"
+    help = "List roles with their users and the scopes they have access in"
+
+    def configure(self, parser: argparse.ArgumentParser) -> None:
+        pass
+
+    def run(self, conn, args) -> None:
+        for r in accounts.list_roles(conn):
+            builtin = "built-in" if r["builtin"] else ""
+            print(f"  {r['code']:<16} {r['label']:<32} users={r['users']:<4} scopes={r['scopes']:<4} {builtin}")
+
+
+class RoleCreateCommand(_Command):
+    name = "role:create"
+    shortcut = "ro:cr"
+    help = "Create a role (no access until it is granted some)"
+
+    def configure(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("code", help="^[a-z][a-z0-9_]{1,15}$; cannot be changed later")
+        parser.add_argument("--label", required=True, help="Display name, unique")
+
+    def run(self, conn, args) -> None:
+        role = accounts.create_role(conn, args.code, args.label)
+        print(f"Created role: {role['code']} ({role['label']})")
+
+
+class RoleDeleteCommand(_Command):
+    name = "role:delete"
+    shortcut = "ro:de"
+    help = "Delete a role and its grants (refused for a built-in role or a role with users)"
+
+    def configure(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("code")
+
+    def run(self, conn, args) -> None:
+        accounts.delete_role(conn, args.code)
+        print(f"Deleted role: {args.code}")
 
 
 ACCESS_COMMANDS = [
     UserCreateCommand, UserListCommand, UserSetRoleCommand, UserActivateCommand, UserDeactivateCommand,
-    UserPasswordCommand, GrantAddCommand, GrantRemoveCommand, GrantListCommand,
+    UserPasswordCommand, RoleListCommand, RoleCreateCommand, RoleDeleteCommand,
+    GrantAddCommand, GrantRemoveCommand, GrantListCommand,
 ]

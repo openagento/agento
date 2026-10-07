@@ -19,6 +19,7 @@ def _clean(c):
     with c.cursor() as cur:
         for table in ("launch", "session", "role_grant", "`user`"):
             cur.execute(f"DELETE FROM {table}")
+        cur.execute("DELETE FROM role WHERE code NOT IN ('admin', 'user')")
 
 
 @pytest.fixture

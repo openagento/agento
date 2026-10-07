@@ -33,6 +33,8 @@ export const routes: RouteObject[] = [
     children: [
       { index: true, lazy: async () => ({ Component: (await import("./routes/Home")).Home }) },
       { path: "users", lazy: async () => ({ Component: (await import("./routes/Users")).Users }) },
+      { path: "users/roles", lazy: async () => ({ Component: (await import("./routes/Users")).Users }) },
+      { path: "users/roles/:code", lazy: async () => ({ Component: (await import("./routes/RoleEdit")).RoleEdit }) },
       { path: "admin/jobs", lazy: async () => ({ Component: (await import("./routes/admin/Jobs")).Jobs }) },
       { path: "admin/agents", lazy: async () => ({ Component: (await import("./routes/admin/Agents")).Agents }) },
       { path: "admin/credentials", lazy: async () => ({ Component: (await import("./routes/admin/Credentials")).Credentials }) },
