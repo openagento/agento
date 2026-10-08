@@ -352,10 +352,11 @@ cannot be decrypted is `error`, never `not_configured`.
 
 ## CODE — Code
 
-**CODE-1 Python (P1).** httpx (not requests), dataclasses (not Pydantic), PyMySQL (not
-mysql-connector). Get the current time with `datetime.now(timezone.utc)`, never a naive local
+**CODE-1 Python (P1).** Get the current time with `datetime.now(timezone.utc)`, never a naive local
 `datetime.now()`. To compare with a PyMySQL `DATETIME` value, use naive UTC (`.replace(tzinfo=None)`)
-(DECISIONS.md 2026-03-31 UTC-everywhere).
+(DECISIONS.md 2026-03-31 UTC-everywhere). Library choices (httpx, dataclasses, PyMySQL) are
+decisions: DECISIONS.md 2026-02-19 Python port and 2026-02-22 Publisher-consumer job queue. A
+second library for the same job is a SEC-11 finding.
 
 **CODE-2 Style (P2).** Python: relative imports inside the framework; absolute `agento.framework.*`
 from modules and tests. Node: ES modules, `node:` prefix for built-ins, Zod for schema validation
