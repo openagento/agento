@@ -41,6 +41,7 @@ export function registerAdapterTools(
     moduleConfigs?.core?.client_connection_pool_max_per_tool,
     10
   );
+  const lockWaitTimeoutSeconds = positiveInteger(moduleConfigs?.core?.sql_lock_wait_timeout_seconds, 60);
   const serverConcurrencyBudget = positiveInteger(
     moduleConfigs?.core?.server_concurrency_budget,
     10
@@ -50,6 +51,7 @@ export function registerAdapterTools(
     const tools = allTools.filter(t => t.type === type);
     const { names, healthcheck } = registerFn(server, tools, {
       sqlTimeoutSeconds,
+      lockWaitTimeoutSeconds,
       clientConnectionPoolMaxPerTool,
       serverConcurrencyBudget,
       sqlPoolRegistry,

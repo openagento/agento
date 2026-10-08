@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { withConnections } from './fixtures/mysql-pool.js';
 
 let registry;
 
@@ -99,11 +100,11 @@ describe('SQL pool registry', () => {
   it('shares MySQL pools across sessions but creates a new one for changed config', async () => {
     const pools = [];
     const createPool = vi.fn(config => {
-      const pool = {
+      const pool = withConnections({
         config,
         end: vi.fn().mockResolvedValue(),
         query: vi.fn().mockResolvedValue([[{ database: config.database }]]),
-      };
+      });
       pools.push(pool);
       return pool;
     });

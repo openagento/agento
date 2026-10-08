@@ -65,7 +65,7 @@ Pooling, timeouts, and healthchecks are shared with `mysql`, but pools are keyed
 - The opt-in gate still applies on top: like every tool, a `mysql_root` tool is disabled by default and only available where `tools/<name>/is_enabled` resolves to `1` (agent_view > workspace > default). Declaring one grants no access until it is explicitly enabled — prefer `agento tool:enable mysql_sandbox_root --agent-view <code>` over a default-scope enable.
 - **`_root` is a RESERVED suffix, enforced in both directions.** Enablement is keyed by tool NAME (`tools/<name>/is_enabled`) and records nothing about capability, so an in-place `type` edit would otherwise carry an existing grant straight over. Two rules together close that: a `mysql_root` tool's name MUST end in `_root`, and **no other tool type may use that suffix** — so a read-only tool cannot squat the name first and be escalated later by editing only its `type`. Each rule alone is useless; the pair is what makes promotion a rename, and a rename means a name with no `is_enabled` row. Enforced by `agento module:add` (rejects the tool spec), `module:validate` — and therefore `setup:upgrade` — (rejects the manifest), and the mysql adapter at runtime (logs an `ERROR`, leaves the tool unregistered). Reviewers should still treat any manifest diff that changes a tool's `type` as a privilege grant.
 - **Known residual gap: a stale `is_enabled` row can outlive its tool.** The reserved suffix binds a NAME to a capability, not a GRANT to a capability. If a `mysql_root` tool is deleted from a manifest, its `tools/<name>/is_enabled` row survives in `core_config_data`, and a later tool reusing that exact name inherits it. The name can only ever have belonged to a full-access tool, so the row was a deliberate full-access grant — but it was granted for a different tool. Run `agento config:remove tools/<name>/is_enabled --scope=... --scope-id=...` when you retire a `mysql_root` tool. Closing this properly needs a capability-scoped enablement gate (a grant recorded against the capability, not just the name).
-- **A timed-out write may still commit.** `core/sql_timeout_seconds` is enforced as a mysql2 client-side inactivity timeout: it rejects the tool call but does not send `KILL QUERY`, so the server keeps executing the statement. Treat a timeout on a `mysql_root` tool as an UNKNOWN outcome — verify state before retrying, and prefer idempotent statements (`INSERT … ON DUPLICATE KEY UPDATE`, `DELETE … WHERE id = …`) so a retry cannot double-apply. The tool's own description tells the agent the same thing. This is a property of the shared SQL execution path — read-only `mysql` and `mssql` time out the same way — but only writes can leave a lasting effect.
+- **A timed-out write may still commit.** The server-side statement limit and, after a client timeout, `KILL QUERY` stop the statement (see [SQL Timeout](#sql-timeout)), but a write can commit just before it is stopped, and `KILL QUERY` can fail. Treat a timeout on a `mysql_root` tool as an UNKNOWN outcome — verify state before retrying, and prefer idempotent statements (`INSERT … ON DUPLICATE KEY UPDATE`, `DELETE … WHERE id = …`) so a retry cannot double-apply. The tool's own description tells the agent the same thing. This is a property of the shared SQL execution path — read-only `mysql` and `mssql` time out the same way — but only writes can leave a lasting effect.
 - Existing `type: "mysql"` tools are unaffected: their code path is untouched and remains provably read-only.
 - Every decision a MySQL tool logs (`QUERY`, `OK`, `ERROR`, and `BLOCKED` for the read-only tier) goes to the session's agent_view-scoped logger, so `toolbox_mcp.log` attributes destructive statements to an agent_view — not only to the `user` argument the LLM supplies.
 
@@ -123,7 +123,29 @@ agento config:set core/sql_timeout_seconds 300
 # ENV: CONFIG__CORE__SQL_TIMEOUT_SECONDS=300
 ```
 
-Source: [src/agento/toolbox/adapters/sql-timeout.js](../../src/agento/toolbox/adapters/sql-timeout.js)
+`core/sql_timeout_seconds` is the client-side limit. The server must stop first, so the MySQL adapter sets these session limits on each pooled connection (only when they change):
+
+| Limit | Default | Per-tool override | Server variable |
+|---|---|---|---|
+| Statement timeout | `sql_timeout_seconds` − 5 s | `<module>/tools/<tool>/statement_timeout_seconds` (0 = off) | MariaDB `max_statement_time` (all statements, includes lock waits); MySQL `max_execution_time` (SELECT only) |
+| Lock wait timeout | `core/sql_lock_wait_timeout_seconds` (60) | `<module>/tools/<tool>/lock_wait_timeout_seconds` | `lock_wait_timeout` (metadata locks) |
+
+The flavor comes from the server handshake version. If the session limits cannot be set, the adapter logs a `WARN` and relies on the backstop: after a client timeout it sends `KILL QUERY <thread id>` on a separate connection and destroys the pooled connection, so no statement stays behind in `processlist`.
+
+MSSQL prefixes each request with `SET LOCK_TIMEOUT <lock wait ms>`, so a blocked read fails with error 1222. On the client timeout, tedious cancels the request with a TDS ATTENTION packet, so the server stops the statement.
+
+The agent gets an actionable message instead of the raw driver error:
+
+- Lock wait (MySQL/MariaDB 1205, MSSQL 1222): the query is blocked by a lock, not broken — do not retry the same query.
+- Statement timeout (MariaDB 1969, MySQL 3024, client timeout, MSSQL `ETIMEOUT`): the query exceeded N s and was cancelled — narrow it before a retry. If `KILL QUERY` failed, the message says the statement may still run.
+
+```bash
+agento config:set core/sql_lock_wait_timeout_seconds 60
+agento config:set acme/tools/mysql_acme_prod/statement_timeout_seconds 120
+agento config:set acme/tools/mysql_acme_prod/lock_wait_timeout_seconds 30
+```
+
+Source: [src/agento/toolbox/adapters/sql-timeout.js](../../src/agento/toolbox/adapters/sql-timeout.js), [src/agento/toolbox/adapters/sql-errors.js](../../src/agento/toolbox/adapters/sql-errors.js)
 
 ## SQL Connection Pools
 

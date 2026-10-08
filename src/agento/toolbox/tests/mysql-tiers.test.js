@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { withConnections } from './fixtures/mysql-pool.js';
 
 const CONFIG = { host: 'db.test', port: '3306', user: 'sandbox', pass: 'secret', database: 'sandbox' };
 const AGENT = 'agent@example.com';
@@ -90,7 +91,7 @@ function mockDriver({ rejectStacked = false, queryError = null } = {}) {
   const executed = [];
   const createPool = vi.fn(config => {
     created.push(config);
-    return {
+    return withConnections({
       end: vi.fn().mockResolvedValue(),
       query: vi.fn(async request => {
         executed.push(request.sql);
@@ -102,7 +103,7 @@ function mockDriver({ rejectStacked = false, queryError = null } = {}) {
         }
         return [[{ affectedRows: 1 }]];
       }),
-    };
+    });
   });
   vi.doMock('mysql2/promise', () => ({ default: { createPool } }));
   return { created, executed };
