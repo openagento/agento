@@ -3,7 +3,8 @@ import sql from 'mssql';
 import { logToolboxMcp as processLog } from '../log.js';
 import { runCancellable } from '../cancellable-operation.js';
 import { isReadOnlySql } from './sql-read-only.js';
-import { getSqlTimeoutMs } from './sql-timeout.js';
+import { getSqlTimeoutMs, getSqlServerLimits } from './sql-timeout.js';
+import { describeMssqlError } from './sql-errors.js';
 
 const ALLOWED_KEYWORDS = ['SELECT', 'WITH'];
 
@@ -26,6 +27,11 @@ function createMssqlTool(server, toolName, description, config, options) {
     options: { encrypt: true, trustServerCertificate: true },
     pool: { max: poolMax, min: 0, idleTimeoutMillis: 30000 },
   };
+  const { lockWaitTimeoutSeconds } = getSqlServerLimits(options.sqlTimeoutMs, {
+    lockWaitTimeoutSeconds: config.lock_wait_timeout_seconds ?? options.lockWaitTimeoutSeconds,
+  });
+  // A blocking wait fails fast with error 1222 instead of using the full request timeout.
+  const lockTimeoutPrefix = `SET LOCK_TIMEOUT ${lockWaitTimeoutSeconds * 1000};\n`;
 
   const poolHandle = options.sqlPoolRegistry.createPoolHandle({
     adapter: 'mssql',
@@ -75,7 +81,7 @@ function createMssqlTool(server, toolName, description, config, options) {
           pool = p;
           const req = p.request();
           req.timeout = options.sqlTimeoutMs;
-          return req.query(query);
+          return req.query(lockTimeoutPrefix + query);
         });
         const elapsed = Date.now() - start;
         const rows = result.recordset;
@@ -87,8 +93,9 @@ function createMssqlTool(server, toolName, description, config, options) {
       } catch (err) {
         if (pool?.healthy === false) poolHandle.invalidate();
         log(toolName, 'ERROR', `user=${user} ${err.message}`);
+        const message = describeMssqlError(err, { clientTimeoutMs: options.sqlTimeoutMs });
         return {
-          content: [{ type: 'text', text: `Query error: ${err.message}` }],
+          content: [{ type: 'text', text: message || `Query error: ${err.message}` }],
           isError: true,
         };
       }
@@ -112,6 +119,7 @@ export function registerMssqlTools(server, tools, options = {}) {
     serverConcurrencyBudget: options.serverConcurrencyBudget || 10,
     sqlPoolRegistry: options.sqlPoolRegistry,
     sqlTimeoutMs: getSqlTimeoutMs(options.sqlTimeoutSeconds),
+    lockWaitTimeoutSeconds: options.lockWaitTimeoutSeconds,
     log: options.log,
   };
   const registered = [];

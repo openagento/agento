@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { withConnections } from './fixtures/mysql-pool.js';
 
 const ARTIFACTS_DIR = '/workspace/artifacts/ws1/av1/job1';
 
@@ -409,7 +410,7 @@ describe('MySQL tool large result integration', () => {
   async function buildMysqlTool(rowCount) {
     const rows = Array.from({ length: rowCount }, (_, i) => ({ id: i, name: `row${i}` }));
     const mockQuery = vi.fn().mockResolvedValue([rows]);
-    const mockPool = { query: mockQuery };
+    const mockPool = withConnections({ query: mockQuery });
     vi.doMock('mysql2/promise', () => ({
       default: { createPool: () => mockPool },
     }));
