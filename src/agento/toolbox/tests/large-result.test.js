@@ -138,6 +138,22 @@ describe('maybeOffloadRows', () => {
     expect(written[paths[0]]).toBe('a,b\n1,2\n3,4');
   });
 
+  it('uses a unique file name for calls in the same second', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 8, 14, 30, 15));
+    try {
+      const maybeOffloadRows = await load(1);
+      const first = await maybeOffloadRows([{ a: 1 }, { a: 2 }], 'test_tool');
+      const second = await maybeOffloadRows([{ a: 3 }, { a: 4 }], 'test_tool');
+
+      expect(first.filePath).not.toBe(second.filePath);
+      expect(first.filePath).toMatch(/\/result_20261008_143015_[0-9a-f]{8}\.csv$/);
+      expect(Object.keys(written).length).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('includes first 5 rows in sample', async () => {
     const maybeOffloadRows = await load(10);
     const rows = Array.from({ length: 10 }, (_, i) => ({ id: i }));
@@ -229,6 +245,22 @@ describe('maybeOffloadText', () => {
     expect(paths.length).toBe(1);
     expect(paths[0]).toMatch(/\.txt$/);
     expect(written[paths[0]]).toBe(text);
+  });
+
+  it('uses a unique file name for calls in the same second', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(2026, 9, 8, 14, 30, 15));
+    try {
+      const maybeOffloadText = await load(5);
+      const first = await maybeOffloadText('first long text', 'test_tool');
+      const second = await maybeOffloadText('second long text', 'test_tool');
+
+      expect(first.filePath).not.toBe(second.filePath);
+      expect(first.filePath).toMatch(/\/result_20261008_143015_[0-9a-f]{8}\.txt$/);
+      expect(Object.keys(written).length).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('falls back to null on filesystem error', async () => {

@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them as regexes (`ingress:list` shows existing rows) — this is a note, not a migration.
 
 ### Fixed
+- **Large-result offload files no longer overwrite each other.** `large-result.js` named the file
+  `result_YYYYMMDD_HHMMSS.{csv,txt}`, so two calls of the same tool that ended in the same second
+  wrote the same path and the second result replaced the first. The name now has a random 8-hex
+  suffix: `result_YYYYMMDD_HHMMSS_<hex>.{csv,txt}` (AG-66).
 - **Jobs no longer dead-letter on `401 OAuth access token has been revoked` while healthy tokens sit
   unused in the pool.** The message previously matched no known phrase, degraded to a generic
   `RuntimeError`, and so never poisoned or throttled the token nor set `retry_with_other_token` —
