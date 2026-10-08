@@ -46,6 +46,30 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+## 2026-10-08 — Keep dataclasses; no Pydantic
+
+Owner, 2026-10-08: "yes, add this Pydentic decision to DECISION.md today". Re-checks
+2026-02-19 Python port now that the panel API (`src/agento/web/`) takes untrusted JSON.
+
+- **Measured, not guessed.** Every hand-written parse site was read (request bodies, `from_row`,
+  module config `from_dict`, `harness/descriptor.py` `from_declaration`, the shape part of
+  `module_validator.py`). About 730 lines would become about 480 with Pydantic v2: net about -250
+  of about 49.7k Python lines in `src` (0.5%). Estimates, ±25% per area; the sign per area is firm.
+- **The trust boundary gets longer, not shorter.** Panel API body checks are 1–3 lines each today
+  (~65 lines). Pydantic needs ~12 small models plus a `ValidationError`→400 adapter (~95 lines).
+  Lax mode also accepts `"5"` as an int and `1` as a bool, which the hand checks reject, so it would
+  need strict mode.
+- **The saving is on trusted input** (DB rows, manifests checked at setup), where the hand code
+  causes no defects. About 1190 of the 1346 lines of `module_validator.py` are cross-module and
+  security rules that no schema library removes.
+- **Costs.** `pydantic-core` is one more native (Rust) wheel in the locked set and the host CLI;
+  validation on `Job.from_row` adds cost in the consumer claim path (SCL-1); error messages change
+  unless each one becomes a custom error. There is no `to_dict` today, so `model_dump` saves nothing.
+- **Revisit when** the panel API grows well past today's ~65 lines of body checks. Then the scope is
+  Pydantic at the HTTP boundary only, in strict mode, with a new entry here.
+
+---
+
 ## 2026-10-07 — A model id is checked by the harness itself, not against a list we keep
 
 Plan: `~/.claude/plans/harness-model-config-tester-08e22f.md`. Owner, 2026-10-07: "i'd like to have
@@ -1867,3 +1891,46 @@ A new core, disableable channel that watches an agent's open Bitbucket Cloud PRs
 - **Runner ABC shared by Claude and Codex**: common interface, replay support, e2e tests. Not two separate unrelated runners.
 - **20-minute subprocess timeout**: agents have variable duration, but unbounded is too risky. 20 min covers longest observed tasks.
 - **No timeout on ClaudeRunner for job execution**: agent tasks can legitimately run 30s–10min. Premature kill leaves Jira in inconsistent state. Timeout enforcement deferred.
+
+---
+
+## 2026-03-05 — Mention publisher (jira-mention)
+
+- **Comment-level idempotency key** (`jira:mention:{issue_key}:{comment_id}`), not time-windowed — same mention never processed twice.
+- **New toolbox REST endpoint** (`POST /api/jira/issue/comments`): Python code can't use MCP tools directly, needed a REST bridge.
+- **Static `accountId` in config** (`jira_assignee_account_id`): dynamic lookup via `/myself` is unnecessary complexity for a rarely-changing value.
+- **JQL `comment ~ "{accountId}"`**: `text ~ email` returns 0 results (email not indexed from `[~accountid:...]` markup). Jira indexes the raw accountId string from comment bodies.
+- **Reuses `TodoWorkflow`**, no mention-specific workflow needed.
+
+---
+
+## 2026-02-24 — Jira image attachments
+
+- **API v2 over v3** for issue fetching: v3 returns ADF JSON (no direct UUID→attachment mapping). v2 returns wiki markup with `!filename!` directly matching attachment filenames.
+- **Download to disk, not base64 in MCP response**: keeps every `jira_get_issue` response lightweight; agent reads images on demand.
+- **Shared volume mount** (`../workspace/tmp/jira`): toolbox writes, sandbox reads at same path.
+- **Limits: 10 images × 5 MB**: prevents runaway downloads.
+
+---
+
+## 2026-02-22 — Publisher-consumer job queue
+
+- **MySQL `SELECT FOR UPDATE SKIP LOCKED`** over Redis/Celery/Kafka: ~50 jobs/day, 2 workers — no external queue infra needed.
+- **PyMySQL over mysql-connector-python**: pure Python, no C extension build in Docker (base image is `node:22-slim`).
+- **Consumer in same container as cron**: simpler than a separate service. `wait -n` provides fail-fast if either process dies.
+- **Retry via row mutation** (`TODO` + future `scheduled_after`), no separate `RETRYING` status. Backoff: 1m, 5m, 30m.
+- **`INSERT IGNORE` on unique key** for idempotency. Time-windowed keys (e.g., `jira:cron:AI-123:20260220_0800`) prevent duplicate jobs from double-fired cron.
+  - *Superseded 2026-08-18:* job dedupe is SELECT-then-INSERT (see 2026-08-18 Job dedupe, AG-22).
+- **`source` column** (`'jira'`, `'email'`, …) for future multi-publisher extensibility.
+- **JSON structured logs for consumer only**: publisher/sync are short-lived, JSON adds noise there.
+
+---
+
+## 2026-02-19 — Python port (bash → Python)
+
+- **httpx over requests**: native async for future migration, `respx` for clean mocking.
+- **Dataclasses over Pydantic**: simple models (<10 fields) from a trusted internal API. Pydantic is 5 MB+ of unneeded validation.
+- **Single CLI with subcommands** (`sync`, `exec:cron`, `exec:todo`, `task-list`) instead of 4 bash scripts.
+- **Code baked into Docker image** (COPY, not volume mount): venv must be in image. Trade-off: requires rebuild after code changes.
+  - *Superseded:* code now comes in through a read-only bind mount of the project `.venv` (AGENTS.md, Code via volume mounts).
+- **Toolbox REST API is the only Jira interface**: cron container has no Jira credentials. All mutations go through Claude CLI via MCP.
