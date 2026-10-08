@@ -1,5 +1,6 @@
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { logToolboxMcp as log } from '../log.js';
 
 function escapeCsvField(value) {
@@ -25,13 +26,17 @@ function formatDatetime() {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
+function resultFileName(ext) {
+  return `result_${formatDatetime()}_${randomBytes(4).toString('hex')}.${ext}`;
+}
+
 export async function maybeOffloadRows(rows, toolName, { artifactsDir, threshold, sampleRows }) {
   if (!artifactsDir) return null;
   const estimatedSize = JSON.stringify(rows).length;
   if (estimatedSize <= threshold) return null;
 
   const dir = join(artifactsDir, 'mcp-results', toolName);
-  const filePath = join(dir, `result_${formatDatetime()}.csv`);
+  const filePath = join(dir, resultFileName('csv'));
 
   try {
     await mkdir(dir, { recursive: true });
@@ -62,7 +67,7 @@ export async function maybeOffloadText(text, toolName, { artifactsDir, threshold
   if (text.length <= threshold) return null;
 
   const dir = join(artifactsDir, 'mcp-results', toolName);
-  const filePath = join(dir, `result_${formatDatetime()}.txt`);
+  const filePath = join(dir, resultFileName('txt'));
 
   try {
     await mkdir(dir, { recursive: true });

@@ -183,7 +183,7 @@ Config paths (core module, 3-level fallback):
 | `core/toolbox/result_offload/sample_rows` | 5 | Number of sample rows included in the summary |
 | `core/toolbox/result_offload/text_preview_chars` | 200 | Number of preview characters for text offload |
 
-Files are written to `${artifactsDir}/mcp-results/{toolName}/result_{timestamp}.{csv,txt}` (where `artifactsDir` is `/workspace/artifacts/{workspace}/{agent_view}/{job_id}`). Cleanup of old offload files is the responsibility of the artifacts dir lifecycle manager, not this middleware.
+Files are written to `${artifactsDir}/mcp-results/{toolName}/result_{timestamp}_{random}.{csv,txt}` (where `artifactsDir` is `/workspace/artifacts/{workspace}/{agent_view}/{job_id}`). The `{random}` suffix (8 hex chars) keeps the name unique, so two calls in the same second never overwrite each other. Cleanup of old offload files is the responsibility of the artifacts dir lifecycle manager, not this middleware.
 
 Override per agent_view:
 ```bash
