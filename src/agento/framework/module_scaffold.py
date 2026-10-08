@@ -16,6 +16,8 @@ _MYSQL_FIELDS = {
     "pass": {"type": "obscure", "label": "Password"},
     "database": {"type": "string", "label": "Database"},
     "client_connection_pool_max_per_tool": {"type": "integer", "label": "Maximum client connections"},
+    "statement_timeout_seconds": {"type": "integer", "label": "Server-side statement timeout (seconds)"},
+    "lock_wait_timeout_seconds": {"type": "integer", "label": "Server-side lock wait timeout (seconds)"},
 }
 
 # Standard tool field templates by type
@@ -29,6 +31,7 @@ TOOL_FIELD_TEMPLATES = {
         "pass": {"type": "obscure", "label": "Password"},
         "database": {"type": "string", "label": "Database"},
         "client_connection_pool_max_per_tool": {"type": "integer", "label": "Maximum client connections"},
+        "lock_wait_timeout_seconds": {"type": "integer", "label": "Server-side lock wait timeout (seconds)"},
     },
     "opensearch": {
         "host": {"type": "string", "label": "Host"},

@@ -1,6 +1,7 @@
 {
   "timezone": "UTC",
   "sql_timeout_seconds": 300,
+  "sql_lock_wait_timeout_seconds": 60,
   "client_connection_pool_max_per_tool": 10,
   "server_concurrency_budget": 10,
   "smtp_port": 587,

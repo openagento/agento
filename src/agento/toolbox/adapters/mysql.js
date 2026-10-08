@@ -3,7 +3,8 @@ import mysql from 'mysql2/promise';
 import { logToolboxMcp as processLog } from '../log.js';
 import { runCancellable } from '../cancellable-operation.js';
 import { isReadOnlySql } from './sql-read-only.js';
-import { getSqlTimeoutMs } from './sql-timeout.js';
+import { getSqlTimeoutMs, getSqlServerLimits } from './sql-timeout.js';
+import { describeMysqlError } from './sql-errors.js';
 
 const ALLOWED_KEYWORDS = ['SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN', 'WITH'];
 
@@ -55,6 +56,64 @@ function nameViolation(toolName, tier) {
     : null;
 }
 
+const KILL_TIMEOUT_MS = 10_000;
+
+// SET SESSION runs only when a pooled connection's limits differ from this tool's, because
+// sessions with different scoped timeouts may share one pool. MariaDB's max_statement_time counts
+// lock waits too; MySQL's max_execution_time limits only SELECT. lock_wait_timeout covers metadata
+// locks on both, which is what a blocked replica waits on.
+async function applyServerLimits(connection, limits, warn) {
+  const raw = connection.connection;
+  const key = `${limits.statementTimeoutMs}/${limits.lockWaitTimeoutSeconds}`;
+  if (raw.agentoServerLimits === key) return;
+  raw.agentoServerLimits = key;
+
+  let version = raw._handshakePacket?.serverVersion;
+  try {
+    if (!version) [[{ version }]] = await connection.query('SELECT VERSION() AS version');
+    const statementLimit = /mariadb/i.test(version)
+      ? `max_statement_time = ${limits.statementTimeoutMs / 1000}`
+      : `max_execution_time = ${limits.statementTimeoutMs}`;
+    await connection.query(`SET SESSION ${statementLimit}, lock_wait_timeout = ${limits.lockWaitTimeoutSeconds}`);
+  } catch (err) {
+    warn(`server-side limits not set (${err.message}); relying on KILL QUERY after client timeout`);
+  }
+}
+
+// mysql2 only stops waiting on a client timeout; the statement keeps running (or waiting for a
+// lock) on the server. KILL QUERY must use its own connection because the pooled one is busy.
+async function killQuery(connectionConfig, threadId) {
+  let killer = null;
+  try {
+    killer = await mysql.createConnection({ ...connectionConfig, connectTimeout: KILL_TIMEOUT_MS });
+    await killer.query({ sql: 'KILL QUERY ?', values: [threadId], timeout: KILL_TIMEOUT_MS });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    killer?.destroy();
+  }
+}
+
+async function runQuery(pool, sql, { connectionConfig, clientTimeoutMs, limits, warn }) {
+  const connection = await pool.getConnection();
+  let reusable = true;
+  try {
+    await applyServerLimits(connection, limits, warn);
+    return await connection.query({ sql, timeout: clientTimeoutMs });
+  } catch (err) {
+    if (err.code === 'PROTOCOL_SEQUENCE_TIMEOUT') {
+      reusable = false;
+      err.cancelled = await killQuery(connectionConfig, connection.threadId);
+    }
+    if (err.fatal) reusable = false;
+    throw err;
+  } finally {
+    if (reusable) connection.release();
+    else connection.destroy();
+  }
+}
+
 function createMysqlTool(server, toolName, description, config, options) {
   const tier = TIERS[options.tier] || TIERS['read-only'];
   // The session logger carries the agent_view label/id, so every decision this tool logs is
@@ -66,15 +125,22 @@ function createMysqlTool(server, toolName, description, config, options) {
   const poolMax = Number.isInteger(configuredPoolMax) && configuredPoolMax > 0
     ? configuredPoolMax
     : options.clientConnectionPoolMaxPerTool;
-  const mysqlConfig = {
+  const connectionConfig = {
     host: config.host,
     port,
     user: config.user,
     password: config.pass,
     database: config.database,
+  };
+  const mysqlConfig = {
+    ...connectionConfig,
     waitForConnections: true,
     connectionLimit: poolMax,
   };
+  const limits = getSqlServerLimits(options.sqlTimeoutMs, {
+    statementTimeoutSeconds: config.statement_timeout_seconds ?? options.statementTimeoutSeconds,
+    lockWaitTimeoutSeconds: config.lock_wait_timeout_seconds ?? options.lockWaitTimeoutSeconds,
+  });
   const poolHandle = options.sqlPoolRegistry.createPoolHandle({
     adapter: tier.type,
     toolName,
@@ -114,7 +180,12 @@ function createMysqlTool(server, toolName, description, config, options) {
       const start = Date.now();
 
       try {
-        const [rows] = await poolHandle.use(pool => pool.query({ sql: query, timeout: options.sqlTimeoutMs }));
+        const [rows] = await poolHandle.use(pool => runQuery(pool, query, {
+          connectionConfig,
+          clientTimeoutMs: options.sqlTimeoutMs,
+          limits,
+          warn: message => log(toolName, 'WARN', `user=${user} type=${tier.type} ${message}`),
+        }));
         const elapsed = Date.now() - start;
         const rowCount = Array.isArray(rows) ? rows.length : '?';
 
@@ -123,9 +194,14 @@ function createMysqlTool(server, toolName, description, config, options) {
         const text = JSON.stringify(rows, null, 2);
         return { content: [{ type: 'text', text }] };
       } catch (err) {
-        log(toolName, 'ERROR', `user=${user} type=${tier.type} ${err.message}`);
+        const cancelled = err.cancelled === undefined ? '' : ` server_cancelled=${err.cancelled}`;
+        log(toolName, 'ERROR', `user=${user} type=${tier.type} ${err.message}${cancelled}`);
+        const message = describeMysqlError(err, {
+          clientTimeoutMs: options.sqlTimeoutMs,
+          statementTimeoutMs: limits.statementTimeoutMs,
+        });
         return {
-          content: [{ type: 'text', text: `Query error: ${err.message}` }],
+          content: [{ type: 'text', text: message || `Query error: ${err.message}` }],
           isError: true,
         };
       }
@@ -145,6 +221,8 @@ function registerTierTools(server, tools, options, tier) {
     serverConcurrencyBudget: options.serverConcurrencyBudget || 10,
     sqlPoolRegistry: options.sqlPoolRegistry,
     sqlTimeoutMs: getSqlTimeoutMs(options.sqlTimeoutSeconds),
+    statementTimeoutSeconds: options.statementTimeoutSeconds,
+    lockWaitTimeoutSeconds: options.lockWaitTimeoutSeconds,
     log: options.log,
     tier,
   };

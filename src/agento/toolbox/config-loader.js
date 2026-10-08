@@ -365,6 +365,14 @@ function resolveField(moduleName, toolName, fieldName, configDefaults, dbOverrid
   return null;
 }
 
+// Per-tool SQL limits are configurable even when module.json does not declare them as fields.
+const SQL_TOOL_TYPES = new Set(['mysql', 'mysql_root', 'mssql']);
+const SQL_TOOL_IMPLICIT_FIELDS = [
+  'client_connection_pool_max_per_tool',
+  'statement_timeout_seconds',
+  'lock_wait_timeout_seconds',
+];
+
 /**
  * Load all tools from all modules with resolved config.
  * Each tool has: { name, type, description, module, config: { host, port, user, pass, database } }
@@ -382,15 +390,12 @@ export async function loadTools(dbOverrides = null) {
       for (const fieldName of Object.keys(tool.fields || {})) {
         config[fieldName] = resolveField(mod.name, tool.name, fieldName, configDefaults, dbOverrides);
       }
-      if ((tool.type === 'mysql' || tool.type === 'mssql')
-          && config.client_connection_pool_max_per_tool === undefined) {
-        config.client_connection_pool_max_per_tool = resolveField(
-          mod.name,
-          tool.name,
-          'client_connection_pool_max_per_tool',
-          configDefaults,
-          dbOverrides
-        );
+      if (SQL_TOOL_TYPES.has(tool.type)) {
+        for (const fieldName of SQL_TOOL_IMPLICIT_FIELDS) {
+          if (config[fieldName] === undefined) {
+            config[fieldName] = resolveField(mod.name, tool.name, fieldName, configDefaults, dbOverrides);
+          }
+        }
       }
 
       tools.push({

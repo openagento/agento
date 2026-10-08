@@ -1,6 +1,7 @@
 {
   "timezone": {"type": "string", "label": "IANA timezone (e.g., America/New_York)"},
   "sql_timeout_seconds": {"type": "integer", "label": "SQL query timeout (seconds)"},
+  "sql_lock_wait_timeout_seconds": {"type": "integer", "label": "SQL server-side lock wait timeout (seconds)"},
   "client_connection_pool_max_per_tool": {"type": "integer", "label": "Maximum client DB connections per tool"},
   "server_concurrency_budget": {"type": "integer", "label": "Maximum concurrent DB operations per server", "showInDefault": true, "showInWorkspace": false, "showInAgentView": false},
   "email_whitelist": {"type": "string", "label": "Allowed email recipients (comma-separated)"},
