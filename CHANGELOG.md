@@ -67,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them as regexes (`ingress:list` shows existing rows) — this is a note, not a migration.
 
 ### Fixed
+- **MSSQL tools now honour `core/sql_timeout_seconds` (AG-68).** node-mssql ignores
+  `Request.timeout` and reads only `requestTimeout` from the pool config, so every MSSQL query
+  failed at the library default of 15 s. The adapter now passes the configured timeout as the pool
+  `requestTimeout`. The healthcheck keeps its own 10 s limit through request cancellation.
 - **Jobs no longer dead-letter on `401 OAuth access token has been revoked` while healthy tokens sit
   unused in the pool.** The message previously matched no known phrase, degraded to a generic
   `RuntimeError`, and so never poisoned or throttled the token nor set `retry_with_other_token` —

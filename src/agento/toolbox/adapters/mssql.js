@@ -24,6 +24,7 @@ function createMssqlTool(server, toolName, description, config, options) {
     user: config.user,
     password: config.pass,
     database: config.database,
+    requestTimeout: options.sqlTimeoutMs,
     options: { encrypt: true, trustServerCertificate: true },
     pool: { max: poolMax, min: 0, idleTimeoutMillis: 30000 },
   };
@@ -74,9 +75,7 @@ function createMssqlTool(server, toolName, description, config, options) {
       try {
         const result = await poolHandle.use(async p => {
           pool = p;
-          const req = p.request();
-          req.timeout = options.sqlTimeoutMs;
-          return req.query(query);
+          return p.request().query(query);
         });
         const elapsed = Date.now() - start;
         const rows = result.recordset;
@@ -138,7 +137,6 @@ export function registerMssqlTools(server, tools, options = {}) {
         await poolHandle.use(p => runCancellable(async ({ isCancelled }) => {
           pool = p;
           request = p.request();
-          request.timeout = timeoutMs;
           if (isCancelled()) request.cancel();
           return request.query('SELECT 1');
         }, {

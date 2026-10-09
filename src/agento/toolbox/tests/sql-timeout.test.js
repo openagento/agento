@@ -71,6 +71,42 @@ describe('MySQL tool timeout', () => {
 });
 
 describe('MSSQL tool timeout', () => {
+  async function buildMssqlTool(sqlTimeoutSeconds) {
+    const ConnectionPool = vi.fn(() => ({
+      healthy: true,
+      connect: vi.fn().mockResolvedValue(),
+      close: vi.fn().mockResolvedValue(),
+      request: () => ({ query: vi.fn().mockResolvedValue({ recordset: [{ ok: 1 }] }) }),
+    }));
+    vi.doMock('mssql', () => ({ default: { ConnectionPool } }));
+
+    let handler;
+    const fakeServer = {
+      tool: (_name, _desc, _schema, fn) => { handler = fn; },
+    };
+
+    const { registerMssqlTools } = await import('../adapters/mssql.js');
+    registerMssqlTools(fakeServer, [{
+      name: 'mssql_test',
+      description: 'Test MSSQL',
+      config: { host: 'localhost', port: 1433, user: 'user', pass: 'secret', database: 'testdb' },
+    }], { sqlTimeoutSeconds, sqlPoolRegistry: await newRegistry() });
+
+    return { handler, ConnectionPool };
+  }
+
+  it('passes default requestTimeout to the connection pool when not configured', async () => {
+    const { handler, ConnectionPool } = await buildMssqlTool(undefined);
+    await handler({ user: 'test@example.com', query: 'SELECT 1' });
+    expect(ConnectionPool).toHaveBeenCalledWith(expect.objectContaining({ requestTimeout: 300_000 }));
+  });
+
+  it('passes the configured timeout as requestTimeout to the connection pool', async () => {
+    const { handler, ConnectionPool } = await buildMssqlTool(5);
+    await handler({ user: 'test@example.com', query: 'SELECT 1' });
+    expect(ConnectionPool).toHaveBeenCalledWith(expect.objectContaining({ requestTimeout: 5_000 }));
+  });
+
   it('keeps scoped timeouts isolated after another session registers', async () => {
     const requests = [];
     const ConnectionPool = vi.fn(() => ({
@@ -79,7 +115,6 @@ describe('MSSQL tool timeout', () => {
       close: vi.fn().mockResolvedValue(),
       request: () => {
         const request = {
-          timeout: undefined,
           query: vi.fn().mockResolvedValue({ recordset: [{ ok: 1 }] }),
         };
         requests.push(request);
@@ -111,7 +146,7 @@ describe('MSSQL tool timeout', () => {
 
     await handlers[0]({ user: 'test@example.com', query: 'SELECT 1' });
     await handlers[1]({ user: 'test@example.com', query: 'SELECT 1' });
-    expect(requests.map(request => request.timeout)).toEqual([5_000, 300_000]);
-    expect(ConnectionPool).toHaveBeenCalledTimes(1);
+    expect(requests).toHaveLength(2);
+    expect(ConnectionPool.mock.calls.map(([cfg]) => cfg.requestTimeout)).toEqual([5_000, 300_000]);
   });
 });
