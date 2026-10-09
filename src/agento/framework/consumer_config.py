@@ -19,11 +19,6 @@ class ConsumerConfig:
     job_timeout_seconds: int = 1200  # 20 minutes
     disable_llm: bool = False
 
-    @property
-    def concurrency(self) -> int:
-        """Backward-compatible alias for max_workers."""
-        return self.max_workers
-
     @classmethod
     def from_env(cls) -> ConsumerConfig:
         """Build from env vars only."""

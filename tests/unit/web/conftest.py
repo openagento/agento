@@ -1,33 +1,44 @@
 from __future__ import annotations
 
 import threading
-from http.server import ThreadingHTTPServer
+import time
 from unittest.mock import MagicMock
 
 import pytest
+import uvicorn
 
 from agento.web import api, rate_limit, server
-from agento.web.server import Handler
 
 PANEL = "https://panel.localhost:8443"
 APPS = "https://apps.localhost:8443"
 
 
 @pytest.fixture
-def web(monkeypatch, tmp_path):
+def web(monkeypatch, tmp_path, live):
     """A live web server on a free port, with no database: tests patch the access functions."""
     monkeypatch.setenv("AGENTO_PROXY_SECRET_FILE", str(tmp_path / "proxy-secret"))
     monkeypatch.delenv("AGENTO_PROXY_PORT", raising=False)
     monkeypatch.delenv("AGENTO_PANEL_HOST", raising=False)
     monkeypatch.delenv("AGENTO_APPS_HOST", raising=False)
-    monkeypatch.setattr(server, "connect", lambda: MagicMock(name="conn"))
     api.THROTTLE.clear()
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    return live
+
+
+@pytest.fixture(scope="session")
+def live():
+    """The production app and flags on a free port, once per session: the app reads its
+    patched module globals (`connect`, the limiter, `api.ROUTES`) per request."""
+    httpd = uvicorn.Server(uvicorn.Config(server.app, port=0, **server.UVICORN_FLAGS))
+    thread = threading.Thread(target=httpd.run, daemon=True)
     thread.start()
-    yield f"http://127.0.0.1:{httpd.server_address[1]}"
-    httpd.shutdown()
-    httpd.server_close()
+    deadline = time.monotonic() + 5
+    while not httpd.started and time.monotonic() < deadline:
+        time.sleep(0.01)
+    try:
+        yield f"http://127.0.0.1:{httpd.servers[0].sockets[0].getsockname()[1]}"
+    finally:
+        httpd.should_exit = True
+        thread.join(5)
 
 
 def panel_headers(**extra) -> dict:
@@ -36,12 +47,8 @@ def panel_headers(**extra) -> dict:
 
 @pytest.fixture(autouse=True)
 def counted(monkeypatch):
-    """The limiter needs a database; these tests have none.
-
-    Stubbed to ALLOW and to record what it was asked, so a test can still assert that a
-    request reached the limiter at all. The limiter's own behaviour is tested against real
-    MySQL in tests/integration/test_rate_limit.py.
-    """
+    """No database: the limiter ALLOWS and records what it was asked (the real one is tested
+    in tests/integration/test_rate_limit.py)."""
     seen: list = []
 
     def check(conn, buckets, *, cfg=None):

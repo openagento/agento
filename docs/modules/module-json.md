@@ -176,7 +176,7 @@ Declares the CLI binary your agent module needs installed in the sandbox image, 
 
 The sandbox Dockerfile is **rendered** from these declarations (`cli/templates/sandbox.Dockerfile` + `render_sandbox_dockerfile`), so a third-party agent module gets its CLI installed with no framework edit. Because the rendered line is `"@scope/pkg@${YOUR_VERSION}"`, the fields are validated against a closed schema (regex per field, allow-list of managers) instead of being shell-quoted — quoting would stop the `ARG` from expanding, defeating the pin.
 
-The **legacy top-level `sandbox_packages` array** is still read for one release cycle so an unmigrated module keeps its pin; an `agent_harnesses` entry wins for the same `version_env_key`.
+The **legacy top-level `sandbox_packages` array** was removed in v0.17 and is ignored. Move each entry to `agent_harnesses[].sandbox_package`.
 
 #### `agent_harnesses[].class` — the adapter
 
@@ -194,7 +194,6 @@ class MyHarnessAdapter:
                                            # write_credentials, credential_env,
                                            # capture_refreshed_credentials,
                                            # serialize_toolbox_connection
-    transcript_reader: TranscriptReader | None
     authenticators: Mapping[CredentialScope, CredentialAuthenticator]
 
     def create_runner(self, ctx: HarnessRunContext, **kwargs): ...

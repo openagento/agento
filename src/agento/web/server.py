@@ -3,9 +3,12 @@
 The allow/deny decision behind /internal/authz/app is E2's; the path it decides on is parsed
 once, in app_path (E6). Shares never reach web: the artifacts server checks them (E6).
 
-`web` shares agento-net with `sandbox`, so reachability proves nothing: a request is from
+`web` shares db-net with `toolbox` and `cron`, so reachability proves nothing: a request is from
 the proxy only if it carries the secret the proxy and web alone can read. Nothing on this
 listener may trust an identity or forwarding header without that check.
+
+FastAPI under uvicorn (DECISIONS.md 2026-10-09). SEC-12 is one ASGI middleware (`Sec12`) in
+front of the router; handlers stay `api.Request` -> `api.Response` in the thread pool (PyMySQL blocks).
 """
 from __future__ import annotations
 
@@ -13,10 +16,14 @@ import hmac
 import json
 import os
 import sys
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import ClassVar
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl
+
+import anyio
+import uvicorn
+from fastapi import FastAPI
+from starlette.datastructures import Headers
+from starlette.routing import BaseRoute, Match
 
 from agento.framework.access import sessions
 
@@ -27,17 +34,13 @@ AUTHZ_PATHS = ("/internal/authz/app",)
 REDEEM_PATH = "/internal/launch/redeem"
 
 
-def _proxy_secret() -> str:
-    # Read per request: web may start before the proxy has written the file.
-    path = os.environ.get("AGENTO_PROXY_SECRET_FILE", "/run/agento/proxy-secret")
-    try:
-        return Path(path).read_text().strip()
-    except OSError:
-        return ""
-
-
 def _from_proxy(given: str) -> bool:
-    secret = _proxy_secret()
+    # Read per request: web may start before the proxy has written the file.
+    try:
+        secret = Path(os.environ.get("AGENTO_PROXY_SECRET_FILE", "/run/agento/proxy-secret")
+                      ).read_text().strip()
+    except OSError:
+        return False
     return bool(secret) and hmac.compare_digest(given.encode(), secret.encode())
 
 
@@ -48,6 +51,12 @@ _SECURITY_HEADERS = (
     ("X-Content-Type-Options", "nosniff"),
     ("Referrer-Policy", "no-referrer"),
 )
+_UNAVAILABLE = api.Response(503, b"service unavailable")
+# Streams sleep in their generator between polls, so they get their own thread budget: on the
+# request pool 40 idle streams would stop every other request.
+# ponytail: one thread per open stream; an async poll loop in conversation/src/stream.py past it.
+MAX_STREAMS = 256
+_STREAMS = anyio.CapacityLimiter(MAX_STREAMS)
 
 
 def connect():
@@ -55,6 +64,16 @@ def connect():
     from agento.framework.db import get_connection
 
     return get_connection(DatabaseConfig.from_env())
+
+
+def _too_many(retry) -> api.Response:
+    return api.Response(429, {"error": "too many requests"}, [("Retry-After", str(retry))])
+
+
+def _unavailable(exc: Exception) -> api.Response:
+    # Fail closed: a limiter that cannot count is not a limiter (SEC-12).
+    sys.stderr.write(f"rate limiter unavailable: {type(exc).__name__}\n")
+    return _UNAVAILABLE
 
 
 def _match(method: str, path: str) -> tuple[api.Route | None, bool]:
@@ -69,91 +88,79 @@ def _match(method: str, path: str) -> tuple[api.Route | None, bool]:
     return None, known
 
 
-class Handler(BaseHTTPRequestHandler):
-    _conn = None
-    _buckets: ClassVar[list] = []
-    # Whether the caller proved an identity, and the session that proved it.
-    # `_refused_as_a_stranger` reads them to decide who spends the shared bucket, BEFORE
-    # any handler runs (§7.5, SEC-12).
-    _authenticated = False
-    # The PROXY proved itself, which says nothing about WHO is calling through it.
-    _proxy_trusted = False
-    _launch_presented = False
-    _session = None
+class Call:
+    """One request: what SEC-12 learned about its caller, and its one DB connection."""
+
+    def __init__(self, scope) -> None:
+        self.command = scope["method"]
+        self.path = scope["path"]
+        self.query = scope["query_string"].decode("latin-1")
+        self.headers = Headers(scope=scope)
+        self.cookies = security.parse_cookies(self.headers.get("Cookie"))
+        self.client_address = scope.get("client")
+        self._conn = None
+        self._buckets: list = []
+        # The PROXY proving itself says nothing about WHO calls through it, so it has a field
+        # of its own; nothing derived from an identity may read `_proxy_trusted`.
+        self._authenticated, self._proxy_trusted, self._session = False, False, None
+        self._launch_presented = False
 
     def _db(self):
-        """One connection per request, opened on first use and closed by `_route`."""
         if self._conn is None:
             self._conn = connect()
         return self._conn
 
-    def _limited(self, path: str) -> bool:
-        """Count this request. True when it must not be dispatched.
+    def gate(self) -> api.Response | None:
+        """SEC-12 in this order: private limiter, identity, stranger refusal; then OPTIONS."""
+        refusal = self._limited()
+        if refusal is None:
+            self._prove_identity()
+            refusal = self._refused_as_a_stranger()
+        if refusal is None and self.command == "OPTIONS":
+            # No preflight is ever answered: no credentialed CORS anywhere.
+            refusal = api.error(405, "method not allowed")
+        return refusal
 
-        Mounted here, before every branch below, so a route cannot escape the limiter by
-        omission - a request to a path that does not exist is counted too. /health is the
-        one exemption, and it is named in rate_limit.EXEMPT_PATHS rather than claimed by a
-        route.
+    def _limited(self) -> api.Response | None:
+        """Count the PRIVATE buckets (session, launch) of every request but /health.
+
+        Mounted before every route, so a path that does not exist is counted too. The SHARED
+        address bucket counts only what failed to authenticate (SEC-12), so one signed-in
+        caller cannot lock every stranger behind its address out; `_refused_as_a_stranger`
+        counts it.
         """
-        self._authenticated, self._proxy_trusted, self._session = False, False, None
-        self._launch_presented = False
-        if path in rate_limit.EXEMPT_PATHS:
-            return False
-        cookies = security.parse_cookies(self.headers.get("Cookie"))
-        session_token = cookies.get(security.SESSION_COOKIE)
-        launch_token = next(iter(security.launch_cookies(cookies).values()), None)
+        if self.path in rate_limit.EXEMPT_PATHS:
+            return None
+        launch_token = next(iter(security.launch_cookies(self.cookies).values()), None)
         self._buckets = rate_limit.request_buckets(
             address=self.client_address[0] if self.client_address else None,
-            session_token=session_token,
+            session_token=self.cookies.get(security.SESSION_COOKIE),
             launch_token=launch_token,
         )
         self._launch_presented = launch_token is not None
         try:
-            # PRIVATE buckets only - session, launch. They belong to one caller, so counting
-            # them before the identity is resolved costs nobody else anything. The SHARED
-            # (address) bucket is deliberately NOT counted here: SEC-12 says the address
-            # limit counts only what failed to authenticate, "so one caller cannot throttle
-            # the others' authorized traffic". Counting every request on it let one signed-in
-            # caller flood the shared budget and lock every stranger behind that address -
-            # another user's sign-in included - out of the panel. It is counted in
-            # `_refused_as_a_stranger`, once we know the caller proved nothing.
             decision = rate_limit.check(self._db(), [b for b in self._buckets if b.private])
         except Exception as exc:
-            # Fail closed: a limiter that cannot count is not a limiter (SEC-12).
-            sys.stderr.write(f"rate limiter unavailable: {type(exc).__name__}\n")
-            self._send(503, b"service unavailable")
-            return True
-        if not decision.allowed:
-            self._reply(api.Response(429, {"error": "too many requests"},
-                                     [("Retry-After", str(decision.retry_after))]))
-            return True
-        return False
+            return _unavailable(exc)
+        return None if decision.allowed else _too_many(decision.retry_after)
 
-    def _prove_identity(self, path: str) -> None:
-        """Resolve WHO is calling, before anything runs on their behalf.
-
-        Identity resolution is split from route execution on purpose. A shared bucket
-        refuses only a caller that proved nothing, and the refusal has to land before the
-        handler - otherwise a held address still gets its password derived on the sign-in
-        route, and still gets its single-use launch code redeemed and committed, with the
-        429 arriving only in place of the answer. Both are side effects, not just work.
-
-        Cheap and side-effect-free by construction: one indexed session lookup, or the
-        proxy's own secret. Nothing here consumes anything.
-
-        The proxy's secret answers a different question - which hop, not which caller - so it
-        lands in `_proxy_trusted`. Nothing derived from an identity may read that field.
+    def _prove_identity(self) -> None:
+        """Resolve WHO is calling, before any handler runs: one indexed session lookup, or the
+        proxy's secret, with no side effect. The stranger refusal must land before a handler
+        derives a password or redeems a single-use launch code (SEC-12).
         """
-        if path in AUTHZ_PATHS:
-            # The secret proves the PROXY, not the caller. Treating it as the caller's own
-            # identity was a way through SEC-12: the shared bucket was neither consulted nor
-            # told about the failure, so an attacker with rotating launch cookies got a fresh
-            # private bucket per attempt and an unlimited number of free guesses.
+        if self.path in AUTHZ_PATHS:
+            # The secret proves the PROXY, not the caller: as the caller's identity it skipped
+            # the shared bucket, and rotating launch cookies got unlimited guesses.
             self._proxy_trusted = _from_proxy(self.headers.get("X-Agento-Proxy-Auth", ""))
             return
-        if self._is_an_authentication_attempt(path):
+        # A route whose PURPOSE is to authenticate has no identity but its own outcome: a
+        # session cookie on it would let a signed-in caller guess passwords or launch codes
+        # past the address counter (SEC-12).
+        route, _ = _match(self.command, self.path)
+        if self.path == REDEEM_PATH or (route is not None and route.auth == "login"):
             return
-        token = security.parse_cookies(self.headers.get("Cookie")).get(security.SESSION_COOKIE)
+        token = self.cookies.get(security.SESSION_COOKIE)
         if not token:
             return
         try:
@@ -163,202 +170,85 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._authenticated = self._session is not None
 
-    def _is_an_authentication_attempt(self, path: str) -> bool:
-        """A route whose PURPOSE is to authenticate. Its own outcome is the only identity
-        it has, so the session cookie it happens to carry proves nothing about it.
+    def _refused_as_a_stranger(self) -> api.Response | None:
+        """Count the SHARED buckets, the only place they are counted, for a caller that proved
+        no identity, before any handler (SEC-12).
 
-        Counting it as authenticated would hand a signed-in caller a free pass: they could
-        guess another user's password, or spend forged launch codes, with the address
-        counter silent and the shared refusal not applying to them (SEC-12).
+        A proxy-trusted subrequest comes once per request the proxy handles, so it spends
+        nothing; it still reads the HOLD, the only stop on a brute force of a proxy-only route.
         """
-        if path == REDEEM_PATH:
-            return True
-        route, _ = _match(self.command, path)
-        return route is not None and route.auth == "login"
-
-    def _refused_as_a_stranger(self) -> bool:
-        """Count the SHARED buckets and refuse - for a caller that proved no identity.
-
-        This is where the address bucket is counted, and the only place: an authenticated
-        request never reaches it, so authorized traffic cannot spend the budget that keeps
-        strangers out (SEC-12). It still runs BEFORE any handler, so a held address gets no
-        password derived on the sign-in route and no single-use launch code redeemed.
-
-        A proxy-trusted subrequest is a third case: not a caller identity, but not a stranger
-        to be charged either, since the proxy makes one per request it handles. It reads the
-        hold and spends nothing.
-        """
-        if self._authenticated or not self._buckets:
-            return False
         shared = [b for b in self._buckets if not b.private]
-        if not shared:
-            return False
+        if self._authenticated or not shared:
+            return None
         try:
             if self._proxy_trusted:
-                # One subrequest per request the proxy handles: counting them on the shared
-                # ceiling would spend the strangers' budget on everyone's ordinary traffic.
-                # The HOLD still applies - it is placed by failures, and it is the only thing
-                # that stops a brute force on a route only the proxy can reach (SEC-12).
                 retry = rate_limit.held(self._db(), shared)
             else:
                 decision = rate_limit.check(self._db(), shared)
                 retry = decision.shared_refusal or (
                     0 if decision.allowed else decision.retry_after)
         except Exception as exc:
-            # Fail closed, exactly as `_limited` does (SEC-12).
-            sys.stderr.write(f"rate limiter unavailable: {type(exc).__name__}\n")
-            self._send(503, b"service unavailable")
-            return True
-        if not retry:
-            return False
-        self._reply(api.Response(429, {"error": "too many requests"},
-                                 [("Retry-After", str(retry))]))
-        return True
+            return _unavailable(exc)
+        return _too_many(retry) if retry else None
 
-    def _route(self) -> None:
-        try:
-            self._dispatch()
-        finally:
-            if self._conn is not None:
-                self._conn.close()
-                self._conn = None
-
-    def _dispatch(self) -> None:
-        path = urlsplit(self.path).path
-        if self._limited(path):
-            return
-        self._prove_identity(path)
-        if self._refused_as_a_stranger():
-            return
-        if self.command == "OPTIONS":
-            # No preflight is ever answered: no credentialed CORS anywhere.
-            self._reply(api.error(405, "method not allowed"))
-        elif path == "/health":
-            self._send(200, b"ok")
-        elif path in AUTHZ_PATHS:
-            if not self._proxy_trusted:         # only the proxy may ask this question
-                self._send(401)
-                return
-            self._internal(path, api.authorize_app, b"")
-        elif path == REDEEM_PATH:
-            if self.command != "POST":
-                self._reply(api.error(405, "method not allowed"))
-                return
-            body = self._read_body(None, api.MAX_FORM_BODY)
-            if isinstance(body, api.Response):
-                self._reply(body)
-            else:
-                self._internal(path, api.redeem_launch, body)
-        elif path.startswith("/api/"):
-            self._api(path)
-        else:
-            self._send(404)
-
-    do_GET = do_HEAD = do_POST = do_PUT = do_PATCH = do_DELETE = do_OPTIONS = _route
-
-    def _api(self, path: str) -> None:
-        route, known = _match(self.command, path)
-        if route is None:
-            self._reply(api.error(405 if known else 404, "method not allowed" if known else "not found"))
-            return
+    def _api(self, route: api.Route, body: bytes | api.Response):
         origins = security.Origins.from_env()
         write = self.command in _WRITES
         if write and not security.write_allowed(self.headers, origins):
-            self._reply(api.error(403, "forbidden"))
-            return
-        body = self._read_body(route, MAX_JSON_BODY)
+            return api.error(403, "forbidden")
         if isinstance(body, api.Response):
-            self._reply(body)
-            return
+            return body
         req = api.Request(
-            method=self.command, path=path, headers=self.headers, body=body,
-            cookies=security.parse_cookies(self.headers.get("Cookie")), origins=origins,
-            params=route.pattern.match(path).groupdict(),
-            # keep_blank_values: `?after=` is a present-but-empty parameter, and the route
-            # answers 400 for it; dropped, it reads as absent and gets the default.
+            method=self.command, path=self.path, headers=self.headers, body=body,
+            cookies=self.cookies, origins=origins,
+            params=route.pattern.match(self.path).groupdict(),
+            # keep_blank_values: `?after=` is present-but-empty, and the route answers 400.
             # Reversed before dict(): `Request.query` documents the FIRST of a repeat.
-            query=dict(reversed(parse_qsl(urlsplit(self.path).query, keep_blank_values=True))),
+            query=dict(reversed(parse_qsl(self.query, keep_blank_values=True))),
         )
         if route.json_body:
             try:
                 req.json = json.loads(body)
             except ValueError:
-                self._reply(api.error(400, "invalid JSON"))
-                return
+                return api.error(400, "invalid JSON")
+        return self._run(route.handler, req, session=route.auth == "session", write=write)
+
+    def _internal(self, handler, body: bytes):
+        return self._run(handler, api.Request(
+            method=self.command, path=self.path, headers=self.headers, body=body,
+            cookies=self.cookies, origins=security.Origins.from_env()))
+
+    def _run(self, handler, req: api.Request, *, session=False, write=False):
         try:
             req.conn = conn = self._db()
-            if route.auth == "session":
-                # Resolved once, in `_prove_identity`, before the limiter's shared refusal
-                # was applied - looking it up a second time here would be a second query
-                # and a second chance for the two answers to differ.
-                token = req.cookies.get(security.SESSION_COOKIE)
+            if session:
+                # Resolved once, in `_prove_identity`: a second lookup could answer otherwise.
                 req.session = self._session
                 if req.session is None:
-                    self._reply(api.error(401, "not signed in"))
-                    return
-                # Rotating the session token is a new session bucket but the same user
-                # bucket, so the per-user budget cannot be evaded by signing in again.
+                    return api.error(401, "not signed in")
+                # Per user, not per token: signing in again does not reset the budget.
                 identity = rate_limit.count_identity(conn, req.session.user.id)
                 if not identity.allowed:
-                    self._reply(api.Response(429, {"error": "too many requests"},
-                                             [("Retry-After", str(identity.retry_after))]))
-                    return
-                req.session_token = token
+                    return _too_many(identity.retry_after)
+                req.session_token = token = req.cookies.get(security.SESSION_COOKIE)
                 if write and not sessions.csrf_valid(token, self.headers.get("X-CSRF-Token")):
-                    self._reply(api.error(403, "forbidden"))
-                    return
-            self._reply(route.handler(req))
+                    return api.error(403, "forbidden")
+            return handler(req)
         except Exception as exc:
-            sys.stderr.write(f"{self.command} {path} failed: {type(exc).__name__}\n")
-            self._reply(api.error(500, "internal error"))
-
-    def _internal(self, path: str, handler, body: bytes) -> None:
-        req = api.Request(
-            method=self.command, path=path, headers=self.headers, body=body,
-            cookies=security.parse_cookies(self.headers.get("Cookie")), origins=security.Origins.from_env(),
-        )
-        try:
-            req.conn = self._db()
-            self._reply(handler(req))
-        except Exception as exc:
-            sys.stderr.write(f"{self.command} {path} failed: {type(exc).__name__}\n")
-            self._reply(api.error(500, "internal error"))
-
-    def _read_body(self, route: api.Route | None, limit: int) -> bytes | api.Response:
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            return api.error(400, "bad Content-Length")
-        if length > limit:
-            return api.error(413, "body too large")
-        if route is not None and route.json_body:
-            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            if ctype != "application/json":
-                return api.error(400, "Content-Type must be application/json")
-        return self.rfile.read(length) if length > 0 else b""
+            sys.stderr.write(f"{self.command} {self.path} failed: {type(exc).__name__}\n")
+            return api.error(500, "internal error")
 
     def _failed_auth(self, status: int) -> bool:
-        """Every 401 this listener sends feeds the hold, wherever it was decided.
+        """Every 401/403 this listener sends feeds the hold, wherever it was decided (SEC-12).
 
-        False when the failure could NOT be counted: the caller then gets 503 instead of the
-        401, because a limiter that cannot count a failed authentication is not a limiter,
-        and answering the 401 anyway is an unbounded number of free guesses (SEC-12).
-
-        One rule in one place: a dead session cookie, a failed login, a call without the
-        proxy secret and a spent exchange code are all failed authentication, and counting
-        only the ones a particular branch remembered to report is how the hold gets missed
-        on exactly the path being brute-forced.
+        False when it could NOT be counted: the caller then gets 503, because an uncounted
+        failure is a free guess. An authenticated caller's 403 is authorization, not counted.
         """
-        # 401 AND 403: SEC-12 names both, because a flood of random tokens is answered
-        # with whichever the route reached for. An authenticated caller's 403 is an
-        # authorization failure, not an authentication one, and is not counted.
         if status not in (401, 403) or self._authenticated or not self._buckets:
             return True
         if self._proxy_trusted and not self._launch_presented:
-            # The proxy asks this question for every request it forwards, and a visitor with
-            # no launch cookie is the ordinary answer to it - nothing was presented, so
-            # nothing was guessed. Counting it would let plain browsing place the hold that
-            # exists to stop guessing (SEC-12).
+            # The proxy asks for every request it forwards; with no launch cookie nothing was
+            # guessed, and plain browsing must not place the hold.
             return True
         try:
             rate_limit.record_auth_failure(self._db(), self._buckets)
@@ -367,98 +257,180 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write(f"recording a failed authentication failed: {type(exc).__name__}\n")
             return False
 
-    def _reply(self, resp) -> None:
+
+async def _read_body(receive, headers, limit: int, json_body: bool) -> bytes | api.Response:
+    try:
+        length = int(headers.get("Content-Length") or 0)
+    except ValueError:
+        return api.error(400, "bad Content-Length")
+    if length > limit:
+        return api.error(413, "body too large")
+    if json_body:
+        ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            return api.error(400, "Content-Type must be application/json")
+    body = b""
+    while True:                       # bounded too when the body is chunked, with no length
+        message = await receive()
+        body += message.get("body", b"")
+        if len(body) > limit:
+            return api.error(413, "body too large")
+        if not message.get("more_body"):
+            return body
+
+
+def _raw(headers) -> list[tuple[bytes, bytes]]:
+    return [(name.lower().encode("latin-1"), value.encode("latin-1")) for name, value in headers]
+
+
+async def _write(send, resp: api.Response) -> None:
+    """A bytes body is plain text (/health, the authz answers); anything else is JSON."""
+    if isinstance(resp.body, bytes):
+        ctype, body = "text/plain", resp.body
+    else:
+        ctype, body = "application/json", b"" if resp.body is None else json.dumps(resp.body).encode()
+    headers = [*resp.headers, ("Content-Type", ctype), ("Content-Length", str(len(body)))]
+    await send({"type": "http.response.start", "status": resp.status, "headers": _raw(headers)})
+    await send({"type": "http.response.body", "body": body})
+
+
+async def _stream(receive, send, resp: StreamingResponse) -> None:
+    """Write frames as they are produced; web/streaming.py has the contract.
+
+    uvicorn drops writes to a closed socket, so a watcher on `http.disconnect` cancels the
+    loop. The `finally` closes the generator once, with no `next()` in flight.
+    """
+    await send({"type": "http.response.start", "status": resp.status, "headers": _raw(resp.headers)})
+    frames = iter(resp.frames)
+    try:
+        async with anyio.create_task_group() as tasks:
+            async def watch() -> None:
+                while (await receive())["type"] != "http.disconnect":
+                    pass
+                tasks.cancel_scope.cancel()
+
+            tasks.start_soon(watch)
+            while (chunk := await anyio.to_thread.run_sync(next, frames, None,
+                                                           limiter=_STREAMS)) is not None:
+                await send({"type": "http.response.body", "body": chunk, "more_body": True})
+            await send({"type": "http.response.body", "body": b""})
+            tasks.cancel_scope.cancel()
+    except Exception as exc:
+        # The headers went out: no 500 is left to send. Log why the body is truncated.
+        sys.stderr.write(f"stream failed: {type(exc).__name__}\n")
+    finally:
+        getattr(resp.frames, "close", lambda: None)()   # a plain iterator has nothing to release
+
+
+class RegexRoute(BaseRoute):
+    """The router's one route: the built-in paths and `api.ROUTES`, read per request, so
+    di.json routes keep their raw regex `(?P<id>...)` contract (CODE-5)."""
+
+    def matches(self, scope):
+        return (Match.FULL if scope["type"] == "http" else Match.NONE), {}
+
+    async def handle(self, scope, receive, send) -> None:
+        call: Call = scope["agento.call"]
+        path = call.path
+        if path == "/health":
+            resp = api.Response(200, b"ok")
+        elif path in AUTHZ_PATHS:
+            if call._proxy_trusted:             # only the proxy may ask this question
+                resp = await anyio.to_thread.run_sync(call._internal, api.authorize_app, b"")
+            else:
+                resp = api.Response(401, b"")
+        elif path == REDEEM_PATH:
+            body = (await _read_body(receive, call.headers, api.MAX_FORM_BODY, False)
+                    if call.command == "POST" else api.error(405, "method not allowed"))
+            resp = body if isinstance(body, api.Response) else await anyio.to_thread.run_sync(
+                call._internal, api.redeem_launch, body)
+        elif path.startswith("/api/"):
+            route, known = _match(call.command, path)
+            if route is None:
+                resp = api.error(405 if known else 404, "method not allowed" if known else "not found")
+            else:
+                body = await _read_body(receive, call.headers, MAX_JSON_BODY, route.json_body)
+                resp = await anyio.to_thread.run_sync(call._api, route, body)
+        else:
+            resp = api.Response(404, b"")
         if isinstance(resp, StreamingResponse):
-            self._stream(resp)
-            return
-        if not self._failed_auth(resp.status):
-            self._send(503, b"service unavailable")
-            return
-        body = b"" if resp.body is None else json.dumps(resp.body).encode()
-        self.send_response(resp.status)
-        for name, value in resp.headers:
-            self.send_header(name, value)
-        self._send_common("application/json", body)
+            await _stream(receive, send, resp)
+        else:
+            await _write(send, resp)
 
-    def _stream(self, resp: StreamingResponse) -> None:
-        """Write frames as they are produced. See web/streaming.py for the contract.
 
-        No `Content-Length`, so the end of the body is the end of the connection: this
-        response is not keep-alive and says so. The `finally` closes the generator on every
-        exit - that close is what runs the handler's own `finally` and releases its §7.3
-        slot, and it must happen for a dropped client exactly as for a clean end.
-        """
-        self.close_connection = True
-        self.send_response(resp.status)
-        for name, value in (*_SECURITY_HEADERS, *resp.headers):
-            self.send_header(name, value)
-        self.send_header("Connection", "close")
-        self.end_headers()
+class Sec12:
+    """SEC-12 before the router: `Call.gate`, security headers, every 401/403 to `_failed_auth`
+    (503 when it cannot count), a `METHOD path status` log without the query (SEC-6), and
+    the request's DB connection closed at the end."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        # The routes and the exempt and authz names match the undecoded path (CODE-5).
+        scope["path"] = scope.get("raw_path", scope["path"].encode()).decode("latin-1")
+        call = scope["agento.call"] = Call(scope)
+        status, replaced = 0, False
+
+        async def secured(message) -> None:
+            if message["type"] == "http.response.start":
+                message = {**message, "headers": [*message["headers"], *_raw(_SECURITY_HEADERS)]}
+            await send(message)
+
+        async def guarded(message) -> None:
+            nonlocal status, replaced
+            if replaced:
+                return
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                if not await anyio.to_thread.run_sync(call._failed_auth, status):
+                    status, replaced = 503, True
+                    await _write(secured, _UNAVAILABLE)
+                    return
+            await secured(message)
+
         try:
-            for chunk in resp.frames:
-                self.wfile.write(chunk)
-                self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            # The reader left. Not an error, and there is no response left to send it.
-            pass
-        except Exception as exc:
-            # The headers went out long ago: there is no 500 left to send. Cut the stream
-            # and say so where the other failures are said, or the caller sees a truncated
-            # body with no trace of why.
-            sys.stderr.write(f"stream {self.path} failed: {type(exc).__name__}\n")
+            refusal = await anyio.to_thread.run_sync(call.gate)
+            if refusal is not None:
+                await _write(guarded, refusal)
+            else:
+                await self.app(scope, receive, guarded)
         finally:
-            # Generators only. An iterator without `close()` has no `finally` to run, so
-            # there is nothing to release either.
-            close = getattr(resp.frames, "close", None)
-            if close is not None:
-                close()
+            sys.stderr.write(f"{call.command} {call.path} {status}\n")
+            if call._conn is not None:
+                call._conn.close()
 
-    def _send(self, status: int, body: bytes = b"") -> None:
-        # Same fail-closed rule as `_reply`: this is the path the AUTHZ 401 takes, which is
-        # precisely the one a brute force runs through (SEC-12). No recursion - 503 is not
-        # an authentication failure, so `_failed_auth` returns True for it.
-        if not self._failed_auth(status):
-            status, body = 503, b"service unavailable"
-        self.send_response(status)
-        self._send_common("text/plain", body)
 
-    def _send_common(self, content_type: str, body: bytes) -> None:
-        for name, value in _SECURITY_HEADERS:
-            self.send_header(name, value)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
-
-    # The proxy forwards the original query string (it may carry `cap` or a launch
-    # exchange code), and the stdlib default logs the raw request line.
-    def log_request(self, code="-", size="-") -> None:
-        sys.stderr.write(f"{self.command} {urlsplit(self.path).path} {code}\n")
-
-    def log_message(self, format, *args) -> None:
-        sys.stderr.write(f"{getattr(self, 'command', None) or '-'} request error\n")
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False,
+              routes=[RegexRoute()])
+app.add_middleware(Sec12)
 
 
 def compose_routes() -> None:
-    """Add every enabled module's declared routes to the one dispatch table, once.
-
-    At startup only: `web` never re-bootstraps, so a module's routes appear or disappear
-    when `web` restarts - which `module:enable` already does.
-    """
+    """Add every enabled module's routes to `api.ROUTES`, once at startup (`module:enable`
+    restarts `web`)."""
     from agento.framework.bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
     from agento.framework.module_discovery import module_dirs_by_name
 
     from .routes_registry import load_module_routes
 
     etc = Path("/app/etc") if Path("/app/etc").is_dir() else Path.cwd() / "app" / "etc"
-    # The shared discovery, not a hand-written list of roots: it carries the container
-    # extension mount and the shadowing rules with it, so an installed PyPI extension's
-    # routes are served instead of answering 404.
+    # The shared discovery carries the extension mount and shadowing rules (PyPI routes too).
     api.ROUTES.extend(load_module_routes(etc, module_dirs_by_name(CORE_MODULES_DIR,
                                                                  USER_MODULES_DIR)))
 
 
+# The query may carry `cap` or an exchange code: no access log, `Sec12` logs the path (SEC-6).
+# No proxy headers: the limiter keys on the socket peer. A stop cuts open streams after 5 s
+# (inside the compose grace); the browser resumes from `Last-Event-ID`.
+UVICORN_FLAGS = {"log_config": None, "access_log": False, "server_header": False,
+                 "proxy_headers": False, "timeout_graceful_shutdown": 5}
+
+
 def main() -> None:
     compose_routes()
-    ThreadingHTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+    uvicorn.run(app, host="0.0.0.0", port=8000, **UVICORN_FLAGS)

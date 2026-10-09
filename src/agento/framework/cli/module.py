@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import subprocess
 import sys
 from pathlib import Path
@@ -128,31 +127,17 @@ def _declared_sandbox_pins(project_root, name: str) -> set[str]:
     if module_dir is None:
         return set()
 
-    from ..harness.manifest import (
-        _parse_legacy_sandbox_packages,
-        parse_harness_declarations,
-    )
+    from ..harness.manifest import parse_harness_declarations
 
-    pins: set[str] = set()
     try:
         decls = parse_harness_declarations(module_dir / "di.json", name)
     except ValueError:
-        decls = []
-    pins |= {
+        return set()
+    return {
         d.descriptor.sandbox_package.version_env_key
         for d in decls
         if d.descriptor.sandbox_package is not None
     }
-    # The deprecated top-level `sandbox_packages` array is still honoured for one release
-    # (see harness/manifest.py), so a module that has not migrated must still trigger the
-    # rebuild — otherwise its CLI is missing after enable, or left installed after disable.
-    # A malformed legacy entry is reported by module:validate, not here.
-    with contextlib.suppress(RuntimeError):
-        pins |= {
-            p.version_env_key
-            for p in _parse_legacy_sandbox_packages(module_dir / "di.json", name)
-        }
-    return pins
 
 
 class MakeModuleCommand:

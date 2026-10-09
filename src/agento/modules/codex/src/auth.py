@@ -14,7 +14,7 @@ import httpx
 from agento.framework.agent_manager.auth import (
     AuthenticationError,
     AuthResult,
-    _run_cli,
+    attended_login,
 )
 from agento.framework.agent_manager.pty_login import PtyLogin, spawn
 from agento.framework.harness import (
@@ -82,12 +82,10 @@ def _limit_window(window: dict) -> LimitWindow:
 
 
 class CodexCredentialAuthenticator:
-    """Run ``codex auth login --device-auth`` in isolated HOME, extract credentials."""
+    """``codex login --device-auth`` in a runner, in ``tmp_home``; extract credentials."""
 
     def authenticate_interactive(self, tmp_home: str, logger: logging.Logger) -> AuthResult:
-        logger.info("Starting Codex device-auth login (follow the URL in your browser)...")
-        _run_cli(["codex", "auth", "login", "--device-auth"], tmp_home, "Codex")
-        return _read_login(Path(tmp_home))
+        return attended_login(self.start_web_login(tmp_home, logger))
 
     def start_web_login(self, tmp_home: str, logger: logging.Logger) -> PtyLogin:
         """``codex login --device-auth`` in ``tmp_home``: it prints the device page and a

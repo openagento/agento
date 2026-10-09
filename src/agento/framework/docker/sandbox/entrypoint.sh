@@ -26,7 +26,7 @@ done
 # no key at all, which is exactly the cross-view use of one identity this release removes.
 # `CONFIG__AGENT_VIEW__IDENTITY__SSH_PRIVATE_KEY` is refused here for the same reason as the
 # others, and stays refused for consistency with the cron entrypoint, which would write any
-# `CONFIG__*` value to its credential-store file, putting the key on disk (this entrypoint
+# `CONFIG__*` value to its root-only env file, putting the key on disk (this entrypoint
 # `exec`s gosu and writes no such file). Set it in the DB instead
 # (`cat id_rsa | bin/agento config:set agent_view/identity/ssh_private_key --scope agent_view`).
 for _v in AGENTO_SSH_PRIVATE_KEY AGENTO_SSH_TTL SSH_AUTH_SOCK SSH_AGENT_PID \

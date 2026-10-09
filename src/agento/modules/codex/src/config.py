@@ -15,15 +15,13 @@ from typing import TYPE_CHECKING, Any
 
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
 from agento.framework.agent_manager.errors import AuthenticationError, TransientAuthError
-from agento.framework.credential_store_env import without_credential_store_env
 from agento.framework.harness import (
     ToolboxConnectionSpec,
-    harness_base_env,
     is_toolbox_endpoint,
     toolbox_origin,
 )
 from agento.framework.harness.run_scope import scope_toolbox_url, toolbox_auth
-from agento.framework.ssh_identity import without_run_owned_ssh_env
+from agento.framework.runner import client as runner_client
 
 if TYPE_CHECKING:
     import pymysql
@@ -346,13 +344,11 @@ class CodexWorkspaceAdapter:
         was given (SEC-6).
         """
         build_dir.mkdir(parents=True, exist_ok=True)
-        env = {**harness_base_env(), "HOME": str(build_dir)}
         try:
-            result = subprocess.run(
+            # In a runner (WS5): build_dir is on the shared /workspace.
+            result = runner_client.run(
                 ["codex", "login", flag],
-                input=secret, env=env, text=True,
-                capture_output=True, check=False,
-                timeout=timeout_s,
+                input=secret, env={"HOME": str(build_dir)}, timeout=timeout_s,
             )
         except FileNotFoundError as exc:
             raise AuthenticationError(
@@ -585,7 +581,8 @@ class CodexWorkspaceAdapter:
         """
         if credential.type != "oauth":
             return False
-        with tempfile.TemporaryDirectory(prefix="agento-refresh-") as tmp:
+        # Created 0700 on the shared /workspace: the CLI runs in a runner.
+        with tempfile.TemporaryDirectory(dir=runner_client.shared_tmp()) as tmp:
             home = Path(tmp)
             self.write_credentials(home, credential)
             auth_path = home / ".codex" / "auth.json"
@@ -602,19 +599,10 @@ class CodexWorkspaceAdapter:
             failure: Exception | None = None
             proc = None
             try:
-                proc = subprocess.run(
-                    _REFRESH_ARGV,
-                    cwd=tmp,
-                    env={
-                        **without_credential_store_env(without_run_owned_ssh_env(dict(os.environ))),
-                        "HOME": tmp,
-                    },
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    timeout=_REFRESH_TIMEOUT_SECONDS,
+                proc = runner_client.run(
+                    _REFRESH_ARGV, cwd=tmp, env={"HOME": tmp}, timeout=_REFRESH_TIMEOUT_SECONDS,
                 )
-            except (subprocess.TimeoutExpired, OSError) as exc:
+            except Exception as exc:  # a timeout or a lost runner: the HOME is read first
                 failure = exc
 
             built = self._refreshed_creds(home, credential)

@@ -21,6 +21,35 @@ agento run <agent_view_code>    # Runs the configured agent (claude/codex/pi) in
 
 The command resolves the agent_view's provider + HOME (from the materialized workspace build) and spawns an interactive session in the `sandbox` container. See [docs/cli/run.md](../docs/cli/run.md) for details.
 
+## Runners
+
+Every agent CLI starts in a `runner-<i>` service, not in `cron`
+([runner.md](../docs/architecture/runner.md)). The managed compose renders
+`AGENTO_RUNNER_COUNT` of them (default 1). To change it, set `AGENTO_RUNNER_COUNT` in
+`docker/.env` and run `agento upgrade` (or any command that renders the compose), then
+`docker compose up -d`. The dev compose has one runner.
+
+**Drain first before you lower the count.** A job keeps the name of the runner that
+started it. A removed runner never answers, so its RUNNING jobs stay blocked (no recovery,
+no resume). Stop new work, wait until no job is RUNNING on the runners you remove, then
+lower the count. To unblock a job of a runner that is gone, start that runner again: its
+new boot id marks the run dead and the job retries.
+
+## Database users (dev)
+
+`docker-compose.dev.yml` uses the same three MySQL users as an install (see
+[docs/cli/upgrade.md](../docs/cli/upgrade.md#database-users)), with dev default passwords.
+A new `storage/mysql` gets the root grant for `cron_agent` at MySQL init. A `storage/mysql`
+made before this change needs it once, before `cron` starts:
+
+```bash
+cd docker
+docker compose -f docker-compose.dev.yml up -d --wait mysql
+docker compose -f docker-compose.dev.yml exec -T mysql \
+  sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot' \
+  < ../src/agento/framework/sql/init/001_migrate_user.sql
+```
+
 ## Build
 
 ```bash
@@ -130,95 +159,16 @@ uv run --group dev pytest -v
 uv run --group dev python -m src.cli task-list --json
 ```
 
-#### Agent onboarding (OAuth tokens)
+#### Agent onboarding (credentials)
 
-The agent manager uses **OAuth tokens from Claude/Codex subscriptions** — NOT API keys
-from console.anthropic.com. OAuth tokens are obtained through the normal browser login flow
-and stored as credential files in `tokens/` (mounted as `/etc/tokens` in containers).
-
-##### Option A: Interactive auth (recommended)
-
-`token register` can launch the CLI's OAuth flow directly inside the container.
-Credentials are saved automatically — no manual extraction needed.
-
-```bash
-# Interactive auth — launches browser OAuth, extracts token, registers in DB
-docker compose exec -it cron /opt/cron-agent/run.sh token register claude oauth-team-1
-
-# With Codex
-docker compose exec -it cron /opt/cron-agent/run.sh token register codex oauth-codex-1
-```
-
-> **Requires `-it` flag** (interactive TTY). The command runs `claude auth login` /
-> `codex auth login` in an isolated temporary HOME directory so the main active
-> credentials at `/workspace/.claude` are NOT affected.
-
-##### Option B: Manual credentials file
-
-If you already have a credentials file (e.g. extracted from a host authentication):
-
-```bash
-# 1. Authenticate Claude CLI on the host (browser flow)
-claude
-# After auth completes, type /exit
-
-# 2. Extract OAuth token to the tokens directory
-python3 -c "
-import json
-with open('workspace/.claude/.credentials.json') as f:
-    oauth = json.load(f)['claudeAiOauth']
-token = {
-    'subscription_key': oauth['accessToken'],
-    'refresh_token': oauth['refreshToken'],
-    'expires_at': oauth['expiresAt'],
-    'subscription_type': oauth.get('subscriptionType', ''),
-}
-with open('tokens/claude_oauth_1.json', 'w') as f:
-    json.dump(token, f, indent=2)
-print('Done. Token expires:', __import__('datetime').datetime.fromtimestamp(oauth['expiresAt']/1000))
-"
-
-# 3. Register with explicit path
-docker compose exec cron /opt/cron-agent/run.sh token register \
-  claude oauth-team-1 /etc/tokens/claude_oauth_1.json
-```
-
-##### After registering: activate and configure
-
-```bash
-# Set the active token (creates symlink in /etc/tokens/active/)
-docker compose exec cron /opt/cron-agent/run.sh rotate
-
-# Verify
-docker compose exec cron /opt/cron-agent/run.sh token list
-```
-
-Then rebuild: `docker compose build cron && docker compose up -d cron --force-recreate`
-
-> **OAuth tokens expire.** When jobs fail with auth errors, refresh the token:
-> `docker compose exec -it cron /opt/cron-agent/run.sh token refresh <id>`
-> This re-runs interactive OAuth and overwrites the credentials file in-place.
-
-To add more tokens (multiple subscriptions for rotation):
-```bash
-# Interactive auth with a different label
-docker compose exec -it cron /opt/cron-agent/run.sh token register claude oauth-team-2
-
-# Or with an existing file
-docker compose exec cron /opt/cron-agent/run.sh token register \
-  claude oauth-team-2 /etc/tokens/claude_oauth_2.json
-
-# Rotate picks the token with the most remaining capacity
-docker compose exec cron /opt/cron-agent/run.sh rotate
-```
+Register each harness credential with `credential:register` (see [Agent management](#agent-management) and [docs/cli/credentials.md](../docs/cli/credentials.md)).
 
 #### Caveats
 
 - **Do not delete log files** while the consumer is running — the consumer holds
   open file descriptors. Deleting the file orphans the fd and logs are silently
   lost. If you must clean logs, restart the container afterwards.
-- **OAuth tokens expire** — if jobs fail with auth errors, re-authenticate on the
-  host, re-run the token extraction script, and restart the container.
+- **OAuth credentials expire** — if jobs fail with auth errors, run `credential:refresh <id>`.
 - **Config changes** to `.cron.env` require `docker compose restart cron`.
 
 ## Panel
@@ -376,11 +326,11 @@ docker compose up -d --build --force-recreate
 # Unit tests (from docker/ dir)
 TEST_MYSQL_HOST=localhost TEST_MYSQL_PASSWORD=cronagent_root cd cron/app && uv run --group dev pytest -v && cd ../../
 
-# E2E tests — real LLM calls, uses primary token (is_primary=1), requires DISABLE_LLM=0
+# E2E tests — real LLM calls, takes a credential from the pool, requires DISABLE_LLM=0
 docker exec -it -u agent -e DISABLE_LLM=0 agento-cron /opt/cron-agent/run.sh e2e --keep
 
-# E2E with specific token override
-docker exec -it -u agent -e DISABLE_LLM=0 agento-cron /opt/cron-agent/run.sh e2e --keep --oauth_token 2 --model gpt-5.3-codex
+# E2E with a specific credential
+docker exec -it -u agent -e DISABLE_LLM=0 agento-cron /opt/cron-agent/run.sh e2e --keep --credential 2 --model gpt-5.3-codex
 ```
 
 ## Agent management
@@ -388,17 +338,14 @@ docker exec -it -u agent -e DISABLE_LLM=0 agento-cron /opt/cron-agent/run.sh e2e
 # Check migration status
 docker exec -it agento-cron /opt/cron-agent/run.sh migrate --dry-run
 
-# Set the primary token (determines which agent runs all jobs)
-docker exec -it agento-cron /opt/cron-agent/run.sh token set claude 1
+# Credential - register (interactive auth)
+docker exec -it agento-cron /opt/cron-agent/run.sh credential:register claude oauth-team-1
 
-# OAuth Token - register (interactive auth)
-docker exec -it agento-cron /opt/cron-agent/run.sh token register claude oauth-team-1
-
-# OAuth Token - refresh (re-authenticate expired token by id)
-docker exec -it agento-cron /opt/cron-agent/run.sh token refresh 2
+# Credential - refresh (re-authenticate an expired credential by id)
+docker exec -it agento-cron /opt/cron-agent/run.sh credential:refresh 2
 
 # Verify
-docker exec -it agento-cron /opt/cron-agent/run.sh token list
+docker exec -it agento-cron /opt/cron-agent/run.sh credential:list
 ```
 
 ## Replay
@@ -410,36 +357,11 @@ Useful for local testing, reproducing bugs, and comparing different models on th
 # Execute: re-run the stored prompt through the same runner
 # --exec invokes the agent CLI — must run as non-root user (-u agent)
 # DISABLE_LLM=0 overrides the default (LLM disabled to prevent cron from processing jobs)
-docker exec -it -u agent -e DISABLE_LLM=0 agento-cron /opt/cron-agent/run.sh replay 1 --exec --oauth_token 1
+docker exec -it -u agent -e DISABLE_LLM=0 agento-cron /opt/cron-agent/run.sh replay 1 --exec --credential 1
 
 # Execute with a different Claude model
 docker exec -it -u agent -e DISABLE_LLM=0 agento-cron /opt/cron-agent/run.sh replay 1 --exec --model claude-opus-4-20250514
 
-# Execute with a specific token (overrides primary)
-docker exec -it -u agent -e DISABLE_LLM=0 agento-cron /opt/cron-agent/run.sh replay 1 --exec --oauth_token 2 --model gpt-5.3-codex
-```
-
-## Token management
-
-```bash
-# List tokens with usage stats, model, and % free capacity
-docker exec -it agento-cron /opt/cron-agent/run.sh token list
-docker exec -it agento-cron /opt/cron-agent/run.sh token list --json
-
-# Register a token with a specific model
-# Claude models: claude-sonnet-4-20250514, claude-opus-4-20250514, claude-haiku-4-5-20251001
-docker exec -it agento-cron /opt/cron-agent/run.sh token register claude prod-1 --model claude-sonnet-4-20250514
-
-# Codex models: o3, o4-mini, codex-mini-latest
-docker exec -it agento-cron /opt/cron-agent/run.sh token register codex prod-1 --model o3
-
-# Refresh an expired token (re-runs interactive OAuth, overwrites credentials)
-docker exec -it agento-cron /opt/cron-agent/run.sh token refresh 1
-docker exec -it agento-cron /opt/cron-agent/run.sh token refresh 2
-
-# Set a token as primary (determines which agent runs all jobs)
-docker exec -it agento-cron /opt/cron-agent/run.sh token set claude 1
-
-# Show usage for last 24h
-docker exec -it agento-cron /opt/cron-agent/run.sh token usage --window 24
+# Execute with a specific credential
+docker exec -it -u agent -e DISABLE_LLM=0 agento-cron /opt/cron-agent/run.sh replay 1 --exec --credential 2 --model gpt-5.3-codex
 ```

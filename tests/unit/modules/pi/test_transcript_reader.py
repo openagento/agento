@@ -1,4 +1,4 @@
-"""Pi transcript reading: located by glob, tool names verbatim."""
+"""Pi transcript reading: located by glob; the bridge init entry."""
 from __future__ import annotations
 
 import json
@@ -19,71 +19,31 @@ def write_transcript(root, session_id, records, slug="workspace-run-42"):
     return path
 
 
-def assistant_with_tools(*names):
-    return {
-        "type": "message",
-        "message": {
-            "role": "assistant",
-            "content": [
-                {"type": "toolCall", "name": n, "id": f"call-{i}"}
-                for i, n in enumerate(names)
-            ],
-        },
-    }
-
-
 @pytest.fixture
 def reader(tmp_path):
     return PiTranscriptReader(build_root=tmp_path)
 
 
+_INIT = [{"type": "custom", "customType": "agento-toolbox-init", "data": {"status": "ok"}}]
+
+
 class TestLocating:
     def test_finds_the_transcript_by_session_id(self, reader, tmp_path):
-        write_transcript(tmp_path, SESSION, [{"type": "session", "id": SESSION}])
-        assert reader.parse(SESSION).total_json_lines == 1
+        write_transcript(tmp_path, SESSION, _INIT)
+        assert reader.read_toolbox_init(SESSION) == {"status": "ok"}
 
     def test_missing_session_raises(self, reader):
         with pytest.raises(FileNotFoundError):
-            reader.parse("nope")
+            reader.read_toolbox_init("nope")
 
     def test_empty_session_id_raises(self, reader):
         with pytest.raises(FileNotFoundError):
-            reader.parse("")
-
-
-class TestToolUses:
-    def test_names_are_taken_verbatim_so_telemetry_keeps_working(self, reader, tmp_path):
-        """The bridge registers `mcp__toolbox__*` precisely so nothing here translates —
-        app_monitor counts `name.startswith('mcp__toolbox__')`."""
-        write_transcript(
-            tmp_path, SESSION,
-            [assistant_with_tools("mcp__toolbox__jira_search", "bash")],
-        )
-        names = [t.name for t in reader.iter_tool_uses(SESSION)]
-        assert names == ["mcp__toolbox__jira_search", "bash"]
-
-    def test_user_messages_contribute_no_tool_uses(self, reader, tmp_path):
-        write_transcript(
-            tmp_path, SESSION,
-            [{"type": "message", "message": {"role": "user", "content": [
-                {"type": "toolCall", "name": "not_a_real_call", "id": "x"}]}}],
-        )
-        assert list(reader.iter_tool_uses(SESSION)) == []
-
-
-class TestFormatDrift:
-    def test_parseable_but_unknown_shapes_signal_drift(self, reader, tmp_path):
-        """total_json_lines > 0 with recognized_records == 0 is the canonical
-        'Pi changed its transcript format' signal."""
-        write_transcript(tmp_path, SESSION, [{"type": "brand_new_shape", "x": 1}] * 3)
-        summary = reader.parse(SESSION)
-        assert summary.total_json_lines == 3
-        assert summary.recognized_records == 0
+            reader.read_toolbox_init("")
 
     def test_unparseable_lines_are_skipped(self, reader, tmp_path):
-        path = write_transcript(tmp_path, SESSION, [{"type": "message", "message": {}}])
-        path.write_text(path.read_text() + "not json\n\n")
-        assert reader.parse(SESSION).total_json_lines == 1
+        path = write_transcript(tmp_path, SESSION, _INIT)
+        path.write_text("not json\n\n" + path.read_text())
+        assert reader.read_toolbox_init(SESSION) == {"status": "ok"}
 
 
 class TestToolboxInitRecord:
@@ -108,14 +68,6 @@ class TestToolboxInitRecord:
         )
         assert reader.read_toolbox_init(SESSION) is None
 
-    def test_reads_the_model_mismatch_entry(self, reader, tmp_path):
-        write_transcript(
-            tmp_path, SESSION,
-            [{"type": "custom", "customType": "agento-model-mismatch",
-              "data": {"actualModel": "other"}}],
-        )
-        assert reader.read_model_mismatch(SESSION)["actualModel"] == "other"
-
 
 class TestTheDefaultRootIsTheFrameworksBuildDir:
     """The default root was never exercised, and it was wrong.
@@ -124,7 +76,7 @@ class TestTheDefaultRootIsTheFrameworksBuildDir:
     production default pointed at ``/var/agento/builds`` — a path that exists in no
     container, read from an ``AGENTO_BUILD_DIR`` variable nothing sets. The reader
     therefore found no transcript in any real deployment, leaving
-    ``job.toolbox_mcp_connected`` and ``job.toolbox_mcp_calls`` NULL for every Pi job.
+    ``job.toolbox_mcp_connected`` NULL for every Pi job.
     Found by running a job through the consumer queue, not by any unit test.
     """
 

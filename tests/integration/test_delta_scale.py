@@ -17,6 +17,7 @@ import uuid
 import pytest
 
 from agento.framework import consumer, execution_deltas
+from agento.framework.runner.server import map_line
 from agento.modules.claude.src.stream_event_mapper import ClaudeStreamEventMapper
 from agento.modules.conversation.src import service
 from agento.modules.conversation.src.deltas import ConversationDeltaSink
@@ -32,7 +33,7 @@ SECRET = "cap_scale_secret_0123456789"
 
 
 class _Entry:
-    class adapter:  # noqa: N801 - the shape `_delta_callback` reads
+    class adapter:
         stream_event_mapper = ClaudeStreamEventMapper()
 
 
@@ -140,11 +141,14 @@ def test_250_parallel_streaming_runs_stay_ordered_paced_and_lossless(conn, scale
               + ["normal"] * (len(scale) - FAST_RUNS - SWITCH_RUNS))
 
     def run(n: int, execution_id: str, style: str) -> None:
-        on_line = consumer._delta_callback(_Entry(), execution_id, logging.getLogger("scale"),
-                                           (SECRET,))
+        # The runner maps (map_line), the worker submits (on_fragment): both halves (WS5).
+        on_fragment = consumer._delta_callback(_Entry(), execution_id, logging.getLogger("scale"),
+                                               (SECRET,))
+        mapper = _Entry.adapter.stream_event_mapper
         for delay, event in _script(n, style):
             time.sleep(delay)
-            on_line(json.dumps(event))
+            for fragment in map_line(mapper, json.dumps(event)):
+                on_fragment(fragment)
             for fragment in _as_list(ClaudeStreamEventMapper().map_event(event)):
                 if fragment["kind"].endswith(".partial") and fragment["text"].startswith("w"):
                     with fed_lock:      # each word is unique per run: a row's first word dates it

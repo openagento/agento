@@ -62,6 +62,16 @@ class TestModuleIsolation:
                             )
         assert not violations, "Cross-module imports found:\n" + "\n".join(violations)
 
+    def test_no_pydantic_import(self):
+        """Dataclasses only (DECISIONS.md 2026-10-08, 2026-10-09): pydantic is in the image
+        only because FastAPI needs it, and our code never imports it (TST-2)."""
+        violations = [
+            str(py_file.relative_to(ROOT))
+            for py_file in (ROOT / "src" / "agento").rglob("*.py")
+            if any(imp.split(".")[0] in ("pydantic", "pydantic_core") for imp in _get_imports(py_file))
+        ]
+        assert not violations, violations
+
     def test_framework_does_not_import_modules(self):
         """Framework code should not import from agento.modules."""
         violations = []

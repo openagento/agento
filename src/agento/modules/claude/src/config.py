@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import tempfile
 import time
 from datetime import UTC, datetime
@@ -13,10 +12,9 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
-from agento.framework.credential_store_env import without_credential_store_env
 from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
 from agento.framework.harness.run_scope import scope_toolbox_url, toolbox_auth
-from agento.framework.ssh_identity import without_run_owned_ssh_env
+from agento.framework.runner import client as runner_client
 
 from .output_parser import parse_claude_output
 
@@ -462,7 +460,8 @@ class ClaudeWorkspaceAdapter:
         """
         if credential.type != "oauth":
             return False
-        with tempfile.TemporaryDirectory(prefix="agento-refresh-") as tmp:
+        # Created 0700 on the shared /workspace: the CLI runs in a runner.
+        with tempfile.TemporaryDirectory(dir=runner_client.shared_tmp()) as tmp:
             home = Path(tmp)
             self.write_credentials(home, credential)
             creds_path = home / ".claude" / ".credentials.json"
@@ -476,19 +475,10 @@ class ClaudeWorkspaceAdapter:
             failure: Exception | None = None
             proc = None
             try:
-                proc = subprocess.run(
-                    _REFRESH_ARGV,
-                    cwd=tmp,
-                    env={
-                        **without_credential_store_env(without_run_owned_ssh_env(dict(os.environ))),
-                        "HOME": tmp,
-                    },
-                    stdin=subprocess.DEVNULL,
-                    capture_output=True,
-                    text=True,
-                    timeout=_REFRESH_TIMEOUT_SECONDS,
+                proc = runner_client.run(
+                    _REFRESH_ARGV, cwd=tmp, env={"HOME": tmp}, timeout=_REFRESH_TIMEOUT_SECONDS,
                 )
-            except (subprocess.TimeoutExpired, OSError) as exc:
+            except Exception as exc:  # a timeout or a lost runner: the HOME is read first
                 failure = exc
 
             built = self._refreshed_creds(home, credential)

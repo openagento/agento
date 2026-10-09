@@ -17,7 +17,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from cryptography.hazmat.primitives.asymmetric import rsa
 
 from agento.framework.access import accounts, sessions
 from agento.framework.agent_manager import credential_login
@@ -191,7 +190,6 @@ def test_claude_code_flow_end_to_end(db, clis, events, caplog):
     state = _web(admin_api.credential_login_state, id=login_id).body
     assert state["verify_url"] == "https://claude.com/cai/oauth/authorize?code=true&state=st4te"
     assert state["needs_code"] is True and "code_key" not in state and "code_box" not in state
-    assert _row(db, login_id)["code_key"].startswith("-----BEGIN PUBLIC KEY-----")
 
     assert _web(admin_api.credential_login_code, "POST", {"code": CODE}, id=login_id).status == 204
     assert CODE.encode() not in bytes(_row(db, login_id)["code_box"] or b"")
@@ -294,23 +292,34 @@ def test_claim_race_one_winner(db):
     assert sorted(wins) == [False, False, False, True]
 
 
-def test_one_code_per_login_and_the_box_opens_only_with_the_worker_key(db):
+def test_one_code_per_login_and_the_box_holds_it_encrypted(db):
     login_id = _login(db, _credential(db, "claude"))
-    worker_key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-    from cryptography.hazmat.primitives import serialization
-    pem = worker_key.public_key().public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
     with db.cursor() as cur:
-        cur.execute("UPDATE credential_login SET status = 'waiting', needs_code = TRUE, code_key = %s, "
-                    "heartbeat_at = UTC_TIMESTAMP() WHERE id = %s", (pem, login_id))
-    longest = "~" * credential_login.CODE_MAX  # the longest code the route takes, sealed for real
+        cur.execute("UPDATE credential_login SET status = 'waiting', needs_code = TRUE, "
+                    "heartbeat_at = UTC_TIMESTAMP() WHERE id = %s", (login_id,))
+    longest = "~" * credential_login.CODE_MAX  # the longest code the route takes, fits code_box
     assert _web(admin_api.credential_login_code, "POST", {"code": longest}, id=login_id).status == 204
     assert _web(admin_api.credential_login_code, "POST", {"code": "replay"}, id=login_id).status == 409
-    box = bytes(_row(db, login_id)["code_box"])
-    assert credential_login.open_code(worker_key, box) == longest
-    other = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-    with pytest.raises(ValueError):
-        credential_login.open_code(other, box)
+    assert longest.encode() not in bytes(_row(db, login_id)["code_box"])
+    conn = _test_connection()
+    try:
+        assert credential_login._take_code(conn, login_id, logging.getLogger("cl-test")) == longest
+    finally:
+        conn.close()
+    assert _row(db, login_id)["code_box"] is None
+
+
+def test_a_box_that_does_not_decrypt_fails_the_login(db):
+    login_id = _login(db, _credential(db, "claude"))
+    with db.cursor() as cur:
+        cur.execute("UPDATE credential_login SET status = 'waiting', needs_code = TRUE, code_box = 'aes256:00:00', "
+                    "heartbeat_at = UTC_TIMESTAMP() WHERE id = %s", (login_id,))
+    conn = _test_connection()
+    try:
+        assert credential_login._take_code(conn, login_id, logging.getLogger("cl-test")) is None
+    finally:
+        conn.close()
+    _assert_terminal(_row(db, login_id), "failed", "cli_failed")
 
 
 def _codex_waiting(db, clis, *, label="cl-main"):
@@ -353,8 +362,7 @@ def test_expiry_stops_the_login_and_kills_the_cli(db, clis):
                     "WHERE id = %s", (login_id,))
     worker.join(20)
     _assert_terminal(_row(db, login_id), "failed", "expired")
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    _wait(lambda: _gone(pid))   # the runner kills it when the worker closes the socket
     assert not home.exists()
 
 
@@ -720,8 +728,6 @@ _LOGIN_WRITE = re.compile(r"^(UPDATE credential_login|INSERT INTO credential_log
 
 def test_every_login_write_locks_the_credential_row_first(db, events, tmp_path):
     """Class guard: one lock order on every path, credential row then login row."""
-    from cryptography.hazmat.primitives import serialization
-
     from agento.framework.agent_manager.auth import AuthResult
 
     log = logging.getLogger("cl-test")
@@ -731,14 +737,11 @@ def test_every_login_write_locks_the_credential_row_first(db, events, tmp_path):
     try:
         login_id = credential_login.request_login(rec, cid, None, {"claude"})
         assert credential_login.claim(rec, login_id)
-        key = rsa.generate_private_key(public_exponent=65537, key_size=3072)
-        pem = key.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
         assert credential_login._fenced(rec, login_id, ("starting",), "status = 'waiting', needs_code = TRUE, "
-                                        "code_key = %s, heartbeat_at = UTC_TIMESTAMP()", (pem,))
+                                        "heartbeat_at = UTC_TIMESTAMP()")
         assert credential_login._heartbeat(rec, login_id)["status"] == "waiting"
         assert credential_login.put_code(rec, login_id, CODE) is None
-        assert credential_login._take_code(rec, login_id, key, log) == CODE
+        assert credential_login._take_code(rec, login_id, log) == CODE
         credential_login._save(rec, login_id, cid, AuthResult(subscription_key="new-at"), needs_code=True,
                                logger=log)
         assert _row(db, login_id)["status"] == "done"

@@ -350,7 +350,7 @@ class TestWriteCredentials:
         from unittest.mock import MagicMock
         fake_run = MagicMock(return_value=subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""))
-        monkeypatch.setattr("agento.modules.codex.src.config.subprocess.run", fake_run)
+        monkeypatch.setattr("agento.modules.codex.src.config.runner_client.run", fake_run)
 
         token = self._make_token("openai_api_key", {"api_key": "sk-X"})
         writer.write_credentials(work_dir, token)
@@ -374,7 +374,7 @@ class TestWriteCredentials:
         from unittest.mock import MagicMock
         fake_run = MagicMock(return_value=subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""))
-        monkeypatch.setattr("agento.modules.codex.src.config.subprocess.run", fake_run)
+        monkeypatch.setattr("agento.modules.codex.src.config.runner_client.run", fake_run)
 
         token = self._make_token("codex_access_token", {
             "access_token": "eyJ.payload.sig", "expires_at": 9999999999})
@@ -397,7 +397,7 @@ class TestWriteCredentials:
 
         fake_run = MagicMock(return_value=subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="invalid agent identity JWT format"))
-        monkeypatch.setattr("agento.modules.codex.src.config.subprocess.run", fake_run)
+        monkeypatch.setattr("agento.modules.codex.src.config.runner_client.run", fake_run)
 
         token = self._make_token("codex_access_token", {
             "access_token": "eyJ.bad.sig", "expires_at": 9999999999})

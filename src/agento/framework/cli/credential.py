@@ -318,8 +318,9 @@ class CredentialRefreshCommand:
         finally:
             conn.close()
 
-        from ..events import CredentialRefreshedEvent, dispatch_credential_event
-        dispatch_credential_event(
+        from ..event_manager import get_event_manager
+        from ..events import CredentialRefreshedEvent
+        get_event_manager().dispatch(
             "credential_refresh_after",
             CredentialRefreshedEvent(
                 scope=credential.scope,
@@ -385,8 +386,6 @@ class CredentialListCommand:
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--scope", dest="scope", default=None,
                             help="Filter by credential scope")
-        parser.add_argument("--agent-type", dest="scope", default=None,
-                            help=argparse.SUPPRESS)  # deprecated alias for --scope
         parser.add_argument("--all", action="store_true", help="Include disabled credentials")
         parser.add_argument("--json", action="store_true")
 
@@ -424,10 +423,7 @@ class CredentialListCommand:
                 pct_free = round((t.token_limit - used) / t.token_limit * 100, 1) if t.token_limit > 0 else None
                 data.append({
                     "id": t.id,
-                    # `scope` is the field going forward; `agent_type` is emitted for one
-                    # cycle so existing --json consumers keep working (ROADMAP.md).
                     "scope": t.scope,
-                    "agent_type": t.scope,
                     # The real authenticated account behind the label — `null` when the
                     # credential carries none (API key) or it cannot be extracted. Lets an
                     # operator detect a label that does not match its account, or two rows
@@ -558,7 +554,8 @@ class CredentialMarkErrorCommand:
     def execute(self, args: argparse.Namespace) -> None:
         from ..agent_manager import mark_credential_error
         from ..agent_manager.credential_store import get_credential
-        from ..events import CredentialAuthFailedEvent, dispatch_credential_event
+        from ..event_manager import get_event_manager
+        from ..events import CredentialAuthFailedEvent
 
         db_config, _, _ = _load_framework_config()
         logger = get_logger("agent-manager")
@@ -576,7 +573,7 @@ class CredentialMarkErrorCommand:
             conn.close()
 
         if credential is not None:
-            dispatch_credential_event(
+            get_event_manager().dispatch(
                 "credential_auth_failed_after",
                 CredentialAuthFailedEvent(
                     scope=credential.scope,
@@ -672,8 +669,6 @@ class CredentialUsageCommand:
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--scope", dest="scope", default=None,
                             help="Filter by credential scope")
-        parser.add_argument("--agent-type", dest="scope", default=None,
-                            help=argparse.SUPPRESS)  # deprecated alias for --scope
         parser.add_argument("--window", type=int, default=24, help="Window in hours (default: 24)")
 
     def execute(self, args: argparse.Namespace) -> None:

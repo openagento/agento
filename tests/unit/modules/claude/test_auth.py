@@ -1,30 +1,22 @@
-"""Tests for ClaudeCredentialAuthenticator — captures full ``claudeAiOauth`` + ``.claude.json``."""
+"""Claude ``_read_login`` — captures full ``claudeAiOauth`` + ``.claude.json``."""
 from __future__ import annotations
 
 import json
-import logging
-from unittest.mock import patch
 
 import pytest
 
 from agento.framework.agent_manager.auth import AuthenticationError
-from agento.modules.claude.src.auth import ClaudeCredentialAuthenticator
+from agento.modules.claude.src.auth import ClaudeCredentialAuthenticator, _read_login
 
 
 @pytest.fixture
-def fake_home(tmp_path, monkeypatch):
-    claude_dir = tmp_path / ".claude"
-    claude_dir.mkdir()
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setattr(
-        "agento.modules.claude.src.auth.Path.home",
-        classmethod(lambda _cls: tmp_path),
-    )
+def fake_home(tmp_path):
+    (tmp_path / ".claude").mkdir()
     return tmp_path
 
 
 class TestClaudeCredentialAuthenticator:
-    def _stub_run_cli(self, home):
+    def _stub_login(self, home):
         # Simulate a successful interactive login writing files to HOME
         creds = {
             "claudeAiOauth": {
@@ -53,12 +45,8 @@ class TestClaudeCredentialAuthenticator:
         }))
 
     def test_captures_full_oauth_payload(self, fake_home):
-        strategy = ClaudeCredentialAuthenticator()
-        with patch(
-            "agento.modules.claude.src.auth._run_cli",
-            side_effect=lambda *a, **kw: self._stub_run_cli(fake_home),
-        ):
-            result = strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
+        self._stub_login(fake_home)
+        result = _read_login(fake_home)
 
         assert result.subscription_key == "sk-ant-oat01-abc"
         assert result.refresh_token == "sk-ant-ort01-def"
@@ -78,12 +66,8 @@ class TestClaudeCredentialAuthenticator:
         assert raw_creds["claudeAiOauth"]["rateLimitTier"] == "default_claude_max_5x"
 
     def test_captures_claude_json_user_state(self, fake_home):
-        strategy = ClaudeCredentialAuthenticator()
-        with patch(
-            "agento.modules.claude.src.auth._run_cli",
-            side_effect=lambda *a, **kw: self._stub_run_cli(fake_home),
-        ):
-            result = strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
+        self._stub_login(fake_home)
+        result = _read_login(fake_home)
 
         assert result.raw_auth is not None
         claude_json = result.raw_auth["claude_json"]
@@ -98,22 +82,16 @@ class TestClaudeCredentialAuthenticator:
                 "claudeAiOauth": {"accessToken": "sk-x"}
             }))
 
-        strategy = ClaudeCredentialAuthenticator()
-        with patch("agento.modules.claude.src.auth._run_cli", side_effect=_only_creds):
-            result = strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
+        _only_creds()
+        result = _read_login(fake_home)
 
         assert result.subscription_key == "sk-x"
         assert result.raw_auth is not None
         assert result.raw_auth["claude_json"] == {}
 
     def test_missing_credentials_file_raises(self, fake_home):
-        strategy = ClaudeCredentialAuthenticator()
-        # _run_cli returns without writing anything
-        with (
-            patch("agento.modules.claude.src.auth._run_cli", lambda *a, **kw: None),
-            pytest.raises(AuthenticationError, match="credentials file not found"),
-        ):
-            strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
+        with pytest.raises(AuthenticationError, match="credentials file not found"):
+            _read_login(fake_home)
 
     def test_credentials_without_access_token_raises(self, fake_home):
         def _no_token(*_args, **_kw):
@@ -121,12 +99,9 @@ class TestClaudeCredentialAuthenticator:
                 json.dumps({"claudeAiOauth": {}})
             )
 
-        strategy = ClaudeCredentialAuthenticator()
-        with (
-            patch("agento.modules.claude.src.auth._run_cli", side_effect=_no_token),
-            pytest.raises(AuthenticationError, match="no accessToken"),
-        ):
-            strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
+        _no_token()
+        with pytest.raises(AuthenticationError, match="no accessToken"):
+            _read_login(fake_home)
 
     def test_malformed_claude_json_is_tolerated(self, fake_home):
         def _bad_claude_json(*_args, **_kw):
@@ -135,9 +110,8 @@ class TestClaudeCredentialAuthenticator:
             }))
             (fake_home / ".claude.json").write_text("not-json{")
 
-        strategy = ClaudeCredentialAuthenticator()
-        with patch("agento.modules.claude.src.auth._run_cli", side_effect=_bad_claude_json):
-            result = strategy.authenticate_interactive("/ignored/tmp", logging.getLogger("test"))
+        _bad_claude_json()
+        result = _read_login(fake_home)
 
         assert result.subscription_key == "sk-x"
         assert result.raw_auth is not None

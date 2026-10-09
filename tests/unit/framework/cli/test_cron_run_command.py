@@ -103,27 +103,5 @@ def test_an_unknown_command_exits_non_zero(capsys):
     assert "unknown command" in capsys.readouterr().err
 
 
-def test_the_fd_delivered_store_is_resolvable_inside_the_dispatched_command():
-    """In-process dispatch keeps the store; an ``exec`` would discard it."""
-    from agento.framework import store_env
-
-    store_env.reset()
-    store_env._store["MYSQL_HOST"] = "db.internal"
-    seen = {}
-
-    class _StoreReader(_Recorder):
-        def execute(self, args):
-            seen["host"] = store_env.get("MYSQL_HOST")
-
-    reader = _StoreReader()
-    patches = _patch(["m"], ["m"], {"x:y": reader})
-    try:
-        with patches[0], patches[1], patches[2], patches[3]:
-            CronRunCommand().execute(_args("m", "x:y"))
-    finally:
-        store_env.reset()
-    assert seen["host"] == "db.internal"
-
-
 def test_the_command_is_hidden_from_help():
     assert CronRunCommand().hidden is True

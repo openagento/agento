@@ -39,9 +39,7 @@ def _call(healthy: int, exc: TransientAuthError, *, rotatable: bool = True):
             "agento.framework.consumer.count_credentials_for_scope",
             return_value=(3, healthy),
         ),
-        # dispatch_credential_event resolves the manager itself, so patch it at the
-        # source rather than through the consumer's own import.
-        patch("agento.framework.event_manager.get_event_manager") as em,
+        patch("agento.framework.consumer.get_event_manager") as em,
     ):
         _consumer()._handle_transient_auth(
             _job(), _token(rotatable=rotatable), "claude", exc
@@ -92,12 +90,11 @@ def test_transient_auth_dispatches_credential_auth_throttled_after():
         healthy=1, exc=TransientAuthError("401 OAuth access token has been revoked")
     )
     names = [c.args[0] for c in dispatch.call_args_list]
-    # Dual dispatch: new name + deprecated alias.
     assert "credential_auth_throttled_after" in names
-    assert "token_auth_throttled_after" in names
     # Must NOT masquerade as a poison — workspace_build binds an observer to that one.
     assert "credential_auth_failed_after" not in names
-    assert "token_auth_failed_after" not in names
+    # The legacy token_* names were removed in v0.17: one dispatch per event.
+    assert not [n for n in names if n.startswith("token_")]
 
 
 def test_the_incident_401_now_lands_here_instead_of_poisoning_the_subscription():
@@ -112,8 +109,8 @@ def test_the_incident_401_now_lands_here_instead_of_poisoning_the_subscription()
     assert throttle.called
     assert not poison.called
     names = [c.args[0] for c in dispatch.call_args_list]
-    assert "token_auth_throttled_after" in names
-    assert "token_auth_failed_after" not in names
+    assert "credential_auth_throttled_after" in names
+    assert "credential_auth_failed_after" not in names
 
 
 def test_a_non_rotatable_credential_is_poisoned_not_throttled_forever():
@@ -126,5 +123,5 @@ def test_a_non_rotatable_credential_is_poisoned_not_throttled_forever():
     assert poison.called
     assert poison.call_args.kwargs["source"] == "auto"
     names = [c.args[0] for c in dispatch.call_args_list]
-    assert "token_auth_failed_after" in names
-    assert "token_auth_throttled_after" not in names
+    assert "credential_auth_failed_after" in names
+    assert "credential_auth_throttled_after" not in names

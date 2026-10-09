@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 from agento.framework.database_config import DatabaseConfig
-from agento.framework.db import get_connection
+from agento.framework.db import get_connection, pooled
 from agento.framework.scoped_config import build_scoped_overrides
 from agento.framework.workspace import get_agent_view
 
@@ -30,8 +30,7 @@ class PopulateInstructionsObserver:
             return
 
         try:
-            conn = get_connection(DatabaseConfig.from_env())
-            try:
+            with pooled(DatabaseConfig.from_env(), get_connection) as conn:
                 agent_view = get_agent_view(conn, event.agent_view_id)
                 if agent_view is None:
                     logger.warning("agent_view %d not found, skipping instructions", event.agent_view_id)
@@ -42,8 +41,6 @@ class PopulateInstructionsObserver:
                     agent_view_id=agent_view.id,
                     workspace_id=agent_view.workspace_id,
                 )
-            finally:
-                conn.close()
 
             write_instruction_files(event.artifacts_dir, overrides)
 
