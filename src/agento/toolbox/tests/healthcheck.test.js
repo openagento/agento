@@ -172,7 +172,6 @@ describe('adapter healthchecks', () => {
     it('cancels an active MSSQL request when aborted', async () => {
       let rejectQuery;
       const request = {
-        timeout: undefined,
         query: vi.fn(() => new Promise((_, reject) => { rejectQuery = reject; })),
         cancel: vi.fn(() => rejectQuery(new Error('cancelled'))),
       };
@@ -200,7 +199,34 @@ describe('adapter healthchecks', () => {
       const results = await pending;
       expect(results[0]).toMatchObject({ tool: 'mssql_slow', status: 'fail' });
       expect(request.cancel).toHaveBeenCalledOnce();
-      expect(request.timeout).toBe(1_000);
+    });
+
+    it('cancels an MSSQL request that exceeds the healthcheck timeout', async () => {
+      let rejectQuery;
+      const request = {
+        query: vi.fn(() => new Promise((_, reject) => { rejectQuery = reject; })),
+        cancel: vi.fn(() => rejectQuery(new Error('cancelled'))),
+      };
+      vi.doMock('mssql', () => ({
+        default: {
+          ConnectionPool: vi.fn(() => ({
+            healthy: true,
+            connect: vi.fn().mockResolvedValue(),
+            close: vi.fn().mockResolvedValue(),
+            request: () => request,
+          })),
+        },
+      }));
+      vi.doMock('../log.js', () => ({ logToolboxMcp: vi.fn() }));
+
+      const { registerMssqlTools } = await import('../adapters/mssql.js');
+      const { healthcheck } = registerMssqlTools({ tool: vi.fn() }, [
+        { name: 'mssql_slow', description: 'Slow', config: { host: 'db', pass: 'p' } },
+      ], { sqlPoolRegistry: sqlPoolRegistry() });
+
+      const results = await healthcheck({ timeoutMs: 20 });
+      expect(results[0]).toMatchObject({ tool: 'mssql_slow', status: 'fail' });
+      expect(request.cancel).toHaveBeenCalledOnce();
     });
   });
 
