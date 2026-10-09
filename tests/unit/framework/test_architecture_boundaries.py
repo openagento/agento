@@ -71,6 +71,25 @@ class TestModuleIsolation:
                     violations.append(f"{py_file.relative_to(ROOT)}: imports {imp}")
         assert not violations, "Framework imports modules:\n" + "\n".join(violations)
 
+    def test_framework_uses_relative_imports(self):
+        """Framework code imports itself relatively (CODE-2); standalone scripts run by path."""
+        scripts_dir = FRAMEWORK_DIR / "docker" / "cron"
+        violations = []
+        for py_file in FRAMEWORK_DIR.rglob("*.py"):
+            if py_file.is_relative_to(scripts_dir):
+                continue
+            for node in ast.walk(ast.parse(py_file.read_text())):
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    names = [node.module]
+                else:
+                    continue
+                for name in names:
+                    if name == "agento.framework" or name.startswith("agento.framework."):
+                        violations.append(f"{py_file.relative_to(ROOT)}:{node.lineno}: imports {name}")
+        assert not violations, "Absolute framework imports found:\n" + "\n".join(violations)
+
 
 class TestModuleManifests:
     def test_all_core_module_manifests_valid(self):

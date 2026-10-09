@@ -9,8 +9,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, DataTable, Footer, Input, Select, Static, TextArea, Tree
 
-from agento.framework.scoped_config import Scope
-
+from ...scoped_config import Scope
 from ..data import ResolvedField
 from ..widgets.confirm import ConfirmScreen
 from ..widgets.field_detail import FieldDetailPanel
@@ -245,7 +244,7 @@ class ConfigScreen(Screen):
         that touches the UI lives in `_show_test_result`, which
         `call_from_thread` runs back on the UI thread.
         """
-        from agento.framework.config_test import run_config_test
+        from ...config_test import run_config_test
 
         conn = self.app.conn
         if conn is None:
@@ -431,7 +430,7 @@ class ConfigFieldEditorScreen(ModalScreen[bool]):
         if self._field.field_type == "obscure" and self._field.field_name.rsplit(
             "/", 1
         )[-1] == "ssh_private_key" and value.strip():
-            from agento.framework.ssh_keys import EncryptedKeyError, derive_public_key
+            from ...ssh_keys import EncryptedKeyError, derive_public_key
 
             try:
                 derive_public_key(value)

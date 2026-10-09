@@ -16,7 +16,7 @@ import os
 import shutil
 from pathlib import Path
 
-from agento.framework.workspace_paths import ARTIFACTS_DIR, BUILD_DIR
+from .workspace_paths import ARTIFACTS_DIR, BUILD_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def copy_build_to_artifacts_dir(
     if harness is None:
         owned_files, owned_dirs = set(), set()
     else:
-        from agento.framework.harness import owned_paths_for
+        from .harness import owned_paths_for
         owned_files, owned_dirs = owned_paths_for(harness)
     copy_files = owned_files | _UNIVERSAL_COPY_FILES
 
@@ -126,7 +126,7 @@ def copy_build_to_artifacts_dir(
         try:
             import inspect as _inspect
 
-            from agento.framework.harness import workspace_adapter_for
+            from .harness import workspace_adapter_for
             writer = workspace_adapter_for(harness)
             kwargs: dict = {"job_id": job_id}
             # `effective_*` are the PER-RUN values (a `--model` override wins over
