@@ -6,7 +6,7 @@ from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Select
 
-from agento.framework.scoped_config import Scope
+from ...scoped_config import Scope
 
 
 class ScopeChanged(Message):

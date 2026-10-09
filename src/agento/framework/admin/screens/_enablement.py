@@ -9,8 +9,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, SelectionList, Static
 
-from agento.framework.scoped_config import Scope
-
+from ...scoped_config import Scope
 from ..data import EnablementItem, set_config_value
 from ..widgets.scope_selector import ScopeChanged, ScopeSelector
 from ..widgets.sidebar import Sidebar

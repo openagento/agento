@@ -5,8 +5,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agento.framework import store_env
-from agento.framework.config_resolver import (
+from .. import store_env
+from ..config_resolver import (
     ScopedConfigService,
     _db_path,
     _db_path_tool,
@@ -14,12 +14,12 @@ from agento.framework.config_resolver import (
     _env_key_tool,
     read_config_defaults,
 )
-from agento.framework.config_schema import allowed_scopes as get_allowed_scopes
-from agento.framework.config_schema import is_scope_allowed
-from agento.framework.config_test.manifest import tester_label
-from agento.framework.config_validation import max_length_of
-from agento.framework.harness import HARNESS_OPTION_KEY
-from agento.framework.scoped_config import Scope
+from ..config_schema import allowed_scopes as get_allowed_scopes
+from ..config_schema import is_scope_allowed
+from ..config_test.manifest import tester_label
+from ..config_validation import max_length_of
+from ..harness import HARNESS_OPTION_KEY
+from ..scoped_config import Scope
 
 
 @dataclass
