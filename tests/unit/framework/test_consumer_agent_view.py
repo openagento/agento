@@ -145,7 +145,7 @@ class TestRunJobWithAgentView:
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch("agento.framework.harness.persistent_home_paths_for", return_value=[])
     @patch("agento.framework.harness.workspace_adapter_for")
@@ -182,7 +182,7 @@ class TestRunJobWithAgentView:
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch("agento.framework.harness.persistent_home_paths_for", return_value=[])
     @patch("agento.framework.harness.workspace_adapter_for")
@@ -212,7 +212,7 @@ class TestRunJobWithAgentView:
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch(
         "agento.framework.consumer.materialize_run_workspace",
@@ -246,7 +246,7 @@ class TestRunJobWithAgentView:
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch("agento.framework.consumer.resolve_agent_view_runtime")
     def test_no_agent_view_skips_populate(
@@ -275,7 +275,7 @@ class TestRunJobWithAgentView:
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch("agento.framework.consumer.resolve_agent_view_runtime")
     def test_explicit_model_flag_overrides_config(
@@ -361,7 +361,7 @@ class TestRunJobProviderFallback:
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch("agento.framework.harness.persistent_home_paths_for", return_value=[])
     @patch("agento.framework.harness.workspace_adapter_for")
@@ -391,7 +391,7 @@ class TestRunJobProviderFallback:
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch("agento.framework.consumer.resolve_agent_view_runtime")
     def test_raises_when_provider_unset(
@@ -443,7 +443,7 @@ class TestPostRunCredentialCapture:
     @patch("agento.framework.run_preparation.get_current_build_dir", return_value=Path("/workspace/acme/developer/current"))
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch("agento.framework.run_preparation.prepare_artifacts_dir")
     @patch("agento.framework.run_preparation.build_artifacts_dir", return_value="/workspace/acme/developer/runs/42")
@@ -475,7 +475,7 @@ class TestPostRunCredentialCapture:
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch("agento.framework.consumer.resolve_agent_view_runtime")
     def test_skips_capture_when_no_artifacts_dir(
@@ -506,7 +506,7 @@ class TestPostRunCredentialCapture:
     @patch("agento.framework.run_preparation.get_current_build_dir", return_value=Path("/workspace/acme/developer/current"))
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch("agento.framework.run_preparation.prepare_artifacts_dir")
     @patch("agento.framework.run_preparation.build_artifacts_dir", return_value="/workspace/acme/developer/runs/42")
@@ -541,7 +541,7 @@ class TestPostRunCredentialCapture:
     @patch("agento.framework.run_preparation.get_current_build_dir", return_value=Path("/workspace/acme/developer/current"))
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.create_runner")
+    @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     @patch("agento.framework.run_preparation.prepare_artifacts_dir")
     @patch("agento.framework.run_preparation.build_artifacts_dir", return_value="/workspace/acme/developer/runs/42")
@@ -555,7 +555,8 @@ class TestPostRunCredentialCapture:
         mock_resolve.return_value = runtime
 
         # Distinct connection per get_connection() call, so we can assert the
-        # exact connection handed to capture() is the one committed and closed.
+        # exact connection handed to capture() is the one committed. Pooled
+        # checkouts reuse it, so it is never closed.
         conns = []
         def _new_conn(*a, **k):
             c = MagicMock()
@@ -580,8 +581,8 @@ class TestPostRunCredentialCapture:
 
         mock_writer.capture_refreshed_credentials.assert_called_once()
         captured_conn = mock_writer.capture_refreshed_credentials.call_args.args[2]
-        captured_conn.commit.assert_called_once()
-        captured_conn.close.assert_called_once()
+        captured_conn.commit.assert_called()
+        captured_conn.close.assert_not_called()
 
 
 _PEM = (
@@ -624,7 +625,7 @@ class TestConsumerSshEnv:
         svc = _StubSvc(values)
         with patch("agento.framework.consumer.get_workflow_class") as mock_get_wf, \
              patch("agento.framework.consumer.get_channel") as mock_get_ch, \
-             patch("agento.framework.consumer.create_runner") as MockRunner, \
+             patch("agento.framework.consumer.RemoteRunner") as MockRunner, \
              patch("agento.framework.consumer.get_connection", return_value=MagicMock()), \
              patch("agento.framework.harness.persistent_home_paths_for", return_value=[]), \
              patch("agento.framework.harness.workspace_adapter_for"), \

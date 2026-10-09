@@ -1,4 +1,5 @@
-"""Claude ``check_model``: a real child process against real local sockets (TST-3)."""
+"""Claude ``check_model``: a real child process, started by an in-process runner (WS5),
+against real local sockets (TST-3)."""
 from __future__ import annotations
 
 import os
@@ -17,6 +18,8 @@ from agento.framework.config_test import ERROR, FAIL, OK
 from agento.modules.claude.src import model_check
 from agento.modules.claude.src.model_check import check_model
 from agento.modules.claude.src.model_probe import probe
+
+pytestmark = pytest.mark.usefixtures("runner_server")
 
 API_KEY = CredentialRecord(id=1, scope="claude", type="anthropic_api_key", label="key",
                            credentials={"api_key": "sk-ant-test"})
@@ -143,7 +146,7 @@ def test_alias_and_invalid_ids_make_no_request(monkeypatch, model, code):
     def no_spawn(*_a, **_k):
         raise AssertionError("no request for an alias or an invalid id")
 
-    monkeypatch.setattr(model_check.subprocess, "run", no_spawn)
+    monkeypatch.setattr(model_check.runner_client, "run", no_spawn)
     assert check_model("anthropic", model, API_KEY, timeout_s=10).code == code
 
 
@@ -185,15 +188,15 @@ def test_blocking_dns_ends_at_the_deadline(tmp_path, monkeypatch, spawned):
 
 def test_credential_reaches_the_child_only_on_stdin(api, monkeypatch):
     calls = []
-    real_run = subprocess.run
+    real_run = model_check.runner_client.run
 
     def spy(args, **kwargs):
         calls.append((args, kwargs))
         return real_run(args, **kwargs)
 
-    monkeypatch.setattr(model_check.subprocess, "run", spy)
+    monkeypatch.setattr(model_check.runner_client, "run", spy)
     check_model("anthropic", "claude-known", API_KEY, timeout_s=10)
     (args, kwargs), = calls
     assert not any("sk-ant-test" in a for a in args)
     assert "sk-ant-test" in kwargs["input"]
-    assert not any("sk-ant-test" in v for v in kwargs["env"].values())
+    assert "env" not in kwargs

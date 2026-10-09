@@ -11,7 +11,7 @@ import pytest
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from agento.framework import crypto, store_env
+from agento.framework import crypto
 
 PATCH_PATH = (
     Path(__file__).resolve().parents[4]
@@ -29,10 +29,7 @@ def _load():
 
 @pytest.fixture(autouse=True)
 def _key(monkeypatch):
-    monkeypatch.setattr(
-        store_env, "get",
-        lambda name, default="": KEY if name == "AGENTO_ENCRYPTION_KEY" else default,
-    )
+    monkeypatch.setenv("AGENTO_ENCRYPTION_KEY", KEY)
 
 
 def _legacy(plaintext: str) -> str:

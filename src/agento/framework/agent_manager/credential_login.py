@@ -1,15 +1,17 @@
 """Panel re-login: the ``credential_login`` request row, shared by ``web`` and the cron worker.
 
-``web`` inserts a ``pending`` row, shows the login URL, and seals a pasted code with the
-row's public key. The worker (``credential:web-login``, cron, uid ``agent``) claims the row,
-drives the vendor CLI through the authenticator's optional ``start_web_login``, and saves
-the new credential with the same register-commit-dispatch path as ``credential:register``.
+``web`` inserts a ``pending`` row, shows the login URL, and encrypts a pasted code with
+``AGENTO_ENCRYPTION_KEY`` (web and cron are one backend, DECISIONS.md D-BACKEND-1). The
+worker (``credential:web-login``, cron, uid ``agent``) claims the row, drives the vendor
+CLI through the authenticator's optional ``start_web_login``, and saves the new credential
+with the same register-commit-dispatch path as ``credential:register``.
 
 Every write the worker makes is fenced on the status it expects: a row that was cancelled,
 swept or expired stops the worker at once. The pasted code is never stored in plain text:
-the worker makes an RSA-3072 key pair for one login and keeps the private half only in its
-memory; ``code_box`` and ``code_key`` are cleared when the code is read and on every
-terminal write. Neither the code nor CLI output reaches a row or a log (SEC-6).
+``code_box`` holds it encrypted and is cleared when the code is read and on every terminal
+write. ``code_key`` is no longer written (it held a per-login RSA key before D-BACKEND-1);
+the clears stay for rows from before. Neither the code nor CLI output reaches a row or a
+log (SEC-6).
 """
 from __future__ import annotations
 
@@ -20,9 +22,9 @@ import time
 from pathlib import Path
 
 import pymysql
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
+from .. import crypto
+from ..workspace_paths import BASE_WORKSPACE_DIR
 from .auth import credentials_from_auth
 from .credential_store import register_credential_and_dispatch
 from .errors import CredentialLeasedError
@@ -34,22 +36,9 @@ HEARTBEAT_S = 1.0
 STALE_S = 30
 CLAIM_POLL_S = 2.0
 WORKER_BUDGET_S = 55.0
-CODE_MAX = 300  # RSA-3072 OAEP-SHA256 seals at most 318 bytes
-TMP_ROOT = Path(tempfile.gettempdir()) / "agento-web-login"
-
-_OAEP = padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
-
-
-def seal_code(public_pem: str, code: str) -> bytes:
-    key = serialization.load_pem_public_key(public_pem.encode())
-    if not isinstance(key, rsa.RSAPublicKey):
-        raise ValueError("code_key is not an RSA public key")
-    return key.encrypt(code.encode(), _OAEP)
-
-
-def open_code(private_key: rsa.RSAPrivateKey, box: bytes) -> str:
-    return private_key.decrypt(box, _OAEP).decode()
-
+CODE_MAX = 300  # encrypted, about 650 bytes: inside VARBINARY(1024) code_box
+# On the shared /workspace: the login CLI runs in a runner and writes its files here.
+TMP_ROOT = Path(BASE_WORKSPACE_DIR) / ".tmp" / "agento-web-login"
 
 # --- shared by web and the worker -------------------------------------------------------
 #
@@ -158,26 +147,26 @@ def get_login(conn: pymysql.Connection, login_id: int) -> dict | None:
 
 
 def put_code(conn: pymysql.Connection, login_id: int, code: str) -> str | None:
-    """Seal ``code`` into the row: ``None`` when stored, else ``not_found`` or ``conflict``
+    """Encrypt ``code`` into the row: ``None`` when stored, else ``not_found`` or ``conflict``
     (not waiting for a code, or a code is already there: one code per login)."""
     try:
         with conn.cursor() as cur:
             if not _lock_for_login(cur, login_id):
                 return "not_found"
             cur.execute(
-                "SELECT status, needs_code, code_key, code_box IS NOT NULL AS has_box "
+                "SELECT status, needs_code, code_box IS NOT NULL AS has_box "
                 "FROM credential_login WHERE id = %s FOR UPDATE",
                 (login_id,),
             )
             row = cur.fetchone()
             if row is None:
                 return "not_found"
-            if row["status"] != "waiting" or not row["needs_code"] or not row["code_key"] or row["has_box"]:
+            if row["status"] != "waiting" or not row["needs_code"] or row["has_box"]:
                 return "conflict"
             cur.execute(
                 "UPDATE credential_login SET code_box = %s WHERE id = %s AND status = 'waiting' "
                 "AND code_box IS NULL",
-                (seal_code(row["code_key"], code), login_id),
+                (crypto.encrypt(code), login_id),
             )
             return None
     finally:
@@ -285,18 +274,14 @@ def run_login(conn: pymysql.Connection, login_id: int, logger: logging.Logger, t
         if not prompt.url.startswith("https://"):
             _finish(conn, login_id, "bad_url", logger)
             return
-        key = rsa.generate_private_key(public_exponent=65537, key_size=3072) if prompt.needs_code else None
-        public_pem = key.public_key().public_bytes(
-            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode() if key else None
         if not _fenced(
             conn, login_id, ("starting",),
-            "status = 'waiting', verify_url = %s, user_code = %s, needs_code = %s, code_key = %s, "
+            "status = 'waiting', verify_url = %s, user_code = %s, needs_code = %s, "
             "heartbeat_at = UTC_TIMESTAMP()",
-            (prompt.url, prompt.user_code, prompt.needs_code, public_pem),
+            (prompt.url, prompt.user_code, prompt.needs_code),
         ):
             return
-        _watch(conn, login_id, row["credential_id"], login, key, logger)
+        _watch(conn, login_id, row["credential_id"], login, prompt.needs_code, logger)
     finally:
         if login is not None:
             login.close()
@@ -324,7 +309,7 @@ def _heartbeat(conn, login_id: int) -> dict | None:
     return state
 
 
-def _watch(conn, login_id: int, credential_id: int, login, key, logger: logging.Logger) -> None:
+def _watch(conn, login_id: int, credential_id: int, login, needs_code: bool, logger: logging.Logger) -> None:
     while True:
         time.sleep(HEARTBEAT_S)
         state = _heartbeat(conn, login_id)
@@ -333,8 +318,8 @@ def _watch(conn, login_id: int, credential_id: int, login, key, logger: logging.
         if state["expired"]:
             _finish(conn, login_id, "expired", logger)
             return
-        if key is not None and state["has_box"] and state["status"] == "waiting":
-            code = _take_code(conn, login_id, key, logger)
+        if needs_code and state["has_box"] and state["status"] == "waiting":
+            code = _take_code(conn, login_id, logger)
             if code is None:
                 return
             login.submit_code(code)
@@ -345,13 +330,13 @@ def _watch(conn, login_id: int, credential_id: int, login, key, logger: logging.
             _finish(conn, login_id, "cli_failed", logger)
             return
         if result is not None:
-            _save(conn, login_id, credential_id, result, needs_code=key is not None, logger=logger)
+            _save(conn, login_id, credential_id, result, needs_code=needs_code, logger=logger)
             return
 
 
-def _take_code(conn, login_id: int, key: rsa.RSAPrivateKey, logger: logging.Logger) -> str | None:
-    """Consume the sealed code once: clear it and move to ``verifying`` in one transaction.
-    ``None``: the row moved on, or the box does not open with this worker's key."""
+def _take_code(conn, login_id: int, logger: logging.Logger) -> str | None:
+    """Consume the encrypted code once: clear it and move to ``verifying`` in one transaction.
+    ``None``: the row moved on, or the box does not decrypt."""
     with conn.cursor() as cur:
         _lock_for_login(cur, login_id)
         cur.execute(
@@ -369,7 +354,7 @@ def _take_code(conn, login_id: int, key: rsa.RSAPrivateKey, logger: logging.Logg
         )
     conn.commit()
     try:
-        return open_code(key, bytes(row["code_box"]))
+        return crypto.decrypt(bytes(row["code_box"]).decode())
     except ValueError:
         _finish(conn, login_id, "cli_failed", logger)
         return None

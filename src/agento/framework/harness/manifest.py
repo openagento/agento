@@ -15,7 +15,6 @@ from ..module_discovery import iter_enabled_module_dirs
 from .descriptor import HarnessDescriptor, SandboxPackage
 
 HARNESS_SECTION = "agent_harnesses"
-LEGACY_SANDBOX_SECTION = "sandbox_packages"
 
 
 @dataclass(frozen=True)
@@ -137,56 +136,9 @@ def enumerate_harness_declarations(
 
 
 def enumerate_sandbox_packages(project_root: Path | None = None) -> list[SandboxPackage]:
-    """Sandbox packages from ``agent_harnesses[].sandbox_package`` plus the legacy section.
-
-    The legacy top-level ``sandbox_packages`` array is still read for one cycle so a
-    module that hasn't migrated keeps its CLI pin. A harness declaration wins over a
-    legacy entry for the same ``version_env_key``.
-    """
-    packages: list[SandboxPackage] = []
-    by_env_key: dict[str, str] = {}
-
-    for decl in enumerate_harness_declarations(project_root):
-        pkg = decl.descriptor.sandbox_package
-        if pkg is not None:
-            by_env_key[pkg.version_env_key] = decl.module
-            packages.append(pkg)
-
-    for module_dir in iter_enabled_module_dirs(project_root):
-        for pkg in _parse_legacy_sandbox_packages(module_dir / "di.json", module_dir.name):
-            prior = by_env_key.get(pkg.version_env_key)
-            if prior is not None:
-                if prior == module_dir.name:
-                    # Same module declares both sections during migration — the
-                    # agent_harnesses entry already covers it.
-                    continue
-                raise RuntimeError(
-                    f"duplicate sandbox_packages.version_env_key {pkg.version_env_key!r} "
-                    f"declared by both {prior!r} and {module_dir.name!r}"
-                )
-            by_env_key[pkg.version_env_key] = module_dir.name
-            packages.append(pkg)
-
-    return packages
-
-
-def _parse_legacy_sandbox_packages(di_json: Path, module: str) -> list[SandboxPackage]:
-    """Read the deprecated top-level ``sandbox_packages`` array. [] on absence/error."""
-    try:
-        data = json.loads(di_json.read_text())
-    except (OSError, json.JSONDecodeError):
-        return []
-    decls = data.get(LEGACY_SANDBOX_SECTION, [])
-    if not isinstance(decls, list):
-        return []
-    out: list[SandboxPackage] = []
-    for decl in decls:
-        if not isinstance(decl, dict):
-            continue
-        harness = decl.get("provider") or decl.get("harness") or module
-        try:
-            out.append(SandboxPackage.from_declaration(decl, str(harness)))
-        except ValueError as e:
-            # Surface as a hard error so a typo doesn't silently drop an agent's pin.
-            raise RuntimeError(f"Malformed {LEGACY_SANDBOX_SECTION} in {di_json}: {e}") from None
-    return out
+    """Sandbox packages from ``agent_harnesses[].sandbox_package``."""
+    return [
+        decl.descriptor.sandbox_package
+        for decl in enumerate_harness_declarations(project_root)
+        if decl.descriptor.sandbox_package is not None
+    ]

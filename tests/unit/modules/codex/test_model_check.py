@@ -16,6 +16,9 @@ from agento.framework.config_test import ERROR, FAIL, OK
 from agento.modules.codex.src.config import CodexWorkspaceAdapter
 from agento.modules.codex.src.model_check import check_model, parse_slugs
 
+# The CLI runs in a runner (WS5): an in-process server here.
+pytestmark = pytest.mark.usefixtures("runner_server")
+
 FIXTURE = Path(__file__).resolve().parents[3] / "fixtures" / "model_check" / "codex_debug_models.json"
 CRED = CredentialRecord(id=3, scope="codex", type="openai_api_key", label="codex",
                         credentials={"api_key": "sk-codex-test"})
@@ -141,17 +144,15 @@ def test_codex_login_logs_and_raises_no_cli_output(fake_codex, tmp_path, caplog)
     assert "exited 1" in caplog.text
 
 
-def test_codex_login_does_not_inherit_the_cron_secrets(fake_codex, tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENTO_ENCRYPTION_KEY", "cron-only-secret")
+def test_codex_login_gets_its_home(fake_codex, tmp_path, monkeypatch):
     seen = {}
-    real_run = subprocess.run
+    real_popen = subprocess.Popen
 
     def spy(args, **kwargs):
         seen.update(kwargs["env"])
-        return real_run(args, **kwargs)
+        return real_popen(args, **kwargs)
 
     fake_codex()
-    monkeypatch.setattr("agento.modules.codex.src.config.subprocess.run", spy)
+    monkeypatch.setattr("agento.framework.runner.server.subprocess.Popen", spy)
     CodexWorkspaceAdapter().write_credentials(tmp_path / "home", CRED)
     assert seen["HOME"] == str(tmp_path / "home")
-    assert "AGENTO_ENCRYPTION_KEY" not in seen

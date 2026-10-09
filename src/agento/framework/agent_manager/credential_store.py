@@ -135,7 +135,8 @@ def register_credential_and_dispatch(
     commits with the credential. On ``CredentialLeasedError`` it rolls back (that write too)
     and raises.
     """
-    from ..events import CredentialRegisteredEvent, dispatch_credential_event
+    from ..event_manager import get_event_manager
+    from ..events import CredentialRegisteredEvent
 
     try:
         credential = register_credential(
@@ -146,7 +147,7 @@ def register_credential_and_dispatch(
         conn.rollback()
         raise
     conn.commit()
-    dispatch_credential_event(
+    get_event_manager().dispatch(
         "credential_register_after",
         CredentialRegisteredEvent(
             scope=scope,
@@ -251,7 +252,7 @@ def list_credentials(
 
     ``include_credentials=False`` never reads the encrypted payload, so nothing is
     decrypted and ``credentials`` is ``None``: the form for a reader that shows a row's
-    status only (the admin screens; ``web`` holds no key).
+    status only (the admin screens: no secret goes to the browser, D-PANEL-ADMIN-1).
     """
     sql = f"SELECT {'*' if include_credentials else _NO_PAYLOAD_COLUMNS} FROM credential WHERE 1=1"
     params: list = []

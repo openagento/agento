@@ -3,7 +3,7 @@
 Three independent axes replace the old closed ``AgentProvider`` enum:
 
 - **harness** — the program driving the agent (runner, command builder, workspace
-  adapter, transcript reader, sandbox package)
+  adapter, sandbox package)
 - **provider** — the model/API vendor (credential requirement, credential scope)
 - **model** — the model identifier at that provider (the ``--model`` flag)
 

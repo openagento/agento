@@ -303,7 +303,7 @@
   <div class="stage-head">
     <span class="stage-num">4</span>
     <h2 class="stage-title" style="margin:0; color: var(--text); text-transform: none; letter-spacing: 0; font-size: 16px;">Run agent</h2>
-    <span class="stage-where">cron container · subprocess (claude / codex)</span>
+    <span class="stage-where">cron prepares · runner-&lt;i&gt; container runs the CLI (claude / codex / pi)</span>
   </div>
   <div class="lanes">
     <div class="lane lane-cron">
@@ -333,21 +333,23 @@
       <div class="arrow">↓</div>
 
       <div class="card">
-        <div class="card-title">Launch agent CLI subprocess</div>
+        <div class="card-title">Launch agent CLI in the runner</div>
         <div class="card-body">
-          Isolated <code>HOME</code>, <code>cwd=artifacts_dir</code>, stream-json output, hard timeout.
+          The consumer sends the run over a Unix socket to a <code>runner-&lt;i&gt;</code> service
+          (<a href="runner.md">runner.md</a>), which has no DB and no key. The runner starts the CLI with an
+          isolated <code>HOME</code>, <code>cwd=artifacts_dir</code>, stream-json output and a hard timeout, and
+          streams pid, session id, fragments and the result back.
         </div>
         <div class="events">
           <span class="evt before"><a href="../../src/agento/framework/consumer.py#L436">agent_view_run_start_before</a></span>
           <span class="evt after"><a href="../../src/agento/framework/consumer.py#L523">agent_view_run_finish_after</a></span>
           <span class="evt after"><a href="../../src/agento/framework/consumer.py#L555">credential_auth_failed_after</a></span>
           <span class="evt after"><a href="../../src/agento/framework/consumer.py#L555">credential_auth_throttled_after</a></span>
-          <span class="evt after" title="deprecated aliases, dispatched alongside the credential_* names">+ legacy <code>token_*</code> aliases</span>
         </div>
       </div>
 
       <div class="card callout">
-        <code>credential_auth_failed_after</code> (legacy alias: <code>token_auth_failed_after</code>) fires only on a <strong>permanent</strong> runtime auth failure — flips the row in <code>credential</code> to <code>status='error'</code> so the LRU pool skips it until an operator clears it.
+        <code>credential_auth_failed_after</code> fires only on a <strong>permanent</strong> runtime auth failure — flips the row in <code>credential</code> to <code>status='error'</code> so the LRU pool skips it until an operator clears it.
         A <strong>transient</strong> credential rejection (revoked/stale access token, or unrecognised <code>401</code> wording) instead fires <code>credential_auth_throttled_after</code> and sets a 15-minute <code>throttled_until</code> cooldown — <code>status</code> stays <code>'ok'</code> and the credential self-recovers, because the same credential is usually still serving other jobs.
       </div>
     </div>
@@ -389,9 +391,8 @@
         </div>
       </div>
       <div class="card callout">
-        Each call is recorded in the agent transcript
-        (<code>~/.claude/projects/*/&lt;session_id&gt;.jsonl</code> or <code>~/.codex/sessions/.../rollout-*.jsonl</code>).
-        Stage 6's verification gate parses this file.
+        The toolbox dispatcher writes a <code>tool_invocation</code> audit row for each call, on the run's
+        <code>mcp_job</code> capability. Stage 6's MCP-health telemetry counts these rows.
       </div>
     </div>
 
@@ -457,10 +458,10 @@
           <a href="../../src/agento/framework/consumer.py#L637"><code>consumer.py:637</code></a> dispatches with
           <code>JobFinalizeEvent(job, job_result, elapsed_ms, harness, verdict=None)</code>.
           Observer <code>McpHealthTelemetryObserver</code>
-          (<a href="../../src/agento/modules/app_monitor/events.json"><code>app_monitor/events.json</code></a>, order=100) parses the
-          transcript via <a href="../../src/agento/framework/harness/registry.py"><code>find_harness(harness).adapter.transcript_reader</code></a>
-          and records two nullable signals on the <code>job</code> row —
-          <code>toolbox_mcp_calls</code> (count of <code>mcp__toolbox__*</code> tool-uses) and
+          (<a href="../../src/agento/modules/app_monitor/events.json"><code>app_monitor/events.json</code></a>, order=100) records two
+          nullable signals on the <code>job</code> row —
+          <code>toolbox_mcp_calls</code> (the <code>tool_invocation</code> rows the toolbox audited on this attempt's
+          <code>mcp_job</code> capability; no transcript is parsed) and
           <code>toolbox_mcp_connected</code> (from <code>job_result.mcp_init</code>) — then optionally emails ops.
           It is <b>telemetry only</b>: <code>verdict</code> stays <code>None</code>, so an <code>rc=0</code> job always commits SUCCESS.
           The framework's verdict plumbing remains for future modules, but no in-tree observer sets a verdict.
@@ -507,7 +508,7 @@
 
     <div class="lane lane-toolbox">
       <span class="lane-label">toolbox</span>
-      <div class="card callout">No participation — finalization reads transcripts from the cron container's filesystem.</div>
+      <div class="card callout">No call — finalization reads the toolbox's <code>tool_invocation</code> audit rows from MySQL.</div>
     </div>
   </div>
 </div>
@@ -556,8 +557,8 @@
   <p><b>Notes on the container split</b></p>
   <ul>
     <li>Agent ⇄ toolbox communication is HTTP only (<code>http://toolbox:3001</code>); the agent never holds credentials.</li>
-    <li>Stages 1–4, 6, 7 happen entirely in the cron container. Stage 5 is the only point where the toolbox container is active.</li>
-    <li>Verification (Stage 6) reads transcripts on the cron container's filesystem — it does <em>not</em> call the toolbox.</li>
+    <li>Stages 1–3, 6, 7 happen in the cron container. In Stage 4 the agent CLI runs in a <code>runner-&lt;i&gt;</code> container. Stage 5 is the only point where the toolbox container is active.</li>
+    <li>MCP-health telemetry (Stage 6) reads the toolbox audit rows in MySQL — it does <em>not</em> call the toolbox.</li>
   </ul>
 </footer>
 

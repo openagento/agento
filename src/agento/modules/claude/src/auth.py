@@ -12,7 +12,7 @@ import httpx
 from agento.framework.agent_manager.auth import (
     AuthenticationError,
     AuthResult,
-    _run_cli,
+    attended_login,
 )
 from agento.framework.agent_manager.pty_login import PtyLogin, spawn
 from agento.framework.harness import (
@@ -80,23 +80,11 @@ def _parse_time(value: str | None) -> datetime | None:
 
 
 class ClaudeCredentialAuthenticator:
-    """Run ``claude auth login`` with the user's real HOME.
-
-    Claude CLI's OAuth polling depends on state in ``$HOME/.claude/``.
-    An isolated temp HOME breaks the polling, so we ignore ``tmp_home``
-    and use the real HOME for the CLI process.
-    """
+    """``claude auth login --claudeai`` in a runner, in ``tmp_home``; the login page
+    shows a code the operator pastes back."""
 
     def authenticate_interactive(self, tmp_home: str, logger: logging.Logger) -> AuthResult:
-        logger.info("Starting Claude OAuth login (follow the URL in your browser)...")
-        # Run full `claude` TUI (not `claude auth login`) — only the TUI
-        # has the "Paste code here" prompt needed for headless/Docker auth.
-        # Use real HOME because Claude CLI's OAuth polling needs $HOME/.claude/.
-        # --strict-mcp-config with no --mcp-config: a login connects to no MCP server
-        # (no project .mcp.json, no claude.ai connectors).
-        real_home = str(Path.home())
-        _run_cli(["claude", "--strict-mcp-config"], real_home, "Claude")
-        return _read_login(Path(real_home))
+        return attended_login(self.start_web_login(tmp_home, logger))
 
     def start_web_login(self, tmp_home: str, logger: logging.Logger) -> PtyLogin:
         """``claude auth login --claudeai`` in ``tmp_home``: it prints the login URL and

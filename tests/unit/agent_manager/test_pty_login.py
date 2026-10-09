@@ -18,6 +18,9 @@ from agento.framework.agent_manager.errors import AuthenticationError
 from agento.framework.agent_manager.pty_login import PtyLogin, spawn
 from agento.framework.harness.protocols import AuthResult, LoginPrompt
 
+# The CLI runs in a runner (WS5): an in-process server here.
+pytestmark = pytest.mark.usefixtures("runner_server")
+
 LONG_URL = "https://login.example.com/oauth/authorize?code=true&state=" + "a" * 400
 URL = re.compile(r"https://\S+/oauth/authorize\?\S+")
 PROMPT = re.compile(r"Paste code here")

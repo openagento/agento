@@ -37,7 +37,7 @@ class Command(Protocol):
 
 
 # Namespace short-forms allowed as the first shortcut segment instead of the
-# default first-2-letters (avoids token:list / tool:list collisions, keeps the
+# default first-2-letters (avoided the old token:list / tool:list collision; keeps the
 # multi-word agent_view readable).
 NAMESPACE_ALIASES: dict[str, str] = {"tool": "tl", "agent_view": "av"}
 

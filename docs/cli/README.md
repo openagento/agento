@@ -29,7 +29,7 @@
 | `config:list [prefix]` | List config values (all scopes) |
 | `config:remove <path> [--scope=S] [--scope-id=N]` | Remove config override from DB |
 | `config:test <path> \| --all [--agent-view CODE]` | Test a field's live credential or connection — four states, exit 1 on failure ([details](config.md#configtest)) |
-| **Credentials** (LRU pool per scope — no sticky primary; `token:*` are deprecated aliases) | |
+| **Credentials** (LRU pool per scope — no sticky primary) | |
 | `credential:register <scope> <label>` | Register OAuth credential interactively ([details](credentials.md)) |
 | `credential:register <scope> <label> --with-api-key` | Register API-key credential; secret read from stdin/getpass ([details](credentials.md)) |
 | `credential:register <scope> <label> --with-access-token` | Register access-token; JWT read from stdin/getpass ([details](credentials.md)) |

@@ -2,7 +2,7 @@
 
 `web` composes its route table once, at startup, from the built-ins plus every enabled
 module's `di.json`. It must do that WITHOUT bootstrapping and without decrypting anything:
-`web` sits on agento-net with `sandbox`, and a config read on this path would put module
+`web` is reachable from `toolbox` and `cron` (db-net), and a config read on this path would put module
 secrets in the panel process for no reason.
 """
 from __future__ import annotations

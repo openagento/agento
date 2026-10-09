@@ -106,6 +106,10 @@ TODO → RUNNING → SUCCESS
 
 The consumer runs a bounded thread pool (`AGENTO_CONSUMER_MAX_WORKERS`). Each job gets an isolated run directory with freshly generated config files (`.claude.json`, `.mcp.json`, `AGENTS.md`, `SOUL.md`), eliminating the shared-file corruption that previously forced `concurrency=1`.
 
+**Database connections.** The consumer borrows connections from a pool (`db.pooled`). The pool keeps at most `AGENTO_CONSUMER_MAX_WORKERS` idle connections. When none is idle, it opens a new one; it never waits. The pool checks each connection at checkout and rolls it back at return. Code that runs `GET_LOCK` or `SET SESSION` must not use the pool, because both outlive the checkout (a test enforces this). The consumer renews refresh leases once per poll interval, and it runs the build freshness check at most once per poll interval for each agent_view. So a config change reaches new runs within one poll interval.
+
+**Sizing.** `AGENTO_CONSUMER_MAX_WORKERS` stays 10 by default. To run 200 jobs at the same time, set it to 200. MySQL `max_connections` must be larger than the peak: about one connection per running job, plus the toolbox, `web` and the CLI. The compose template sets `--max-connections=600`, which is enough for 200 workers. The benchmark `tests/integration/test_orchestration_scale.py` measures connections per job and `Max_used_connections`.
+
 Jobs are dequeued by priority: `ORDER BY priority DESC, created_at ASC`. Priority is stamped at publish time from scoped config path `agent_view/scheduling/priority` (0-100, default 50).
 
 Each job carries `agent_view_id` (resolved via ingress routing at publish time for ingress-routed channels, or set directly by a channel's own per-agent_view publisher — e.g. the Outlook mailbox→agent_view loop). The consumer resolves the agent_view's runtime profile (provider, model, scoped config) and generates per-run config files before CLI execution.

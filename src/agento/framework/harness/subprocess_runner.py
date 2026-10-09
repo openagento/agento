@@ -1,4 +1,4 @@
-"""SubprocessRunner — executes a harness CLI for one run and records usage.
+"""SubprocessRunner — executes a harness CLI for one run.
 
 Formerly ``agent_manager.runner.TokenRunner``. Two things changed beyond the move:
 
@@ -14,13 +14,14 @@ import contextlib
 import logging
 import os
 import re
+import signal
 import subprocess
 import threading
 from abc import ABC, abstractmethod
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
-from ..credential_store_env import without_credential_store_env
 from ..ssh_identity import without_run_owned_ssh_env
 from ..ssh_prelude import wrap_with_ssh_prelude
 from .protocols import CommandBuilder
@@ -28,10 +29,63 @@ from .runtime import HarnessRunContext, RunRequest, RunResult
 
 
 def harness_base_env() -> dict[str, str]:
-    """The environment a harness CLI starts from: this process's env without the
-    credential store and the run-owned SSH names. The run and a model check both
-    use it, so a harness CLI never inherits what the consumer holds."""
-    return without_credential_store_env(without_run_owned_ssh_env(dict(os.environ)))
+    """The environment a harness CLI starts from: the runner's own env (it has no store,
+    ``test_runner_boundary.py``) without the run-owned SSH names."""
+    return without_run_owned_ssh_env(dict(os.environ))
+
+
+# The retained tail of each stream. A run's output is kept in memory until it ends; the
+# oldest lines go first, so `agent_output` is a tail, as on the timeout path (SCL-1).
+MAX_RETAINED = 4 << 20
+
+
+def collect(proc: subprocess.Popen, stdin_payload: str | None, timeout: float | None,
+            on_line: Callable[[str, bool], None] | None = None) -> tuple[str, str, bool]:
+    """Feed, drain and wait for ``proc`` (text mode, ``start_new_session=True``), then kill
+    its process group, so no descendant outlives the run or holds its pipes. Returns the
+    last ``MAX_RETAINED`` chars of stdout and stderr, and whether it timed out. A read is
+    at most ``MAX_RETAINED`` chars: a longer line reaches ``on_line(line, from_stdout)``
+    in pieces.
+
+    The payload is written from its OWN thread: a harness may read stdin only after its
+    startup work, so a payload larger than the pipe buffer would block the wait below."""
+    def _write_stdin(stream) -> None:
+        # The child may die before reading it all (a failed extension load): the
+        # normal rc!=0 path then reports the real error instead of this symptom.
+        with contextlib.suppress(BrokenPipeError, ValueError, OSError):
+            stream.write(stdin_payload)
+        with contextlib.suppress(BrokenPipeError, ValueError, OSError):
+            stream.close()
+
+    def _drain(stream, tail: deque[str], from_stdout: bool) -> None:
+        kept = 0
+        for line in iter(lambda: stream.readline(MAX_RETAINED), ""):
+            tail.append(line)
+            kept += len(line)
+            while kept > MAX_RETAINED:
+                kept -= len(tail.popleft())
+            if on_line:
+                on_line(line, from_stdout)
+
+    tails: tuple[deque[str], deque[str]] = (deque(), deque())
+    threads = [threading.Thread(target=_drain, args=(proc.stdout, tails[0], True), daemon=True),
+               threading.Thread(target=_drain, args=(proc.stderr, tails[1], False), daemon=True)]
+    if stdin_payload is not None:
+        threads.append(threading.Thread(target=_write_stdin, args=(proc.stdin,), daemon=True))
+    for t in threads:
+        t.start()
+    timed_out = False
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    with contextlib.suppress(OSError):
+        os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=5)  # reap the leader the kill just ended: no zombie per timeout
+    for t in threads:
+        t.join(timeout=5)
+    return "".join(tails[0]), "".join(tails[1]), timed_out
 
 
 # A session id goes into a glob: no `*`, `?`, `[`, `/` or `..`.
@@ -77,6 +131,9 @@ class SubprocessRunner(ABC):
         # One line of the harness's stdout, raw. The callback maps and enqueues it; it does
         # NO DB work, because this runs on the drain thread and a query here stalls the run.
         self.line_callback: Callable[[str], None] | None = None
+        # The parsed result, before the exit code is judged: usage is recorded where the
+        # DB is (the worker), also for a run that exited non-zero.
+        self.usage_callback: Callable[[RunResult], None] | None = None
         # Prompt-free rendering of the current command, for logs AND exception strings
         # (a TimeoutExpired's `cmd` ends up in job.error_message).
         self._log_cmd: str | None = None
@@ -138,11 +195,6 @@ class SubprocessRunner(ABC):
         # contributes none of them, so a merge would leave whatever the consumer process
         # inherited in place and the spawn prelude would load a key this run was never
         # granted. See ssh_identity.RUN_OWNED_SSH_ENV_VARS.
-        # The consumer's own environment carries the credential store (DB credentials,
-        # the decryption passphrase, CONFIG__* overrides). An agent that inherits it can
-        # decrypt every credential the framework holds, including another agent_view's
-        # SSH private key — so it is stripped BEFORE the run's own credential is merged
-        # in. See credential_store_env: a reduction under one uid, not a boundary.
         env = {
             **harness_base_env(),
             **self._credential_env(ctx.credential),
@@ -179,6 +231,7 @@ class SubprocessRunner(ABC):
         on_pid=None,
         on_session_id=None,
         on_line=None,
+        on_usage=None,
     ) -> None:
         """Register the progress callbacks (``Runner`` protocol)."""
         if on_pid is not None:
@@ -187,6 +240,8 @@ class SubprocessRunner(ABC):
             self.session_id_callback = on_session_id
         if on_line is not None:
             self.line_callback = on_line
+        if on_usage is not None:
+            self.usage_callback = on_usage
 
     @staticmethod
     def _failure_output(stdout: str, stderr: str) -> str:
@@ -209,17 +264,8 @@ class SubprocessRunner(ABC):
     def _execute_process(
         self, cmd: list[str], env: dict, stdin_payload: str | None = None
     ) -> subprocess.CompletedProcess:
-        """Execute a subprocess with incremental output reading.
-
-        Reads stdout/stderr in threads so that the session id can be reported via
-        callback immediately, and partial output survives a timeout.
-
-        ``stdin_payload`` is written from its OWN thread and the stream is then
-        closed. It cannot be written inline: a harness may read stdin only after
-        doing startup work (loading extensions, opening a network handshake), so a
-        payload larger than the pipe buffer would block the parent — and the
-        timeout logic (``proc.wait``) lives on this thread.
-        """
+        """Execute a subprocess with incremental output reading (``collect``), so the
+        session id is reported at once and partial output survives a timeout."""
         if self.context.home_dir is not None:
             env = {**env, "HOME": self.context.home_dir}
             spawn_cmd = wrap_with_ssh_prelude(cmd)
@@ -234,29 +280,10 @@ class SubprocessRunner(ABC):
             text=True,
             cwd=self.context.working_dir,
             env=env,
+            # Its own process group: the runner signals and kills the whole run (pause,
+            # disconnect), not only the shell prelude.
+            start_new_session=True,
         )
-
-        stdin_thread: threading.Thread | None = None
-        if stdin_payload is not None:
-            # Bind the pipe once: `stdin=PIPE` was requested above, so it exists, and
-            # the local keeps the type checker from seeing `IO | None` on every use.
-            stdin_pipe = proc.stdin
-            assert stdin_pipe is not None
-
-            def _write_stdin() -> None:
-                try:
-                    stdin_pipe.write(stdin_payload)
-                except (BrokenPipeError, ValueError, OSError):
-                    # The child died before reading it all — a failed extension load
-                    # exits before touching stdin. Swallow it so the normal rc!=0 path
-                    # reports the real error instead of this symptom.
-                    pass
-                finally:
-                    with contextlib.suppress(BrokenPipeError, ValueError, OSError):
-                        stdin_pipe.close()
-
-            stdin_thread = threading.Thread(target=_write_stdin, daemon=True)
-            stdin_thread.start()
 
         if self.pid_callback:
             try:
@@ -264,56 +291,30 @@ class SubprocessRunner(ABC):
             except Exception:
                 self.logger.warning(f"PID callback failed for pid={proc.pid}")
 
-        stdout_lines: list[str] = []
-        stderr_lines: list[str] = []
         session_id_found: str | None = None
 
-        def _drain(stream, lines: list[str], parse_session: bool,
-                   stream_lines: bool = False) -> None:
+        def _on_line(line: str, from_stdout: bool) -> None:
             nonlocal session_id_found
-            for line in stream:
-                lines.append(line)
-                if stream_lines and self.line_callback:
-                    # Caught and logged like `session_id_callback`: a streaming seam must
-                    # never be able to fail a run.
-                    try:
-                        self.line_callback(line)
-                    except Exception:
-                        self.logger.warning("line_callback failed")
-                if parse_session and session_id_found is None:
-                    sid = self._try_parse_session_id(line)
-                    if sid:
-                        session_id_found = sid
-                        if self.session_id_callback:
-                            try:
-                                self.session_id_callback(sid)
-                            except Exception:
-                                self.logger.warning(f"session_id_callback failed for sid={sid}")
-
-        stdout_thread = threading.Thread(
             # Only stdout is streamed: the event stream is there, and stderr is diagnostics.
-            target=_drain, args=(proc.stdout, stdout_lines, True, True), daemon=True,
-        )
-        stderr_thread = threading.Thread(
-            target=_drain, args=(proc.stderr, stderr_lines, True), daemon=True,
-        )
-        stdout_thread.start()
-        stderr_thread.start()
+            if from_stdout and self.line_callback:
+                # Caught and logged like `session_id_callback`: a streaming seam must
+                # never be able to fail a run.
+                try:
+                    self.line_callback(line)
+                except Exception:
+                    self.logger.warning("line_callback failed")
+            if session_id_found is None:
+                sid = self._try_parse_session_id(line)
+                if sid:
+                    session_id_found = sid
+                    if self.session_id_callback:
+                        try:
+                            self.session_id_callback(sid)
+                        except Exception:
+                            self.logger.warning(f"session_id_callback failed for sid={sid}")
 
-        timed_out = False
-        try:
-            proc.wait(timeout=self.context.timeout_seconds)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            timed_out = True
-
-        stdout_thread.join(timeout=5)
-        stderr_thread.join(timeout=5)
-        if stdin_thread is not None:
-            stdin_thread.join(timeout=5)
-
-        stdout = "".join(stdout_lines)
-        stderr = "".join(stderr_lines)
+        stdout, stderr, timed_out = collect(proc, stdin_payload, self.context.timeout_seconds,
+                                            _on_line)
 
         if timed_out:
             session_id = session_id_found or self._extract_session_id_from_partial(stdout, stderr)
@@ -351,7 +352,7 @@ class SubprocessRunner(ABC):
     def _execute_and_parse(
         self, cmd: list[str], env: dict, request: RunRequest
     ) -> RunResult:
-        """Execute, parse, stamp metadata, record usage."""
+        """Execute, parse, stamp metadata, report usage."""
         ctx = self.context
         # Metadata only, at every level. The argv is never logged — see _cmd_metadata.
         self._log_cmd = self._cmd_metadata(cmd, request)
@@ -385,7 +386,11 @@ class SubprocessRunner(ABC):
         result.harness = str(ctx.harness)
         result.provider = str(ctx.provider)
         result.model = result.model or request.model or ctx.model
-        self._record_usage(result)
+        if self.usage_callback:
+            try:
+                self.usage_callback(result)
+            except Exception:
+                self.logger.warning("usage_callback failed")
 
         if proc.returncode != 0:
             # Metadata only in the message: it is persisted verbatim to
@@ -402,44 +407,3 @@ class SubprocessRunner(ABC):
             err.agent_output = self._failure_output(proc.stdout, proc.stderr)  # type: ignore[attr-defined]
             raise err
         return result
-
-    # -- usage ----------------------------------------------------------------
-
-    def _get_db_connection(self):
-        """Get a DB connection using DatabaseConfig. Best-effort, may raise."""
-        from ..database_config import DatabaseConfig
-        from ..db import get_connection
-
-        return get_connection(DatabaseConfig.from_env())
-
-    def _record_usage(self, result: RunResult) -> None:
-        """Best-effort usage recording — never raises.
-
-        A run without a credential (a provider that needs none) is still recorded,
-        attributed by ``(harness, provider)`` with ``credential_id = NULL``.
-        """
-        from ..agent_manager.usage_store import record_usage
-
-        credential = self.context.credential
-        credential_id = getattr(credential, "id", None) if credential is not None else None
-        try:
-            conn = self._get_db_connection()
-            try:
-                tokens_used = (result.input_tokens or 0) + (result.output_tokens or 0)
-                record_usage(
-                    conn,
-                    credential_id=credential_id,
-                    tokens_used=tokens_used,
-                    input_tokens=result.input_tokens or 0,
-                    output_tokens=result.output_tokens or 0,
-                    duration_ms=result.duration_ms or 0,
-                    model=result.model,
-                    harness=str(self.context.harness),
-                    provider=str(self.context.provider),
-                    logger=self.logger,
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        except Exception:
-            self.logger.exception("Failed to record usage (best-effort, continuing)")

@@ -111,9 +111,9 @@ side; the client's own reconnect resumes from its last id, so a bounded stream c
 an abandoned one cannot last for ever.
 
 **A user gets `conversation/stream/max_per_user` live streams**, and exceeding it closes the
-**oldest**, never refuses the new one. The budget being bounded is threads: `web` is a
-`ThreadingHTTPServer` and one open streaming response costs exactly one thread (measured 1:1,
-released on close). A refusal would turn a reconnect storm into self-inflicted denial of service
+**oldest**, never refuses the new one. The budget being bounded is threads: `web` runs each open
+stream on a thread of its own stream budget, so one open streaming response costs exactly one
+thread (measured 1:1, released on close). A refusal would turn a reconnect storm into self-inflicted denial of service
 — the client whose stream just dropped is precisely the one asking again, and telling it "no"
 leaves it with nothing while its own stale connections hold the budget. A storm therefore
 converges on exactly the cap, and the stream just opened is never the one closed (not even when
@@ -270,7 +270,7 @@ against a different tree.
 
 | Fact | Where | Status |
 |---|---|---|
-| `web` is a `ThreadingHTTPServer` on `0.0.0.0:8000` | `web/server.py` | confirmed |
+| `web` is a `ThreadingHTTPServer` on `0.0.0.0:8000` (2026-10-09: FastAPI on uvicorn, DECISIONS.md) | `web/server.py` | confirmed |
 | `Route` is a frozen dataclass; `ROUTES` is a list built at import | `web/api.py` | confirmed |
 | `LoginThrottle` is a per-process dict (its own note names the DB-backed replacement) | `web/api.py` | confirmed |
 | A duplicate publish is an `IntegrityError` → rollback + re-read | `framework/publisher.py` | confirmed |

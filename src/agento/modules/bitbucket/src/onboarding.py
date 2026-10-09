@@ -153,11 +153,12 @@ class BitbucketOnboarding:
         # per-view-scope requirement.) config.json defaults for the required fields are empty/absent, so
         # they never make a field "present" and need not be layered.
 
-        from agento.framework import store_env
+        import os
+
         from agento.framework.config_resolver import path_to_env_key
 
         for path in _REQUIRED_PATHS:
-            env_val = store_env.get(path_to_env_key(path))
+            env_val = os.environ.get(path_to_env_key(path))
             if env_val:
                 rows.append({"scope": Scope.DEFAULT, "scope_id": 0, "path": path, "value": env_val})
         return _evaluate_completeness(views, rows)

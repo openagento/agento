@@ -16,7 +16,7 @@ The Claude CLI has no model list. `agento config:test agent_view/model` accepts 
 `opus`, `sonnet`, `haiku` without a request, refuses an id that is not a valid Claude model id, and
 otherwise asks `GET https://api.anthropic.com/v1/models/{id}` with the pool credential (no tokens
 are spent): 200 is `MODEL_OK`, 404 is `MODEL_UNKNOWN`, any other answer is `MODEL_CHECK_FAILED`. The
-request runs in a child process (`model_probe`) that gets the credential on stdin and prints only the
+request runs in a child process (`model_probe`) in a runner that gets the credential on stdin and prints only the
 status code. Not yet verified: if this endpoint accepts a Claude subscription (OAuth) token; if it
 does not, the check answers `MODEL_CHECK_FAILED`, never a false result.
 
@@ -79,8 +79,8 @@ The write is removed. Put an agent_view's personality in `SOUL.md`
 
 ## Telemetry
 
-`job.toolbox_mcp_calls` counts toolbox tool calls from the session transcript, including
-the transcripts of its subagents (`<session>/subagents/agent-*.jsonl`, CLI 2.1.x). A
+`job.toolbox_mcp_calls` counts the toolbox's own `tool_invocation` audit rows for the
+run's capability, so a call a subagent makes is counted too. A
 background subagent makes the CLI print one `result` event per turn; turns, tokens and
 duration are summed over them, and the cost is the largest `total_cost_usd` (the CLI
 reports it cumulative). An error result whose text is only in `errors[]` keeps that text,

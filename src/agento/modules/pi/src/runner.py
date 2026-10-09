@@ -69,7 +69,7 @@ class PiSubprocessRunner(SubprocessRunner):
 
     def execute(self, request):
         # Start the clock here, but READ it in `_parse_output` — which runs inside
-        # `super().execute()`, BEFORE `_record_usage`. Assigning the elapsed time in a
+        # `super().execute()`, BEFORE the usage callback. Assigning the elapsed time in a
         # `finally` (as an earlier version did) happens after the result is already built
         # and usage already recorded, so `duration_ms` was None on the first run and stale
         # on a reused runner.

@@ -98,9 +98,18 @@ class TestThirdPartyHarness:
         assert get_authenticator("fake_local") is None
         assert get_harness_for_scope("fake_cloud").descriptor.id == "fake"
 
-    def test_harness_without_transcript_reader_is_allowed(self):
+    def test_harness_with_deprecated_transcript_reader_still_loads(self):
+        """CODE-5: an external adapter that imports the deprecated names and sets
+        ``transcript_reader`` registers, and the framework ignores the member."""
+        from agento.framework.harness import TranscriptReader
+
         _register_fixture("fake_harness")
-        assert get_harness("fake").adapter.transcript_reader is None
+        assert isinstance(get_harness("fake").adapter.transcript_reader, TranscriptReader)
+
+    def test_adapter_contract_has_no_transcript_reader_member(self):
+        from agento.framework.harness import AgentHarnessAdapter
+
+        assert "transcript_reader" not in AgentHarnessAdapter.__protocol_attrs__
 
     def test_create_runner_goes_through_the_adapter(self):
         from agento.framework.harness import HarnessRunContext

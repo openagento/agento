@@ -10,7 +10,7 @@ set -uo pipefail
 #
 # It proves, against the real containers:
 #   1. the Caddyfile the proxy runs validates.
-#   2. from sandbox, web's authorization endpoint answers 401 — with no header, with a
+#   2. from cron (web's db-net peer), web's authorization endpoint answers 401 — with no header, with a
 #      forged proxy secret plus identity headers, and with a forged X-Forwarded-Uri and a
 #      made-up launch cookie; the launch redeem answers 403 to a made-up code.
 #   3. /internal/* through the panel origin is 404; the panel shell is served with no-store on a
@@ -79,7 +79,8 @@ ok()  { echo -e "  ${GREEN}✓${NC} $1"; pass=$((pass+1)); }
 bad() { echo -e "  ${RED}✗${NC} $1"; fail=$((fail+1)); }
 expect() { [ "$2" = "$3" ] && ok "$1 ($3)" || bad "$1 (expected $2, got $3)"; }
 
-from_sandbox() { docker exec "$SANDBOX" curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
+# WS7: no agent container reaches web (runner-net-smoke.sh), so a db-net peer asks.
+from_peer() { docker exec "$CRON" curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
 # --path-as-is: curl would otherwise resolve `..` itself, and the proxy would never see it.
 via_proxy() {
   local host="$1" path="$2"; shift 2
@@ -140,19 +141,19 @@ else
   bad "adapted config runs the authz subrequest out of order"
 fi
 
-echo "2. web from sandbox"
-expect "/internal/authz/app, no header" 401 "$(from_sandbox http://web:8000/internal/authz/app)"
-expect "/internal/authz/app, forged secret + identity headers" 401 "$(from_sandbox \
+echo "2. web from a db-net peer"
+expect "/internal/authz/app, no header" 401 "$(from_peer http://web:8000/internal/authz/app)"
+expect "/internal/authz/app, forged secret + identity headers" 401 "$(from_peer \
   -H 'X-Agento-Proxy-Auth: forged' -H 'X-Agento-User: admin' -H 'X-Forwarded-User: admin' \
   http://web:8000/internal/authz/app)"
 LAUNCH_ID="cccccccccccccccccccccccccccccccc"
-expect "/internal/authz/app, forged secret + X-Forwarded-Uri + made-up launch cookie" 401 "$(from_sandbox \
+expect "/internal/authz/app, forged secret + X-Forwarded-Uri + made-up launch cookie" 401 "$(from_peer \
   -H 'X-Agento-Proxy-Auth: forged' -H 'X-Forwarded-Uri: /a/demo/v/v-20260925-120000-ab12/index.html' \
   -H "Cookie: __Host-agento-launch-$LAUNCH_ID=made-up" http://web:8000/internal/authz/app)"
-expect "/internal/launch/redeem, made-up code" 403 "$(from_sandbox -X POST \
+expect "/internal/launch/redeem, made-up code" 403 "$(from_peer -X POST \
   -H "Origin: https://panel.localhost:$PORT" -H 'Content-Type: application/x-www-form-urlencoded' \
   --data "launch_id=$LAUNCH_ID&code=made-up" http://web:8000/internal/launch/redeem)"
-expect "/health" 200 "$(from_sandbox http://web:8000/health)"
+expect "/health" 200 "$(from_peer http://web:8000/health)"
 
 echo "3. panel origin"
 expect "/internal/authz/app through panel" 404 "$(via_proxy panel.localhost /internal/authz/app)"

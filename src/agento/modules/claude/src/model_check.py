@@ -4,7 +4,7 @@ The Claude CLI has no model list; it passes any id to the API. So the check is
 ``GET /v1/models/{id}``, which costs no tokens: 200 → known, 404 → unknown, anything
 else → could not check (an OAuth token that this endpoint does not accept gives
 ``error``, never a false answer). The request runs in a child process
-(``model_probe``) so the whole check, DNS included, ends at the deadline.
+(``model_probe``) in a runner, so the whole check, DNS included, ends at the deadline.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import time
 import urllib.parse
 
 from agento.framework.config_test import ERROR, FAIL, OK, TestResult
-from agento.framework.harness import harness_base_env
+from agento.framework.runner import client as runner_client
 
 API_BASE = "https://api.anthropic.com"
 PROBE_MODULE = "agento.modules.claude.src.model_probe"
@@ -57,10 +57,8 @@ def check_model(provider: str, model: str, credential, *, timeout_s: float) -> T
         "headers": {**headers, "anthropic-version": "2023-06-01"},
     }
     try:
-        proc = subprocess.run(
-            [sys.executable, "-m", PROBE_MODULE],
-            input=json.dumps(request), env=harness_base_env(),
-            capture_output=True, text=True, check=False,
+        proc = runner_client.run(
+            [sys.executable, "-m", PROBE_MODULE], input=json.dumps(request),
             timeout=max(0.0, deadline - time.monotonic()),
         )
     except subprocess.TimeoutExpired:

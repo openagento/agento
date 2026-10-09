@@ -1,10 +1,7 @@
 """Interactive authentication for agent CLI tools, keyed by credential scope.
 
-Launches a harness CLI in an isolated temporary HOME directory to perform OAuth,
-then extracts and normalises credentials to the internal JSON format.
-
-The isolation prevents the auth flow from overwriting the main active credentials at
-``/workspace/.claude`` or ``/workspace/.codex``.
+Runs a harness CLI login in a runner, in an isolated temporary HOME on the shared
+/workspace, then extracts and normalises credentials to the internal JSON format.
 
 The registry itself lives in :mod:`agento.framework.harness.registry` — authenticators
 are keyed by ``credential_scope``, which is what partitions the credential pool, so
@@ -14,19 +11,20 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
-import subprocess
 import tempfile
+import time
 from pathlib import Path
 
-from ..harness.protocols import AuthResult
+from ..harness.protocols import AuthResult, InteractiveLogin
 from ..harness.registry import get_authenticator, list_credential_scopes
+from ..runner import client
 from .errors import AuthenticationError
 
 __all__ = [
     "AuthResult",
     "AuthenticationError",
+    "attended_login",
     "authenticate_interactive",
     "credentials_from_auth",
     "get_available_scopes",
@@ -45,8 +43,8 @@ def authenticate_interactive(
 ) -> AuthResult:
     """Run interactive OAuth for the given credential scope.
 
-    Creates an isolated temp HOME directory so the auth flow does NOT touch
-    ``~/.claude`` or ``~/.codex`` (symlinked to ``/workspace/``).
+    Creates an isolated temp HOME on the shared /workspace (the runner sees it at the same
+    path), so the auth flow does NOT touch ``~/.claude`` or ``~/.codex``.
 
     Raises :class:`AuthenticationError` on failure or user cancellation.
     """
@@ -59,7 +57,7 @@ def authenticate_interactive(
             f"Available: {list_credential_scopes()}"
         )
 
-    tmp_home = tempfile.mkdtemp(prefix=f"auth_{scope}_")
+    tmp_home = tempfile.mkdtemp(prefix=f"auth_{scope}_", dir=client.shared_tmp())
     _log.info(f"Using isolated HOME: {tmp_home}")
 
     try:
@@ -89,21 +87,17 @@ def save_credentials(auth_result: AuthResult, output_path: str) -> None:
     path.write_text(json.dumps(credentials_from_auth(auth_result), indent=2))
 
 
-# ---------------------------------------------------------------------------
-# Shared CLI helper (used by authenticator implementations in harness modules)
-# ---------------------------------------------------------------------------
-
-def _run_cli(cmd: list[str], tmp_home: str, name: str) -> None:
-    """Run a CLI command with isolated HOME. Raises on failure."""
-    env = {**os.environ, "HOME": tmp_home}
+def attended_login(login: InteractiveLogin) -> AuthResult:
+    """Finish a ``start_web_login`` on the operator's terminal (``credential:register``).
+    The vendor CLI runs in a runner, never in this container (SEC-1)."""
     try:
-        # cwd=HOME: a login needs no project. The inherited cwd (/workspace in the
-        # containers) made the CLI load that project's .mcp.json and try to connect.
-        proc = subprocess.run(cmd, env=env, cwd=tmp_home)
-    except FileNotFoundError as exc:
-        raise AuthenticationError(f"{name} CLI not found. Is it installed?") from exc
-
-    if proc.returncode != 0:
-        raise AuthenticationError(
-            f"{name} login failed with exit code {proc.returncode}"
-        )
+        print(f"Open this URL in your browser:\n  {login.prompt.url}")
+        if login.prompt.user_code:
+            print(f"Enter this code there: {login.prompt.user_code}")
+        if login.prompt.needs_code:
+            login.submit_code(input("Paste the code from the login page: ").strip())
+        while (result := login.poll()) is None:
+            time.sleep(0.5)
+        return result
+    finally:
+        login.close()

@@ -1,5 +1,0 @@
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"do work"}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_010","name":"ToolSearch","input":{"query":"mcp"}}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_011","name":"Read","input":{"file_path":"/x"}}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_012","name":"Bash","input":{"command":"ls"}}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"nie mogę wykonać zadania"}]}}

@@ -3,34 +3,28 @@
 These tests drive the real ``Consumer`` against the integration MySQL DB with
 a patched runner that:
 
-- Reports rc=0 success (``RunResult`` with ``session_id=<uuid>`` as the
-  session_id, ``agent_type`` set to the provider name, and an optional
-  ``mcp_init`` self-report).
-- Writes a deterministic transcript JSONL at the per-provider production
-  layout under the consumer-resolved ``home_dir`` (a real per-agent_view
-  build dir under the patched ``BUILD_DIR``).
-- Triggers the runner's ``session_id_callback`` so the consumer persists the
-  session_id on the job row before ``_finalize_job`` dispatches
-  ``job_finalize_before``.
+- Reports rc=0 success (``RunResult`` with a fresh session id, the harness id,
+  and an optional ``mcp_init`` self-report).
+- Plays the toolbox dispatcher: writes N ``tool_invocation`` audit rows on the
+  ``mcp_job`` capability the consumer minted for this run.
 
 ``McpHealthTelemetryObserver`` then records two independent, nullable signals
-on the ``job`` row — ``toolbox_mcp_calls`` (from the per-provider
-``TranscriptReader``) and ``toolbox_mcp_connected`` (from ``mcp_init``) — and
+on the ``job`` row — ``toolbox_mcp_calls`` (the toolbox audit count on this
+attempt's capability) and ``toolbox_mcp_connected`` (from ``mcp_init``) — and
 optionally emails ops. It NEVER sets a verdict: every rc=0 job stays a SUCCESS.
 
 The cases prove:
 
-1. claude connected + toolbox calls → SUCCESS, columns N/TRUE, no alert.
+1. claude connected + toolbox calls → SUCCESS, columns N/TRUE, no alert; an
+   earlier attempt's capability does not count.
 2. claude not-connected + 0 calls + flag on → SUCCESS (no DEAD!), columns
    0/FALSE, ONE combined alert.
 3. claude connected + 0 calls + flag on → SUCCESS, columns 0/TRUE, one alert.
 4. claude connected + 0 calls + flag off → SUCCESS, columns 0/TRUE, no alert.
 5. codex (runner emits no ``mcp_init``) + 0 calls + flag on → SUCCESS, columns
    0/NULL, one alert (the count clause fires; NULL connected does not).
-6. unknown provider (no reader, no init) → SUCCESS, columns NULL/NULL, no
-   alert (both signals unknown).
-7. claude format drift (10 JSON records, none recognized) → SUCCESS (no
-   DEAD!), columns NULL/<connected>, drift logged at ERROR, telemetry only.
+6. a harness the registry does not know still gets the audit count (the count
+   names no vendor) → columns N/NULL, no alert.
 """
 from __future__ import annotations
 
@@ -44,6 +38,7 @@ import pytest
 
 from agento.framework.consumer import Consumer
 from agento.framework.harness import McpInitReport, McpServerStatus
+from agento.framework.toolbox_capability import KIND_MCP_JOB
 from agento.modules.app_monitor.src import observers as obs
 from agento.modules.app_monitor.src.constants import (
     CFG_ALERT_EMAIL_TO,
@@ -60,9 +55,6 @@ from .conftest import (
     fetch_job,
     insert_primary_token,
 )
-
-FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "transcripts"
-CODEX_FIXTURES = FIXTURES / "codex"
 
 _MCP_CONNECTED = McpInitReport(servers=(McpServerStatus("toolbox", "connected"),))
 _MCP_FAILED = McpInitReport(servers=(McpServerStatus("toolbox", "failed"),))
@@ -131,6 +123,8 @@ def _cleanup_test_data() -> None:
                 "WHERE scope IN ('workspace','agent_view') OR path = 'agent_view/provider'"
             )
             cur.execute("DELETE FROM workspace_build")
+            cur.execute("DELETE FROM tool_invocation")
+            cur.execute("DELETE FROM toolbox_capability")
             cur.execute("DELETE FROM job")
             cur.execute("DELETE FROM agent_view")
             cur.execute("DELETE FROM workspace")
@@ -139,29 +133,53 @@ def _cleanup_test_data() -> None:
         conn.close()
 
 
-# --- runner callbacks: produce rc=0 + write a transcript ---------------------
+def _audit_calls(job_id: int, n: int, *, capability_id: int | None = None) -> None:
+    """Play the toolbox dispatcher: n audit rows on the job's newest mcp_job capability."""
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            if capability_id is None:
+                cur.execute(
+                    "SELECT MAX(id) AS id FROM toolbox_capability WHERE job_id = %s AND kind = %s",
+                    (job_id, KIND_MCP_JOB),
+                )
+                capability_id = cur.fetchone()["id"]
+            for i in range(n):
+                cur.execute(
+                    "INSERT INTO tool_invocation (execution_id, capability_id, transport, "
+                    "tool_name, args_sha256, outcome) VALUES (%s, %s, 'http', %s, %s, 'ok')",
+                    (str(uuid.uuid4()), capability_id, f"tool_{i}", "0" * 64),
+                )
+    finally:
+        conn.close()
 
 
-def _claude_callback(
-    transcript_payload: str,
-    *,
-    captured: list[str] | None = None,
-    mcp_init: McpInitReport | None = None,
-):
-    """Build a ``ClaudeSubprocessRunner.execute`` replacement that writes the given
-    transcript content to the production layout under
-    ``<home_dir>/.claude/projects/<X>/<session_id>.jsonl``, fires the
-    session_id callback, and returns a successful ``ClaudeResult`` carrying the
-    given ``mcp_init`` self-report.
-    """
+def _earlier_attempt_capability(job_id: int, agent_view_id: int, calls: int) -> None:
+    """A revoked capability of an earlier attempt, with its own audit rows."""
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO toolbox_capability (token_hash, kind, agent_view_id, job_id, "
+                "expires_at, revoked_at) VALUES (%s, %s, %s, %s, NOW(), NOW())",
+                (uuid.uuid4().hex * 2, KIND_MCP_JOB, agent_view_id, job_id),
+            )
+            capability_id = cur.lastrowid
+    finally:
+        conn.close()
+    _audit_calls(job_id, calls, capability_id=capability_id)
+
+
+# --- runner callbacks: produce rc=0 + audit N toolbox calls -------------------
+
+
+def _callback(job_id: int, calls: int, *, harness: str, mcp_init: McpInitReport | None = None):
+    """Build a ``SubprocessRunner.execute`` replacement that audits ``calls`` toolbox
+    calls on this run's capability, fires the session_id callback, and returns a
+    successful result carrying the given ``mcp_init`` self-report."""
     def _run(self_runner, request):
-        home = Path(self_runner.context.home_dir)
+        _audit_calls(job_id, calls)
         sid = str(uuid.uuid4())
-        if captured is not None:
-            captured.append(sid)
-        proj = home / ".claude" / "projects" / "-workspace-test"
-        proj.mkdir(parents=True, exist_ok=True)
-        (proj / f"{sid}.jsonl").write_text(transcript_payload)
         if self_runner.session_id_callback:
             self_runner.session_id_callback(sid)
         return ClaudeResult(
@@ -169,58 +187,14 @@ def _claude_callback(
             input_tokens=100, output_tokens=50,
             duration_ms=1000,
             session_id=sid,
-            harness="claude",
+            harness=harness,
             mcp_init=mcp_init,
         )
     return _run
 
 
-def _codex_callback(
-    transcript_payload: str,
-    *,
-    captured: list[str] | None = None,
-    mcp_init: McpInitReport | None = None,
-):
-    """Build a ``CodexSubprocessRunner.execute`` replacement that writes the given
-    transcript content to ``<home_dir>/.codex/sessions/2026/05/14/rollout-...-<sid>.jsonl``.
-    Codex emits no ``mcp_init`` in practice, so it defaults to ``None``.
-    """
-    def _run(self_runner, request):
-        home = Path(self_runner.context.home_dir)
-        sid = str(uuid.uuid4())
-        if captured is not None:
-            captured.append(sid)
-        sessions = home / ".codex" / "sessions" / "2026" / "05" / "14"
-        sessions.mkdir(parents=True, exist_ok=True)
-        (sessions / f"rollout-2026-05-14T05-05-33-{sid}.jsonl").write_text(transcript_payload)
-        if self_runner.session_id_callback:
-            self_runner.session_id_callback(sid)
-        return ClaudeResult(
-            raw_output="ok",
-            input_tokens=100, output_tokens=50,
-            duration_ms=1000,
-            session_id=sid,
-            harness="codex",
-            model="o3",
-            mcp_init=mcp_init,
-        )
-    return _run
-
-
-def _hermes_callback(self_runner, request):
-    """Claude runner patched to report ``harness="hermes"`` — a harness
-    with no registered ``TranscriptReader`` and no ``mcp_init``. Writes no
-    transcript, so both telemetry signals resolve to NULL."""
-    sid = str(uuid.uuid4())
-    if self_runner.session_id_callback:
-        self_runner.session_id_callback(sid)
-    return ClaudeResult(
-        raw_output="ok",
-        input_tokens=10, output_tokens=5,
-        duration_ms=100,
-        session_id=sid,
-        harness="hermes",
-    )
+_CLAUDE_EXECUTE = "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute"
+_CODEX_EXECUTE = "agento.modules.codex.src.runner.CodexSubprocessRunner.execute"
 
 
 # --- common fixtures ---------------------------------------------------------
@@ -244,15 +218,12 @@ def _patch_app_monitor(monkeypatch, *, alert_flag: bool, smtp_host: str = "smtp.
 
 def _enter_build_dir_patches(stack: ExitStack, build_root: Path) -> None:
     """Patch every module-level ``BUILD_DIR`` / ``ARTIFACTS_DIR`` reference so
-    the consumer + readers + workspace_build all agree on ``tmp_path``. Keep
-    this list in sync with new readers / observers."""
+    the consumer + workspace_build agree on ``tmp_path``."""
     artifacts_root = str(build_root.parent / "artifacts")
     build_str = str(build_root)
     stack.enter_context(patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", artifacts_root))
     stack.enter_context(patch("agento.framework.artifacts_dir.BUILD_DIR", build_str))
     stack.enter_context(patch("agento.modules.workspace_build.src.builder.BUILD_DIR", build_str))
-    stack.enter_context(patch("agento.modules.claude.src.transcript_reader.BUILD_DIR", build_str))
-    stack.enter_context(patch("agento.modules.codex.src.transcript_reader.BUILD_DIR", build_str))
 
 
 # --- the suite ---------------------------------------------------------------
@@ -306,16 +277,14 @@ class TestAppMonitorE2E:
         av_id = _insert_agent_view(_insert_workspace("acme"), "developer")
         job_id = _insert_job_with_agent_view(av_id, reference_id="AI-201")
 
-        captured: list[str] = []
-        payload = (FIXTURES / "good_with_mcp.jsonl").read_text()
+        _earlier_attempt_capability(job_id, av_id, calls=5)  # must not count
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
-            _claude_callback(payload, captured=captured, mcp_init=_MCP_CONNECTED),
+            _CLAUDE_EXECUTE,
+            _callback(job_id, 1, harness="claude", mcp_init=_MCP_CONNECTED),
         ))
 
         row = fetch_job(job_id)
         assert row["status"] == "SUCCESS", row
-        assert row["session_id"] == captured[0]
         assert row["toolbox_mcp_calls"] == 1
         assert row["toolbox_mcp_connected"] == 1  # TRUE
         sender.assert_not_called()
@@ -333,10 +302,8 @@ class TestAppMonitorE2E:
         av_id = _insert_agent_view(_insert_workspace("acme"), "developer")
         job_id = _insert_job_with_agent_view(av_id, reference_id="AI-207")
 
-        payload = (FIXTURES / "good_with_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
-            _claude_callback(payload, mcp_init=_MCP_PENDING),
+            _CLAUDE_EXECUTE, _callback(job_id, 1, harness="claude", mcp_init=_MCP_PENDING),
         ))
 
         row = fetch_job(job_id)
@@ -355,10 +322,8 @@ class TestAppMonitorE2E:
         av_id = _insert_agent_view(_insert_workspace("acme"), "developer")
         job_id = _insert_job_with_agent_view(av_id, reference_id="AI-202")
 
-        payload = (FIXTURES / "bad_no_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
-            _claude_callback(payload, mcp_init=_MCP_FAILED),
+            _CLAUDE_EXECUTE, _callback(job_id, 0, harness="claude", mcp_init=_MCP_FAILED),
         ))
 
         row = fetch_job(job_id)
@@ -385,10 +350,8 @@ class TestAppMonitorE2E:
         av_id = _insert_agent_view(_insert_workspace("acme"), "developer")
         job_id = _insert_job_with_agent_view(av_id, reference_id="AI-203")
 
-        payload = (FIXTURES / "bad_no_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
-            _claude_callback(payload, mcp_init=_MCP_CONNECTED),
+            _CLAUDE_EXECUTE, _callback(job_id, 0, harness="claude", mcp_init=_MCP_CONNECTED),
         ))
 
         row = fetch_job(job_id)
@@ -410,10 +373,8 @@ class TestAppMonitorE2E:
         av_id = _insert_agent_view(_insert_workspace("acme"), "developer")
         job_id = _insert_job_with_agent_view(av_id, reference_id="AI-204")
 
-        payload = (FIXTURES / "bad_no_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
-            _claude_callback(payload, mcp_init=_MCP_CONNECTED),
+            _CLAUDE_EXECUTE, _callback(job_id, 0, harness="claude", mcp_init=_MCP_CONNECTED),
         ))
 
         row = fetch_job(job_id)
@@ -432,10 +393,8 @@ class TestAppMonitorE2E:
         av_id = _insert_agent_view(_insert_workspace("acme"), "developer")
         job_id = _insert_job_with_agent_view(av_id, reference_id="AI-205")
 
-        payload = (CODEX_FIXTURES / "codex_bad_no_mcp.jsonl").read_text()
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.codex.src.runner.CodexSubprocessRunner.execute",
-            _codex_callback(payload),  # mcp_init defaults to None
+            _CODEX_EXECUTE, _callback(job_id, 0, harness="codex"),  # no mcp_init
         ))
 
         row = fetch_job(job_id)
@@ -449,66 +408,23 @@ class TestAppMonitorE2E:
         assert "toolbox not connected" not in subject
         assert "AI-205" in body
 
-    # -- 6. unknown provider → NULL/NULL, no alert --------------------------
+    # -- 6. unknown harness → the count still works, connected NULL --------
 
-    def test_unknown_provider_null_columns_no_alert(
+    def test_unknown_harness_still_gets_the_audit_count(
         self, int_db_config, int_consumer_config, tmp_path, monkeypatch,
     ):
         sender = _patch_app_monitor(monkeypatch, alert_flag=True)
-        # claude pool/auth but harness="hermes" — no reader, no init.
+        # claude pool/auth but harness="hermes" — no init report.
         insert_primary_token("claude")
         av_id = _insert_agent_view(_insert_workspace("acme"), "developer")
         job_id = _insert_job_with_agent_view(av_id, reference_id="AI-206")
 
         self._run_one(int_db_config, int_consumer_config, tmp_path, patch(
-            "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
-            _hermes_callback,
+            _CLAUDE_EXECUTE, _callback(job_id, 2, harness="hermes"),
         ))
 
         row = fetch_job(job_id)
         assert row["status"] == "SUCCESS", row
-        assert row["toolbox_mcp_calls"] is None   # no reader → unknown
+        assert row["toolbox_mcp_calls"] == 2  # the count names no vendor
         assert row["toolbox_mcp_connected"] is None  # no init → unknown
-        sender.assert_not_called()  # both signals NULL — neither clause fires
-
-    # -- 7. format drift → no DEAD, telemetry only --------------------------
-
-    def test_claude_format_drift_no_dead_telemetry_only(
-        self, int_db_config, int_consumer_config, tmp_path, monkeypatch, caplog,
-    ):
-        sender = _patch_app_monitor(monkeypatch, alert_flag=True)
-        insert_primary_token("claude")
-        av_id = _insert_agent_view(_insert_workspace("acme"), "developer")
-        job_id = _insert_job_with_agent_view(av_id, reference_id="AI-207")
-
-        # 10 JSON-parseable lines whose outer shape doesn't match the Claude
-        # ``message.content`` envelope — simulates a silent CLI upgrade.
-        drift_payload = "\n".join(
-            f'{{"unexpected": "format", "v": {i}}}' for i in range(10)
-        ) + "\n"
-
-        with ExitStack() as stack:
-            stack.enter_context(patch(
-                "agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute",
-                _claude_callback(drift_payload, mcp_init=_MCP_CONNECTED),
-            ))
-            _enter_build_dir_patches(stack, tmp_path / "build")
-            consumer = Consumer(int_db_config, int_consumer_config, logging.getLogger("e2e"))
-            job = consumer._try_dequeue()
-            assert job is not None
-            with caplog.at_level(logging.ERROR, logger=obs.logger.name):
-                consumer._execute_job(job)
-
-        row = fetch_job(job_id)
-        # Drift no longer dead-letters — telemetry only.
-        assert row["status"] == "SUCCESS", row
-        # Parse unreliable → calls NULL; connected resolves independently of the
-        # transcript (from mcp_init) → TRUE.
-        assert row["toolbox_mcp_calls"] is None
-        assert row["toolbox_mcp_connected"] == 1
-        # calls NULL + connected TRUE → neither alert clause fires.
-        sender.assert_not_called()
-        assert any(
-            rec.levelno == logging.ERROR and "drift detected" in rec.getMessage()
-            for rec in caplog.records
-        )
+        sender.assert_not_called()  # 2 calls + NULL connected — neither clause fires

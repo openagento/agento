@@ -434,7 +434,7 @@ class TestFetchRuntime:
         assert mock_run.call_args.args[0] == [
             "docker", "compose", "-f", "/x/docker-compose.yml",
             "exec", "-u", "root", "-T", "cron",
-            "/opt/cron-agent/launch.sh", "--store", "--",
+            "/opt/cron-agent/launch.sh", "--",
             "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
         ]
 
@@ -457,7 +457,7 @@ class TestFetchRuntime:
         assert mock_run.call_args.args[0] == [
             "docker", "compose", "-f", "/x/docker-compose.yml",
             "exec", "-u", "root", "-T", "cron",
-            "/opt/cron-agent/launch.sh", "--store", "--",
+            "/opt/cron-agent/launch.sh", "--",
             "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
             "--prompt", "hello", "--yolo",
         ]

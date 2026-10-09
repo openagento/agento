@@ -266,7 +266,8 @@ the CSRF controls above. A scope is `?scope=default|workspace|agent_view&scope_i
 | DELETE | `/api/admin/config` | `config.write` | 204; a secret path is refused, no override is 404 |
 | POST | `/api/admin/config/test` | `config.write` | `{status, code, message}`; an `error` has a fixed message per code |
 
-**Never a secret, never the decryptor.** `web` holds no encryption key. A secret field (`obscure`
+**Never a secret, never the decryptor.** `web` holds the encryption key (D-BACKEND-1), but the
+admin API never sends a secret value. A secret field (`obscure`
 or `toolbox_only`, `config_schema.is_secret_field`) is reported by presence only, and the read path
 calls no decryptor: credentials are listed without their payload. A tester's `error` and a
 credential's error text do not reach the browser, because both can name an internal host or quote
@@ -276,11 +277,11 @@ CLI output. See DECISIONS.md 2026-10-02 (D-PANEL-ADMIN-1, D-PANEL-ADMIN-2).
 live). The `credential:web-login` worker in cron claims it, runs the vendor CLI in a PTY and moves
 it through `starting` → `waiting` → `verifying` → `done`, or to `failed` with an `error_code`
 (`cli_failed`, `bad_url`, `busy`, `disabled`, `unsupported`, `expired`, `abandoned`) or
-`cancelled`. The panel polls the GET. When `needs_code` is true (Claude), `web` seals the pasted
-code with the login's RSA-3072 public key (OAEP-SHA256) and stores only the sealed bytes; `web`
-cannot open them, and no answer ever carries `code_key` or `code_box`. See
-[credentials.md](../cli/credentials.md#re-login-from-the-panel) and DECISIONS.md 2026-10-04
-(D-PANEL-LOGIN-1).
+`cancelled`. The panel polls the GET. When `needs_code` is true (Claude), `web` encrypts the pasted
+code with `AGENTO_ENCRYPTION_KEY` and stores only the encrypted bytes; no answer ever carries
+`code_box`. See
+[credentials.md](../cli/credentials.md#re-login-from-the-panel) and DECISIONS.md 2026-10-09
+(D-BACKEND-1).
 
 **Limits.** `limits` is what `credential:limits` last stored: `{windows: [{label, used_pct,
 resets_at}], balance_usd}`, or `null`; `limits_at` is when it was last checked. `null` with a
@@ -374,22 +375,26 @@ A limiter that cannot count is not a limiter: if the query fails, the request is
 ## Streaming responses
 
 A handler may return `StreamingResponse` (`web/streaming.py`) instead of `Response`. The listener
-then writes each frame as the generator yields it, and four properties hold.
+then writes each frame as the generator yields it, and five properties hold.
 
-**No `Content-Length`.** The length is unknown when the headers go out. The response is not
-keep-alive, sends `Connection: close`, and the end of the body is the end of the connection. It
-also carries `X-Accel-Buffering: no`, so nothing between `web` and the reader collapses the stream
+**No `Content-Length`.** The length is unknown when the headers go out. uvicorn sends the frames
+as HTTP/1.1 chunks (to an HTTP/1.0 client, up to the close), so the body ends where the generator
+ends. It also carries `X-Accel-Buffering: no`, so nothing between `web` and the reader collapses the stream
 into one reply.
 
 **Frames are flushed as they are produced.** Every frame is written and flushed in turn, so the
 first one is readable by the client while the handler is still running. That is the whole point,
 and it is asserted against a real socket rather than a fake writer.
 
-**A disconnect is a broken write.** There is no out-of-band notice that a reader left; the write
-to a dead socket raises, and that raise ends the loop.
+**A disconnect ends the loop.** uvicorn drops a write to a closed socket silently, so the listener
+watches the ASGI `http.disconnect` message and stops after the `next()` in progress.
+
+**Streams have their own thread budget.** The generator is sync and waits between polls, so the
+listener calls `next()` on a thread from `server.MAX_STREAMS`, never from the request pool. Open
+streams cannot stop other requests.
 
 **The generator's `finally` releases the §7.3 stream slot, and the listener closes the generator
-on every exit** — a clean end, a broken write, and a handler that raised mid-stream. The close is
+on every exit** — a clean end, a disconnect, and a handler that raised mid-stream. The close is
 explicit, not left to the garbage collector: a slot released only because CPython happened to drop
 the last reference is not released. A handler that raises after the headers are out gets no `500`
 — there is none left to send — so the stream is cut and the failure is written to stderr with the

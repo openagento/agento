@@ -13,7 +13,7 @@ import tempfile
 import time
 
 from agento.framework.config_test import ERROR, FAIL, OK, TestResult
-from agento.framework.harness import harness_base_env
+from agento.framework.runner import client as runner_client
 
 from .config import PiWorkspaceAdapter
 from .runner import PiSubprocessRunner
@@ -31,12 +31,13 @@ def check_model(provider: str, model: str, credential, *, timeout_s: float) -> T
     if credential is None:
         return None  # no hosted catalogue to check (ollama): MODEL_NOT_CHECKED
     deadline = time.monotonic() + timeout_s
-    with tempfile.TemporaryDirectory() as home:  # created 0700
-        env = {**harness_base_env(), **PiWorkspaceAdapter().credential_env(credential), "HOME": home}
+    # Created 0700 on the shared /workspace: the CLI runs in a runner.
+    with tempfile.TemporaryDirectory(dir=runner_client.shared_tmp()) as home:
+        env = {**PiWorkspaceAdapter().credential_env(credential), "HOME": home}
         try:
-            proc = subprocess.run(
-                ["pi", "--list-models"], cwd=home, env=env, capture_output=True, text=True,
-                timeout=max(0.0, deadline - time.monotonic()), check=False,
+            proc = runner_client.run(
+                ["pi", "--list-models"], cwd=home, env=env,
+                timeout=max(0.0, deadline - time.monotonic()),
             )
         except subprocess.TimeoutExpired:
             return TestResult(ERROR, f"model {model} not checked: pi --list-models timed out",

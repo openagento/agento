@@ -105,11 +105,11 @@ class TestConsumerConfig:
 
         config = ConsumerConfig.from_env()
 
-        assert config.concurrency == 4
+        assert config.max_workers == 4
         assert config.poll_interval == 10.0
 
     def test_from_env_defaults(self):
         config = ConsumerConfig.from_env()
 
-        assert config.concurrency == 10
+        assert config.max_workers == 10
         assert config.poll_interval == 5.0

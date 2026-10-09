@@ -30,11 +30,10 @@ consumer (long-running loop)
 - `consumer` — start the job consumer loop
 - `jira:periodic:exec` / `exec:todo` — direct execution (bypass queue, for debugging)
 - `task-list` — show prioritized action list
-- `token register <agent_type> <label> [credentials_path] [--token-limit N]` — register a subscription token (omit path for interactive OAuth)
-- `token list [--agent-type claude|codex] [--all] [--json]` — list registered tokens
-- `token deregister <token_id>` — disable a token (soft-delete)
-- `token usage [--agent-type claude|codex] [--window N]` — show token usage stats
-- `rotate` — rotate active tokens for all agent types based on remaining capacity
+- `credential:register <scope> <label> [--token-limit N]` — register a credential (interactive)
+- `credential:list [--scope <scope>] [--all] [--json]` — list registered credentials
+- `credential:deregister <credential_id>` — disable a credential (soft-delete)
+- `credential:usage [--scope <scope>] [--window N]` — show credential usage stats
 - `migrate [--dry-run]` — apply pending database migrations (tracked in `schema_migrations` table)
 
 ## File Structure
@@ -66,17 +65,6 @@ app/
     jira_publisher.py     # Jira-specific publisher with time-windowed idempotency keys
     consumer.py           # Job consumer loop with ThreadPoolExecutor and retry/dead-letter
     retry_policy.py       # Retry classification + exponential backoff (1m, 5m, 30m)
-    agent_manager/          # Multi-token orchestration sub-package
-      models.py             # AgentProvider enum, Token, UsageSummary, RotationResult
-      config.py             # AgentManagerConfig frozen dataclass
-      token_store.py        # CRUD for tokens table
-      usage_store.py        # record_usage(), get_usage_summary()
-      active.py             # Atomic symlink: resolve, update, read_credentials
-      rotator.py            # select_best_token(), rotate_tokens(), rotate_all()
-      runner.py             # TokenRunner ABC (Template Method pattern)
-      claude_runner.py      # TokenClaudeRunner (subscription-managed Claude)
-      codex_runner.py       # TokenCodexRunner (subscription-managed Codex)
-      auth.py               # Interactive OAuth auth (isolated HOME, browser flow)
     sql/
       001_create_tables.sql   # DDL for schedules + jobs tables (auto-loaded by MySQL)
       005_agent_manager.sql   # DDL for tokens + usage_log tables
@@ -86,45 +74,9 @@ app/
     test_*.py             # Unit tests for each module
 ```
 
-## Agent Manager (Multi-Token Rotation)
+## Credentials
 
-Manages multiple subscription tokens per agent type (Claude, Codex) with hourly rotation based on remaining capacity.
-
-**Providers** (`provider` in `cron.json` or `PROVIDER` env var):
-- `claude_oauth` — default, uses existing OAuth credentials
-- `claude_subscription` — token-managed Claude runner with subscription keys
-- `codex_subscription` — token-managed Codex runner with subscription keys
-
-**Credentials** are JSON files mounted at `/etc/tokens/`:
-```json
-{"subscription_key": "sk-ant-..."}
-```
-
-**Usage:**
-```bash
-# Register tokens (interactive OAuth — launches browser auth)
-agent token register claude prod-1
-agent token register codex prod-1
-
-# Register tokens (with existing credentials file)
-agent token register claude prod-1 /etc/tokens/claude_1.json --token-limit 1000000
-agent token register claude prod-2 /etc/tokens/claude_2.json --token-limit 1000000
-
-# List tokens
-agent token list
-agent token list --agent-type claude --json
-
-# Check usage
-agent token usage --window 24
-
-# Rotate (picks token with most remaining capacity)
-agent rotate
-
-# Disable a token
-agent token deregister 2
-```
-
-**Rotation algorithm:** selects the token with the highest remaining capacity (`token_limit - tokens_used`). Unlimited tokens (`token_limit=0`) are always preferred. Tie-break: fewer total calls wins.
+Harness credentials live in the `credential` table, one LRU pool per scope. See [docs/cli/credentials.md](../../docs/cli/credentials.md).
 
 ## Setup
 
@@ -184,8 +136,7 @@ docker compose exec cron /opt/cron-agent/run.sh task-list --json
 docker compose exec mysql mysql -u cron_agent -pcronagent_pass cron_agent \
   -e "SELECT id, type, source, reference_id, status, attempt, created_at FROM jobs ORDER BY id DESC LIMIT 10;"
 
-# Token management
-docker compose exec cron /opt/cron-agent/run.sh token list --json
-docker compose exec cron /opt/cron-agent/run.sh token usage --window 24
-docker compose exec cron /opt/cron-agent/run.sh rotate
+# Credentials
+docker compose exec cron /opt/cron-agent/run.sh credential:list --json
+docker compose exec cron /opt/cron-agent/run.sh credential:usage --window 24
 ```

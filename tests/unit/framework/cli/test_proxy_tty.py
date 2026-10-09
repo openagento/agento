@@ -4,7 +4,7 @@ The proxy at ``_proxy_to_docker`` decides:
   * ``-it`` vs ``-T`` (PTY allocation when forwarding into the cron container)
   * ``os.execvp`` vs ``subprocess.run`` (whether to replace the host process)
 
-For ``token:register`` we want both to track ``sys.stdin.isatty()`` so that:
+For ``credential:register`` we want both to track ``sys.stdin.isatty()`` so that:
   * an operator at a terminal gets an interactive prompt + full PTY (OAuth, getpass)
   * a piped/scripted invocation (CI, file redirect) survives without ``-it``
 """
@@ -51,10 +51,10 @@ def _run_proxy_with_stdin(argv, *, isatty: bool):
     return captured
 
 
-class TestTokenRegisterTty:
+class TestCredentialRegisterTty:
     def test_tty_stdin_allocates_pty_and_execvps(self):
         captured = _run_proxy_with_stdin(
-            ["token:register", "codex", "foo"], isatty=True
+            ["credential:register", "codex", "foo"], isatty=True
         )
         assert captured["mode"] == "execvp"
         # exec_args[3] = "exec"; PTY flag is right after exec/-u agent
@@ -63,7 +63,7 @@ class TestTokenRegisterTty:
 
     def test_piped_stdin_uses_subprocess_and_no_pty(self):
         captured = _run_proxy_with_stdin(
-            ["token:register", "codex", "foo", "--with-api-key"], isatty=False
+            ["credential:register", "codex", "foo", "--with-api-key"], isatty=False
         )
         assert captured["mode"] == "subprocess"
         assert "-T" in captured["args"]
@@ -72,21 +72,21 @@ class TestTokenRegisterTty:
     def test_oauth_flow_with_tty_still_works(self):
         """No flags + TTY → interactive OAuth path: PTY + execvp."""
         captured = _run_proxy_with_stdin(
-            ["token:register", "codex", "oauth-codex"], isatty=True
+            ["credential:register", "codex", "oauth-codex"], isatty=True
         )
         assert captured["mode"] == "execvp"
         assert "-it" in captured["args"]
 
 
-class TestTokenRefreshStillForcesPty:
-    """token:refresh has no flag-based alternative; keep it strictly interactive."""
+class TestCredentialRefreshStillForcesPty:
+    """credential:refresh has no flag-based alternative; keep it strictly interactive."""
 
     def test_refresh_uses_pty_even_when_stdin_not_tty(self):
-        # token:refresh stays in _INTERACTIVE_COMMANDS, so PTY is forced
+        # credential:refresh stays in _INTERACTIVE_COMMANDS, so PTY is forced
         # regardless of host stdin. (The command itself sys.exits later if
         # there's no TTY inside the container — that's its own concern.)
         captured = _run_proxy_with_stdin(
-            ["token:refresh", "1"], isatty=False
+            ["credential:refresh", "1"], isatty=False
         )
         assert captured["mode"] == "execvp"
         assert "-it" in captured["args"]
