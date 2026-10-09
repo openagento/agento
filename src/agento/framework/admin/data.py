@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agento.framework import store_env
 from agento.framework.config_resolver import (
     ScopedConfigService,
     _db_path,
@@ -436,7 +436,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
                 rv, inherited = svc.resolve_field_with_source(owner, field_name, field_schema, defaults)
                 source = _display_source(rv.source, inherited)
                 if source == "env":
-                    value = store_env.get(env_key)
+                    value = os.environ.get(env_key)
                 elif source in ("db", "db:inherited"):
                     value = svc.overrides.get(db_path, (None, False))[0]
                 elif source == "json":
@@ -480,7 +480,7 @@ def get_resolved_fields(conn, module: str, scope: str = Scope.DEFAULT, scope_id:
                 )
                 source = _display_source(rv.source, inherited)
                 if source == "env":
-                    value = store_env.get(env_key)
+                    value = os.environ.get(env_key)
                 elif source in ("db", "db:inherited"):
                     value = svc.overrides.get(db_path, (None, False))[0]
                 elif source == "json":
@@ -504,7 +504,7 @@ def _secret_source(svc, db_path: str, env_key: str | None, has_default: bool) ->
     """Where a secret resolves from, by presence alone, in the resolver's order (ENV, DB,
     config.json). Its value is never read, so nothing is decrypted (SEC-2). ``env_key`` is
     None when the field refuses the ENV source."""
-    if env_key is not None and store_env.get(env_key) is not None:
+    if env_key is not None and os.environ.get(env_key) is not None:
         return "env"
     if svc.overrides.get(db_path, (None, False))[0] is not None:
         return "db" if svc.is_set_at_scope(db_path) else "db:inherited"

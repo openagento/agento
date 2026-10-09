@@ -33,6 +33,22 @@ services:
       - MY_CUSTOM_VAR=value
 ```
 
+## Opening the MySQL port
+
+The managed file publishes MySQL on host loopback only (`127.0.0.1:${MYSQL_PORT}`). To reach it
+from another host, add a port in the override. Do this only on a trusted network: the port
+then accepts logins from every address that can reach it.
+
+```yaml
+# docker/docker-compose.override.yml
+services:
+  mysql:
+    ports:
+      - "0.0.0.0:3307:3306"
+```
+
+Compose adds this port to the managed one. Use a host port that is not `MYSQL_PORT`.
+
 ## Adding a new service
 
 ```yaml
@@ -41,11 +57,17 @@ services:
   redis:
     image: redis:7-alpine
     networks:
-      - agento-net
+      - db-net
     restart: unless-stopped
 ```
 
-Make sure to attach custom services to `agento-net` if they need to communicate with Agento containers.
+Attach a custom service to the network of the containers that must reach it
+([networks](../architecture/containers.md#network)): `exec-net` for a service the agents use
+(the runners and `sandbox`), `db-net` for one that `cron`, `web` or `toolbox` use. Each
+network you add widens what can reach that service.
+
+**Upgrade note (0.17):** `agento-net` is gone. An override that names it fails at
+`docker compose up` with an undefined-network error. Change it to `exec-net` or `db-net`.
 
 ## Extending a managed image (custom Dockerfile)
 
@@ -99,7 +121,7 @@ The sandbox image installs agent CLIs from npm, one per enabled module's `sandbo
 }
 ```
 
-At install/upgrade time, the framework enumerates every enabled module's `sandbox_packages` and writes one line per declaration to `docker/.env`:
+At install/upgrade time, the framework enumerates every enabled module's `agent_harnesses[].sandbox_package` and writes one line per declaration to `docker/.env`:
 
 ```bash
 # docker/.env (seeded by agento install — one line per declared agent)
@@ -151,7 +173,7 @@ services:
     ports:
       - "8080:8080"
     networks:
-      - agento-net
+      - exec-net
     restart: unless-stopped
 ```
 

@@ -50,6 +50,9 @@ class Runner(Protocol):
         Both hooks are best-effort and may be ignored: ``on_pid`` is meaningless for a
         runner that spawns no process, and a harness with no streaming session id simply
         never calls ``on_session_id``. Implementations that cannot report either may no-op.
+        A runner may also take ``on_line`` (one raw stdout line) and ``on_usage`` (the parsed
+        ``RunResult``); the runner service passes each only to an ``observe`` that names it
+        or takes ``**kwargs``.
         """
         ...
 
@@ -291,9 +294,17 @@ class WorkspaceAdapter(Protocol):
         ...
 
 
+# --- Deprecated: transcript reading (removed in v0.18 — see ROADMAP.md) ---
+#
+# ``toolbox_mcp_calls`` now comes from the toolbox audit (``tool_invocation``), so the
+# framework reads no transcript and ``AgentHarnessAdapter`` no longer has a
+# ``transcript_reader`` member. The three names stay importable so an out-of-tree
+# harness that still imports them or sets ``transcript_reader`` keeps loading (CODE-5).
+
+
 @dataclass(frozen=True)
 class ToolUse:
-    """Single tool invocation observed in an agent session."""
+    """Deprecated. Single tool invocation observed in an agent session."""
 
     name: str
     tool_use_id: str
@@ -301,7 +312,7 @@ class ToolUse:
 
 @dataclass(frozen=True)
 class ParseSummary:
-    """Result of parsing a session transcript.
+    """Deprecated. Result of parsing a session transcript.
 
     ``total_json_lines`` counts lines whose JSON parses (regardless of shape);
     ``recognized_records`` counts lines whose outer shape matched. Non-zero
@@ -316,7 +327,7 @@ class ParseSummary:
 
 @runtime_checkable
 class TranscriptReader(Protocol):
-    """Reads a harness's own session transcript format."""
+    """Deprecated. Reads a harness's own session transcript format."""
 
     def parse(self, session_id: str) -> ParseSummary:
         """Return parse stats + tool uses for ``session_id``.
@@ -494,9 +505,6 @@ class AgentHarnessAdapter(Protocol):
     def create_runner(self, ctx: HarnessRunContext, **kwargs) -> Runner:
         """Build a runner bound to ``ctx``."""
         ...
-
-    @property
-    def transcript_reader(self) -> TranscriptReader | None: ...
 
     # ``stream_event_mapper`` (-> StreamEventMapper | None) is omitted here for exactly
     # the same reason as ``stream_renderer`` below, and read the same way.

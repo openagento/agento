@@ -7,7 +7,9 @@ Its whole point is to prove the registry is genuinely open: nothing under
 - TWO providers on one harness — ``fake_local`` needs no credential at all, while
   ``fake_cloud`` does — which the old single ``AgentProvider`` axis could not express;
 - its own ``sandbox_package``, so the rendered sandbox Dockerfile picks it up;
-- no transcript reader, exercising the ``transcript_reader is None`` branch.
+- the deprecated ``transcript_reader`` member an out-of-tree harness may still set,
+  built on the deprecated ``TranscriptReader`` / ``ToolUse`` / ``ParseSummary`` names,
+  which must keep importing and loading (CODE-5).
 """
 from __future__ import annotations
 
@@ -20,13 +22,24 @@ from agento.framework.harness import (
     CredentialRegistrationMode,
     CredentialScope,
     HarnessRunContext,
+    ParseSummary,
     RunRequest,
     RunResult,
     ToolboxConnectionSpec,
+    ToolUse,
+    TranscriptReader,
     UnsupportedRegistrationMode,
 )
 
 CLOUD_SCOPE = CredentialScope("fake_cloud")
+
+
+class FakeTranscriptReader:
+    def parse(self, session_id: str) -> ParseSummary:
+        return ParseSummary(total_json_lines=0, recognized_records=0, tool_uses=())
+
+    def iter_tool_uses(self, session_id: str) -> tuple[ToolUse, ...]:
+        return ()
 
 
 class FakeCommandBuilder:
@@ -194,9 +207,9 @@ class FakeHarnessAdapter:
         return self._workspace_adapter
 
     @property
-    def transcript_reader(self) -> None:
-        # This harness keeps no transcripts — capabilities.transcripts is false.
-        return None
+    def transcript_reader(self) -> TranscriptReader:
+        # Deprecated member: the framework no longer reads it.
+        return FakeTranscriptReader()
 
     @property
     def authenticators(self) -> Mapping[CredentialScope, object]:

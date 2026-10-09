@@ -2,8 +2,7 @@
 
 > **RENAMED in v0.15:** every `token:*` command is now `credential:*`, and the
 > `oauth_token` table is now `credential`, keyed by **credential scope** rather than by
-> agent type. The old `token:*` names remain as hidden aliases for one release cycle so
-> existing runbooks keep working; removal is tracked in [ROADMAP.md](../../ROADMAP.md).
+> agent type. The old `token:*` aliases were removed in v0.17.
 > A "scope" is the credential pool a `(harness, provider)` pair draws from — see
 > [harness-contract.md](../architecture/harness-contract.md).
 
@@ -94,7 +93,8 @@ register → [use via LRU+priority] → (near-expiry rotating credential → exc
 
 ### Interactive OAuth
 
-Requires a TTY — opens a browser for the OAuth flow.
+Requires a TTY. It runs the same login as the panel re-login, in a runner: open the URL it
+prints and follow its prompt.
 
 ```bash
 # Claude (OAuth)
@@ -260,8 +260,8 @@ harness's `start_web_login` in a PTY with a temp `HOME` and a minimal environmen
 (`PATH`, `HOME`, `LANG`, `TERM`), never the cron environment.
 
 - **Claude** (`claude auth login --claudeai`): the panel shows the URL; the admin pastes the
-  code from the browser. The panel seals the code with the login's own RSA-3072 public key;
-  only the worker holds the private key, in memory.
+  code from the browser. `web` encrypts the code with `AGENTO_ENCRYPTION_KEY`;
+  the worker decrypts it once and clears it.
 - **Codex** (`codex login --device-auth`): the panel shows the URL and the user code; no code
   is pasted back.
 
@@ -307,4 +307,4 @@ once via the `SplitProviderIntoHarness` data patch.
 - `AGENTO_ENCRYPTION_KEY` must be set (same key used for `core_config_data` obscure fields). See [encryption.md](../config/encryption.md).
 - The `credential` schema is maintained by framework migrations beginning with `019_oauth_token_inline_credentials.sql`; the rename plus the `scope` column land in `030_credential_scope_and_rename.sql`, and `error_source` / `lease_owner` / `leased_until` in `034_credential_error_source_and_refresh_lease.sql`, and `limits` / `limits_at` plus the `credential_login` table in `048_credential_login.sql`. `agento setup:upgrade` applies pending migrations.
 
-Source: [src/agento/framework/cli/credential.py](../../src/agento/framework/cli/credential.py) (deprecated aliases: [credential_aliases.py](../../src/agento/framework/cli/credential_aliases.py))
+Source: [src/agento/framework/cli/credential.py](../../src/agento/framework/cli/credential.py)

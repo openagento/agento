@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 
 from agento.framework.database_config import DatabaseConfig
-from agento.framework.db import get_connection
+from agento.framework.db import get_connection, pooled
 from agento.framework.events import ClaimVerdict, JobClaimBeforeEvent
 from agento.framework.execution_hooks import RunProfile
 
@@ -32,11 +32,10 @@ class ConversationOrderingObserver:
     def execute(self, event: object) -> None:
         if not isinstance(event, JobClaimBeforeEvent):
             return
-        # ponytail: one connection per claim attempt on a conversation job. The claim
-        # transaction is already open on another connection and this one only reads, so
-        # sharing it would mean handing the observer the framework's cursor.
-        conn = get_connection(DatabaseConfig.from_env())
-        try:
+        # A pooled connection, not the claim's: the claim transaction is already open on
+        # another connection and this one only reads, so sharing it would mean handing
+        # the observer the framework's cursor.
+        with pooled(DatabaseConfig.from_env(), get_connection) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT type, reference_id FROM job WHERE id = %s", (event.job_id,))
                 job = cur.fetchone()
@@ -60,8 +59,6 @@ class ConversationOrderingObserver:
             if blocked:
                 event.verdict = ClaimVerdict.DEFER
                 event.delay_ms = service.config(conn, "claim/defer_backoff_ms")
-        finally:
-            conn.close()
 
 
 class ConversationExecutionIds:

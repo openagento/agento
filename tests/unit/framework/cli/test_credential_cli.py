@@ -1,6 +1,5 @@
 """Tests for the credential:* CLI commands — specifically that ``credential:mark-error``
-dispatches ``credential_auth_failed_after`` (and its legacy ``token_auth_failed_after``
-alias) so workspace builds get re-materialized with the next healthy credential."""
+dispatches ``credential_auth_failed_after`` so workspace builds get re-materialized with the next healthy credential."""
 from __future__ import annotations
 
 import argparse
@@ -63,20 +62,14 @@ class TestCredentialMarkErrorCommand:
 
         CredentialMarkErrorCommand().execute(_make_args())
 
-        # Dual dispatch: the new name plus the deprecated alias, both built from
-        # the same data so an observer on either name sees consistent values.
         dispatched = {name: payload for name, payload in
                       (c.args for c in events.dispatch.call_args_list)}
-        assert set(dispatched) == {"credential_auth_failed_after", "token_auth_failed_after"}
+        assert set(dispatched) == {"credential_auth_failed_after"}
 
         new = dispatched["credential_auth_failed_after"]
         assert (new.scope, new.credential_id) == ("codex", 6)
         assert new.error_msg == "refresh-failed"
         assert new.job_id is None
-
-        legacy = dispatched["token_auth_failed_after"]
-        assert (legacy.agent_type, legacy.token_id) == ("codex", 6)
-        assert legacy.error_msg == "refresh-failed"
 
     @patch("agento.framework.cli.credential.get_connection_or_exit")
     @patch("agento.framework.cli.credential._load_framework_config")
@@ -496,12 +489,10 @@ class TestCredentialRegisterEventCarriesType:
 
         dispatched = {name: payload for name, payload in
                       (c.args for c in events.dispatch.call_args_list)}
-        assert set(dispatched) == {"credential_register_after", "token_register_after"}
+        assert set(dispatched) == {"credential_register_after"}
         assert dispatched["credential_register_after"].type == "openai_api_key"
         assert dispatched["credential_register_after"].credential_id == 7
         assert dispatched["credential_register_after"].scope == "codex"
-        assert dispatched["token_register_after"].token_id == 7
-        assert dispatched["token_register_after"].agent_type == "codex"
 
     @patch("agento.framework.cli.credential.get_connection_or_exit")
     @patch("agento.framework.cli.credential._load_framework_config")

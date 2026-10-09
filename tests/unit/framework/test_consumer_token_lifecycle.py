@@ -105,7 +105,7 @@ def _drive_run_job(
             return_value=(Path("/run/42/home"), Path("/run/42/artifacts")),
         ),
         patch("agento.framework.consumer.get_event_manager"),
-        patch("agento.framework.consumer.create_runner"),
+        patch("agento.framework.consumer.RemoteRunner"),
         patch("agento.framework.consumer.get_workflow_class", return_value=workflow_cls),
         patch("agento.framework.consumer.get_module_config", return_value={}),
         # Auth bookkeeping is not what these tests assert; it needs a real DB.
@@ -145,7 +145,7 @@ class TestFinishCredentialLifecycle:
         clear.assert_called_once()
         assert release.call_args.args[:3] == (conn, 7, "job-42-attempt-1")
         conn.commit.assert_called_once()
-        conn.close.assert_called_once()
+        conn.close.assert_not_called()  # given back to the pool
 
     def test_nothing_selected_is_a_no_op(self):
         with patch("agento.framework.consumer.get_connection") as get_conn:
@@ -350,6 +350,36 @@ class TestRenewalCallSites:
         assert len(ticks) >= 2
         assert ticks[0] > 0, "renewal must run while a worker still holds a lease"
 
+    def test_the_main_loop_renews_once_per_poll_interval_not_per_claim(self):
+        """A burst of claims is one loop pass each; renewing on every pass cost one
+        connection and one UPDATE per claim at 200 jobs (SCL-1)."""
+        consumer = Consumer(MagicMock(), ConsumerConfig(poll_interval=3), logging.getLogger("t"))
+        now = [0.0]
+        passes, renewed = [], []
+
+        def _dequeue():
+            passes.append(now[0])
+            now[0] += 1  # one simulated second per claim pass
+            if len(passes) == 6:
+                consumer._shutdown.set()
+            return SimpleNamespace(id=len(passes))
+
+        with (
+            patch.object(consumer, "_recover_stale_jobs"),
+            patch.object(consumer, "_maybe_reload_bootstrap"),
+            patch.object(consumer, "_execute_job"),
+            patch.object(consumer, "_try_dequeue", side_effect=_dequeue),
+            patch.object(consumer, "_renew_leases", side_effect=lambda: renewed.append(now[0])),
+            patch("agento.framework.consumer.time.monotonic", side_effect=lambda: now[0]),
+            patch("agento.framework.consumer.get_event_manager"),
+            patch("agento.framework.consumer.dispatch_shutdown"),
+            patch("signal.signal"),
+        ):
+            consumer.run()
+
+        # Six passes at t=0..5. The drain may add one at t=6 if a worker is still busy.
+        assert [t for t in renewed if t < 6] == [0, 3]
+
     def test_leases_are_renewed_while_draining_past_the_ttl_on_sigterm(self):
         """SIGTERM: the loop exits but executor.shutdown(wait=True) blocks — itself
         UNBOUNDED — so renewal must continue with no cap, or a graceful restart would expire
@@ -542,7 +572,7 @@ class TestResumedSessionPath:
                 return_value=(Path("/run/42/home"), Path("/run/42/artifacts")),
             ),
             patch("agento.framework.consumer.get_event_manager"),
-            patch("agento.framework.consumer.create_runner", return_value=runner),
+            patch("agento.framework.consumer.RemoteRunner", return_value=runner),
             patch.object(consumer, "_save_session_id"),
             patch("agento.framework.consumer.workspace_adapter_for", return_value=adapter),
             patch("agento.framework.consumer.clear_auto_credential_error") as heal,

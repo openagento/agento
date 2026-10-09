@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS job (
     error_message   TEXT NULL,
     error_class     VARCHAR(100) NULL,
     pid             INT DEFAULT NULL,
+    runner_ref      VARCHAR(128) DEFAULT NULL,
     session_id      VARCHAR(255) DEFAULT NULL,
     toolbox_mcp_calls INT DEFAULT NULL,
     toolbox_mcp_connected BOOLEAN DEFAULT NULL,
@@ -414,9 +415,8 @@ CREATE TABLE IF NOT EXISTS job_defer_stretch (
 
 -- One panel re-login. `web` inserts it (`pending`); the cron worker `credential:web-login`
 -- claims it and drives the vendor CLI. The pasted code is never stored in plain text:
--- `code_key` is the PEM public half of a key pair that only the worker's memory holds, and
--- `code_box` is the code sealed with it (RSA-OAEP-SHA256). Both are cleared on every
--- terminal write.
+-- `code_box` is the code encrypted with AGENTO_ENCRYPTION_KEY (crypto.py). It is cleared on
+-- every terminal write. `code_key` is unused since D-BACKEND-1 (it held an RSA public key).
 CREATE TABLE IF NOT EXISTS credential_login (
     id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     credential_id BIGINT UNSIGNED NOT NULL,
@@ -491,4 +491,5 @@ INSERT INTO schema_migration (version) VALUES
     ('047_tool_invocation_run_execution'),
     ('048_credential_login'),
     ('049_tool_invocation_run_execution_index'),
-    ('050_role');
+    ('050_role'),
+    ('051_job_runner_ref');

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -315,7 +316,6 @@ class TestClaudeSubprocessRunner:
             dry_run=False,
             credential=_make_token({"subscription_key": "sk-ant-test"}),
         )
-        runner._record_usage = MagicMock()
         runner._execute_process = MagicMock(
             return_value=_make_completed_process(stdout=stream_output),
         )
@@ -433,7 +433,6 @@ class TestCodexSubprocessRunner:
             dry_run=False,
             credential=_make_token({"subscription_key": "sk-openai-test"}),
         )
-        runner._record_usage = MagicMock()
         stream = (
             '{"type":"thread.started","thread_id":"sess-x"}\n'
             '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"codex result output"}}\n'
@@ -729,7 +728,6 @@ class TestCredentialClaimedByCaller:
         stream = '{"type": "result", "result": "ok", "usage": {"input_tokens": 1, "output_tokens": 1}}\n'
 
         runner = make_runner("claude", dry_run=False, credential=token)
-        runner._record_usage = MagicMock()
         captured_env = {}
 
         def _fake_execute(_cmd, env, stdin_payload=None):
@@ -773,7 +771,6 @@ class TestRecordUsageBestEffort:
             return_value=_make_completed_process(stdout=stream_output),
         )
 
-        # _record_usage silently swallows errors (no DB in test env) — run() should still return
         result = runner.execute(RunRequest(prompt="test"))
 
         assert result.input_tokens == 10
@@ -789,16 +786,15 @@ class TestPidAndSessionCallbacks:
         runner.pid_callback = lambda pid: pids.append(pid)
 
         mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.stdout = iter([])
-        mock_proc.stderr = iter([])
+        mock_proc.pid = 1 << 30  # no such process: the runner kills the group at the end
+        mock_proc.stdout, mock_proc.stderr = io.StringIO(), io.StringIO()
         mock_proc.wait.return_value = 0
         mock_proc.returncode = 0
 
         with patch("agento.framework.harness.subprocess_runner.subprocess.Popen", return_value=mock_proc):
             runner._execute_process(["echo", "test"], {})
 
-        assert pids == [12345]
+        assert pids == [1 << 30]
 
     def test_session_id_callback_invoked(self):
         runner = make_runner("claude", dry_run=True, credential_required=False)
@@ -806,9 +802,9 @@ class TestPidAndSessionCallbacks:
         runner.session_id_callback = lambda sid: session_ids.append(sid)
 
         mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.stdout = iter(['{"session_id": "sess-abc"}\n', '{"type": "result"}\n'])
-        mock_proc.stderr = iter([])
+        mock_proc.pid = 1 << 30
+        mock_proc.stdout = io.StringIO('{"session_id": "sess-abc"}\n{"type": "result"}\n')
+        mock_proc.stderr = io.StringIO()
         mock_proc.wait.return_value = 0
         mock_proc.returncode = 0
 
@@ -832,7 +828,6 @@ class TestResumeMethod:
             dry_run=False,
             credential=_make_token({"subscription_key": "sk-ant-test"}),
         )
-        runner._record_usage = MagicMock()
         runner._execute_process = MagicMock(
             return_value=_make_completed_process(stdout=stream_output),
         )

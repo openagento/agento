@@ -35,7 +35,7 @@ def _fields(merged=None, local=None, env=None, defaults=None, scope=Scope.AGENT_
          patch("agento.framework.admin.data.read_config_defaults", return_value=defaults or {}), \
          patch("agento.framework.scoped_config.build_scoped_overrides", return_value=merged or {}), \
          patch("agento.framework.scoped_config.load_scoped_db_overrides", return_value=local or {}), \
-         patch("agento.framework.store_env.get", side_effect=env.get), \
+         patch.dict("os.environ", env, clear=True), \
          patch("agento.framework.config_resolver.get_encryptor", side_effect=AssertionError("decrypted")), \
          patch("agento.framework.config_resolver.ScopedConfigService.resolve_all",
                side_effect=AssertionError("resolve_all decrypts every secret in scope")):

@@ -14,6 +14,7 @@ import pytest
 
 from agento.framework import consumer, execution_deltas
 from agento.framework.harness.protocols import StreamEventMapper
+from agento.framework.runner.server import map_line
 
 FRAMEWORK = Path("src/agento/framework")
 
@@ -55,13 +56,20 @@ class _Sink:
         self.batches.append(list(batch))
 
 
+def _per_line(mapper, on_fragment):
+    """Both halves of the seam: the runner maps a line, the worker submits (WS5)."""
+    if on_fragment is None:
+        return None
+    return lambda line: [on_fragment(f) for f in map_line(mapper, line)]
+
+
 def _callback(*, sink=True, mapper=_Mapper, execution_id="e1"):
     if sink:
         execution_deltas.sync(_Sink(), module="conversation", class_path="src.deltas.Sink")
     instance = mapper() if isinstance(mapper, type) else mapper
     import logging
-    return consumer._delta_callback(_Entry(_Adapter(instance)), execution_id,
-                                    logging.getLogger("t")), instance
+    return _per_line(instance, consumer._delta_callback(_Entry(_Adapter(instance)), execution_id,
+                                                        logging.getLogger("t"))), instance
 
 
 # --- the three conditions, each on its own ---------------------------------
@@ -142,9 +150,9 @@ def test_the_sequence_is_per_run_and_increases():
     sink = _Sink()
     execution_deltas.sync(sink, module="conversation", class_path="src.deltas.Sink")
     import logging
-    callback = consumer._delta_callback(
-        _Entry(_Adapter(_Mapper({"kind": "delta", "text": "x"}))), "e1",
-        logging.getLogger("t"))
+    mapper = _Mapper({"kind": "delta", "text": "x"})
+    callback = _per_line(mapper, consumer._delta_callback(
+        _Entry(_Adapter(mapper)), "e1", logging.getLogger("t")))
     worker = execution_deltas._worker
     worker.stop()                      # hold the batch in the queue to read it
     worker.thread.join(2)
@@ -220,8 +228,8 @@ def _held(mapper, *, secrets=()):
     """A callback whose queue is held, so the records it enqueues can be read."""
     import logging
     execution_deltas.sync(_Sink(), module="conversation", class_path="src.deltas.Sink")
-    callback = consumer._delta_callback(_Entry(_Adapter(mapper)), "e1",
-                                        logging.getLogger("t"), secrets)
+    callback = _per_line(mapper, consumer._delta_callback(_Entry(_Adapter(mapper)), "e1",
+                                                          logging.getLogger("t"), secrets))
     worker = execution_deltas._worker
     worker.stop()
     worker.thread.join(2)

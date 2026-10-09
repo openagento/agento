@@ -275,7 +275,7 @@ def _populate_mcp_init(events: list[dict], result: RunResult) -> None:
     is intentionally left as ``None`` ("we don't know"). Deliberately we do NOT
     infer connection status from ``mcp_tool_call`` items: that would conflate
     "tool was used" (the ``toolbox_mcp_calls`` count, derived independently from
-    the transcript reader) with "server connected at init".
+    the toolbox audit) with "server connected at init".
 
     This helper is kept (rather than omitted) so that a future codex version
     which *does* emit a structured init report has one obvious place to wire it

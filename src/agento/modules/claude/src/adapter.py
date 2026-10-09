@@ -19,7 +19,6 @@ from agento.modules.claude.src.model_check import check_model
 from agento.modules.claude.src.runner import ClaudeSubprocessRunner
 from agento.modules.claude.src.stream_event_mapper import ClaudeStreamEventMapper
 from agento.modules.claude.src.stream_renderer import ClaudeStreamRenderer
-from agento.modules.claude.src.transcript_reader import ClaudeTranscriptReader
 
 CREDENTIAL_SCOPE = CredentialScope("claude")
 
@@ -28,7 +27,6 @@ class ClaudeHarnessAdapter:
     def __init__(self) -> None:
         self._command_builder = ClaudeCommandBuilder()
         self._workspace_adapter = ClaudeWorkspaceAdapter()
-        self._transcript_reader = ClaudeTranscriptReader()
         self._stream_renderer = ClaudeStreamRenderer()
         self._stream_event_mapper = ClaudeStreamEventMapper()
         self._authenticators: dict[CredentialScope, CredentialAuthenticator] = {
@@ -42,10 +40,6 @@ class ClaudeHarnessAdapter:
     @property
     def workspace_adapter(self) -> ClaudeWorkspaceAdapter:
         return self._workspace_adapter
-
-    @property
-    def transcript_reader(self) -> ClaudeTranscriptReader:
-        return self._transcript_reader
 
     @property
     def stream_renderer(self) -> ClaudeStreamRenderer:

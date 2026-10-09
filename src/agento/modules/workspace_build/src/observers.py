@@ -7,7 +7,7 @@ from pathlib import Path
 
 from agento.framework.agent_manager.models import CredentialRecord, CredentialStatus
 from agento.framework.database_config import DatabaseConfig
-from agento.framework.db import get_connection
+from agento.framework.db import get_connection, pooled
 from agento.framework.harness import get_harness_for_scope
 from agento.framework.workspace_paths import BUILD_DIR
 
@@ -118,24 +118,14 @@ class BuildFreshnessCheckObserver:
         from .builder import execute_build
 
         try:
-            conn = get_connection(DatabaseConfig.from_env())
+            with pooled(DatabaseConfig.from_env(), get_connection) as conn:
+                execute_build(conn, agent_view_id)
         except Exception as exc:
             event.error = exc
             logger.exception(
-                "BuildFreshnessCheckObserver: could not open DB connection",
-            )
-            return
-
-        try:
-            execute_build(conn, agent_view_id)
-        except Exception as exc:
-            event.error = exc
-            logger.exception(
-                "BuildFreshnessCheckObserver: execute_build failed for "
+                "BuildFreshnessCheckObserver: build check failed for "
                 "agent_view_id=%s", agent_view_id,
             )
-        finally:
-            conn.close()
 
 
 class RefreshBuildCredentialsObserver:

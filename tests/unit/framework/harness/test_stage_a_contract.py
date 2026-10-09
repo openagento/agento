@@ -17,6 +17,7 @@ so they would hide that bug.
 from __future__ import annotations
 
 import ast
+import io
 import json
 import subprocess
 import threading
@@ -149,9 +150,10 @@ class TestStdinPayload:
         seen = {}
 
         class _Proc:
+            pid = 1 << 30  # no such process: the runner kills the group at the end
             stdin = None
-            stdout = iter(())
-            stderr = iter(())
+            stdout = io.StringIO()
+            stderr = io.StringIO()
             returncode = 0
 
             def wait(self, timeout=None):
@@ -160,8 +162,8 @@ class TestStdinPayload:
         def _popen(cmd, **kw):
             seen["stdin"] = kw["stdin"]
             p = _Proc()
-            p.stdout = iter(())
-            p.stderr = iter(())
+            p.stdout = io.StringIO()
+            p.stderr = io.StringIO()
             p.stdin = MagicMock()
             return p
 
@@ -184,11 +186,12 @@ class TestStdinPayload:
                 pass
 
         class _Proc:
+            pid = 1 << 30  # no such process: the runner kills the group at the end
             returncode = 1
 
             def __init__(self):
-                self.stdout = iter(())
-                self.stderr = iter(())
+                self.stdout = io.StringIO()
+                self.stderr = io.StringIO()
                 self.stdin = _Stdin()
 
             def wait(self, timeout=None):
@@ -548,11 +551,12 @@ class TestProductionWiring:
                 return {}
 
         class _Proc:
+            pid = 1 << 30  # no such process: the runner kills the group at the end
             returncode = 0
 
             def __init__(self):
-                self.stdout = iter(())
-                self.stderr = iter(())
+                self.stdout = io.StringIO()
+                self.stderr = io.StringIO()
                 self.stdin = MagicMock()
 
             def wait(self, timeout=None):
@@ -570,14 +574,13 @@ class TestProductionWiring:
             credential_required=False,   # fake_local declares credential_required: false
         )
         runner = _R(context=ctx, command_builder=_Builder(), logger=MagicMock())
-        monkeypatch.setattr(runner, "_record_usage", MagicMock(), raising=False)
         runner.execute(RunRequest(prompt="hello"))
 
         assert seen["stdin_mode"] is subprocess.PIPE
         seen["pipe"].write.assert_called_once_with("PROMPT:hello")
 
     def _consumer_run_job(self, monkeypatch, *, attempt, session_id, resume_capable):
-        """Drive the real `Consumer._run_job`, capturing the ctx handed to create_runner."""
+        """Drive the real `Consumer._run_job`, capturing the ctx handed to RemoteRunner."""
         from agento.framework import consumer as cons
 
         _register_fake()
@@ -617,7 +620,7 @@ class TestProductionWiring:
         monkeypatch.setattr(cons, "get_connection", lambda cfg: MagicMock())
         monkeypatch.setattr(cons, "resolve_agent_view_runtime", lambda c, av: runtime)
         monkeypatch.setattr(cons, "materialize_run_workspace", lambda *a, **k: (None, None))
-        monkeypatch.setattr(cons, "create_runner", _create_runner)
+        monkeypatch.setattr(cons, "RemoteRunner", _create_runner)
         monkeypatch.setattr(cons, "get_module_config", lambda src: {})
         monkeypatch.setattr(
             "agento.framework.config_resolver.ScopedConfigService",
@@ -647,7 +650,6 @@ class TestProductionWiring:
         c._held_leases = {}
         c._save_pid = lambda *a: None
         c._save_session_id = lambda *a: None
-        c._is_pid_alive = lambda pid: False
         # Capability minting needs a real job row; this test is about the harness ctx.
         c._issue_run_capabilities = lambda conn, job: (None, None)
 

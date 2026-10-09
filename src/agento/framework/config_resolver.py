@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import store_env
 from .config_schema import (
     ToolboxOnlyConfigError,
     env_allowed,
@@ -290,7 +290,7 @@ def resolve_field(
     # 1. ENV var (highest priority), unless the field opted out of the ENV source
     rejected = False
     if env_allowed(field_schema):
-        env_val = store_env.get(_env_key(module_name, field_name))
+        env_val = os.environ.get(_env_key(module_name, field_name))
         if env_val is not None:
             value = _checked_dynamic(module_name, field_name, field_schema, env_val, "env")
             if value is not _REJECT:
@@ -336,7 +336,7 @@ def resolve_tool_field(
     field_type = field_schema.get("type", "string")
 
     # 1. ENV var
-    env_val = store_env.get(_env_key_tool(module_name, tool_name, field_name))
+    env_val = os.environ.get(_env_key_tool(module_name, tool_name, field_name))
     if env_val is not None:
         return ResolvedValue(value=_coerce_type(env_val, field_type), source="env")
 
@@ -480,7 +480,7 @@ class ScopedConfigService:
             )
 
         if env_allowed(field_schema):
-            env_val = store_env.get(path_to_env_key(path))
+            env_val = os.environ.get(path_to_env_key(path))
             if env_val is not None:
                 return env_val
 
@@ -562,7 +562,7 @@ class ScopedConfigService:
 
         paths = set(self._overrides)
         paths |= {
-            env_key_to_path(k) for k in store_env.environ() if k.startswith("CONFIG__")
+            env_key_to_path(k) for k in os.environ if k.startswith("CONFIG__")
         }
         for m in get_manifests():
             paths.update(f"{m.name}/{field}" for field in m.config)

@@ -4,6 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from agento.framework.cli._project import update_dotenv_value
 
 
@@ -396,3 +398,52 @@ class TestBackfillOrWarnCliPin:
         )
 
         assert "CLAUDE_CODE_VERSION=latest" in env.read_text()
+
+
+class TestUpgradeGrantsTheMigrationUser:
+    """WS8: an existing MySQL gives cron_agent its grant rights from root once, before the restart."""
+
+    def _execute(self, tmp_path: Path, rc_for, no_restart=False, calls=None):
+        from argparse import Namespace
+
+        from agento.framework.cli.upgrade import UpgradeCommand
+
+        (tmp_path / "docker").mkdir()
+        (tmp_path / "docker" / ".env").write_text("AGENTO_VERSION=0.2.0\n")
+        calls = [] if calls is None else calls
+
+        def run(argv, **kw):
+            calls.append((list(argv), kw))
+            return type("R", (), {"returncode": rc_for(argv)})()
+
+        with patch("agento.framework.cli.upgrade.find_project_root", return_value=tmp_path), \
+             patch("agento.framework.cli.upgrade.find_compose_file", return_value=tmp_path / "x.yml"), \
+             patch("agento.framework.cli.upgrade.get_package_version", return_value="0.9.4"), \
+             patch("agento.framework.cli.upgrade.materialize_docker_context"), \
+             patch("agento.framework.cli.upgrade.regenerate_compose"), \
+             patch("agento.framework.cli.upgrade.build_base_images"), \
+             patch("agento.framework.cli.upgrade.subprocess.run", side_effect=run):
+            UpgradeCommand().execute(Namespace(version="0.9.4", no_build=True, no_restart=no_restart))
+        return calls
+
+    def test_root_grant_runs_before_the_restart_with_no_password_in_argv(self, tmp_path: Path):
+        calls = self._execute(tmp_path, lambda argv: 0)
+        argvs = [argv for argv, _ in calls]
+        grant = next(i for i, a in enumerate(argvs) if "exec" in a and "mysql" in a)
+        restart = max(i for i, a in enumerate(argvs) if a[-2:] == ["up", "-d"])
+        assert argvs[grant - 1][-4:] == ["up", "-d", "--wait", "mysql"]
+        assert grant < restart
+        sql = (Path(__file__).resolve().parents[4]
+               / "src/agento/framework/sql/init/001_migrate_user.sql").read_text()
+        assert calls[grant][1]["input"] == sql
+        assert "$MYSQL_ROOT_PASSWORD" in " ".join(argvs[grant])  # expanded inside the container
+
+    def test_a_failed_root_grant_aborts_before_the_restart(self, tmp_path: Path):
+        calls = []
+        with pytest.raises(SystemExit):
+            self._execute(tmp_path, lambda argv: int("exec" in argv), calls=calls)
+        assert "exec" in calls[-1][0]  # nothing runs after the failed grant
+
+    def test_no_restart_skips_the_root_grant(self, tmp_path: Path):
+        calls = self._execute(tmp_path, lambda argv: 0, no_restart=True)
+        assert not any("mysql" in argv for argv, _ in calls)

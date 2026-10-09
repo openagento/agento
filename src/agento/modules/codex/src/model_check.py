@@ -20,7 +20,7 @@ from pathlib import Path
 
 from agento.framework.agent_manager.errors import AuthenticationError
 from agento.framework.config_test import ERROR, FAIL, OK, TestResult
-from agento.framework.harness import harness_base_env
+from agento.framework.runner import client as runner_client
 
 from .config import CodexWorkspaceAdapter
 
@@ -49,10 +49,8 @@ def _list(home: str, deadline: float, *extra: str) -> list[str] | None:
     if remaining <= 0:
         raise _Timeout
     try:
-        proc = subprocess.run(
-            ["codex", "debug", "models", *extra],
-            cwd=home, env={**harness_base_env(), "HOME": home},
-            capture_output=True, text=True, timeout=remaining, check=False,
+        proc = runner_client.run(
+            ["codex", "debug", "models", *extra], cwd=home, env={"HOME": home}, timeout=remaining,
         )
     except subprocess.TimeoutExpired as e:
         raise _Timeout from e
@@ -72,7 +70,8 @@ def check_model(provider: str, model: str, credential, *, timeout_s: float) -> T
     deadline = time.monotonic() + timeout_s
     timeout = TestResult(ERROR, f"model {model} not checked: the codex CLI timed out",
                          code="MODEL_CHECK_TIMEOUT")
-    with tempfile.TemporaryDirectory() as home:  # created 0700
+    # Created 0700 on the shared /workspace: the CLI runs in a runner.
+    with tempfile.TemporaryDirectory(dir=runner_client.shared_tmp()) as home:
         try:
             logged_in = True
             if credential is not None:

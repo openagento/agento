@@ -94,6 +94,8 @@ class HarnessRunContext:
     # this context builds argv, and `resolve_all()` decrypts every module's
     # `obscure` values. Populated by `get_harness_config`.
     harness_config: dict[str, str] = field(default_factory=dict, repr=False)
+    # Names the run for the runner's alive/signal ops (``job:<id>``); None: not addressable.
+    tag: str | None = None
 
 
 @dataclass(frozen=True)

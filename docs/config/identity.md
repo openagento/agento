@@ -169,7 +169,7 @@ input **sanity bound** on a secret that travels through the process environment 
 ### The `CONFIG__*` ENV scope cannot carry the private key
 
 The 3-level fallback is ENV → DB → `config.json` for every field, with **one refused path**: the
-**cron** entrypoint writes every `CONFIG__*` value to its credential-store file, so a PEM arriving
+**cron** entrypoint writes every `CONFIG__*` value to its root-only env file, so a PEM arriving
 that way would be the key on disk — which is exactly what this release removed. The **sandbox** entrypoint has no such file (it `exec`s `gosu agent`, so the environment
 passes through intact); it refuses the variable for the second reason below, not this one. Both
 entrypoints **refuse to start** when

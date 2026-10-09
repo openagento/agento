@@ -24,8 +24,6 @@ from functools import lru_cache
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from . import store_env
-
 # 16 MiB / ~100 ms per derivation. Mirrored in toolbox/crypto.js — changing either
 # side alone makes every stored value undecryptable by the other container.
 SCRYPT_N = 1 << 14
@@ -35,7 +33,7 @@ SALT_BYTES = 16
 
 
 def _passphrase() -> str:
-    passphrase = store_env.get("AGENTO_ENCRYPTION_KEY", "")
+    passphrase = os.environ.get("AGENTO_ENCRYPTION_KEY", "")
     if not passphrase:
         raise RuntimeError("AGENTO_ENCRYPTION_KEY not set — cannot encrypt/decrypt")
     return passphrase

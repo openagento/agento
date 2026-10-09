@@ -13,8 +13,6 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from agento.framework.cli._cron_exec import cron_exec
 
 CLI_DIR = Path(__file__).resolve().parents[4] / "src/agento/framework/cli"
@@ -69,7 +67,6 @@ def test_the_universal_cli_proxy_enters_as_root_through_the_launcher():
     assert _service_of(argv) == "cron"
     assert "agent" not in argv[:argv.index("cron")]
     assert argv[argv.index("cron") + 1] == "/opt/cron-agent/launch.sh"
-    assert "--store" in argv
     assert argv[argv.index("--") + 1] == "/opt/cron-agent/run.sh"
 
 
@@ -122,15 +119,12 @@ def test_the_sandbox_execs_still_run_as_agent():
 
 # --- the canary ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("store", [True, False])
-def test_a_cron_exec_names_no_store_variable(store):
-    """The store reaches the command through the launcher's fd, never through ``-e``."""
-    argv = cron_exec(["/opt/cron-agent/run.sh", "config:list"], store=store)
-    joined = " ".join(argv)
+def test_a_cron_exec_names_no_store_variable():
+    """The launcher reads the store from its root-only file, never from ``-e``."""
+    joined = " ".join(cron_exec(["/opt/cron-agent/run.sh", "config:list"]))
     for name, value in STORE_CANARIES.items():
         assert name not in joined
         assert value not in joined
-    assert ("--store" in argv) is store
 
 
 def test_the_interactive_setup_upgrade_keeps_its_tty():

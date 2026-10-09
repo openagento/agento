@@ -23,6 +23,35 @@ agento upgrade --version 0.3.1
 
 This updates `AGENTO_VERSION` in `docker/.env`, runs `docker compose pull`, and restarts containers. The `setup:upgrade` command runs automatically in the cron container entrypoint, applying any pending schema migrations and data patches. Cron jobs are not its business: the container's root-owned renderer rebuilds the crontab every minute from the installed modules and the `schedule` table (see [cron-privileges.md](../architecture/cron-privileges.md)).
 
+### Database users
+
+The containers use three MySQL users:
+
+| User | Used by | Rights |
+|---|---|---|
+| `cron_agent` | `setup:upgrade` only (in `cron`) | DDL, `CREATE USER`, `GRANT OPTION` |
+| `agento_backend` | `cron` and `web` at run time | `SELECT`, `INSERT`, `UPDATE`, `DELETE` on every table |
+| `agento_toolbox` | `toolbox` | only the tables and rights its SQL uses (`framework/db_grants.py`) |
+
+`setup:upgrade` creates the two runtime users and makes their grants again on each run, so a
+new module table gets its grants on the next upgrade. The toolbox gets no grant on a table
+that `db_grants.py` does not name. Their passwords are `MYSQL_BACKEND_PASSWORD` and
+`MYSQL_TOOLBOX_PASSWORD` in `docker/.env`. Every command that writes `docker-compose.yml`
+generates a missing one.
+
+`cron_agent` needs a one-time grant from MySQL root. A fresh install gets it at MySQL init.
+On an existing install, `agento upgrade` (and a reinstall) runs it before the restart, with the
+root password that the `mysql` container already holds. If it fails, nothing restarts. With
+`--no-restart` the step does not run: run `agento upgrade` once without it. MySQL 8.0 is
+required.
+
+On the first start after a fresh install or this upgrade, `web` and `toolbox` can log
+"access denied" for some seconds: they start before `setup:upgrade` in `cron` creates their
+users. They recover without a restart.
+
+MySQL publishes its port on `127.0.0.1` only. To open it to the network again, see
+[docker-compose-override.md](../deployment/docker-compose-override.md#opening-the-mysql-port).
+
 ## Using `agento install` (reinstall)
 
 Running `agento install` on an existing project offers a reinstall option that refreshes framework files while preserving data:

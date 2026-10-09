@@ -16,6 +16,9 @@ from agento.framework.agent_manager.errors import AuthenticationError
 from agento.framework.harness.protocols import CredentialLimits, LimitWindow
 from agento.modules.claude.src.auth import ClaudeCredentialAuthenticator
 
+# The CLI runs in a runner (WS5): an in-process server here.
+pytestmark = pytest.mark.usefixtures("runner_server")
+
 USAGE = "https://api.anthropic.com/api/oauth/usage"
 CREDS = {"subscription_key": "sk-ant-oat-x"}
 
@@ -109,6 +112,14 @@ def test_web_login_code_flow(fake_claude):
         login.close()
     assert (result.subscription_key, result.refresh_token) == ("at", "rt")
     assert result.raw_auth["claude_json"] == {"oauthAccount": {"emailAddress": "ops@example.com"}}
+
+
+def test_attended_login_runs_the_cli_in_the_runner(fake_claude, monkeypatch):
+    """``credential:register`` on a TTY: the same runner-side login, the code read from the
+    operator's terminal (SEC-1: no vendor CLI starts in the worker)."""
+    monkeypatch.setattr("builtins.input", lambda _prompt: "abc#s1\n")
+    result = ClaudeCredentialAuthenticator().authenticate_interactive(fake_claude, logging.getLogger("t"))
+    assert (result.subscription_key, result.refresh_token) == ("at", "rt")
 
 
 def test_web_login_wrong_code_fails(fake_claude):

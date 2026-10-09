@@ -16,6 +16,9 @@ from agento.framework.agent_manager.errors import AuthenticationError
 from agento.framework.harness.protocols import CredentialLimits, LimitWindow
 from agento.modules.codex.src.auth import CodexCredentialAuthenticator
 
+# The CLI runs in a runner (WS5): an in-process server here.
+pytestmark = pytest.mark.usefixtures("runner_server")
+
 USAGE = "https://chatgpt.com/backend-api/wham/usage"
 CREDS = {"subscription_key": "at-x", "raw_auth": {"tokens": {"account_id": "acc-1"}}}
 

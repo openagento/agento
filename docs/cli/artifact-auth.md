@@ -12,7 +12,6 @@ Shortcut: `ar:au`.
 |---|---|
 | `--user <u>` | Basic auth user. Empty defaults to the artifact code |
 | `--pass-stdin` | Read the password from stdin (`printf '%s' "$PW" \| … --pass-stdin`), or from a prompt, typed twice, on a terminal. Without it the password is a strong random one |
-| `--pass <p>` | Deprecated: argv lands in shell history and `ps`. Still works, with a warning; removed in v0.16 |
 | `--disable` | Turn Basic auth off — removes the sidecar the server gates on |
 | `--show` | Print the current credential instead of changing it |
 | `--actor <who>` | Recorded in the audit row (default `admin`) |

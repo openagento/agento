@@ -51,12 +51,13 @@ def max_concurrent(conn, workspace_id: int) -> int:
     web never runs ``bootstrap()``, so the generic resolver has no manifests there; the
     module's ``config.json`` is read from disk instead.
     """
-    from .. import store_env
+    import os
+
     from ..config_resolver import path_to_env_key, read_config_defaults
     from ..core_config import _find_module_dir
     from ..scoped_config import Scope, load_scoped_db_overrides
 
-    raw = store_env.get(path_to_env_key(_MAX_CONCURRENT_PATH))
+    raw = os.environ.get(path_to_env_key(_MAX_CONCURRENT_PATH))
     if raw is None:
         for scope, scope_id in ((Scope.WORKSPACE, workspace_id), (Scope.DEFAULT, 0)):
             row = load_scoped_db_overrides(conn, scope, scope_id, strict=True).get(_MAX_CONCURRENT_PATH)

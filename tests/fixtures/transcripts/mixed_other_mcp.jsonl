@@ -1,5 +1,0 @@
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"go"}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_020","name":"mcp__context7__resolve-library-id","input":{"name":"react"}}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_021","name":"Read","input":{"file_path":"/x"}}]}}
-not-json-this-line
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}

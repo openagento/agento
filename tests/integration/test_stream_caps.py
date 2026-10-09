@@ -1,6 +1,6 @@
 """The per-user stream cap (PRD E3-E5 §7.3).
 
-The budget is threads: `web` is a `ThreadingHTTPServer` and one open streaming response costs
+The budget is threads: `web` gives each open streaming response its own thread (`MAX_STREAMS`), so one costs
 exactly one thread (measured 1:1, released on close). Exceeding the cap closes the **oldest**
 stream for that user and never refuses the new one - a refusal would make a reconnect storm
 self-inflicted denial of service, because the client whose stream just dropped is precisely

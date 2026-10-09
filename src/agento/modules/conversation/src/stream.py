@@ -34,10 +34,10 @@ HEARTBEAT = b": ping\n\n"
 
 # --- the per-user stream cap (§7.3) ----------------------------------------
 #
-# The budget this bounds is THREADS. `web` is a `ThreadingHTTPServer`, and one open streaming
-# response costs exactly one thread: measured at 25 concurrent long-lived responses, threads
-# went 2 -> 27 and back to 2 on close (delta 25, ratio 1.00). So a user's live streams are a
-# user's share of the process, one for one.
+# The budget this bounds is THREADS. `web` runs each open stream on a thread of its own (the
+# stream budget in web/server.py), so one stream costs one thread: measured at 25 concurrent
+# long-lived responses, threads went 2 -> 27 and back to 2 on close (delta 25, ratio 1.00).
+# So a user's live streams are a user's share of the process, one for one.
 #
 # Exceeding the cap closes the OLDEST stream for that user and never refuses the new one. A
 # refusal would make a reconnect storm self-inflicted denial of service: the client whose

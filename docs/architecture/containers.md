@@ -1,19 +1,21 @@
 # Docker Containers
 
-Seven containers. Six share the `agento-net` bridge network; `artifacts` declares no
-`networks:` key and deliberately joins none of it. `proxy` is the only service on both
-`agento-net` and the project `default` network that `artifacts` sits on.
+Eight containers with one runner (`runner-<i>`, one per `AGENTO_RUNNER_COUNT`), on three
+bridge networks: `db-net`, `exec-net` and `web-net` ([Network](#network)). `artifacts`
+declares no `networks:` key and deliberately joins none of them. `proxy` is the only other
+service on the project `default` network that `artifacts` sits on.
 
 ## Services
 
 | Service | Image | Role | Language |
 |---------|-------|------|----------|
-| **cron** | agento-cron | Job consumer + cron scheduler + Python CLI | Python |
+| **cron** | agento-cron | Job consumer + cron scheduler + Python CLI. Starts no agent CLI: it asks a runner | Python |
 | **toolbox** | agento-toolbox | MCP server — credential broker, tool execution | Node.js |
 | **mysql** | mysql:8.0 | Job queue DB (`cron_agent`) | — |
 | **sandbox** | agento-sandbox | Interactive agent execution (ad-hoc) | Python |
 | **artifacts** | agento-toolbox | Static HTTP for the `versioned_artifacts` published tree | Node.js |
-| **web** | agento-cron | Panel API (sign-in, roles and grants, admin, launches), the launch redeem, and `/internal/authz/app` for the proxy; holds only the internal proxy secret, no upstream tool credential or encryption key ([panel.md](panel.md)) | Python |
+| **web** | agento-cron | Panel API (sign-in, roles and grants, admin, launches), the launch redeem, and `/internal/authz/app` for the proxy; one backend with `cron`: the same env file (with the encryption key) and DB user (DECISIONS.md D-BACKEND-1); also the internal proxy secret; no upstream tool credential ([panel.md](panel.md)) | Python |
+| **runner-1** | agento-cron | Where every agent CLI runs. No database, no key, no `env_file`. The worker in cron sends it runs over a Unix socket ([runner.md](runner.md)). More runners: `runner-2` … | Python |
 | **proxy** | caddy:2.11 | TLS, the panel / apps / share origins, `forward_auth` to `web`; the only route to artifact files | — |
 
 ## Volume Mounts
@@ -41,12 +43,12 @@ Seven containers. Six share the `agento-net` bridge network; `artifacts` declare
 
 The `artifacts` service declares **no `networks:` key** and carries no `env_file:` or
 `environment:`. Compose therefore leaves it on the project's `default` network while every
-other service names `agento-net` — measured: the sandbox cannot resolve the name
+other service names `db-net`, `exec-net` or `web-net` — measured: the sandbox cannot resolve the name
 `artifacts`. It publishes **no host port**: the only other container on `default` is `proxy`,
 which is the only route to these files, and it serves only `/a/<code>/v/<id>/` paths after
 `web` authorizes them against a live launch ([panel.md](panel.md)). Shares are E6's and every
 share request is denied until then, so VA `preview_url` links and Basic-auth shares are not
-reachable from the host. Putting it on `agento-net` would let every agent in every
+reachable from the host. Putting it on `exec-net` would let every agent in every
 agent_view read every artifact over plain HTTP, bypassing `allowed_artifacts` with no audit row.
 
 ### Agent-Only (cron + sandbox)
@@ -79,7 +81,8 @@ config → env → an inherited file descriptor → a per-run `ssh-agent` and is
 - `CONFIG__*` — Config overrides (highest priority)
 
 ### Web
-- `MYSQL_*` — MySQL connection (no `env_file`, no `AGENTO_ENCRYPTION_KEY`)
+- `MYSQL_*` — MySQL connection, the same user as `cron`
+- `AGENTO_ENCRYPTION_KEY` — from the same `env_file` as `cron`; encrypts a pasted re-login code
 - `AGENTO_PANEL_HOST`, `AGENTO_APPS_HOST`, `AGENTO_PROXY_PORT` — the browser-facing origins, same defaults as `proxy`
 
 ### Cron
@@ -89,7 +92,39 @@ config → env → an inherited file descriptor → a per-run `ssh-agent` and is
 
 ## Network
 
-All containers **except `artifacts`** communicate on `agento-net` (bridge). DNS names match service names: `toolbox`, `mysql`, `web`. `artifacts` declares no `networks:` key, so Compose leaves it on the project `default` network, which it shares with `proxy` alone; no other container can even resolve its name.
+Three bridge networks. A container reaches, and can resolve the name of, only a container
+that shares one of its networks. DNS names match service names.
+
+| Network | Members | Why |
+|---|---|---|
+| `db-net` | mysql, cron, web, toolbox | the services that hold a DB user |
+| `exec-net` | runner-<i>, sandbox, toolbox, proxy | agents reach the toolbox and the panel origin |
+| `web-net` | proxy, web | the proxy reaches `web` |
+
+None is `internal`: agents and vendor CLIs need egress. MySQL publishes its port on host
+loopback only (`127.0.0.1:${MYSQL_PORT:-3306}`).
+
+Reachability ("yes" = a TCP connect works, not "trusted"):
+
+| From → To | web | cron | runner | toolbox | mysql | proxy |
+|---|---|---|---|---|---|---|
+| web | — | yes (nothing listens) | no | yes | yes | yes |
+| cron | yes | — | Unix socket only | yes | yes | no |
+| runner, sandbox | no | no | — | yes | no | yes |
+| toolbox | yes | yes (nothing listens) | yes (nothing listens on TCP) | — | yes | yes |
+
+The security claims are the "no" cells. Where a cell says yes but the caller is not
+trusted, the guard is authentication: `web` authenticates every route (SEC-12 limiter, then
+identity), and `proxy` authenticates every non-static path. `docker/smoke/runner-net-smoke.sh`
+checks every cell on a running stack.
+
+**Docker Desktop:** a container reaches `host.docker.internal` (also by its raw IP), and
+Desktop forwards it to host loopback, where MySQL is published. So on Desktop an agent can
+open a TCP connection to MySQL; it holds no DB user, and MySQL authentication is the guard
+(DECISIONS.md 2026-10-09 Network split). On Linux that route fails; the smoke checks it
+there only.
+
+`artifacts` declares no `networks:` key, so Compose leaves it on the project `default` network, which it shares with `proxy` alone; no other container can even resolve its name.
 
 ### Proxy and web
 
@@ -113,13 +148,14 @@ Hardening: every caller-supplied `X-Agento-*`, `X-Forwarded-User`, `X-Remote-Use
 query values are replaced with `REDACTED` in both the access log and Caddy's error log, and no
 route targets the toolbox.
 
-`web` shares `agento-net` with `sandbox`, so **reachability is not trust**. The shared secret
+No agent reaches `web`, but `toolbox` and `cron` do (`db-net`), so **reachability is not
+trust**. The shared secret
 `X-Agento-Proxy-Auth` lives in the `proxy-internal` volume, which only `proxy` (writes it once
 at start) and `web` (reads it per request) mount. A request without it — a direct call from
-`sandbox` — gets `401` on `/internal/authz/*`. Nothing on `web` may trust an identity or
+another container — gets `401` on `/internal/authz/*`. Nothing on `web` may trust an identity or
 forwarding header without that check.
 
-Being on `agento-net` grants **reachability, not authorization**. The toolbox authenticates east-west
+Being on `exec-net` or `db-net` grants **reachability, not authorization**. The toolbox authenticates east-west
 traffic itself: `/mcp`, `/sse`, `/config-test` and every `/api/*` route require a capability token and take their scope
 from the `toolbox_capability` row, so a process on the network cannot pick a scope by asking for it. Bare
 `/health` is unauthenticated **liveness only** (`200`, tool names and Playwright state). It runs no

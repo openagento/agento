@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from dataclasses import fields as dataclass_fields
 from datetime import datetime
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -152,9 +151,7 @@ class JobFinalizeEvent:
     SUCCESS, otherwise the populated ``Verdict``).
 
     ``harness`` is the id of the program that drove this job (e.g. ``"claude"``,
-    ``"codex"``), taken from the run result. Verification observers use it to resolve
-    the right ``TranscriptReader`` from the harness registry — the transcript format
-    is a property of the harness, not of the model vendor.
+    ``"codex"``), taken from the run result.
     """
 
     job: Job
@@ -598,13 +595,6 @@ class SkillSyncCompletedEvent:
 # Names have NO vendor prefix: these are core events, and the convention
 # (RULES.md EVT-4 / docs/architecture/events.md) reserves `{publisher}_{module}_...` for
 # third-party modules. Same shape as job_claim_after, module_register_before.
-#
-# Dual dispatch: each of these is dispatched under BOTH the new
-# `credential_*_after` name (carrying the new payload below) and the legacy
-# `token_*_after` name (carrying the legacy `Token*Event` payload further down).
-# Renaming the event alone would NOT be backwards compatible — observers bound via
-# events.json read `event.agent_type` / `event.token_id`, and because observer
-# errors are swallowed by design the AttributeError would be SILENT.
 
 
 @dataclass
@@ -665,104 +655,3 @@ class CredentialAuthThrottledEvent:
     error_msg: str
     throttled_until: datetime | None = None
     job_id: int | None = None
-
-
-# --- Legacy token events (deprecated, removed next release — see ROADMAP.md) ---
-#
-# Kept so observers bound to the old `token_*_after` names keep receiving a payload
-# with the fields they actually read (`agent_type`, `token_id`).
-
-
-@dataclass
-class TokenRegisteredEvent:
-    """Deprecated alias payload for ``token_register_after``."""
-
-    agent_type: str
-    token_id: int
-    label: str
-    credentials: dict[str, Any] = field(repr=False, default_factory=dict)
-    type: str = "oauth"
-
-
-@dataclass
-class TokenRefreshedEvent:
-    """Deprecated alias payload for ``token_refresh_after``."""
-
-    agent_type: str
-    token_id: int
-    label: str
-    credentials: dict[str, Any] = field(repr=False, default_factory=dict)
-    type: str = "oauth"
-
-
-@dataclass
-class TokenAuthFailedEvent:
-    """Deprecated alias payload for ``token_auth_failed_after``."""
-
-    agent_type: str
-    token_id: int
-    error_msg: str
-    job_id: int | None = None
-
-
-@dataclass
-class TokenUsageLimitedEvent:
-    """Deprecated alias payload for ``token_usage_limited_after``."""
-
-    agent_type: str
-    token_id: int
-    error_msg: str
-    reset_at: datetime | None = None
-    job_id: int | None = None
-
-
-@dataclass
-class TokenAuthThrottledEvent:
-    """Deprecated alias payload for ``token_auth_throttled_after``."""
-
-    agent_type: str
-    token_id: int
-    error_msg: str
-    throttled_until: datetime | None = None
-    job_id: int | None = None
-
-
-# Maps each new credential event name to its legacy name + legacy payload class.
-# ``dispatch_credential_event`` below is the ONE place both are emitted, so the two
-# payloads can never drift apart.
-_CREDENTIAL_EVENT_ALIASES: dict[str, tuple[str, type]] = {
-    "credential_register_after": ("token_register_after", TokenRegisteredEvent),
-    "credential_refresh_after": ("token_refresh_after", TokenRefreshedEvent),
-    "credential_auth_failed_after": ("token_auth_failed_after", TokenAuthFailedEvent),
-    "credential_usage_limited_after": ("token_usage_limited_after", TokenUsageLimitedEvent),
-    "credential_auth_throttled_after": (
-        "token_auth_throttled_after",
-        TokenAuthThrottledEvent,
-    ),
-}
-
-
-def dispatch_credential_event(event_name: str, event: object) -> None:
-    """Dispatch a credential event under its new name AND its legacy name.
-
-    Both payloads are built from the same data here, so an observer on either name
-    sees consistent values. Remove together with the legacy names (ROADMAP.md).
-    """
-    from .event_manager import get_event_manager
-
-    manager = get_event_manager()
-    manager.dispatch(event_name, event)
-
-    alias = _CREDENTIAL_EVENT_ALIASES.get(event_name)
-    if alias is None:
-        return
-    legacy_name, legacy_cls = alias
-    fields = {
-        f.name: getattr(event, f.name)
-        for f in dataclass_fields(event)
-        if f.name not in ("scope", "credential_id")
-    }
-    manager.dispatch(
-        legacy_name,
-        legacy_cls(agent_type=event.scope, token_id=event.credential_id, **fields),
-    )

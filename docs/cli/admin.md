@@ -10,10 +10,10 @@ TUI stays as the fallback. It is the only place for what the `web` container can
 
 | Action | Why only here |
 |---|---|
-| Replay a job (`p`) | it runs the agent CLI in the cron container |
+| Replay a job (`p`) | it starts from the cron container, which sends the run to a runner |
 | Build a workspace (`b`) | it writes `workspace/build/` in the cron container |
-| Set or edit a secret (`obscure` or `toolbox_only`) | `web` holds no encryption key |
-| See an `env` source and a `CONFIG__*` value | `web` does not load the cron credential store |
+| Set or edit a secret (`obscure` or `toolbox_only`) | not built in the panel: no secret value goes to or from the browser (D-PANEL-ADMIN-1) |
+| See a `CONFIG__*` value set only on the `cron` service | `web` reads the same `secrets.env`, not `cron`'s own `environment:` |
 | Read a credential's error message | `web` sends no error text to the browser |
 | Run a `local`-kind config tester | `web` does not load module code |
 

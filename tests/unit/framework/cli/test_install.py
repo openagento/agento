@@ -439,3 +439,35 @@ class TestRunPostInstall:
         # Easiest assertion: build_base_images was called and at least one
         # compose subprocess.run also happened.
         assert mock_run.call_count >= 1
+
+    @patch("agento.framework.cli.install.grant_migrate_user", return_value=False)
+    @patch("agento.framework.cli.install.subprocess.run")
+    @patch("agento.framework.cli.install.build_base_images")
+    @patch("agento.framework.cli.install.get_package_version", return_value="0.9.4")
+    def test_an_existing_database_gets_the_root_grant_before_start(
+        self, mock_ver, mock_build_base, mock_run, mock_grant, tmp_path: Path
+    ):
+        # WS8: a reinstall keeps storage/mysql, whose cron_agent predates the migration-user
+        # grant. A failed grant stops before `up -d`; a fresh install gets it from initdb.
+        self._seed_project(tmp_path)
+        mock_run.return_value = type("R", (), {"returncode": 0})()
+
+        _run_post_install(tmp_path, existing_db=True)
+
+        mock_grant.assert_called_once()
+        assert not any("up" in call.args[0] for call in mock_run.call_args_list)
+
+    @patch("agento.framework.cli.install.grant_migrate_user")
+    @patch("agento.framework.cli.install.subprocess.run")
+    @patch("agento.framework.cli.install.build_base_images")
+    @patch("agento.framework.cli.install.get_package_version", return_value="0.9.4")
+    def test_a_fresh_install_needs_no_root_grant(
+        self, mock_ver, mock_build_base, mock_run, mock_grant, tmp_path: Path
+    ):
+        self._seed_project(tmp_path)
+        outcomes = iter([type("R", (), {"returncode": rc})() for rc in (0, 0, 1)])
+        mock_run.side_effect = lambda *a, **kw: next(outcomes)
+
+        _run_post_install(tmp_path)
+
+        mock_grant.assert_not_called()

@@ -12,6 +12,9 @@ from agento.framework.agent_manager.models import CredentialRecord
 from agento.framework.config_test import ERROR, FAIL, OK
 from agento.modules.pi.src.model_check import check_model, parse_models
 
+# The CLI runs in a runner (WS5): an in-process server here.
+pytestmark = pytest.mark.usefixtures("runner_server")
+
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "model_check"
 CRED = CredentialRecord(id=1, scope="openrouter", type="openrouter_api_key", label="pi",
                         credentials={"api_key": "sk-or-test"})
@@ -94,13 +97,6 @@ def test_total_deadline(fake_pi):
     result = check_model("openrouter", "deepseek/deepseek-v4-flash", CRED, timeout_s=0.5)
     assert time.monotonic() - started < 2.0
     assert (result.status, result.code) == (ERROR, "MODEL_CHECK_TIMEOUT")
-
-
-def test_the_cron_secrets_do_not_reach_pi(fake_pi, monkeypatch):
-    monkeypatch.setenv("AGENTO_ENCRYPTION_KEY", "cron-only-secret")
-    record = fake_pi("pi_list_models.txt")
-    check_model("openrouter", "deepseek/deepseek-v4-flash", CRED, timeout_s=10)
-    assert "cron-only-secret" not in record.with_suffix(".env").read_text()
 
 
 @pytest.mark.usefixtures("builtin_harnesses")

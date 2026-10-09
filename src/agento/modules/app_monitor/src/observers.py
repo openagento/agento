@@ -4,9 +4,9 @@
   Records two independent, nullable per-attempt signals on the ``job`` row and
   (optionally) emails ops when something looks off. It does NOT set a verdict
   and never disrupts job flow: an rc=0 job stays a SUCCESS. The two signals:
-    * ``toolbox_mcp_calls``  — count of ``mcp__toolbox__*`` tool-uses seen in the
-      on-disk transcript. ``0`` = parsed, none found. ``NULL`` = unknown
-      (no reader, missing/unreadable transcript, or parser drift).
+    * ``toolbox_mcp_calls``  — the calls the toolbox dispatcher audited
+      (``tool_invocation``) on this attempt's MCP capability. ``0`` = none.
+      ``NULL`` = unknown (no agent_view, no capability, or a DB error).
     * ``toolbox_mcp_connected`` — what the CLI self-reported for ``toolbox`` in
       its session-init line, mapped tri-state: ``TRUE`` only for
       ``connected``; ``FALSE`` for a status the CLI treats as terminal
@@ -14,9 +14,6 @@
       report; ``NULL`` ("we don't know") when there is no init report at all
       **or** the status is merely indeterminate — notably ``pending``, which
       only means the handshake had not finished when init was printed.
-  The transcript parser lives in the agent's module (claude/codex/…); this
-  observer resolves one via the harness registry so the
-  framework — and this module — stay agent-agnostic.
 - ``AlertEmailObserver`` (``job_dead_after``) — send a plain-text SMTP alert
   on DEAD transitions when both ``alerts/email_to`` and ``alerts/smtp_host``
   are configured. Silent no-op if either is empty; SMTP failures are logged
@@ -37,9 +34,9 @@ import logging
 
 from agento.framework.bootstrap import get_module_config
 from agento.framework.database_config import DatabaseConfig
-from agento.framework.db import get_connection
+from agento.framework.db import get_connection, pooled
 from agento.framework.events import JobVerificationFailed
-from agento.framework.harness import find_harness
+from agento.framework.toolbox_capability import KIND_MCP_JOB
 
 from .constants import (
     CFG_ALERT_EMAIL_TO,
@@ -53,8 +50,6 @@ from .constants import (
     MCP_STATUS_CONNECTED,
     MCP_STATUS_NOT_CONNECTED,
     MCP_STATUS_TRANSIENT,
-    MCP_TOOLBOX_TOOL_PREFIX,
-    PARSE_DRIFT_MIN_LINES,
 )
 from .emailer import SmtpConfig, send_alert
 
@@ -80,29 +75,59 @@ def _flag(key: str) -> bool:
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
-def _save_mcp_telemetry(job_id: int, calls: int | None, connected: bool | None) -> None:
+def _count_toolbox_calls(conn, job) -> int | None:
+    """Count the calls the toolbox dispatcher audited on this attempt's MCP capability.
+
+    Each attempt mints exactly one ``mcp_job`` capability, and the attempts of one job
+    run one after another, so the newest row is this attempt's. The key is the
+    capability, not the execution: ``execution_id`` is NULL when no execution provider
+    is registered. ``None`` = unknown: no agent_view (no capability is minted), no
+    capability row, or a DB error.
+    """
+    if getattr(job, "id", None) is None or getattr(job, "agent_view_id", None) is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT MAX(id) AS id FROM toolbox_capability WHERE job_id = %s AND kind = %s",
+                (job.id, KIND_MCP_JOB),
+            )
+            cap_id = (cur.fetchone() or {}).get("id")
+            if cap_id is None:
+                return None
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM tool_invocation WHERE capability_id = %s",
+                (cap_id,),
+            )
+            return int(cur.fetchone()["n"])
+    except Exception as e:
+        # Type name only, as in `_save_mcp_telemetry` (SEC-6).
+        logger.warning(
+            "McpHealthTelemetryObserver: %s counting toolbox calls for job_id=%s "
+            "— count unknown", type(e).__name__, job.id,
+        )
+        return None
+
+
+def _save_mcp_telemetry(conn, job_id: int, calls: int | None, connected: bool | None) -> None:
     """Persist both per-attempt MCP signals on the ``job`` row in one UPDATE.
 
     Always rewrites BOTH columns — including to NULL — because job rows are
     reused across retry attempts (retry-with-fresh-session writes the same row).
     Skipping the write on unknown signals would leave stale values from a prior
     attempt (e.g. attempt 1's ``3/TRUE`` surviving an attempt 2 that couldn't
-    read the transcript). Best-effort: a DB hiccup logs a warning and returns;
+    count the calls). Best-effort: a DB hiccup logs a warning and returns;
     it never crashes the observer or changes job flow. PyMySQL maps Python
     ``True``→1, ``False``→0, ``None``→NULL for the BOOLEAN column.
     """
     try:
-        conn = get_connection(DatabaseConfig.from_env())
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE job SET toolbox_mcp_calls = %s, "
-                    "toolbox_mcp_connected = %s, updated_at = NOW() WHERE id = %s",
-                    (calls, connected, job_id),
-                )
-            conn.commit()
-        finally:
-            conn.close()
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE job SET toolbox_mcp_calls = %s, "
+                "toolbox_mcp_connected = %s, updated_at = NOW() WHERE id = %s",
+                (calls, connected, job_id),
+            )
+        conn.commit()
     except Exception as e:
         # Type name, not the traceback: `framework/log.py` now attaches file
         # handlers to this namespace, so `exc_info=True` would persist whatever
@@ -118,10 +143,8 @@ def _save_mcp_telemetry(job_id: int, calls: int | None, connected: bool | None) 
 class McpHealthTelemetryObserver:
     """Record MCP-health telemetry for a finalizing job — no verdict, ever.
 
-    Resolves the harness's transcript reader via the framework registry —
-    never imports a harness-specific module directly. Both signals
-    are independently nullable; missing data is ``NULL``, never coerced to
-    ``0`` / ``False``.
+    Both signals are independently nullable; missing data is ``NULL``, never
+    coerced to ``0`` / ``False``.
     """
 
     def execute(self, event) -> None:
@@ -134,15 +157,15 @@ class McpHealthTelemetryObserver:
             harness = getattr(event, "harness", None)
             session_id = getattr(job, "session_id", None) if job is not None else None
 
-            toolbox_calls = self._count_toolbox_calls(harness, session_id, job_id)
             toolbox_connected, toolbox_status = self._resolve_toolbox_status(event)
+            # One connection for the count and the UPDATE (SCL-1).
+            with pooled(DatabaseConfig.from_env(), get_connection) as conn:
+                toolbox_calls = _count_toolbox_calls(conn, job)
+                if isinstance(job_id, int) and job_id > 0:
+                    _save_mcp_telemetry(conn, job_id, toolbox_calls, toolbox_connected)
 
-            if isinstance(job_id, int) and job_id > 0:
-                _save_mcp_telemetry(job_id, toolbox_calls, toolbox_connected)
-
-            # Separate from the parse log in _count_toolbox_calls (which runs
-            # before the status is resolved): the raw status word is otherwise
-            # only visible at DEBUG, inside the harness's output parser.
+            # The raw status word is otherwise only visible at DEBUG, inside the
+            # harness's output parser.
             logger.info(
                 "McpHealthTelemetryObserver: mcp health",
                 extra={
@@ -169,71 +192,6 @@ class McpHealthTelemetryObserver:
                 getattr(getattr(event, "job", None), "id", "?"),
             )
         # event.verdict is intentionally never touched — telemetry only.
-
-    def _count_toolbox_calls(self, harness, session_id, job_id) -> int | None:
-        """Count ``mcp__toolbox__*`` tool-uses in the on-disk transcript.
-
-        Returns ``None`` whenever the count is unknown (no session id, no reader
-        for the harness, missing/unreadable transcript, or parser drift); ``0``
-        only when the transcript parsed cleanly and held zero toolbox calls.
-        """
-        if not session_id:
-            return None
-        registered = find_harness(harness) if harness else None
-        reader = registered.adapter.transcript_reader if registered is not None else None
-        if reader is None:
-            logger.info(
-                "McpHealthTelemetryObserver: no TranscriptReader for harness=%r "
-                "— toolbox call count unknown (job_id=%s)", harness, job_id,
-            )
-            return None
-        try:
-            summary = reader.parse(session_id)
-        except FileNotFoundError:
-            return None  # transcript missing — count unknown
-        except Exception as e:
-            # `logger.exception` writes the traceback into the file now. A
-            # transcript reader parses agent output, which is the least
-            # predictable text in the system — the type name is enough to tell a
-            # malformed transcript from a missing one.
-            logger.warning(
-                "McpHealthTelemetryObserver: %s reading transcript for "
-                "harness=%s session_id=%s — toolbox count unknown",
-                type(e).__name__, harness, session_id,
-            )
-            return None
-
-        # Drift detection (log-only): a non-trivial transcript whose records the
-        # reader didn't recognize at all is almost certainly a silent harness
-        # format change. Log at ERROR so ops can spot it, but leave the count
-        # NULL (the measurement is unreliable) and set no verdict.
-        if (
-            summary.total_json_lines >= PARSE_DRIFT_MIN_LINES
-            and summary.recognized_records == 0
-        ):
-            logger.error(
-                "parser drift detected: harness=%s session_id=%s — %d JSON "
-                "lines, 0 recognized records",
-                harness, session_id, summary.total_json_lines,
-            )
-            return None
-
-        toolbox_calls = sum(
-            1 for t in summary.tool_uses if t.name.startswith(MCP_TOOLBOX_TOOL_PREFIX)
-        )
-        logger.info(
-            "McpHealthTelemetryObserver: parsed transcript",
-            extra={
-                "job_id": job_id,
-                "harness": harness,
-                "session_id": session_id,
-                "toolbox_mcp_calls": toolbox_calls,
-                "tool_uses_total": len(summary.tool_uses),
-                "recognized_records": summary.recognized_records,
-                "json_lines_total": summary.total_json_lines,
-            },
-        )
-        return toolbox_calls
 
     def _resolve_toolbox_status(self, event) -> tuple[bool | None, str]:
         """Resolve ``toolbox_mcp_connected`` + the raw status word behind it.

@@ -101,13 +101,21 @@ The module supplies one object implementing `AgentHarnessAdapter`, which wires t
 |---------------------------|-------------------------------------------------------------------|
 | `CommandBuilder`          | `headless(ctx, request)`, `interactive(ctx, *, yolo)` and `stdin_payload(ctx, request)` — **the only** place that harness's CLI invocation exists |
 | `WorkspaceAdapter`        | materializes config + credentials into a build/run dir; owns `owned_paths`, `persistent_home_paths`, `inject_runtime_params`, `capture_refreshed_credentials`, `serialize_toolbox_connection` |
-| `TranscriptReader`        | parses that harness's own session transcript (optional — `None` when it keeps none) |
 | `StreamRenderer`          | renders one **live stdout event** as terminal text for `agento run --pretty` (optional — omit the member entirely and the run streams raw) |
 | `CredentialAuthenticator` | one per credential-requiring scope: interactive OAuth + `register_from_secret(mode, secret)` |
 | `create_runner(ctx)`      | builds a runner bound to the run context                          |
 
 `descriptor` is deliberately **absent** from the adapter: the framework builds it from
 `di.json` so it can be enumerated without importing the module's Python.
+
+**Where it runs.** The runner that `create_runner(ctx)` builds, its output parser and its
+`stream_event_mapper` run in a `runner-<i>` service, not in `cron`
+([runner.md](runner.md)). The consumer uses `RemoteRunner`, which has the same `Runner`
+protocol, so a workflow sees no difference. The runner has no database: a harness runner
+reads no DB and no module config (it gets `harness_config` on the context). Usage goes back
+as a `usage` event (`SubprocessRunner.observe(on_usage=…)`); the worker writes the row. A
+vendor CLI that is not a run (a login, a model list) goes through `runner.client.run` or
+`runner.client.pty`, never `subprocess` in the module (`test_spawn_guard.py`).
 
 ### `inject_runtime_params` — the capability injection point
 
@@ -149,9 +157,8 @@ test, receives no capability, and is refused `401` by the toolbox. Fail-closed b
 
 ### Adding pretty rendering to a harness
 
-`StreamRenderer` is the seam for `agento run --pretty`. `TranscriptReader` is **not** the
-right one: it reads an on-disk transcript by `session_id`, while `--pretty` renders the
-live stdout stream as it arrives.
+`StreamRenderer` is the seam for `agento run --pretty`. It renders the live stdout stream
+as it arrives.
 
 A harness opts in with one class and one property — nothing to declare in `di.json`:
 
@@ -215,7 +222,8 @@ The framework adds `gap` and `truncated` itself. It drops an unknown kind (DEBUG
 kindless fragment or the pre-E9 `delta` kind as `assistant.text`, redacts the run's capability
 tokens from `text` and from every string in `data`, and cuts each string at 64 KiB. Pair a
 `tool.started` and its `tool.completed` by the same `call_id`; use `""` when the harness gives
-none. The mapper names no other harness and does no I/O: it runs on the stdout drain thread.
+none. The mapper names no other harness and does no I/O: it runs on the stdout drain thread, in
+the runner. The runner sends each fragment to the worker, and the worker does the rest below.
 
 **Partials are coalesced, not written one per token.** The framework keeps one buffer per run and
 flushes it as one row every 250 ms or 4 KiB, and the delta writer commits at most 4 times a second
@@ -453,7 +461,8 @@ def check_model(self, provider: str, model: str, credential: CredentialRecord | 
 - `timeout_s` is a total budget: take one deadline at entry and give each subprocess or request only
   the time that is left. Run network calls in a child process, so the deadline also covers DNS.
 - Write nothing to the DB. Put no secret, CLI stderr or response body in the message. Start a CLI
-  from `harness_base_env()` in a temporary HOME, never with the secret on argv.
+  in a runner (`runner.client.run`) in a temporary HOME under `client.shared_tmp()`, never with
+  the secret on argv.
 
 The shipped harnesses: Pi reads `pi --list-models`, Codex reads `codex debug models` (the account's
 list), Claude asks `GET /v1/models/{id}`. A guard test requires `check_model` on every in-tree

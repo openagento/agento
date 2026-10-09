@@ -10,6 +10,7 @@ No GHCR pulls — images are built locally from the in-package context.
 from __future__ import annotations
 
 import argparse
+import importlib.resources as ires
 import subprocess
 import sys
 from pathlib import Path
@@ -110,6 +111,18 @@ def _backfill_or_warn_cli_pin(
             f"{default}. To bump: edit docker/.env and rebuild "
             f"({display} pin)."
         )
+
+
+def grant_migrate_user(compose: list[str]) -> bool:
+    """One-time root step (WS8): the initdb SQL, so cron_agent may grant the runtime DB users.
+    The root password stays in the mysql container's environment, never in a host argv."""
+    sql = (ires.files("agento.framework.sql.init") / "001_migrate_user.sql").read_text()
+    if subprocess.run([*compose, "up", "-d", "--wait", "mysql"]).returncode != 0:
+        return False
+    return subprocess.run(
+        [*compose, "exec", "-T", "mysql", "sh", "-c", 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot'],
+        input=sql, text=True,
+    ).returncode == 0
 
 
 class UpgradeCommand:
@@ -254,7 +267,13 @@ class UpgradeCommand:
 
         if args.no_restart:
             log_info("Skipping container restart (--no-restart).")
+            log_warn("Run 'agento upgrade' without --no-restart once: the MySQL root grant "
+                     "for the migration user runs only there.")
         else:
+            if not grant_migrate_user(compose):
+                log_error("MySQL root grant for the migration user failed (check MYSQL_ROOT_PASSWORD "
+                          "in docker/.env). Nothing was restarted.")
+                sys.exit(1)
             log_info("Restarting containers...")
             result = subprocess.run([*compose, "up", "-d"])
             if result.returncode != 0:

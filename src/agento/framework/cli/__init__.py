@@ -6,14 +6,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from ..process_hardening import make_non_dumpable
-
-# At IMPORT time, not in main(): a framework process resolves credentials, so its heap is
-# worth reading to a same-uid peer from its first line. The credential store itself does
-# not arrive here — `docker/cron/drop.py` reads it as root and loads it before importing
-# this module, so it never crosses an execve (see that file).
-make_non_dumpable()
-
 # Commands that always run on the host (no Docker proxy)
 _LOCAL_COMMANDS = frozenset({
     "doctor", "install", "upgrade", "up", "down", "logs",
@@ -29,12 +21,9 @@ _INTERACTIVE_COMMANDS = frozenset({
     "admin", "credential:refresh", "setup:upgrade",
     # Shortcuts for interactive commands
     "cr:ref", "se:up",
-    # Legacy aliases, one cycle (ROADMAP.md). Dropping them here would silently
-    # break OAuth: without TTY forwarding the login flow cannot prompt.
-    "token:refresh", "to:ref",
 })
 
-# Commands that MAY want a TTY (e.g. config:set in paste mode, token:register
+# Commands that MAY want a TTY (e.g. config:set in paste mode, credential:register
 # with piped --with-api-key). We forward the TTY only when the host caller
 # actually has one — otherwise pipe-through (`-T`) keeps working for CI /
 # scripts. When a TTY IS forwarded we also execvp so the in-container CLI
@@ -46,8 +35,6 @@ _MAYBE_INTERACTIVE_COMMANDS = frozenset({
     "user:create", "user:password",
     # Shortcuts
     "co:se", "co:re", "cr:reg", "us:cr", "us:pa",
-    # Legacy aliases, one cycle (ROADMAP.md) — `getpass` needs the TTY.
-    "token:register", "to:reg",
 })
 
 
@@ -152,7 +139,6 @@ def _register_framework_commands() -> None:
         CredentialUsageCommand,
         CredentialWebLoginCommand,
     )
-    from .credential_aliases import LEGACY_TOKEN_COMMANDS
     from .cron import CronRunCommand
     from .doctor import DoctorCommand
     from .install import InstallCommand
@@ -193,8 +179,6 @@ def _register_framework_commands() -> None:
         CapabilityMintCommand, CapabilityRevokeCommand,
         LimitsPruneCommand, OutboxPruneCommand,
         *ACCESS_COMMANDS,
-        # Hidden `token:*` aliases, kept for one cycle (ROADMAP.md).
-        *LEGACY_TOKEN_COMMANDS,
     ]:
         register_command(cmd_cls())
 

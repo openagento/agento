@@ -145,10 +145,10 @@ backend route, so these gaps stay open, each needing a route first:
 - ~~**no config screen**~~ — done 2026-10-02: the admin TUI screens are in the panel
   (`/api/admin/*`, [docs/architecture/panel.md](docs/architecture/panel.md#admin-screens)). Left
   TUI-only, each a follow-up:
-  - **secret writes** (`obscure`, `toolbox_only`): `web` holds no key; needs the credential broker
-    below, or a toolbox write route;
-  - **`CONFIG__*` ENV visibility**: `web` does not load the cron store, so the panel cannot show an
-    `env` source;
+  - **secret writes** (`obscure`, `toolbox_only`): no secret value goes to or from the browser
+    (D-PANEL-ADMIN-1); needs a write-only route;
+  - **`CONFIG__*` ENV visibility**: `web` reads the same `secrets.env` as `cron`, not `cron`'s own
+    `environment:`, so the panel cannot show a value set only there;
   - **job replay and workspace build**: both run in the cron container; a panel button needs a
     queued request that cron picks up;
   - **`local`-kind testers**: `web` does not load module code;
@@ -290,7 +290,7 @@ The `agent_view/model` tester (DECISIONS.md 2026-10-07) runs from `config:test` 
 
 - **Panel Test button for `local` testers.** `web` refuses them with 400 because it loads no module
   code. A panel path needs a web→cron request, the same shape as panel re-login
-  (DECISIONS.md D-PANEL-LOGIN-1).
+  (DECISIONS.md D-BACKEND-1).
 - **Run-time `ModelConfigError` for claude and codex.** Pi fails a run with a wrong model at once,
   with no retry. Claude and Codex do not yet classify a wrong-model answer the same way.
 - **Live check of the Claude OAuth path.** Not verified: if `GET /v1/models/{id}` accepts a Claude
@@ -313,6 +313,24 @@ limits. Still open:
 - **Live check of re-login.** The usage endpoints were checked live on 2026-10-05 (Claude and
   Codex OAuth, OpenRouter). A finished re-login is not: check that Claude writes its credentials
   into the temp `HOME` after a pasted code.
+
+### ⚪ Runtime split — follow-ups
+
+Left out of the `refactor-runtime-split` plan on purpose (DECISIONS.md 2026-10-09, O1–O12):
+
+- **Strict credential boundary.** Today the backend (`cron`, `web`) decrypts credentials (O1 =
+  MVC). The strict form moves select, lease, decrypt and capture to the toolbox or a separate
+  keyholder service, so no browser-facing process holds the key (PRD §31.12–15, §32 D/E).
+- **Per-run uid or per-run mount in the runner.** Co-tenant runs in one runner share the
+  `agent` uid and `/workspace` (zero-trust.md debt row).
+- **Retire the idle `sandbox` service.** Headless runs use the runners; `sandbox` stays only
+  as the image build target and the `agento run` / `doctor` exec target.
+- **Process retry, cheap form.** One runner retry on an unclassified crash, on the same
+  credential, with resume (struck as O2).
+- **`AUTH_REQUIRED` wait, cheap form.** Reuse the pool-wait reschedule with an attempt
+  refund, and pull waiting jobs forward on `credential_register_after` (struck as O3).
+- **The 60 s relay floor** for lifecycle events.
+- **One session store.** Make `execution.harness_session_id` the only place a session id is kept.
 
 ### ⚪ Distribution & installation model
 
@@ -390,7 +408,9 @@ docker compose restart
   launcher, and a root-rendered crontab). See
   [docs/architecture/cron-privileges.md](docs/architecture/cron-privileges.md) and `DECISIONS.md`
   D-SSH-1. The peer-**artifact** reads Option B would also have closed remain open and accepted:
-  one uid, one `/workspace`.
+  one uid, one `/workspace`. 2026-10-09: V0's store file, `drop.py` and the env split are removed
+  again — the runner split took every agent out of `cron`, so the store has no same-uid peer
+  there ([zero-trust.md](docs/architecture/zero-trust.md#what-the-runner-split-replaced)).
 - **Per-run identity boundary for the sandbox (the segmentation half of the toolbox east-west work)**
   — **OPEN.** Capability tokens stop a caller from *asking* for another view's scope, but every agent
   process the consumer spawns runs as the same `agent` account and the cron container mounts the whole
@@ -428,27 +448,19 @@ docker compose restart
 | Shim | Where | Remove when |
 |---|---|---|
 | Legacy `aes256:` read path + the `core/RekeyToScrypt` data patch | `framework/crypto.py` (`decrypt` legacy branch, `is_legacy`), `toolbox/crypto.js`, `modules/core/src/patches/rekey_to_scrypt.py`, `modules/core/data_patch.json` | v0.18.0 — the patch ships in 0.17.0, so every deployment that upgraded has been rekeyed to `aes256s:`. Delete both legacy branches, `is_legacy`, the patch and its test, and the legacy-format bullet in `docs/config/encryption.md`. CodeQL alerts `py/weak-sensitive-data-hashing` / `js/insufficient-password-hash` were dismissed for this path and close with it |
+| `TranscriptReader`, `ToolUse`, `ParseSummary` (deprecated: `toolbox_mcp_calls` comes from the toolbox audit) | `framework/harness/protocols.py` and the `framework/harness/__init__.py` exports; the `transcript_reader` property of the test fixture `tests/fixtures/modules/fake_harness` | v0.18. Delete the three names, their exports and the fixture property. An external adapter that still sets `transcript_reader` loads with or without them |
 | `workspace:ssh-purge` command (+ its `wo:sp` shortcut) | `workspace_build/src/commands/ssh_purge.py`, `workspace_build/di.json` | every deployment has upgraded past the release that stopped writing `ssh_private_key` to disk and has run the sweep once. Nothing on this code writes a key file, so the command then has nothing to find. Delete the command, its `di.json` entry, its tests, and the doc sections in `docs/cli/workspace-build.md` / `docs/cli/README.md` / `docs/config/identity.md`; keep `find_private_keys` only if `workspace:build`'s own legacy pruning still uses it |
 
-### Deprecation removals due next release (v0.16)
+### Deprecation removals still open from v0.16
 
 Introduced by the harness/provider split (see
 [DECISIONS.md](DECISIONS.md#2026-08-04--one-closed-agentprovider-enum-split-into-harness--provider--model)).
-Each is a one-release compatibility shim; remove all of them together.
+The other shims of this list were removed in v0.17 (CHANGELOG.md). These two stay open:
 
 | Shim | Where | Remove |
 |---|---|---|
-| `token:*` CLI aliases (hidden) | `framework/cli/credential_aliases.py` | delete the module + its registration |
-| `--agent-type` alias on `credential:list` / `credential:usage` | `framework/cli/credential.py` | drop the hidden `add_argument` |
-| `agent_type` in `--json` output alongside `scope` | `framework/cli/credential.py` | drop the duplicate key |
-| `token_id` in `agent_view:prepare-run` payload alongside `credential_id` | `agent_view/src/commands/prepare_run.py` | drop the duplicate key |
-| `Token*Event` payloads + `token_*` event names | `framework/events.py` (`_CREDENTIAL_EVENT_ALIASES`, `dispatch_credential_event`) | delete the alias map; dispatch once |
 | `credential.agent_type` column (dual-written with `scope`) | migration | drop the column once no deployment reads it |
-| Top-level `sandbox_packages` array in `di.json` | `framework/harness/manifest.py` (`_parse_legacy_sandbox_packages`) | delete the legacy parser |
-| `--oauth_token` flag alias (`agento replay`, `agento e2e`) | `framework/cli/runtime.py` | drop the second flag name |
-| `_iter_module_dirs` shim | `framework/cli/_provisioning.py` | callers use `framework/module_discovery.py` |
-| Pre-0.15 `agent_view/provider`-as-harness fallback | `framework/agent_view_runtime._resolve_harness_and_provider` | keep until the data patch has demonstrably run everywhere; then delete the legacy branch |
-| `--pass` on `artifact:auth` (argv lands in shell history; use `--pass-stdin`) | `versioned_artifacts/src/commands/auth.py` | drop the flag and its warning |
+| Pre-0.15 `agent_view/provider`-as-harness fallback | `framework/agent_view_runtime._resolve_harness_and_provider` | keep until a read-only prod check shows the data patch ran everywhere (owner, O11); then delete the legacy branch and `tests/unit/framework/test_legacy_config_resolution.py` |
 
 ### No per-job isolation inside the consumer process (raised during AG-50)
 

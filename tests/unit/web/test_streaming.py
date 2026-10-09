@@ -42,11 +42,14 @@ def _route(monkeypatch, handler, *, method="GET", path="/api/stream/test"):
 
 
 def _raw_get(base: str, path: str, *, cookie: str = TOKEN) -> socket.socket:
-    """A socket we read frame by frame. httpx would hand back the whole body."""
+    """A socket we read frame by frame. httpx would hand back the whole body.
+
+    HTTP/1.0, so the body is the raw frames up to the close; HTTP/1.1 wraps them in chunks.
+    """
     host, port = base.removeprefix("http://").split(":")
     sock = socket.create_connection((host, int(port)), timeout=5)
     sock.sendall(
-        f"GET {path} HTTP/1.1\r\nHost: {host}\r\n"
+        f"GET {path} HTTP/1.0\r\nHost: {host}\r\n"
         f"Cookie: {security.SESSION_COOKIE}={cookie}\r\n\r\n".encode())
     return sock
 
@@ -129,7 +132,7 @@ def test_the_status_line_is_the_handlers(web, monkeypatch, signed_in):
     path = _route(monkeypatch, lambda req: StreamingResponse(503, iter([b""])))
     sock = _raw_get(web, path)
     try:
-        assert _read_headers(sock).startswith("HTTP/1.0 503")
+        assert _read_headers(sock).startswith("HTTP/1.1 503")
     finally:
         sock.close()
 

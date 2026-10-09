@@ -254,7 +254,7 @@ export function createDeltaHandler(
         if (!r.ok) {
           // Read the body server-side ONLY to detect a resync signal; never surface it to the caller
           // (it can carry provider internals / mailbox identifiers, and this route is reachable by any
-          // agento-net container).
+          // container on exec-net or db-net).
           const errText = await r.text().catch(() => '');
           let code = '';
           try {

@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import itertools
-import json
 import logging
-import os
 import random
 import signal
 import threading
@@ -13,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from . import db
 from .agent_manager.credential_resolver import (
     _DEFAULT_LEASE_TTL_SECONDS,
     CredentialResolver,
@@ -58,7 +57,6 @@ from .events import (
     JobVerificationFailed,
     WorkerStartedEvent,
     WorkerStoppedEvent,
-    dispatch_credential_event,
 )
 from .execution_hooks import (
     DeltaRecord,
@@ -72,7 +70,6 @@ from .harness import (
     McpInitReport,
     RunRequest,
     RunResult,
-    create_runner,
     get_harness,
     get_harness_config,
     resolve_provider,
@@ -81,7 +78,9 @@ from .harness import (
 from .job_models import Job, JobStatus
 from .outbox import write_outbox
 from .retry_policy import evaluate as evaluate_retry
-from .run_preparation import materialize_run_workspace
+from .run_preparation import check_workspace_build, materialize_run_workspace
+from .runner import client as runner_client
+from .runner.client import RemoteRunner
 from .secret_redaction import redact_exception, redact_secret
 from .toolbox_capability import (
     KIND_INTERNAL_REST,
@@ -230,6 +229,9 @@ def _delta_callback(harness_entry, execution_id: str | None, logger,
                     secrets: tuple[str | None, ...] = ()):
     """The optional stdout->delta seam (PRD E3-E5 §8.2), or None to attach nothing.
 
+    This is the worker's half: it gets the fragments the harness's mapper made in the
+    runner (``runner/server.py``) and gives them a seq, redacts and submits them.
+
     Three independent conditions, and all three must hold: a module registered a sink, the
     run has an execution to attribute fragments to, and the harness declares a mapper. Any
     one missing means the run streams nothing extra and its users get §8.1 - which is the
@@ -253,33 +255,21 @@ def _delta_callback(harness_entry, execution_id: str | None, logger,
     # in the run's `finally` writes the tail.
     execution_deltas.open(execution_id, seq, secrets)
 
-    def on_line(line: str) -> None:
-        # On the harness's drain thread: map, enqueue, return. No DB work, ever.
-        try:
-            event = json.loads(line)
-        except ValueError:
-            return
-        if not isinstance(event, dict):
-            return
-        try:
-            mapped = mapper.map_event(event)
-        except Exception as exc:
-            logger.debug("stream_event_mapper failed: %s", type(exc).__name__)
-            return
-        fragments = mapped if isinstance(mapped, list) else [mapped] if mapped else []
-        for fragment in fragments:
+    def on_fragment(fragment: dict) -> None:
+        # On the run's reading thread: enqueue and return. No DB work, ever.
+        if isinstance(fragment, dict):
             # A pre-E9 mapper says "delta" (or nothing): that was always assistant prose.
             kind = fragment.get("kind") or "delta"
             kind = "assistant.text" if kind == "delta" else kind
             if kind not in FRAGMENT_KINDS:
                 logger.debug("stream_event_mapper: unknown fragment kind dropped")
-                continue
+                return
             text, data = fragment.get("text"), fragment.get("data")
             if kind in execution_deltas.SUPERSEDED_BY:
                 # Redacted on the joined text, not per piece: a secret can span two pieces.
                 if isinstance(text, str):
                     execution_deltas.submit_partial(execution_id, kind, text)
-                continue
+                return
             execution_deltas.submit(DeltaRecord(
                 execution_id=execution_id, seq=next(seq), kind=kind,
                 text=_bound(text, secrets) if isinstance(text, str) else None,
@@ -287,7 +277,7 @@ def _delta_callback(harness_entry, execution_id: str | None, logger,
                 data={k: _bound(v, secrets) if isinstance(v, str) else v
                       for k, v in data.items()} if isinstance(data, dict) else None))
 
-    return on_line
+    return on_fragment
 
 
 class Consumer:
@@ -306,6 +296,7 @@ class Consumer:
         self._shutdown = threading.Event()
         self._db_config = db_config
         self._consumer_config = consumer_config
+        db.IDLE_CAP = consumer_config.max_workers  # one idle connection per worker (SCL-1)
         # The freshness horizon is derived from job_timeout_seconds rather than a new env
         # var: the entrypoint whitelist only forwards AGENTO_*-prefixed knobs and an AST
         # test guards every from_env() literal against it, so a knob we can derive is pure
@@ -323,6 +314,10 @@ class Consumer:
         # lease alive forever, so entries are dropped unconditionally at job end and the
         # row is left to expire — the correct failure direction.
         self._held_leases: dict[str, int] = {}
+        # agent_view_id -> monotonic time of the last passed build check, and one lock per
+        # view so a burst of one view's jobs runs the check once (SCL-1).
+        self._build_checked: dict[int, float] = {}
+        self._build_locks: dict[int, threading.Lock] = {}
 
     def run(self) -> None:
         """Main loop. Blocks until SIGTERM/SIGINT."""
@@ -354,12 +349,16 @@ class Consumer:
                     self._active_jobs -= 1
                 semaphore.release()
 
+        last_renew = float("-inf")
         try:
             while not self._shutdown.is_set():
                 self._maybe_reload_bootstrap()
                 # NOT gated on _active_jobs == 0 like the reload above: renewal matters
-                # precisely while workers are busy holding leases.
-                self._renew_leases()
+                # precisely while workers are busy holding leases. Once per poll interval,
+                # not per claim pass: a burst of 200 claims is 200 passes (SCL-1).
+                if time.monotonic() - last_renew >= self._consumer_config.poll_interval:
+                    last_renew = time.monotonic()
+                    self._renew_leases()
 
                 if not semaphore.acquire(timeout=self._consumer_config.poll_interval):
                     continue  # timed out waiting for a free slot
@@ -388,6 +387,7 @@ class Consumer:
                 self._renew_leases()
                 time.sleep(self._consumer_config.poll_interval)
             executor.shutdown(wait=True, cancel_futures=False)
+            db.close_idle()
             # BEFORE the module shutdown, and not after: this drains what is still queued
             # while the sink that writes it is still live. Left uncalled, the daemon thread
             # kept writing past the module's own shutdown and lost whatever it still held
@@ -441,59 +441,62 @@ class Consumer:
         finally:
             conn.close()
 
+    def _db(self):
+        """A pooled connection. Opened through this module's ``get_connection``, so a test
+        patch on it still applies."""
+        return db.pooled(self._db_config, get_connection)
+
+    def _check_build(self, em, agent_view_id: int) -> None:
+        """The build freshness check, skipped when it passed for this view within one poll
+        interval: a config change reaches new runs within one poll, as hot-reload does. A
+        failed check is not remembered."""
+        with self._build_locks.setdefault(agent_view_id, threading.Lock()):
+            last = self._build_checked.get(agent_view_id)
+            if last is not None and time.monotonic() - last < self._consumer_config.poll_interval:
+                return
+            check_workspace_build(em, agent_view_id)
+            self._build_checked[agent_view_id] = time.monotonic()
+
     def _handle_signal(self, signum: int, frame: object) -> None:
         sig_name = signal.Signals(signum).name
         self.logger.info(f"Received {sig_name}, initiating graceful shutdown")
         self._shutdown.set()
 
-    def _save_pid(self, job_id: int, pid: int) -> None:
-        """Best-effort: save subprocess PID to job row."""
+    def _save_pid(self, job_id: int, pid: int, runner_ref: str | None = None) -> None:
+        """Best-effort: save the run's pid (in the runner's namespace) and its owner
+        (``<socket>:<boot>``, the owner rule in runner/client.py) to the job row."""
         try:
-            conn = get_connection(self._db_config)
-            try:
+            with self._db() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "UPDATE job SET pid = %s, updated_at = NOW() WHERE id = %s",
-                        (pid, job_id),
+                        "UPDATE job SET pid = %s, runner_ref = %s, updated_at = NOW() WHERE id = %s",
+                        (pid, runner_ref, job_id),
                     )
                 conn.commit()
-            finally:
-                conn.close()
         except Exception:
             self.logger.warning(f"Failed to save PID {pid} for job {job_id} (best-effort)")
 
     def _save_session_id(self, job_id: int, session_id: str) -> None:
         """Best-effort: save session_id to job row."""
         try:
-            conn = get_connection(self._db_config)
-            try:
+            with self._db() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "UPDATE job SET session_id = %s, updated_at = NOW() WHERE id = %s",
                         (session_id, job_id),
                     )
                 conn.commit()
-            finally:
-                conn.close()
         except Exception:
             self.logger.warning(f"Failed to save session_id for job {job_id} (best-effort)")
 
-    @staticmethod
-    def _is_pid_alive(pid: int | None) -> bool:
-        if pid is None:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
-
     def _recover_stale_jobs(self) -> None:
-        """Recover RUNNING jobs whose process has died (PID-based check).
+        """Recover RUNNING jobs whose run has ended.
 
-        Jobs with a PID are checked via os.kill(pid, 0).  Jobs without a PID
-        (callback hasn't fired yet) fall back to the timestamp threshold so we
-        don't kill freshly-claimed jobs in multi-worker mode.
+        A job with an owner on record asks that runner (``runner_client.alive``): only
+        ``dead`` recovers it; ``unknown`` (the owner cannot be asked) keeps it RUNNING and
+        logs it, until that runner answers again. A pid with no owner is from before the
+        runner, and dead. A job with no pid yet falls back to the timestamp threshold, so a
+        freshly claimed job of another worker is not taken.
         """
         threshold = self._consumer_config.job_timeout_seconds + 60
         try:
@@ -501,7 +504,7 @@ class Consumer:
             try:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT id, reference_id, pid, attempt, max_attempts, started_at "
+                        "SELECT id, reference_id, pid, runner_ref, attempt, max_attempts, started_at "
                         "FROM job WHERE status = 'RUNNING'"
                     )
                     running_jobs = cur.fetchall()
@@ -516,11 +519,19 @@ class Consumer:
                         attempt = row["attempt"]
                         max_attempts = row["max_attempts"]
 
-                        if pid is not None:
-                            if self._is_pid_alive(int(pid)):
+                        if row.get("runner_ref"):
+                            state = runner_client.alive(row["runner_ref"], f"job:{job_id}")
+                            if state == "unknown":
+                                self.logger.warning(
+                                    f"Stale recovery blocked: runner of job {job_id} does not "
+                                    f"answer ({row['runner_ref'].partition(':')[0]})"
+                                )
+                            if state != "dead":
                                 continue
-                        else:
-                            # No PID yet — fall back to timestamp guard
+                        elif pid is None:
+                            # No pid yet — fall back to timestamp guard. (A pid with no
+                            # owner is from before the runner: that run was in the old
+                            # cron container, which the upgrade replaced. Dead.)
                             started_at = row["started_at"]
                             if started_at is None:
                                 continue
@@ -530,63 +541,27 @@ class Consumer:
                             if elapsed < threshold:
                                 continue
 
-                        if attempt < max_attempts:
-                            cur.execute(
-                                """
-                                UPDATE job
-                                SET status = 'TODO', finished_at = NOW(),
-                                    error_message = %s,
-                                    error_class = 'StaleJobRecovery',
-                                    scheduled_after = NOW(), updated_at = NOW()
-                                WHERE id = %s AND status = 'RUNNING'
-                                """,
-                                (f"Recovered: process dead (pid={pid})", job_id),
-                            )
-                            revoke_job_capabilities(conn, job_id, commit=False)
-                            # Another process's run: its id was never ours, so the
-                            # finalizer resolves the row by (job_id, attempt).
-                            recovered.append(self._end_execution(
-                                conn, job_id=job_id, attempt=attempt, execution_id=None,
-                                outcome="abandoned", job_terminal=False,
-                            ))
-                            retried += 1
-                            self.logger.warning(
-                                f"Recovered stale job -> TODO (retry) | "
-                                f"job_id={job_id} reference_id={ref_id} "
-                                f"pid={pid} attempt={attempt}/{max_attempts}"
-                            )
-                        else:
-                            cur.execute(
-                                """
-                                UPDATE job
-                                SET status = 'DEAD', finished_at = NOW(),
-                                    error_message = %s,
-                                    error_class = 'StaleJobRecovery',
-                                    updated_at = NOW()
-                                WHERE id = %s AND status = 'RUNNING'
-                                """,
-                                (f"Recovered: process dead (pid={pid}), max attempts reached", job_id),
-                            )
-                            revoke_job_capabilities(conn, job_id, commit=False)
-                            # A dead transition is a fail/dead transition (§6.4.2), whoever
-                            # noticed it: the process that was running this job cannot write
-                            # the row any more, so the recovering one writes it here, in the
-                            # same transaction as the DEAD update. `execution_id` is NULL -
-                            # the run belonged to a process whose id was never ours.
-                            write_outbox(cur, job_id=job_id, kind="job.failed",
-                                         payload={"job_id": job_id, "attempt": attempt,
-                                                  "kind": failure_kind("StaleJobRecovery"),
-                                                  "execution_id": None})
-                            recovered.append(self._end_execution(
-                                conn, job_id=job_id, attempt=attempt, execution_id=None,
-                                outcome="failed", job_terminal=True,
-                            ))
-                            dead += 1
-                            self.logger.warning(
-                                f"Recovered stale job -> DEAD | "
-                                f"job_id={job_id} reference_id={ref_id} "
-                                f"pid={pid} attempt={attempt}/{max_attempts}"
-                            )
+                        retry = attempt < max_attempts
+                        # Another process's run: its id was never ours, so the finalizer
+                        # resolves the row by (job_id, attempt). A dead transition writes
+                        # `job.failed` here (§6.4.2): the process that ran it cannot.
+                        recovered.append(self._transition(
+                            conn, job_id, attempt, None,
+                            status="TODO" if retry else "DEAD",
+                            error_msg=f"Recovered: process dead (pid={pid})"
+                            + ("" if retry else ", max attempts reached"),
+                            error_class="StaleJobRecovery",
+                            scheduled_after=datetime.now(UTC).replace(tzinfo=None, microsecond=0) if retry else None,
+                            revoke=True, write_failed=not retry,
+                            outcome="abandoned" if retry else "failed", terminal=not retry,
+                        ))
+                        retried += retry
+                        dead += not retry
+                        self.logger.warning(
+                            f"Recovered stale job -> {'TODO (retry)' if retry else 'DEAD'} | "
+                            f"job_id={job_id} reference_id={ref_id} "
+                            f"pid={pid} attempt={attempt}/{max_attempts}"
+                        )
 
                 conn.commit()
                 for announce in recovered:
@@ -602,62 +577,60 @@ class Consumer:
 
     def _try_dequeue(self) -> Job | None:
         """Claim one job from the queue. Returns None if empty."""
-        conn = get_connection(self._db_config)
-        try:
-            with conn.cursor() as cur:
-                cur.execute(DEQUEUE_SQL)
-                row = cur.fetchone()
-                if not row:
-                    conn.rollback()
-                    return None
+        with self._db() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(DEQUEUE_SQL)
+                    row = cur.fetchone()
+                    if not row:
+                        conn.rollback()
+                        return None
 
-                job = Job.from_row(row)
+                    job = Job.from_row(row)
 
-                # The ordering seam (§4.4). It runs INSIDE the claim transaction and before
-                # CLAIM_SQL, so a deferral and the bookkeeping that records it commit
-                # together - and a job that is deferred was never RUNNING, so its attempt
-                # count is untouched and nothing downstream sees an execution.
-                claim = JobClaimBeforeEvent(job_id=job.id)
-                if not get_event_manager().dispatch_with_result("job_claim_before", claim):
-                    # An observer that cannot decide has not decided "yes". This is the one
-                    # dispatch in the framework that is not fail-open.
-                    claim.verdict = ClaimVerdict.DEFER
-                if claim.verdict is ClaimVerdict.DEFER:
-                    cur.execute(
-                        "UPDATE job SET scheduled_after = NOW() + INTERVAL %s SECOND "
-                        "WHERE id = %s",
-                        (defer_seconds(claim.delay_ms), job.id),
-                    )
-                    open_or_bump_stretch(cur, job_id=job.id)
+                    # The ordering seam (§4.4). It runs INSIDE the claim transaction and before
+                    # CLAIM_SQL, so a deferral and the bookkeeping that records it commit
+                    # together - and a job that is deferred was never RUNNING, so its attempt
+                    # count is untouched and nothing downstream sees an execution.
+                    claim = JobClaimBeforeEvent(job_id=job.id)
+                    if not get_event_manager().dispatch_with_result("job_claim_before", claim):
+                        # An observer that cannot decide has not decided "yes". This is the one
+                        # dispatch in the framework that is not fail-open.
+                        claim.verdict = ClaimVerdict.DEFER
+                    if claim.verdict is ClaimVerdict.DEFER:
+                        cur.execute(
+                            "UPDATE job SET scheduled_after = NOW() + INTERVAL %s SECOND "
+                            "WHERE id = %s",
+                            (defer_seconds(claim.delay_ms), job.id),
+                        )
+                        open_or_bump_stretch(cur, job_id=job.id)
+                        conn.commit()
+                        return None
+
+                    cur.execute(CLAIM_SQL, (job.id,))
+                    # §6.4.2: `job.claimed` is written by the FRAMEWORK, in the consumer's claim
+                    # transaction. In it and not after it - a row written on a second commit is a
+                    # transition a crash can lose, and the claim is the one a waiting reader is
+                    # watching for. The attempt is the one this claim just took.
+                    write_outbox(cur, job_id=job.id, kind="job.claimed",
+                                 payload={"job_id": job.id, "attempt": job.attempt + 1})
+                    # The stretch ends where the block ends, and only the caller that closed it
+                    # announces it - one block, one event, however many ticks it lasted.
+                    defer_after = close_stretch(cur, job_id=job.id, reason="claimed")
                     conn.commit()
-                    return None
 
-                cur.execute(CLAIM_SQL, (job.id,))
-                # §6.4.2: `job.claimed` is written by the FRAMEWORK, in the consumer's claim
-                # transaction. In it and not after it - a row written on a second commit is a
-                # transition a crash can lose, and the claim is the one a waiting reader is
-                # watching for. The attempt is the one this claim just took.
-                write_outbox(cur, job_id=job.id, kind="job.claimed",
-                             payload={"job_id": job.id, "attempt": job.attempt + 1})
-                # The stretch ends where the block ends, and only the caller that closed it
-                # announces it - one block, one event, however many ticks it lasted.
-                defer_after = close_stretch(cur, job_id=job.id, reason="claimed")
-                conn.commit()
+                    job.status = JobStatus.RUNNING
+                    job.attempt += 1
 
-                job.status = JobStatus.RUNNING
-                job.attempt += 1
+                    if defer_after is not None:
+                        get_event_manager().dispatch("job_defer_after", defer_after)
+                    get_event_manager().dispatch("job_claim_after", JobClaimedEvent(job=job))
 
-                if defer_after is not None:
-                    get_event_manager().dispatch("job_defer_after", defer_after)
-                get_event_manager().dispatch("job_claim_after", JobClaimedEvent(job=job))
-
-                return job
-        except Exception:
-            conn.rollback()
-            self.logger.exception("Error during dequeue")
-            return None
-        finally:
-            conn.close()
+                    return job
+            except Exception:
+                conn.rollback()
+                self.logger.exception("Error during dequeue")
+                return None
 
     def _execute_job(self, job: Job) -> None:
         """Execute a single job. Runs in a thread pool thread."""
@@ -798,8 +771,7 @@ class Consumer:
         # materialize_run_workspace, both of which sit outside the inner try below.
         try:
             # Resolve agent_view runtime profile (provider, model, scoped config)
-            conn = get_connection(self._db_config)
-            try:
+            with self._db() as conn:
                 runtime = resolve_agent_view_runtime(conn, job.agent_view_id)
 
                 # agent_view/harness must resolve — the sticky primary-credential
@@ -875,8 +847,6 @@ class Consumer:
                 em.dispatch("execution_start_after", ExecutionEvent(
                     execution_id=job.execution_id, job_id=job.id, attempt=job.attempt,
                 ))
-            finally:
-                conn.close()
 
             # The four SSH identity values are read ONCE per run: the public files and
             # the private key must come from the same config snapshot (a rotation between
@@ -905,6 +875,7 @@ class Consumer:
                     # own model guard.
                     effective_model=model_override,
                     ssh_identity=ssh_identity,
+                    check_build=self._check_build,
                 )
             except Exception as exc:
                 redact_exception(exc, capability_token, rest_capability_token)
@@ -956,12 +927,13 @@ class Consumer:
                     credential_required=provider_desc.credential_required,
                     credential=credential,
                     extra_env={**git_env, **ssh_env},
+                    tag=f"job:{job.id}",
                     harness_config=(
                         get_harness_config(agent_config_svc, harness_entry)
                         if agent_config_svc is not None else {}
                     ),
                 )
-                runner = create_runner(
+                runner = RemoteRunner(
                     harness,
                     ctx,
                     logger=self.logger,
@@ -978,16 +950,19 @@ class Consumer:
                 # Through the protocol method, not by assigning attributes: a third-party
                 # runner using __slots__ would raise AttributeError on assignment.
                 runner.observe(
-                    on_pid=lambda pid: self._save_pid(job.id, pid),
+                    on_pid=lambda pid: self._save_pid(job.id, pid, runner.runner_ref),
                     on_session_id=_on_session_id,
-                    on_line=_delta_callback(harness_entry, job.execution_id, self.logger,
-                                            (capability_token, rest_capability_token)),
+                    on_fragment=_delta_callback(harness_entry, job.execution_id, self.logger,
+                                                (capability_token, rest_capability_token)),
                 )
 
                 should_resume = _should_resume(
                     attempt=job.attempt,
                     session_id=job.session_id,
-                    pid_alive=self._is_pid_alive(job.pid),
+                    # The previous attempt's run, asked of its owner: `unknown` counts as
+                    # alive, so a run that may still go on is never resumed twice.
+                    pid_alive=job.pid is not None
+                    and runner_client.alive(job.runner_ref, f"job:{job.id}") != "dead",
                     can_resume=harness_entry.descriptor.capabilities.resume,
                 )
                 if should_resume:
@@ -1028,7 +1003,7 @@ class Consumer:
                 # and the workflow builds the same prompt it builds today.
                 resume_session_id = None
                 if harness_entry.descriptor.capabilities.resume:
-                    with get_connection(self._db_config) as resume_conn:
+                    with self._db() as resume_conn:
                         resume_session_id = resolve_resume_session(
                             conn=resume_conn, job_id=job.id, attempt=job.attempt,
                         )
@@ -1110,14 +1085,11 @@ class Consumer:
         if not owners:
             return
         try:
-            conn = get_connection(self._db_config)
-            try:
+            with self._db() as conn:
                 renew_credential_leases(
                     conn, owners, _DEFAULT_LEASE_TTL_SECONDS, logger=self.logger
                 )
                 conn.commit()
-            finally:
-                conn.close()
         except Exception as exc:
             self.logger.warning(
                 "Refresh lease renewal skipped: %s (%s)", type(exc).__name__, exc
@@ -1156,15 +1128,7 @@ class Consumer:
         try:
             if credential is None or harness is None:
                 return  # nothing claimed -> nothing to capture, clear or release
-            try:
-                conn = get_connection(self._db_config)
-            except Exception:
-                self.logger.warning(
-                    "credential lifecycle skipped for job_id=%s: DB connection failed",
-                    job.id, exc_info=True,
-                )
-                return
-            try:
+            with self._db() as conn:
                 rotated = False
                 if home_dir is not None:
                     try:
@@ -1204,8 +1168,6 @@ class Consumer:
                         conn, credential.id, lease_owner, logger=self.logger
                     )
                 conn.commit()
-            finally:
-                conn.close()
         except Exception:
             self.logger.warning(
                 "credential lifecycle failed for job_id=%s", job.id, exc_info=True
@@ -1223,15 +1185,14 @@ class Consumer:
         exc: AuthenticationError | TransientAuthError,
     ) -> None:
         """Mark the offending token as errored so the pool stops handing it out,
-        and dispatch ``token_auth_failed_after`` for observers. Best-effort —
+        and dispatch ``credential_auth_failed_after`` for observers. Best-effort —
         DB issues here must not mask the original failure about to be re-raised."""
         credential_id = (
             exc.credential_id if exc.credential_id is not None
             else getattr(credential, "id", None)
         )
         try:
-            conn = get_connection(self._db_config)
-            try:
+            with self._db() as conn:
                 mark_credential_error(
                     conn, credential_id, str(exc), logger=self.logger, source="auto"
                 )
@@ -1242,15 +1203,13 @@ class Consumer:
                 # override AuthenticationError's default terminal disposition.
                 _total, healthy = count_credentials_for_scope(conn, scope)
                 exc.retry_with_other_token = healthy > 0
-            finally:
-                conn.close()
         except Exception:
             self.logger.exception(
                 "Failed to mark token as errored after auth failure",
                 extra={"job_id": job.id, "credential_id": credential_id},
             )
         try:
-            dispatch_credential_event(
+            get_event_manager().dispatch(
                 "credential_auth_failed_after",
                 CredentialAuthFailedEvent(
                     scope=scope or "",
@@ -1274,7 +1233,7 @@ class Consumer:
     ) -> None:
         """Throttle the usage/session-limited token until its reset time (a temporary
         cooldown — NOT a poison) so the pool skips it and the job fails over to a
-        healthy token, then dispatch ``token_usage_limited_after``. Best-effort — DB
+        healthy token, then dispatch ``credential_usage_limited_after``. Best-effort — DB
         issues here must not mask the original failure about to be re-raised."""
         credential_id = (
             exc.credential_id if exc.credential_id is not None
@@ -1282,8 +1241,7 @@ class Consumer:
         )
         until = exc.reset_at or (datetime.now(UTC).replace(tzinfo=None) + _DEFAULT_LIMIT_THROTTLE)
         try:
-            conn = get_connection(self._db_config)
-            try:
+            with self._db() as conn:
                 throttle_credential(conn, credential_id, until, str(exc), logger=self.logger)
                 conn.commit()
                 # Pool-aware retry: with the offending token now throttled (and thus
@@ -1300,15 +1258,13 @@ class Consumer:
                     exc.pool_retry_at = (
                         earliest_throttle_reset_for_scope(conn, scope) or until
                     )
-            finally:
-                conn.close()
         except Exception:
             self.logger.exception(
                 "Failed to throttle token after usage limit",
                 extra={"job_id": job.id, "credential_id": credential_id},
             )
         try:
-            dispatch_credential_event(
+            get_event_manager().dispatch(
                 "credential_usage_limited_after",
                 CredentialUsageLimitedEvent(
                     scope=scope or "",
@@ -1325,34 +1281,59 @@ class Consumer:
             )
 
     def _update_job_reference_id(self, job_id: int, reference_id: str) -> None:
-        conn = get_connection(self._db_config)
-        try:
+        with self._db() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "UPDATE job SET reference_id = %s, updated_at = NOW() WHERE id = %s",
                     (reference_id, job_id),
                 )
             conn.commit()
-        finally:
-            conn.close()
 
-    def _write_job_failed(self, conn, job: Job, error_class: str) -> None:
-        """The `job.failed` outbox row, in the SAME transaction as the failure (§6.4.2).
+    def _transition(self, conn, job_id: int, attempt: int, execution_id: str | None, *,
+                    status: str, error_msg: str, error_class: str,
+                    agent_output: str | None = None, session_id: str | None = None,
+                    scheduled_after: datetime | None = None, refund_attempt: bool = False,
+                    revoke: bool, write_failed: bool, outcome: str,
+                    terminal: bool) -> Callable[[], None]:
+        """Move a RUNNING job out of an attempt that failed, on the caller's transaction.
 
-        Written by the FRAMEWORK, not by a module: this is a framework job transition, and
-        a module that owns it would make the module-disabled guarantee silently exclude the
-        one event a waiting reader most needs. The payload is ids and a coarse kind - no
-        exception text, no agent output, because every reader of the outbox would otherwise
-        read both (SEC-6).
+        The one writer of every failure transition (finalize and stale recovery). The
+        caller commits, then calls the returned announcement (see `_end_execution`).
+        `status` is one of a closed set of literals, never input. Pool-wait and blocked
+        keep the job's capabilities; retry and dead revoke them (SEC-7).
+
+        `write_failed` writes the `job.failed` outbox row in the SAME transaction (§6.4.2).
+        The FRAMEWORK writes it, not a module: a module that owns it would make the
+        module-disabled guarantee silently exclude the one event a waiting reader most
+        needs. The payload is ids and a coarse kind - no exception text, no agent output,
+        because every reader of the outbox would otherwise read both (SEC-6).
         """
+        refund = "attempt = GREATEST(attempt - 1, 0), " if refund_attempt else ""
         with conn.cursor() as cur:
-            write_outbox(
-                cur, job_id=job.id, kind="job.failed",
-                execution_id=job.execution_id,
-                payload={"job_id": job.id, "attempt": job.attempt,
-                         "kind": failure_kind(error_class),
-                         "execution_id": job.execution_id},
+            cur.execute(
+                f"""
+                UPDATE job
+                SET status = '{status}', finished_at = NOW(), {refund}
+                    error_message = %s, error_class = %s,
+                    output = COALESCE(%s, output),
+                    session_id = COALESCE(%s, session_id),
+                    scheduled_after = COALESCE(%s, scheduled_after), updated_at = NOW()
+                WHERE id = %s AND status = 'RUNNING'
+                """,
+                (error_msg, error_class, agent_output, session_id, scheduled_after, job_id),
             )
+        if revoke:
+            revoke_job_capabilities(conn, job_id, commit=False)
+        announce = self._end_execution(conn, job_id=job_id, attempt=attempt,
+                                       execution_id=execution_id, outcome=outcome,
+                                       job_terminal=terminal)
+        if write_failed:
+            with conn.cursor() as cur:
+                write_outbox(cur, job_id=job_id, kind="job.failed", execution_id=execution_id,
+                             payload={"job_id": job_id, "attempt": attempt,
+                                      "kind": failure_kind(error_class),
+                                      "execution_id": execution_id})
+        return announce
 
     def _end_execution(self, conn, *, job_id: int, attempt: int,
                        execution_id: str | None, outcome: str,
@@ -1397,8 +1378,7 @@ class Consumer:
         # may mutate ``.verdict`` to veto an apparent success. We dispatch
         # exactly once across DB retries (using ``verify_dispatched``) and
         # then fire ``job_finalize_after`` after we commit a terminal status.
-        # ``provider`` is what the run reported (e.g. "claude") — observers use
-        # it to resolve a provider-specific TranscriptReader from the registry.
+        # ``harness`` is what the run reported (e.g. "claude").
         finalize_event = JobFinalizeEvent(
             job=job,
             job_result=job_result,
@@ -1410,185 +1390,17 @@ class Consumer:
         finalize_after_pending = False
 
         for db_attempt in range(1, max_db_retries + 1):
-            conn = get_connection(self._db_config)
             try:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT status FROM job WHERE id = %s", (job.id,))
-                    row = cur.fetchone()
-                if row is None:
-                    current_status = None
-                elif isinstance(row, dict):
-                    current_status = row.get("status")
-                else:
-                    current_status = row[0]
-                if current_status != "RUNNING":
-                    # The job is no longer ours to finalize - a CLI pause committed
-                    # PAUSED while the process ran, or another worker re-claimed it. The
-                    # JOB row stays untouched; this attempt's execution is abandoned,
-                    # because the process it described has exited (§5.3).
-                    announce = self._end_execution(
-                        conn, job_id=job.id, attempt=job.attempt,
-                        execution_id=job.execution_id,
-                        outcome="abandoned", job_terminal=False,
-                    )
-                    conn.commit()
-                    announce()
-                    self.logger.info(
-                        "Job finalize skipped (status changed during run)",
-                        extra={
-                            "job_id": job.id,
-                            "reference_id": job.reference_id,
-                            "current_status": current_status,
-                        },
-                    )
-                    return
-
-                if error is None and not verify_dispatched:
-                    em.dispatch("job_finalize_before", finalize_event)
-                    verify_dispatched = True
-                    if finalize_event.verdict is not None:
-                        error = JobVerificationFailed(finalize_event.verdict)
-
-                if error is None:
+                with self._db() as conn:
                     with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            UPDATE job
-                            SET status = 'SUCCESS', finished_at = NOW(),
-                                result_summary = %s, agent_type = %s, provider = %s,
-                                model = %s,
-                                input_tokens = %s, output_tokens = %s,
-                                prompt = %s, output = %s,
-                                updated_at = NOW()
-                            WHERE id = %s AND status = 'RUNNING'
-                            """,
-                            (
-                                job_result.summary if job_result else None,
-                                job_result.agent_type if job_result else None,
-                                job_result.provider if job_result else None,
-                                job_result.model if job_result else None,
-                                job_result.input_tokens if job_result else None,
-                                job_result.output_tokens if job_result else None,
-                                job_result.prompt if job_result else None,
-                                job_result.output if job_result else None,
-                                job.id,
-                            ),
-                        )
-                    # Same transaction as the terminal status: a failing revoke rolls
-                    # the status back too, leaving the job RUNNING for
-                    # _recover_stale_jobs — which revokes as well.
-                    revoke_job_capabilities(conn, job.id, commit=False)
-                    announce = self._end_execution(
-                        conn, job_id=job.id, attempt=job.attempt,
-                        execution_id=job.execution_id,
-                        outcome="succeeded", job_terminal=True,
-                    )
-                    conn.commit()
-                    announce()
-                    self.logger.info(
-                        "Job succeeded",
-                        extra={
-                            "job_id": job.id,
-                            "reference_id": job.reference_id,
-                            "status": "SUCCESS",
-                            "duration_ms": elapsed_ms,
-                            "result_summary": job_result.summary if job_result else None,
-                        },
-                    )
-                    em.dispatch(
-                        "job_succeed_after",
-                        JobSucceededEvent(
-                            job=job,
-                            summary=job_result.summary if job_result else None,
-                            agent_type=job_result.agent_type if job_result else None,
-                            model=job_result.model if job_result else None,
-                            elapsed_ms=elapsed_ms,
-                        ),
-                    )
-                else:
-                    error_class = error.__class__.__name__
-                    error_msg = str(error)[:2000]
-                    # The agent's own output travels on the exception rather than inside
-                    # error_message, so it lands in the column meant for it. Operators lose
-                    # nothing — they gain the full output instead of a 500-char excerpt —
-                    # and error_message stays free of prompt/customer content.
-                    agent_output = getattr(error, "agent_output", None)
-                    decision = evaluate_retry(
-                        error_class, job.attempt, job.max_attempts, error_obj=error,
-                    )
-
-                    em.dispatch(
-                        "job_fail_after",
-                        JobFailedEvent(job=job, error=error, elapsed_ms=elapsed_ms),
-                    )
-
-                    # Extract session_id from result or error (best-effort)
-                    session_id = job_result.session_id if job_result else None
-                    if session_id is None:
-                        session_id = getattr(error, "session_id", None)
-
-                    # Verification veto with ``fresh_start`` → next retry must
-                    # spawn a brand-new claude-cli session (incident 3368).
-                    fresh_start = (
-                        isinstance(error, JobVerificationFailed)
-                        and error.verdict.fresh_start
-                    )
-                    # A ``blocked`` verdict is a deterministic config/infra fault:
-                    # the retry policy already refused a retry, but it must NOT
-                    # dead-letter as an agent failure — it lands in the (otherwise
-                    # unused) FAILED terminal status with a dedicated admin alert,
-                    # keeping DEAD to mean "the agent exhausted its retries".
-                    blocked = (
-                        isinstance(error, JobVerificationFailed)
-                        and error.verdict.blocked
-                    )
-                    if fresh_start:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                "UPDATE job SET session_id = NULL, updated_at = NOW() WHERE id = %s",
-                                (job.id,),
-                            )
-                        session_id = None
-
-                    # The WHOLE pool is temporarily unavailable — either every token is
-                    # usage-limited (``_handle_usage_limit``) or every healthy token is
-                    # transiently busy/leased (``CredentialsBusyError`` from ``resolve``).
-                    # Both set ``pool_retry_at`` to the naive-UTC time the pool next
-                    # recovers. Wait for that instead of dead-lettering: a pool that heals
-                    # on its own is not a real failure. Checked BEFORE ``should_retry`` so a
-                    # known recovery time wins over blind backoff; ``None`` (no recovery
-                    # time, e.g. pure row-lock contention) falls through to ordinary retry.
-                    pool_retry_at = getattr(error, "pool_retry_at", None)
-
-                    if pool_retry_at is not None:
-                        # The whole pool is temporarily unavailable (all tokens throttled,
-                        # or all healthy tokens busy/leased). Reschedule for just after the
-                        # pool recovers, plus a randomised gap to clear the boundary and
-                        # de-sync waiting jobs. ``pool_retry_at`` is naive UTC (from
-                        # ``throttled_until`` or ``leased_until``); the DB session is UTC so
-                        # it compares correctly against ``NOW()``.
-                        jitter = random.randint(*_POOL_RETRY_JITTER_SECONDS)
-                        scheduled_after = pool_retry_at + timedelta(seconds=jitter)
-                        # Refund the attempt spent on this run: waiting for the pool is not a
-                        # real failure, so it must not march the job toward ``max_attempts``
-                        # and reintroduce the dead-letter this fix removes.
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                """
-                                UPDATE job
-                                SET status = 'TODO', finished_at = NOW(),
-                                    attempt = GREATEST(attempt - 1, 0),
-                                    error_message = %s, error_class = %s,
-                                    output = COALESCE(%s, output),
-                                    session_id = COALESCE(%s, session_id),
-                                    scheduled_after = %s, updated_at = NOW()
-                                WHERE id = %s AND status = 'RUNNING'
-                                """,
-                                (
-                                    error_msg, error_class, agent_output,
-                                    session_id, scheduled_after, job.id,
-                                ),
-                            )
+                        cur.execute("SELECT status FROM job WHERE id = %s", (job.id,))
+                        row = cur.fetchone()
+                    current_status = row["status"] if row else None
+                    if current_status != "RUNNING":
+                        # The job is no longer ours to finalize - a CLI pause committed
+                        # PAUSED while the process ran, or another worker re-claimed it. The
+                        # JOB row stays untouched; this attempt's execution is abandoned,
+                        # because the process it described has exited (§5.3).
                         announce = self._end_execution(
                             conn, job_id=job.id, attempt=job.attempt,
                             execution_id=job.execution_id,
@@ -1597,147 +1409,192 @@ class Consumer:
                         conn.commit()
                         announce()
                         self.logger.info(
-                            "Job waiting for pool to recover: whole pool throttled or "
-                            f"busy, rescheduled for {scheduled_after} (UTC)",
+                            "Job finalize skipped (status changed during run)",
                             extra={
                                 "job_id": job.id,
                                 "reference_id": job.reference_id,
-                                "status": "TODO",
-                                "duration_ms": elapsed_ms,
+                                "current_status": current_status,
                             },
                         )
-                        em.dispatch(
-                            "job_retry_after",
-                            JobRetryingEvent(
-                                job=job,
-                                error=error,
-                                delay_seconds=max(
-                                    int((scheduled_after - datetime.now(UTC).replace(tzinfo=None)).total_seconds()),
-                                    0,
-                                ),
-                                elapsed_ms=elapsed_ms,
-                            ),
-                        )
-                    elif decision.should_retry:
-                        scheduled_after = datetime.now(UTC) + timedelta(seconds=decision.delay_seconds)
+                        return
+
+                    if error is None and not verify_dispatched:
+                        em.dispatch("job_finalize_before", finalize_event)
+                        verify_dispatched = True
+                        if finalize_event.verdict is not None:
+                            error = JobVerificationFailed(finalize_event.verdict)
+
+                    if error is None:
                         with conn.cursor() as cur:
                             cur.execute(
                                 """
                                 UPDATE job
-                                SET status = 'TODO', finished_at = NOW(),
-                                    error_message = %s, error_class = %s,
-                                    output = COALESCE(%s, output),
-                                    session_id = COALESCE(%s, session_id),
-                                    scheduled_after = %s, updated_at = NOW()
+                                SET status = 'SUCCESS', finished_at = NOW(),
+                                    result_summary = %s, agent_type = %s, provider = %s,
+                                    model = %s,
+                                    input_tokens = %s, output_tokens = %s,
+                                    prompt = %s, output = %s,
+                                    updated_at = NOW()
                                 WHERE id = %s AND status = 'RUNNING'
                                 """,
                                 (
-                                    error_msg, error_class, agent_output,
-                                    session_id, scheduled_after, job.id,
+                                    job_result.summary if job_result else None,
+                                    job_result.agent_type if job_result else None,
+                                    job_result.provider if job_result else None,
+                                    job_result.model if job_result else None,
+                                    job_result.input_tokens if job_result else None,
+                                    job_result.output_tokens if job_result else None,
+                                    job_result.prompt if job_result else None,
+                                    job_result.output if job_result else None,
+                                    job.id,
                                 ),
                             )
+                        # Same transaction as the terminal status: a failing revoke rolls
+                        # the status back too, leaving the job RUNNING for
+                        # _recover_stale_jobs — which revokes as well.
                         revoke_job_capabilities(conn, job.id, commit=False)
                         announce = self._end_execution(
                             conn, job_id=job.id, attempt=job.attempt,
                             execution_id=job.execution_id,
-                            outcome="failed", job_terminal=False,
+                            outcome="succeeded", job_terminal=True,
                         )
-                        self._write_job_failed(conn, job, error_class)
                         conn.commit()
                         announce()
                         self.logger.info(
-                            f"Job scheduled for retry: {decision.reason}",
+                            "Job succeeded",
                             extra={
                                 "job_id": job.id,
                                 "reference_id": job.reference_id,
-                                "status": "TODO",
+                                "status": "SUCCESS",
                                 "duration_ms": elapsed_ms,
+                                "result_summary": job_result.summary if job_result else None,
                             },
                         )
                         em.dispatch(
-                            "job_retry_after",
-                            JobRetryingEvent(
+                            "job_succeed_after",
+                            JobSucceededEvent(
                                 job=job,
-                                error=error,
-                                delay_seconds=decision.delay_seconds,
+                                summary=job_result.summary if job_result else None,
+                                agent_type=job_result.agent_type if job_result else None,
+                                model=job_result.model if job_result else None,
                                 elapsed_ms=elapsed_ms,
                             ),
                         )
-                    elif blocked:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                """
-                                UPDATE job
-                                SET status = 'FAILED', finished_at = NOW(),
-                                    error_message = %s, error_class = %s,
-                                    output = COALESCE(%s, output),
-                                    session_id = COALESCE(%s, session_id),
-                                    updated_at = NOW()
-                                WHERE id = %s AND status = 'RUNNING'
-                                """,
-                                (error_msg, error_class, agent_output, session_id, job.id),
-                            )
-                        announce = self._end_execution(
-                            conn, job_id=job.id, attempt=job.attempt,
-                            execution_id=job.execution_id,
-                            outcome="failed", job_terminal=True,
-                        )
-                        self._write_job_failed(conn, job, error_class)
-                        conn.commit()
-                        announce()
-                        self.logger.warning(
-                            f"Job blocked (configuration/infrastructure fault, no retry): {decision.reason}",
-                            extra={
-                                "job_id": job.id,
-                                "reference_id": job.reference_id,
-                                "status": "FAILED",
-                                "duration_ms": elapsed_ms,
-                            },
-                        )
-                        em.dispatch(
-                            "job_blocked_after",
-                            JobBlockedEvent(job=job, error=error, elapsed_ms=elapsed_ms),
-                        )
                     else:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                """
-                                UPDATE job
-                                SET status = 'DEAD', finished_at = NOW(),
-                                    error_message = %s, error_class = %s,
-                                    output = COALESCE(%s, output),
-                                    session_id = COALESCE(%s, session_id),
-                                    updated_at = NOW()
-                                WHERE id = %s AND status = 'RUNNING'
-                                """,
-                                (error_msg, error_class, agent_output, session_id, job.id),
-                            )
-                        revoke_job_capabilities(conn, job.id, commit=False)
-                        announce = self._end_execution(
-                            conn, job_id=job.id, attempt=job.attempt,
-                            execution_id=job.execution_id,
-                            outcome="failed", job_terminal=True,
+                        error_class = error.__class__.__name__
+                        error_msg = str(error)[:2000]
+                        # The agent's own output travels on the exception rather than inside
+                        # error_message, so it lands in the column meant for it. Operators lose
+                        # nothing — they gain the full output instead of a 500-char excerpt —
+                        # and error_message stays free of prompt/customer content.
+                        agent_output = getattr(error, "agent_output", None)
+                        decision = evaluate_retry(
+                            error_class, job.attempt, job.max_attempts, error_obj=error,
                         )
-                        self._write_job_failed(conn, job, error_class)
+
+                        em.dispatch(
+                            "job_fail_after",
+                            JobFailedEvent(job=job, error=error, elapsed_ms=elapsed_ms),
+                        )
+
+                        # Extract session_id from result or error (best-effort)
+                        session_id = job_result.session_id if job_result else None
+                        if session_id is None:
+                            session_id = getattr(error, "session_id", None)
+
+                        # Verification veto with ``fresh_start`` → next retry must
+                        # spawn a brand-new claude-cli session (incident 3368).
+                        fresh_start = (
+                            isinstance(error, JobVerificationFailed)
+                            and error.verdict.fresh_start
+                        )
+                        # A ``blocked`` verdict is a deterministic config/infra fault:
+                        # the retry policy already refused a retry, but it must NOT
+                        # dead-letter as an agent failure — it lands in the (otherwise
+                        # unused) FAILED terminal status with a dedicated admin alert,
+                        # keeping DEAD to mean "the agent exhausted its retries".
+                        blocked = (
+                            isinstance(error, JobVerificationFailed)
+                            and error.verdict.blocked
+                        )
+                        if fresh_start:
+                            with conn.cursor() as cur:
+                                cur.execute(
+                                    "UPDATE job SET session_id = NULL, updated_at = NOW() WHERE id = %s",
+                                    (job.id,),
+                                )
+                            session_id = None
+
+                        # The WHOLE pool is temporarily unavailable — either every token is
+                        # usage-limited (``_handle_usage_limit``) or every healthy token is
+                        # transiently busy/leased (``CredentialsBusyError`` from ``resolve``).
+                        # Both set ``pool_retry_at`` to the naive-UTC time the pool next
+                        # recovers. Wait for that instead of dead-lettering: a pool that heals
+                        # on its own is not a real failure. Checked BEFORE ``should_retry`` so a
+                        # known recovery time wins over blind backoff; ``None`` (no recovery
+                        # time, e.g. pure row-lock contention) falls through to ordinary retry.
+                        pool_retry_at = getattr(error, "pool_retry_at", None)
+
+                        if pool_retry_at is not None:
+                            # Reschedule for just after the pool recovers, plus a randomised
+                            # gap to clear the boundary and de-sync waiting jobs.
+                            # ``pool_retry_at`` is naive UTC (from ``throttled_until`` or
+                            # ``leased_until``); the DB session is UTC so it compares correctly
+                            # against ``NOW()``. The attempt is refunded: waiting for the pool
+                            # is not a real failure, so it must not march the job toward
+                            # ``max_attempts`` and reintroduce the dead-letter this removes.
+                            scheduled_after = pool_retry_at + timedelta(
+                                seconds=random.randint(*_POOL_RETRY_JITTER_SECONDS))
+                            delay = (scheduled_after - datetime.now(UTC).replace(tzinfo=None)).total_seconds()
+                            how = dict(status="TODO", refund_attempt=True, revoke=False,
+                                       write_failed=False, outcome="abandoned", terminal=False)
+                            level, message = logging.INFO, (
+                                "Job waiting for pool to recover: whole pool throttled or "
+                                f"busy, rescheduled for {scheduled_after} (UTC)")
+                            after = ("job_retry_after", JobRetryingEvent(
+                                job=job, error=error, delay_seconds=max(int(delay), 0),
+                                elapsed_ms=elapsed_ms))
+                        elif decision.should_retry:
+                            scheduled_after = datetime.now(UTC) + timedelta(seconds=decision.delay_seconds)
+                            how = dict(status="TODO", revoke=True, write_failed=True,
+                                       outcome="failed", terminal=False)
+                            level, message = logging.INFO, f"Job scheduled for retry: {decision.reason}"
+                            after = ("job_retry_after", JobRetryingEvent(
+                                job=job, error=error, delay_seconds=decision.delay_seconds,
+                                elapsed_ms=elapsed_ms))
+                        elif blocked:
+                            scheduled_after = None
+                            how = dict(status="FAILED", revoke=False, write_failed=True,
+                                       outcome="failed", terminal=True)
+                            level, message = logging.WARNING, (
+                                "Job blocked (configuration/infrastructure fault, no retry): "
+                                f"{decision.reason}")
+                            after = ("job_blocked_after", JobBlockedEvent(
+                                job=job, error=error, elapsed_ms=elapsed_ms))
+                        else:
+                            scheduled_after = None
+                            how = dict(status="DEAD", revoke=True, write_failed=True,
+                                       outcome="failed", terminal=True)
+                            level, message = logging.WARNING, f"Job dead-lettered: {decision.reason}"
+                            after = ("job_dead_after", JobDeadEvent(
+                                job=job, error=error, elapsed_ms=elapsed_ms))
+
+                        announce = self._transition(
+                            conn, job.id, job.attempt, job.execution_id,
+                            error_msg=error_msg, error_class=error_class,
+                            agent_output=agent_output, session_id=session_id,
+                            scheduled_after=scheduled_after, **how,
+                        )
                         conn.commit()
                         announce()
-                        self.logger.warning(
-                            f"Job dead-lettered: {decision.reason}",
-                            extra={
-                                "job_id": job.id,
-                                "reference_id": job.reference_id,
-                                "status": "DEAD",
-                                "duration_ms": elapsed_ms,
-                            },
-                        )
-                        em.dispatch(
-                            "job_dead_after",
-                            JobDeadEvent(job=job, error=error, elapsed_ms=elapsed_ms),
-                        )
-                finalize_after_pending = True
-                return  # DB update succeeded
-            except Exception:
-                conn.rollback()
+                        self.logger.log(level, message, extra={
+                            "job_id": job.id, "reference_id": job.reference_id,
+                            "status": how["status"], "duration_ms": elapsed_ms,
+                        })
+                        em.dispatch(*after)
+                    finalize_after_pending = True
+                    return  # DB update succeeded
+            except Exception:  # checkout included; pooled() already discarded a failed conn
                 if db_attempt < max_db_retries:
                     self.logger.warning(
                         f"Failed to finalize job {job.id} "
@@ -1751,7 +1608,6 @@ class Consumer:
                         f"Job may be stuck in RUNNING. Manual intervention required."
                     )
             finally:
-                conn.close()
                 if finalize_after_pending:
                     em.dispatch("job_finalize_after", finalize_event)
 
@@ -1784,21 +1640,18 @@ class Consumer:
         )
         until = datetime.now(UTC).replace(tzinfo=None) + _DEFAULT_TRANSIENT_AUTH_THROTTLE
         try:
-            conn = get_connection(self._db_config)
-            try:
+            with self._db() as conn:
                 throttle_credential(conn, credential_id, until, str(exc), logger=self.logger)
                 conn.commit()
                 _total, healthy = count_credentials_for_scope(conn, scope)
                 exc.retry_with_other_token = healthy > 0
-            finally:
-                conn.close()
         except Exception:
             self.logger.exception(
                 "Failed to throttle token after transient auth failure",
                 extra={"job_id": job.id, "credential_id": credential_id},
             )
         try:
-            dispatch_credential_event(
+            get_event_manager().dispatch(
                 "credential_auth_throttled_after",
                 CredentialAuthThrottledEvent(
                     scope=scope or "",

@@ -16,11 +16,11 @@ from agento.framework.agent_manager.credential_store import update_refreshed_cre
 from agento.framework.agent_manager.errors import AuthenticationError
 from agento.framework.harness import (
     ToolboxConnectionSpec,
-    harness_base_env,
     is_toolbox_endpoint,
     toolbox_origin,
 )
 from agento.framework.harness.run_scope import scope_toolbox_url, toolbox_auth
+from agento.framework.runner import client as runner_client
 
 if TYPE_CHECKING:
     import pymysql
@@ -306,13 +306,11 @@ class CodexWorkspaceAdapter:
         was given (SEC-6).
         """
         build_dir.mkdir(parents=True, exist_ok=True)
-        env = {**harness_base_env(), "HOME": str(build_dir)}
         try:
-            result = subprocess.run(
+            # In a runner (WS5): build_dir is on the shared /workspace.
+            result = runner_client.run(
                 ["codex", "login", flag],
-                input=secret, env=env, text=True,
-                capture_output=True, check=False,
-                timeout=timeout_s,
+                input=secret, env={"HOME": str(build_dir)}, timeout=timeout_s,
             )
         except FileNotFoundError as exc:
             raise AuthenticationError(

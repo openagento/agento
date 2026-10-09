@@ -28,13 +28,13 @@ agento run <code> "say hello"
 
 ## Quick start (Ollama, no credential)
 
-Add Ollama to `docker/docker-compose.override.yml` on `agento-net`:
+Add Ollama to `docker/docker-compose.override.yml` on `exec-net` (the runners' network):
 
 ```yaml
 services:
   ollama:
     image: ollama/ollama:latest
-    networks: [agento-net]
+    networks: [exec-net]
     volumes: [ollama:/root/.ollama]
 volumes:
   ollama:
@@ -158,8 +158,8 @@ present there and absent from Pi's catalogue will still be substituted.)
 
 Pi ships no MCP client, so `src/agento/modules/pi/bridge/agento-toolbox.js` is one. It is
 copied into each run directory and loaded with `-e`, and it registers every Toolbox tool
-as `mcp__toolbox__<name>` — the same shape `claude` produces, so
-`job.toolbox_mcp_calls` telemetry works with no change.
+as `mcp__toolbox__<name>` — the same shape `claude` produces. Each call reaches the toolbox
+on the run's capability, so `job.toolbox_mcp_calls` counts it with no change.
 
 It has **zero runtime dependencies** by necessity: Node resolves bare imports by walking
 up from the importing file, and a per-job build directory has no `node_modules` above it.
@@ -385,7 +385,7 @@ Ollama section) — or, for a throwaway check against the dev stack, which start
 `-f docker-compose.dev.yml` and therefore does **not** merge the override:
 
 ```bash
-docker run -d --name ollama --network <project>_agento-net --network-alias ollama \
+docker run -d --name ollama --network <project>_exec-net --network-alias ollama \
   -v ollama:/root/.ollama ollama/ollama:latest
 docker exec ollama ollama pull qwen2.5:0.5b
 ```

@@ -30,7 +30,6 @@ class TestNoAgentContentInLogsOrErrorMessage:
 
     def _failing_runner(self):
         runner = make_runner("claude", credential=None, credential_required=False)
-        runner._record_usage = MagicMock()
         runner.logger = logging.getLogger("round7-log-test")
         runner._execute_process = MagicMock(
             return_value=MagicMock(
@@ -90,8 +89,9 @@ class TestNoAgentContentInLogsOrErrorMessage:
         source = Path(consumer.__file__).read_text()
         assert 'agent_output = getattr(error, "agent_output", None)' in source
         # All failure branches (retry, usage-limit pool-wait, blocked, and
-        # dead-letter) must store it.
-        assert source.count("output = COALESCE(%s, output)") == 4
+        # dead-letter) go through the one writer, `_transition`, which stores it.
+        assert source.count("output = COALESCE(%s, output)") == 1
+        assert "agent_output=agent_output" in source
 
 
 class TestCredentialErrorLogsCarryNoContent:
@@ -282,7 +282,7 @@ class TestCliMigrationCompleted:
         parser = argparse.ArgumentParser()
         ReplayCommand().configure(parser)
 
-        for flag in ("--credential", "--credential-id", "--oauth_token"):
+        for flag in ("--credential", "--credential-id"):
             ns = parser.parse_args(["7", flag, "5"])
             assert ns.credential_id == 5, flag
 

@@ -229,13 +229,10 @@ stretches with the same retention as the outbox; an open stretch is never pruned
 | `credential_usage_limited_after` | `CredentialUsageLimitedEvent` | `scope, credential_id, error_msg, reset_at, job_id` | A session/usage/rate limit throttles a credential via `throttled_until` (temporary cooldown; `status` stays `'ok'`) |
 | `credential_auth_throttled_after` | `CredentialAuthThrottledEvent` | `scope, credential_id, error_msg, throttled_until, job_id` | A **transient** auth failure (revoked/stale access token) throttles a credential via `throttled_until` (`status` stays `'ok'`; no poison) |
 
-**Deprecated aliases.** Each of the five is ALSO dispatched under its pre-0.15 name
-(`token_register_after`, `token_refresh_after`, `token_auth_failed_after`,
-`token_usage_limited_after`, `token_auth_throttled_after`) carrying the old `Token*Event`
-payload with `agent_type` / `token_id`. Both payloads are built from the same data in
-`dispatch_credential_event`, so an observer on either name sees consistent values. Existing
-third-party observers therefore keep working; removal is tracked in
-[ROADMAP.md](../../ROADMAP.md). New observers should bind the `credential_*` names.
+**Removed in v0.17:** the pre-0.15 names (`token_register_after`, `token_refresh_after`,
+`token_auth_failed_after`, `token_usage_limited_after`, `token_auth_throttled_after`) and their
+`Token*Event` payloads. An observer bound to a `token_*` name gets no event. Bind it to the
+`credential_*` name and read `scope` / `credential_id`.
 
 `credential_usage_limited_after` is distinct from `credential_auth_failed_after`: a usage limit is **temporary**, so the consumer sets `credential.throttled_until = reset_at` (a cooldown the pool skips until it passes — the credential auto-recovers) and the job fails over to another healthy credential, whereas an auth failure **poisons** it (`status='error'`) until an operator or credential-refresh clears it. Both are internal events (defined in `framework/events.py`, not re-exported from `framework/contracts/`).
 

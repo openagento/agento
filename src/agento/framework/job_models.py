@@ -100,6 +100,8 @@ class Job:
     # It is carried on the job because the mint and the finalize sit in different scopes of
     # the consumer, and `None` - no provider registered - is the framework's own behaviour.
     execution_id: str | None = None
+    # `<runner socket>:<boot id>` of the runner that started the run (runner/client.py).
+    runner_ref: str | None = None
 
     @classmethod
     def stub(
@@ -167,6 +169,7 @@ class Job:
             error_message=row["error_message"],
             error_class=row["error_class"],
             pid=row.get("pid"),
+            runner_ref=row.get("runner_ref"),
             session_id=row.get("session_id"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],

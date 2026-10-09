@@ -178,7 +178,7 @@ _LOGIN_REFUSED = {
     "not_oauth": (409, "only a subscription (OAuth) credential can sign in again"),
     "active": (409, "a sign-in for this credential is already running"),
 }
-# Printable ASCII with no space; RSA-3072 OAEP-SHA256 seals at most 318 bytes.
+# Printable ASCII with no space; encrypted, it fits credential_login.code_box.
 _LOGIN_CODE = re.compile(r"[!-~]{1,300}")
 
 
@@ -348,7 +348,7 @@ def set_config(req: Request) -> Response:
     if isinstance(scope, Response):
         return scope
     try:
-        # web holds no encryption key: allow_secret=False writes only a provably plain field.
+        # No secret value from the browser (D-PANEL-ADMIN-1): allow_secret=False writes only a provably plain field.
         _encrypted, reset = save_config(
             req.conn, body.get("path"), body.get("value"), scope=scope[0], scope_id=scope[1],
             allow_secret=False, actor_id=req.session.user.id,
