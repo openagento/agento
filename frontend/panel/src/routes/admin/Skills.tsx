@@ -1,30 +1,20 @@
-import { apiFetch, useQuery } from "@agento/api";
-import { EmptyState, ErrorState, LoadingState, PageHeader } from "@agento/ui";
-import { EnablementGroup, type EnablementItem } from "./Enablement";
+import { useCallback } from "react";
+import { PageHeader } from "@agento/ui";
+import type { EnablementItem, Groups } from "../enablementTree";
+import { EnablementTree } from "./EnablementTree";
 import { ScopePicker } from "./ScopePicker";
-import { AdminOnly, message, useConfigWrite, useScope } from "./shared";
-
-function SkillList() {
-  const { ready, query } = useScope();
-  const skills = useQuery({
-    queryKey: ["admin-skills", query], enabled: ready,
-    queryFn: ({ signal }) => apiFetch<EnablementItem[]>(`/api/admin/skills?${query}`, { signal }),
-  });
-  const write = useConfigWrite("admin-skills");
-  if (!ready) return <EmptyState title="Choose a scope" />;
-  if (skills.isPending) return <LoadingState />;
-  if (skills.error) return <ErrorState message={message(skills.error)} onRetry={() => void skills.refetch()} />;
-  if (!skills.data.length) return <EmptyState title="No skills" />;
-  return <EnablementGroup title="Skills" items={skills.data} write={write} />;
-}
+import { AdminOnly } from "./shared";
 
 export function Skills() {
+  const groupsOf = useCallback((data: EnablementItem[]): Groups =>
+    data.length ? [{ group: "Skills", items: data }] : [], []);
   return (
     <AdminOnly>
       <div className="ag-stack">
         <PageHeader title="Skills" description="Which skills an agent gets. A skill is off unless it is enabled." />
         <ScopePicker />
-        <SkillList />
+        <EnablementTree listKey="admin-skills" url="/api/admin/skills" groupsOf={groupsOf}
+          emptyTitle="No skills" emptyText="No enabled module declares a skill." />
       </div>
     </AdminOnly>
   );

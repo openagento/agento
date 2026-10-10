@@ -31,13 +31,16 @@ export function useScope(): Scope & { ready: boolean; query: string } {
 /** Some writes of a batch failed; the text names each one, built only from `message()`. */
 class WriteError extends Error {}
 
-/** `PUT /api/admin/config`: one value at one scope. A repaired dependent is named in `reset`. */
+/** `PUT /api/admin/config`: one value at one scope. A repaired dependent is named in `reset`.
+ *  The scope travels WITH the writes, bound by the handler that calls `mutate`. Read inside the
+ *  mutation instead, it would be whatever the picker on the same screen shows by the time the
+ *  request runs — React Query runs the mutation from the latest render, not from the click. */
 export function useConfigWrite(invalidate: string) {
   const qc = useQueryClient();
   const { scope, scopeId } = useScope();
-  return useMutation({
+  const write = useMutation({
     // allSettled, not all: the list refreshes and the toggles unlock only after every write is done.
-    mutationFn: async (writes: { path: string; value: string }[]) => {
+    mutationFn: async ({ writes, scope, scopeId }: { writes: { path: string; value: string }[]; scope: string; scopeId: number }) => {
       const settled = await Promise.allSettled(writes.map((w) =>
         apiFetch<{ path: string; reset: string[] }>("/api/admin/config", {
           method: "PUT", json: { path: w.path, value: w.value, scope, scope_id: scopeId },
@@ -57,6 +60,11 @@ export function useConfigWrite(invalidate: string) {
     // Any write may be an `admin/locale/*` field: the session re-reads its display settings.
     onSettled: () => { void qc.invalidateQueries({ queryKey: [invalidate] }); void refreshDisplay(); },
   });
+  type Opts = Parameters<typeof write.mutate>[1];
+  return {
+    isPending: write.isPending,
+    mutate: (writes: { path: string; value: string }[], opts?: Opts) => write.mutate({ writes, scope, scopeId }, opts),
+  };
 }
 
 /** A job as the dashboard lists it; `GET /api/admin/jobs` adds the rest (JobRow). */

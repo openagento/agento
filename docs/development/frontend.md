@@ -134,13 +134,24 @@ call `/api/admin/*` ([panel.md](../architecture/panel.md#admin-screens)).
 - **ENV overrides are not shown.** `CONFIG__*` ENV overrides are not visible on the Config screen;
   `bin/agento config:resolve <path>` shows the effective value. The module list shows a title made
   from the key (`agent_view` → "Agent View"); the URL keeps the key.
-- **A role's access is a tree.** Users → Roles lists the roles; a role page (`/users/roles/<code>`)
-  has Role info and Role resources. Role resources picks one workspace or agent view by name, then
-  shows the operations and the tools of that place as a Mantine `Tree` of checkboxes, saved with one
-  `PUT`. `useTree` holds only the expanded state: the checked leaves are a `Set` the page holds
-  (`roleTree.ts`), because `useTree`'s own checked state drops the leaves a search hides. A leaf
-  inherited from the workspace or built in for admin is checked and locked, and is never sent. A tool
-  that is off at that place is marked "Off here", because a grant does not enable a tool.
+- **Access and enablement are the same tree.** Role resources, Tools and Skills all render
+  `routes/ResourceTree.tsx`: a Mantine `Tree` of checkboxes with search, expand/collapse, select
+  all/clear, and the sticky `UnsavedBar` (Reset and Save as icons, UI-7). The page gives it one
+  memoized `toData(search)`; the tree owns `search` and the expanded state, so a page that keys it on
+  its scope clears both on a scope change. `useTree` holds only the expanded state: the checked
+  leaves are a `Set` the page holds (`roleTree.ts`, `enablementTree.ts`), because `useTree`'s own
+  checked state drops the leaves a search hides. **Expand all** is shown only while a group is
+  closed and **Collapse all** only while one is open, over the data a search leaves visible.
+- **A role's access.** Users → Roles lists the roles; a role page (`/users/roles/<code>`) has Role
+  info and Role resources. Role resources picks one workspace or agent view by name, then shows the
+  operations and the tools of that place, saved with one `PUT`. A leaf inherited from the workspace
+  or built in for admin is checked and locked, and is never sent. A tool that is off at that place is
+  marked "Off here", because a grant does not enable a tool.
+- **Tools and Skills save on demand.** A checkbox edits a draft; **Save** sends only the changed
+  gates as one batch of `PUT /api/admin/config` and the draft clears once that screen's own list has
+  refetched. Drafts are held **per scope** (`routes/admin/EnablementTree.tsx`), because the scope is
+  in the URL and the screen stays mounted across a change of it — see DECISIONS.md. A failed save
+  keeps the draft, so the write can be retried.
 - **Mouse and keyboard.** `DataTable` activates a row on Enter; each admin table also has a button
   column (Details, Usage, Edit) for the mouse.
 

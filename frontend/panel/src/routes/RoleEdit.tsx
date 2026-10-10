@@ -1,21 +1,20 @@
 // The role page (plan "Panel roles"): Role info and Role resources, Magento ACL style. The resources
 // are a checkbox tree per scope; the checked leaves are a Set held here (roleTree.ts), saved with one PUT.
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
+import { Info, ShieldCheck, Wrench } from "lucide-react";
 import {
-  ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Info, ListChecks, ListX, Search, ShieldCheck, Wrench,
-} from "lucide-react";
-import {
-  ActionIcon, Alert, Anchor, Badge, Breadcrumbs, Checkbox, Divider, Group, Highlight, Paper, Select, Stack, Tabs, Text,
-  TextInput, ThemeIcon, Tooltip, Tree, getTreeExpandedState, useTree, type RenderTreeNodePayload,
+  Alert, Anchor, Badge, Breadcrumbs, Divider, Group, Paper, Select, Stack, Tabs, Text,
+  TextInput, ThemeIcon, Tooltip, type TreeNodeData,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { apiFetch, useMutation, useQuery, useQueryClient } from "@agento/api";
-import { Button, ConfirmDialog, EmptyState, ErrorState, IconAction, LoadingState, PageHeader } from "@agento/ui";
+import { Button, ConfirmDialog, EmptyState, ErrorState, LoadingState, PageHeader } from "@agento/ui";
+import { ResourceTree, UnsavedBar } from "./ResourceTree";
 import { useScopes, type Scopes } from "./admin/ScopePicker";
 import { AdminOnly, message, useScope } from "./admin/shared";
 import {
-  changeCount, initialChecked, leavesOf, lockedLeaves, nodeState, toggle, toPayload, toTreeData,
+  changeCount, initialChecked, lockedLeaves, toPayload, toTreeData,
   type LeafInfo, type RoleResources,
 } from "./roleTree";
 
@@ -57,91 +56,32 @@ function RoleInfo({ role }: { role: RoleDetail }) {
   );
 }
 
-/** Search, expand and the tree. Keyed by scope by its parent, so a scope starts fully expanded. */
-function ResourceTree({ resources, checked, locked, onChange, via, busy }: {
-  resources: RoleResources; checked: Set<string>; locked: Set<string>; onChange: (next: Set<string>) => void; via: string;
-  busy: boolean;
-}) {
-  const [search, setSearch] = useState("");
-  const full = useMemo(() => toTreeData(resources, ""), [resources]);
-  // Tree re-initializes on every new `data`: it must be memoized.
-  const data = useMemo(() => (search ? toTreeData(resources, search) : full), [resources, search, full]);
-  const [expanded, setExpanded] = useState(() => getTreeExpandedState(full, "*"));
-  // Merged, not replaced: a node a search hides keeps its expanded state for when it comes back.
-  const tree = useTree({ expandedState: expanded, onExpandedStateChange: (s) => setExpanded((prev) => ({ ...prev, ...s })) });
-  const setAll = (on: boolean) => onChange(data.reduce((s, n) => toggle(s, n, on, locked), checked));
+/** The level-1 group icon, and the badges a role leaf shows after its label. */
+const roleIcon = (node: TreeNodeData): ReactNode => node.value === "grp:ops" || node.value === "grp:tools"
+  ? <ThemeIcon variant="light" size="sm" radius="sm">{node.value === "grp:ops" ? <ShieldCheck size={14} /> : <Wrench size={14} />}</ThemeIcon>
+  : null;
 
-  const renderNode = ({ node, expanded: open, hasChildren, elementProps, level }: RenderTreeNodePayload) => {
-    const leaves = leavesOf(node);
-    const state = nodeState(node, checked);
-    const info = (node.nodeProps ?? {}) as LeafInfo;
-    const label = String(node.label);
-    const box = (
-      <Checkbox size="sm" aria-label={label} checked={state === "checked"} indeterminate={state === "indeterminate"}
-        disabled={busy || leaves.every((v) => locked.has(v))}
-        label={<Highlight highlight={search} fz="sm" fw={hasChildren ? 600 : 400} component="span">{label}</Highlight>}
-        onChange={() => onChange(toggle(checked, node, state !== "checked", locked))}
-        // The node's own click handler would move the focus from the checkbox to the tree item.
-        wrapperProps={{ onClick: (e: React.MouseEvent) => e.stopPropagation() }} />
-    );
-    return (
-      <Group gap="xs" wrap="nowrap" {...elementProps}>
-        {hasChildren && (
-          <ActionIcon variant="subtle" color="gray" size="sm" aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
-            aria-expanded={open} onClick={() => tree.toggleExpanded(node.value)}>
-            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </ActionIcon>
-        )}
-        {/* A leaf keeps the chevron's slot (same component and size), so its checkbox lines up under its group's. */}
-        {!hasChildren && <ActionIcon component="span" variant="transparent" size="sm" aria-hidden />}
-        {level === 1 && (
-          <ThemeIcon variant="light" size="sm" radius="sm">
-            {node.value === "grp:ops" ? <ShieldCheck size={14} /> : <Wrench size={14} />}
-          </ThemeIcon>
-        )}
-        {box}
-        {hasChildren && (
-          <Badge variant="default" size="sm" radius="sm">
-            {leaves.filter((v) => checked.has(v)).length} of {leaves.length}
-          </Badge>
-        )}
-        {info.id && <Text fz="xs" c="dimmed" ff="monospace" truncate>{info.id}</Text>}
-        {info.off && (
-          <Tooltip label="A grant does not enable a tool: it stays off here until it is enabled on the Tools screen." withArrow multiline w={260}>
-            <Badge variant="light" color="yellow" size="sm">Off here</Badge>
-          </Tooltip>
-        )}
-        {info.via && (
-          <Tooltip label={`Given at workspace ${via}: every agent view in it has it.`} withArrow>
-            <Badge variant="light" color="blue" size="sm">Via workspace</Badge>
-          </Tooltip>
-        )}
-        {info.builtin && (
-          <Tooltip label="Built in for Administrator." withArrow>
-            <Badge variant="light" color="grape" size="sm">Built in</Badge>
-          </Tooltip>
-        )}
-      </Group>
-    );
-  };
-
+function roleInfo(node: TreeNodeData, via: string): ReactNode {
+  const info = (node.nodeProps ?? {}) as LeafInfo;
   return (
-    <Stack gap="sm">
-      <Group gap="xs" wrap="nowrap">
-        <TextInput flex={1} aria-label="Search resources" placeholder="Search tools and operations" leftSection={<Search size={16} />}
-          value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
-        <IconAction label="Expand all" icon={<ChevronsUpDown size={16} />} onClick={() => setExpanded(getTreeExpandedState(full, "*"))} />
-        <IconAction label="Collapse all" icon={<ChevronsDownUp size={16} />} onClick={() => setExpanded({})} />
-        <Divider orientation="vertical" />
-        <IconAction label="Select all" icon={<ListChecks size={16} />} disabled={busy} onClick={() => setAll(true)} />
-        <IconAction label="Clear" icon={<ListX size={16} />} disabled={busy} onClick={() => setAll(false)} />
-      </Group>
-      {data.length
-        ? <Tree data={data} tree={tree} expandOnClick={false} expandOnSpace={false} levelOffset="xl" renderNode={renderNode} />
-        : <EmptyState title={search ? "Nothing matches" : "Nothing to give"}>
-          {search ? "No tool or operation matches the search." : "No enabled module declares a tool or an operation."}
-        </EmptyState>}
-    </Stack>
+    <>
+      {info.id && <Text fz="xs" c="dimmed" ff="monospace" truncate>{info.id}</Text>}
+      {info.off && (
+        <Tooltip label="A grant does not enable a tool: it stays off here until it is enabled on the Tools screen." withArrow multiline w={260}>
+          <Badge variant="light" color="yellow" size="sm">Off here</Badge>
+        </Tooltip>
+      )}
+      {info.via && (
+        <Tooltip label={`Given at workspace ${via}: every agent view in it has it.`} withArrow>
+          <Badge variant="light" color="blue" size="sm">Via workspace</Badge>
+        </Tooltip>
+      )}
+      {info.builtin && (
+        <Tooltip label="Built in for Administrator." withArrow>
+          <Badge variant="light" color="grape" size="sm">Built in</Badge>
+        </Tooltip>
+      )}
+    </>
   );
 }
 
@@ -175,6 +115,8 @@ function RoleResourcesTab({ role }: { role: RoleDetail }) {
   });
   const server = useMemo(() => resources.data && initialChecked(resources.data), [resources.data]);
   const locked = useMemo(() => resources.data ? lockedLeaves(resources.data) : new Set<string>(), [resources.data]);
+  const res = resources.data;
+  const toData = useCallback((search: string) => (res ? toTreeData(res, search) : []), [res]);
   const checked = edits && edits.at === current ? edits.set : server;
   const changes = checked && server ? changeCount(checked, server) : 0;
 
@@ -211,6 +153,8 @@ function RoleResourcesTab({ role }: { role: RoleDetail }) {
   };
   const ws = kind === "agent_view" ? scopes.data?.workspaces.find((w) =>
     w.id === scopes.data?.agent_views.find((v) => v.id === Number(id))?.workspace_id) : undefined;
+  const via = ws ? `${ws.code} — ${ws.label}` : "of this agent view";
+  const renderInfo = useCallback((node: TreeNodeData) => roleInfo(node, via), [via]);
 
   if (scopes.isPending) return <LoadingState />;
   if (scopes.error) return <ErrorState message={message(scopes.error)} onRetry={() => void scopes.refetch()} />;
@@ -240,20 +184,15 @@ function RoleResourcesTab({ role }: { role: RoleDetail }) {
         <Stack p="md" gap="sm">
           {resources.isPending ? <LoadingState /> : resources.error
             ? <ErrorState message={message(resources.error)} onRetry={() => void resources.refetch()} />
-            : <ResourceTree key={current} resources={resources.data} checked={checked!} locked={locked} onChange={(set) => setEdits({ at: current, set })} busy={save.isPending}
-              via={ws ? `${ws.code} — ${ws.label}` : "of this agent view"} />}
+            : <ResourceTree key={current} toData={toData} checked={checked!} locked={locked}
+              onChange={(set) => setEdits({ at: current, set })} busy={save.isPending}
+              renderIcon={roleIcon} renderInfo={renderInfo}
+              emptyTitle="Nothing to give" emptyText="No enabled module declares a tool or an operation." />}
         </Stack>
       </Paper>
       {changes > 0 && (
-        <Paper withBorder shadow="md" radius="md" p="sm" pos="sticky" bottom={0}>
-          <Group justify="space-between">
-            <Text fz="sm" fw={500}>{changes === 1 ? "1 change" : `${changes} changes`} not saved</Text>
-            <Group gap="xs">
-              <Button variant="subtle" onClick={() => setEdits(null)} disabled={save.isPending}>Reset</Button>
-              <Button variant="primary" onClick={() => edits && save.mutate(edits)} disabled={save.isPending}>Save</Button>
-            </Group>
-          </Group>
-        </Paper>
+        <UnsavedBar changes={changes} busy={save.isPending} onReset={() => setEdits(null)}
+          onSave={() => edits && save.mutate(edits)} />
       )}
       <ConfirmDialog opened={pending !== null} title="Discard changes?" danger confirmLabel="Discard"
         onCancel={() => setPending(null)} onConfirm={() => pending && go(pending)}>
