@@ -1,0 +1,13 @@
+{"type":"session","version":3,"id":"01931f0e-aaaa-bbbb-cccc-000000000004","timestamp":"2026-10-06T09:00:00.000Z","cwd":"/workspace/run-45"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Read DEMO-1 and summarize it."}]}}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Reading the ticket."},{"type":"toolCall","id":"call_1","name":"mcp__toolbox__jira_get_issue","arguments":{"key":"DEMO-1"}}],"provider":"openrouter","model":"m","usage":{"input":100,"output":20},"stopReason":"toolUse"}}
+{"type":"tool_execution_start","toolCallId":"call_1","toolName":"mcp__toolbox__jira_get_issue","args":{"key":"DEMO-1"}}
+{"type":"tool_execution_end","toolCallId":"call_1","toolName":"mcp__toolbox__jira_get_issue","result":{"content":[{"type":"text","text":"Summary: Fix the login page"}],"isError":false},"isError":false}
+{"type":"message_end","message":{"role":"toolResult","toolCallId":"call_1","toolName":"mcp__toolbox__jira_get_issue","content":[{"type":"text","text":"Summary: Fix the login page"}],"isError":false}}
+{"type":"turn_end","turnIndex":0}
+{"type":"turn_start"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"DEMO-1 asks to fix the login page."}],"provider":"openrouter","model":"m","usage":{"input":150,"output":12},"stopReason":"stop"}}
+{"type":"turn_end","turnIndex":1}
+{"type":"agent_end","messages":[]}

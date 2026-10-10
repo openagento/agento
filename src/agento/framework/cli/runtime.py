@@ -110,7 +110,8 @@ def _make_runner(
     silently drops the harness's own build-time settings, so a caller must resolve one
     rather than fall into one.
     """
-    from ..harness import HarnessRunContext, create_runner, resolve_provider
+    from ..harness import HarnessRunContext, resolve_provider
+    from ..runner.client import RemoteRunner
 
     provider_desc = resolve_provider(harness, provider)
     if credential is None and provider_desc.credential_required:
@@ -124,7 +125,8 @@ def _make_runner(
         credential=credential,
         harness_config=harness_config,
     )
-    return create_runner(harness, ctx, logger=logger, dry_run=consumer_config.disable_llm)
+    # The CLI runs in a runner, as a consumer run does (WS5).
+    return RemoteRunner(harness, ctx, logger=logger, dry_run=consumer_config.disable_llm)
 
 
 class ConsumerCommand:
@@ -178,12 +180,22 @@ class SetupUpgradeCommand:
                          help="Skip interactive module onboarding prompts")
 
     def execute(self, args: argparse.Namespace) -> None:
+        import os
         import sys
+        from dataclasses import replace
 
+        import pymysql
+
+        from .. import db_grants
         from ..dependency_resolver import DisabledDependencyError
         from ..setup import ModuleValidationError, setup_upgrade
 
         db_config, _, _ = _load_framework_config()
+        # The migration user (WS8, SEC-1), when the install has one; else (dev, CI) one user.
+        migrate_password = os.environ.get("MYSQL_MIGRATE_PASSWORD")
+        if migrate_password:
+            db_config = replace(db_config, mysql_user=db_grants.MIGRATE_USER,
+                                mysql_password=migrate_password)
         logger = get_logger("setup")
         conn = get_connection_or_exit(db_config)
         try:
@@ -195,6 +207,23 @@ class SetupUpgradeCommand:
             except (DisabledDependencyError, ModuleValidationError) as e:
                 print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
+            if migrate_password and not args.dry_run:
+                try:
+                    db_grants.apply_grants(
+                        conn,
+                        backend_user=os.environ.get("MYSQL_USER", ""),
+                        backend_password=os.environ.get("MYSQL_PASSWORD", ""),
+                        toolbox_password=os.environ.get("MYSQL_TOOLBOX_PASSWORD", ""),
+                    )
+                except ValueError as e:
+                    print(f"Error: {e}", file=sys.stderr)
+                    sys.exit(1)
+                except pymysql.err.OperationalError as e:
+                    # The code only: a server message can quote the statement (SEC-6).
+                    print(f"Error: MySQL {e.args[0]} while granting the runtime DB users. The "
+                          "migration user needs its one-time root grant: run 'agento upgrade'.",
+                          file=sys.stderr)
+                    sys.exit(1)
 
             if args.dry_run:
                 if not result.has_work:
@@ -246,7 +275,7 @@ class ReplayCommand:
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("job_id", type=int, help="Job ID to replay")
-        parser.add_argument("--credential", "--credential-id", "--oauth_token",
+        parser.add_argument("--credential", "--credential-id",
                           type=int, dest="credential_id", default=None,
                           help="Override credential id (default: least-recently-used healthy credential)")
         parser.add_argument("--model", type=str, default=None,
@@ -514,7 +543,7 @@ class E2eCommand:
         return "Run end-to-end tests with real LLM calls"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument("--credential", "--credential-id", "--oauth_token",
+        parser.add_argument("--credential", "--credential-id",
                           type=int, dest="credential_id", default=None,
                           help="Override credential id (default: least-recently-used healthy credential)")
         parser.add_argument("--keep", action="store_true",

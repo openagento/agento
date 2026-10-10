@@ -101,13 +101,21 @@ The module supplies one object implementing `AgentHarnessAdapter`, which wires t
 |---------------------------|-------------------------------------------------------------------|
 | `CommandBuilder`          | `headless(ctx, request)`, `interactive(ctx, *, yolo)` and `stdin_payload(ctx, request)` — **the only** place that harness's CLI invocation exists |
 | `WorkspaceAdapter`        | materializes config + credentials into a build/run dir; owns `owned_paths`, `persistent_home_paths`, `inject_runtime_params`, `capture_refreshed_credentials`, `serialize_toolbox_connection` |
-| `TranscriptReader`        | parses that harness's own session transcript (optional — `None` when it keeps none) |
 | `StreamRenderer`          | renders one **live stdout event** as terminal text for `agento run --pretty` (optional — omit the member entirely and the run streams raw) |
 | `CredentialAuthenticator` | one per credential-requiring scope: interactive OAuth + `register_from_secret(mode, secret)` |
 | `create_runner(ctx)`      | builds a runner bound to the run context                          |
 
 `descriptor` is deliberately **absent** from the adapter: the framework builds it from
 `di.json` so it can be enumerated without importing the module's Python.
+
+**Where it runs.** The runner that `create_runner(ctx)` builds, its output parser and its
+`stream_event_mapper` run in a `runner-<i>` service, not in `cron`
+([runner.md](runner.md)). The consumer uses `RemoteRunner`, which has the same `Runner`
+protocol, so a workflow sees no difference. The runner has no database: a harness runner
+reads no DB and no module config (it gets `harness_config` on the context). Usage goes back
+as a `usage` event (`SubprocessRunner.observe(on_usage=…)`); the worker writes the row. A
+vendor CLI that is not a run (a login, a model list) goes through `runner.client.run` or
+`runner.client.pty`, never `subprocess` in the module (`test_spawn_guard.py`).
 
 ### `inject_runtime_params` — the capability injection point
 
@@ -149,9 +157,8 @@ test, receives no capability, and is refused `401` by the toolbox. Fail-closed b
 
 ### Adding pretty rendering to a harness
 
-`StreamRenderer` is the seam for `agento run --pretty`. `TranscriptReader` is **not** the
-right one: it reads an on-disk transcript by `session_id`, while `--pretty` renders the
-live stdout stream as it arrives.
+`StreamRenderer` is the seam for `agento run --pretty`. It renders the live stdout stream
+as it arrives.
 
 A harness opts in with one class and one property — nothing to declare in `di.json`:
 
@@ -187,6 +194,52 @@ raise if you must — the caller prints the raw line on any exception, so a rend
 never swallow a run's output. Do not return raw JSON for an event type you do not know; a
 short dim line keeps a silent format change visible.
 
+### Adding live timeline events
+
+`StreamEventMapper` turns one parsed stdout event into **canonical fragments**, so the panel
+timeline shows every harness the same way. It is optional, like `stream_renderer`: a harness
+exposes it as a `stream_event_mapper` property, and a harness without one still runs (its thread
+gets `run.started`, `run.finished` and the answer, but no live events).
+
+```python
+# src/agento/modules/<harness>/src/stream_event_mapper.py
+class MyStreamEventMapper:
+    def map_event(self, event: dict) -> dict | list[dict] | None:
+        ...   # one fragment, several, or None to skip the event
+```
+
+| `kind` | Fields | Meaning |
+| --- | --- | --- |
+| `assistant.text` | `text` | assistant text, one message or one part of it |
+| `assistant.partial` | `text` | a token-level piece of assistant text (coalesced, see below) |
+| `assistant.reasoning` | `text` | the model's complete reasoning block (may be empty) |
+| `reasoning.partial` | `text` | a token-level piece of reasoning (coalesced) |
+| `tool.started` | `tool_name`, `data.call_id`, `data.input` | the harness calls a tool |
+| `tool.completed` | `tool_name` (optional), `data.call_id`, `data.output`, `data.is_error` | the call's result |
+| `error` | `text` | an error the harness reported |
+
+The framework adds `gap` and `truncated` itself. It drops an unknown kind (DEBUG log), reads a
+kindless fragment or the pre-E9 `delta` kind as `assistant.text`, redacts the run's capability
+tokens from `text` and from every string in `data`, and cuts each string at 64 KiB. Pair a
+`tool.started` and its `tool.completed` by the same `call_id`; use `""` when the harness gives
+none. The mapper names no other harness and does no I/O: it runs on the stdout drain thread, in
+the runner. The runner sends each fragment to the worker, and the worker does the rest below.
+
+**Partials are coalesced, not written one per token.** The framework keeps one buffer per run and
+flushes it as one row every 250 ms or 4 KiB, and the delta writer commits at most 4 times a second
+(plus one per 200 rows), so 200 parallel streaming runs do not multiply the write rate by the token
+rate (RULES.md SCL-1). The complete fragment supersedes the buffer of its kind
+(`assistant.text` ends `assistant.partial`, `assistant.reasoning` ends `reasoning.partial`); a
+fragment of another kind flushes it first, so the rows keep stream order. Redaction runs on the
+joined buffer and holds back a tail that could be the start of a secret, so a token split over two
+deltas never reaches a row. A full queue drops partials without a gap marker: the complete fragment
+follows. Emit partials only when the harness streams text and also sends the complete message
+(claude `--include-partial-messages`, pi `message_update`); codex sends whole items only
+(DECISIONS.md D-E9-5).
+
+A harness's `raw_output` is the **final answer text** — the last assistant message — never the
+stream: it is what the answer bubble shows (DECISIONS.md D-E9-4).
+
 ### A command is argv *plus* stdin
 
 `stdin_payload(ctx, request)` returns the text written to the process's stdin, which is
@@ -214,6 +267,16 @@ Two implementation constraints that are easy to get wrong:
 resumes with an **empty** prompt, so a CLI that merely re-opens a session without
 continuing work would exit successfully having done nothing — a silent false success. A
 harness that declares `resume: false` therefore starts fresh instead.
+
+A conversation's next turn resumes too, but with the new message as the prompt: the
+`CommandBuilder` must send `req.prompt` when it is set, and its own "continue" text only
+when it is empty (a retry). That turn is a new job, so it runs in a new working directory.
+A CLI that files sessions under a slug of its cwd (claude, pi) cannot see the earlier
+session from there, so its runner overrides the optional `SubprocessRunner.prepare_resume(
+session_id) -> bool`: it moves the session file into this run's folder (`move_session_into`),
+or answers `False` when the session is gone. On `False` the conversation workflow starts a
+fresh session with the whole thread. The hook is not part of the `Runner` protocol; a runner
+without it counts as "found".
 
 ### `runtime_config_fields` — the harness's own config, at command-build time
 
@@ -302,6 +365,32 @@ the process it spawns can never end up on two different credentials.
 A provider needing no credential still records usage: `usage_log.credential_id` is
 nullable and the row is attributed by `(harness, provider)`.
 
+### Optional authenticator members: limits and panel re-login
+
+`CredentialAuthenticator` has two **optional** members. The framework reads them with
+`getattr`, like `account_label`, so an out-of-tree authenticator without them keeps working:
+its credentials show "no data" for limits, and a panel re-login of its credential ends as
+`failed` with `unsupported`. `web` loads no harness module, so it cannot see the member: it
+answers 400 only when the scope's `di.json` provider declares no `interactive_oauth`
+registration mode. A scope that declares the mode but whose authenticator has no
+`start_web_login` gets 201, and the worker then ends the login with `unsupported`.
+
+| Member | Called by | Returns |
+|---|---|---|
+| `fetch_limits(credentials, credential_type)` | `credential:limits` (cron, every 10 min) | `CredentialLimits(windows, balance_usd)` of `LimitWindow(label, used_pct, resets_at)`, or `None` when this type has no endpoint. Raise on a failed call; the framework stores `NULL` and logs the exception class only. It also stores `NULL` when a `used_pct` is outside 0–100 or a number is not finite. Use `httpx` with a 10 s timeout. |
+| `start_web_login(tmp_home, logger)` | `credential:web-login` (cron, every minute) | an `InteractiveLogin`: `prompt: LoginPrompt(url, user_code, needs_code)`, `submit_code(code)`, `poll() -> AuthResult \| None`, `close()` |
+
+`start_web_login` starts the vendor CLI with `HOME=tmp_home`, a fresh temp dir. The framework's
+`pty_login.spawn(cmd, home)` and `PtyLogin(proc, prompt, parse)` do the PTY work (minimal
+environment, wide terminal, ANSI stripping, the CLI dies with the worker); the module gives
+only the command, the patterns, and `parse`, which reads the files the CLI wrote into
+`tmp_home`. `PtyProcess.read_until(pattern, timeout)` returns a match only once more output
+follows it or the CLI ended, so a pattern may end in an open token (`\S+`) and still get the
+whole URL or code when the CLI writes it in parts. `poll()` raises `AuthenticationError` when the CLI fails. The worker checks that
+`prompt.url` is `https`, keeps the code in memory only, and saves the result through
+`register_credential_and_dispatch`, the same function as `credential:register`. See
+[credentials.md](../cli/credentials.md#re-login-from-the-panel).
+
 ## Scoped config
 
 Two `agent_view` config paths, both `select` fields whose options come from the
@@ -351,6 +440,33 @@ Deleted with the split: `framework/cli_invoker.py`, `framework/config_writer.py`
 `framework/agent_manager/runner.py`, and the per-module `src/cli.py` invokers — five
 registries and five loaders collapsed into one registry and one loader
 (`bootstrap._load_agent_harnesses`).
+
+### Checking a model id
+
+`check_model` is optional, like `stream_renderer`, and read with `getattr`. The `agent_view/model`
+config tester ([testers.md](../config/testers.md#3-a-module-local-python-class)) calls it after it
+has checked the harness, its CLI, the provider and the credential pool:
+
+```python
+def check_model(self, provider: str, model: str, credential: CredentialRecord | None,
+                *, timeout_s: float) -> TestResult | None: ...
+```
+
+- `credential` is the decrypted pool credential, or `None` when the provider needs none.
+- Return `None` when this harness cannot check this provider's models; the tester answers
+  `error` / `MODEL_NOT_CHECKED`.
+- Otherwise return `ok` / `MODEL_OK`, `fail` / `MODEL_UNKNOWN`, `error` / `MODEL_CHECK_FAILED` or
+  `error` / `MODEL_CHECK_TIMEOUT`. Answer `fail` only on proof that the model is unknown; a list that
+  could not be read is `error`.
+- `timeout_s` is a total budget: take one deadline at entry and give each subprocess or request only
+  the time that is left. Run network calls in a child process, so the deadline also covers DNS.
+- Write nothing to the DB. Put no secret, CLI stderr or response body in the message. Start a CLI
+  in a runner (`runner.client.run`) in a temporary HOME under `client.shared_tmp()`, never with
+  the secret on argv.
+
+The shipped harnesses: Pi reads `pi --list-models`, Codex reads `codex debug models` (the account's
+list), Claude asks `GET /v1/models/{id}`. A guard test requires `check_model` on every in-tree
+harness.
 
 ## Adding a harness: checklist
 

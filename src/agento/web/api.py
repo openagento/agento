@@ -124,20 +124,46 @@ def login(req: Request) -> Response:
         return error(401, _INVALID)
     THROTTLE.reset(username)
     session, token = signed_in
-    user = session.user
     return Response(
         200,
-        {"user": user_json(user), "csrf_token": sessions.csrf_token(token), "expires_at": _iso(session.expires_at)},
+        _session_json(req.conn, session, token),
         [("Set-Cookie", security.session_cookie(token, _seconds_until(session.expires_at)))],
     )
 
 
+_DISPLAY_FIELDS = {"date_format": "locale/date_format", "timezone": "locale/timezone"}
+
+
+def display_settings(conn) -> dict[str, str] | None:
+    """The ``admin`` module's panel display settings at the default scope, or None when the
+    module is disabled. The Config screen's resolver (ENV -> DB -> config.json); a value
+    that is not one of the field's options gets the config.json default."""
+    from agento.framework import module_status
+    from agento.framework.admin import data
+    from agento.framework.config_resolver import read_config_defaults
+
+    # Per request, as _miniapps_enabled: get_module_schemas() is cached for the process.
+    if not module_status.is_enabled("admin", module_status.read_module_status()):
+        return None
+    schema = next((m for m in data.get_module_schemas() if m.name == "admin"), None)
+    if schema is None or schema.module_path is None:
+        return None
+    defaults = read_config_defaults(schema.module_path)
+    fields = {f.field_name: f for f in data.get_resolved_fields(conn, "admin")}
+    out = {}
+    for key, name in _DISPLAY_FIELDS.items():
+        f = fields[name]
+        out[key] = f.value if f.value in {o["value"] for o in f.options or []} else defaults[name]
+    return out
+
+
+def _session_json(conn, session: sessions.Session, token: str) -> dict:
+    return {"user": user_json(session.user), "csrf_token": sessions.csrf_token(token),
+            "expires_at": _iso(session.expires_at), "display": display_settings(conn)}
+
+
 def get_session(req: Request) -> Response:
-    return Response(200, {
-        "user": user_json(req.session.user),
-        "csrf_token": sessions.csrf_token(req.session_token),
-        "expires_at": _iso(req.session.expires_at),
-    })
+    return Response(200, _session_json(req.conn, req.session, req.session_token))
 
 
 def logout(req: Request) -> Response:
@@ -247,71 +273,6 @@ def admin_update_user(req: Request) -> Response:
     except accounts.AccessError as exc:
         return _access_error(exc)
     return Response(200, user_json(accounts.get_user(req.conn, user_id)))
-
-
-def _grant_json(g: dict) -> dict:
-    return {**g, "created_at": _iso(g["created_at"]) if g.get("created_at") else None}
-
-
-def admin_list_grants(req: Request) -> Response:
-    return _forbidden_unless(req, "grants.manage") or Response(
-        200, [_grant_json(g) for g in accounts.list_grants(req.conn)])
-
-
-def admin_add_grant(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
-    body = _body(req)
-    for key in ("workspace_id", "agent_view_id"):
-        if body.get(key) is not None and not _positive_int(body[key]):
-            return error(400, f"{key} must be a positive integer")
-    try:
-        grant_id = accounts.add_grant(
-            req.conn, body.get("role"), body.get("kind"), body.get("name"),
-            workspace_id=body.get("workspace_id"), agent_view_id=body.get("agent_view_id"),
-            actor_id=req.session.user.id,
-        )
-    except accounts.AccessError as exc:
-        return _access_error(exc)
-    return Response(201, {"id": grant_id})
-
-
-def admin_remove_grant(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
-    try:
-        accounts.remove_grant(req.conn, int(req.params["id"]), actor_id=req.session.user.id)
-    except accounts.AccessError as exc:
-        return _access_error(exc)
-    return Response(204)
-
-
-_SCOPES = ("default", "workspace", "agent_view")
-
-
-def admin_set_config(req: Request) -> Response:
-    from agento.framework.config_write import ConfigWriteError, save_config
-
-    if denied := _forbidden_unless(req, "config.write"):
-        return denied
-    body = _body(req)
-    scope, scope_id = body.get("scope", "default"), body.get("scope_id", 0)
-    if scope not in _SCOPES:
-        return error(400, f"scope must be one of {', '.join(_SCOPES)}")
-    if scope == "default":
-        scope_id = 0
-    elif not _positive_int(scope_id):
-        return error(400, "scope_id must be a positive integer")
-    try:
-        # web holds no encryption key: allow_secret=False writes only a provably plain field.
-        _encrypted, reset = save_config(
-            req.conn, body.get("path"), body.get("value"), scope=scope, scope_id=scope_id,
-            allow_secret=False, actor_id=req.session.user.id,
-        )
-    except ConfigWriteError as exc:
-        return error(403, "forbidden") if str(exc) == "not allowed" else error(400, str(exc))
-    # No admin route returns a config value; a repaired dependent is named, not shown.
-    return Response(200, {"path": body.get("path"), "reset": [p for p, _v in reset]})
 
 
 _TOOLBOX_DOWN = error(503, "toolbox unavailable")
@@ -459,8 +420,9 @@ def agent_view_miniapps(req: Request) -> Response:
     if isinstance(scope, Response):
         return scope
     workspace_id, view_id = scope
+    # The view is reachable, so it is already disclosed: no launch right means nothing to list, not 404.
     if not accounts.has_operation(req.conn, req.session.user.role, "artifact.launch", workspace_id, view_id):
-        return error(404, "not found")
+        return Response(200, [])
     if not _miniapps_enabled():
         return Response(200, [])
     result = invoke_tool(req.conn, req.session, "miniapp_list", {}, workspace_id=workspace_id, agent_view_id=view_id)
@@ -498,12 +460,14 @@ def redeem_launch(req: Request) -> Response:
     """POST /launch on the apps origin (proxied to /internal/launch/redeem).
 
     The exchange code is the credential, so the proxy secret is not required here: a stolen
-    code is equally usable from anywhere. The form must come from the panel page.
+    code is equally usable from anywhere. The form must come from the panel page: the exact
+    panel Origin, which a page cannot forge. Sec-Fetch-Site is not checked, because panel and
+    apps may be two sites (``panel.localhost`` and ``apps.localhost`` are) and it adds nothing
+    to an exact Origin.
     """
     from urllib.parse import parse_qs
 
-    site = req.headers.get("Sec-Fetch-Site")
-    if req.headers.get("Origin") != req.origins.panel or site not in (None, "same-site", "same-origin"):
+    if req.headers.get("Origin") != req.origins.panel:
         return error(403, "forbidden")
     ctype = (req.headers.get("Content-Type") or "").split(";")[0].strip().lower()
     if ctype != "application/x-www-form-urlencoded":
@@ -562,8 +526,8 @@ ROUTES: list[Route] = [
     _r("GET", "/api/admin/users", admin_list_users),
     _r("POST", "/api/admin/users", admin_create_user, json_body=True),
     _r("PATCH", r"/api/admin/users/(?P<id>[0-9]{1,10})", admin_update_user, json_body=True),
-    _r("GET", "/api/admin/grants", admin_list_grants),
-    _r("POST", "/api/admin/grants", admin_add_grant, json_body=True),
-    _r("DELETE", r"/api/admin/grants/(?P<id>[0-9]{1,19})", admin_remove_grant),
-    _r("PUT", "/api/admin/config", admin_set_config, json_body=True),
 ]
+
+# Last: admin_api imports the request types above and adds its routes to ROUTES. Its own module
+# body does the add, so the routes are there whichever of the two modules is imported first.
+from . import admin_api  # noqa: E402, F401

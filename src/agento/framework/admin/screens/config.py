@@ -459,6 +459,11 @@ class ConfigFieldEditorScreen(ModalScreen[bool]):
 
     def _save(self) -> None:
         value = self._get_value()
+        if self._field.secret and not value:
+            # The editor never holds the stored secret, so an empty box means "keep it".
+            self.notify("Unchanged: enter a new value to replace the secret")
+            self.dismiss(False)
+            return
         error = self._validate(value)
         if error:
             self.notify(error, severity="error")

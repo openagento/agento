@@ -180,7 +180,7 @@ class TestResumeOnTimeout:
             patch.object(
                 ClaudeSubprocessRunner, "execute", return_value=resume_result,
             ) as mock_execute,
-            patch.object(Consumer, "_is_pid_alive", return_value=False),
+            patch("agento.framework.consumer.runner_client.alive", return_value="dead"),
         ):
             consumer2 = Consumer(int_db_config, int_consumer_config, logger)
             job2 = consumer2._try_dequeue()

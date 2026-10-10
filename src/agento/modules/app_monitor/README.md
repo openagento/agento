@@ -9,7 +9,7 @@ Application health monitoring. Currently two responsibilities:
 
    | Column | Meaning |
    |---|---|
-   | `job.toolbox_mcp_calls` (`INT NULL`) | Count of `mcp__toolbox__*` tool-uses observed in the on-disk session transcript (parsed via the provider's registered `TranscriptReader`). `0` = parsed cleanly, none found. `NULL` = unknown: no reader for the provider, missing/unreadable transcript, or parser drift. |
+   | `job.toolbox_mcp_calls` (`INT NULL`) | Count of the tool calls the toolbox dispatcher audited (`tool_invocation` rows) on this attempt's `mcp_job` capability — the newest one for the job. `0` = none. `NULL` = unknown: the job has no agent_view (no capability is minted), no capability row, or a DB error. It reads no transcript and names no harness. |
    | `job.toolbox_mcp_connected` (`BOOLEAN NULL`) | What the CLI self-reported for the `toolbox` MCP server in its session-init line (from `RunResult.mcp_init`), mapped tri-state. See semantics below. |
 
    `toolbox_mcp_connected` semantics — the status is the CLI's **own vocabulary**
@@ -54,11 +54,7 @@ Application health monitoring. Currently two responsibilities:
    silent, while `calls == 0` still catches a job that never reached the toolbox.
    A combined hit sends a single email naming both conditions, and the subject/body
    carry the raw status word (`toolbox not connected (failed)`,
-   `Toolbox status: absent`) so ops can tell *why* without opening a transcript.
-
-   The transcript parser lives in the agent's module (claude/codex/…); this
-   observer resolves one via `get_transcript_reader(provider)`, so the
-   framework — and this module — stay agent-agnostic.
+   `Toolbox status: absent`) so ops can tell *why* without opening a log.
 
    **Codex init signal — empirical finding.** `codex exec --json` (verified
    through 0.128.0 against a real production session, fixture

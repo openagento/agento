@@ -89,7 +89,7 @@ class TestReplayExecutesTheModelItDisplays:
             return object()
 
         with (
-            patch("agento.framework.harness.create_runner", _create_runner),
+            patch("agento.framework.runner.client.RemoteRunner", _create_runner),
             patch(
                 "agento.framework.cli.runtime._load_framework_config",
                 return_value=(None, MagicMock(disable_llm=False), None),
@@ -106,7 +106,7 @@ class TestReplayExecutesTheModelItDisplays:
         captured: dict = {}
         with (
             patch(
-                "agento.framework.harness.create_runner",
+                "agento.framework.runner.client.RemoteRunner",
                 lambda h, ctx, **kw: captured.setdefault("ctx", ctx),
             ),
             patch(

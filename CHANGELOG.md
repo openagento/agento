@@ -21,6 +21,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selector, and only for the harness this view uses — a `system.json` field asks for that with
   `"harness_option": true`, the same shape as `provider_option` one axis up. The config path is
   unchanged (`{module}/{field}`), so `config:set` and `runtime_config_fields` are untouched.
+- **Network split.** `agento-net` is replaced by `db-net` (mysql, cron, web, toolbox),
+  `exec-net` (runners, sandbox, toolbox, proxy) and `web-net` (proxy, web). No agent container
+  reaches MySQL, `web` or `cron` over the network. **Upgrade:** a `docker-compose.override.yml`
+  that names `agento-net` must use `exec-net` or `db-net`
+  ([override docs](docs/deployment/docker-compose-override.md)). New smoke:
+  `docker/smoke/runner-net-smoke.sh`. A fresh MySQL now gives the migration user its grant on
+  both name forms, so the first `setup:upgrade` does not fail with MySQL 1142.
+- **Runner service.** Every agent CLI now starts in a `runner-<i>` compose service (cron image,
+  no `env_file`, no `MYSQL_*`, no key), not in `cron`. The consumer sends each run over a Unix
+  socket (`framework/runner/`); codex login, the model checks, the panel re-login and the
+  attended `credential:register` login go there too. Set the number with
+  `AGENTO_RUNNER_COUNT` in `docker/.env` (default 1) and re-render the compose; **drain first** before you lower it. Migration `051_job_runner_ref`
+  adds `job.runner_ref`: stale recovery, resume and pause ask the runner that owns the run, and
+  a runner that does not answer blocks recovery instead of a guess. See
+  [docs/architecture/runner.md](docs/architecture/runner.md).
+- **Panel roles are rows (Users → Roles).** A `role` table (migration `050_role`) replaces the
+  hardcoded `admin`/`user` pair; both stay built in. An admin creates, renames and deletes roles,
+  and edits a role's tools and operations per scope as a checkbox tree saved by one
+  `PUT /api/admin/roles/{code}/resources`. CLI `role:list` / `role:create` / `role:delete`
+  (`ro:li`, `ro:cr`, `ro:de`); `--role` takes any code in the table.
+- **Chat UX for conversations (E9).** Claude (`--include-partial-messages`) and pi stream text and
+  reasoning live: new fragment kinds `assistant.partial`, `reasoning.partial` and
+  `assistant.reasoning`, coalesced per run (one row per 250 ms or 4 KiB, at most 4 writer commits
+  a second) and proven at 250 parallel runs. Codex passes `-c model_reasoning_summary=auto` and
+  shows its reasoning summary. The panel shows the chat layout, tool summaries, one status line,
+  one error per turn with a retry, collapsed reasoning, code highlight and a phone drawer.
+- **ACL resources declared by modules.** `di.json` `acl_resources: [{id, title}]` makes an
+  operation grantable (`grant:add --operation`, the panel role page); `admin` has all. The
+  conversation module declares `conversation.run_details`: prompts, tool input and output, harness,
+  provider, credential label, model, tokens and job links are shown to a non-admin only with this
+  grant. Each attempt records its harness, provider, model and credential id at mint
+  (`RunProfile`, migration `conversation/003`), so a failed run shows them too.
+- A thread with no title takes one from its first message. `run.started` carries `max_attempts`.
+- RULES.md SCL-1: the target is 100–200 parallel jobs per deployment.
+- RULES.md UI-7: a row, header or copy action is an icon with a hover title (`IconAction`,
+  `ArchiveAction`); `CopyButton` and the panel's row actions are icons now.
 
 - **Regex + priority sender routing for shared Outlook mailboxes.** A mailbox UPN shared by two or
   more agent_views is now polled once and each message routed to a view by matching the normalized
@@ -46,6 +82,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CliInvoker.interactive_command()` gained a `yolo` keyword; each agent module decides its own flag.
 
 ### Changed
+- **`web` and `cron` are one trusted backend (D-BACKEND-1).** `web` now gets the same
+  `env_file` as `cron`, so it holds `AGENTO_ENCRYPTION_KEY`; both use the `agento_backend` DB
+  user. A compromise of `web` now exposes the key. The service names do not change. A panel
+  re-login encrypts the pasted code with the key; the per-login RSA key pair is gone and
+  `credential_login.code_key` is no longer written. Only the `runner-<i>` services hold no
+  secret.
+- **Least-privilege DB users.** `cron_agent` is now the migration user; only `setup:upgrade`
+  uses it. `cron` and `web` run as `agento_backend` (DML only), the toolbox as `agento_toolbox`
+  (only the tables its SQL uses, no `credential`). `setup:upgrade` makes the grants again on each
+  run. The passwords (`MYSQL_BACKEND_PASSWORD`, `MYSQL_TOOLBOX_PASSWORD`) are generated into
+  `docker/.env`. **Upgrade:** run `agento upgrade` without `--no-restart` once; it runs the
+  one-time root grant. MySQL now publishes its port on `127.0.0.1` only
+  ([upgrade.md](docs/cli/upgrade.md#database-users)).
+- **`web` runs on FastAPI and uvicorn.** The routes, the di.json regex contract and the SEC-12
+  order do not change. There is no OpenAPI surface. Pydantic is installed as a FastAPI
+  dependency only; our code does not import it.
+- **Harness runner contract (WS5).** `SubprocessRunner` no longer writes usage
+  (`_record_usage` and `_get_db_connection` are gone): it calls `observe(on_usage=…)`, and the
+  worker writes the row. Its child starts in a new session, and it keeps the last 4 MiB of each
+  stream. `HarnessRunContext` gets `tag` (`job:<id>`). A third-party harness that spawns a vendor
+  CLI itself must use `runner.client.run` / `.pty`.
+- `GET /api/conversation/threads/{id}` adds `run_details`; without it, `runs` rows omit `model`,
+  tokens, `job_id`, `type` and `agent_type` (they were shown to every reader before). With it,
+  `agent_type` is replaced by `harness`, `provider` and `credential`.
+- `accounts.GRANTABLE_OPERATIONS` is replaced by `accounts.grantable_operations()`.
+- **Faster job start at 100–200 parallel jobs.** The consumer and its per-job observers borrow
+  database connections from a pool (`db.pooled`, at most `AGENTO_CONSUMER_MAX_WORKERS` idle).
+  Refresh leases are renewed once per poll interval, not once per claim. The build freshness
+  check runs at most once per poll interval for each agent_view, so a config change reaches new
+  runs within one poll interval. Benchmark at 100 jobs: 13 → 1.1 connections per job,
+  claim → spawn p95 0.25 s → 0.16 s. Compose and CI set MySQL `max_connections` to 600.
+- `job.toolbox_mcp_calls` now counts the tool calls the toolbox audited (`tool_invocation`) on the
+  attempt's `mcp_job` capability. No transcript is parsed: the Claude and Codex transcript readers
+  and the app_monitor parser-drift log are removed. A job with no agent_view records `NULL`.
+- **Deprecated:** `TranscriptReader`, `ToolUse`, `ParseSummary` and the adapter member
+  `transcript_reader`. The harness contract has 4 members now; the framework does not read
+  `transcript_reader`. The names stay importable until v0.18 (ROADMAP.md).
+- `GET /api/conversation/threads/{id}` adds `run_details`; without it, `runs` rows omit `model`,
+  tokens, `job_id`, `type` and `agent_type` (they were shown to every reader before). With it,
+  `agent_type` is replaced by `harness`, `provider` and `credential`.
+- `accounts.GRANTABLE_OPERATIONS` is replaced by `accounts.grantable_operations()`.
 - **Codex CLI pinned to 0.157.0** (was 0.137.0) in the sandbox image, the dev compose build arg and
   the `codex` harness declaration's `default_range`.
 - **BREAKING — an invalid `agent_view/claude/permissions` now fails the workspace build.** It used
@@ -60,13 +137,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sandbox_mode` — that flag overrides `config.toml`, so without this the operator's sandbox would
   be silently dead. With no blob, behaviour is unchanged.
 
+- **The final answer is the last assistant message, for every harness.** `job.output` (and
+  what a channel posts back) is now the text of the last assistant message. **Codex:** earlier
+  `agent_message` items are progress notes and are no longer joined into the answer, so a Jira
+  comment holds the answer only. **Claude:** `job.output` is the `result` text, not the full
+  stream-json (a run with no `result` still keeps the raw stream). **Pi:** user and tool text
+  no longer leaks into the answer. Each harness also ships a `stream_event_mapper` for the live
+  timeline (`docs/modules/{claude,codex,pi}.md`).
 - **Shared Outlook mailbox behavior changed (breaking for any pre-existing shared-mailbox
   deployment).** Previously a shared UPN silently collapsed to "lowest `agent_view.id` wins, others
   skipped". It is now **routed by sender**. A mailbox owned by exactly one view is unchanged
   (direct mode). If you previously hand-created inert `outlook_sender` ingress bindings, re-create
   them as regexes (`ingress:list` shows existing rows) — this is a note, not a migration.
 
+### Removed
+- **The same-uid hardening stack in `cron`.** No agent runs in `cron` now (the runner runs
+  them), so `drop.py`, `split-env.py`, `framework/store_env.py`,
+  `framework/credential_store_env.py`, `launch.sh --store` and the CLI's `make_non_dumpable()`
+  are gone. The entrypoint writes one root-only env file (same whitelist); the consumer reads
+  `MYSQL_*` and the key from `os.environ`. `app/code` in `cron` is trusted operator code. See
+  [zero-trust.md](docs/architecture/zero-trust.md#what-the-runner-split-replaced).
+- **Compatibility shims due in v0.16 (ROADMAP.md).** Use the new form before you upgrade:
+  - `token:*` commands and `to:*` shortcuts: use `credential:*`.
+  - `token_*_after` events and their `Token*Event` payloads (also gone from
+    `framework.contracts`): bind the `credential_*_after` events and read `scope` /
+    `credential_id`. An observer on a `token_*` name now gets no event.
+  - `--agent-type` on `credential:list` / `credential:usage`: use `--scope`.
+  - `agent_type` in `credential:list --json`: read `scope`.
+  - `token_id` in the `agent_view:prepare-run` payload: read `credential_id`.
+  - `--oauth_token` on `agento replay` / `agento e2e`: use `--credential`.
+  - `--pass <p>` on `artifact:auth`: use `--pass-stdin`.
+  - The top-level `sandbox_packages` array in `di.json` is ignored: move each entry to
+    `agent_harnesses[].sandbox_package`.
+  - `ConsumerConfig.concurrency`: use `max_workers`.
+  - The private `_iter_module_dirs` in `framework/cli/_provisioning.py`: use
+    `framework.module_discovery.iter_module_dirs`.
+- Still open: the `credential.agent_type` column and the pre-0.15 `agent_view/provider`
+  fallback (ROADMAP.md).
+
 ### Fixed
+- **Conversation follow-ups on claude, codex and pi.** The next turn of a thread lost the new
+  message on claude and codex (the resume sent a fixed "continue" text), could not find the
+  session on claude (it is filed under the earlier job's run dir: "No conversation found"),
+  and silently started an empty session on pi. The runner now moves the session into the new
+  run dir; a session that is gone starts a fresh one with the whole thread.
+- A claude error with no `result` text now shows claude's `errors[]` instead of "unknown error".
+- The panel stream badge no longer sticks on RECONNECTING after a run's error event.
 - **Jobs no longer dead-letter on `401 OAuth access token has been revoked` while healthy tokens sit
   unused in the pool.** The message previously matched no known phrase, degraded to a generic
   `RuntimeError`, and so never poisoned or throttled the token nor set `retry_with_other_token` —

@@ -91,8 +91,9 @@ def run(conn, world):
         client_message_id=str(uuid.uuid4())[:16], content="p")
     execution_id = str(uuid.uuid4())
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO execution (execution_id, job_id, attempt, status) "
-                    "VALUES (%s, %s, 1, 'running')", (execution_id, job_id))
+        cur.execute("INSERT INTO execution (execution_id, job_id, attempt, status, "
+                    "conversation_id) VALUES (%s, %s, 1, 'running', %s)",
+                    (execution_id, job_id, conversation_id))
     conn.commit()
     return execution_id
 
@@ -117,3 +118,37 @@ def test_a_delta_batch_resolves_its_caps_and_its_thread_once(conn, run, selects)
     finally:
         if sink._conn is not None:
             sink._conn.close()
+
+
+def _timeline_rows(conn, world, cid: int, n: int) -> None:
+    """`n` user turns and `n` runs: each kind the projection reads a row for."""
+    for _ in range(n):
+        _message_id, job_id, _ = service.submit_message(
+            conn, conversation_id=cid, user_id=world["owner"].id,
+            client_message_id=str(uuid.uuid4())[:16], content="p")
+        with conn.cursor() as cur:
+            service.append_event(cur, cid, kind="run.started", source_kind="execution",
+                                 source_id=int(uuid.uuid4().int % 10**12),
+                                 payload={"job_id": job_id, "attempt": 1})
+        conn.commit()
+
+
+def test_a_timeline_page_costs_the_same_reads_whatever_its_length(conn, world, selects):
+    """The projection reads message texts and run prompts once per page, not per event."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    _timeline_rows(conn, world, cid, 2)
+
+    def page():
+        rows, _ = service.list_timeline(conn, conversation_id=cid, before_id=None, limit=100)
+        service.project_events(conn, rows, world["admin"],
+                               service.load_visible(conn, conversation_id=cid, user=world["admin"]))
+
+    selects.clear()
+    page()
+    few = len(selects)
+    _timeline_rows(conn, world, cid, 6)
+    selects.clear()
+    page()
+
+    assert len(selects) == few

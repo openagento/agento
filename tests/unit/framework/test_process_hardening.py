@@ -66,26 +66,13 @@ class TestLoadLibc:
         assert libc is not None and hasattr(libc, "prctl")
 
 
-class TestCliCallsIt:
-    def test_the_cli_hardens_at_import_time_not_inside_main(self):
-        """Placement is the point, twice over.
-
-        Every cron-spawned `bin/agento` job carries the store env, not only the
-        consumer — so this belongs at the CLI entry, not in `Consumer`. And it must run
-        at IMPORT time: reaching `main()` costs ~200 ms of bootstrap, all of it with the
-        process's environ readable by a same-uid peer.
-        """
-        import ast
+class TestPlacement:
+    def test_the_runner_server_hardens_and_the_cli_does_not(self):
+        """The runner holds co-tenant run secrets; no agent runs beside the CLI (WS6)."""
         import pathlib
 
         import agento.framework.cli as cli
+        import agento.framework.runner.server as server
 
-        tree = ast.parse(pathlib.Path(cli.__file__).read_text())
-        module_level = [
-            node.value.func.id
-            for node in tree.body
-            if isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Name)
-        ]
-        assert "make_non_dumpable" in module_level
+        assert "make_non_dumpable()" in pathlib.Path(server.__file__).read_text()
+        assert "make_non_dumpable" not in pathlib.Path(cli.__file__).read_text()

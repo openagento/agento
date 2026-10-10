@@ -1,19 +1,15 @@
 """Health, and the authorization endpoints only the proxy can reach.
 
-`sandbox` shares agento-net with `web`, so a direct call from it looks exactly like a
-request with no (or a forged) X-Agento-Proxy-Auth header — the sandbox cannot read the
+`toolbox` shares db-net with `web`, so a direct call from it looks exactly like a
+request with no (or a forged) X-Agento-Proxy-Auth header — the toolbox cannot read the
 secret, because only `proxy` and `web` mount its volume (asserted in test_provisioning).
 """
 from __future__ import annotations
 
 import re
-import threading
-from http.server import ThreadingHTTPServer
 
 import httpx
 import pytest
-
-from agento.web.server import Handler
 
 SECRET = "a" * 64
 APP = "/a/demo/v/v-20260925-120000-ab12/index.html"
@@ -27,13 +23,8 @@ def secret_file(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def base_url(secret_file):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
-    thread.start()
-    yield f"http://127.0.0.1:{server.server_address[1]}"
-    server.shutdown()
-    server.server_close()
+def base_url(secret_file, live):
+    return live
 
 
 def test_health_answers_ok(base_url):

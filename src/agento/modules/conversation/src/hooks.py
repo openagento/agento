@@ -14,8 +14,9 @@ from __future__ import annotations
 import uuid
 
 from agento.framework.database_config import DatabaseConfig
-from agento.framework.db import get_connection
+from agento.framework.db import get_connection, pooled
 from agento.framework.events import ClaimVerdict, JobClaimBeforeEvent
+from agento.framework.execution_hooks import RunProfile
 
 from . import service
 from .workflow import ReferenceUnusable, parse_reference
@@ -31,11 +32,10 @@ class ConversationOrderingObserver:
     def execute(self, event: object) -> None:
         if not isinstance(event, JobClaimBeforeEvent):
             return
-        # ponytail: one connection per claim attempt on a conversation job. The claim
-        # transaction is already open on another connection and this one only reads, so
-        # sharing it would mean handing the observer the framework's cursor.
-        conn = get_connection(DatabaseConfig.from_env())
-        try:
+        # A pooled connection, not the claim's: the claim transaction is already open on
+        # another connection and this one only reads, so sharing it would mean handing
+        # the observer the framework's cursor.
+        with pooled(DatabaseConfig.from_env(), get_connection) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT type, reference_id FROM job WHERE id = %s", (event.job_id,))
                 job = cur.fetchone()
@@ -59,8 +59,6 @@ class ConversationOrderingObserver:
             if blocked:
                 event.verdict = ClaimVerdict.DEFER
                 event.delay_ms = service.config(conn, "claim/defer_backoff_ms")
-        finally:
-            conn.close()
 
 
 class ConversationExecutionIds:
@@ -70,16 +68,25 @@ class ConversationExecutionIds:
     two real attempts of one job can carry the same number, and an id built from the pair
     would collide on the table's own unique key. The row is written on the framework's open
     connection and NOT committed here - it commits with the transition that produced it.
+
+    Every run also gets its thread here (E9 §3.5): a panel run its message's, any other
+    run its channel thread, plus a `run.started` event - in the same uncommitted write.
     """
 
-    def mint(self, *, conn, job_id: int, attempt: int) -> str | None:
+    def mint(self, *, conn, job_id: int, attempt: int,
+             profile: RunProfile | None = None) -> str | None:
         execution_id = str(uuid.uuid4())
+        # With no profile (an older caller) the columns stay NULL: shown as unknown.
+        p = (profile.harness, profile.provider, profile.model, profile.credential_id) \
+            if profile else (None, None, None, None)
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO execution (execution_id, job_id, attempt, status) "
-                "VALUES (%s, %s, %s, 'running')",
-                (execution_id, job_id, attempt),
+                "INSERT INTO execution (execution_id, job_id, attempt, status, harness, "
+                "provider, model, credential_id) VALUES (%s, %s, %s, 'running', %s, %s, %s, %s)",
+                (execution_id, job_id, attempt, *p),
             )
+            service.link_execution(cur, execution_row_id=cur.lastrowid,
+                                   execution_id=execution_id, job_id=job_id, attempt=attempt)
         return execution_id
 
 

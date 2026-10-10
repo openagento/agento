@@ -50,7 +50,7 @@ agento config:set my_ecommerce/tools/mysql_ecom_prod/host 10.0.0.1
 ```bash
 agento module:list               # Shows your module with tool count
 agento config:list               # Shows all config values
-agento token list                # Shows registered agent tokens
+agento credential:list           # Shows registered credentials
 agento setup:upgrade --dry-run   # Shows pending work (should be none)
 ```
 

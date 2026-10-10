@@ -37,6 +37,10 @@ from .protocols import (
     AuthResult,
     CommandBuilder,
     CredentialAuthenticator,
+    CredentialLimits,
+    InteractiveLogin,
+    LimitWindow,
+    LoginPrompt,
     ParseSummary,
     Runner,
     StreamRenderer,
@@ -84,7 +88,7 @@ from .runtime import (
     RunResult,
     ToolboxConnectionSpec,
 )
-from .subprocess_runner import SubprocessRunner
+from .subprocess_runner import SESSION_ID, SubprocessRunner, harness_base_env, move_session_into
 
 _MCP_PATHS = ("/mcp", "/sse")
 
@@ -125,11 +129,13 @@ __all__ = [
     "AGENT_CONFIG_PREFIX",
     "HARNESS_OPTION_KEY",
     "PROVIDER_OPTION_KEY",
+    "SESSION_ID",
     "SUPPORTED_SOURCES",
     "AgentHarnessAdapter",
     "AuthResult",
     "CommandBuilder",
     "CredentialAuthenticator",
+    "CredentialLimits",
     "CredentialRegistrationMode",
     "CredentialScope",
     "DuplicateCredentialScopeError",
@@ -139,6 +145,9 @@ __all__ = [
     "HarnessDescriptor",
     "HarnessId",
     "HarnessRunContext",
+    "InteractiveLogin",
+    "LimitWindow",
+    "LoginPrompt",
     "McpInitReport",
     "McpServerStatus",
     "ModelProviderDescriptor",
@@ -169,6 +178,7 @@ __all__ = [
     "get_harness",
     "get_harness_config",
     "get_harness_for_scope",
+    "harness_base_env",
     "is_harness_option_hidden",
     "is_provider_option_hidden",
     "is_toolbox_endpoint",
@@ -176,6 +186,7 @@ __all__ = [
     "list_descriptors",
     "list_harnesses",
     "modules_declaring",
+    "move_session_into",
     "owned_paths_for",
     "parse_harness_declarations",
     "persistent_home_paths_for",

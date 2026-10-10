@@ -101,6 +101,15 @@ def parse_session_id(line: str) -> str | None:
     return None
 
 
+def message_text(message: dict) -> str:
+    """The text blocks of one message, joined with newlines."""
+    return "\n".join(
+        block["text"] for block in message.get("content") or []
+        if isinstance(block, dict) and block.get("type") == "text"
+        and isinstance(block.get("text"), str) and block["text"]
+    )
+
+
 def _assistant_error(message: dict) -> str | None:
     """The one channel allowed to decide credential state."""
     if message.get("role") != "assistant":
@@ -114,7 +123,6 @@ def _assistant_error(message: dict) -> str | None:
 def parse_stream(raw: str) -> ParsedStream:
     """Fold an NDJSON stream into the fields the runner reports."""
     out = ParsedStream()
-    texts: list[str] = []
 
     for event in iter_events(raw):
         etype = event.get("type")
@@ -153,11 +161,12 @@ def parse_stream(raw: str) -> ParsedStream:
                 if model:
                     out.model = model
 
-            for block in message.get("content") or []:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    text = block.get("text")
-                    if isinstance(text, str) and text:
-                        texts.append(text)
+            # The answer is the last assistant message with text (E9 §3.1). User and tool
+            # text never becomes the answer.
+            if message.get("role") == "assistant":
+                text = message_text(message)
+                if text:
+                    out.text = text
 
             if out.error_message is None:
                 out.error_message = _assistant_error(message)
@@ -177,7 +186,6 @@ def parse_stream(raw: str) -> ParsedStream:
                 if isinstance(data, dict):
                     out.model_mismatch = data
 
-    out.text = "\n".join(texts)
     return out
 
 

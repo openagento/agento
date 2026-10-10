@@ -16,8 +16,7 @@ class VersionedArtifactDeleteCommand:
 
     @property
     def shortcut(self) -> str:
-        # No alias: see artifact:list.
-        return ""
+        return "ar:de"
 
     @property
     def help(self) -> str:

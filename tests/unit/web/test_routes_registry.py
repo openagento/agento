@@ -2,7 +2,7 @@
 
 `web` composes its route table once, at startup, from the built-ins plus every enabled
 module's `di.json`. It must do that WITHOUT bootstrapping and without decrypting anything:
-`web` sits on agento-net with `sandbox`, and a config read on this path would put module
+`web` is reachable from `toolbox` and `cron` (db-net), and a config read on this path would put module
 secrets in the panel process for no reason.
 """
 from __future__ import annotations
@@ -212,8 +212,10 @@ def test_the_shipped_conversation_module_loads_its_own_routes(etc, tmp_path):
         "DELETE ^/api/conversation/threads/(?P<id>[0-9]{1,19})$",
         "GET ^/api/conversation/threads/(?P<id>[0-9]{1,19})/messages$",
         "GET ^/api/conversation/threads/(?P<id>[0-9]{1,19})/events$",
+        "GET ^/api/conversation/threads/(?P<id>[0-9]{1,19})/timeline$",
         "GET ^/api/conversation/threads/(?P<id>[0-9]{1,19})/events/stream$",
         "POST ^/api/conversation/threads/(?P<id>[0-9]{1,19})/messages$",
+        "POST ^/api/conversation/threads/(?P<id>[0-9]{1,19})/regenerate$",
         "POST ^/api/conversation/threads/(?P<id>[0-9]{1,19})/messages/"
         "(?P<message_id>[0-9]{1,19})/unblock$",
     }

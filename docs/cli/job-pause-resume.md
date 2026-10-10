@@ -58,6 +58,7 @@ No new mechanisms are introduced. Resume reuses the existing retry-resume infras
 | Pause a job in non-RUNNING state | Error: "Cannot pause job in status X". |
 | Resume a PAUSED job | Flip to TODO. Consumer picks up and auto-resumes. |
 | Resume a job without session_id | Error: session was not captured before pause. |
+| Resume while the last run is `alive` or `unknown` (its runner does not answer) | Error: "its last run is …; retry later". The job stays PAUSED. |
 | Resume a job in non-PAUSED state | Error: "Cannot resume job in status X". |
 
 ## Events

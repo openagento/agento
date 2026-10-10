@@ -6,6 +6,8 @@ Point an artifact's `current` at an existing version.
 uv run bin/agento artifact:publish <artifact_code> <version_id> --expected <version_id> [--actor <who>]
 ```
 
+Shortcut: `ar:pu`.
+
 | Flag | Meaning |
 |---|---|
 | `--expected <version_id>` | **Required.** The version you believe is current; the publish fails with `CURRENT_VERSION_CHANGED` if it changed |

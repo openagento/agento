@@ -19,7 +19,7 @@ the four identifiers and the event contract. This page is the module's operation
 | --- | --- |
 | `conversation` | One thread: its owner, its agent_view, `active` or `archived`. |
 | `message` | One turn. A `user` row carries the job bookkeeping (`job_id`, `execution_id`, `job_state`); a CHECK keeps that off an `assistant` row. |
-| `execution` | One attempt at answering a turn. `execution_id` is unique; `(job_id, attempt)` is **not** — the pool-wait path refunds an attempt, so two real attempts can carry one number. |
+| `execution` | One attempt at answering a turn. `execution_id` is unique; `(job_id, attempt)` is **not** — the pool-wait path refunds an attempt, so two real attempts can carry one number. The mint writes the attempt's harness, provider, model and `credential_id` (an id; the label is read through a join). |
 | `conversation_event` | The append-only log a stream replays. Its `id` is the cursor, and it is global, not per-thread. `UNIQUE (source_kind, source_id)` makes the relay idempotent. |
 | `execution_delta` | Per-execution streamed output, bounded by the `stream/max_delta*` limits. |
 | `conversation_prune_watermark` | How far retention has pruned each thread. |
@@ -41,6 +41,7 @@ config levels — see [the config README](../config/README.md#numeric-bounds-min
 | `conversation/stream/max_duration_seconds` | 900 | 1 – |
 | `conversation/stream/max_deltas_per_execution` | 2000 | 1 – 20000 |
 | `conversation/stream/max_delta_bytes_per_execution` | 1048576 | 1024 – 8388608 |
+| `conversation/stream/max_fragment_bytes` | 8192 | 256 – 65536 |
 | `conversation/history/page_size` | 100 | 1 – 500 |
 | `conversation/sweep/pending_grace_seconds` | 60 | 5 – 3600 |
 | `conversation/limits/max_message_bytes` | 32768 | 1024 – 49152 |
@@ -51,18 +52,22 @@ config levels — see [the config README](../config/README.md#numeric-bounds-min
 
 Each retention field reads a different clock: `event_days` and `outbox_days` from the row's
 `created_at`, `archived_days` from `conversation.updated_at`, and `idle_days` from the newest
-message's `created_at`. All four comparisons are strict.
+message's `created_at` (a channel thread: its `last_activity_at`). All four comparisons are
+strict. `stream/max_fragment_bytes` cuts each string field of one live fragment (its text, a
+tool's input or output) before the per-run byte cap counts it.
 
 ## REST
 
 | Method | Path | Answers |
 | --- | --- | --- |
 | POST | `/api/conversation/threads` | `201 {id}` |
-| GET | `/api/conversation/threads` | the caller's active threads |
-| GET | `/api/conversation/threads/{id}` | one thread |
+| GET | `/api/conversation/threads` | the caller's active threads; `?scope=channels[&channel=<source>][&before=<cursor>]` lists the channel threads instead (admins only, a non-admin gets `[]`), newest activity first, each row with a `cursor` for the next page |
+| GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (harness, provider, credential label, model, tokens and job id only with `run_details`) |
+| GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&limit=<n>`: one page of events, oldest first, `{events, has_older, newest_id}`; a `before` at or below the prune watermark is `409 cursor_expired` |
 | DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path) |
 | GET | `/api/conversation/threads/{id}/messages` | its messages |
-| POST | `/api/conversation/threads/{id}/messages` | `201` on the first submission, `200` on a repeat |
+| POST | `/api/conversation/threads/{id}/messages` | `201` on the first submission, `200` on a repeat; in a **channel** thread it posts an operator reply — `403` without `conversation.channel_write`, `409 read_only` when the thread has no `external_ref` |
+| POST | `/api/conversation/threads/{id}/regenerate` | `{message_id, client_message_id}`: asks that user message again as a new turn — `201`, `200` on a repeat of the same `client_message_id`, `404` when the id is not a user message of this thread |
 
 The PRD writes these under `/api/conversations`. A module owns `/api/<its own module name>/`
 and nothing else ([panel.md](../architecture/panel.md#module-routes)), so a module named
@@ -85,6 +90,50 @@ only when the caller owns it (or is `admin`), **and** `can_reach()` covers its
 returns `None`, which every route renders as **404, never 403** — a 403 would confirm the
 thread exists. Reach is therefore re-evaluated on every request: deactivating the view, or
 removing the role's grant, hides the thread from the next one.
+
+### Run details (ACL resource)
+
+The module declares the ACL resource `conversation.run_details` in `di.json`. It covers the trigger
+prompt, tool input and output, the error text, and a run's harness, provider, credential label,
+model, tokens and job id. `admin` has it built in; a
+`user` gets it only by a grant on the thread's workspace or view
+(`bin/agento grant:add --role user --operation conversation.run_details --workspace <code>`).
+Tool names, statuses and the fact of an error stay visible to everyone who reads the thread.
+
+### Channel write (ACL resource)
+
+A **channel** thread mirrors a Jira issue or a mailbox, so a post into it speaks to whoever is on
+the other side. The module declares `conversation.channel_write` for exactly that.
+
+**Today this means an admin.** Reading a channel thread is an admin's only (D-E9-3), and a route
+refuses what the reader cannot see with 404 before it ever consults the grant — so a `user` with
+`conversation.channel_write` still gets 404, and the grant decides nothing until channel **reads**
+open to a role (ROADMAP E9). The resource exists now because the write gate belongs beside the
+write, not because a non-admin can use it yet. Once reads open, the grant is the gate:
+`bin/agento grant:add --role user --operation conversation.channel_write --workspace <code>`.
+The reply is published by `complete_pending` as a **`followup` job on the thread's own source and
+`external_ref`**, with the operator's text as the job's `context` — so it continues the external
+task instead of starting a panel conversation. Everything else is the panel path unchanged: the
+message row and its `message.created` event commit first, the publish follows, and `sweep_pending`
+recovers a crash between them through the same one publisher.
+
+`GET /api/conversation/threads/{id}` carries `channel_write` on a channel thread, so the panel
+hides a composer the reader could not use; the route checks the grant regardless.
+
+### Regenerate
+
+`POST …/regenerate` re-asks an existing user message as a **new** turn. The caller names the
+message — "the newest one" stops being a stable identity as soon as a regeneration lands beside it
+— and supplies the `client_message_id`, so the existing `uq_conversation_client_message` makes a
+repeated click a replay and a second, deliberate regeneration a second turn. Ordering is the
+claim-time rule (§4.4): nothing new serialises here.
+
+### Title
+
+A thread created with no title takes one from its first message: whitespace collapsed, cut on a
+word boundary at 60 characters with `…`. It is set in the submit transaction
+(`UPDATE … WHERE title IS NULL`), so a thread created with a title keeps it and an old untitled
+thread takes the title of its next message.
 
 `scope_is_active()` is a **new** framework predicate beside `can_reach()`, never folded into
 it: E2's admin screens call `can_reach()`/`visible_agent_views()` precisely in order to
@@ -185,10 +234,15 @@ refuses a second before `setup:upgrade` applies a single schema change.
 
 | Seam | Implemented by | With none registered |
 | --- | --- | --- |
-| `execution_id_provider` | `ConversationExecutionIds` | the execution id is `None` |
+| `execution_id_provider` | `ConversationExecutionIds` (records the `RunProfile`: harness, provider, model, credential id) | the execution id is `None` |
 | `execution_finalizer` | `ConversationFinalizer` | no finalize write; the transition is today's |
 | `resume_session_resolver` | `ConversationResumeSessions` | the shipped attempt-based resume rule |
 | `execution_delta_sink` | `ConversationDeltaSink` | deltas are discarded |
+
+A follow-up turn resumes the previous turn's session and is sent the new turn alone. Before
+that, the workflow asks the runner's optional `prepare_resume`, which moves the session into
+the new run dir; when the session is gone, the turn runs fresh with the whole thread instead
+of failing every later turn (see [harness contract](../architecture/harness-contract.md)).
 
 The provider mints a **UUID**, not `{job_id}-{attempt}`: the pool-wait path refunds an
 attempt, so two real attempts of one job can carry one number and an id built from the pair
@@ -288,6 +342,15 @@ event unconditionally beside the insert would let a replayed terminal transactio
 one message row and still emit a second event, and the relay, faithful by design, would
 deliver the same answer to the thread twice.
 
+When `job_terminal`, a **channel** reply is advanced the same way, by its stored `job_id`: the
+job's reference belongs to the external system, so there is no message reference to resolve. Over
+`message(job_id)` (migration `004`), with `reconcile_terminal` still the crash backstop.
+
+It also **deletes this attempt's `assistant.partial` and `reasoning.partial` events**, for every
+outcome — the answer replaces the keystrokes, and a failed or retried attempt leaves them behind
+too. Bounded to one execution by `conversation_event(execution_id, kind)` (migration `004`);
+retention is no longer their only cleanup.
+
 The assistant row carries no `job_id` and no `job_state`: the reply is not itself a queued
 turn, and §4.4's non-terminal check reads `user` rows only.
 
@@ -332,16 +395,16 @@ than in an observer.
 ## Retention
 
 `conversation:retention` (`co:ret`, cron `17 3 * * *`) runs four passes in one order that
-matters: prune, then retire, then delete, then sweep the executions no thread owns. Pruning first keeps every thread's watermark current,
+matters: prune, then retire, then delete, then remove old runs. Pruning first keeps every thread's watermark current,
 including ones this pass is about to archive; deleting after them means a thread archived seconds ago
 is not also deleted in the same run.
 
 | Pass | Config | What it does |
 |---|---|---|
 | Prune | `conversation/retention/event_days` (90) | Removes `conversation_event` rows past the window, per conversation, and raises that conversation's prune watermark. Floor: 1 day. |
-| Auto-archive | `conversation/retention/idle_days` (90) | Archives a thread whose newest message is older than the window (a thread with no messages falls back to its own `created_at`; `conversation.updated_at` does not vote), through `service.archive(..., reason="idle")`. Skips one whose newest **user** turn is not `terminal`. Re-checked per thread under the conversation row lock the posting path takes, so a post that lands mid-pass keeps the thread. |
+| Auto-archive | `conversation/retention/idle_days` (90) | Archives a panel thread whose newest message is older than the window (a thread with no messages falls back to its own `created_at`; `conversation.updated_at` does not vote), through `service.archive(..., reason="idle")`. Skips one whose newest **user** turn is not `terminal`. Re-checked per thread under the conversation row lock the posting path takes, so a post that lands mid-pass keeps the thread. A **channel** thread uses `COALESCE(last_activity_at, created_at)` instead (every timeline write moves it) and is skipped while one of its runs is `running`. |
 | Delete | `conversation/retention/archived_days` (365) | Deletes an archived thread and everything under it, one transaction each. |
-| Orphan executions | `conversation/retention/event_days` (90) | Deletes `execution` rows, and their `execution_delta` rows, that **no `message` points at** and that started past the window — 500 per batch, oldest first. The execution provider mints a row for every job, not only a conversation's, while the delete above reaches `execution` through `message.job_id`; without this pass a Jira or Outlook job's execution rows are reachable by nothing (CODE-8). |
+| Old runs | `conversation/retention/event_days` (90) | Deletes every `execution` row that is not `running` and **finished** past the window, with its `execution_delta` rows — oldest first, in batches. One age bound for every run, because an active channel thread lives as long as its issue keeps running (CODE-8). The clock is `finished_at`: a run's events age by `created_at`, so a run that started long ago and finished today keeps its row as long as its events. A run with a finished toolbox call that the relay has not projected yet is kept, because the relay finds the thread through the run's row. |
 
 `conversation/retention/outbox_days` is the relay's own, faster cleanup and belongs to
 `conversation:relay`, not to this pass.

@@ -16,8 +16,9 @@ from agento.framework.harness import (
 from .auth import PiOpenRouterAuthenticator
 from .command_builder import PiCommandBuilder
 from .config import PiWorkspaceAdapter
+from .model_check import check_model
 from .runner import PiSubprocessRunner
-from .transcript_reader import PiTranscriptReader
+from .stream_event_mapper import PiStreamEventMapper
 
 # One scope per credential-requiring provider. `ollama` requires none, so it has no
 # entry here — the registry checks this mapping's keys against exactly the
@@ -29,7 +30,7 @@ class PiHarnessAdapter:
     def __init__(self) -> None:
         self._command_builder = PiCommandBuilder()
         self._workspace_adapter = PiWorkspaceAdapter()
-        self._transcript_reader = PiTranscriptReader()
+        self._stream_event_mapper = PiStreamEventMapper()
         self._authenticators: dict[CredentialScope, CredentialAuthenticator] = {
             CREDENTIAL_SCOPE: PiOpenRouterAuthenticator(),
         }
@@ -43,12 +44,15 @@ class PiHarnessAdapter:
         return self._workspace_adapter
 
     @property
-    def transcript_reader(self) -> PiTranscriptReader:
-        return self._transcript_reader
+    def stream_event_mapper(self) -> PiStreamEventMapper:
+        return self._stream_event_mapper
 
     @property
     def authenticators(self) -> Mapping[CredentialScope, CredentialAuthenticator]:
         return self._authenticators
+
+    def check_model(self, provider, model, credential, *, timeout_s):
+        return check_model(provider, model, credential, timeout_s=timeout_s)
 
     def create_runner(self, ctx: HarnessRunContext, **kwargs) -> PiSubprocessRunner:
         return PiSubprocessRunner(

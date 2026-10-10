@@ -8,6 +8,7 @@ launch sees either the old access (and is revoked with the rest) or the new one.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -15,12 +16,16 @@ import pymysql
 
 from .passwords import dummy_verify, hash_password, verify_password
 
-ROLES = ("admin", "user")
+BUILTIN_ROLES = ("admin", "user")
+ROLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,15}$")
 GRANT_KINDS = ("tool", "operation")
-ADMIN_OPERATIONS = frozenset({"users.manage", "grants.manage", "config.write"})
-GRANTABLE_OPERATIONS = frozenset({"artifact.launch"})
+ADMIN_OPERATIONS = frozenset({"users.manage", "grants.manage", "config.write", "admin.read", "credentials.manage"})
+# Framework operations: checked by grant for every role, admin included (web/api.py create_launch).
+FRAMEWORK_OPERATIONS = {"artifact.launch": "Launch a miniapp"}
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _GRANT_LOCK = "agento.role_grant"
+MAX_GRANT_NAMES = 1000
+_ER_ROW_IS_REFERENCED, _ER_NO_REFERENCED_ROW = 1451, 1452
 
 # A view grant reaches only a call scoped to that view; a workspace grant reaches the
 # workspace and every view in it. A row with both or neither scope matches nothing.
@@ -95,9 +100,13 @@ def _check_username(username: str) -> None:
         raise AccessError("username must match ^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
-def _check_role(role: str) -> None:
-    if role not in ROLES:
-        raise AccessError(f"role must be one of {', '.join(ROLES)}")
+def _check_role(cur, role: str) -> None:
+    """Inside the writer's transaction; the FK is the backstop for a role deleted after this."""
+    if isinstance(role, str) and ROLE_CODE_RE.fullmatch(role):
+        cur.execute("SELECT 1 FROM role WHERE code = %s", (role,))
+        if cur.fetchone():
+            return
+    raise AccessError("unknown role")
 
 
 def _hash(password: str) -> str:
@@ -109,17 +118,19 @@ def _hash(password: str) -> str:
 
 def create_user(conn, username: str, role: str, password: str | None, *, actor_id: int | None = None) -> User:
     _check_username(username)
-    _check_role(role)
     password_hash = _hash(password) if password is not None else None
 
     def work(cur):
         _lock_actor_and(cur, actor_id)
+        _check_role(cur, role)
         try:
             cur.execute(
                 "INSERT INTO `user` (username, password_hash, role) VALUES (%s, %s, %s)",
                 (username, password_hash, role),
             )
-        except pymysql.err.IntegrityError:
+        except pymysql.err.IntegrityError as exc:
+            if exc.args[0] == _ER_NO_REFERENCED_ROW:
+                raise AccessError("unknown role") from None
             raise AccessError("username already exists") from None
         return User(id=cur.lastrowid, username=username, role=role, is_active=True)
 
@@ -178,8 +189,6 @@ def _require_target(locked: dict[int, dict], user_id: int) -> dict:
 def update_user(conn, user_id: int, *, role: str | None = None, active: bool | None = None,
                 password: str | None = None, actor_id: int | None = None) -> None:
     """Apply every given field in one transaction: all of them or none."""
-    if role is not None:
-        _check_role(role)
     if active is not None and not isinstance(active, bool):
         raise AccessError("is_active must be a boolean")
     password_hash = _hash(password) if password is not None else None
@@ -187,7 +196,11 @@ def update_user(conn, user_id: int, *, role: str | None = None, active: bool | N
     def work(cur):
         _require_target(_lock_actor_and(cur, actor_id, user_id), user_id)
         if role is not None:
-            cur.execute("UPDATE `user` SET role = %s WHERE id = %s", (role, user_id))
+            _check_role(cur, role)
+            try:
+                cur.execute("UPDATE `user` SET role = %s WHERE id = %s", (role, user_id))
+            except pymysql.err.IntegrityError:
+                raise AccessError("unknown role") from None
         if active is not None:
             cur.execute("UPDATE `user` SET is_active = %s WHERE id = %s", (1 if active else 0, user_id))
         if password_hash is not None:
@@ -212,37 +225,66 @@ def set_password(conn, user_id: int, password: str, *, actor_id: int | None = No
     update_user(conn, user_id, password=password, actor_id=actor_id)
 
 
-def declared_tools() -> set[str]:
-    """Every tool name a module declares in ``module.json`` ``tools[]``, enabled or not."""
+def declared_tools(*, enabled_only: bool = False) -> set[str]:
+    """Every tool name a module declares in ``module.json`` ``tools[]``; with ``enabled_only``,
+    of the enabled modules only (what the panel's role tree shows)."""
     from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
     from ..module_discovery import scan_all_modules
+    from ..module_status import filter_enabled
 
-    return {t["name"] for m in scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR) for t in m.tools if t.get("name")}
+    modules = scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR)
+    if enabled_only:
+        modules = filter_enabled(modules)
+    return {t["name"] for m in modules for t in m.tools if t.get("name")}
 
 
-def _check_grant(role: str, kind: str, name: str, workspace_id, agent_view_id) -> None:
-    _check_role(role)
-    if kind not in GRANT_KINDS:
-        raise AccessError(f"grant kind must be one of {', '.join(GRANT_KINDS)}")
+def grantable_operations() -> dict[str, str]:
+    """``{id: title}`` of the operations an admin may grant: the built-in ones plus every
+    ``acl_resources`` entry a module declares in ``di.json`` (Magento ``acl.xml``). Admin has
+    them all built in (``may``/``can_see_*`` check the role first)."""
+    from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
+    from ..module_discovery import module_dirs_by_name
+    from ..module_validator import acl_resource_declarations
+
+    out = dict(FRAMEWORK_OPERATIONS)
+    for _name, module_dir in module_dirs_by_name(CORE_MODULES_DIR, USER_MODULES_DIR):
+        try:
+            manifest = json.loads((module_dir / "module.json").read_text())
+        except (OSError, ValueError):
+            continue
+        out.update(acl_resource_declarations(module_dir, manifest if isinstance(manifest, dict) else {}))
+    return out
+
+
+def is_builtin_resource(role: str, operation: str) -> bool:
+    """Admin has every module-declared ACL resource built in (the module checks the role before
+    the grant); a framework operation is a grant for every role."""
+    return role == "admin" and operation not in FRAMEWORK_OPERATIONS
+
+
+def _check_scope(workspace_id, agent_view_id) -> None:
     if (workspace_id is None) == (agent_view_id is None):
         raise AccessError("set exactly one of workspace or agent_view")
-    if kind == "operation" and name not in GRANTABLE_OPERATIONS:
-        raise AccessError(f"operation must be one of {', '.join(sorted(GRANTABLE_OPERATIONS))}")
+
+
+def _check_grant(kind: str, name: str, workspace_id, agent_view_id) -> None:
+    if kind not in GRANT_KINDS:
+        raise AccessError(f"grant kind must be one of {', '.join(GRANT_KINDS)}")
+    _check_scope(workspace_id, agent_view_id)
+    if kind == "operation" and name not in (operations := grantable_operations()):
+        raise AccessError(f"operation must be one of {', '.join(sorted(operations))}")
     if kind == "tool" and name not in declared_tools():
         raise AccessError(f"no module declares tool {name!r}")
 
 
 def add_grant(conn, role: str, kind: str, name: str, *, workspace_id: int | None = None,
               agent_view_id: int | None = None, actor_id: int | None = None) -> int:
-    _check_grant(role, kind, name, workspace_id, agent_view_id)
+    _check_grant(kind, name, workspace_id, agent_view_id)
 
     def work(cur):
         _lock_actor_and(cur, actor_id)
-        # role_grant has no unique key (both scope columns are nullable), so a named lock
-        # stops two writers from both seeing no duplicate and both inserting.
-        cur.execute("SELECT GET_LOCK(%s, 5) AS got", (_GRANT_LOCK,))
-        if cur.fetchone()["got"] != 1:
-            raise AccessError("busy, retry")
+        _grant_lock(cur)
+        _check_role(cur, role)
         cur.execute(
             "SELECT id FROM role_grant WHERE role = %s AND grant_kind = %s AND name = %s"
             " AND workspace_id <=> %s AND agent_view_id <=> %s",
@@ -258,14 +300,37 @@ def add_grant(conn, role: str, kind: str, name: str, *, workspace_id: int | None
                 (role, kind, name, workspace_id, agent_view_id),
             )
         except pymysql.err.IntegrityError:
-            raise AccessError("unknown workspace or agent_view") from None
+            raise AccessError("unknown role, workspace or agent_view") from None
         return cur.lastrowid
 
     try:
         return _in_transaction(conn, work)
     finally:
-        with conn.cursor() as cur:
-            cur.execute("DO RELEASE_LOCK(%s)", (_GRANT_LOCK,))
+        _release_grant_lock(conn)
+
+
+def _grant_lock(cur) -> None:
+    # role_grant has no unique key (both scope columns are nullable), so a named lock
+    # stops two writers from both seeing no duplicate and both inserting.
+    cur.execute("SELECT GET_LOCK(%s, 5) AS got", (_GRANT_LOCK,))
+    if cur.fetchone()["got"] != 1:
+        raise AccessError("busy, retry")
+
+
+def _release_grant_lock(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DO RELEASE_LOCK(%s)", (_GRANT_LOCK,))
+
+
+def _revoke_role_launches(cur, role: str, workspace_id, agent_view_id) -> None:
+    # A launch is re-authorized per request against its row, not against role_grant.
+    scope, value = ("l.agent_view_id = %s", agent_view_id) if agent_view_id is not None \
+        else ("l.workspace_id = %s", workspace_id)
+    cur.execute(
+        "UPDATE launch l JOIN `user` u ON u.id = l.user_id SET l.revoked_at = NOW()"
+        f" WHERE u.role = %s AND l.revoked_at IS NULL AND {scope}",
+        (role, value),
+    )
 
 
 def remove_grant(conn, grant_id: int, *, actor_id: int | None = None) -> None:
@@ -279,16 +344,189 @@ def remove_grant(conn, grant_id: int, *, actor_id: int | None = None) -> None:
         cur.execute("DELETE FROM role_grant WHERE id = %s", (grant_id,))
         if cur.rowcount != 1:
             raise AccessError("grant not found")
-        if grant["agent_view_id"] is not None:
-            scope, value = "l.agent_view_id = %s", grant["agent_view_id"]
-        else:
-            scope, value = "l.workspace_id = %s", grant["workspace_id"]
-        # A launch is re-authorized per request against its row, not against role_grant.
+        _revoke_role_launches(cur, grant["role"], grant["workspace_id"], grant["agent_view_id"])
+
+    _in_transaction(conn, work)
+
+
+def _names(value, what: str) -> set[str]:
+    if not isinstance(value, list) or not all(isinstance(n, str) for n in value):
+        raise AccessError(f"{what} must be a list of names")
+    return set(value)
+
+
+def set_role_grants(conn, role: str, *, workspace_id: int | None = None, agent_view_id: int | None = None,
+                    tools: list[str], operations: list[str], actor_id: int | None = None) -> dict:
+    """Make the role's grants at exactly this scope the given names, in one transaction.
+
+    A name already granted at the view's workspace is never inserted at the view (it is
+    redundant); a view row that is already there stays. Removing anything ends the role's
+    launches in the scope, as ``remove_grant`` does. Returns ``{added, removed}`` (counts).
+    """
+    _check_scope(workspace_id, agent_view_id)
+    want_tools, want_ops = _names(tools, "tools"), _names(operations, "operations")
+    if len(want_tools) + len(want_ops) > MAX_GRANT_NAMES:
+        raise AccessError(f"at most {MAX_GRANT_NAMES} names per scope")
+    if unknown := want_ops - (operations_known := set(grantable_operations())):
+        raise AccessError(f"operation must be one of {', '.join(sorted(operations_known))}")
+    if unknown := sorted(want_tools - declared_tools()):
+        raise AccessError(f"no module declares tool {unknown[0]!r}")
+    # ponytail: the tree lists the tools of enabled modules only, so a row for a tool of a
+    # disabled module is outside this write and kept (it works again when the module does).
+    replaceable = {("tool", n) for n in declared_tools(enabled_only=True)} | {("operation", n) for n in operations_known}
+    want = {("tool", n) for n in want_tools} | {("operation", n) for n in want_ops}
+
+    def work(cur):
+        locked = _lock_users(cur, "role = %s OR id = %s", (role, actor_id))
+        _check_actor(locked, actor_id)
+        _grant_lock(cur)
+        _check_role(cur, role)
+        inherited: set = set()
+        if agent_view_id is not None:
+            cur.execute("SELECT workspace_id FROM agent_view WHERE id = %s", (agent_view_id,))
+            view = cur.fetchone()
+            if not view:
+                raise AccessError("agent_view not found")
+            cur.execute(
+                "SELECT grant_kind, name FROM role_grant WHERE role = %s AND workspace_id = %s"
+                " AND agent_view_id IS NULL", (role, view["workspace_id"]),
+            )
+            inherited = {(r["grant_kind"], r["name"]) for r in cur.fetchall()}
         cur.execute(
-            "UPDATE launch l JOIN `user` u ON u.id = l.user_id SET l.revoked_at = NOW()"
-            f" WHERE u.role = %s AND l.revoked_at IS NULL AND {scope}",
-            (grant["role"], value),
+            "SELECT id, grant_kind, name FROM role_grant WHERE role = %s"
+            " AND workspace_id <=> %s AND agent_view_id <=> %s",
+            (role, workspace_id, agent_view_id),
         )
+        current = cur.fetchall()
+        have = {(r["grant_kind"], r["name"]) for r in current}
+        # A redundant view row (the workspace grants it too) stays: dropping it changes no access
+        # but would end the role's launches here.
+        drop = [r["id"] for r in current if (key := (r["grant_kind"], r["name"])) in replaceable
+                and key not in want and key not in inherited]
+        add = sorted(want - have - inherited)
+        if drop:
+            cur.execute("DELETE FROM role_grant WHERE id IN (" + ",".join(["%s"] * len(drop)) + ")", drop)
+            _revoke_role_launches(cur, role, workspace_id, agent_view_id)
+        if add:
+            try:
+                cur.execute(
+                    "INSERT INTO role_grant (role, grant_kind, name, workspace_id, agent_view_id) VALUES "
+                    + ",".join(["(%s, %s, %s, %s, %s)"] * len(add)),
+                    [v for kind, name in add for v in (role, kind, name, workspace_id, agent_view_id)],
+                )
+            except pymysql.err.IntegrityError:
+                raise AccessError("unknown role, workspace or agent_view") from None
+        return {"added": len(add), "removed": len(drop)}
+
+    try:
+        return _in_transaction(conn, work)
+    finally:
+        _release_grant_lock(conn)
+
+
+def list_roles(conn) -> list[dict]:
+    """``[{code, label, builtin, users, scopes}]``: ``scopes`` counts the scopes with a grant."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT r.code, r.label, COALESCE(u.n, 0) AS users, COALESCE(g.n, 0) AS scopes FROM role r"
+            " LEFT JOIN (SELECT role, COUNT(*) AS n FROM `user` GROUP BY role) u ON u.role = r.code"
+            # A valid row has exactly one scope, so the two distinct counts never overlap.
+            " LEFT JOIN (SELECT role, COUNT(DISTINCT workspace_id) + COUNT(DISTINCT agent_view_id) AS n"
+            "  FROM role_grant WHERE (workspace_id IS NULL) <> (agent_view_id IS NULL) GROUP BY role) g"
+            " ON g.role = r.code ORDER BY r.label"
+        )
+        return [{"code": r["code"], "label": r["label"], "builtin": r["code"] in BUILTIN_ROLES,
+                 "users": int(r["users"]), "scopes": int(r["scopes"])} for r in cur.fetchall()]
+
+
+def role_scopes(conn, role: str) -> list[dict]:
+    """``[{workspace_id, agent_view_id, tools, operations}]``: grant counts per scope."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT workspace_id, agent_view_id, SUM(grant_kind = 'tool') AS tools,"
+            " SUM(grant_kind = 'operation') AS operations FROM role_grant"
+            " WHERE role = %s AND (workspace_id IS NULL) <> (agent_view_id IS NULL)"
+            " GROUP BY workspace_id, agent_view_id ORDER BY workspace_id, agent_view_id",
+            (role,),
+        )
+        return [{"workspace_id": r["workspace_id"], "agent_view_id": r["agent_view_id"],
+                 "tools": int(r["tools"]), "operations": int(r["operations"])} for r in cur.fetchall()]
+
+
+def _check_label(label) -> str:
+    if not isinstance(label, str) or not 1 <= len(label.strip()) <= 64:
+        raise AccessError("label must have 1 to 64 characters")
+    return label.strip()
+
+
+def _duplicate_role(exc: pymysql.err.IntegrityError) -> AccessError:
+    return AccessError("a role with this label already exists" if "uk_role_label" in str(exc)
+                       else "a role with this code already exists")
+
+
+def create_role(conn, code: str, label: str, *, actor_id: int | None = None) -> dict:
+    if not isinstance(code, str) or not ROLE_CODE_RE.fullmatch(code):
+        raise AccessError("code must match ^[a-z][a-z0-9_]{1,15}$")
+    label = _check_label(label)
+
+    def work(cur):
+        _lock_actor_and(cur, actor_id)
+        try:
+            cur.execute("INSERT INTO role (code, label) VALUES (%s, %s)", (code, label))
+        except pymysql.err.IntegrityError as exc:
+            raise _duplicate_role(exc) from None
+        return {"code": code, "label": label, "builtin": code in BUILTIN_ROLES, "users": 0, "scopes": 0}
+
+    return _in_transaction(conn, work)
+
+
+def _lock_role(cur, code: str) -> None:
+    # The grammar first: the column collation is case-insensitive, so 'Admin' would match admin.
+    if not isinstance(code, str) or not ROLE_CODE_RE.fullmatch(code):
+        raise AccessError("role not found")
+    cur.execute("SELECT code FROM role WHERE code = %s FOR UPDATE", (code,))
+    if not cur.fetchone():
+        raise AccessError("role not found")
+
+
+def rename_role(conn, code: str, label: str, *, actor_id: int | None = None) -> None:
+    """The label only: the code is the key ``user.role`` and ``role_grant.role`` hold."""
+    label = _check_label(label)
+
+    def work(cur):
+        _lock_actor_and(cur, actor_id)
+        _lock_role(cur, code)
+        try:
+            cur.execute("UPDATE role SET label = %s WHERE code = %s", (label, code))
+        except pymysql.err.IntegrityError as exc:
+            raise _duplicate_role(exc) from None
+
+    _in_transaction(conn, work)
+
+
+def _in_use(n: int) -> AccessError:
+    return AccessError("1 user has this role" if n == 1 else f"{n} users have this role")
+
+
+def delete_role(conn, code: str, *, actor_id: int | None = None) -> None:
+    """A built-in role or a role with users is refused. Its grants go with it (FK cascade);
+    no launch needs a revoke, because no user holds the role."""
+    if code in BUILTIN_ROLES:
+        raise AccessError("a built-in role cannot be deleted")
+
+    def work(cur):
+        _lock_actor_and(cur, actor_id)
+        _lock_role(cur, code)
+        cur.execute("SELECT COUNT(*) AS n FROM `user` WHERE role = %s", (code,))
+        if n := cur.fetchone()["n"]:
+            raise _in_use(n)
+        try:
+            cur.execute("DELETE FROM role WHERE code = %s", (code,))
+        except pymysql.err.IntegrityError as exc:
+            # A user got the role after the count: the FK (no action) refuses the delete.
+            if exc.args[0] == _ER_ROW_IS_REFERENCED:
+                raise _in_use(1) from None
+            raise
 
     _in_transaction(conn, work)
 

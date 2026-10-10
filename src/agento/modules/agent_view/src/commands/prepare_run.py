@@ -307,8 +307,5 @@ class AgentViewPrepareRunCommand:
                 "stdin": stdin_payload,
                 "env": env,
                 "credential_id": credential.id if credential is not None else None,
-                # Deprecated duplicate of credential_id, kept for one release so an older
-                # host-side `agento run` reading token_id keeps working.
-                "token_id": credential.id if credential is not None else None,
             }
             print(json.dumps(payload))

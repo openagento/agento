@@ -80,6 +80,33 @@ def resolve_agent_view_runtime(conn, agent_view_id: int | None) -> AgentViewRunt
     return runtime
 
 
+def resolve_runtime_for_scope(
+    conn, scope: str, scope_id: int,
+) -> tuple[str | None, str | None, str | None]:
+    """``(harness, provider, model)`` that a run at this config scope would use.
+
+    The same resolution as a run, for any scope a config tester is given. A workspace
+    has no run of its own, so it resolves as an agent_view of that workspace with no
+    value of its own would. Raises like a run does: ``ValueError`` for a provider the
+    harness does not declare, ``UnknownHarnessError`` for an unregistered harness.
+    """
+    if scope == Scope.AGENT_VIEW:
+        runtime = resolve_agent_view_runtime(conn, scope_id)
+        return runtime.harness, runtime.provider, runtime.model
+    if scope == Scope.WORKSPACE:
+        svc = ScopedConfigService(conn, Scope.WORKSPACE, scope_id)
+        harness, provider = _resolve_harness_and_provider(
+            conn,
+            agent_view_id=None,
+            workspace_id=scope_id,
+            harness_default=svc.get("agent_view/harness"),
+            provider_default=svc.get("agent_view/provider"),
+        )
+        return harness, provider, svc.get("agent_view/model")
+    runtime = resolve_agent_view_runtime(conn, None)
+    return runtime.harness, runtime.provider, runtime.model
+
+
 def _resolve_harness_and_provider(
     conn,
     *,

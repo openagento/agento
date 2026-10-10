@@ -58,7 +58,6 @@ class TestPromptNeverReachesInfoLogs:
                 stderr="",
             ),
         )
-        runner._record_usage = MagicMock()
         runner.logger = logging.getLogger("harness-log-test")
         with caplog.at_level(level, logger="harness-log-test"):
             runner.execute(RunRequest(prompt=SENTINEL))

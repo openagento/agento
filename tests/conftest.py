@@ -17,6 +17,17 @@ def load_fixture(name: str) -> dict:
     return json.loads((FIXTURES_DIR / name).read_text())
 
 
+@pytest.fixture(autouse=True)
+def _empty_db_pool():
+    """A connection (or a mock) one test parks in `db.pooled` must not reach the next,
+    and neither may the idle cap a test's Consumer set."""
+    from agento.framework import db
+    cap = db.IDLE_CAP
+    yield
+    db.close_idle()
+    db.IDLE_CAP = cap
+
+
 @pytest.fixture
 def sample_db_config() -> DatabaseConfig:
     return DatabaseConfig()
@@ -89,3 +100,47 @@ def builtin_harnesses():
     register_builtin_harnesses()
     yield
     clear()
+
+
+@pytest.fixture
+def start_runner(monkeypatch, tmp_path):
+    """Start an in-process runner server (framework/runner/server.py) as ``runner-1.sock``;
+    the client reaches it through AGENTO_RUNNER_SOCKET_DIR. ``Server`` keyword arguments
+    pass through. The test process is inside the server's PID namespace, so the peer check
+    is "outside" (pid 0) unless a test gives its own ``peer``. A temporary HOME parent goes
+    under tmp_path (``client.shared_tmp``)."""
+    import os
+    import shutil
+    import socket
+    import tempfile
+    import threading
+
+    from agento.framework import workspace_paths
+    from agento.framework.runner.server import Server
+
+    sock_dir = tempfile.mkdtemp(prefix="rt", dir="/tmp")  # AF_UNIX paths are short
+    os.mkdir(f"{sock_dir}/runner-1")
+    servers = []
+
+    def start(**kwargs):
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(f"{sock_dir}/runner-1/runner-1.sock")
+        listener.listen(256)
+        server = Server(listener, **{"peer": lambda conn: 0, **kwargs})
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        return server
+
+    monkeypatch.setenv("AGENTO_RUNNER_SOCKET_DIR", sock_dir)
+    monkeypatch.setenv("AGENTO_RUNNER_COUNT", "1")
+    monkeypatch.setattr(workspace_paths, "BASE_WORKSPACE_DIR", str(tmp_path / "workspace"))
+    yield start
+    for server in servers:
+        server.close()
+    shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+@pytest.fixture
+def runner_server(start_runner):
+    """A default in-process runner (``start_runner``)."""
+    return start_runner()

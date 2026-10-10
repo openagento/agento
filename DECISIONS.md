@@ -4,6 +4,101 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-10 — The consumer's transitions run at READ COMMITTED
+
+`Consumer._db()` borrows with `isolation="READ COMMITTED"`, and `db.pooled` holds that level as a
+SESSION setting for the whole checkout, restoring the global default at return. The finalizer hook
+(§5.3) runs inside those transactions, in EVERY transition that ends an attempt — success, failure,
+abandon, retry, recovery — and under the server default a transition is wrong in two ways at once:
+
+- **Stale reads.** The transaction's FIRST read fixes a snapshot, and taking a row lock afterwards
+  does not refresh it. A finalizer that waits on a lock then reads cannot see what the session it
+  waited for committed. (A write is unaffected: an `UPDATE`/`DELETE` performs a *current* read. That
+  is why the finalizer's two cleanups are ranged statements and not a plain `SELECT` of ids followed
+  by a write by id — the select-then-write shape reads the stale snapshot and silently misses rows.
+  `test_a_partial_committed_before_the_lock_but_after_the_snapshot_is_dropped` and
+  `test_a_reply_attached_before_the_job_lock_but_after_the_snapshot_reaches_terminal` both fail if
+  either statement is converted back to it.)
+- **Gap locks.** A ranged `UPDATE`/`DELETE` on a *secondary* index takes next-key (gap) locks, and a
+  neighbouring run inserting its own `conversation_event` or `message` row lands inside a gap. At
+  100–200 parallel runs that is a deadlock, not a wait: `test_orchestration_scale` produced 52 MySQL
+  1213s with these two writes at REPEATABLE READ, and 0 at READ COMMITTED (SCL-1).
+
+READ COMMITTED answers both — every statement reads the latest committed version, and InnoDB takes
+record locks without gaps.
+
+- **At the consumer, not in the module.** It is a framework guarantee the hook contract states, so
+  every module's finalizer gets it. Set per call site instead, the hardest-to-test paths (recovery,
+  retry) would have kept the default.
+- **Nothing there needs a repeatable range read.** Every read in a transition is a point lookup
+  guarded by a row lock, where fresher is strictly better.
+- **The pool owns the setting, for the whole checkout.** `db.pooled` grew an `isolation=`
+  parameter: it applies the level in the same guarded region as the checkout ping (so a pooled
+  connection too dead to take it is discarded and replaced rather than failing the borrow) and
+  restores `@@GLOBAL.transaction_isolation` at return. `SET TRANSACTION` *without* `SESSION` was
+  tried first and is wrong here: it binds only the NEXT transaction, so a checkout that commits
+  twice — credential selection commits before the capability check, which can reach the abandon
+  finalizer — silently finishes at the server default. The pool undoing a session setting is what
+  keeps TST-2's "nothing outlives the checkout" rule true, rather than prohibiting it.
+- **One funnel, asserted.** Stale-job recovery used to open its own connection; it borrows now.
+  `test_the_consumer_borrows_every_connection_at_read_committed` walks `consumer.py`'s AST and
+  fails if any method but `_maybe_reload_bootstrap` (which never reaches a finalizer) opens one
+  directly.
+
+---
+
+## 2026-10-10 — The conversation delta sink runs at READ COMMITTED
+
+The finalizer deletes an attempt's `assistant.partial` / `reasoning.partial` events, and
+`execution_deltas.close()` only QUEUES the tail — so a partial can reach the sink after that
+cleanup committed. The sink therefore refuses a live-text fragment whose `execution` is no longer
+`running`, and reads that status after the batch has taken its threads' row locks: the finalizer
+takes the same lock before it deletes, so it either committed before the read or waits for the
+batch.
+
+- **`SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED` on the sink's own connection.** Under
+  the server default (REPEATABLE READ) every plain SELECT answers from the snapshot the
+  transaction's FIRST read took — here the cap lookups, before any lock — and taking a row lock
+  does NOT refresh it. The status check would read `running` from before the finalization and let
+  the partial through.
+- **Not a locking read.** `SELECT … FOR SHARE` would also read the latest committed row, but it
+  takes `execution` AFTER the thread lock, while the finalizer takes `execution` BEFORE it — two
+  transactions on the same two rows in opposite orders, which is a deadlock bought for nothing.
+- **Connection-local.** It is set in `ConversationDeltaSink._connection()` and binds that one
+  connection. The consumer's transitions reach the same level by their own route (above); no
+  session is changed from outside itself. The sink needs no repeatable range read: every
+  budget is seeded per execution and every write is an `INSERT IGNORE`.
+- **Guarded by a test.** `test_a_finalization_between_the_batchs_first_read_and_its_lock_is_seen`
+  finalizes from a second connection inside an open batch. Reverting the isolation line makes it
+  fail.
+
+---
+
+## 2026-10-07 — A Tools/Skills draft is bound to its scope, held per scope
+
+The Tools and Skills screens moved from a write per checkbox to the Roles pattern: a draft, then one
+batch of `PUT /api/admin/config` on Save. Their scope lives in the URL (`ScopePicker`), and the
+screen stays mounted across a change of it, so the draft outlives the scope it was made in while
+`useConfigWrite` resolves the scope **at render** — an unbound draft saved after a scope change would
+write scope A's edits into scope B.
+
+- **Drafts are a map keyed by the scope query**, not one slot. The key does the binding, so no write
+  can cross scopes, and editing scope B cannot destroy scope A's unsaved work.
+- **Bound, not discarded.** Leaving a scope hides its draft, returning shows it again, and the drafts
+  die with the page like any other unsaved form. A confirm dialog before a scope change (what the
+  Roles page has, because it owns its scope `Select`) would therefore guard nothing.
+- **The draft clears in `onSuccess`, not `onSettled`**, and only after that screen's own list query
+  has refetched: a partly failed batch rejects, and the draft is the only retry path.
+
+The write carries its scope too. `useConfigWrite` reads the scope from the URL at render, and React
+Query runs a mutation from the latest render — so a scope change between the click and the request
+would send the batch to the scope now on screen. `mutate(writes)` binds `scope`/`scope_id` into the
+mutation variables at the call, so the writes land where the draft was made. The draft is also kept
+when the refresh after a save fails: the screen cannot show what is stored, so the draft stays as the
+only record of the intent.
+
+---
+
 ## 2026-10-06 — Claude Code 2.1.291 upgrade: what Agento reads and writes
 
 Owner: the repo owner approved the scope in the AG-27 session on 2026-10-06 ("zaimplementuj
@@ -29,6 +124,524 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
   `permissionMode: default` with it, `bypassPermissions` with `defaultMode`).
 
 ---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+---
+
+## 2026-10-09 — Runtime split: owner decisions O1–O12
+
+Plan: `refactor-runtime-split` (all or nothing, one gate). Owner approval S4, 2026-10-09 (quoted
+in D-BACKEND-1): each open item takes the plan's recommendation. This entry is the index. The
+entries below give the detail where one exists.
+
+| ID | Decision | Where |
+|---|---|---|
+| O1 | Credential path = MVC with one trusted backend. `cron` selects, leases, decrypts and captures credentials; `web` and `cron` share the key and one DB user. The strict path (the toolbox holds the credentials) is a ROADMAP follow-up. | D-BACKEND-1 |
+| O2 | No process retry inside one attempt. The durable retry with resume stays the only retry. | struck; ROADMAP follow-up |
+| O3 | No `AUTH_REQUIRED` wait state. An exhausted credential pool still ends the job `DEAD`. | struck; ROADMAP follow-up |
+| O4 | `app/code` in `cron` is trusted operator code. | same-uid stack entry |
+| O5 | `TranscriptReader` leaves the harness contract (5 → 4 members). | below |
+| O6 | The execution model stays module-owned. | below |
+| O7 | One long-lived runner pool, not a container per run. | runner entry |
+| O8 | Run secrets cross the runner socket in memory (extends D-SSH-1). | runner entry; zero-trust.md |
+| O9 | FastAPI with dataclasses; Pydantic only as an install dependency. | FastAPI entry |
+| O10 | Three DB users; MySQL on host loopback. | below; network entry |
+| O11 | The v0.16 shims are removed; the pre-0.15 fallback waits for a prod check. | below |
+| O12 | MySQL `max_connections` 600; `AGENTO_CONSUMER_MAX_WORKERS` default stays 10. | below; pool entry |
+
+- **O5.** `job.toolbox_mcp_calls` is the number of calls the toolbox dispatcher audited
+  (`tool_invocation`) on the attempt's `mcp_job` capability: the newest such row of the job,
+  because each attempt mints one and the attempts of a job run one after another. It does not
+  key on `execution`, because `execution_id` is NULL when the conversation module is off. No
+  agent_view → `NULL` (no capability). No transcript is parsed, so a vendor format change cannot
+  break the count. `TranscriptReader`, `ToolUse` and `ParseSummary` stay importable until v0.18
+  (CODE-5, ROADMAP.md).
+- **O6.** The conversation module keeps `execution`, `execution_delta` and `job_event_outbox`
+  (MOD-2). Runner events map onto the existing seams (fragment → delta, session →
+  `_save_session_id`, pid → `_save_pid`, result → finalize). The one new column is
+  `job.runner_ref` (`051_job_runner_ref`), which liveness needs. It is not an execution model.
+- **O10.** `cron_agent` is the migration user; only `setup:upgrade` connects as it.
+  `agento_backend` (`cron`, `web`) gets DML on every table. `agento_toolbox` gets only the
+  tables and rights its SQL uses (`framework/db_grants.py`, deny by default, pinned by a test);
+  it has no grant on `credential`. `setup:upgrade` makes the grants again on each run, so a new
+  module table gets its grants on the next upgrade. `agento upgrade` runs the one-time root
+  grant. MySQL publishes its port on `127.0.0.1` only; the override file can open it again.
+  See [docs/cli/upgrade.md](docs/cli/upgrade.md#database-users).
+- **O11.** The shims due in v0.16 are removed (CHANGELOG.md). The pre-0.15
+  `agent_view/provider` fallback stays until a read-only prod check shows the data patch ran
+  everywhere. The `credential.agent_type` column drop needs a migration and stays open.
+- **O12.** A 200-job burst opens more connections than the MySQL default of 151 allows, so
+  compose and CI set 600. 200 workers is an operator setting; the default stays 10. Size
+  `max_workers` against `max_connections` ([publisher-consumer.md](docs/architecture/publisher-consumer.md)).
+
+## 2026-10-09 — Network split: db-net, exec-net, web-net
+
+Plan: `refactor-runtime-split` WS7 (§31.3; owner approval S4, O10). It replaces the flat
+`agento-net`.
+
+- **Three networks, each for one reason.** `db-net` (mysql, cron, web, toolbox): the services
+  that hold a DB user. `exec-net` (runner-<i>, sandbox, toolbox, proxy): where agents run; they
+  reach the toolbox, and the panel origin on `proxy` (they get its URL, E8). `web-net` (proxy,
+  web): the proxy reaches `web`. `artifacts` keeps no `networks:` key. The reachability table is
+  in docs/architecture/containers.md#network, and `docker/smoke/runner-net-smoke.sh` checks
+  each cell. The security claims are the "no" cells: no agent container reaches `mysql`, `web`
+  or `cron`, and `cron` does not reach `proxy`.
+- **No network is `internal`.** Agents and vendor CLIs need egress, and `cron` calls vendor APIs
+  (credential refresh, limits).
+- **The Docker Desktop gap.** Desktop forwards `host.docker.internal` (also its raw IP) to host
+  loopback, where MySQL is published (`127.0.0.1:${MYSQL_PORT}`). Measured (WS7 spike A2): from
+  the runner, a TCP connect to MySQL works there, and `extra_hosts` hides only the name. No
+  compose setting closes it while egress stays open. So on Desktop the guard is MySQL
+  authentication: the runner and sandbox hold no DB user (WS5, WS8). On Linux the route fails;
+  the smoke checks it there and skips it on Desktop. zero-trust.md lists it as debt; it is not
+  an accepted exception until the owner says so.
+- **No `pid:` key on any service.** The runner's peer check (SO_PEERCRED pid 0 = a peer from
+  another PID namespace) trusts every container that mounts `runner-<i>-sock`, so only cron
+  and runner-<i> mount it (another runner's agent is pid 0 too); `pid: host` or
+  `pid: service:runner-<i>` would break it.
+- **The override file breaks loudly (CODE-5).** A user `docker-compose.override.yml` that names
+  `agento-net` fails at `docker compose up` with an undefined-network error. We keep no
+  `agento-net` alias: an empty alias network would let such an override start, with its service
+  cut off from every container and no error. docs/deployment/docker-compose-override.md has the
+  upgrade note.
+- **Fresh MySQL needs both grant rows for the migration user.** The mysql image grants
+  `cron_agent` on the exact name `` `cron\_agent` ``. A table GRANT is checked against that row,
+  so `001_migrate_user.sql` adds GRANT OPTION there too (without it, setup:upgrade fails with
+  MySQL 1142 on a fresh install). The database-level GRANT in `db_grants.py` is a `_` pattern
+  and needs the pattern row (without it, 1044). Found when the WS7 smoke started a fresh stack.
+
+## 2026-10-09 — `web` and `cron` are one trusted backend (D-BACKEND-1)
+
+Owner, 2026-10-09 (S4): "can't we just have 1 python backend for admin and cron? Runner would
+be separated as we planned." and then "yes, and start /loop /loop-skill for implementation".
+Plan: `refactor-runtime-split` WS11 (O1 = MVC).
+
+- **D-BACKEND-1: one backend, two processes.** `web` (the panel API) and `cron` (the worker)
+  use one image, the same `env_file` (with `AGENTO_ENCRYPTION_KEY`) and one DB user
+  (`agento_backend`). They stay two compose services, so a 200-job burst does not starve the
+  panel on the GIL and a consumer restart does not cut SSE streams. The hard boundary is the
+  runner (entry below): it holds no key and no DB. `test_provisioning.py` pins the shared env file;
+  `runner/test_runner_boundary.py` pins the runner's empty one.
+- **The cost, said plainly:** a compromise of the browser-facing `web` process now exposes the
+  key and so the plaintext credentials (before: only encrypted rows). This supersedes
+  D-PANEL-LOGIN-1 and the "web holds no key" reason in D-PANEL-ADMIN-1. It amends PRD §4,
+  §17/§19, §31.12–15 and §32 D (not met).
+- **Panel re-login without RSA.** `web` encrypts the pasted code with `crypto.encrypt` (the
+  key), and the worker decrypts it with `crypto.decrypt`. Both sides call `crypto.py`, not
+  `get_encryptor()`, because `web` never runs `bootstrap()` and so never sees a registered
+  backend. The per-login RSA key pair is deleted. `credential_login.code_key` stays in the
+  schema, unused and NULL (a nullable column needs no migration).
+- **The service names stay `cron` and `web`.** The plan named them `backend-worker` and
+  `backend-api`. A rename breaks every user-owned `docker-compose.override.yml` keyed `cron:`
+  or `web:` (Compose then makes a new service with no image), every container name in
+  runbooks (`<project>-cron-1`) and about 125 doc lines, for no security gain. The env file and
+  the DB user are what make one backend.
+- **Not changed:** no new panel feature that the key would allow. D-PANEL-ADMIN-1 stands: no
+  secret value goes to or from the browser; secret writes, `local` testers and replay stay
+  in the TUI.
+
+## 2026-10-09 — The same-uid hardening stack leaves `cron`; `app/code` there is trusted (O4)
+
+Plan: `refactor-runtime-split` WS6 (O4, owner S4). It needs the runner entry below: no agent
+runs in `cron` any more (`runner/test_spawn_guard.py`).
+
+- **Removed:** `docker/cron/drop.py`, `docker/cron/split-env.py`, `framework/store_env.py`,
+  `framework/credential_store_env.py`, the `--store` branch of `launch.sh`, and
+  `make_non_dumpable()` in the framework CLI. The store values go back to `os.environ`.
+- **Kept:** the env whitelist (CFG-2), now one root-only file `/opt/cron-agent/env` that
+  `launch.sh` imports before `setpriv`; the cron SSH guard (the runner starts through the same
+  entrypoint); `process_hardening.py` (the runner server calls it). The store-name strip in
+  `harness_base_env()` is removed too: `cron` starts no CLI, and the runner has no store.
+- **O4.** `app/code` cron jobs, observers and data patches run in `cron` with the database
+  credentials and the key. They are operator-installed code and are trusted. zero-trust.md has
+  the row.
+- **SEC-9.** Each removed guard, its invariant and where it lives now:
+  [zero-trust.md](docs/architecture/zero-trust.md#what-the-runner-split-replaced).
+- This supersedes the V0 delivery in D-SSH-1 residual channel (6) and channel (4)'s
+  "every framework CLI is non-dumpable": the peer those closed against is now in another
+  container.
+
+---
+
+## 2026-10-09 — Agent CLIs run in a runner service, over a Unix socket
+
+Plan: `refactor-runtime-split` WS5 (O7, O8). Details: [docs/architecture/runner.md](docs/architecture/runner.md).
+
+- **A long-lived runner, not a container per run.** A container per run costs 0.5–1 s and
+  needs `docker.sock`. One `runner-<i>` service per `AGENTO_RUNNER_COUNT`, each with a fixed
+  socket name, so the owner of a run is a name plus a boot id (`job.runner_ref`).
+- **Socket activation.** A root script binds the socket in a root 0755 directory and starts
+  the server as `agent` with the listener on fd 3. An agent cannot replace the socket, so a
+  boot id on that name can only change with a container start.
+- **`unknown` is never `dead`.** An owner that does not answer blocks recovery and resume; no
+  timeout changes that. A wrong `dead` runs one session twice; a wrong `unknown` only waits.
+- **`signal` carries the boot id to the server.** The server sends a signal only for its own
+  boot, so an old ref cannot reach a new run with the same tag.
+- **The runner has no database (`db.DISABLED`).** `get_connection` fails at once, so a module
+  observer in `bootstrap(db_conn=None)` cannot hang on a host it cannot reach. Smaller than a
+  change to every `module_ready` observer.
+- **Usage is a `usage` event.** `SubprocessRunner._record_usage` opened a connection; the
+  runner now sends the numbers and the worker writes the row.
+- **The delta seam is split.** The runner maps lines with the harness's mapper; the worker
+  keeps seq, redaction and the sink, because only it holds the run's secrets and the
+  database.
+- **Error names survive the socket.** The retry policy reads the class name, so every name it
+  lists (`ValueError`, `KeyError`, …) keeps its class.
+- **SIGTERM exits at once, no drain.** The runs die with the PID namespace; the worker gets
+  "runner connection lost" with the session id, and the durable retry resumes it.
+- **Temporary HOMEs go under `/workspace/.tmp`.** The runner sees `/workspace` at the same
+  path; `TMPDIR` in each container does not.
+- **One runner entrypoint branch, not a copy of the sandbox entrypoint.** The cron image's
+  `/entrypoint.sh` is cron's; `runner` as the first argument runs the same SSH guard, then
+  `listen.py`. A copy of the sandbox entrypoint would end in `gosu agent`, and `listen.py`
+  must bind as root.
+- **The operator TTY login runs the panel's login.** `credential:register` calls the
+  harness's `start_web_login` (a CLI on a PTY in a runner) and reads the code from the
+  operator's terminal (`attended_login`). No byte relay of a full-screen CLI: the runner PTY is
+  `TERM=dumb`, sized for one-line URLs.
+
+---
+
+## 2026-10-09 — The consumer pools its DB connections with a stdlib queue
+
+Plan: `refactor-runtime-split` WS1 (SCL-1). Benchmark at 100 jobs
+(`tests/integration/test_orchestration_scale.py`): 13 → 1.1 connections per job.
+
+- **Stdlib, not a pool library.** `db.pooled(config)` keeps one `queue.Queue` of idle
+  connections per config, capped at `max_workers`. It is ~40 lines; a library adds a dependency
+  (SEC-11) for the same thing.
+- **Checkout never blocks.** With nothing idle it opens a new connection. A claim holds a row
+  lock in its transaction while `job_claim_before` observers borrow a second connection, so a
+  blocking pool of N could deadlock at N claims. The idle cap bounds what is kept, not what is
+  open; MySQL `max_connections` (600 in compose) bounds the rest.
+- **Clean at return.** A ping at checkout, a rollback at return, and a connection that raised is
+  closed, never pooled.
+- **No session state.** `GET_LOCK` and `SET SESSION` outlive a checkout, so the next borrower
+  would get the lock or the setting. A file that runs either never uses `pooled` (a test guards
+  this).
+- **The build freshness check is remembered for one poll interval per agent_view.** At base it
+  was ~40% of claim → spawn. A config change reaches new runs within one poll interval, the same
+  delay as hot-reload. A failed check is not remembered.
+
+---
+
+## 2026-10-09 — `web` runs on FastAPI and uvicorn; Pydantic only as an install dependency
+
+Plan: `refactor-runtime-split` WS9 (O9). Owner, 2026-10-08: "We dont need Pydentic, we can use
+dataclasses as it sufice."
+
+- **What changed.** `web/server.py` was `ThreadingHTTPServer`. It is now a FastAPI app under
+  uvicorn. Handlers stay `api.Request` -> `api.Response` dataclasses and run in the thread pool.
+  There is no OpenAPI surface (`docs_url`, `redoc_url`, `openapi_url` are `None`).
+- **The CODE-1 / SEC-11 exception.** FastAPI's install metadata requires `pydantic` and
+  `pydantic-core`, so both are in `uv.lock` and in the cron image (also used by `web`). Our code
+  never imports them: `test_architecture_boundaries.py::test_no_pydantic_import` (TST-2). The
+  2026-10-08 entry below still holds. Starlette alone has no Pydantic, if zero Pydantic is wanted.
+- **SEC-12 stays in one place.** One pure ASGI middleware (`Sec12`) runs the old order: private
+  limiter -> identity -> stranger refusal -> route. Every 401/403 is counted, and fails closed to
+  503. Routes are read from the live `api.ROUTES` table per request, by the raw (not decoded) path,
+  so the di.json regex contract does not change (CODE-5).
+- **Streams stay sync generators.** The plan said "async generator". The 34 MySQL tests of
+  `conversation/src/stream.py` drive it with `next()` and a fake clock. So the listener calls
+  `next()` on its own thread budget (`MAX_STREAMS`, 256) instead, and a stream never holds a
+  request-pool thread. The cost is one thread per open stream, as before. Revisit with an async
+  poll loop when that ceiling is reached.
+- **uvicorn flags.** `access_log=False` (the query can carry `cap` or an exchange code, SEC-6;
+  `Sec12` logs `METHOD path status`), `server_header=False`, `proxy_headers=False` (no hop is
+  trusted for the client address).
+
+---
+
+## 2026-10-08 — Keep dataclasses; no Pydantic
+
+Owner, 2026-10-08: "yes, add this Pydentic decision to DECISION.md today". Re-checks
+2026-02-19 Python port now that the panel API (`src/agento/web/`) takes untrusted JSON.
+
+- **Measured, not guessed.** Every hand-written parse site was read (request bodies, `from_row`,
+  module config `from_dict`, `harness/descriptor.py` `from_declaration`, the shape part of
+  `module_validator.py`). About 730 lines would become about 480 with Pydantic v2: net about -250
+  of about 49.7k Python lines in `src` (0.5%). Estimates, ±25% per area; the sign per area is firm.
+- **The trust boundary gets longer, not shorter.** Panel API body checks are 1–3 lines each today
+  (~65 lines). Pydantic needs ~12 small models plus a `ValidationError`→400 adapter (~95 lines).
+  Lax mode also accepts `"5"` as an int and `1` as a bool, which the hand checks reject, so it would
+  need strict mode.
+- **The saving is on trusted input** (DB rows, manifests checked at setup), where the hand code
+  causes no defects. About 1190 of the 1346 lines of `module_validator.py` are cross-module and
+  security rules that no schema library removes.
+- **Costs.** `pydantic-core` is one more native (Rust) wheel in the locked set and the host CLI;
+  validation on `Job.from_row` adds cost in the consumer claim path (SCL-1); error messages change
+  unless each one becomes a custom error. There is no `to_dict` today, so `model_dump` saves nothing.
+- **Revisit when** the panel API grows well past today's ~65 lines of body checks. Then the scope is
+  Pydantic at the HTTP boundary only, in strict mode, with a new entry here.
+
+---
+
+## 2026-10-07 — A model id is checked by the harness itself, not against a list we keep
+
+Plan: `~/.claude/plans/harness-model-config-tester-08e22f.md`. Owner, 2026-10-07: "i'd like to have
+this test/validate model vs used harness and installed harness to be for all 3 harnesses. So we
+have harness, credentail provider and model - that should be somehow tested."
+
+- **The `agent_view/model` tester asks each harness, through an optional `check_model` member.**
+  Pi matches `--model` against its own catalogue, Codex against the account's list, and the Claude
+  CLI passes any id to the API. Only the harness knows its truth, so a list kept here would drift
+  (the qa_01 incident: `deepseek/deepseek-v4.1-flash` looked valid and was not).
+- **Claude's check is `GET /v1/models/{id}`**: free, no tokens. Any answer other than 200 or 404 is
+  `error`, never `ok` or `MODEL_UNKNOWN`, so an OAuth token the endpoint does not accept gives
+  "could not check".
+- **Network checks run in a child process.** An in-process HTTP client has per-phase timeouts, not a
+  total deadline (DNS, connect, each header read). `subprocess.run(timeout=…)` kills and reaps the
+  child, so the check ends at the deadline. The credential goes to the child on stdin.
+- **The tester never calls `select_credential`.** It stamps `used_at` and takes a lease; the tester
+  reads the pool with `list_credentials` and decrypts only the row a run would take.
+- **CLI and TUI only.** `web` does not load module code, so the panel refuses local testers; a panel
+  button needs a web→cron request (ROADMAP.md).
+
+## 2026-10-06 — Roles are rows; admin stays the one code with built-in admin operations
+
+Plan: `~/.claude/plans/panel-roles-acl-tree-85c647.md`. Owner approval, 2026-10-06: "Instead of
+seeing raw grants, we should see Roles tab and inside normal CRUD. Then in Role edit page we should
+see beautiful tree of resources with checkboxes. You can, again inspire by Magento ACL."
+
+- **A `role` table (`code`, `label`) replaces the hardcoded `("admin", "user")` and the two role
+  CHECKs** (migration `050_role`). `user.role` and `role_grant.role` get foreign keys: `user.role`
+  with no action (a role that a user has cannot be deleted — the DB enforces what the API says),
+  `role_grant.role` with `ON DELETE CASCADE` (grants go with their role). The CHECKs are dropped
+  because MySQL refuses an FK with a referential action on a column a CHECK names (ER 3823).
+  Writers still check the code inside their transaction for a clear message; the FK is the backstop
+  (errno 1452 → "unknown role", 1451 on delete → "N users have this role").
+- **`admin` stays the one code with the built-in admin operations** (`users.manage`,
+  `grants.manage`, `config.write`, `admin.read`, `credentials.manage`; `accounts.may`) and with
+  every module-declared ACL resource. They stay not grantable, so a new role is a `user`-like role.
+  Custom admin-like roles would make those operations grantable rows — a larger change to the trust
+  model, left as a ROADMAP.md follow-up. The checks that compare the code `"admin"` (accounts,
+  launches, the conversation service) keep working because `admin` is a seeded row with the same
+  code.
+- **The code is never renamed; the label is.** The code is the key `user.role` and `role_grant.role`
+  hold and the toolbox reads (`GRANTS_SQL`), so the toolbox needed no change.
+- **One write per scope: `set_role_grants` replaces the role's rows at exactly one scope.** The
+  panel tree saves in one request. A name that the view's workspace already grants is not inserted
+  at the view. A row for a tool of a disabled module is outside the tree, so the write keeps it (it
+  works again when the module is enabled).
+- **The raw `/api/admin/grants*` routes are removed with no alias.** They were never in a release
+  (the commit that added them is in no tag), so no shipped contract breaks (CODE-5). `grant:*` stays
+  for the CLI.
+
+## 2026-10-06 — The launch redeem checks the exact panel Origin only, not Sec-Fetch-Site
+
+- **Problem.** `POST /launch` on the apps origin refused every browser launch on the default
+  hosts. `localhost` is a top-level domain to a browser, so `panel.localhost` and `apps.localhost`
+  are two sites, and the form post carries `Sec-Fetch-Site: cross-site`. The redeem accepted only
+  `same-site` / `same-origin`.
+- **Decision.** The redeem requires the exact panel `Origin` and no longer reads
+  `Sec-Fetch-Site`. A page cannot forge `Origin`, so the exact match already proves the form came
+  from the panel; `Sec-Fetch-Site` added nothing. A non-browser caller can set both headers, and
+  the single-use exchange code stays the credential, as before.
+- **Not changed.** Panel API writes (`security.write_allowed`) still need `Sec-Fetch-Site:
+  same-origin`. Those requests stay on the panel origin.
+
+## 2026-10-06 — Module skills carry YAML frontmatter; a `miniapp-build` skill
+
+Plan: `~/.claude/plans/miniapp-agent-skill-0ca4e7.md`.
+
+- **The problem.** An agent asked for a miniapp wrote an Express server with Jira credentials in
+  env vars and never saved a version. The only agent guide, the generated `miniapp-ui` skill,
+  covers the kit, not the lifecycle or the limits. And Codex never loaded it: Codex 0.160.0
+  refuses a `SKILL.md` without frontmatter (`failed to load skill …: missing YAML frontmatter
+  delimited by ---`), and `miniapp-ui` had none.
+- **Every module `SKILL.md` starts with `name` + `description` frontmatter.** `name` equals the
+  directory. `tests/unit/modules/skill/test_module_skills_contract.py` discovers every
+  `src/agento/modules/*/skills/*/SKILL.md` and enforces it. `gen-skill.ts` emits it for
+  `miniapp-ui`.
+- **The registry reads `description` from the frontmatter**, and `skill:sync` also updates a row
+  whose description changed with the same checksum: the description is derived, so a parser change
+  moves it without a file change. No PyYAML: a leading `---` block, an inline value or a `>`/`|`
+  block.
+- **`miniapp-build` is hand-written and lives in `miniapps`**, beside the generated `miniapp-ui`.
+  It points to `miniapp-ui` for the kit and copies no class list. `versioned_artifacts` does not
+  name it (VA has no dependency on `miniapps`); its workspace guide states the VA-native fact
+  instead: a version is static files, nothing in it runs on a server.
+
+## 2026-10-06 — E9 chat UX: coalesced token streaming, run details as an ACL resource
+
+Plan: `~/.claude/plans/e9-chat-ux-03532f.md`.
+
+- **D-E9-5: partials are coalesced per run, then written by the one delta writer.** Claude
+  (`--include-partial-messages`) and pi send text and thinking token by token. The mapper emits
+  `assistant.partial` / `reasoning.partial`; the framework keeps one pending buffer per run and
+  flushes it as one row every 250 ms or 4 KiB, and the writer commits at most 4 times a second
+  plus one per 200 rows. The complete fragment (`assistant.text`, `assistant.reasoning`)
+  supersedes the buffer of its kind; stream order decides segments. Redaction runs on the joined
+  buffer and holds back a tail that could be a secret's prefix, so a token split across two
+  deltas never reaches a row. A full queue drops partials silently (no gap marker: the complete
+  fragment follows), and the sink keeps partials under half of the per-run budget. No table
+  lock: rows take the thread's row lock in ascending id (D-E9-2) and AUTO_INCREMENT runs with
+  `innodb_autoinc_lock_mode=2`. Proven at 250 parallel runs (`test_delta_scale.py`). Owner
+  approval: D1, 2026-10-06 ("Make sure this is not trade off", RULES.md SCL-1).
+- **D-E9-6: an operation a role can be granted is a module-declared ACL resource.** A module
+  lists `acl_resources: [{id, title}]` in `di.json` (the Magento `acl.xml` pattern); the
+  grantable set is the built-in `artifact.launch` plus every declared id, read from the module
+  directories like `declared_tools()`, so `web`, the CLI and validation agree with no runtime
+  registry. Admin has every resource built in. The conversation module declares
+  `conversation.run_details` (prompts, tool input and output, model, tokens, job links). Owner
+  approval: D4, 2026-10-06 ("by default only for admin role … assign this resource to any other
+  role").
+
+## 2026-10-06 — E9: one timeline for every conversation
+
+Plan: `~/.claude/plans/e9-unified-conversations-552df5.md`.
+
+- **D-E9-1: the store is `conversation_event`.** The PRD proposes `conversation_session`, a
+  per-conversation `seq` and `conversation_source`. They are not added: `execution` already is the
+  run row (job, attempt, harness session, model), the global `conversation_event.id` is a valid
+  keyset cursor, and the source lives on `conversation` (`channel`, `external_ref`,
+  `external_key`). The live path decodes the harness's stdout through the existing
+  `StreamEventMapper` seam; reading native session files is deferred (ROADMAP.md).
+- **D-E9-2: a commit-ordered append.** The cursor is a global AUTO_INCREMENT, so two writers of one
+  thread could take ids 10 and 11 and commit 11 first, and a reader at `id > 10` would never see
+  10. Every insert goes through `service.append_event`, which takes the thread's row lock first
+  (one `UPDATE conversation SET last_activity_at`, which also moves the idle clock). A writer of
+  several threads locks them in ascending id. An AST test allows no second INSERT site.
+- **D-E9-3 (proposal, the owner has not decided): channel threads and tool payloads are an
+  admin's only.** A job that is not a panel turn gets a thread with no owner; only an admin reads
+  it, and a non-admin gets 404. Tool `input`/`output` are stripped for a non-admin even in their
+  own panel thread: a tool can return customer data the user holds no grant on. Admins already
+  read every job's prompt and output (`/api/admin/jobs/{id}`); the timeline shows them a longer
+  excerpt of the same data. Channel threads are read-only (409 `read_only`).
+- **D-E9-4: the answer is the last assistant message.** A harness's `raw_output` is the final
+  answer text (claude `result`, codex last `agent_message`, pi last assistant message), never the
+  stream-json. That is what `job.output` stores and the answer bubble shows.
+
+---
+
+## 2026-10-05 — Panel display settings in an `admin` module
+
+- **A core module, not `web` and not `core`.** The date format and time zone are panel meaning
+  with their own Config tab, so they are an `admin` module (PLC-1 q7 in spirit) with no Python,
+  shaped like `web`. Disabling it gives `display: null`, and the panel falls back to
+  `toLocaleString()`.
+- **`timezones` sits in `harness/options_source.py`.** That file holds the one `options_source`
+  registry that `module:validate`, `config:set` and the Config screen read; the name is historical.
+  A time zone list names no vendor (PLC-2).
+- **`web` resolves `display` with the Config screen's resolver** (`admin/data.get_resolved_fields`),
+  not the `launches.max_concurrent` path: it returns each field's `options` (the allowed set) and
+  the module path (the `config.json` default for a value that is not an option). Enablement is
+  read per request, as for `miniapps`, because the schema list is cached for the process.
+
+---
+
+## 2026-10-04 — Credential limits and re-login from the panel
+
+Plan: `~/.claude/plans/web-admin-panel-improvements-664a27.md` (Phases 3–4).
+
+- **D-PANEL-LOGIN-1: a key pair per login, not the shared key in `web`.** *Superseded
+  2026-10-09 by D-BACKEND-1: `web` holds the key and encrypts the code with it.* A Claude re-login needs
+  the code the admin pastes from the browser. `web` must not hold `AGENTO_ENCRYPTION_KEY`
+  ([zero-trust.md](docs/architecture/zero-trust.md#what-the-backend-holds)), and a plaintext code in the
+  DB would be readable by anything that reads the table for up to 15 minutes. So the cron worker
+  makes an RSA-3072 key pair for each login, writes only the public key to `credential_login`,
+  and keeps the private key in memory. `web` seals the code (OAEP-SHA256, at most 300 printable
+  ASCII characters) and cannot open it again. A worker that dies loses the key, and the login
+  fails `abandoned` — the admin starts a new one. The vendor CLI runs in cron, not in `web`,
+  because cron already writes credentials and has the CLIs; the CLI gets a temp `HOME` and a
+  minimal environment, never the cron environment.
+- **D-PANEL-LOGIN-1: one save path.** The worker saves through
+  `register_credential_and_dispatch`, the function `credential:register` uses (EVT-2), so the
+  refresh lease, the encryption and `credential_register_after` are the same on both paths. A
+  cancel or a sweep that lands before the save commits wins: the save is fenced on
+  `status='verifying'`, and the credential row is locked before the login row on every path.
+- **D-PANEL-LIMITS-1: vendor usage endpoints, read from cron.** `credential:limits` calls
+  each vendor's usage endpoint with the stored credential (Claude and Codex OAuth usage,
+  OpenRouter credits) every 10 minutes and stores the numbers; `web` only reads them. These
+  endpoints are not public API: a failure stores `NULL` ("no data") and logs only the exception
+  class, so a changed endpoint degrades the panel and never a run. A live check of each endpoint
+  is a ROADMAP follow-up.
+
+## 2026-10-02 — Admin TUI screens in the panel; the TUI stays the fallback
+
+The owner asked (2026-10-02): "implement all screens from TUI admin in the React Mantine admin panel.
+Leave TUI as fallback mechanism." Plan: `~/.claude/plans/tui-admin-screens-mantine-panel-0b52dd.md`.
+
+- **D-PANEL-ADMIN-1: `web` reads config but never a secret value.** `GET /api/admin/config` sends
+  `secret`, `is_set` and `source` for a secret field (one predicate, `config_schema.is_secret_field`,
+  shared with the write side's `_prove_not_secret`) and never its value. The read path takes a
+  secret's source from presence (ENV test, raw DB rows, `config.json`) and never calls the
+  decryptor; dependent select options read each non-secret path with `get(path)` in place of
+  `resolve_all()`. The TUI uses the same path, so it no longer decrypts to show `****`.
+- **D-PANEL-ADMIN-1: what stays TUI-only.** Job replay and workspace build need the cron container;
+  secret writes need the key (*reason amended 2026-10-09, D-BACKEND-1: `web` holds the key;
+  secret writes stay TUI-only by choice*); `CONFIG__*` ENV is in the cron store only; a `local` tester would load
+  module code into `web`. The panel shows each one with the CLI command or a hint
+  ([docs/cli/admin.md](docs/cli/admin.md)). No error text from a subprocess or the toolbox (a
+  credential's `error_msg`, a tester's ERROR message) goes to the browser: the panel gets
+  `status`/`error_source`, or a fixed message per tester code. Job content (`prompt`, `output`,
+  `error_message`, cut to 500 chars as in the TUI) is shown to an admin; this exception waits for
+  the owner's confirmation.
+- **D-PANEL-ADMIN-2: `web` mints the tester's `internal_rest` capability on the server side.** It
+  calls `config_test.run_config_test`, which mints a two-minute `internal_rest` token for one
+  `/config-test` request and revokes it. The token never reaches the browser; the route is
+  `config.write`, admin only.
+
+## 2026-10-01 — E8 composable frontend: a static panel, one token source, an immutable miniapp kit
+
+- **The panel is static files on `proxy`, mounted read-only from the installed package.** No Node
+  process at runtime, no new image: the built `framework/web/panel` and `framework/web/miniapp-ui`
+  ship in the wheel and `proxy` mounts them like every other service mounts package code, so
+  `agento upgrade` brings the new panel. `web` stays the API only; the panel origin sends just
+  `/api/*` and `/health` to it.
+
+- **One token source for the panel and miniapps.** `packages/miniapp-kit/src/tokens.ts` generates
+  `agento-ui.css` and builds the Mantine theme. The presentational components render the same
+  `.ag-*` markup a miniapp writes by hand, and a story asserts the computed styles of the panel card
+  and the miniapp card are equal in light and dark. Mantine is kept to the shell, modal, tabs and
+  notifications, where a11y behaviour is costly to rewrite.
+  - *2026-10-02, reversed with owner approval* ("ok, lookbook w Storybooku, rób cały plan", "nic
+    nie jest jeszcze wydane"): the source is now the Mantine theme (`packages/ui/src/theme.ts`),
+    so the panel looks like ui.mantine.dev. `packages/miniapp-kit/scripts/tokens.ts` resolves the
+    theme's CSS variables to literals and emits them under the `--ag-*` names, so the agent-facing
+    CSS names no vendor. `Button`, `StatusBadge`, `TextField`, `SelectField` and `DataTable`
+    render Mantine components with the same props; the cards, headers and states stay `.ag-*`. The
+    "same markup" proof becomes a parity story (`Acceptance/Mantine parity`) that compares the
+    computed styles of each Mantine component and its `.ag-*` twin in light and dark, so a theme
+    change or a Mantine upgrade the kit does not follow fails a test. Kit 1.0.0 was re-cut. The
+    ui.mantine.dev patterns (MIT) are copied into `frontend/lookbook/` as a Storybook catalogue,
+    not as exported components ([plan](docs/plans/2026-10-02-mantine-look-and-lookbook.md)).
+
+- **A released kit version is immutable.** `/_ui/<version>/` is served `immutable`, so its bytes
+  can never change under a cached URL: the released copy is committed and the build fails on a
+  difference. A change is a new version; old versions stay served, so a miniapp never restyles
+  without its author.
+
+- **The kit's bridge is the E6 SDK, byte for byte.** One implementation of the origin and
+  `event.source` checks, not two that can drift.
+
+- **A miniapp opens in a window, not an iframe.** The E6 SDK needs `window.opener`, and a window keeps
+  the app's DOM and the panel's in separate browsing contexts. The window is reserved in the click
+  handler (or the browser blocks it), and the exchange code goes only into a form POST.
+
+- **Module screens are core-only and gated by the module's own probe.** A user or PyPI module never
+  ships JavaScript into the panel origin. With no module-list API, a screen shows only while a GET the
+  module owns answers 2xx — a disabled module answers 404, so this fails closed.
+
+- **Import boundaries are an AST test, not dependency-cruiser.** dependency-cruiser refused the Node
+  version in use; `ts.preProcessFile` over the module panels and shared packages checks the same
+  graph with no new dependency.
+
+- **Stories are tests through `@storybook/addon-vitest`**, not the separate test-runner: every story
+  renders, runs its `play` and fails on an a11y violation inside the same `vitest run`.
 
 ## 2026-09-28 — E3–E5: the job-type contract, the outbox, and the four execution protocols
 
@@ -591,6 +1204,7 @@ their lifetimes:
    as the same uid in the same container, so ptrace-class access (`/proc/<pid>/mem`) was not barred by
    file modes either. This is not new to the SSH key — `ctx.credential` already carries provider
    credentials through the identical field.
+   **Since 2026-10-09 (WS6)** only the runner server calls it; no agent runs beside the consumer.
    **CLOSED 2026-08-25** by `framework/process_hardening.py`: every framework CLI process calls
    `prctl(PR_SET_DUMPABLE, 0)` at import time, so the kernel reparents its `/proc` entries to root and
    denies ptrace-mode access — and these containers drop `CAP_SYS_PTRACE`, so nothing in the container
@@ -625,6 +1239,9 @@ their lifetimes:
    consumer. Every agent_view's run is the same uid, so any agent could source that file and
    decrypt **any** view's key — with `bin/agento agent_view:prepare-run <peer-view>`, which
    prints the resolved key in its JSON `env` field, or with a database client directly.
+
+   **Superseded 2026-10-09 (WS6):** agents now run in the runner, so the V0 delivery below is
+   removed; see the 2026-10-09 entry at the top.
 
    The mechanism that closes it (**V0**, owner decision 2026-09-23): the container keeps **one**
    uid and one shared `/workspace` — views seeing each other's files is a wanted property, so
@@ -1599,3 +2216,46 @@ A new core, disableable channel that watches an agent's open Bitbucket Cloud PRs
 - **Runner ABC shared by Claude and Codex**: common interface, replay support, e2e tests. Not two separate unrelated runners.
 - **20-minute subprocess timeout**: agents have variable duration, but unbounded is too risky. 20 min covers longest observed tasks.
 - **No timeout on ClaudeRunner for job execution**: agent tasks can legitimately run 30s–10min. Premature kill leaves Jira in inconsistent state. Timeout enforcement deferred.
+
+---
+
+## 2026-03-05 — Mention publisher (jira-mention)
+
+- **Comment-level idempotency key** (`jira:mention:{issue_key}:{comment_id}`), not time-windowed — same mention never processed twice.
+- **New toolbox REST endpoint** (`POST /api/jira/issue/comments`): Python code can't use MCP tools directly, needed a REST bridge.
+- **Static `accountId` in config** (`jira_assignee_account_id`): dynamic lookup via `/myself` is unnecessary complexity for a rarely-changing value.
+- **JQL `comment ~ "{accountId}"`**: `text ~ email` returns 0 results (email not indexed from `[~accountid:...]` markup). Jira indexes the raw accountId string from comment bodies.
+- **Reuses `TodoWorkflow`**, no mention-specific workflow needed.
+
+---
+
+## 2026-02-24 — Jira image attachments
+
+- **API v2 over v3** for issue fetching: v3 returns ADF JSON (no direct UUID→attachment mapping). v2 returns wiki markup with `!filename!` directly matching attachment filenames.
+- **Download to disk, not base64 in MCP response**: keeps every `jira_get_issue` response lightweight; agent reads images on demand.
+- **Shared volume mount** (`../workspace/tmp/jira`): toolbox writes, sandbox reads at same path.
+- **Limits: 10 images × 5 MB**: prevents runaway downloads.
+
+---
+
+## 2026-02-22 — Publisher-consumer job queue
+
+- **MySQL `SELECT FOR UPDATE SKIP LOCKED`** over Redis/Celery/Kafka: ~50 jobs/day, 2 workers — no external queue infra needed.
+- **PyMySQL over mysql-connector-python**: pure Python, no C extension build in Docker (base image is `node:22-slim`).
+- **Consumer in same container as cron**: simpler than a separate service. `wait -n` provides fail-fast if either process dies.
+- **Retry via row mutation** (`TODO` + future `scheduled_after`), no separate `RETRYING` status. Backoff: 1m, 5m, 30m.
+- **`INSERT IGNORE` on unique key** for idempotency. Time-windowed keys (e.g., `jira:cron:AI-123:20260220_0800`) prevent duplicate jobs from double-fired cron.
+  - *Superseded 2026-08-18:* job dedupe is SELECT-then-INSERT (see 2026-08-18 Job dedupe, AG-22).
+- **`source` column** (`'jira'`, `'email'`, …) for future multi-publisher extensibility.
+- **JSON structured logs for consumer only**: publisher/sync are short-lived, JSON adds noise there.
+
+---
+
+## 2026-02-19 — Python port (bash → Python)
+
+- **httpx over requests**: native async for future migration, `respx` for clean mocking.
+- **Dataclasses over Pydantic**: simple models (<10 fields) from a trusted internal API. Pydantic is 5 MB+ of unneeded validation.
+- **Single CLI with subcommands** (`sync`, `exec:cron`, `exec:todo`, `task-list`) instead of 4 bash scripts.
+- **Code baked into Docker image** (COPY, not volume mount): venv must be in image. Trade-off: requires rebuild after code changes.
+  - *Superseded:* code now comes in through a read-only bind mount of the project `.venv` (AGENTS.md, Code via volume mounts).
+- **Toolbox REST API is the only Jira interface**: cron container has no Jira credentials. All mutations go through Claude CLI via MCP.

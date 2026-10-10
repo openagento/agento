@@ -18,10 +18,6 @@ CFG_ALERT_SMTP_PASSWORD  = "alerts/smtp_password"
 CFG_ALERT_SMTP_FROM      = "alerts/smtp_from"
 CFG_ALERT_SMTP_TLS       = "alerts/smtp_tls"
 
-# --- telemetry domain constants ---
-
-MCP_TOOLBOX_TOOL_PREFIX = "mcp__toolbox__"
-
 # --- MCP init status vocabulary (the CLI's own words, an open string on the wire) ---
 
 MCP_STATUS_CONNECTED = "connected"
@@ -37,9 +33,3 @@ MCP_STATUS_NOT_CONNECTED = frozenset({
 # connected", never with a warning. Three sets, not two, so that "expected
 # indeterminate" stays distinguishable from "a word we have never seen".
 MCP_STATUS_TRANSIENT = frozenset({"pending"})
-
-# Minimum number of JSON-parseable lines in a transcript before we treat
-# ``recognized_records == 0`` as parser drift (rather than "agent did almost
-# nothing"). Production transcripts run dozens of lines; this filter keeps
-# trivial 1-or-2-line stubs out of the drift alert.
-PARSE_DRIFT_MIN_LINES = 5

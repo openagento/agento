@@ -1,0 +1,13 @@
+/* highlight.js token colors from the Mantine theme's text colors (UI-1): no theme file with color
+   literals, and dark mode follows the scheme. The kit has no twin: `.ag-prose` shows plain code. */
+.root { margin-block: var(--mantine-spacing-md); }
+.language { margin-bottom: calc(var(--mantine-spacing-xs) / 4); font-family: var(--mantine-font-family-monospace); }
+.root :global(.hljs-keyword), .root :global(.hljs-selector-tag), .root :global(.hljs-built_in),
+.root :global(.hljs-meta) { color: var(--mantine-color-violet-text); }
+.root :global(.hljs-string), .root :global(.hljs-regexp), .root :global(.hljs-addition),
+.root :global(.hljs-attr) { color: var(--mantine-color-green-text); }
+.root :global(.hljs-number), .root :global(.hljs-literal), .root :global(.hljs-symbol) { color: var(--mantine-color-orange-text); }
+.root :global(.hljs-title), .root :global(.hljs-section), .root :global(.hljs-name) { color: var(--mantine-color-blue-text); }
+.root :global(.hljs-type), .root :global(.hljs-attribute), .root :global(.hljs-variable) { color: var(--mantine-color-cyan-text); }
+.root :global(.hljs-comment), .root :global(.hljs-quote) { color: var(--mantine-color-dimmed); font-style: italic; }
+.root :global(.hljs-deletion) { color: var(--mantine-color-red-text); }

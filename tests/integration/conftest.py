@@ -228,6 +228,13 @@ def _bootstrap_registries():
 
 
 @pytest.fixture(autouse=True)
+def _runner(start_runner):
+    """Every agent CLI starts in a runner (WS5): an in-process one per test, so a consumer
+    run here goes through the socket, as in a deployment."""
+    start_runner()
+
+
+@pytest.fixture(autouse=True)
 def _keep_bootstrapped_registries():
     """`bootstrap_for_tests()` runs ONCE per session, so a test that clears a registry to
     get a clean slate leaves every later test with an empty one. The observed bite: an empty
@@ -346,15 +353,13 @@ def int_agent_view(tmp_path, int_db_config, monkeypatch):
     """
     # A view-scoped job also runs the workspace-build freshness observer, which builds under
     # BUILD_DIR and opens its OWN connection from env. Same redirection the other build-touching
-    # integration tests use (test_concurrent_materialization, test_app_monitor_e2e).
+    # integration tests use (test_orchestration_scale, test_app_monitor_e2e).
     build_root = str(tmp_path / "build")
     artifacts_root = str(tmp_path / "artifacts")
     patches = [
         patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", artifacts_root),
         patch("agento.framework.artifacts_dir.BUILD_DIR", build_root),
         patch("agento.modules.workspace_build.src.builder.BUILD_DIR", build_root),
-        patch("agento.modules.claude.src.transcript_reader.BUILD_DIR", build_root),
-        patch("agento.modules.codex.src.transcript_reader.BUILD_DIR", build_root),
         # ONE patch, on the class itself. Both observers import the SAME DatabaseConfig, so
         # patching two module paths would patch one attribute twice — and stopping them in start
         # order then restores the first mock instead of the real classmethod, leaking a localhost

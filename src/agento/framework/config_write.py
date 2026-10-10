@@ -15,7 +15,9 @@ from .config_schema import numeric_bound_error
 from .config_schema_options import field_options
 from .scoped_config import Scope
 
-_GATE_KEY = re.compile(r"tools/([a-z][a-z0-9_]*)/is_enabled")
+# The runtime gate keys (no module prefix, no schema): `tool:enable` and `skill:enable` are their CLI.
+# A skill name may carry a dash; it must match a skill_registry row exactly.
+_GATE_KEY = re.compile(r"(tools)/([a-z][a-z0-9_]*)/is_enabled|(skill)/([^/]+)/is_enabled")
 _USE_CLI = "set this field with bin/agento config:set"
 
 
@@ -170,7 +172,9 @@ def validate_config_value(path: str, value: str, *, conn=None, scope: str | None
         depends_value = _effective_depends_on_value(conn, depends_on, scope=scope, scope_id=scope_id)
     options = field_options(field_def, depends_on_value=depends_value)
     allowed = [opt["value"] for opt in options if isinstance(opt, dict) and "value" in opt]
-    if value not in allowed:
+    # A multiselect is stored comma-separated; "" selects none.
+    members = (value.split(",") if value else []) if field_type == "multiselect" else [value]
+    if len(set(members)) != len(members) or any(m not in allowed for m in members):
         raise ConfigWriteError(
             f"Error: Invalid value '{value}' for {field_type} field '{field_name}'\n"
             f"  Allowed values: {', '.join(allowed)}"
@@ -234,9 +238,46 @@ def _gate_key_names() -> set[str]:
     return names
 
 
+def _skill_registered(conn, name: str) -> bool:
+    if conn is None:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM skill_registry WHERE name = %s", (name,))
+            row = cur.fetchone()
+    except Exception:
+        return False  # no skill table (module disabled): nothing is proven registered
+    # Compared here, not by the table's case-insensitive collation: the gate key is read verbatim.
+    return row is not None and row["name"] == name
+
+
+def _is_gate_key(conn, path: str) -> bool:
+    """True for a gate key naming a declared tool or a registered skill; raises for one naming nothing."""
+    gate = _GATE_KEY.fullmatch(path)
+    if gate is None:
+        return False
+    tool, skill = gate.group(2), gate.group(4)
+    if tool is not None and tool not in _gate_key_names():
+        raise ConfigWriteError(f"no module declares tool {tool!r}")
+    if skill is not None and not _skill_registered(conn, skill):
+        raise ConfigWriteError(f"no skill {skill!r} is registered")
+    return True
+
+
+def validate_web_path(conn, path: str) -> bool:
+    """The web form's path check, for a write and a delete alike: a gate key, or a field provably
+    not a secret. Returns True for a gate key, whose value is then ``0`` or ``1`` only."""
+    if not isinstance(path, str):
+        raise ConfigWriteError("path must be a string")
+    if _is_gate_key(conn, path):
+        return True
+    _prove_not_secret(path)
+    return False
+
+
 def _prove_not_secret(path: str) -> None:
     """Refuse unless the field's schema is an object that is provably not a secret."""
-    from .config_schema import is_toolbox_only
+    from .config_schema import is_secret_field
     from .core_config import _find_module_dir, _parse_config_path
 
     parsed = _parse_config_path(path)
@@ -254,28 +295,17 @@ def _prove_not_secret(path: str) -> None:
         schema = ((tool or {}).get("fields") or {}).get(field_name)
     else:
         schema = system.get(field_name) if isinstance(system, dict) else None
-    if (
-        not isinstance(schema, dict)
-        or schema.get("type") == "obscure"
-        or is_toolbox_only(schema)
-        or is_private_key_field(field_name, schema)
-    ):
+    if is_secret_field(schema):
         raise ConfigWriteError(_USE_CLI)
 
 
 def validate_config_write(conn, path: str, value: str, scope: str, scope_id: int, *, allow_secret: bool) -> None:
     if not isinstance(path, str) or not isinstance(value, str):
         raise ConfigWriteError("path and value must be strings")
-    gate = _GATE_KEY.fullmatch(path)
-    if gate and not allow_secret:
-        # The runtime tool gate (no module prefix): `tool:enable` is its CLI.
-        if gate.group(1) not in _gate_key_names():
-            raise ConfigWriteError(f"no module declares tool {gate.group(1)!r}")
+    if not allow_secret and validate_web_path(conn, path):
         if value not in ("0", "1"):
             raise ConfigWriteError("is_enabled must be 0 or 1")
         return
-    if not allow_secret:
-        _prove_not_secret(path)
     validate_config_path(path, scope)
     validate_config_value(path, value, conn=conn, scope=scope, scope_id=scope_id)
 

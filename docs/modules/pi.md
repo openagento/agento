@@ -28,13 +28,13 @@ agento run <code> "say hello"
 
 ## Quick start (Ollama, no credential)
 
-Add Ollama to `docker/docker-compose.override.yml` on `agento-net`:
+Add Ollama to `docker/docker-compose.override.yml` on `exec-net` (the runners' network):
 
 ```yaml
 services:
   ollama:
     image: ollama/ollama:latest
-    networks: [agento-net]
+    networks: [exec-net]
     volumes: [ollama:/root/.ollama]
 volumes:
   ollama:
@@ -72,7 +72,7 @@ Agento therefore checks positively rather than watching for a warning:
 
 | Layer | What it does |
 | --- | --- |
-| `PiSubprocessRunner` | compares **both** `provider` and `model` on **every** assistant message (`docs/session-format.md:85-86`) against the request — not just the last, so a mid-run switch cannot hide — and **fails the job** on any mismatch. A stream with **no** assistant identity also fails: absence cannot prove the right model ran |
+| `PiSubprocessRunner` | compares **both** `provider` and `model` on **every** assistant message (`docs/session-format.md:85-86`) against the request — not just the last, so a mid-run switch cannot hide — and **fails the job** on any mismatch, on the first attempt with no retry (`ModelConfigError`). A stream with **no** assistant identity also fails: absence cannot prove the right model ran |
 | the bridge extension | the same comparison in-process, on every spawn path including interactive. A **missing** actual field counts as a mismatch, and a malformed expectation is **rejected** rather than silently disabling the guard. Records an `agento-model-mismatch` entry and sets `process.exitCode = 1` when headless (`ctx.hasUI !== true`), which survives a clean finish so scripts and CI see the failure |
 | stderr scan | Pi's own anchored "not found" warning is also treated as fatal |
 
@@ -99,6 +99,13 @@ an ordinary run error, because there is no credential to act on.
 
 A mismatch is an ordinary run failure, never a credential failure — the credential is
 fine, the configuration is not.
+
+To find a wrong model before a run, run `agento config:test agent_view/model --agent-view <code>`.
+Pi's check reads `pi --list-models` (the whole table, with the pool's key) and looks for the model
+among the rows of the configured provider, with the same `~` alias rule as the run. A miss answers
+`MODEL_UNKNOWN` with up to 3 near matches. An empty table is `MODEL_CHECK_FAILED`, not a miss:
+Pi prints the same "no models" text when it has no key. Ollama has no catalogue to check
+(`MODEL_NOT_CHECKED`).
 
 ### Router models: `pi/allow_model_substitution`
 
@@ -151,8 +158,8 @@ present there and absent from Pi's catalogue will still be substituted.)
 
 Pi ships no MCP client, so `src/agento/modules/pi/bridge/agento-toolbox.js` is one. It is
 copied into each run directory and loaded with `-e`, and it registers every Toolbox tool
-as `mcp__toolbox__<name>` — the same shape `claude` produces, so
-`job.toolbox_mcp_calls` telemetry works with no change.
+as `mcp__toolbox__<name>` — the same shape `claude` produces. Each call reaches the toolbox
+on the run's capability, so `job.toolbox_mcp_calls` counts it with no change.
 
 It has **zero runtime dependencies** by necessity: Node resolves bare imports by walking
 up from the importing file, and a per-job build directory has no `node_modules` above it.
@@ -316,6 +323,25 @@ Pi supports 40+ providers, but a credential scope has exactly **one** owning har
 `pi` cannot claim the `claude` or `codex` scopes (`DuplicateCredentialScopeError`).
 Further providers need their own scopes — `pi_anthropic`, and so on. Out of scope here.
 
+## Final answer and live timeline fragments
+
+The final answer is the text of the **last assistant message** that has text (its text
+blocks joined with `\n`). User and tool-result text is never part of the answer, so a
+prompt or a Jira comment that a tool returned cannot appear as the agent's words.
+
+`stream_event_mapper` (`src/stream_event_mapper.py`) turns each NDJSON event into
+framework fragments:
+
+| Event | Fragments |
+|---|---|
+| `message_update` `text_delta` / `thinking_delta` | `assistant.partial` / `reasoning.partial` (coalesced by the framework) |
+| `message_end`, `role` = `assistant` | `assistant.reasoning` per thinking block, then `assistant.text` (skipped when empty); `error` when `errorMessage` is set |
+| `tool_execution_start` | `tool.started`, `call_id` = `toolCallId`, `tool_name` = `toolName`, `input` = JSON of `args` |
+| `tool_execution_end` | `tool.completed`, `output` = text blocks of `result.content`, `is_error` = `isError` or `result.isError` |
+
+An older Pi that sends no `tool_execution_start` or no `toolCallId` still gives a
+`tool.completed` fragment, with an empty `call_id`.
+
 ## See also
 
 - [../architecture/harness-contract.md](../architecture/harness-contract.md) — the contract
@@ -359,7 +385,7 @@ Ollama section) — or, for a throwaway check against the dev stack, which start
 `-f docker-compose.dev.yml` and therefore does **not** merge the override:
 
 ```bash
-docker run -d --name ollama --network <project>_agento-net --network-alias ollama \
+docker run -d --name ollama --network <project>_exec-net --network-alias ollama \
   -v ollama:/root/.ollama ollama/ollama:latest
 docker exec ollama ollama pull qwen2.5:0.5b
 ```

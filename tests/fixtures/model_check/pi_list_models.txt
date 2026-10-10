@@ -1,0 +1,15 @@
+provider    model                                               context  max-out  thinking  images
+openai      gpt-4                                               8.2K     8.2K     no        no    
+openai      gpt-4-turbo                                         128K     4.1K     no        yes   
+openrouter  ~deepseek/deepseek-v4-flash-latest                  1.0M     65.5K    yes       no    
+openrouter  deepseek/deepseek-chat-v3.1                         163.8K   32.8K    yes       no    
+openrouter  deepseek/deepseek-r1                                64K      16K      yes       no    
+openrouter  deepseek/deepseek-r1-0528                           163.8K   32.8K    yes       no    
+openrouter  deepseek/deepseek-v3.1-terminus                     131.1K   32.8K    yes       no    
+openrouter  deepseek/deepseek-v3.2                              163.8K   65.5K    yes       no    
+openrouter  deepseek/deepseek-v3.2-exp                          163.8K   65.5K    yes       no    
+openrouter  deepseek/deepseek-v4-flash                          1.0M     131.1K   yes       no    
+openrouter  deepseek/deepseek-v4-flash-0731                     1.0M     65.5K    yes       no    
+openrouter  deepseek/deepseek-v4-pro                            1.0M     384K     yes       no    
+openrouter  google/gemini-2.5-flash                             1.0M     65.5K    yes       yes   
+openrouter  google/gemini-2.5-flash-lite                        1.0M     65.5K    yes       yes   

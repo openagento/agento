@@ -40,6 +40,24 @@ def _rows(conn, sql, params=()) -> list[dict]:
     return rows
 
 
+# --- the title (E9 chat UX, U9) ---------------------------------------------
+
+def test_an_untitled_thread_is_named_by_its_first_message_only(conn, world):
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title=None)
+    _submit(conn, cid, world, content="  Napraw   stronę\nlogowania  ")
+    _submit(conn, cid, world, cmid="c2", content="a second message")
+
+    assert _rows(conn, "SELECT title FROM conversation WHERE id = %s", (cid,))[0]["title"] \
+        == "Napraw stronę logowania"
+
+
+def test_a_long_first_message_is_cut_on_a_word():
+    title = service.derive_title("word " * 30)
+
+    assert len(title) <= service.TITLE_CHARS and title.endswith("word…")
+
+
 # --- the three-step contract ----------------------------------------------
 
 def test_a_submission_publishes_one_job_and_announces_one_turn(conn, world):
@@ -288,8 +306,9 @@ def test_the_next_turn_is_not_blocked_for_ever_by_a_missing_finalizer(conn, worl
 # --- the routes ------------------------------------------------------------
 
 class _Req:
-    def __init__(self, conn, user, params=None, json=None):
+    def __init__(self, conn, user, params=None, json=None, query=None):
         self.conn, self.session, self.params, self.json = conn, _Session(user), params or {}, json
+        self.query = query or {}
 
 
 class _Session:
@@ -481,18 +500,18 @@ def test_the_revival_and_the_new_turn_commit_together(conn, world, monkeypatch):
     conn.commit()
 
     ran: list = []
-    real_event = service._event
+    real_event = service.append_event
 
-    def barrier(cur, **kwargs):
+    def barrier(cur, conversation_id, **kwargs):
         """Called inside the post's transaction, right after the message insert."""
-        real_event(cur, **kwargs)
+        real_event(cur, conversation_id, **kwargs)
         outside = _test_connection(autocommit=False)
         try:
             ran.append(retention.auto_archive(outside, idle_days=30))
         finally:
             outside.close()
 
-    monkeypatch.setattr(service, "_event", barrier)
+    monkeypatch.setattr(service, "append_event", barrier)
     service.submit_message(conn, conversation_id=cid, user_id=world["owner"].id,
                            client_message_id="c1", content="hi", reactivate_actor_id=1)
 
@@ -550,3 +569,119 @@ def test_a_lone_surrogate_is_refused_at_every_text_input(conn, world):
                             json={"client_message_id": bad, "content": "ok"})).status == 400
     assert routes.send(_Req(conn, world["owner"], params={"id": cid},
                             json={"client_message_id": "c1", "content": bad})).status == 400
+
+
+def test_a_thread_created_with_a_title_keeps_it(conn, world):
+    cid = _conversation(conn, world)
+    _submit(conn, cid, world, content="something else")
+
+    assert _rows(conn, "SELECT title FROM conversation WHERE id = %s", (cid,))[0]["title"] == "t"
+
+
+def test_show_says_whether_the_caller_sees_run_details(conn, world):
+    """`conversation.run_details` (owner decision D4): a `user` role sees them only with the
+    grant; without it a run keeps its shape but omits harness, credential, model, tokens and
+    the job link."""
+    cid = str(_conversation(conn, world))
+    assert routes.show(_Req(conn, world["owner"], params={"id": cid})).body["run_details"] is False
+    accounts.add_grant(conn, "user", "operation", service.RUN_DETAILS, agent_view_id=world["view"])
+    assert routes.show(_Req(conn, world["owner"], params={"id": cid})).body["run_details"] is True
+
+    run = {"execution_id": "e", "job_id": 7, "attempt": 1, "status": "done", "started_at": None,
+           "finished_at": None, "type": "conversation", "harness": "claude",
+           "provider": "anthropic", "credential": "team-1", "model": "m",
+           "input_tokens": 1, "output_tokens": 2}
+    assert set(routes._run_json(run, False)) == {"execution_id", "attempt", "status",
+                                                 "started_at", "finished_at"}
+    shown = routes._run_json(run, True)
+    assert (shown["harness"], shown["provider"], shown["credential"], shown["model"]) == (
+        "claude", "anthropic", "team-1", "m")
+
+
+# --- regenerate (ROADMAP E3-E5) -------------------------------------------------
+
+def _regenerate(conn, user, cid, message_id, cmid="r1"):
+    return routes.regenerate(_Req(conn, user, params={"id": str(cid)},
+                                  json={"message_id": message_id,
+                                        "client_message_id": cmid}))
+
+
+def test_regenerate_re_asks_the_named_message_as_a_new_turn(conn, world):
+    cid = _conversation(conn, world)
+    first, _, _ = service.submit_message(conn, conversation_id=cid,
+                                         user_id=world["owner"].id,
+                                         client_message_id="c1", content="pytanie")
+
+    response = _regenerate(conn, world["owner"], cid, first)
+
+    assert response.status == 201
+    assert response.body["message_id"] != first
+    with conn.cursor() as cur:
+        cur.execute("SELECT content FROM message WHERE id = %s",
+                    (response.body["message_id"],))
+        assert cur.fetchone()["content"] == "pytanie"
+    conn.commit()
+
+
+def test_a_repeated_regenerate_click_replays_into_the_same_turn(conn, world):
+    cid = _conversation(conn, world)
+    first, _, _ = service.submit_message(conn, conversation_id=cid,
+                                         user_id=world["owner"].id,
+                                         client_message_id="c1", content="pytanie")
+
+    one = _regenerate(conn, world["owner"], cid, first)
+    two = _regenerate(conn, world["owner"], cid, first)
+
+    assert (one.status, two.status) == (201, 200)
+    assert one.body == two.body
+
+
+def test_a_second_deliberate_regeneration_is_a_second_turn(conn, world):
+    cid = _conversation(conn, world)
+    first, _, _ = service.submit_message(conn, conversation_id=cid,
+                                         user_id=world["owner"].id,
+                                         client_message_id="c1", content="pytanie")
+
+    one = _regenerate(conn, world["owner"], cid, first, cmid="r1")
+    two = _regenerate(conn, world["owner"], cid, first, cmid="r2")
+
+    assert one.body["message_id"] != two.body["message_id"]
+
+
+def test_regenerate_of_a_message_in_another_thread_is_404(conn, world):
+    mine = _conversation(conn, world)
+    theirs = _conversation(conn, world)
+    elsewhere, _, _ = service.submit_message(conn, conversation_id=theirs,
+                                             user_id=world["owner"].id,
+                                             client_message_id="c1", content="pytanie")
+
+    assert _regenerate(conn, world["owner"], mine, elsewhere).status == 404
+
+
+def test_regenerate_of_an_assistant_row_is_404(conn, world):
+    """Only a user message is re-askable: the answer is not the question."""
+    cid = _conversation(conn, world)
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO message (conversation_id, role, content) "
+                    "VALUES (%s, 'assistant', 'odpowiedź')", (cid,))
+        assistant_id = cur.lastrowid
+    conn.commit()
+
+    assert _regenerate(conn, world["owner"], cid, assistant_id).status == 404
+
+
+@pytest.mark.parametrize("message_id", [0, -1, "7", 1.5, None, True])
+def test_regenerate_refuses_a_message_id_that_is_not_a_positive_integer(
+        conn, world, message_id):
+    cid = _conversation(conn, world)
+
+    assert _regenerate(conn, world["owner"], cid, message_id).status == 400
+
+
+def test_another_users_thread_cannot_be_regenerated(conn, world):
+    cid = _conversation(conn, world)
+    first, _, _ = service.submit_message(conn, conversation_id=cid,
+                                         user_id=world["owner"].id,
+                                         client_message_id="c1", content="pytanie")
+
+    assert _regenerate(conn, world["stranger"], cid, first).status == 404

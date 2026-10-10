@@ -29,7 +29,7 @@
 | `config:list [prefix]` | List config values (all scopes) |
 | `config:remove <path> [--scope=S] [--scope-id=N]` | Remove config override from DB |
 | `config:test <path> \| --all [--agent-view CODE]` | Test a field's live credential or connection — four states, exit 1 on failure ([details](config.md#configtest)) |
-| **Credentials** (LRU pool per scope — no sticky primary; `token:*` are deprecated aliases) | |
+| **Credentials** (LRU pool per scope — no sticky primary) | |
 | `credential:register <scope> <label>` | Register OAuth credential interactively ([details](credentials.md)) |
 | `credential:register <scope> <label> --with-api-key` | Register API-key credential; secret read from stdin/getpass ([details](credentials.md)) |
 | `credential:register <scope> <label> --with-access-token` | Register access-token; JWT read from stdin/getpass ([details](credentials.md)) |
@@ -40,6 +40,8 @@
 | `credential:reset <id>` | Clear error status without re-auth |
 | `credential:deregister <id>` | Disable credential |
 | `credential:usage` | Show credential usage (incl. credential-less runs by `(harness, provider)`) |
+| `credential:limits` | Fetch each credential's vendor usage limits into `credential.limits` (cron, every 10 min) |
+| `credential:web-login` | Run panel re-logins in a PTY (cron, every minute) |
 | **Ingress** | |
 | `ingress:bind <type> <value> <agent_view> [--priority N]` | Bind inbound identity to agent_view. For regex identity types (e.g. `outlook_sender`), `<value>` is a case-insensitive `fullmatch` regex and `--priority` selects the winner (higher wins; ties between different views are ambiguous). |
 | `ingress:list [--type <type>] [--json]` | List all identity bindings |
@@ -72,9 +74,10 @@
 | `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |
 | `config:resolve <module> [--scope=S] [--scope-id=N] [--json]` | Resolve effective config values with source info |
-| **Panel users and grants** | |
+| **Panel users, roles and grants** | |
 | `user:create <username> [--role R]` | Create a panel user; password from a prompt or stdin, never argv ([details](user.md)) |
 | `user:list` / `user:set-role <u> <role>` / `user:activate <u>` / `user:deactivate <u>` / `user:password <u>` | Manage panel users; a role change or deactivation ends their sessions and launches ([details](user.md)) |
+| `role:list` / `role:create <code> --label L` / `role:delete <code>` | List, create or delete panel roles; `admin` and `user` are built in ([details](role.md)) |
 | `grant:add --role R (--tool T \| --operation O) (--workspace C \| --agent-view C)` | Grant a role a tool or `artifact.launch` in one scope ([details](grant.md)) |
 | `grant:list [--role R]` / `grant:remove <id>` | List or remove grants; removal ends that role's launches in the scope ([details](grant.md)) |
 | **Capabilities** | |

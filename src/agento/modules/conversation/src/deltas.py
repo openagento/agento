@@ -1,4 +1,4 @@
-"""The delta sink: the only writer of `execution_delta` and of `assistant.delta` (§6.4.1, §8.2).
+"""The delta sink: the only writer of `execution_delta` and of streamed fragments (§6.4.1, §8.2).
 
 The framework owns the queue and the writer thread; this file owns the rows. Everything here
 runs on that thread, off the harness's drain path, on its **own** connection — the seam is
@@ -10,7 +10,14 @@ Two rows per fragment, in one transaction:
 * `execution_delta` — the ordering and cap ledger, unique on `(execution_id, seq)`, which is
   what makes a re-delivered fragment harmless.
 * `conversation_event` — what a reader actually sees, keyed `('delta', <the ledger row id>)`
-  so the same uniqueness carries into the stream.
+  so the same uniqueness carries into the stream. Its `kind` is the fragment's own canonical
+  kind (`FRAGMENT_KINDS` in the framework consumer) or a marker (`gap`, `truncated`); older
+  rows say `assistant.delta` and a reader treats them as text (E9 §3.2). Live text
+  (`assistant.partial`, `reasoning.partial`) spends at most half of each cap and is dropped
+  silently past it.
+
+Every string field is first cut to `stream/max_fragment_bytes`, so one huge tool output
+spends a bounded share of the per-execution byte cap and the timeline stays readable.
 
 **The caps are the module's, not the framework's** (§8.2). Exceeding either
 `stream/max_deltas_per_execution` or `stream/max_delta_bytes_per_execution` stops the deltas
@@ -24,8 +31,11 @@ import json
 import logging
 from collections.abc import Sequence
 
+import pymysql
+
 from agento.framework.database_config import DatabaseConfig
 from agento.framework.db import get_connection
+from agento.framework.execution_deltas import SUPERSEDED_BY
 from agento.framework.execution_hooks import DeltaRecord
 
 from . import service
@@ -49,7 +59,11 @@ def _sql_timeout_seconds(conn) -> int:
                              read_config_defaults(core), load_db_overrides(conn)).value)
 
 SOURCE_KIND = "delta"
-EVENT_KIND = "assistant.delta"
+MARKERS = ("gap", "truncated")
+# A lock wait or a deadlock on the thread row is retried, not dropped: the framework's
+# writer thread logs and discards a batch whose `write` raises.
+_RETRYABLE = (1205, 1213)
+_ATTEMPTS = 3
 
 
 # How many executions one sink keeps accounted in memory. Well above the executions a
@@ -66,12 +80,9 @@ class _Budget:
 
     def __init__(self, count: int, size: int, truncated: bool) -> None:
         self.count, self.bytes, self.truncated = count, size, truncated
-        # The conversation this execution belongs to, remembered the first time it
-        # RESOLVES: it cannot change afterwards, and re-reading it per fragment is a
-        # three-table join per streamed token (CODE-8). A miss is deliberately not cached:
-        # §4.1 sets `message.job_id` in a second commit, so the first fragments of a run
-        # can arrive before the join can see the thread, and freezing that miss would
-        # silently drop every event of exactly that run.
+        # The conversation this execution belongs to: `execution.conversation_id`, set at
+        # claim and committed before the run prints its first line, so it is read once,
+        # when the budget is seeded, and never changes afterwards (CODE-8).
         self.conversation: int | None = None
 
 
@@ -86,16 +97,34 @@ class ConversationDeltaSink:
 
     def write(self, batch: Sequence[DeltaRecord]) -> None:
         conn = self._connection()
-        # Both caps resolved ONCE per batch, not per fragment: `service.config` re-reads
+        # The caps resolved ONCE per batch, not per fragment: `service.config` re-reads
         # every DB override and the module's system.json each time, and a batch is a burst
         # of streamed tokens (CODE-8). A batch is short, so a cap changed mid-stream takes
         # effect on the next one.
         caps = (service.config(conn, "stream/max_deltas_per_execution"),
-                service.config(conn, "stream/max_delta_bytes_per_execution"))
-        with conn.cursor() as cur:
-            for record in batch:
-                self._one(cur, record, caps)
-        conn.commit()
+                service.config(conn, "stream/max_delta_bytes_per_execution"),
+                service.config(conn, "stream/max_fragment_bytes"))
+        for attempt in range(1, _ATTEMPTS + 1):
+            try:
+                with conn.cursor() as cur:
+                    # The lock-order invariant (E9 §3.4): every thread of the batch, in
+                    # ascending id, before the first write.
+                    service.lock_conversations(cur, [
+                        c for c in (self._budget(cur, r.execution_id).conversation
+                                    for r in batch) if c is not None])
+                    live = self._live(cur, {r.execution_id for r in batch})
+                    for record in batch:
+                        self._one(cur, record, caps, live)
+                conn.commit()
+                return
+            except pymysql.err.OperationalError as exc:
+                conn.rollback()
+                # The budgets were spent in memory before the commit that failed; drop
+                # them, so the retry re-seeds them from the rows that did commit.
+                for record in batch:
+                    self._budgets.pop(record.execution_id, None)
+                if exc.args[0] not in _RETRYABLE or attempt == _ATTEMPTS:
+                    raise
 
     # -- the connection ------------------------------------------------------
 
@@ -111,6 +140,11 @@ class ConversationDeltaSink:
         self._conn = get_connection(DatabaseConfig.from_env())
         seconds = max(1, _sql_timeout_seconds(self._conn))
         with self._conn.cursor() as cur:
+            # READ COMMITTED, not the server default: under REPEATABLE READ every plain
+            # SELECT of a transaction answers from the snapshot its FIRST read took, and
+            # taking a row lock afterwards does not refresh it. `_live` would then read a
+            # status from before the finalizer committed and let a late partial through.
+            cur.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
             cur.execute("SET SESSION max_execution_time = %s", (seconds * 1000,))
             # MySQL applies `max_execution_time` to read-only SELECTs ONLY, and every write
             # here is an INSERT. Without this second knob the declared timeout bounded the
@@ -123,17 +157,51 @@ class ConversationDeltaSink:
 
     # -- one fragment --------------------------------------------------------
 
-    def _one(self, cur, record: DeltaRecord, caps: tuple[int, int]) -> None:
+    @staticmethod
+    def _live(cur, execution_ids: set[str]) -> set[str]:
+        """Which of these executions have not been finalized yet.
+
+        Read AFTER the batch has taken its threads’ row locks, which is what makes it
+        race-free: the finalizer takes the same lock before it forgets the attempt’s
+        fragments, so it either committed before this read (and we see the closed status)
+        or it waits for this batch (and its delete runs last). Without it, a partial that
+        the writer thread had already queued could land after the cleanup and sit in the
+        timeline for ever - `execution_deltas.close()` only QUEUES the tail. One keyed read
+        per batch, not per fragment (CODE-8).
+        """
+        if not execution_ids:
+            return set()
+        ids = list(execution_ids)
+        marks = ", ".join(["%s"] * len(ids))
+        cur.execute(f"SELECT execution_id, status FROM execution "
+                    f"WHERE execution_id IN ({marks})", ids)
+        closed = {r["execution_id"] for r in cur.fetchall() if r["status"] != "running"}
+        # An execution with no row at all is not a finalized one: the fragment is written,
+        # exactly as before this guard.
+        return execution_ids - closed
+
+    def _one(self, cur, record: DeltaRecord, caps: tuple[int, int, int],
+             live: set[str]) -> None:
         budget = self._budget(cur, record.execution_id)
+        if record.kind in SUPERSEDED_BY and record.execution_id not in live:
+            # The attempt is over and its fragments are already forgotten; the complete
+            # fragment (and the answer) still get through.
+            return
         if budget.truncated:
             # Already capped. A second marker would say nothing the first does not.
             return
-        if record.kind == "delta" and self._over_cap(budget, record, caps):
+        text, data = _cut(record, caps[2])
+        size = _size(text, data)
+        if record.kind in SUPERSEDED_BY and self._over_half(budget, size, caps):
+            # Live text gets half the budget and is dropped silently past it: its complete
+            # fragment follows, and live text must never push a tool call or the answer out.
+            return
+        if record.kind not in MARKERS and self._over_cap(budget, size, caps):
             budget.truncated = True
             marker, _ = self._ledger(cur, record.execution_id, record.seq, "truncated")
             if marker is not None:
-                self._event(cur, budget, record.execution_id, record.seq, "truncated",
-                            None, None, ledger_id=marker)
+                self._event(cur, budget, record, "truncated", {"seq": record.seq},
+                            ledger_id=marker)
             return
         row_id, fresh = self._ledger(cur, record.execution_id, record.seq, record.kind)
         if row_id is None:
@@ -141,17 +209,19 @@ class ConversationDeltaSink:
         if fresh:
             # Only a NEW fragment spends the budget; a re-delivery already paid.
             budget.count += 1
-            budget.bytes += len((record.text or "").encode("utf-8"))
-        # Attempted on a re-delivery too: the first attempt may have found no conversation
-        # yet (§4.1 sets `message.job_id` in a second commit), and the ledger row alone
-        # would then have swallowed the event for ever. `_event`'s own INSERT IGNORE on
-        # `uq_source` is what makes the retry cost nothing when the event already exists.
-        self._event(cur, budget, record.execution_id, record.seq, record.kind,
-                    record.text, record.tool_name, ledger_id=row_id)
+            budget.bytes += size
+        # Attempted on a re-delivery too: `_event`'s INSERT IGNORE on `uq_source` is what
+        # makes the retry cost nothing when the event already exists.
+        self._event(cur, budget, record, record.kind,
+                    {"seq": record.seq, "text": text, "tool_name": record.tool_name,
+                     "data": data}, ledger_id=row_id)
 
-    def _over_cap(self, budget: _Budget, record: DeltaRecord, caps: tuple[int, int]) -> bool:
-        max_deltas, max_bytes = caps
-        size = len((record.text or "").encode("utf-8"))
+    def _over_half(self, budget: _Budget, size: int, caps: tuple[int, int, int]) -> bool:
+        max_deltas, max_bytes, _ = caps
+        return budget.count + 1 > max_deltas // 2 or budget.bytes + size > max_bytes // 2
+
+    def _over_cap(self, budget: _Budget, size: int, caps: tuple[int, int, int]) -> bool:
+        max_deltas, max_bytes, _ = caps
         return budget.count + 1 > max_deltas or budget.bytes + size > max_bytes
 
     def _budget(self, cur, execution_id: str) -> _Budget:
@@ -167,17 +237,19 @@ class ConversationDeltaSink:
             "FROM execution_delta WHERE execution_id = %s", (execution_id,))
         row = cur.fetchone() or {}
         cur.execute(
-            # `LENGTH(payload->>'$.text')` - the UTF-8 BYTES of the same text `_one`
-            # counts, not the characters of the whole JSON row. On CHAR_LENGTH(payload)
-            # the cap meant one thing while the process lived and another after a
-            # restart: the envelope's keys were counted, every escape was counted, and a
-            # multibyte character counted as one. A cap that changes size on restart is
-            # not a cap.
-            "SELECT COALESCE(SUM(LENGTH(payload->>'$.text')), 0) AS size "
-            "FROM conversation_event WHERE execution_id = %s AND kind = %s",
-            (execution_id, EVENT_KIND))
+            # `LENGTH(...)` - the UTF-8 BYTES of the same fields `_size` counts, not the
+            # characters of the whole JSON row. On CHAR_LENGTH(payload) the cap meant one
+            # thing while the process lived and another after a restart: the envelope's
+            # keys were counted, every escape was counted, and a multibyte character
+            # counted as one. A cap that changes size on restart is not a cap.
+            "SELECT COALESCE(SUM(" + _SIZE_SQL + "), 0) AS size "
+            "FROM conversation_event WHERE execution_id = %s AND source_kind = %s",
+            (execution_id, SOURCE_KIND))
         size = (cur.fetchone() or {}).get("size") or 0
+        cur.execute("SELECT conversation_id FROM execution WHERE execution_id = %s",
+                    (execution_id,))
         budget = _Budget(int(row.get("n") or 0), int(size), bool(row.get("capped")))
+        budget.conversation = (cur.fetchone() or {}).get("conversation_id")
         self._budgets[execution_id] = budget
         # One entry per execution, never removed, is unbounded memory in a consumer that
         # runs for weeks (CODE-8). Dropping the oldest is safe rather than merely cheap:
@@ -205,25 +277,33 @@ class ConversationDeltaSink:
         row = cur.fetchone()
         return (row["id"] if row else None), False
 
-    def _event(self, cur, budget: _Budget, execution_id: str, seq: int, kind: str,
-               text: str | None, tool_name: str | None, *, ledger_id: int) -> None:
+    def _event(self, cur, budget: _Budget, record: DeltaRecord, kind: str, payload: dict,
+               *, ledger_id: int) -> None:
         if budget.conversation is None:
-            cur.execute(
-                "SELECT c.id FROM conversation c "
-                "JOIN message m ON m.conversation_id = c.id "
-                "JOIN execution e ON e.job_id = m.job_id "
-                "WHERE e.execution_id = %s LIMIT 1", (execution_id,))
-            row = cur.fetchone()
-            if row is None:
-                # Not a conversation's run, or not one YET. The ledger row still stands:
-                # the cap is per execution, whoever owns it.
-                return
-            budget.conversation = row["id"]
-        cur.execute(
-            "INSERT IGNORE INTO conversation_event "
-            "(conversation_id, execution_id, kind, payload, source_kind, source_id) "
-            "VALUES (%s, %s, %s, %s, %s, %s)",
-            (budget.conversation, execution_id, EVENT_KIND,
-             json.dumps({"seq": seq, "fragment": kind, "text": text,
-                         "tool_name": tool_name}),
-             SOURCE_KIND, ledger_id))
+            # A run with no thread (minted before this module linked runs). The ledger row
+            # still stands: the cap is per execution, whoever owns it.
+            return
+        service.append_event(cur, budget.conversation, kind=kind, payload=payload,
+                             execution_id=record.execution_id, source_kind=SOURCE_KIND,
+                             source_id=ledger_id, locked=True)
+
+
+# The fields a fragment spends the byte budget with, in Python and in SQL alike.
+_SIZE_SQL = ("LENGTH(COALESCE(payload->>'$.text', '')) "
+             "+ LENGTH(COALESCE(payload->>'$.data.input', '')) "
+             "+ LENGTH(COALESCE(payload->>'$.data.output', ''))")
+
+
+def _cut(record: DeltaRecord, max_bytes: int) -> tuple[str | None, dict | None]:
+    from .finalizer import truncate_utf8
+
+    def one(value):
+        return truncate_utf8(value, max_bytes) if isinstance(value, str) else value
+
+    data = None if record.data is None else {k: one(v) for k, v in record.data.items()}
+    return one(record.text), data
+
+
+def _size(text: str | None, data: dict | None) -> int:
+    parts = [text] + [(data or {}).get(k) for k in ("input", "output")]
+    return sum(len(p.encode("utf-8")) for p in parts if isinstance(p, str))

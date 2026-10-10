@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Stand-in `claude` CLI for scale tests (TST-3: it fails where the real CLI fails).
+# Streams the stream_tool_use fixture with jitter under a per-run session id, files the
+# session under $HOME like the real CLI, and answers with the access token it found in
+# its own materialized $HOME/.claude/.credentials.json. FAKE_EXIT=1 -> rc 1, no result.
+set -u
+fixture="$(dirname "$0")/../claude/stream_tool_use.jsonl"
+token=$(sed -n 's/.*"accessToken": *"\([^"]*\)".*/\1/p' "$HOME/.claude/.credentials.json")
+[ -n "$token" ] || { echo "Not logged in" >&2; exit 1; }
+sid=$(printf '00000000-0000-4000-8000-%012d' "$$")
+session="$HOME/.claude/projects/$(pwd | sed 's/[^A-Za-z0-9]/-/g')/$sid.jsonl"
+mkdir -p "$(dirname "$session")"
+sed '$d' "$fixture" | while IFS= read -r line; do
+  sleep "1.$((RANDOM % 10))"  # ~10 s a run: longer than the claim ramp at 200, so runs overlap
+  line="${line//00000000-0000-4000-8000-000000000001/$sid}"
+  echo "$line" >> "$session"
+  echo "$line"
+done
+[ "${FAKE_EXIT:-0}" = 1 ] && { echo "fake failure" >&2; exit 1; }
+echo "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"$token\",\"session_id\":\"$sid\",\"num_turns\":3,\"duration_ms\":500,\"total_cost_usd\":0.0042,\"usage\":{\"input_tokens\":120,\"output_tokens\":40}}"

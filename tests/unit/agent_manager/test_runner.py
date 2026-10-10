@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -222,6 +223,7 @@ class TestClaudeSubprocessRunner:
             "--strict-mcp-config",
             "--output-format", "stream-json",
             "--verbose",
+            "--include-partial-messages",
         ]
 
     def test_build_command_with_model(self):
@@ -234,6 +236,7 @@ class TestClaudeSubprocessRunner:
             "--strict-mcp-config",
             "--output-format", "stream-json",
             "--verbose",
+            "--include-partial-messages",
             "--model", "claude-sonnet-4-20250514",
         ]
 
@@ -253,6 +256,7 @@ class TestClaudeSubprocessRunner:
             "--strict-mcp-config",
             "--output-format", "stream-json",
             "--verbose",
+            "--include-partial-messages",
         ]
 
     def test_build_resume_command_with_model(self):
@@ -312,7 +316,6 @@ class TestClaudeSubprocessRunner:
             dry_run=False,
             credential=_make_token({"subscription_key": "sk-ant-test"}),
         )
-        runner._record_usage = MagicMock()
         runner._execute_process = MagicMock(
             return_value=_make_completed_process(stdout=stream_output),
         )
@@ -390,6 +393,7 @@ class TestCodexSubprocessRunner:
             "codex", "exec", "Hello world",
             "--json",
             "--skip-git-repo-check",
+            "-c", "model_reasoning_summary=auto",
             "--dangerously-bypass-approvals-and-sandbox",
         ]
 
@@ -400,6 +404,7 @@ class TestCodexSubprocessRunner:
             "codex", "exec", "Hello world",
             "--json",
             "--skip-git-repo-check",
+            "-c", "model_reasoning_summary=auto",
             "--dangerously-bypass-approvals-and-sandbox",
             "--model", "o3",
         ]
@@ -412,6 +417,7 @@ class TestCodexSubprocessRunner:
             "Continue working from where you left off.",
             "--json",
             "--skip-git-repo-check",
+            "-c", "model_reasoning_summary=auto",
             "--dangerously-bypass-approvals-and-sandbox",
         ]
 
@@ -427,7 +433,6 @@ class TestCodexSubprocessRunner:
             dry_run=False,
             credential=_make_token({"subscription_key": "sk-openai-test"}),
         )
-        runner._record_usage = MagicMock()
         stream = (
             '{"type":"thread.started","thread_id":"sess-x"}\n'
             '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"codex result output"}}\n'
@@ -626,7 +631,7 @@ class TestCodexSubprocessRunnerJsonOutput:
         assert result.input_tokens == 101854
         # output_tokens (1904) + reasoning_output_tokens (833)
         assert result.output_tokens == 1904 + 833
-        # raw_output is the concatenated agent_message text(s) from item.completed
+        # raw_output is the LAST agent_message text from item.completed
         assert "353043085362789" in result.raw_output
         # codex emits no session-level MCP init self-report (only per-call
         # mcp_tool_call items), so the connection signal stays unknown.
@@ -723,7 +728,6 @@ class TestCredentialClaimedByCaller:
         stream = '{"type": "result", "result": "ok", "usage": {"input_tokens": 1, "output_tokens": 1}}\n'
 
         runner = make_runner("claude", dry_run=False, credential=token)
-        runner._record_usage = MagicMock()
         captured_env = {}
 
         def _fake_execute(_cmd, env, stdin_payload=None):
@@ -767,7 +771,6 @@ class TestRecordUsageBestEffort:
             return_value=_make_completed_process(stdout=stream_output),
         )
 
-        # _record_usage silently swallows errors (no DB in test env) — run() should still return
         result = runner.execute(RunRequest(prompt="test"))
 
         assert result.input_tokens == 10
@@ -783,16 +786,15 @@ class TestPidAndSessionCallbacks:
         runner.pid_callback = lambda pid: pids.append(pid)
 
         mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.stdout = iter([])
-        mock_proc.stderr = iter([])
+        mock_proc.pid = 1 << 30  # no such process: the runner kills the group at the end
+        mock_proc.stdout, mock_proc.stderr = io.StringIO(), io.StringIO()
         mock_proc.wait.return_value = 0
         mock_proc.returncode = 0
 
         with patch("agento.framework.harness.subprocess_runner.subprocess.Popen", return_value=mock_proc):
             runner._execute_process(["echo", "test"], {})
 
-        assert pids == [12345]
+        assert pids == [1 << 30]
 
     def test_session_id_callback_invoked(self):
         runner = make_runner("claude", dry_run=True, credential_required=False)
@@ -800,9 +802,9 @@ class TestPidAndSessionCallbacks:
         runner.session_id_callback = lambda sid: session_ids.append(sid)
 
         mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.stdout = iter(['{"session_id": "sess-abc"}\n', '{"type": "result"}\n'])
-        mock_proc.stderr = iter([])
+        mock_proc.pid = 1 << 30
+        mock_proc.stdout = io.StringIO('{"session_id": "sess-abc"}\n{"type": "result"}\n')
+        mock_proc.stderr = io.StringIO()
         mock_proc.wait.return_value = 0
         mock_proc.returncode = 0
 
@@ -826,7 +828,6 @@ class TestResumeMethod:
             dry_run=False,
             credential=_make_token({"subscription_key": "sk-ant-test"}),
         )
-        runner._record_usage = MagicMock()
         runner._execute_process = MagicMock(
             return_value=_make_completed_process(stdout=stream_output),
         )

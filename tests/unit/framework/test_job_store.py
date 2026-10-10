@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import signal
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -69,25 +70,27 @@ class TestFetchJob:
 
 class TestPauseJob:
     def test_pause_running_job_with_live_pid(self):
-        conn, _cursor = _mock_conn(_make_row(pid=12345))
+        """The SIGTERM goes through the run's owner, for this job's tag only (WS5)."""
+        conn, _cursor = _mock_conn(_make_row(pid=12345, runner_ref="runner-1.sock:b1"))
 
-        with patch("agento.framework.job_store.os.kill") as mock_kill:
-            # First os.kill(pid, 0) succeeds (alive), SIGTERM succeeds,
-            # then os.kill(pid, 0) raises OSError (dead)
-            mock_kill.side_effect = [None, None, OSError("dead")]
-            with patch("agento.framework.job_store.time.sleep"):
-                job = pause_job(conn, 42)
-
-        assert job.status == JobStatus.PAUSED
-        conn.commit.assert_called_once()
-
-    def test_pause_running_job_with_dead_pid(self):
-        conn, _cursor = _mock_conn(_make_row(pid=99999))
-
-        with patch("agento.framework.job_store.os.kill", side_effect=OSError("dead")):
+        with patch("agento.framework.job_store.runner_client.signal", return_value=True) as sig, \
+                patch("agento.framework.job_store.runner_client.alive", side_effect=["alive", "dead"]), \
+                patch("agento.framework.job_store.time.sleep"):
             job = pause_job(conn, 42)
 
         assert job.status == JobStatus.PAUSED
+        sig.assert_called_once_with("runner-1.sock:b1", "job:42", signal.SIGTERM)
+        conn.commit.assert_called_once()
+
+    def test_pause_running_job_with_dead_pid(self):
+        conn, _cursor = _mock_conn(_make_row(pid=99999, runner_ref="runner-1.sock:b1"))
+
+        with patch("agento.framework.job_store.runner_client.signal", return_value=False), \
+                patch("agento.framework.job_store.runner_client.alive") as alive:
+            job = pause_job(conn, 42)
+
+        assert job.status == JobStatus.PAUSED
+        alive.assert_not_called()
         conn.commit.assert_called_once()
 
     def test_pause_running_job_without_pid(self):
@@ -146,6 +149,16 @@ class TestResumeJob:
         conn, _cursor = _mock_conn(_make_row(status="RUNNING"))
         with pytest.raises(ValueError, match="Cannot resume job in status RUNNING"):
             resume_job(conn, 42)
+
+    @pytest.mark.parametrize("state", ["alive", "unknown"])
+    def test_resume_refused_until_owner_answers_dead(self, state):
+        """A paused run whose child ignored SIGTERM, or whose runner does not answer,
+        keeps its owner: resume must not clear it and start the same session twice."""
+        conn, _cursor = _mock_conn(_make_row(status="PAUSED", runner_ref="runner-1.sock:b1"))
+        with patch("agento.framework.job_store.runner_client.alive", return_value=state), \
+                pytest.raises(ValueError, match=state):
+            resume_job(conn, 42)
+        conn.commit.assert_not_called()
 
     def test_resume_no_session_id_raises(self):
         conn, _cursor = _mock_conn(_make_row(status="PAUSED", session_id=None))

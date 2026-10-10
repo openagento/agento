@@ -177,7 +177,6 @@ class TestEveryRunnerFailureCarriesItsOutput:
 
     def test_timeout_carries_partial_output(self):
         runner = make_runner("claude", credential=None, credential_required=False)
-        runner._record_usage = MagicMock()
 
         def _timeout(cmd, env, stdin_payload=None):
             exc = subprocess.TimeoutExpired(cmd="claude", timeout=1, output=OUTPUT_SENTINEL)
@@ -205,7 +204,6 @@ class TestEveryRunnerFailureCarriesItsOutput:
     def test_classified_parser_failure_carries_output(self):
         """An AuthenticationError raised by the parser must not lose the output."""
         runner = make_runner("claude", credential=None, credential_required=False)
-        runner._record_usage = MagicMock()
         runner._execute_process = MagicMock(
             return_value=MagicMock(returncode=0, stdout=OUTPUT_SENTINEL, stderr=""),
         )
@@ -224,7 +222,6 @@ class TestEveryRunnerFailureCarriesItsOutput:
 
     def test_an_already_attached_output_is_not_overwritten(self):
         runner = make_runner("claude", credential=None, credential_required=False)
-        runner._record_usage = MagicMock()
         runner._execute_process = MagicMock(
             return_value=MagicMock(returncode=0, stdout="raw", stderr=""),
         )

@@ -4,20 +4,33 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import time
+from datetime import UTC, datetime
 from pathlib import Path
+
+import httpx
 
 from agento.framework.agent_manager.auth import (
     AuthenticationError,
     AuthResult,
-    _run_cli,
+    attended_login,
 )
+from agento.framework.agent_manager.pty_login import PtyLogin, spawn
 from agento.framework.harness import (
+    CredentialLimits,
     CredentialRegistrationMode,
+    LimitWindow,
+    LoginPrompt,
     UnsupportedRegistrationMode,
 )
 
 _OPENAI_ISSUER = "https://auth.openai.com"
+# Not verified live here (plan ASSUMPTION A1): any failure shows no limits.
+_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+_WINDOW_LABELS = {18000: "5h", 604800: "Week"}
+_DEVICE_URL = re.compile(r"https://auth\.openai\.com/\S+")
+_DEVICE_CODE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b")
 
 _logger = logging.getLogger(__name__)
 
@@ -30,37 +43,91 @@ def _b64url_decode(segment: str) -> bytes:
         raise AuthenticationError(f"Invalid JWT segment: {exc}") from exc
 
 
+def _read_login(home: Path) -> AuthResult:
+    """The credential the Codex CLI wrote into ``home`` after a login."""
+    creds_path = home / ".codex" / "auth.json"
+    if not creds_path.is_file():
+        raise AuthenticationError(
+            "Codex login completed but auth.json not found. "
+            "Auth may have been cancelled."
+        )
+
+    raw = json.loads(creds_path.read_text())
+    tokens = raw.get("tokens", {})
+    access_token = tokens.get("access_token")
+    if not access_token:
+        raise AuthenticationError(
+            "Codex auth.json exists but contains no access_token. "
+            "Auth may have been incomplete."
+        )
+
+    return AuthResult(
+        subscription_key=access_token,
+        refresh_token=tokens.get("refresh_token"),
+        expires_at=None,
+        subscription_type=None,
+        id_token=tokens.get("id_token"),
+        raw_auth=raw,
+    )
+
+
+def _limit_window(window: dict) -> LimitWindow:
+    seconds = int(window["limit_window_seconds"])
+    reset_at = window.get("reset_at")
+    return LimitWindow(
+        label=_WINDOW_LABELS.get(seconds, f"{seconds // 3600}h"),
+        used_pct=float(window["used_percent"]),
+        resets_at=datetime.fromtimestamp(reset_at, UTC) if reset_at is not None else None,
+    )
+
+
 class CodexCredentialAuthenticator:
-    """Run ``codex auth login --device-auth`` in isolated HOME, extract credentials."""
+    """``codex login --device-auth`` in a runner, in ``tmp_home``; extract credentials."""
 
     def authenticate_interactive(self, tmp_home: str, logger: logging.Logger) -> AuthResult:
-        logger.info("Starting Codex device-auth login (follow the URL in your browser)...")
-        _run_cli(["codex", "auth", "login", "--device-auth"], tmp_home, "Codex")
+        return attended_login(self.start_web_login(tmp_home, logger))
 
-        creds_path = Path(tmp_home) / ".codex" / "auth.json"
-        if not creds_path.is_file():
-            raise AuthenticationError(
-                "Codex login completed but auth.json not found. "
-                "Auth may have been cancelled."
-            )
+    def start_web_login(self, tmp_home: str, logger: logging.Logger) -> PtyLogin:
+        """``codex login --device-auth`` in ``tmp_home``: it prints the device page and a
+        one-time code, then waits until the operator signs in there."""
+        proc = spawn(["codex", "login", "--device-auth"], tmp_home)
+        url = proc.read_until(_DEVICE_URL, timeout=20)
+        code = proc.read_until(_DEVICE_CODE, timeout=10) if url else None
+        if url is None or code is None:
+            proc.kill()
+            raise AuthenticationError("The Codex CLI printed no device login URL and code.")
+        prompt = LoginPrompt(url=url.group(0), user_code=code.group(0), needs_code=False)
+        return PtyLogin(proc, prompt, lambda: _read_login(Path(tmp_home)))
 
-        raw = json.loads(creds_path.read_text())
-        tokens = raw.get("tokens", {})
-        access_token = tokens.get("access_token")
-        if not access_token:
-            raise AuthenticationError(
-                "Codex auth.json exists but contains no access_token. "
-                "Auth may have been incomplete."
-            )
+    def fetch_limits(self, credentials: dict, credential_type: str) -> CredentialLimits | None:
+        """The 5 h and week use of a ChatGPT subscription (OAuth) credential.
 
-        return AuthResult(
-            subscription_key=access_token,
-            refresh_token=tokens.get("refresh_token"),
-            expires_at=None,
-            subscription_type=None,
-            id_token=tokens.get("id_token"),
-            raw_auth=raw,
+        A ``codex_access_token`` has no account id verified here, so it shows no limits
+        (ROADMAP.md), like an API key."""
+        if credential_type != "oauth":
+            return None
+        account_id = credentials["raw_auth"]["tokens"]["account_id"]
+        resp = httpx.get(
+            _USAGE_URL,
+            headers={
+                "Authorization": f"Bearer {credentials['subscription_key']}",
+                "ChatGPT-Account-Id": account_id,
+                "Accept": "application/json",
+                # chatgpt.com refuses the default python-httpx agent; CodexBar sends its own name.
+                "User-Agent": "agento",
+            },
+            timeout=10,
         )
+        resp.raise_for_status()
+        rate_limit = resp.json()["rate_limit"]
+        windows = tuple(
+            _limit_window(rate_limit[key])
+            for key in ("primary_window", "secondary_window")
+            if isinstance(rate_limit.get(key), dict)
+        )
+        if not windows:
+            raise ValueError("the usage answer has no window")
+        return CredentialLimits(windows=windows)
 
     def register_from_access_token(self, token: str) -> tuple[dict, str]:
         """Validate a Codex/OpenAI access-token JWT and return

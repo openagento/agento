@@ -6,12 +6,26 @@ directly, with no ``bootstrap()`` and no Python imports available.
 """
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 HARNESS_REGISTRY = "agent_harness_registry"
 HARNESS_PROVIDERS = "agent_harness_providers"
+# Not harness data, but this is the one options_source registry (the validator reads it).
+TIMEZONES = "timezones"
 
-SUPPORTED_SOURCES = (HARNESS_REGISTRY, HARNESS_PROVIDERS)
+SUPPORTED_SOURCES = (HARNESS_REGISTRY, HARNESS_PROVIDERS, TIMEZONES)
+
+
+@functools.cache
+def _timezone_options() -> tuple[dict[str, str], ...]:
+    """Cached: ``available_timezones()`` walks TZPATH, and tzdata changes only with a restart."""
+    import zoneinfo
+
+    return (
+        {"value": "browser", "label": "Browser time zone"},
+        *({"value": z, "label": z} for z in sorted(zoneinfo.available_timezones())),
+    )
 
 
 def resolve_options(
@@ -34,6 +48,8 @@ def resolve_options(
         raise ValueError(
             f"Unknown options_source {source!r}. Supported: {list(SUPPORTED_SOURCES)}"
         )
+    if source == TIMEZONES:
+        return [dict(o) for o in _timezone_options()]
 
     # Default to the ambient root rather than "core modules only" — an explicit
     # project_root (tests, install-time) still wins.

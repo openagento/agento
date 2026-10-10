@@ -210,6 +210,19 @@ class TestApplyMigration:
         assert "fk_toolbox_capability_view" in sql
         assert "('035_toolbox_capability')" in sql
 
+    def test_fresh_init_includes_credential_login(self):
+        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
+        assert "limits           JSON         NULL," in sql
+        assert "limits_at        DATETIME     NULL," in sql
+        assert "CREATE TABLE IF NOT EXISTS credential_login (" in sql
+        assert "fk_credential_login_credential" in sql and "fk_credential_login_user" in sql
+        assert "('048_credential_login')" in sql
+
+    def test_fresh_init_includes_tool_invocation_run_execution_index(self):
+        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
+        assert "KEY idx_tool_invocation_run_execution (run_execution_id)" in sql
+        assert "('049_tool_invocation_run_execution_index')" in sql
+
     def test_every_framework_migration_is_marked_applied_in_fresh_init(self):
         """The class guard: 000_init.sql is the schema a NEW project starts from, so a
         migration whose marker is missing runs against a schema that already has its effect

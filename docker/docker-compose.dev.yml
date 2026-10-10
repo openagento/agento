@@ -24,7 +24,7 @@ services:
     security_opt:
       - no-new-privileges:true
     networks:
-      - agento-net
+      - exec-net
     depends_on:
       toolbox:
         condition: service_healthy
@@ -45,10 +45,12 @@ services:
       - CRONDB_HOST=mysql
       - CRONDB_PORT=3306
       - CRONDB_DATABASE=cron_agent
-      - CRONDB_USER=cron_agent
-      - CRONDB_PASSWORD=${MYSQL_PASSWORD:-cronagent_pass}
+      - CRONDB_USER=agento_toolbox
+      - CRONDB_PASSWORD=${MYSQL_TOOLBOX_PASSWORD:-toolbox_pass}
       # A share's URL (PRD E6 §9.1). `-`, not `:-`: set to empty turns shares off.
       - AGENTO_SHARE_HOST=${AGENTO_SHARE_HOST-share.localhost}
+      # The panel origin a miniapp page gives the bridge; create_draft returns it.
+      - AGENTO_PANEL_HOST=${AGENTO_PANEL_HOST:-panel.localhost}
       - AGENTO_PROXY_PORT=${AGENTO_PROXY_PORT:-8443}
     env_file:
       - path: .toolbox.env
@@ -67,7 +69,8 @@ services:
     security_opt:
       - no-new-privileges:true
     networks:
-      - agento-net
+      - db-net
+      - exec-net
     depends_on:
       mysql:
         condition: service_healthy
@@ -95,36 +98,71 @@ services:
         required: false
       - path: ../secrets.env
         required: false
+    # MYSQL_MIGRATE_PASSWORD / MYSQL_TOOLBOX_PASSWORD: setup:upgrade only. It migrates as
+    # cron_agent and grants the runtime users (framework/db_grants.py).
     environment:
       - TZ=Europe/Warsaw
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_DATABASE=cron_agent
-      - MYSQL_USER=cron_agent
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-cronagent_pass}
+      - MYSQL_USER=agento_backend
+      - MYSQL_PASSWORD=${MYSQL_BACKEND_PASSWORD:-backend_pass}
+      - MYSQL_MIGRATE_PASSWORD=${MYSQL_PASSWORD:-cronagent_pass}
+      - MYSQL_TOOLBOX_PASSWORD=${MYSQL_TOOLBOX_PASSWORD:-toolbox_pass}
       - DISABLE_LLM=${DISABLE_LLM:-0}
       - PYTHONPATH=/opt/agento-src
+      - AGENTO_RUNNER_COUNT=1
     volumes:
       - ../workspace:/workspace
       - ../app/code:/app/code:ro
       - ../app/etc:/app/etc
       - ../logs:/app/logs
       - ../src/agento:/opt/agento-src/agento:ro
+      - runner-1-sock:/run/agento-runner/runner-1:ro
     networks:
-      - agento-net
+      - db-net
     depends_on:
       toolbox:
         condition: service_healthy
       mysql:
         condition: service_healthy
+      runner-1:
+        condition: service_started
+    restart: unless-stopped
+
+  # Where every agent CLI runs (docs/architecture/runner.md). No env_file, no MYSQL_*, no
+  # key, no `pid:` key: deliberate. One runner here; the managed compose renders
+  # AGENTO_RUNNER_COUNT of them.
+  runner-1:
+    image: agento-cron:${COMPOSE_PROJECT_NAME:-agento}
+    command: ["runner"]
+    init: true  # reaps killed orphans; tini exits with the server, so the namespace still ends
+    environment:
+      - TZ=Europe/Warsaw
+      - PYTHONPATH=/opt/agento-src
+      - AGENTO_RUNNER_SOCKET=/run/agento-runner/runner-1.sock
+    volumes:
+      - ../workspace:/workspace
+      - ../app/code:/app/code:ro
+      - ../app/etc:/app/etc:ro
+      - ../src/agento:/opt/agento-src/agento:ro
+      - runner-1-sock:/run/agento-runner
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - exec-net
+    depends_on:
+      toolbox:
+        condition: service_healthy
     restart: unless-stopped
 
   # The absence of `networks:`, `env_file:` and `environment:` is DELIBERATE and must stay.
-  # One `networks:` line added for consistency puts every artifact on agento-net, where every
-  # agent in every agent_view can read every artifact over plain HTTP with `allowed_artifacts`
-  # bypassed for reads — silently, with no audit row.
+  # One `networks:` line added for consistency puts every artifact on a named network, where
+  # every agent in every agent_view can read every artifact over plain HTTP with
+  # `allowed_artifacts` bypassed for reads — silently, with no audit row.
   # Compose puts a service with no `networks:` key on the project's `default` network, and every
-  # other service here names agento-net, so this container shares it with `proxy` alone.
+  # other service here names db-net, exec-net or web-net, so this container shares it with
+  # `proxy` alone.
   # Measured: the sandbox cannot even resolve the name `artifacts`. It publishes no host port:
   # the proxy is the only route to these files (PRD E1.5 §2.3).
   # The service mounts storage/versioned-artifacts/published EXACTLY, never the store root, and
@@ -151,14 +189,20 @@ services:
       - no-new-privileges:true
     restart: unless-stopped
 
-  # The panel API, the launch redeem and the apps authorization (E2). It shares agento-net
-  # with sandbox, so it trusts no identity header unless the request carries the proxy
-  # secret (agento/web/server.py). No env_file and no encryption key: web never decrypts.
-  # It reuses the cron image, like `artifacts` reuses the toolbox one.
+  # The panel API, the launch redeem and the apps authorization (E2). The toolbox reaches it
+  # on db-net, so it trusts no identity header unless the request carries the proxy
+  # secret (agento/web/server.py). No agent reaches it: sandbox and runners are on exec-net. web and cron are one trusted backend (DECISIONS.md
+  # D-BACKEND-1): one image, the same env_file (with the encryption key), one DB user.
+  # Only the runner-<i> services hold no secret.
   web:
-    image: agento-cron:latest
+    image: agento-cron:${COMPOSE_PROJECT_NAME:-agento}
     entrypoint: ["python", "-m", "agento.web"]
     user: agent
+    env_file:
+      - path: .cron.env
+        required: false
+      - path: ../secrets.env
+        required: false
     # AGENTO_*_HOST / AGENTO_PROXY_PORT: the browser-facing origins, same defaults as proxy.
     # app/code + app/etc: the module inventory cron sees; web still never runs bootstrap().
     environment:
@@ -166,8 +210,8 @@ services:
       - MYSQL_HOST=mysql
       - MYSQL_PORT=3306
       - MYSQL_DATABASE=cron_agent
-      - MYSQL_USER=cron_agent
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-cronagent_pass}
+      - MYSQL_USER=agento_backend
+      - MYSQL_PASSWORD=${MYSQL_BACKEND_PASSWORD:-backend_pass}
       - PYTHONPATH=/opt/agento-src
       - AGENTO_PANEL_HOST=${AGENTO_PANEL_HOST:-panel.localhost}
       - AGENTO_APPS_HOST=${AGENTO_APPS_HOST:-apps.localhost}
@@ -180,7 +224,8 @@ services:
     security_opt:
       - no-new-privileges:true
     networks:
-      - agento-net
+      - db-net
+      - web-net
     depends_on:
       mysql:
         condition: service_healthy
@@ -192,8 +237,9 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-  # The ONLY service on both agento-net and the artifacts `default` network, and the only
-  # route to artifact files. It routes nothing to the toolbox. Config: framework/docker/proxy/.
+  # The ONLY service on the artifacts `default` network besides `artifacts`, and the only
+  # route to artifact files. On exec-net so agents reach the panel origin; on web-net to reach
+  # web. It routes nothing to the toolbox. Config: framework/docker/proxy/.
   proxy:
     image: caddy:2.11
     entrypoint: ["/bin/sh", "/etc/agento-proxy/entrypoint.sh"]
@@ -205,12 +251,15 @@ services:
       - ../src/agento/framework/docker/proxy:/etc/agento-proxy:ro
       - proxy-internal:/run/agento
       - caddy-data:/data
+      - ../src/agento/framework/web/panel:/srv/panel:ro
+      - ../src/agento/framework/web/miniapp-ui:/srv/miniapp-ui:ro
     ports:
       - "127.0.0.1:${AGENTO_PROXY_PORT:-8443}:443"
     security_opt:
       - no-new-privileges:true
     networks:
-      - agento-net
+      - exec-net
+      - web-net
       - default
     depends_on:
       - web
@@ -219,8 +268,10 @@ services:
 
   mysql:
     image: mysql:8.0
+    # Sized for 200 parallel jobs. See docs/architecture/publisher-consumer.md (Sizing).
+    command: --max-connections=600
     ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-cronagent_root}
       MYSQL_DATABASE: cron_agent
@@ -236,13 +287,17 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - agento-net
+      - db-net
     restart: unless-stopped
 
+# WS7: three networks, so a route exists only where a table cell says yes
+# (docs/architecture/containers.md#networks). None is `internal`: agents need egress.
 networks:
-  agento-net:
-    driver: bridge
+  db-net:
+  exec-net:
+  web-net:
 
 volumes:
   proxy-internal:
   caddy-data:
+  runner-1-sock:

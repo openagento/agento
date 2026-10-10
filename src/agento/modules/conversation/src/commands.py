@@ -107,7 +107,7 @@ class ConversationRetentionCommand:
         pass
 
     def execute(self, args: argparse.Namespace) -> None:
-        from .retention import auto_archive, delete_archived, prune_events, prune_orphan_executions
+        from .retention import auto_archive, delete_archived, prune_events, prune_old_executions
         from .service import config
 
         db_config, _, _ = _load_framework_config()
@@ -117,9 +117,9 @@ class ConversationRetentionCommand:
             archived = auto_archive(conn, idle_days=config(conn, "retention/idle_days"))
             deleted = delete_archived(
                 conn, archived_days=config(conn, "retention/archived_days"))
-            orphans = prune_orphan_executions(
+            runs = prune_old_executions(
                 conn, event_days=config(conn, "retention/event_days"))
             print(f"Pruned {pruned} event(s), archived {archived}, deleted {deleted}, "
-                  f"removed {orphans} orphan execution(s).")
+                  f"removed {runs} old execution(s).")
         finally:
             conn.close()

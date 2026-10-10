@@ -109,7 +109,8 @@ All apps share one origin, so `event.origin` cannot tell two apps apart (PRD E6 
 * **App** — `createAgentoSdk({panelOrigin})` → `{ready, callAction(tool, args), close()}`.
   At most `MAX_IN_FLIGHT` (16) calls wait, for the handshake or for an answer; one more resolves `{status: 429}` at
   once and posts nothing.
-  `panelOrigin` is a trusted value the app gives itself (from its agent_view instructions), never
+  `panelOrigin` is a trusted value the app gives itself (the agent writes in the `panel_origin` that
+  `versioned_artifact_create_draft` returns; never `location.origin`, which is the apps origin), never
   one read from a message or the URL. It must be one exact `https:` origin (or `http://localhost`).
   The SDK refuses to start without `window.opener`, accepts messages only from the opener at
   `panelOrigin`, and posts only to `panelOrigin`.
@@ -118,13 +119,29 @@ Messages: app → `{type: "agento.ready"}`; panel → `{type: "agento.hello", la
 app → `{type: "agento.action", launch_id, id, tool, arguments}`;
 panel → `{type: "agento.result", launch_id, id, status, body}`.
 
+## Writing a miniapp
+
+A miniapp page is hand-written HTML over the shared kit, served by `proxy` at `/_ui/<version>/`
+on the apps origin: `agento-ui.css` (the same tokens as the panel), `agento-ui.js` (`<ag-table>`,
+`<ag-dialog>`, `<ag-copy>`, `<ag-json>`) and `agento-bridge.js` (this SDK, byte for byte). The
+`miniapp-build` skill tells an agent the steps and the limits (no server, no credential, no
+external call, AI text written at build time, the hand-over an operator needs), and the generated
+`miniapp-ui` skill tells it the kit classes; enable both per scope
+(`skill:enable miniapp-build`, `skill:enable miniapp-ui`). An example is in
+`frontend/miniapps/examples/job-status/`. See [../development/frontend.md](../development/frontend.md#the-miniapp-kit).
+
 ## Enable checklist
 
 ```bash
 uv run bin/agento module:enable miniapps && uv run bin/agento setup:upgrade
 uv run bin/agento tool:enable miniapp --agent-view <view>
 uv run bin/agento tool:enable miniapp_get_launch_spec --agent-view <view>
+uv run bin/agento tool:enable miniapp_list --agent-view <view>
+uv run bin/agento tool:enable versioned_artifact --agent-view <view>
+uv run bin/agento tool:enable versioned_artifact_get_current --agent-view <view>
 uv run bin/agento grant:add --role user --tool miniapp_get_launch_spec --agent-view <view>
+uv run bin/agento grant:add --role user --tool miniapp_list --agent-view <view>
+uv run bin/agento grant:add --role user --tool versioned_artifact_get_current --agent-view <view>
 uv run bin/agento grant:add --role user --operation artifact.launch --agent-view <view>
 # plus a grant and a tool gate for each action the manifest names
 uv run bin/agento miniapp:activate <artifact_code> <version_id>

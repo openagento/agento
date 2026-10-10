@@ -14,16 +14,28 @@ the transition that produced them - and the framework itself writes no module ta
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+import inspect
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
+
+
+@dataclass(frozen=True)
+class RunProfile:
+    """What drives one attempt: ids and a model name, never a credential value (SEC-6)."""
+
+    harness: str
+    provider: str
+    model: str | None
+    credential_id: int | None
 
 
 @runtime_checkable
 class ExecutionIdProvider(Protocol):
     """Mints the id one attempt is known by. Returns None to decline this run."""
 
-    def mint(self, *, conn, job_id: int, attempt: int) -> str | None: ...
+    def mint(self, *, conn, job_id: int, attempt: int,
+             profile: RunProfile | None = None) -> str | None: ...
 
 
 @runtime_checkable
@@ -49,9 +61,10 @@ class DeltaRecord:
 
     execution_id: str
     seq: int
-    kind: str                 # "delta" | "gap" | "truncated"
+    kind: str                 # FRAGMENT_KINDS (consumer.py) | "gap" | "truncated"
     text: str | None
     tool_name: str | None
+    data: Mapping[str, str | bool] | None = None   # tool fields: call_id, input, output, is_error
 
 
 @runtime_checkable
@@ -128,16 +141,28 @@ def clear() -> None:
         slot.clear()
 
 
-def mint_execution_id(*, conn, job_id: int, attempt: int) -> str | None:
+def mint_execution_id(*, conn, job_id: int, attempt: int,
+                      profile: RunProfile | None = None) -> str | None:
     provider = _EXECUTION_ID_PROVIDER.get()
     if provider is None:
         return None
+    # `profile` came after the seam shipped: a provider without the parameter still mints
+    # (CODE-3 signature check), it only records no profile.
+    if profile is not None and "profile" in inspect.signature(provider.mint).parameters:
+        return provider.mint(conn=conn, job_id=job_id, attempt=attempt, profile=profile)
     return provider.mint(conn=conn, job_id=job_id, attempt=attempt)
 
 
 def finalize_execution(*, conn, job_id: int, attempt: int, execution_id: str | None,
                        outcome: Literal["succeeded", "failed", "abandoned"],
                        job_terminal: bool) -> None:
+    """Run the registered finalizer in the caller's transaction (§5.3).
+
+    Contract: `conn` runs at READ COMMITTED (`Consumer._db()`). A finalizer's plain reads
+    are therefore fresh - they see what a session it waited on committed - and its ranged
+    writes take record locks without gaps, which is what keeps them safe at 100-200
+    parallel jobs (SCL-1). See DECISIONS.md, 2026-10-10.
+    """
     finalizer = _EXECUTION_FINALIZER.get()
     if finalizer is None:
         return

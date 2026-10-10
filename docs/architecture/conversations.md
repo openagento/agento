@@ -111,9 +111,9 @@ side; the client's own reconnect resumes from its last id, so a bounded stream c
 an abandoned one cannot last for ever.
 
 **A user gets `conversation/stream/max_per_user` live streams**, and exceeding it closes the
-**oldest**, never refuses the new one. The budget being bounded is threads: `web` is a
-`ThreadingHTTPServer` and one open streaming response costs exactly one thread (measured 1:1,
-released on close). A refusal would turn a reconnect storm into self-inflicted denial of service
+**oldest**, never refuses the new one. The budget being bounded is threads: `web` runs each open
+stream on a thread of its own stream budget, so one open streaming response costs exactly one
+thread (measured 1:1, released on close). A refusal would turn a reconnect storm into self-inflicted denial of service
 — the client whose stream just dropped is precisely the one asking again, and telling it "no"
 leaves it with nothing while its own stale connections hold the budget. A storm therefore
 converges on exactly the cap, and the stream just opened is never the one closed (not even when
@@ -155,6 +155,14 @@ either stops the deltas for that execution and records **one** `truncated` marke
 truncation on one execution are two distinct events. **The final assistant message is never
 truncated**: a cap on the live stream is not a cap on the answer.
 
+**Partials and the budget.** Partial rows count against the same caps, but the sink stops taking
+partials once a run has used half of either cap, without a marker, so the complete fragments
+(answer, tools, errors) of a long streaming run always have room. Live text at scale: 250 parallel
+runs commit in a handful of transactions a second, each takes one row lock per thread in ascending
+id, and no statement takes a table lock (`innodb_autoinc_lock_mode=2`), so runs never wait on one
+another's AUTO_INCREMENT. `tests/integration/test_delta_scale.py` asserts the transaction rate,
+the commit delay (p95 ≤ 1 s, max ≤ 2 s), order and no loss (RULES.md SCL-1).
+
 The writer thread is reconciled on every `bootstrap()`, and the key is **the declaration**
 (`module name`, declared class path), never the object — the loader builds a new sink on every
 pass and the consumer bootstraps every idle poll tick, so keying on identity would restart the
@@ -169,6 +177,62 @@ returns says nothing about the moment it commits. Either the batch finished befo
 boundary or the handover waits for it. A bounded `join()` is never treated as proof the thread
 stopped: if a worker outlives it, no replacement starts. The sink's own statement timeout
 (`core/sql_timeout_seconds`) is what bounds the handover's wait.
+
+## Every job has a thread (E9)
+
+**Channel threads.** At claim, `ConversationExecutionIds.mint` gives the new `execution` row its
+`conversation_id` (`service.link_execution`). A panel job is in the thread of the message it
+answers. Any other job (Jira, Outlook, cron) is in its **channel thread**: `user_id` NULL,
+`channel` = `job.source`, `external_ref` = `job.reference_id`, and a unique `external_key` =
+sha1 of `source|view|reference` (`job:<id>` when there is no reference). The next run on the same
+issue, and a follow-up that copies its parent's source and reference, land in the same thread; an
+archived one is reactivated. Each run adds `run.started`, and the finalizer adds `run.finished`
+and, on success, the answer (`assistant.message`). Channel threads are an admin's only
+(DECISIONS.md D-E9-3). An admin **may** post into one: the reply is a `followup` job on the
+thread's own `source` and `external_ref`, with the operator's text as the job's `context`, gated
+by `conversation.channel_write` and refused with 409 when the thread has no `external_ref`. Every
+other reader still sees 404.
+
+**Regeneration.** `POST /api/conversation/threads/{id}/regenerate` re-asks a named `role='user'`
+message as a NEW turn: same content, a new `message` row, a new job. It passes the same write
+gates as a post. Retry identity is the caller's `client_message_id`, and ordering stays where it
+belongs — `ConversationOrderingObserver` defers the turn at claim time.
+
+**The attempt's fragments.** The finalizer deletes this execution's `assistant.partial` and
+`reasoning.partial` events for every outcome: the complete fragment and the answer replace them.
+The delta sink refuses a partial whose execution is no longer `running`, read after the batch
+took its thread locks — the writer thread only QUEUES the tail, so without that guard a late
+fragment would land after the cleanup and stay in the timeline for ever.
+
+**The vocabulary.** A harness's `StreamEventMapper` turns its stdout into canonical fragments:
+`assistant.text`, `assistant.reasoning`, `tool.started`, `tool.completed`, `error`, the
+coalesced live kinds `assistant.partial` and `reasoning.partial`, plus the markers `gap` and
+`truncated` (see [harness-contract.md](harness-contract.md#adding-live-timeline-events)). A reader
+shows a partial row until the complete fragment of its kind arrives in the same run, then drops it. The sink stores the
+kind as the event kind, with payload `{seq, text, tool_name, data}`. Older rows say
+`assistant.delta`; a reader treats them as `assistant.text`.
+
+**Commit-ordered append.** The event id is a global AUTO_INCREMENT, so two writers of one thread
+could commit ids out of order and a reader at `id > cursor` would skip one. `service.append_event`
+is the one writer: it takes the thread's row lock (an `UPDATE` that also moves
+`last_activity_at`) before the insert. A transaction that writes several threads (sink batch,
+relay batch) locks them all first, in ascending id. The lock comes before any child write, also
+the `message` insert, whose FK check would otherwise take a shared lock first and deadlock.
+
+**One projection.** `service.project_events` builds the client shape for the timeline, the replay
+and the stream: it fills `message.created` with the message text, and `run.started` with the
+job's prompt, one query each per page. The prompt and tool `data.input` / `data.output` are
+**run details**: an admin sees them, and another role only with the `conversation.run_details`
+grant on the thread's workspace or view (`service.can_see_run_details`, DECISIONS.md D-E9-6).
+`GET …/threads/{id}` says `run_details: true|false`; without it each run keeps its fields
+`execution_id`, `status`, `attempt`, `started_at`, `finished_at` and omits harness, provider,
+credential label, model, tokens and job id. The harness, provider, model and credential id are
+written when the attempt is minted (`RunProfile`), so a failed run shows them too; the model is
+the one the CLI reported when the job finished, else the configured one.
+
+**The timeline route.** `GET …/threads/{id}/timeline?before=<id>` pages back from the newest
+event; the panel then opens the stream with `?after=<newest_id>`, so the page and the stream leave
+no window between them.
 
 ## Retention
 
@@ -206,8 +270,9 @@ and a post serialize instead of racing.
 **The delete is an explicit ordered delete, not a cascade.** One transaction per conversation:
 lock the `conversation` row `FOR UPDATE`, re-check under that lock that it is still archived and
 still past the window, then delete events, `execution_delta`, `execution`, messages, the watermark
-and the conversation — in that order. `execution` and `execution_delta` hang off `job`, so no
-cascade reaches them and dropping the conversation row alone would orphan them for ever. A
+and the conversation — in that order. `execution` and `execution_delta` are found through
+`execution.conversation_id`; no cascade reaches them, and dropping the conversation row alone
+would leave them for ever. A
 reactivation racing the pass either wins (the thread survives whole) or loses (the delete
 completes), never half of each, and a crash mid-delete leaves a still-archived conversation the
 next run finishes. `service.delete_conversation` (the operator path, no route yet) runs the same function, so it cannot fall back to the cascade either.
@@ -219,7 +284,7 @@ against a different tree.
 
 | Fact | Where | Status |
 |---|---|---|
-| `web` is a `ThreadingHTTPServer` on `0.0.0.0:8000` | `web/server.py` | confirmed |
+| `web` is a `ThreadingHTTPServer` on `0.0.0.0:8000` (2026-10-09: FastAPI on uvicorn, DECISIONS.md) | `web/server.py` | confirmed |
 | `Route` is a frozen dataclass; `ROUTES` is a list built at import | `web/api.py` | confirmed |
 | `LoginThrottle` is a per-process dict (its own note names the DB-backed replacement) | `web/api.py` | confirmed |
 | A duplicate publish is an `IntegrityError` → rollback + re-read | `framework/publisher.py` | confirmed |

@@ -15,8 +15,7 @@ class VersionedArtifactAuthCommand:
 
     @property
     def shortcut(self) -> str:
-        # No alias: see artifact:list.
-        return ""
+        return "ar:au"
 
     @property
     def help(self) -> str:
@@ -25,13 +24,9 @@ class VersionedArtifactAuthCommand:
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("artifact_code", help="Artifact code, e.g. openagento-website")
         parser.add_argument("--user", default=None, help="Basic auth user (default: the artifact code)")
-        password = parser.add_mutually_exclusive_group()
-        password.add_argument("--pass-stdin", action="store_true",
-                              help="Read the password from stdin, or a prompt on a terminal "
-                                   "(default: a strong random one)")
-        # Deprecated: argv lands in shell history and `ps`. Removal: ROADMAP.md.
-        password.add_argument("--pass", dest="password", default=None,
-                              help="Deprecated, use --pass-stdin")
+        parser.add_argument("--pass-stdin", action="store_true",
+                            help="Read the password from stdin, or a prompt on a terminal "
+                                 "(default: a strong random one)")
         parser.add_argument("--disable", action="store_true", help="Turn Basic auth off")
         parser.add_argument("--show", action="store_true", help="Show the current credential instead of changing it")
         parser.add_argument("--actor", default="admin", help="Who is running this command")
@@ -53,16 +48,11 @@ class VersionedArtifactAuthCommand:
             _print_share(body)
             return
 
-        if args.pass_stdin:
-            args.password = _read_password()
-        elif args.password is not None:
-            print("Warning: --pass puts the password in shell history and `ps`; use --pass-stdin.",
-                  file=sys.stderr)
-
+        password = _read_password() if args.pass_stdin else None
         body, result = run_toolbox(
             flags, ["--op", "auth", "--actor", args.actor],
             {"artifact_code": args.artifact_code, "user": args.user,
-             "password": args.password, "disable": args.disable})
+             "password": password, "disable": args.disable})
         fail_on_error(body, result, "could not change the credential")
 
         if args.disable:

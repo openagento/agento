@@ -5,6 +5,7 @@ and wrong as a contract — an argv shape, a stream, a manifest form, a provider
 """
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 from pathlib import Path
@@ -35,7 +36,6 @@ def _harnesses():
 
 def _runner():
     r = make_runner("claude", credential=None, credential_required=False)
-    r._record_usage = MagicMock()
     return r
 
 
@@ -128,11 +128,11 @@ class TestStderrOnlyFailuresKeepTheirOutput:
         runner = _runner()
 
         class _FakeProc:
-            pid = 4242
+            pid = 1 << 30  # no such process: the runner kills the group at the end
             returncode = None
-            # Real iterables: `_execute_process` drains both streams in threads.
-            stdout = iter(())
-            stderr = iter(["diagnostic on stderr\n"])
+            # Real streams: `_execute_process` drains both in threads.
+            stdout = io.StringIO()
+            stderr = io.StringIO("diagnostic on stderr\n")
 
             def wait(self, timeout=None):
                 raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout or 1)
@@ -164,34 +164,16 @@ class TestStderrOnlyFailuresKeepTheirOutput:
         assert "only-stderr" in getattr(exc.value, "agent_output", "")
 
 
-class TestLegacySandboxPackagesTriggerRebuild:
-    """`manifest.py` promises the deprecated top-level ``sandbox_packages`` array for one
-    more release, so a module that has not migrated must still trigger the sandbox rebuild —
-    otherwise its CLI is absent after enable, or left installed after disable."""
-
-    def _legacy_module(self, root: Path) -> Path:
-        m = root / "app" / "code" / "legacy_harness"
-        m.mkdir(parents=True)
-        (m / "module.json").write_text(json.dumps({"name": "legacy_harness", "version": "1"}))
-        (m / "di.json").write_text(json.dumps({"sandbox_packages": [{
-            "provider": "legacy_harness", "manager": "npm", "package": "@x/legacy",
-            "binary": "legacy", "version_env_key": "LEGACY_VERSION",
-            "default_range": "1.0.0",
-        }]}))
-        return root
-
-    def test_legacy_declaration_yields_a_pin(self, tmp_path):
-        from agento.framework.cli.module import _declared_sandbox_pins
-
-        root = self._legacy_module(tmp_path)
-        assert _declared_sandbox_pins(root, "legacy_harness") == {"LEGACY_VERSION"}
+class TestSandboxPinsTriggerRebuild:
+    """A module's harness pin must trigger the sandbox rebuild on enable/disable. The
+    top-level ``sandbox_packages`` array was removed in v0.17 and is ignored."""
 
     def test_modern_declaration_still_yields_its_pin(self):
         from agento.framework.cli.module import _declared_sandbox_pins
 
         assert _declared_sandbox_pins(REPO, "codex") == {"CODEX_VERSION"}
 
-    def test_both_forms_in_one_module_are_merged(self, tmp_path):
+    def test_removed_legacy_section_is_ignored(self, tmp_path):
         from agento.framework.cli.module import _declared_sandbox_pins
 
         m = tmp_path / "app" / "code" / "both"
@@ -214,20 +196,7 @@ class TestLegacySandboxPackagesTriggerRebuild:
             }],
         }))
 
-        assert _declared_sandbox_pins(tmp_path, "both") == {
-            "MODERN_VERSION", "OLD_VERSION",
-        }
-
-    def test_a_malformed_legacy_entry_does_not_crash_the_toggle(self, tmp_path):
-        """module:validate reports it; the toggle must not blow up."""
-        from agento.framework.cli.module import _declared_sandbox_pins
-
-        m = tmp_path / "app" / "code" / "broken"
-        m.mkdir(parents=True)
-        (m / "module.json").write_text(json.dumps({"name": "broken", "version": "1"}))
-        (m / "di.json").write_text(json.dumps({"sandbox_packages": [{"provider": "x"}]}))
-
-        assert _declared_sandbox_pins(tmp_path, "broken") == set()
+        assert _declared_sandbox_pins(tmp_path, "both") == {"MODERN_VERSION"}
 
 
 class TestScopeUniquenessWithinOneHarness:

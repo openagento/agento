@@ -34,13 +34,13 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - run: uv sync --group dev
       # Service containers accept no command override, so raise the limit at
-      # runtime. Default is 151; the token-pool contention test drives 200
-      # concurrent claimants that each hold a connection (no pooling), and
-      # skips itself below 230.
+      # runtime to what the compose template sets (600; default is 151). The
+      # token-pool contention test and the 200-job orchestration benchmark
+      # skip themselves when it is too low.
       - name: Raise MySQL max_connections
         run: >-
           mysql -h 127.0.0.1 -P 3306 -u root -pcronagent_root
-          -e "SET GLOBAL max_connections=300;"
+          -e "SET GLOBAL max_connections=600;"
       - run: uv run pytest -q
         env:
           TEST_MYSQL_HOST: 127.0.0.1
@@ -62,3 +62,8 @@ jobs:
       # non-root run here is the one the root container cannot give us.
       - run: sudo mkdir -p /workspace/artifacts && sudo chown -R "$(id -u):$(id -g)" /workspace
       - run: cd src/agento/toolbox && npm ci && npm test
+      # Panel, ui kit and miniapp kit: build, lint, types, unit tests and every story in Chromium.
+      - run: cd frontend && npm ci && npm test
+      # The wheel ships the build that npm test just made.
+      - uses: astral-sh/setup-uv@v4
+      - run: uv run python tests/check_wheel_frontend.py

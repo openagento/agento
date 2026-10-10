@@ -67,9 +67,20 @@
       "handler": "src.routes.unblock"
     },
     {
+      "method": "POST",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/regenerate",
+      "handler": "src.routes.regenerate",
+      "json_body": true
+    },
+    {
       "method": "GET",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/events",
       "handler": "src.routes.events"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/timeline",
+      "handler": "src.routes.timeline"
     },
     {
       "method": "GET",
@@ -82,5 +93,15 @@
     "resume_session_resolver": "src.hooks.ConversationResumeSessions",
     "execution_finalizer": "src.finalizer.ConversationFinalizer",
     "execution_delta_sink": "src.deltas.ConversationDeltaSink"
-  }
+  },
+  "acl_resources": [
+    {
+      "id": "conversation.run_details",
+      "title": "See run details: prompts, tool input and output, harness, credential, model, tokens, job links"
+    },
+    {
+      "id": "conversation.channel_write",
+      "title": "Write into a channel thread: post a reply that continues the external task (Jira, Outlook)"
+    }
+  ]
 }

@@ -53,16 +53,10 @@ def test_an_empty_stdin_password_is_refused(monkeypatch, capsys, toolbox):
     assert "empty" in capsys.readouterr().err
 
 
-def test_pass_and_pass_stdin_are_mutually_exclusive():
+def test_a_password_in_argv_is_refused():
+    """`--pass <value>` was removed in v0.17: argv lands in shell history and `ps`."""
     with pytest.raises(SystemExit):
-        _parse(["demo-site", "--pass", "x", "--pass-stdin"])
-
-
-def test_pass_still_works_but_warns_it_lands_in_shell_history(capsys, toolbox):
-    _cmd().execute(_parse(["demo-site", "--pass", "legacy-pass"]))
-    (_cmd_argv, kw), = toolbox
-    assert json.loads(kw["input"])["password"] == "legacy-pass"
-    assert "--pass-stdin" in capsys.readouterr().err
+        _parse(["demo-site", "--pass", "x"])
 
 
 def _toolbox_body(monkeypatch, tmp_path, body):

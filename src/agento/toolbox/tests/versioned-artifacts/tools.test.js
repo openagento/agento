@@ -343,7 +343,7 @@ describe.skipIf(!linux)('the desk the tools hand the agent', () => {
     const tools = await liveTools();
     const out = payload(await tools.get('versioned_artifact_create_draft')
       .handler({ artifact_code: 'site', base_version: 'current', description: 'x' }));
-    expect(Object.keys(out).sort()).toEqual(['base_version', 'draft_id', 'path']);
+    expect(Object.keys(out).sort()).toEqual(['base_version', 'draft_id', 'panel_origin', 'path']);
     expect(out.path).toBe(deskOf('site', out.draft_id));
     expect(await readdir(out.path)).toEqual(['index.html']);
   });

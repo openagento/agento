@@ -32,13 +32,13 @@ and serves three origins on it:
 
 | Variable | Default | Origin |
 |---|---|---|
-| `AGENTO_PANEL_HOST` | `panel.localhost` | the panel API, `/api/*` |
-| `AGENTO_APPS_HOST` | `apps.localhost` | launched artifact files, `/a/<code>/v/<id>/…` |
+| `AGENTO_PANEL_HOST` | `panel.localhost` | the panel: the built app, and the API at `/api/*`. `toolbox` reads it too: `versioned_artifact_create_draft` returns the panel origin as `panel_origin`, for the miniapp bridge |
+| `AGENTO_APPS_HOST` | `apps.localhost` | launched artifact files, `/a/<code>/v/<id>/…`, and the miniapp kit, `/_ui/<version>/` |
 | `AGENTO_SHARE_HOST` | `share.localhost` | Basic-auth shares, one origin per share: `<token>.<host>`. Set it to empty to turn shares off; an invalid value stops `proxy` from starting. `toolbox` reads it too, to print share URLs |
 | `AGENTO_PROXY_PORT` | `8443` | the host port; `443` gives origins with no port |
 
 Set the variables in `docker/.env`. The generated `docker-compose.yml` gives the same values
-to `proxy` and to `web` (and `AGENTO_SHARE_HOST` / `AGENTO_PROXY_PORT` to `toolbox`). `web` needs them because it compares the `Origin` header of every
+to `proxy` and to `web` (and `AGENTO_SHARE_HOST` / `AGENTO_PANEL_HOST` / `AGENTO_PROXY_PORT` to `toolbox`). `web` needs them because it compares the `Origin` header of every
 write with the exact panel origin, and it builds the launch redeem URL on the apps origin. If you
 override one of them in `docker-compose.override.yml`, override it for both services.
 
@@ -96,6 +96,13 @@ stores only SHA-256 hashes of session tokens, launch tokens and exchange codes. 
 `app/code` and `app/etc` read-only, so it sees the same module list as `cron` when it checks a
 grant or a config write. The admin config form refuses every field that it cannot prove is not a
 secret: set those with `bin/agento config:set`.
+
+## The panel files
+
+The panel and the miniapp kit are static files inside the installed `agento-core` package
+(`agento/framework/web/panel` and `agento/framework/web/miniapp-ui`). `proxy` mounts both
+read-only, so `agento upgrade` brings the new panel with no extra step. A wheel built without
+them is refused at build time. In the dev stack, `cd frontend && npm run build` updates them live.
 
 ## Checking a deployment
 

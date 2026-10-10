@@ -118,14 +118,52 @@ E2 shipped the panel API: users, sessions, `admin`/`user` roles with per-scope g
 `user_session` capabilities, and the launch exchange that authorizes files on the apps origin
 ([docs/architecture/panel.md](docs/architecture/panel.md)). Left out of E2:
 
-- the panel frontend (E2 ships the API only) and an admin-TUI users screen;
+- an admin-TUI users screen (the panel frontend shipped in E8, below);
 - per-user grants (visibility is per role), and `operation` grants beyond `artifact.launch`;
+- **custom admin-like roles**: roles are rows since 2026-10-06, but the admin operations
+  (`users.manage`, `grants.manage`, `config.write`, `admin.read`, `credentials.manage`) stay bound
+  to the code `admin` and are not grantable, so a new role is `user`-like (DECISIONS.md 2026-10-06
+  Roles are rows);
+- **renaming a role code**: only the label can change; the code is the key `user.role`,
+  `role_grant.role` and the toolbox hold;
 - a DB-backed login throttle (the current one is per process);
 - rate limits for the launch redeem and `/internal/authz/app` (RULES.md SEC-12; see the zero-trust.md debt row);
 - a sequence column for exact launch eviction order (`created_at` has 1 s precision);
 - **per-run UID or container isolation (OPEN)**: until it exists, panel roles do not separate users
   from what a shell-capable agent can read on the shared mount
   ([docs/deployment/panel.md](docs/deployment/panel.md)).
+
+E8 shipped the composable frontend: a static React panel served by `proxy`, the `@agento/ui`
+components over one token source, the miniapp kit at `/_ui/<version>/` and the generated
+`miniapp-ui` skill ([docs/development/frontend.md](docs/development/frontend.md)). It added no
+backend route, so these gaps stay open, each needing a route first:
+
+- **conversation messages are not paged**: the messages route answers the oldest 100 rows and takes
+  no `after`, so a long thread shows only its start;
+- **no module list for the panel**: there is no `GET /api/admin/modules`, so the navigation knows a
+  module only through its own probe route (fail closed: a module with no GET route has no screen);
+- ~~**no config screen**~~ — done 2026-10-02: the admin TUI screens are in the panel
+  (`/api/admin/*`, [docs/architecture/panel.md](docs/architecture/panel.md#admin-screens)). Left
+  TUI-only, each a follow-up:
+  - **secret writes** (`obscure`, `toolbox_only`): no secret value goes to or from the browser
+    (D-PANEL-ADMIN-1); needs a write-only route;
+  - **`CONFIG__*` ENV visibility**: `web` reads the same `secrets.env` as `cron`, not `cron`'s own
+    `environment:`, so the panel cannot show a value set only there;
+  - **job replay and workspace build**: both run in the cron container; a panel button needs a
+    queued request that cron picks up;
+  - **`local`-kind testers**: `web` does not load module code;
+  - **a `config_delete_after` event**: no remove path dispatches one (CLI, TUI, panel);
+  - **kit `.ag-badge` in a narrow table cell**: like `StatusBadge`, it is cut to "S…" (`overflow:
+    hidden` in a grid); the panel keeps its table badges whole at the cell (`whole()`), the kit needs
+    `min-width: max-content` on both twins in a new kit version (UI-2, UI-3);
+- **Config's row action is still a text button**: `Config.tsx`'s Actions cell renders
+  `<Button variant="subtle">Edit</Button>` where UI-7 asks for an `IconAction`; every other admin
+  table was converted on 2026-10-07;
+- **no `job.succeeded` event**: a turn's success is read from the assistant message that follows it;
+- **no snapshot watermark**: a REST snapshot carries no stream event id, so the panel refetches on
+  every stream (re)open instead of resuming exactly;
+- **the release must build the frontend**: CI and `release.yml` run `npm ci && npm run build`
+  before `uv build`, and the wheel hook refuses a wheel without the panel.
 
 ### 🟡 Conversations, history and chat (E3–E5)
 
@@ -144,12 +182,50 @@ Known gaps, each deliberate:
   and as one `cursor_expired` SSE frame (before any event frame) on a reconnect. A client that sees
   it restarts from the newest page. History that has been pruned is gone, and saying so is the
   guarantee — silently serving the survivors as if they were the whole thread is not.
-- **F14 — the Node job insert emits no event.** `src/agento/modules/core/toolbox/schedule.js`
-  writes to `job` directly from the toolbox, so a job scheduled by a tool never reaches
-  `publish_service` and never dispatches `job_publish_after`. Nothing relays it into a thread. Give
-  the toolbox a publish path that goes through the framework, or have it write the outbox row too.
-- **Nothing streams live deltas yet.** No shipped harness declares a `stream_event_mapper`, so the
-  `§8.2` seam is registered and unused — every run falls back to `§8.1`'s per-event behaviour.
+- ~~**F14 — the Node job insert emits no event.**~~ — **done 2026-10-10.** `schedule.js` now wraps
+  its dedupe, its `job` insert and a `job.queued` `job_event_outbox` row in one transaction, so a
+  tool-scheduled follow-up is announced like every other turn. The thread itself was never missing:
+  `link_execution` creates or reactivates it at claim time for every job, whatever the insert path.
+  What stays open is narrower and unchanged: the Node path still cannot dispatch
+  `job_publish_after` (EVT-2 — the toolbox has no event mechanism), and `schedule.js` remains the
+  second write path to `job`, in another language, with its own dedupe. No module observes
+  `job_publish_after` today, so nothing is missing a notification.
+- **E9 left out (PRD `E9-conversations-deep-research-report.md`).** E9 shipped the live path:
+  a `stream_event_mapper` per harness, channel threads for every non-panel job, the timeline
+  route and the panel timeline ([docs/architecture/conversations.md](docs/architecture/conversations.md)).
+  Deferred, each with its PRD section:
+  - `SessionReader`: import of native session files (`~/.claude/projects`, codex rollouts, pi
+    sessions), lazy backfill and "discover unmanaged sessions" ("Historical read-through
+    fallback"). Runs before E9 keep their stored messages only.
+  - Pi branch UI and the `native_parent_id` tree ("Pi branches").
+  - Replay mode at 0.5×/1×/2× ("Replay").
+  - Row virtualization past 100k events (the panel keeps at most 5000 loaded events).
+  - Metrics and OpenTelemetry counters ("Observability").
+  - Channel threads for non-admins through role grants, a `conversation:raw` permission split,
+    and full-text search (D-E9-3 is a proposal the owner has not decided).
+  - ~~Writing into a channel thread from the panel~~ — **done 2026-10-10.** A post into a channel
+    thread publishes a `followup` job on the thread's own source and `external_ref`, with the
+    operator's text as the job's `context`, gated by the `conversation.channel_write` ACL resource.
+    The branch lives in `complete_pending`, so the route and `sweep_pending` share one publisher.
+    An **admin's** today: the bullet above still holds, so a non-admin gets 404 on the read before
+    the grant is consulted, and `conversation.channel_write` starts deciding when that opens.
+  - Per-harness feature flags (disabling a module or shipping no mapper is the off switch today).
+  - Long-polling: the REST poll stays the fallback.
+- **E9 chat UX left out (2026-10-06).** The chat UX pass shipped token streaming for claude and pi
+  (coalesced partials), the reasoning fragment, tool summaries, the status line, the
+  `conversation.run_details` ACL resource and server titles. Left out:
+  - A Stop button and edit-and-resend (they need the E7 stop request). ~~Regenerate~~ — **done
+    2026-10-10**: `POST …/regenerate` re-asks a named user message as a new turn, with the caller's
+    `client_message_id` as the retry identity.
+  - Per-user grants (grants stay per role).
+  - Lighter Markdown tables (they need `.ag-prose` and a new kit version).
+  - Codex token streaming: `codex exec --json` sends no partial text.
+  - ~~Deleting partial rows after a run~~ — **done 2026-10-10**: the finalizer deletes the
+    attempt's `assistant.partial` / `reasoning.partial` events for every outcome, over the new
+    `conversation_event(execution_id, kind)` index, and the delta sink refuses a partial whose
+    execution is no longer `running` so a queued one cannot land after the cleanup.
+  - Claude reasoning text: the claude CLI sends thinking blocks with empty text, so the panel
+    shows "Thought" with no body until the CLI gives a way to show it.
 - **The `§4.5` audit ordering is E7's.** The framework's audit writer must be called from inside
   `service.unblock()`'s transaction, not from an observer and not with module SQL.
 
@@ -208,6 +284,15 @@ A minimal but real control plane so operators can create workspaces and agent_vi
 
 A dedicated broker service that owns secret storage: admin writes secrets, toolbox reads them with scoped broker tokens, and agent-execution runtimes never get direct vault access by default. Config stores secret references rather than raw values, and external backends like Azure Key Vault stay optional adapters, not MVP requirements.
 
+### ⚪ Multi-language platform
+
+The admin panel, the TUI and the agent output in more than one language. Today the panel and the
+CLI speak English and the prompts that conversations and channels send to the agent are Polish
+(`=== WĄTEK ===`, `Użytkownik`/`Asystent` in `modules/conversation/src/workflow.py`); the owner
+keeps them Polish until this milestone (2026-10-06). Scope: message catalogues for the panel and
+`system.json` labels, a per-user UI locale, and prompt templates per locale. The agent's reply
+language is the [Response locale policy](#-response-locale-policy) below.
+
 ### ⚪ Response locale policy
 
 Per-workspace and per-agent_view control of the language agents reply in — `preserve_input_language` or `force_output_locale` — as part of effective agent configuration, without opaque pre-translation steps. Full admin and module i18n is explicitly a later nice-to-have, not part of this milestone.
@@ -215,6 +300,54 @@ Per-workspace and per-agent_view control of the language agents reply in — `pr
 ### ⚪ OAuth token pools
 
 Group multiple tokens from the same provider into pools with capacity-based rotation and per-agent_view pool assignment, replacing direct per-provider token selection. `TokenResolver` stays the single extension point, so pool-aware selection needs no consumer changes.
+
+### ⚪ Model check — follow-ups
+
+The `agent_view/model` tester (DECISIONS.md 2026-10-07) runs from `config:test` and the TUI only.
+
+- **Panel Test button for `local` testers.** `web` refuses them with 400 because it loads no module
+  code. A panel path needs a web→cron request, the same shape as panel re-login
+  (DECISIONS.md D-BACKEND-1).
+- **Run-time `ModelConfigError` for claude and codex.** Pi fails a run with a wrong model at once,
+  with no retry. Claude and Codex do not yet classify a wrong-model answer the same way.
+- **Live check of the Claude OAuth path.** Not verified: if `GET /v1/models/{id}` accepts a Claude
+  subscription token. If it does not, the check answers `MODEL_CHECK_FAILED`.
+
+### ⚪ Credential limits and panel re-login — follow-ups
+
+Phases 3–4 of the panel improvements (DECISIONS.md 2026-10-04) shipped OAuth re-login and
+limits. Still open:
+
+- **API-key re-login from the panel.** Today an API key is replaced only with
+  `credential:register --with-api-key`. A panel form needs the same per-login sealing as the code.
+- **TUI module titles.** The admin TUI shows module ids where the panel shows titles.
+- **`codex_access_token` limits.** `fetch_limits` covers Codex `oauth` only; an access-token
+  credential stores "no data".
+- **Limits for an idle OAuth credential.** Only a run renews an OAuth access token, so
+  `credential:limits` skips a credential whose token has expired and keeps its last result. To show
+  fresh limits with no runs, the job must renew the token itself under the same exclusive refresh
+  lease a run takes (refresh tokens are single-use), as CodexBar does.
+- **Live check of re-login.** The usage endpoints were checked live on 2026-10-05 (Claude and
+  Codex OAuth, OpenRouter). A finished re-login is not: check that Claude writes its credentials
+  into the temp `HOME` after a pasted code.
+
+### ⚪ Runtime split — follow-ups
+
+Left out of the `refactor-runtime-split` plan on purpose (DECISIONS.md 2026-10-09, O1–O12):
+
+- **Strict credential boundary.** Today the backend (`cron`, `web`) decrypts credentials (O1 =
+  MVC). The strict form moves select, lease, decrypt and capture to the toolbox or a separate
+  keyholder service, so no browser-facing process holds the key (PRD §31.12–15, §32 D/E).
+- **Per-run uid or per-run mount in the runner.** Co-tenant runs in one runner share the
+  `agent` uid and `/workspace` (zero-trust.md debt row).
+- **Retire the idle `sandbox` service.** Headless runs use the runners; `sandbox` stays only
+  as the image build target and the `agento run` / `doctor` exec target.
+- **Process retry, cheap form.** One runner retry on an unclassified crash, on the same
+  credential, with resume (struck as O2).
+- **`AUTH_REQUIRED` wait, cheap form.** Reuse the pool-wait reschedule with an attempt
+  refund, and pull waiting jobs forward on `credential_register_after` (struck as O3).
+- **The 60 s relay floor** for lifecycle events.
+- **One session store.** Make `execution.harness_session_id` the only place a session id is kept.
 
 ### ⚪ Distribution & installation model
 
@@ -292,7 +425,9 @@ docker compose restart
   launcher, and a root-rendered crontab). See
   [docs/architecture/cron-privileges.md](docs/architecture/cron-privileges.md) and `DECISIONS.md`
   D-SSH-1. The peer-**artifact** reads Option B would also have closed remain open and accepted:
-  one uid, one `/workspace`.
+  one uid, one `/workspace`. 2026-10-09: V0's store file, `drop.py` and the env split are removed
+  again — the runner split took every agent out of `cron`, so the store has no same-uid peer
+  there ([zero-trust.md](docs/architecture/zero-trust.md#what-the-runner-split-replaced)).
 - **Per-run identity boundary for the sandbox (the segmentation half of the toolbox east-west work)**
   — **OPEN.** Capability tokens stop a caller from *asking* for another view's scope, but every agent
   process the consumer spawns runs as the same `agent` account and the cron container mounts the whole
@@ -330,27 +465,19 @@ docker compose restart
 | Shim | Where | Remove when |
 |---|---|---|
 | Legacy `aes256:` read path + the `core/RekeyToScrypt` data patch | `framework/crypto.py` (`decrypt` legacy branch, `is_legacy`), `toolbox/crypto.js`, `modules/core/src/patches/rekey_to_scrypt.py`, `modules/core/data_patch.json` | v0.18.0 — the patch ships in 0.17.0, so every deployment that upgraded has been rekeyed to `aes256s:`. Delete both legacy branches, `is_legacy`, the patch and its test, and the legacy-format bullet in `docs/config/encryption.md`. CodeQL alerts `py/weak-sensitive-data-hashing` / `js/insufficient-password-hash` were dismissed for this path and close with it |
+| `TranscriptReader`, `ToolUse`, `ParseSummary` (deprecated: `toolbox_mcp_calls` comes from the toolbox audit) | `framework/harness/protocols.py` and the `framework/harness/__init__.py` exports; the `transcript_reader` property of the test fixture `tests/fixtures/modules/fake_harness` | v0.18. Delete the three names, their exports and the fixture property. An external adapter that still sets `transcript_reader` loads with or without them |
 | `workspace:ssh-purge` command (+ its `wo:sp` shortcut) | `workspace_build/src/commands/ssh_purge.py`, `workspace_build/di.json` | every deployment has upgraded past the release that stopped writing `ssh_private_key` to disk and has run the sweep once. Nothing on this code writes a key file, so the command then has nothing to find. Delete the command, its `di.json` entry, its tests, and the doc sections in `docs/cli/workspace-build.md` / `docs/cli/README.md` / `docs/config/identity.md`; keep `find_private_keys` only if `workspace:build`'s own legacy pruning still uses it |
 
-### Deprecation removals due next release (v0.16)
+### Deprecation removals still open from v0.16
 
 Introduced by the harness/provider split (see
 [DECISIONS.md](DECISIONS.md#2026-08-04--one-closed-agentprovider-enum-split-into-harness--provider--model)).
-Each is a one-release compatibility shim; remove all of them together.
+The other shims of this list were removed in v0.17 (CHANGELOG.md). These two stay open:
 
 | Shim | Where | Remove |
 |---|---|---|
-| `token:*` CLI aliases (hidden) | `framework/cli/credential_aliases.py` | delete the module + its registration |
-| `--agent-type` alias on `credential:list` / `credential:usage` | `framework/cli/credential.py` | drop the hidden `add_argument` |
-| `agent_type` in `--json` output alongside `scope` | `framework/cli/credential.py` | drop the duplicate key |
-| `token_id` in `agent_view:prepare-run` payload alongside `credential_id` | `agent_view/src/commands/prepare_run.py` | drop the duplicate key |
-| `Token*Event` payloads + `token_*` event names | `framework/events.py` (`_CREDENTIAL_EVENT_ALIASES`, `dispatch_credential_event`) | delete the alias map; dispatch once |
 | `credential.agent_type` column (dual-written with `scope`) | migration | drop the column once no deployment reads it |
-| Top-level `sandbox_packages` array in `di.json` | `framework/harness/manifest.py` (`_parse_legacy_sandbox_packages`) | delete the legacy parser |
-| `--oauth_token` flag alias (`agento replay`, `agento e2e`) | `framework/cli/runtime.py` | drop the second flag name |
-| `_iter_module_dirs` shim | `framework/cli/_provisioning.py` | callers use `framework/module_discovery.py` |
-| Pre-0.15 `agent_view/provider`-as-harness fallback | `framework/agent_view_runtime._resolve_harness_and_provider` | keep until the data patch has demonstrably run everywhere; then delete the legacy branch |
-| `--pass` on `artifact:auth` (argv lands in shell history; use `--pass-stdin`) | `versioned_artifacts/src/commands/auth.py` | drop the flag and its warning |
+| Pre-0.15 `agent_view/provider`-as-harness fallback | `framework/agent_view_runtime._resolve_harness_and_provider` | keep until a read-only prod check shows the data patch ran everywhere (owner, O11); then delete the legacy branch and `tests/unit/framework/test_legacy_config_resolution.py` |
 
 ### No per-job isolation inside the consumer process (raised during AG-50)
 
@@ -375,7 +502,8 @@ fan-out in the same minute into one job — and reports success.
 As of the conversations epic the Python side has exactly ONE insert into `job` —
 `publisher.insert_job()`, which both `publisher.publish()` and `publish_service.publish_job()`
 call — plus `framework/e2e.py` for the smoke stack. `schedule.js` remains the second write
-path, in the toolbox, in another language, with its own dedupe. `grep -rn -i "insert into job"
+path, in the toolbox, in another language, with its own dedupe (since 2026-10-10 it at least
+commits its job and its `job.queued` outbox row together). `grep -rn -i "insert into job"
 src/agento` is the check; a fourth hit is the bug this entry is about.
 
 ### Ungated Toolbox REST endpoints (raised during the Pi harness work)

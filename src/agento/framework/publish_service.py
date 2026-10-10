@@ -30,6 +30,7 @@ def publish_job(
     requester: JobRequester | None,
     priority: int,
     prompt: str | None = None,
+    context: str | None = None,
     max_attempts: int = 3,
     config: object | None = None,
 ) -> int:
@@ -58,6 +59,7 @@ def publish_job(
                     max_attempts=max_attempts,
                     requester=requester,
                     prompt=prompt,
+                    context=context,
                 )
                 write_outbox(
                     cur,

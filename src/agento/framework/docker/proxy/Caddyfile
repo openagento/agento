@@ -65,8 +65,30 @@
 	handle /internal/* {
 		respond 404
 	}
-	handle {
+	handle /api/* {
 		reverse_proxy web:8000
+	}
+	handle /health {
+		reverse_proxy web:8000
+	}
+	# The built panel (PRD E8 §11): static files, no server-side render. Hashed assets are
+	# immutable; the shell is never cached, so a deploy is seen on the next load. A path
+	# with no file is a client route and gets the shell.
+	# `route` keeps the written order: a missing file answers 404 before any cache header.
+	handle /assets/* {
+		route {
+			root * /srv/panel
+			@missing not file
+			respond @missing 404
+			header Cache-Control "public, max-age=31536000, immutable"
+			file_server
+		}
+	}
+	handle {
+		root * /srv/panel
+		header Cache-Control "no-store"
+		try_files {path} /index.html
+		file_server
 	}
 }
 
@@ -87,6 +109,17 @@
 	handle @redeem {
 		rewrite * /internal/launch/redeem
 		reverse_proxy web:8000
+	}
+	# The miniapp kit (PRD E8 §10): /_ui/<version>/ is immutable, never behind forward_auth;
+	# it holds no data, only the shared CSS, the custom elements, the bridge and the font.
+	handle_path /_ui/* {
+		route {
+			root * /srv/miniapp-ui
+			@missing not file
+			respond @missing 404
+			header Cache-Control "public, max-age=31536000, immutable"
+			file_server
+		}
 	}
 	handle /a/* {
 		route {

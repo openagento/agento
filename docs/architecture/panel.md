@@ -2,16 +2,16 @@
 
 `web` (`src/agento/web/`) serves the panel API. `proxy` puts it on the panel origin and asks it,
 per file request, whether a launched artifact may be served on the apps origin. All logic over
-the `user`, `session`, `launch` and `role_grant` tables is in `src/agento/framework/access/`;
-the web API and the `user:*` / `grant:*` CLI call the same functions. Operator page:
+the `role`, `user`, `session`, `launch` and `role_grant` tables is in `src/agento/framework/access/`;
+the web API and the `user:*` / `role:*` / `grant:*` CLI call the same functions. Operator page:
 [../deployment/panel.md](../deployment/panel.md).
 
 ## Origins
 
 | Origin | Serves | Why it is separate |
 |---|---|---|
-| panel (`AGENTO_PANEL_HOST`) | `/api/*` (a frontend comes later); anything else answers 404 | agent-written code never runs here |
-| apps (`AGENTO_APPS_HOST`) | `/a/<code>/v/<id>/…` after `forward_auth`, and `POST /launch` | a page here cannot read panel responses, DOM or the panel cookie |
+| panel (`AGENTO_PANEL_HOST`) | `/api/*` and `/health` from `web`; `/internal/*` answers 404; every other path is the built panel, static from `proxy` (E8, [../development/frontend.md](../development/frontend.md)) | agent-written code never runs here |
+| apps (`AGENTO_APPS_HOST`) | `/a/<code>/v/<id>/…` after `forward_auth`, `POST /launch`, and the miniapp kit at `/_ui/<version>/` (static, immutable, no data) | a page here cannot read panel responses, DOM or the panel cookie |
 
 The split stops cross-origin **reads**. It does not stop writes: panel and apps are same-site,
 so a page on apps can make the browser send a credentialed request to the panel. The CSRF controls
@@ -29,6 +29,15 @@ reverse. Each launch has its own cookie name, so two tabs with two versions of o
 overwrite each other: the file check accepts the request when **any** live launch cookie matches the
 path's `(code, version)`. At most 20 launch cookies are read from one request; the same 20 are checked and cleared, and any
 others are ignored.
+
+## Session
+
+`POST /api/session` (login) and `GET /api/session` answer
+`{user, csrf_token, expires_at, display}`. `display` is `{date_format, timezone}`: the `admin`
+module's `admin/locale/date_format` (`us`, `eu` or `iso`) and `admin/locale/timezone` (`browser`
+or an IANA zone), resolved at the default scope; a value that is not an option gets the
+`config.json` default. It is `null` when the `admin` module is disabled
+([admin.md](../modules/admin.md)). The panel formats every `Timestamp` with it.
 
 ## CSRF controls
 
@@ -86,7 +95,7 @@ panel page                      web                                  proxy / app
 - The retention lock is the one the toolbox prune takes, so a launch never pins a version the
   prune is deleting ([../modules/versioned-artifacts.md](../modules/versioned-artifacts.md)).
   Busy for 5 s: `503`.
-- The redeem does not need the proxy secret: the exchange code is the credential.
+- The redeem does not need the proxy secret: the exchange code is the credential. It needs the exact panel `Origin`. It does not check `Sec-Fetch-Site`: panel and apps can be two sites (`panel.localhost` and `apps.localhost` are), so the browser sends `cross-site`.
 - A 403 from `/internal/authz/app` clears every presented launch cookie whose launch is no longer
   live. Caddy returns the deny response, headers included, to the client (measured).
 - A version that is not an activated miniapp gets the no-manifest constants in `launch`:
@@ -94,24 +103,71 @@ panel page                      web                                  proxy / app
   action. An activated one pins its fingerprint and actions; see
   [../modules/miniapps.md](../modules/miniapps.md). A toolbox failure while reading the spec is
   `503`, never a files-only guess.
-- `GET /api/agent-views/<id>/miniapps` lists the activated miniapps the user may launch there.
+- `GET /api/agent-views/<id>/miniapps` lists the activated miniapps the user may launch there. A reachable view without `artifact.launch` answers an empty list, not 404: the view is already in the user's list.
 
 ## Roles and grants
 
-Two roles: `admin` and `user`. `admin` has the built-in operations `users.manage`,
-`grants.manage` and `config.write`. Everything else comes from `role_grant` rows:
+Roles are rows in the `role` table: a `code` (`^[a-z][a-z0-9_]{1,15}$`, the key that `user.role`
+and `role_grant.role` hold, never renamed) and a unique `label` (the display name). `admin` and
+`user` are seeded and built in: they cannot be deleted. `user.role` has a foreign key with no action,
+so a role that a user has cannot be deleted; `role_grant.role` cascades, so a deleted role's grants
+go with it. Every writer (`create_user`, `update_user`, `add_grant`, `set_role_grants`) checks the
+code against `role` inside its transaction, and the foreign key is the backstop.
+
+`admin` is the one code with the built-in admin operations `users.manage`, `grants.manage`,
+`config.write`, `admin.read` and `credentials.manage` (`accounts.may`); they are not grantable, so a
+new role is a `user`-like role (DECISIONS.md 2026-10-06 Roles are rows). Everything else comes from
+`role_grant` rows:
 
 - `grant_kind = 'tool'`: the role may call that tool, if it is enabled there;
-- `grant_kind = 'operation'`: the one grantable operation is `artifact.launch`.
+- `grant_kind = 'operation'`: an ACL resource — the built-in `artifact.launch`, or one a module
+  declares in `di.json` (`"acl_resources": [{"id": "<module>.<name>", "title": "…"}]`, the Magento
+  `acl.xml` pattern). `admin` has every module-declared resource built in; `artifact.launch` is a
+  grant for every role, `admin` included. The conversation module declares
+  `conversation.run_details` (DECISIONS.md D-E9-6).
 
 A row has exactly one scope. A workspace grant reaches the workspace and every view in it. A view
 grant reaches only that view. The same SQL rule is used in Python (`accounts._granted`) and in the
 toolbox (`src/agento/toolbox/capability.js` `GRANTS_SQL`, handed to every auth source as
 `grants`); the fixture
-`tests/fixtures/role_grant_v1.json` holds both to it.
+`tests/fixtures/role_grant_v1.json` holds both to it. The toolbox reads the role code from `user`
+and needs no list of roles.
+
+### Panel: Users → Roles
+
+All behind `grants.manage`:
+
+| Method | Path | Answer |
+|---|---|---|
+| GET | `/api/admin/roles` | `[{code, label, builtin, users, scopes}]` — `scopes` counts the scopes with a grant |
+| POST | `/api/admin/roles` | `{code, label}` → 201 the role |
+| GET | `/api/admin/roles/{code}` | the role plus `scopes: [{workspace_id, agent_view_id, tools, operations}]` |
+| PATCH | `/api/admin/roles/{code}` | `{label}` (the code never changes) |
+| DELETE | `/api/admin/roles/{code}` | 204; 400 with the reason (built in, or "3 users have this role") |
+| GET | `/api/admin/roles/{code}/resources?scope=&scope_id=` | the tree, below |
+| PUT | `/api/admin/roles/{code}/resources` | `{scope, scope_id, tools[], operations[]}` → `{added, removed}` (counts) |
+
+`scope` is `workspace` or `agent_view`; a grant has no default scope (400). An unknown role or scope
+id is 404.
+
+The role page shows the role's resources at one scope as a checkbox tree (Magento *Role
+Resources*). `GET …/resources` answers `{operations: [{id, title, granted, inherited, builtin}],
+toolsets: [{toolset, tools: [{name, enabled, granted, inherited}]}]}`: `granted` is a row at exactly
+this scope; `inherited` (agent_view scope only) is a row at the view's workspace, which already
+reaches the view; `builtin` is `admin` with a module-declared resource; `enabled` is the tool's
+effective `is_enabled` at the scope — a grant does not enable a tool. The tools are those of the
+enabled modules (the Tools screen's list).
+
+`PUT …/resources` (`accounts.set_role_grants`) makes the role's rows at **exactly that scope** the
+given names, in one transaction under the `agento.role_grant` named lock, with the role's users and
+the actor locked in id order. It validates like `grant:add` (declared tools, grantable operations,
+at most 1000 names), inserts the added names in one statement, and never inserts at a view a name
+that the view's workspace already grants (a redundant view row that is already there stays). A row
+for a tool of a disabled module is outside the tree, so a PUT keeps it. When anything is removed,
+the role's launches in that scope end, as `grant:remove` does. Rows at other scopes are untouched.
 
 Grants are **per role**, not per user (the PRD asks for per-user visibility; see DECISIONS.md).
-A `user` sees the agent_views its role's grants reach. A scope that it cannot reach answers 404,
+A user who is not `admin` sees the agent_views its role's grants reach. A scope that it cannot reach answers 404,
 not 403.
 
 ## Per-call evaluation
@@ -172,6 +228,70 @@ module's routes appear or disappear when `web` restarts, which `module:enable` a
 The same pass registers each enabled module's `job_types` from that `di.json`. A route that
 publishes a job (a conversation message submit) resolves its type in the `web` process, and
 without `bootstrap()` nothing else registers it — the submit would fail with `JobTypeUnknown`.
+
+### Module screens
+
+A core module may also ship `panel/index.ts`, its screens in the panel app. The build collects
+them; the panel shows a module's screens only while its `availability.probe` (a GET under its own
+`/api/<module>/`) answers 2xx, so a disabled module's screens are hidden. A user or PyPI module
+never ships panel JavaScript. See [../development/frontend.md](../development/frontend.md#adding-a-module-screen).
+
+## Admin screens
+
+The admin TUI's screens, for an admin in the panel ([frontend.md](../development/frontend.md#admin-screens)).
+The handlers are in `src/agento/web/admin_api.py` and read through `framework/admin/data.py`, the
+TUI's read layer. Every route needs a session and its operation; a `user` gets 403. Writes pass
+the CSRF controls above. A scope is `?scope=default|workspace|agent_view&scope_id=N` on a GET, and
+`{scope, scope_id}` in a body; a bad one is 400, and an id that does not exist is 404.
+
+| Method | Path | Operation | Answer |
+|---|---|---|---|
+| GET | `/api/admin/scopes` | `admin.read` | workspaces and agent_views, for the scope picker |
+| GET | `/api/admin/dashboard` | `admin.read` | health, version, module count, recent jobs, credentials, agent views |
+| GET | `/api/admin/jobs[?status=]` | `admin.read` | the newest 50 jobs; status `TODO`, `RUNNING`, `SUCCESS`, `FAILED` or `DEAD` |
+| GET | `/api/admin/jobs/<id>` | `admin.read` | the job, with prompt, output, summary and error cut to 500 chars |
+| GET | `/api/admin/agents` | `admin.read` | agent_views with workspace, ingress count and last build status |
+| GET | `/api/admin/credentials` | `admin.read` | credentials with 24 h usage, `type`, `limits` and `limits_at`; `status` and `error_source`, never the error message or the token |
+| POST | `/api/admin/credentials/<id>/clear-error` | `credentials.manage` | 204 |
+| POST | `/api/admin/credentials/<id>/disable` | `credentials.manage` | 204 (the same as `credential:deregister`) |
+| POST | `/api/admin/credentials/<id>/login` | `credentials.manage` | 201 `{id}`; 404 no credential; 400 the scope declares no `interactive_oauth` mode (a harness without `start_web_login` gets 201, then `failed: unsupported`); 409 disabled, not `oauth`, or a login already active |
+| GET | `/api/admin/credential-logins/<id>` | `credentials.manage` | `{status, verify_url, user_code, needs_code, error_code, expires_at}`; 404 no login |
+| POST | `/api/admin/credential-logins/<id>/code` | `credentials.manage` | `{code}`, 1–300 printable ASCII characters, no space; 204; 400 a bad code; 409 not `waiting`, no code expected, or a code already sent |
+| POST | `/api/admin/credential-logins/<id>/cancel` | `credentials.manage` | 204; 404 no active login |
+| GET | `/api/admin/tools` | `admin.read` | tools per toolset with `enabled`, `explicit_here`, `blocked_by` |
+| GET | `/api/admin/skills` | `admin.read` | skills with `enabled`, `explicit_here` |
+| GET | `/api/admin/config/modules` | `admin.read` | modules with config, and their tools that have fields |
+| GET | `/api/admin/config?module=` | `admin.read` | the module's fields: source, editable, options, tester; `secret` and `is_set`, and `value` only when not secret |
+| PUT | `/api/admin/config` | `config.write` | `{path, reset}`; a secret path is refused |
+| DELETE | `/api/admin/config` | `config.write` | 204; a secret path is refused, no override is 404 |
+| POST | `/api/admin/config/test` | `config.write` | `{status, code, message}`; an `error` has a fixed message per code |
+
+**Never a secret, never the decryptor.** `web` holds the encryption key (D-BACKEND-1), but the
+admin API never sends a secret value. A secret field (`obscure`
+or `toolbox_only`, `config_schema.is_secret_field`) is reported by presence only, and the read path
+calls no decryptor: credentials are listed without their payload. A tester's `error` and a
+credential's error text do not reach the browser, because both can name an internal host or quote
+CLI output. See DECISIONS.md 2026-10-02 (D-PANEL-ADMIN-1, D-PANEL-ADMIN-2).
+
+**Re-login.** `POST …/login` only writes a `pending` `credential_login` row (15 minutes to
+live). The `credential:web-login` worker in cron claims it, runs the vendor CLI in a PTY and moves
+it through `starting` → `waiting` → `verifying` → `done`, or to `failed` with an `error_code`
+(`cli_failed`, `bad_url`, `busy`, `disabled`, `unsupported`, `expired`, `abandoned`) or
+`cancelled`. The panel polls the GET. When `needs_code` is true (Claude), `web` encrypts the pasted
+code with `AGENTO_ENCRYPTION_KEY` and stores only the encrypted bytes; no answer ever carries
+`code_box`. See
+[credentials.md](../cli/credentials.md#re-login-from-the-panel) and DECISIONS.md 2026-10-09
+(D-BACKEND-1).
+
+**Limits.** `limits` is what `credential:limits` last stored: `{windows: [{label, used_pct,
+resets_at}], balance_usd}`, or `null`; `limits_at` is when it was last checked. `null` with a
+`limits_at` is a failed check (the panel shows "Check failed"); `null` without one has nothing to
+show ("—"). `web`
+calls no vendor ([credentials.md](../cli/credentials.md#usage-limits)).
+
+**What stays in the TUI**: [docs/cli/admin.md](../cli/admin.md). `web` caches the module schemas
+for its process life, like the module routes: restart `web` after `module:enable` or
+`module:disable`.
 
 ## Rate limiting
 
@@ -255,22 +375,26 @@ A limiter that cannot count is not a limiter: if the query fails, the request is
 ## Streaming responses
 
 A handler may return `StreamingResponse` (`web/streaming.py`) instead of `Response`. The listener
-then writes each frame as the generator yields it, and four properties hold.
+then writes each frame as the generator yields it, and five properties hold.
 
-**No `Content-Length`.** The length is unknown when the headers go out. The response is not
-keep-alive, sends `Connection: close`, and the end of the body is the end of the connection. It
-also carries `X-Accel-Buffering: no`, so nothing between `web` and the reader collapses the stream
+**No `Content-Length`.** The length is unknown when the headers go out. uvicorn sends the frames
+as HTTP/1.1 chunks (to an HTTP/1.0 client, up to the close), so the body ends where the generator
+ends. It also carries `X-Accel-Buffering: no`, so nothing between `web` and the reader collapses the stream
 into one reply.
 
 **Frames are flushed as they are produced.** Every frame is written and flushed in turn, so the
 first one is readable by the client while the handler is still running. That is the whole point,
 and it is asserted against a real socket rather than a fake writer.
 
-**A disconnect is a broken write.** There is no out-of-band notice that a reader left; the write
-to a dead socket raises, and that raise ends the loop.
+**A disconnect ends the loop.** uvicorn drops a write to a closed socket silently, so the listener
+watches the ASGI `http.disconnect` message and stops after the `next()` in progress.
+
+**Streams have their own thread budget.** The generator is sync and waits between polls, so the
+listener calls `next()` on a thread from `server.MAX_STREAMS`, never from the request pool. Open
+streams cannot stop other requests.
 
 **The generator's `finally` releases the §7.3 stream slot, and the listener closes the generator
-on every exit** — a clean end, a broken write, and a handler that raised mid-stream. The close is
+on every exit** — a clean end, a disconnect, and a handler that raised mid-stream. The close is
 explicit, not left to the garbage collector: a slot released only because CPython happened to drop
 the last reference is not released. A handler that raises after the headers are out gets no `500`
 — there is none left to send — so the stream is cut and the failure is written to stderr with the

@@ -95,8 +95,8 @@ class TestAdminBorrowsTheField:
         ), patch(
             "agento.framework.scoped_config.load_scoped_db_overrides", return_value={}
         ), patch(
-            "agento.framework.config_resolver.ScopedConfigService.resolve_all",
-            return_value=resolved,
+            "agento.framework.config_resolver.ScopedConfigService.get",
+            new=lambda _svc, path, *a, **k: resolved.get(path),
         ):
             conn = MagicMock()
             cursor = MagicMock()

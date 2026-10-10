@@ -1,5 +1,0 @@
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_001","name":"Read","input":{"file_path":"/x"}}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_002","name":"mcp__toolbox__jira_get_issue","input":{"issue":"AI-70"}}]}}
-{"type":"queue-operation"}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from agento.framework.events import JobVerificationFailed, Verdict, VerifyReason
-from agento.framework.harness import McpInitReport, McpServerStatus, ParseSummary, ToolUse
+from agento.framework.harness import McpInitReport, McpServerStatus
 from agento.modules.app_monitor.src import observers as obs
 from agento.modules.app_monitor.src.constants import (
     CFG_ALERT_EMAIL_TO,
@@ -60,48 +59,8 @@ class _BlockedEvent:
     elapsed_ms: int = 0
 
 
-def _harness_with(reader):
-    """A RegisteredHarness-shaped stub — the observer reads the transcript reader off
-    the registered harness's adapter, not off ``find_harness`` directly."""
-    return SimpleNamespace(adapter=SimpleNamespace(transcript_reader=reader))
-
-
-class _FakeReader:
-    """In-memory TranscriptReader stub keyed by session_id."""
-
-    def __init__(self, summaries: dict[str, ParseSummary] | None = None):
-        self.summaries = summaries or {}
-
-    def parse(self, session_id: str) -> ParseSummary:
-        if session_id not in self.summaries:
-            raise FileNotFoundError(session_id)
-        return self.summaries[session_id]
-
-    def iter_tool_uses(self, session_id: str) -> tuple[ToolUse, ...]:
-        return self.parse(session_id).tool_uses
-
-
-def _summary(tool_use_names: list[str], *, total_json_lines: int | None = None,
-             recognized_records: int | None = None) -> ParseSummary:
-    tool_uses = tuple(ToolUse(name=n, tool_use_id=f"t{i}") for i, n in enumerate(tool_use_names))
-    if recognized_records is None:
-        recognized_records = max(len(tool_uses), 1)
-    if total_json_lines is None:
-        total_json_lines = recognized_records + 2
-    return ParseSummary(
-        total_json_lines=total_json_lines,
-        recognized_records=recognized_records,
-        tool_uses=tool_uses,
-    )
-
-
 def _mcp_init(*pairs: tuple[str, str]) -> McpInitReport:
     return McpInitReport(servers=tuple(McpServerStatus(n, s) for n, s in pairs))
-
-
-def _toolbox(n: int) -> list[str]:
-    """n distinct ``mcp__toolbox__*`` tool-use names."""
-    return [f"mcp__toolbox__tool_{i}" for i in range(n)]
 
 
 # Full SMTP config so _smtp_config() returns a usable object.
@@ -116,16 +75,18 @@ _SMTP = {
 }
 
 
-@pytest.fixture
-def fake_reader(monkeypatch):
-    reader = _FakeReader({
-        "calls_3": _summary([*_toolbox(3), "Read"]),
-        "calls_5": _summary(_toolbox(5)),
-        "zero_calls": _summary(["Read", "Bash"]),
-        "drifted": ParseSummary(total_json_lines=10, recognized_records=0, tool_uses=()),
-    })
-    monkeypatch.setattr(obs, "find_harness", lambda harness: _harness_with(reader))
-    return reader
+# Toolbox call count per session id; an id not listed is "unknown" (NULL).
+_COUNTS = {"calls_3": 3, "calls_5": 5, "zero_calls": 0}
+
+
+@pytest.fixture(autouse=True)
+def fake_counts(monkeypatch):
+    """No DB: the count is keyed off the job's session id, the connection is a mock.
+    The real query is pinned in ``test_toolbox_call_count.py``."""
+    monkeypatch.setattr(obs, "get_connection", lambda _cfg: MagicMock())
+    monkeypatch.setattr(
+        obs, "_count_toolbox_calls", lambda _conn, job: _COUNTS.get(job.session_id),
+    )
 
 
 def _patch_config(monkeypatch, **kwargs):
@@ -133,8 +94,9 @@ def _patch_config(monkeypatch, **kwargs):
 
 
 def _patch_saver(monkeypatch) -> MagicMock:
+    """Records ``(job_id, calls, connected)``; the connection argument is dropped."""
     saver = MagicMock()
-    monkeypatch.setattr(obs, "_save_mcp_telemetry", saver)
+    monkeypatch.setattr(obs, "_save_mcp_telemetry", lambda _conn, *a: saver(*a))
     return saver
 
 
@@ -147,7 +109,7 @@ def _patch_sender(monkeypatch) -> MagicMock:
 class TestMcpHealthTelemetry:
     """Telemetry truth table — dual nullable signals, combined alert, no verdict."""
 
-    def test_persists_both_signals_connected_with_calls(self, fake_reader, monkeypatch):
+    def test_persists_both_signals_connected_with_calls(self, monkeypatch):
         _patch_config(monkeypatch)  # flag off (missing key)
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
@@ -160,7 +122,7 @@ class TestMcpHealthTelemetry:
         sender.assert_not_called()
         assert event.verdict is None
 
-    def test_persists_connected_zero_calls_no_alert(self, fake_reader, monkeypatch):
+    def test_persists_connected_zero_calls_no_alert(self, monkeypatch):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: False, **_SMTP})
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
@@ -173,7 +135,7 @@ class TestMcpHealthTelemetry:
         sender.assert_not_called()
         assert event.verdict is None
 
-    def test_persists_connected_zero_calls_alerts(self, fake_reader, monkeypatch):
+    def test_persists_connected_zero_calls_alerts(self, monkeypatch):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
@@ -188,7 +150,7 @@ class TestMcpHealthTelemetry:
         assert "0 toolbox calls" in subject
         assert event.verdict is None
 
-    def test_persists_not_connected_with_calls_alerts(self, fake_reader, monkeypatch):
+    def test_persists_not_connected_with_calls_alerts(self, monkeypatch):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
@@ -203,7 +165,7 @@ class TestMcpHealthTelemetry:
         assert "toolbox not connected" in subject
         assert event.verdict is None
 
-    def test_persists_not_connected_no_calls_alerts_once(self, fake_reader, monkeypatch):
+    def test_persists_not_connected_no_calls_alerts_once(self, monkeypatch):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
@@ -220,7 +182,7 @@ class TestMcpHealthTelemetry:
         assert "toolbox not connected" in subject
         assert event.verdict is None
 
-    def test_persists_no_init_data_with_calls(self, fake_reader, monkeypatch):
+    def test_persists_no_init_data_with_calls(self, monkeypatch):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
@@ -235,7 +197,6 @@ class TestMcpHealthTelemetry:
 
     def test_null_calls_does_not_alert(self, monkeypatch):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
-        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
         event = _FinalizeEvent(
@@ -248,7 +209,7 @@ class TestMcpHealthTelemetry:
         sender.assert_not_called()  # calls == 0 is False for None
         assert event.verdict is None
 
-    def test_null_connected_does_not_alert(self, fake_reader, monkeypatch):
+    def test_null_connected_does_not_alert(self, monkeypatch):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
@@ -263,7 +224,6 @@ class TestMcpHealthTelemetry:
 
     def test_both_null_still_updates_row(self, monkeypatch):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
-        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         saver = _patch_saver(monkeypatch)
         sender = _patch_sender(monkeypatch)
         event = _FinalizeEvent(
@@ -285,16 +245,13 @@ class TestMcpHealthTelemetry:
         saver = _patch_saver(monkeypatch)
         observer = obs.McpHealthTelemetryObserver()
 
-        # Attempt 1: readable transcript w/ 3 toolbox calls + connected init.
-        reader = _FakeReader({"s1": _summary(_toolbox(3))})
-        monkeypatch.setattr(obs, "find_harness", lambda harness: _harness_with(reader))
+        # Attempt 1: 3 audited toolbox calls + connected init.
         observer.execute(_FinalizeEvent(
-            job=_Job(id=20, session_id="s1"),
+            job=_Job(id=20, session_id="calls_3"),
             job_result=_JobResult(_mcp_init(("toolbox", "connected"))),
         ))
 
-        # Attempt 2 (same row): no reader, no init report.
-        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
+        # Attempt 2 (same row): count unknown, no init report.
         observer.execute(_FinalizeEvent(
             job=_Job(id=20, session_id="s2"),
             harness="unknown",
@@ -304,7 +261,7 @@ class TestMcpHealthTelemetry:
         assert saver.call_args_list[0].args == (20, 3, True)
         assert saver.call_args_list[1].args == (20, None, None)
 
-    def test_no_alert_when_smtp_unconfigured(self, fake_reader, monkeypatch):
+    def test_no_alert_when_smtp_unconfigured(self, monkeypatch):
         _patch_config(monkeypatch, **{
             CFG_SEND_ALERT_ON_MCP_ISSUES: True,
             CFG_ALERT_EMAIL_TO: "ops@example.com",
@@ -320,7 +277,7 @@ class TestMcpHealthTelemetry:
         saver.assert_called_once_with(21, 0, False)
         sender.assert_not_called()
 
-    def test_alert_smtp_failure_logged_not_raised(self, fake_reader, monkeypatch, caplog):
+    def test_alert_smtp_failure_logged_not_raised(self, monkeypatch, caplog):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
         saver = _patch_saver(monkeypatch)
 
@@ -338,24 +295,8 @@ class TestMcpHealthTelemetry:
         saver.assert_called_once_with(22, 0, False)  # columns still persisted
         assert any("SMTP send failed" in r.message for r in caplog.records)
 
-    def test_drift_logs_persists_null_calls_and_known_connected(self, fake_reader, monkeypatch, caplog):
-        _patch_config(monkeypatch)
-        saver = _patch_saver(monkeypatch)
-        event = _FinalizeEvent(
-            job=_Job(id=23, session_id="drifted"),
-            job_result=_JobResult(_mcp_init(("toolbox", "connected"))),
-        )
-        with caplog.at_level(logging.ERROR, logger=obs.logger.name):
-            obs.McpHealthTelemetryObserver().execute(event)
-
-        # calls NULL (parse unreliable) but connected TRUE (independent of transcript).
-        saver.assert_called_once_with(23, None, True)
-        assert event.verdict is None
-        assert any("parser drift detected" in r.message for r in caplog.records)
-
     def test_toolbox_absent_from_init_list_is_false(self, monkeypatch):
         _patch_config(monkeypatch)
-        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         saver = _patch_saver(monkeypatch)
         event = _FinalizeEvent(
             job=_Job(id=24, session_id="any"),
@@ -368,7 +309,6 @@ class TestMcpHealthTelemetry:
 
     def test_empty_servers_list_is_false(self, monkeypatch):
         _patch_config(monkeypatch)
-        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         saver = _patch_saver(monkeypatch)
         event = _FinalizeEvent(
             job=_Job(id=25, session_id="any"),
@@ -380,7 +320,6 @@ class TestMcpHealthTelemetry:
 
     def test_toolbox_provider_lacks_init_is_null(self, monkeypatch):
         _patch_config(monkeypatch)
-        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         saver = _patch_saver(monkeypatch)
         event = _FinalizeEvent(
             job=_Job(id=26, session_id="any"),
@@ -392,7 +331,7 @@ class TestMcpHealthTelemetry:
         assert saver.call_args.args == (26, None, None)
 
     def test_pending_status_is_unknown_and_does_not_warn(
-        self, fake_reader, monkeypatch, caplog,
+        self, monkeypatch, caplog,
     ):
         """`pending` = the CLI printed init before the handshake finished.
 
@@ -413,7 +352,7 @@ class TestMcpHealthTelemetry:
         assert caplog.text == ""
 
     def test_pending_status_with_zero_calls_alerts_on_calls_only(
-        self, fake_reader, monkeypatch,
+        self, monkeypatch,
     ):
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
         saver = _patch_saver(monkeypatch)
@@ -430,7 +369,7 @@ class TestMcpHealthTelemetry:
         assert "toolbox not connected" not in subject
 
     def test_unrecognized_status_is_unknown_and_warns(
-        self, fake_reader, monkeypatch, caplog,
+        self, monkeypatch, caplog,
     ):
         """A status word we have never seen is UNKNOWN, not "broken" — but loud."""
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
@@ -447,7 +386,7 @@ class TestMcpHealthTelemetry:
         assert "connecting" in caplog.text
 
     @pytest.mark.parametrize("status", ["failed", "needs-auth", "needs-approval", "disabled"])
-    def test_terminal_statuses_are_not_connected(self, status, fake_reader, monkeypatch):
+    def test_terminal_statuses_are_not_connected(self, status, monkeypatch):
         """The CLI decided this server will not serve tools -> FALSE, and alert
         regardless of the call count."""
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
@@ -472,7 +411,7 @@ class TestMcpHealthTelemetry:
         ],
     )
     def test_alert_names_the_raw_toolbox_status(
-        self, init, expected, fake_reader, monkeypatch,
+        self, init, expected, monkeypatch,
     ):
         """Ops must be able to see WHY from the email alone."""
         _patch_config(monkeypatch, **{CFG_SEND_ALERT_ON_MCP_ISSUES: True, **_SMTP})
@@ -495,24 +434,18 @@ class TestMcpHealthTelemetry:
         def _bad_config():
             raise RuntimeError("config backend down")
         monkeypatch.setattr(obs, "_config", _bad_config)
-        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
         observer.execute(_FinalizeEvent(job=_Job(session_id="x")))
 
-        # 2. reader.parse throws unexpectedly.
+        # 2. the DB connection cannot be opened.
         _patch_config(monkeypatch)
 
-        class _Broken:
-            def parse(self, session_id):
-                raise RuntimeError("disk corrupted")
-
-            def iter_tool_uses(self, session_id):
-                return self.parse(session_id)
-
-        monkeypatch.setattr(obs, "find_harness", lambda harness: _harness_with(_Broken()))
+        def _no_db(_cfg):
+            raise RuntimeError("db down")
+        monkeypatch.setattr(obs, "get_connection", _no_db)
         observer.execute(_FinalizeEvent(job=_Job(session_id="x")))
+        monkeypatch.setattr(obs, "get_connection", lambda _cfg: MagicMock())
 
         # 3. persist throws.
-        monkeypatch.setattr(obs, "find_harness", lambda harness: None)
 
         def _bad_save(*_a, **_kw):
             raise RuntimeError("db down")

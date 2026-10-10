@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -706,6 +707,17 @@ class TestSandboxDockerfileIsRendered:
             )
 
 
+def _harness_di(name: str, env_key: str, default: str) -> dict:
+    return {"agent_harnesses": [{
+        "id": name, "label": name, "class": "src.adapter.A", "default_provider": "p",
+        "providers": [{"id": "p", "label": "P", "credential_required": False}],
+        "sandbox_package": {
+            "manager": "npm", "package": f"@example/{name}-cli", "binary": name,
+            "version_env_key": env_key, "default_range": default,
+        },
+    }]}
+
+
 class TestEnumerateSandboxPackages:
     """Registry enumeration is the single source of truth for which agents the
     sandbox image needs to install. Tests cover: core-only enumeration, the
@@ -732,16 +744,7 @@ class TestEnumerateSandboxPackages:
         mod = tmp_path / "app" / "code" / name
         mod.mkdir(parents=True)
         (mod / "module.json").write_text(json.dumps({"name": name, "version": "0.1.0"}))
-        (mod / "di.json").write_text(json.dumps({
-            "sandbox_packages": [{
-                "provider": name,
-                "manager": "npm",
-                "package": f"@example/{name}-cli",
-                "binary": name,
-                "version_env_key": env_key,
-                "default_range": default,
-            }]
-        }))
+        (mod / "di.json").write_text(json.dumps(_harness_di(name, env_key, default)))
         return tmp_path
 
     def test_local_module_overlays_on_core(self, tmp_path: Path):
@@ -794,20 +797,8 @@ class TestEnumerateSandboxPackages:
             tmp_path, name="dupe1", env_key="CLAUDE_CODE_VERSION", default="~9.9.9",
         )
         # CLAUDE_CODE_VERSION is already claimed by the core claude module.
-        with pytest.raises(RuntimeError, match="duplicate sandbox_packages"):
+        with pytest.raises(RuntimeError, match="duplicate sandbox_package"):
             enumerate_sandbox_packages(proj)
-
-    def test_malformed_entry_raises(self, tmp_path: Path):
-        # Missing required fields in a declaration must not be silently dropped.
-        mod = tmp_path / "app" / "code" / "broken"
-        mod.mkdir(parents=True)
-        (mod / "module.json").write_text(json.dumps({"name": "broken"}))
-        (mod / "di.json").write_text(json.dumps({
-            "sandbox_packages": [{"provider": "broken"}]  # missing everything else
-        }))
-
-        with pytest.raises(RuntimeError, match="Malformed sandbox_packages"):
-            enumerate_sandbox_packages(tmp_path)
 
     def test_module_without_sandbox_packages_is_skipped(self, tmp_path: Path):
         mod = tmp_path / "app" / "code" / "no_sandbox"
@@ -903,16 +894,7 @@ class TestNewAgentRegistersWithoutFrameworkEdit:
         mod = tmp_path / "app" / "code" / "hermes"
         mod.mkdir(parents=True)
         (mod / "module.json").write_text(json.dumps({"name": "hermes", "version": "0.1.0"}))
-        (mod / "di.json").write_text(json.dumps({
-            "sandbox_packages": [{
-                "provider": "hermes",
-                "manager": "npm",
-                "package": "@example/hermes-cli",
-                "binary": "hermes",
-                "version_env_key": "HERMES_VERSION",
-                "default_range": "~1.0.0",
-            }]
-        }))
+        (mod / "di.json").write_text(json.dumps(_harness_di("hermes", "HERMES_VERSION", "~1.0.0")))
 
         # 1. Enumeration includes the new agent.
         pkgs = enumerate_sandbox_packages(tmp_path)
@@ -987,8 +969,8 @@ class TestArtifactsService:
 
     def test_joins_no_network_and_reads_no_secret(self):
         block = self._block()
-        # One `networks:` line added for consistency would put every artifact on
-        # agento-net, readable by every agent in every agent_view over plain HTTP.
+        # One `networks:` line added for consistency would put every artifact on a
+        # named network, readable by every agent in every agent_view over plain HTTP.
         assert "networks:" not in block
         assert "env_file:" not in block
         assert "environment:" not in block
@@ -1132,27 +1114,35 @@ def _compose_sources() -> list:
 
 @pytest.mark.parametrize("load", _compose_sources())
 class TestPlatformFoundationServices:
-    """E1.5 §2: the proxy is the only route to artifact files and the only bridge
-    between agento-net and the artifacts `default` network."""
+    """E1.5 §2: the proxy is the only route to artifact files. WS7: each service sits on
+    exactly the networks of the reachability table (docs/architecture/containers.md)."""
 
-    def test_runs_the_seven_services(self, load):
+    def test_runs_the_eight_services(self, load):
         assert _services(load()) == {
-            "sandbox", "toolbox", "cron", "artifacts", "mysql", "web", "proxy",
+            "sandbox", "toolbox", "cron", "artifacts", "mysql", "web", "proxy", "runner-1",
         }
 
-    def test_only_the_proxy_bridges_both_networks(self, load):
+    def test_each_service_sits_on_its_networks_only(self, load):
+        # The security claims are the cells with no shared network: runner/sandbox reach
+        # neither mysql nor web, cron reaches no proxy. Only proxy joins `default`.
         content = load()
-        assert set(_items(_service_block(content, "proxy"), "networks")) == {"agento-net", "default"}
-        for name in _services(content) - {"proxy"}:
-            assert "default" not in _items(_service_block(content, name), "networks"), name
+        assert {name: set(_items(_service_block(content, name), "networks"))
+                for name in _services(content)} == {
+            "mysql": {"db-net"},
+            "cron": {"db-net"},
+            "web": {"db-net", "web-net"},
+            "toolbox": {"db-net", "exec-net"},
+            "runner-1": {"exec-net"},
+            "sandbox": {"exec-net"},
+            "proxy": {"exec-net", "web-net", "default"},
+            "artifacts": set(),
+        }
+        assert "agento-net" not in content
 
     def test_artifacts_has_no_network_and_no_host_port(self, load):
         block = _service_block(load(), "artifacts")
         assert "networks:" not in block
         assert "ports:" not in block
-
-    def test_web_sits_on_agento_net_only(self, load):
-        assert _items(_service_block(load(), "web"), "networks") == ["agento-net"]
 
     def test_only_proxy_and_web_mount_the_proxy_secret(self, load):
         content = load()
@@ -1183,16 +1173,37 @@ class TestPlatformFoundationServices:
         volumes = _items(_service_block(load(), "web"), "volumes")
         assert {"../app/code:/app/code:ro", "../app/etc:/app/etc:ro"} <= set(volumes)
 
-    def test_web_holds_no_secret(self, load):
-        block = _service_block(load(), "web")
-        assert "env_file:" not in block
-        assert "AGENTO_ENCRYPTION_KEY" not in block
+    def test_web_and_cron_are_one_backend_env(self, load):
+        # WS11 (D-BACKEND-1): web holds the key, as cron does. The runner holds none:
+        # runner/test_runner_boundary.py.
+        def env_file(name):
+            block = _service_block(content, name).split("\n    env_file:\n", 1)[1]
+            return re.match(r"(?:      .*\n)+", block).group()
+
+        content = load()
+        assert "secrets.env" in env_file("web")
+        assert env_file("web") == env_file("cron")
 
     def test_web_healthcheck_needs_no_curl(self, load):
         block = _service_block(load(), "web")
         assert "healthcheck:" in block
         assert "urllib.request" in block
         assert "curl" not in block
+
+
+def test_no_doc_or_source_names_the_retired_agento_net():
+    # WS7 (CLS-1): the flat network is gone. History (DECISIONS.md, old plans) and the one
+    # upgrade note keep the name; nothing else may tell an operator to use it.
+    root = Path(__file__).resolve().parents[4]
+    allowed = {"docs/deployment/docker-compose-override.md"}
+    paths = [root / "AGENTS.md", root / "README.md"]
+    for top in ("src", "docs", "docker"):
+        paths += [f for f in (root / top).rglob("*") if f.is_file() and f.suffix in
+                  {".md", ".py", ".js", ".yml", ".yaml", ".sh", ".html"}
+                  and "node_modules" not in f.parts and "superpowers" not in f.parts]
+    hits = [str(f.relative_to(root)) for f in paths
+            if str(f.relative_to(root)) not in allowed and "agento-net" in f.read_text(errors="ignore")]
+    assert hits == []
 
 
 def test_web_mounts_the_same_extensions_as_cron():
@@ -1203,3 +1214,63 @@ def test_web_mounts_the_same_extensions_as_cron():
     mount = "../.venv/lib/python3.12/site-packages/acme_ext:/opt/agento-src/acme_ext:ro"
     assert mount in _items(_service_block(content, "web"), "volumes")
     assert mount in _items(_service_block(content, "cron"), "volumes")
+
+
+@pytest.mark.parametrize("load", _compose_sources())
+class TestLeastPrivilegeDbUsers:
+    """WS8 (SEC-1): cron_agent migrates; cron and web run as the backend user, the toolbox
+    as its own user. MySQL listens on host loopback only (O10)."""
+
+    def test_mysql_on_loopback_creates_the_migration_user(self, load):
+        block = _service_block(load(), "mysql")
+        assert _items(block, "ports") == ["127.0.0.1:${MYSQL_PORT:-3306}:3306"]
+        assert "      MYSQL_USER: cron_agent" in block.splitlines()
+
+    def test_runtime_services_use_their_own_users(self, load):
+        from agento.framework.db_grants import TOOLBOX_USER
+
+        content = load()
+        for name, user, pw in (("cron", "MYSQL_USER=agento_backend", "MYSQL_PASSWORD=${MYSQL_BACKEND_PASSWORD"),
+                               ("web", "MYSQL_USER=agento_backend", "MYSQL_PASSWORD=${MYSQL_BACKEND_PASSWORD"),
+                               ("toolbox", f"CRONDB_USER={TOOLBOX_USER}", "CRONDB_PASSWORD=${MYSQL_TOOLBOX_PASSWORD")):
+            env = _items(_service_block(content, name), "environment")
+            assert user in env and any(e.startswith(pw) for e in env), name
+
+    def test_only_cron_holds_the_migration_and_toolbox_passwords(self, load):
+        # setup:upgrade runs in cron: it connects as cron_agent and (re)creates the toolbox user.
+        content = load()
+        for name in _services(content):
+            block = _service_block(content, name)
+            has = "MYSQL_MIGRATE_PASSWORD=" in block or "MYSQL_TOOLBOX_PASSWORD=" in block
+            assert has == (name == "cron"), name
+
+
+class TestRuntimeDbPasswords:
+    def _project(self, tmp_path: Path, env: str) -> Path:
+        TestRegenerateCompose()._seed_project(tmp_path)
+        (tmp_path / "docker" / ".env").write_text(env)
+        return tmp_path
+
+    def test_regenerate_compose_backfills_both_passwords(self, tmp_path: Path):
+        from agento.framework.cli._env import parse_env_file
+
+        proj = self._project(tmp_path, "MYSQL_PASSWORD=old\n")
+        regenerate_compose(proj)
+        env = parse_env_file(proj / "docker" / ".env")
+        assert env["MYSQL_PASSWORD"] == "old"
+        assert len(env["MYSQL_BACKEND_PASSWORD"]) >= 24
+        assert len(env["MYSQL_TOOLBOX_PASSWORD"]) >= 24
+        assert env["MYSQL_BACKEND_PASSWORD"] != env["MYSQL_TOOLBOX_PASSWORD"]
+
+    def test_regenerate_compose_never_overwrites_a_password(self, tmp_path: Path):
+        proj = self._project(tmp_path, "MYSQL_BACKEND_PASSWORD=b\nMYSQL_TOOLBOX_PASSWORD=t\n")
+        regenerate_compose(proj)
+        assert (proj / "docker" / ".env").read_text() == "MYSQL_BACKEND_PASSWORD=b\nMYSQL_TOOLBOX_PASSWORD=t\n"
+
+
+def test_fresh_mysql_gives_the_migration_user_its_grant_rights():
+    sql = (Path(__file__).resolve().parents[4] / "src/agento/framework/sql/init/001_migrate_user.sql").read_text()
+    for line in ("GRANT CREATE USER ON *.* TO 'cron_agent'@'%';",
+                 "GRANT ALL PRIVILEGES ON `cron_agent`.* TO 'cron_agent'@'%' WITH GRANT OPTION;",
+                 "GRANT ALL PRIVILEGES ON `cron\\_agent`.* TO 'cron_agent'@'%' WITH GRANT OPTION;"):
+        assert line in sql

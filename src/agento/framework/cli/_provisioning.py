@@ -13,7 +13,9 @@ GHCR pulls.
 from __future__ import annotations
 
 import importlib.resources as ires
+import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -23,6 +25,7 @@ from ..harness.descriptor import SandboxPackage
 from ..module_status import read_module_status, resolve_module_source
 from ._env import parse_env_file
 from ._output import log_error, log_info
+from ._project import update_dotenv_value
 from ._templates import get_package_version, get_template
 
 _AGENTO_REQUIRES_PYTHON = ">=3.12"
@@ -72,23 +75,10 @@ def parse_semver_floor(value: str) -> tuple[int, int, int] | None:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
 
-def _iter_module_dirs(project_root: Path | None) -> list[Path]:
-    """Deprecated shim — module discovery is public now.
-
-    Kept so existing callers/tests keep working; the implementation moved to
-    ``framework/module_discovery.py`` so core contracts (``framework/harness/``) can
-    use it without depending on this private CLI helper.
-    """
-    from ..module_discovery import iter_module_dirs
-
-    return iter_module_dirs(project_root)
-
-
 def enumerate_sandbox_packages(project_root: Path | None = None) -> list[SandboxPackage]:
     """Enumerate agent CLI declarations across all reachable modules.
 
-    Reads ``agent_harnesses[].sandbox_package`` plus the deprecated top-level
-    ``sandbox_packages`` array (one more cycle). Scans core modules, local modules
+    Reads ``agent_harnesses[].sandbox_package``. Scans core modules, local modules
     (``<project>/app/code/``) and PyPI extensions; filters modules disabled via
     ``app/etc/modules.json``. Raises ``RuntimeError`` on a duplicate
     ``version_env_key`` so a copy-paste collision surfaces immediately instead of one
@@ -436,6 +426,7 @@ def render_compose(
     python_version: str,
     extensions: list[str],
     sandbox_packages: list[SandboxPackage],
+    runner_count: int = 1,
 ) -> str:
     """Substitute placeholders in the docker-compose template.
 
@@ -447,6 +438,9 @@ def render_compose(
     - line ``        # {{ sandbox_package_args }}`` — replaced with one
       ``<KEY>: ${<KEY>:-<default>}`` per ``sandbox_packages`` entry (or removed
       when no agent module ships one).
+    - the block from ``  # {{ runner }}`` to ``  # {{ /runner }}`` — one copy per
+      runner, ``{{ i }}`` = 1..``runner_count``; then every other line with ``{{ i }}``
+      (cron's socket mounts and depends_on, the socket volumes) — one copy per runner.
     """
     def mount_block(target_path: str) -> str:
         if not extensions:
@@ -466,6 +460,15 @@ def render_compose(
         ]
         return "\n".join(lines) + "\n"
 
+    start, end = "  # {{ runner }}\n", "  # {{ /runner }}\n"
+    count = max(1, runner_count)
+    if start in template:
+        head, rest = template.split(start)
+        block, tail = rest.split(end)
+        template = head + "\n".join(block.replace("{{ i }}", str(i)) for i in range(1, count + 1)) + tail
+    template = re.sub(r"^.*\{\{ i \}\}.*\n", lambda m: "".join(
+        m[0].replace("{{ i }}", str(i)) for i in range(1, count + 1)), template, flags=re.M)
+    template = template.replace("{{ runner_count }}", str(count))
     rendered = template.replace(
         "      # {{ extension_mounts_sandbox }}\n",
         mount_block("/opt/agento-src"),
@@ -547,12 +550,20 @@ def regenerate_compose(project_dir: Path) -> None:
     extensions = enumerate_enabled_extensions(project_dir)
     sandbox_packages = enumerate_sandbox_packages(project_dir)
     template = get_template("docker-compose.yml")
+    env_path = project_dir / "docker" / ".env"
+    dotenv = parse_env_file(env_path) if env_path.is_file() else {}
     rendered = render_compose(
         template,
         python_version=py_ver,
         extensions=extensions,
         sandbox_packages=sandbox_packages,
+        # Lowering it: drain first, or jobs of a removed runner stay RUNNING (docker/README.md).
+        runner_count=int(os.environ.get("AGENTO_RUNNER_COUNT") or dotenv.get("AGENTO_RUNNER_COUNT") or 1),
     )
     out = project_dir / "docker" / "docker-compose.yml"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(rendered)
+    # The compose reads the runtime DB passwords from docker/.env (WS8): generate a missing one.
+    for key in ("MYSQL_BACKEND_PASSWORD", "MYSQL_TOOLBOX_PASSWORD"):
+        if env_path.is_file() and not dotenv.get(key):
+            update_dotenv_value(env_path, key, secrets.token_urlsafe(24))

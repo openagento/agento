@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS job (
     error_message   TEXT NULL,
     error_class     VARCHAR(100) NULL,
     pid             INT DEFAULT NULL,
+    runner_ref      VARCHAR(128) DEFAULT NULL,
     session_id      VARCHAR(255) DEFAULT NULL,
     toolbox_mcp_calls INT DEFAULT NULL,
     toolbox_mcp_connected BOOLEAN DEFAULT NULL,
@@ -128,6 +129,8 @@ CREATE TABLE IF NOT EXISTS credential (
     lease_owner      VARCHAR(64)  NULL DEFAULT NULL,
     leased_until     DATETIME     NULL DEFAULT NULL,
     used_at          DATETIME(6)  NULL,
+    limits           JSON         NULL,
+    limits_at        DATETIME     NULL,
     created_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     -- Per SCOPE, not global: a label only means anything inside its scope, and the
@@ -254,8 +257,20 @@ CREATE TABLE tool_invocation (
     UNIQUE KEY uk_tool_invocation_execution (execution_id),
     KEY idx_tool_invocation_capability (capability_id),
     KEY idx_tool_invocation_created (created_at),
-    KEY idx_tool_invocation_conversation_relay (conversation_relayed_at, id)
+    KEY idx_tool_invocation_conversation_relay (conversation_relayed_at, id),
+    KEY idx_tool_invocation_run_execution (run_execution_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Roles are rows (050_role). `admin` and `user` are seeded; `admin` stays the one code with the
+-- built-in admin operations (accounts.may).
+CREATE TABLE IF NOT EXISTS role (
+    code       VARCHAR(16) NOT NULL PRIMARY KEY,
+    label      VARCHAR(64) NOT NULL,
+    created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_role_label (label)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO role (code, label) VALUES ('admin', 'Administrator'), ('user', 'User');
 
 -- Platform users (E1.5, PRD E2 §5). Login and RBAC logic are E2's.
 -- `user` is a non-reserved keyword in MySQL 8: always backtick it.
@@ -270,7 +285,7 @@ CREATE TABLE IF NOT EXISTS `user` (
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_user_username (username),
-    CONSTRAINT chk_user_role CHECK (role IN ('admin', 'user'))
+    CONSTRAINT fk_user_role FOREIGN KEY (role) REFERENCES role (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Panel sessions behind the __Host- cookie (E1.5, PRD E2 §4.2). Hashes only.
@@ -334,8 +349,9 @@ CREATE TABLE IF NOT EXISTS role_grant (
     agent_view_id INT UNSIGNED NULL,
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     KEY idx_role_grant_lookup (role, grant_kind, name),
-    CONSTRAINT chk_role_grant_role CHECK (role IN ('admin', 'user')),
     CONSTRAINT chk_role_grant_kind CHECK (grant_kind IN ('tool', 'operation')),
+    CONSTRAINT fk_role_grant_role FOREIGN KEY (role)
+        REFERENCES role (code) ON DELETE CASCADE,
     CONSTRAINT fk_role_grant_workspace FOREIGN KEY (workspace_id)
         REFERENCES workspace (id) ON DELETE CASCADE,
     CONSTRAINT fk_role_grant_agent_view FOREIGN KEY (agent_view_id)
@@ -397,6 +413,32 @@ CREATE TABLE IF NOT EXISTS job_defer_stretch (
     KEY idx_closed_id (closed_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- One panel re-login. `web` inserts it (`pending`); the cron worker `credential:web-login`
+-- claims it and drives the vendor CLI. The pasted code is never stored in plain text:
+-- `code_box` is the code encrypted with AGENTO_ENCRYPTION_KEY (crypto.py). It is cleared on
+-- every terminal write. `code_key` is unused since D-BACKEND-1 (it held an RSA public key).
+CREATE TABLE IF NOT EXISTS credential_login (
+    id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    credential_id BIGINT UNSIGNED NOT NULL,
+    status        ENUM('pending','starting','waiting','verifying','done','failed','cancelled') NOT NULL,
+    verify_url    VARCHAR(2048)   NULL,
+    user_code     VARCHAR(64)     NULL,
+    needs_code    BOOLEAN         NOT NULL DEFAULT FALSE,
+    code_key      TEXT            NULL,
+    code_box      VARBINARY(1024) NULL,
+    error_code    VARCHAR(32)     NULL,
+    created_by    INT UNSIGNED    NULL,
+    created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    heartbeat_at  DATETIME        NULL,
+    expires_at    DATETIME        NOT NULL,
+    KEY idx_credential_login_credential (credential_id, status),
+    CONSTRAINT fk_credential_login_credential FOREIGN KEY (credential_id)
+        REFERENCES credential (id) ON DELETE CASCADE,
+    CONSTRAINT fk_credential_login_user FOREIGN KEY (created_by)
+        REFERENCES `user` (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Mark all framework migrations as applied so setup:upgrade skips them
 INSERT INTO schema_migration (version) VALUES
     ('001_create_tables'),
@@ -446,4 +488,8 @@ INSERT INTO schema_migration (version) VALUES
     ('044_limit_bucket'),
     ('045_job_event_outbox'),
     ('046_job_defer_stretch'),
-    ('047_tool_invocation_run_execution');
+    ('047_tool_invocation_run_execution'),
+    ('048_credential_login'),
+    ('049_tool_invocation_run_execution_index'),
+    ('050_role'),
+    ('051_job_runner_ref');

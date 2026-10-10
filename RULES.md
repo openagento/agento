@@ -139,6 +139,12 @@ sandbox runs), the address limit counts failures only, so one caller cannot thro
 authorized traffic. A limit is never the only guard: authentication still runs on every request. A
 server that only a test starts is exempt.
 
+**SEC-13 Secret fields are `obscure`.** A `system.json` field that holds a password, token, API key,
+client secret, private key, or other credential has `"type": "obscure"`, so the value is stored
+encrypted and shown masked. A `string`, `textarea`, or `json` field never holds a secret. A field that
+only looks like one by its name (`outlook/summon_token`, a trigger word) is not a secret. Where the
+toolbox must keep the secret from Python, add `"access": "toolbox_only"` too (SEC-2).
+
 ## TBX — Toolbox and tools
 
 **TBX-1 Session isolation (P0).** Trigger: a change under `src/agento/toolbox/**` or
@@ -346,10 +352,11 @@ cannot be decrypted is `error`, never `not_configured`.
 
 ## CODE — Code
 
-**CODE-1 Python (P1).** httpx (not requests), dataclasses (not Pydantic), PyMySQL (not
-mysql-connector). Get the current time with `datetime.now(timezone.utc)`, never a naive local
+**CODE-1 Python (P1).** Get the current time with `datetime.now(timezone.utc)`, never a naive local
 `datetime.now()`. To compare with a PyMySQL `DATETIME` value, use naive UTC (`.replace(tzinfo=None)`)
-(DECISIONS.md 2026-03-31 UTC-everywhere).
+(DECISIONS.md 2026-03-31 UTC-everywhere). Library choices (httpx, dataclasses, PyMySQL) are
+decisions: DECISIONS.md 2026-02-19 Python port and 2026-02-22 Publisher-consumer job queue. A
+second library for the same job is a SEC-11 finding.
 
 **CODE-2 Style (P2).** Python: relative imports inside the framework; absolute `agento.framework.*`
 from modules and tests. Node: ES modules, `node:` prefix for built-ins, Zod for schema validation
@@ -388,6 +395,17 @@ text input uses `input()` with the default in brackets.
 loop where one batch query does the same work; a per-item idempotent insert on a unique key is fine.
 The consumer poll loop makes no call to a third-party service and no wait without a timeout.
 
+**CODE-9 CLI shortcuts (P1).** A new `ns:verb` command has a shortcut. Derive it as
+`is_valid_shortcut()` in `framework/commands.py` says: 2 letters per segment, the initials of each part
+of a hyphenated segment, a longer prefix only to break a collision (`co:res`). A single-word command
+needs none. A command has no shortcut only when its derived code collides with a sibling's
+(`bitbucket:publish-comments` / `publish-changes`). The host routes by the raw argv string before it
+resolves a shortcut, so a shortcut goes into each set in `framework/cli/__init__.py` that holds its
+command (`_LOCAL_COMMANDS`, `_LOCAL_MODULE_COMMANDS`, `_INTERACTIVE_COMMANDS`,
+`_MAYBE_INTERACTIVE_COMMANDS`). If not, the shortcut runs in the wrong container or without a TTY.
+`tests/unit/framework/test_command_shortcuts.py` guards both. Show the shortcut in the command's
+`docs/cli/` page.
+
 ## CLS — Defect classes
 
 **CLS-1 Close the class (P1).** A class is a rename, a removed flow, a renamed config key, a changed
@@ -396,6 +414,61 @@ of a defective helper. It puts the whole repo in scope, including files the diff
 `system.json` labels, tool descriptions, manifests). The reviewer reports one finding per class with
 every instance and the search that found them. The fixer sweeps the whole class and adds one guard
 test for it.
+
+## SCL — Scale
+
+**SCL-1 Parallel runs (P1).** The target is 100–200 jobs running at the same time in one
+deployment (`AGENTO_CONSUMER_MAX_WORKERS`). A change to a per-run hot path (claim, delta, event,
+credential, capability) adds no lock, counter row or serial step that all runs share. Per-run
+writes are batched or coalesced, so the write rate does not grow with the token rate. One
+transaction takes its row locks in one order (ascending id) and never a table lock. Every per-run
+buffer and queue has a size bound and says what it drops when full. The change comes with a test at
+`CONCURRENT_WORKERS_STRESS_TEST` scale (`tests/integration/conftest.py`, 100) or larger that
+asserts the bound, not only that the runs pass (`tests/integration/test_delta_scale.py` runs
+250). Owner: 2026-10-06.
+
+## UI — Panel and miniapp kit
+
+Scope: `frontend/**` and `src/agento/modules/*/panel/**`.
+
+**UI-1 One source of visual values (P1).** A color, radius, font, or spacing value comes from
+`packages/ui/src/theme.ts`. The kit gets it as an `--ag-*` variable that `scripts/tokens.ts`
+generates. No color literal in `components.css` or in `packages/ui` outside `theme.ts`. A value that
+Mantine sets in its component CSS, not in a theme variable, is copied once with a comment that names
+the Mantine source (the divider and chevron in `tokens.ts`, the dialog backdrop). No `style` or
+`styles` prop in `packages/ui` (ESLint enforces this). A Mantine default that fails WCAG AA is raised once, in
+`agentoCssVariables`, never per component. A new text color pair gets a contrast check in
+`kit.test.ts`.
+
+**UI-2 Twins stay equal (P1).** A `@agento/ui` component that a miniapp can also show has an `.ag-*`
+twin with a `@catalogue` block, and a pair in `acceptance/Parity.stories.tsx` that compares computed
+styles in light and dark. A change to one side changes the other in the same change. What the kit
+cannot copy (the open list of a native select) is written in the catalogue text.
+
+**UI-3 A released kit is immutable (P1).** A change to the built `agento-ui.css` (from
+`components.css`, `theme.ts`, `tokens.ts`, or a Mantine upgrade) is a new kit version. Only the owner
+can approve a re-cut of an unreleased version, and the plan records that approval (PLN-4). Nobody
+edits `released/` by hand.
+
+**UI-4 The agent-facing kit names no vendor (P1).** `agento-ui.css`, `agento-ui.js`, and the
+`miniapp-ui` skill use only `ag-` names. Mantine stays inside `packages/ui` and the panel (PLC-2 in
+spirit).
+
+**UI-5 Lookbook is a catalogue (P2).** Nothing imports `frontend/lookbook/` (`boundaries.test.ts`
+checks this), and its packages are devDependencies. To use a pattern, move it into `@agento/ui` or
+the panel and adapt it (UI-1, UI-2). Its stories stay `!test`.
+
+**UI-6 Stable component identity (P1).** Do not create a component type during a render (a function
+passed as a component, or a component declared inside another one): React remounts it on each
+render. Call a render-prop function directly. A key handler on a container (row, list) ignores
+events from interactive elements inside it. Incident: `DataTable` remounted every cell, so an open
+Select closed when its row took focus.
+
+**UI-7 An action is an icon with a title (P2).** A row action, a header action, and a copy action
+is `IconAction` from `@agento/ui` (`ArchiveAction` and `CopyButton` build on it): an icon, with the
+action's name as the hover title and the accessible name, and `danger` for a destructive action.
+A text `Button` stays for a form submit, a dialog footer, the call to action of an empty or error
+state (Retry), and a page's create action. Owner: 2026-10-06.
 
 ## TST — Tests
 
@@ -417,13 +490,14 @@ wrong (a command, flag, path, default, security step, runbook, contract) is a `D
 
 | Change | Update |
 |---|---|
-| CLI command added, removed, renamed | `docs/cli/`; `README.md` where it shows that command |
+| CLI command added, removed, renamed | `docs/cli/` with its shortcut (CODE-9); `README.md` where it shows that command |
 | Config path, or the fallback itself | `docs/config/`; AGENTS.md for a change to the fallback |
 | Module added, renamed, removed | `docs/modules/`, the `README.md` module list |
 | Container or trust boundary | `docs/architecture/` (incl. zero-trust.md), AGENTS.md, SECURITY.md |
 | Event | `docs/architecture/events.md` (EVT-6) |
 | Tool | `docs/tools/` |
 | Roadmap item done or moved | `ROADMAP.md` |
+| UI component, kit class, or frontend rule | `docs/development/frontend.md`; the `@catalogue` block (it regenerates the `miniapp-ui` skill) |
 | A rule | this file, in the same change |
 
 **DOC-2 Record decisions (P2).** Add each non-obvious technical choice to DECISIONS.md. Do not rewrite
