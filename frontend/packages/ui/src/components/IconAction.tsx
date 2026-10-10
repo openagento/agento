@@ -1,5 +1,5 @@
 import { ActionIcon, Tooltip } from "@mantine/core";
-import { Archive } from "lucide-react";
+import { Archive, RefreshCw } from "lucide-react";
 import type { ComponentPropsWithRef, ReactNode } from "react";
 
 /** An action as an icon. `label` is its hover title and its accessible name (RULES.md UI-7).
@@ -15,4 +15,8 @@ export function IconAction({ label, icon, danger = false, ...rest }:
 
 export function ArchiveAction(props: Omit<ComponentPropsWithRef<"button">, "children" | "color">) {
   return <IconAction label="Archive" icon={<Archive size={16} />} {...props} />;
+}
+
+export function RegenerateAction(props: Omit<ComponentPropsWithRef<"button">, "children" | "color">) {
+  return <IconAction label="Regenerate" icon={<RefreshCw size={16} />} {...props} />;
 }

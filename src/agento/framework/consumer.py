@@ -442,9 +442,28 @@ class Consumer:
             conn.close()
 
     def _db(self):
-        """A pooled connection. Opened through this module's ``get_connection``, so a test
-        patch on it still applies."""
-        return db.pooled(self._db_config, get_connection)
+        """A pooled connection, whose next transaction runs at READ COMMITTED.
+
+        Opened through this module's ``get_connection``, so a test patch on it still
+        applies.
+
+        The isolation level is the consumer's, not one transaction's, because the
+        finalizer hook runs in EVERY transition that ends an attempt - success, failure,
+        abandon, retry, recovery - and a level set at only some of them would leave the
+        hardest-to-test paths on the server default. Under REPEATABLE READ a transition is
+        wrong in two ways at once (§5.3, DECISIONS.md 2026-10-10):
+
+        - its plain reads answer from the snapshot its FIRST read took, before it holds any
+          lock, so a finalizer cannot see a row another session committed while it waited;
+        - its ranged writes take next-key (gap) locks, so a neighbouring run inserting its
+          own row lands in a gap and the pair deadlocks at 100-200 parallel jobs (SCL-1).
+
+        READ COMMITTED answers both: every statement reads the latest committed version,
+        and InnoDB takes record locks without gaps. Nothing here needs a repeatable range
+        read - every read is a point lookup guarded by a row lock, where fresher is
+        strictly better.
+        """
+        return db.pooled(self._db_config, get_connection, isolation="READ COMMITTED")
 
     def _check_build(self, em, agent_view_id: int) -> None:
         """The build freshness check, skipped when it passed for this view within one poll
@@ -500,8 +519,9 @@ class Consumer:
         """
         threshold = self._consumer_config.job_timeout_seconds + 60
         try:
-            conn = get_connection(self._db_config)
-            try:
+            # Through the pool, like every other transition: recovery calls the finalizer
+            # too, and it is the one path with no scale test of its own (CLS-1).
+            with self._db() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT id, reference_id, pid, runner_ref, attempt, max_attempts, started_at "
@@ -570,8 +590,6 @@ class Consumer:
                     self.logger.warning(
                         f"Stale job recovery: {retried} retried, {dead} dead-lettered"
                     )
-            finally:
-                conn.close()
         except Exception:
             self.logger.exception("Failed to recover stale jobs (non-fatal, continuing)")
 

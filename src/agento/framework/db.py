@@ -39,7 +39,8 @@ def get_connection(config: object) -> pymysql.Connection:
 
 
 @contextmanager
-def pooled(config: object, connect: Callable[[object], pymysql.Connection] | None = None) -> Iterator[pymysql.Connection]:
+def pooled(config: object, connect: Callable[[object], pymysql.Connection] | None = None,
+           isolation: str | None = None) -> Iterator[pymysql.Connection]:
     """Borrow a connection from the idle pool of ``config``; give it back on exit.
 
     Checkout never blocks: with nothing idle it opens a new one through ``connect``
@@ -47,6 +48,16 @@ def pooled(config: object, connect: Callable[[object], pymysql.Connection] | Non
     it still applies). The connection is pinged at checkout and rolled back at return, and
     one that raised is closed, never pooled. Never use it where ``GET_LOCK`` or
     ``SET SESSION`` runs: both outlive the checkout (a test guards this).
+
+    ``isolation`` binds the level for the WHOLE checkout, however many transactions the
+    borrower commits inside it - ``SET TRANSACTION`` alone would bind only the NEXT one and
+    silently revert at the first commit, which is the opposite of what a caller asking for
+    a level means. It is therefore a SESSION setting that the pool OWNS: applied in the
+    same guarded region as the checkout ping (a pooled connection too dead to take it is
+    discarded and replaced, so a borrow never fails for a reason a reconnect fixes) and
+    restored from the global default at return, before the connection goes back in. That
+    is what keeps the rule above intact - nothing outlives the checkout, because the pool
+    undoes it rather than forbidding it.
     """
     connect = connect or get_connection
     key = (connect, config.mysql_host, config.mysql_port, config.mysql_user,
@@ -55,10 +66,18 @@ def pooled(config: object, connect: Callable[[object], pymysql.Connection] | Non
         idle = _pools.get(key)
         if idle is None:
             idle = _pools[key] = queue.Queue(maxsize=IDLE_CAP)
+
+    def _prepare(c: pymysql.Connection) -> None:
+        if isolation is None:
+            return
+        with c.cursor() as cur:
+            cur.execute(f"SET SESSION TRANSACTION ISOLATION LEVEL {isolation}")
+
     conn = None
     try:
         conn = idle.get_nowait()
         conn.ping(reconnect=True)
+        _prepare(conn)
     except queue.Empty:
         pass
     except Exception:
@@ -66,6 +85,13 @@ def pooled(config: object, connect: Callable[[object], pymysql.Connection] | Non
         conn = None
     if conn is None:
         conn = connect(config)
+        try:
+            _prepare(conn)
+        except BaseException:
+            # Before the yield, so the cleanup below has not armed yet: a connection
+            # opened here and left unprepared would be neither closed nor pooled.
+            _discard(conn)
+            raise
     try:
         yield conn
     except BaseException:
@@ -73,6 +99,9 @@ def pooled(config: object, connect: Callable[[object], pymysql.Connection] | Non
         raise
     try:
         conn.rollback()
+        if isolation is not None:
+            with conn.cursor() as cur:
+                cur.execute("SET SESSION transaction_isolation = @@GLOBAL.transaction_isolation")
         idle.put_nowait(conn)
     except Exception:  # pool full, or the rollback found the connection dead
         _discard(conn)

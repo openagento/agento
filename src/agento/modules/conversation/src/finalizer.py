@@ -73,9 +73,22 @@ class ConversationFinalizer:
                     payload={"job_id": job_id, "attempt": attempt, "outcome": outcome})
             reference = self._conversation_reference(cur, job_id)
             if reference is None:
-                if run is not None and outcome == "succeeded":
-                    self._write_answer(cur, run["conversation_id"], job_id, resolved,
-                                       channel=True)
+                if job_terminal:
+                    # An operator reply posted from the panel into a channel thread has a
+                    # `message` row of its own, reachable only by the job id: the job's
+                    # reference belongs to the external system, not to a message. Without
+                    # this the reply would sit at `published` until the periodic
+                    # `reconcile_terminal`, and the panel would show it still running.
+                    # Outside the `run` branch: a run this module never linked still ends
+                    # the operator's turn.
+                    cur.execute(
+                        "UPDATE message SET job_state = 'terminal' "
+                        "WHERE job_id = %s AND job_state = 'published'", (job_id,))
+                if run is not None:
+                    if outcome == "succeeded":
+                        self._write_answer(cur, run["conversation_id"], job_id, resolved,
+                                           channel=True)
+                    self._drop_partials(cur, run["conversation_id"], resolved)
                 return
             conversation_id, message_id = reference
             service.lock_conversations(cur, [conversation_id])
@@ -84,6 +97,23 @@ class ConversationFinalizer:
                     "UPDATE message SET job_state = 'terminal' WHERE id = %s", (message_id,))
             if outcome == "succeeded" and resolved is not None:
                 self._write_answer(cur, conversation_id, job_id, resolved)
+            self._drop_partials(cur, conversation_id, resolved)
+
+    @staticmethod
+    def _drop_partials(cur, conversation_id: int, execution_id: str | None) -> None:
+        """Forget this attempt's live fragments: the answer replaces them.
+
+        Runs for EVERY outcome - a failed or retried attempt leaves partials behind too,
+        and retention would otherwise be their only cleanup. The thread's row lock is
+        already held by the caller. Bounded by `idx_execution_kind` to one execution.
+        """
+        if execution_id is None:
+            return
+        cur.execute(
+            "DELETE FROM conversation_event WHERE conversation_id = %s "
+            "AND execution_id = %s AND kind IN ('assistant.partial', 'reasoning.partial')",
+            (conversation_id, execution_id),
+        )
 
     # --- the execution row ------------------------------------------------
 

@@ -11,7 +11,7 @@ export { EmptyState, ErrorState, LoadingState } from "./components/States";
 export { CodeBlock, JsonViewer } from "./components/CodeBlock";
 export { Markdown } from "./components/Markdown";
 export { CopyButton } from "./components/CopyButton";
-export { ArchiveAction, IconAction } from "./components/IconAction";
+export { ArchiveAction, IconAction, RegenerateAction } from "./components/IconAction";
 export { DataTable, type Column } from "./components/DataTable";
 export { ConfirmDialog } from "./components/ConfirmDialog";
 export { FormSection, TextField, SelectField } from "./components/Form";

@@ -588,3 +588,158 @@ describe("Composer", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Regenerate and the channel composer", () => {
+  afterEach(() => { endSession(); });
+
+  /** A write needs a session: `apiFetch` sends the CSRF token with every POST. */
+  async function signIn() {
+    const stub = vi.fn(async () => new Response(JSON.stringify(
+      { user: { id: 1 }, csrf_token: "t", expires_at: "x" }), { status: 200 }));
+    vi.stubGlobal("fetch", stub);
+    await login("a", "b");
+  }
+
+  const answered = [
+    { id: 11, role: "user", content: "pytanie", client_message_id: "c1", job_id: 7,
+      job_state: "terminal", created_at: null, blocked: false, blocked_reason: null },
+    { id: 12, role: "assistant", content: "odpowiedź", client_message_id: null, job_id: null,
+      job_state: null, created_at: null, blocked: false, blocked_reason: null },
+  ];
+
+  /** `api()` answers reads; this one also records writes and can fail the first one. */
+  function writable(routes: Record<string, () => unknown>, failFirst?: string) {
+    const failed = new Set<string>();
+    return vi.fn(async (url: URL | string, init?: RequestInit) => {
+      const u = new URL(String(url), "http://panel");
+      if (init?.method === "POST") {
+        if (u.pathname === failFirst && !failed.has(failFirst)) {
+          failed.add(failFirst);
+          return new Response(JSON.stringify({ error: "boom" }), { status: 500 });
+        }
+        return new Response(JSON.stringify({ message_id: 20, job_id: 21 }), { status: 201 });
+      }
+      const route = routes[u.pathname + u.search];
+      return route ? new Response(JSON.stringify(route()), { status: 200 }) : new Response("{}", { status: 404 });
+    });
+  }
+  const posts = (f: ReturnType<typeof writable>, path: string) =>
+    f.mock.calls.filter(([u, i]) => (i as RequestInit | undefined)?.method === "POST"
+      && new URL(String(u), "http://panel").pathname === path);
+
+  it("Regenerate names the message, and a retry keeps the same request id", async () => {
+    await signIn();
+    captureHub();
+    const fetchMock = writable({
+      "/api/conversation/threads/5/timeline": () => page([]),
+      "/api/conversation/threads/5/messages": () => answered,
+      "/api/conversation/threads/5": () => thread(),
+    }, "/api/conversation/threads/5/regenerate");
+    vi.stubGlobal("fetch", fetchMock);
+    render(<View threadId={5} />, { wrapper });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Regenerate" }));
+    await vi.waitFor(() => expect(posts(fetchMock, "/api/conversation/threads/5/regenerate")).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Regenerate" }));
+    await vi.waitFor(() => expect(posts(fetchMock, "/api/conversation/threads/5/regenerate")).toHaveLength(2));
+
+    const sent = posts(fetchMock, "/api/conversation/threads/5/regenerate")
+      .map(([, i]) => JSON.parse(String((i as RequestInit).body)));
+    expect(sent[0]).toMatchObject({ message_id: 11 });
+    // The failed attempt and its retry are ONE regeneration, not two.
+    expect(sent[1].client_message_id).toBe(sent[0].client_message_id);
+  });
+
+  it("a send that failed after committing retries with the same request id", async () => {
+    await signIn();
+    captureHub();
+    const fetchMock = writable({
+      "/api/conversation/threads/5/timeline": () => page([]),
+      "/api/conversation/threads/5/messages": () => [],
+      "/api/conversation/threads/5": () => thread(),
+    }, "/api/conversation/threads/5/messages");
+    vi.stubGlobal("fetch", fetchMock);
+    render(<View threadId={5} />, { wrapper });
+    const box = await screen.findByRole("textbox", { name: "Message" });
+
+    fireEvent.change(box, { target: { value: "pytanie" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await vi.waitFor(() => expect(posts(fetchMock, "/api/conversation/threads/5/messages")).toHaveLength(1));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    await vi.waitFor(() => expect(posts(fetchMock, "/api/conversation/threads/5/messages")).toHaveLength(2));
+
+    const sent = posts(fetchMock, "/api/conversation/threads/5/messages")
+      .map(([, i]) => JSON.parse(String((i as RequestInit).body)));
+    // The server may have committed the first one: the retry must replay it, not duplicate it.
+    expect(sent[1].client_message_id).toBe(sent[0].client_message_id);
+  });
+
+  it("an edited retry is a new submission, with a new request id", async () => {
+    await signIn();
+    captureHub();
+    const fetchMock = writable({
+      "/api/conversation/threads/5/timeline": () => page([]),
+      "/api/conversation/threads/5/messages": () => [],
+      "/api/conversation/threads/5": () => thread(),
+    }, "/api/conversation/threads/5/messages");
+    vi.stubGlobal("fetch", fetchMock);
+    render(<View threadId={5} />, { wrapper });
+    const box = await screen.findByRole("textbox", { name: "Message" });
+
+    fireEvent.change(box, { target: { value: "pytanie" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await vi.waitFor(() => expect(posts(fetchMock, "/api/conversation/threads/5/messages")).toHaveLength(1));
+    fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "inne pytanie" } });
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    await vi.waitFor(() => expect(posts(fetchMock, "/api/conversation/threads/5/messages")).toHaveLength(2));
+
+    const sent = posts(fetchMock, "/api/conversation/threads/5/messages")
+      .map(([, i]) => JSON.parse(String((i as RequestInit).body)));
+    // Different text is a different turn: replaying the first id would send the old text.
+    expect(sent[1].content).toBe("inne pytanie");
+    expect(sent[1].client_message_id).not.toBe(sent[0].client_message_id);
+  });
+
+  it("a channel thread shows no Regenerate", async () => {
+    captureHub();
+    vi.stubGlobal("fetch", api({
+      "/api/conversation/threads/5/timeline": () => page([]),
+      "/api/conversation/threads/5/messages": () => answered,
+      "/api/conversation/threads/5": () => ({ ...thread("jira"), external_ref: "AI-7", channel_write: true }),
+    }));
+    render(<View threadId={5} />, { wrapper });
+    await screen.findByRole("textbox", { name: "Message" });
+    expect(screen.queryByRole("button", { name: "Regenerate" })).toBeNull();
+  });
+
+  it("the channel composer appears only with the grant and a reference, and posts the reply", async () => {
+    await signIn();
+    captureHub();
+    const routes = {
+      "/api/conversation/threads/5/timeline": () => page([]),
+      "/api/conversation/threads/5/messages": () => [],
+    };
+    const detail = (extra: Record<string, unknown>) =>
+      ({ ...thread("jira"), external_ref: "AI-7", ...extra });
+
+    for (const missing of [{ channel_write: false }, { channel_write: true, external_ref: null }]) {
+      vi.stubGlobal("fetch", api({ ...routes, "/api/conversation/threads/5": () => detail(missing) }));
+      const { unmount } = render(<View threadId={5} />, { wrapper });
+      expect(await screen.findByText("Read-only: this conversation comes from jira.")).toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+      unmount();
+      qc.clear();
+    }
+
+    const fetchMock = writable({ ...routes, "/api/conversation/threads/5": () => detail({ channel_write: true }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<View threadId={5} />, { wrapper });
+    const box = await screen.findByRole("textbox", { name: "Message" });
+    fireEvent.change(box, { target: { value: "odpowiedź operatora" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+
+    await vi.waitFor(() => expect(posts(fetchMock, "/api/conversation/threads/5/messages")).toHaveLength(1));
+    expect(JSON.parse(String((posts(fetchMock, "/api/conversation/threads/5/messages")[0][1] as RequestInit).body)))
+      .toMatchObject({ content: "odpowiedź operatora" });
+  });
+});

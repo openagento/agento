@@ -60,6 +60,34 @@ def _make_job(**overrides) -> Job:
     return Job(**defaults)
 
 
+
+def _statements(cursor):
+    """Every statement the code under test ran, minus the one the POOL runs.
+
+    `Consumer._db()` borrows with `isolation="READ COMMITTED"`, so every checkout opens
+    with a `SET SESSION TRANSACTION ISOLATION LEVEL` and closes by restoring
+    `transaction_isolation`. Both are the pool's statements, not the caller's, and a test
+    that counts or indexes `execute` calls must not see them.
+    """
+    return [c for c in cursor.execute.call_args_list
+            if "ISOLATION" not in c[0][0].upper()
+            and "transaction_isolation" not in c[0][0]]
+
+
+def _fails_except_pool(exc):
+    """Make every statement raise EXCEPT the pool's own isolation statements.
+
+    A connection too dead to take `SET SESSION TRANSACTION ISOLATION LEVEL` is discarded
+    at checkout and never reaches the caller, so a test about the CALLER's error handling
+    must let that one statement through.
+    """
+    def execute(sql, *args):
+        if "ISOLATION" in sql.upper() or "transaction_isolation" in sql:
+            return None
+        raise exc
+    return execute
+
+
 def _mock_connection(row=None):
     """Create mock connection with optional fetchone result."""
     mock_conn = MagicMock()
@@ -76,7 +104,7 @@ def _last_job_update(mock_cursor):
     Finalize also revokes the job's toolbox capabilities in the same transaction,
     so the LAST execute is no longer the status write.
     """
-    for call in reversed(mock_cursor.execute.call_args_list):
+    for call in reversed(_statements(mock_cursor)):
         if "UPDATE job" in call[0][0]:
             return call[0]
     raise AssertionError("no UPDATE job executed")
@@ -156,7 +184,7 @@ class TestRecoverStaleJobs:
         with patch("agento.framework.consumer.runner_client.alive", return_value=state) as alive:
             consumer._recover_stale_jobs()
 
-        assert mock_cursor.execute.call_count == 1  # only the SELECT
+        assert len(_statements(mock_cursor)) == 1  # only the SELECT
         mock_conn.commit.assert_called_once()
         alive.assert_called_once_with("runner-1.sock:b1", "job:1")
 
@@ -176,7 +204,7 @@ class TestRecoverStaleJobs:
             consumer._recover_stale_jobs()
 
         alive.assert_not_called()
-        assert "status = 'TODO'" in mock_cursor.execute.call_args_list[1][0][0]
+        assert "status = 'TODO'" in _statements(mock_cursor)[1][0][0]
 
     @patch("agento.framework.consumer.get_connection")
     def test_recover_null_pid_old_job_treated_as_dead(self, mock_get_conn, sample_config, sample_db_config, sample_consumer_config):
@@ -193,8 +221,8 @@ class TestRecoverStaleJobs:
         consumer._recover_stale_jobs()
 
         # SELECT + UPDATE + capability revoke (null PID, old timestamp)
-        assert mock_cursor.execute.call_count == 3
-        update_sql = mock_cursor.execute.call_args_list[1][0][0]
+        assert len(_statements(mock_cursor)) == 3
+        update_sql = _statements(mock_cursor)[1][0][0]
         assert "status = 'TODO'" in update_sql
 
     @patch("agento.framework.consumer.get_connection")
@@ -211,7 +239,7 @@ class TestRecoverStaleJobs:
         consumer._recover_stale_jobs()
 
         # Only SELECT, no UPDATE — fresh job without PID is not touched
-        assert mock_cursor.execute.call_count == 1
+        assert len(_statements(mock_cursor)) == 1
         mock_conn.commit.assert_called_once()
 
     @patch("agento.framework.consumer.get_connection")
@@ -235,12 +263,14 @@ class TestRecoverStaleJobs:
         consumer._recover_stale_jobs()
 
         # Only the SELECT, no UPDATEs
-        assert mock_cursor.execute.call_count == 1
-        sql = mock_cursor.execute.call_args_list[0][0][0]
+        assert len(_statements(mock_cursor)) == 1
+        sql = _statements(mock_cursor)[0][0][0]
         assert "status = 'RUNNING'" in sql
 
 
 # ---- Section 5: Dequeue ----
+
+
 
 
 class TestDequeue:
@@ -284,7 +314,9 @@ class TestDequeue:
     @patch("agento.framework.consumer.get_connection")
     def test_dequeue_error_returns_none(self, mock_get_conn, sample_config, sample_db_config, sample_consumer_config):
         mock_conn, mock_cursor = _mock_connection()
-        mock_cursor.execute.side_effect = RuntimeError("DB error")
+        # Not on the pool's `SET TRANSACTION`: a connection too dead for that never
+        # reaches the caller's try block, and this test is about the claim failing.
+        mock_cursor.execute.side_effect = _fails_except_pool(RuntimeError("DB error"))
         mock_get_conn.return_value = mock_conn
 
         consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
@@ -779,14 +811,14 @@ class TestFinalize:
 
         consumer._finalize_job(job, error=error, job_result=None, elapsed_ms=100)
 
-        sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
+        sql_arg = _statements(mock_cursor)[-1][0][0]
         assert "DEAD" not in sql_arg
         assert "TODO" in sql_arg
         assert "scheduled_after" in sql_arg
         # Attempt is refunded so quota waits never march the job toward max_attempts.
         assert "attempt = GREATEST(attempt - 1, 0)" in sql_arg
         # scheduled_after lands after the reset (reset + jitter of 60-300s).
-        params = mock_cursor.execute.call_args_list[-1][0][1]
+        params = _statements(mock_cursor)[-1][0][1]
         scheduled_after = params[4]
         assert scheduled_after > reset
         assert scheduled_after <= reset + timedelta(seconds=300)
@@ -822,12 +854,12 @@ class TestFinalize:
 
         consumer._finalize_job(job, error=error, job_result=None, elapsed_ms=2000)
 
-        sql_arg = mock_cursor.execute.call_args_list[-1][0][0]
+        sql_arg = _statements(mock_cursor)[-1][0][0]
         assert "DEAD" not in sql_arg
         assert "TODO" in sql_arg
         # Refunded: waiting for a leased token is not a real failure.
         assert "attempt = GREATEST(attempt - 1, 0)" in sql_arg
-        params = mock_cursor.execute.call_args_list[-1][0][1]
+        params = _statements(mock_cursor)[-1][0][1]
         scheduled_after = params[4]
         # Rescheduled for after the lease frees (lease_expiry + 60-300s jitter), NOT the
         # 60s backoff the retry policy proposed.
@@ -863,7 +895,7 @@ class TestFinalize:
         # The ordinary retry also revokes the job's capabilities, so the job UPDATE is not
         # the last statement.
         update = next(
-            c for c in reversed(mock_cursor.execute.call_args_list) if "UPDATE job" in c[0][0]
+            c for c in reversed(_statements(mock_cursor)) if "UPDATE job" in c[0][0]
         )
         sql_arg = update[0][0]
         assert "TODO" in sql_arg
@@ -901,7 +933,7 @@ class TestFinalize:
     @patch("agento.framework.consumer.get_connection")
     def test_finalize_db_error_does_not_crash(self, mock_get_conn, sample_config, sample_db_config, sample_consumer_config):
         mock_conn, mock_cursor = _mock_connection()
-        mock_cursor.execute.side_effect = RuntimeError("DB down")
+        mock_cursor.execute.side_effect = _fails_except_pool(RuntimeError("DB down"))
         mock_get_conn.return_value = mock_conn
 
         consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
@@ -911,7 +943,7 @@ class TestFinalize:
         # Should not raise (retries 3 times then gives up)
         consumer._finalize_job(job, error=None, job_result=job_result, elapsed_ms=100)
 
-        assert mock_cursor.execute.call_count == 3  # 3 retry attempts
+        assert len(_statements(mock_cursor)) == 3  # 3 retry attempts
 
     @patch("agento.framework.consumer.time.sleep")
     @patch("agento.framework.consumer.get_connection")
@@ -945,9 +977,8 @@ class TestFinalize:
         consumer._finalize_job(job, error=None, job_result=job_result, elapsed_ms=100)
 
         # No UPDATE to SUCCESS/DEAD/TODO — the job row is not ours to write any more.
-        assert not [c for c in mock_cursor.execute.call_args_list if "UPDATE job" in c[0][0]]
-        sql = mock_cursor.execute.call_args_list[0][0][0]
-        assert "SELECT status" in sql
+        assert not [c for c in _statements(mock_cursor) if "UPDATE job" in c[0][0]]
+        assert "SELECT status" in _statements(mock_cursor)[0][0][0]
         # It DOES commit: this attempt's execution is abandoned, because the process it
         # described has exited (§5.3). With no finalizer registered that commit is empty.
         mock_conn.commit.assert_called_once()
@@ -989,10 +1020,10 @@ class TestSavePid:
         consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
         consumer._save_pid(42, 12345, "runner-2.sock:b1")
 
-        mock_cursor.execute.assert_called_once()
-        sql = mock_cursor.execute.call_args[0][0]
+        assert len(_statements(mock_cursor)) == 1
+        sql = _statements(mock_cursor)[0][0][0]
         assert "pid" in sql and "runner_ref" in sql
-        params = mock_cursor.execute.call_args[0][1]
+        params = _statements(mock_cursor)[0][0][1]
         assert params == (12345, "runner-2.sock:b1", 42)
         mock_conn.commit.assert_called_once()
 
@@ -1014,10 +1045,10 @@ class TestSaveSessionId:
         consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
         consumer._save_session_id(42, "sess-abc")
 
-        mock_cursor.execute.assert_called_once()
-        sql = mock_cursor.execute.call_args[0][0]
+        assert len(_statements(mock_cursor)) == 1
+        sql = _statements(mock_cursor)[0][0][0]
         assert "session_id" in sql
-        params = mock_cursor.execute.call_args[0][1]
+        params = _statements(mock_cursor)[0][0][1]
         assert params == ("sess-abc", 42)
         mock_conn.commit.assert_called_once()
 

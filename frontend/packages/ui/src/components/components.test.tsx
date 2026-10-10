@@ -5,7 +5,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 import { Markdown } from "./Markdown";
 import { ChatComposer, ChatError, RunInfo, ToolCall } from "./Chat";
-import { ArchiveAction } from "./IconAction";
+import { ArchiveAction, RegenerateAction } from "./IconAction";
 import { CopyButton } from "./CopyButton";
 import { MenuButton, ThreadList } from "./ChatShell";
 
@@ -148,10 +148,11 @@ describe("ToolCall and ChatError", () => {
 describe("icon actions (RULES.md UI-7)", () => {
   it("an action is an icon: no text, its name is the accessible name and the hover title", async () => {
     const onClick = vi.fn();
-    render(<><ArchiveAction onClick={onClick} /><CopyButton value="x" /></>, { wrapper: AgentoUiProvider });
+    render(<><ArchiveAction onClick={onClick} /><RegenerateAction onClick={onClick} /><CopyButton value="x" /></>, { wrapper: AgentoUiProvider });
     const archive = screen.getByRole("button", { name: "Archive" });
     expect(archive).toHaveTextContent("");
     expect(screen.getByRole("button", { name: "Copy" })).toHaveTextContent("");
+    expect(screen.getByRole("button", { name: "Regenerate" })).toHaveTextContent("");
     fireEvent.mouseEnter(archive);
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Archive");
     fireEvent.click(archive);

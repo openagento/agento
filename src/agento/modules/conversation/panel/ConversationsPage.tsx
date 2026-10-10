@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router";
 import { apiFetch, ApiError, useMutation, useQuery, useQueryClient, useSession, type StreamEvent } from "@agento/api";
 import {
   ArchiveAction, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
-  LoadingState, MenuButton, PageHeader, Reasoning, RunInfo, SelectField, SplitView, ThreadList, ToolCall, ToolGroup,
+  LoadingState, MenuButton, PageHeader, Reasoning, RegenerateAction, RunInfo, SelectField, SplitView, ThreadList, ToolCall, ToolGroup,
   type ThreadLink,
 } from "@agento/ui";
 import { DAY_GROUPS, dayGroup, inFlight, turnState, type Message, type Thread, type ThreadDetail } from "./model";
@@ -72,20 +72,58 @@ function Rail({ current, close }: { current: number | null; close: () => void })
   );
 }
 
+/** One request id per SUBMISSION, kept across retries of that same submission.
+ *
+ *  A server that committed and lost its response must answer a retry with THAT turn, so the
+ *  id survives a failed attempt. It is tied to the payload: changing the text (or picking a
+ *  different message to regenerate) is a new submission and takes a new id, or the retry
+ *  would replay the old payload while the composer clears the new one. `done()` after a
+ *  landed request, so the next submission starts fresh. */
+function useRequestId() {
+  const pending = useRef<{ key: string; id: string } | null>(null);
+  return {
+    for: (key: string) => {
+      if (pending.current?.key !== key) pending.current = { key, id: crypto.randomUUID() };
+      return pending.current.id;
+    },
+    done: () => { pending.current = null; },
+  };
+}
+
 /** The composer: typing is always allowed; only Send waits for the agent (U8). */
 export function Composer({ threadId, busy }: { threadId: number; busy: boolean }) {
   const qc = useQueryClient();
   const [text, setText] = useState("");
+  const request = useRequestId();
   const send = useMutation({
     mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
-      method: "POST", json: { content, client_message_id: crypto.randomUUID() },
+      method: "POST", json: { content, client_message_id: request.for(content) },
     }),
     // The list too: the first message gives the thread its server title (U9).
-    onSuccess: () => { setText(""); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
+    onSuccess: () => { request.done(); setText(""); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
   });
   return (
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
       hint={busy ? "The agent is answering…" : "Enter sends. Shift+Enter adds a new line."}
+      error={send.error ? message(send.error) : undefined} />
+  );
+}
+
+/** The channel composer: an operator reply that continues the external task. Shown only with
+ *  the `conversation.channel_write` grant and a reference to reply to - the route checks both. */
+export function ChannelComposer({ threadId, busy }: { threadId: number; busy: boolean }) {
+  const qc = useQueryClient();
+  const [text, setText] = useState("");
+  const request = useRequestId();
+  const send = useMutation({
+    mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
+      method: "POST", json: { content, client_message_id: request.for(content) },
+    }),
+    onSuccess: () => { request.done(); setText(""); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
+  });
+  return (
+    <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
+      hint={busy ? "The agent is answering…" : "Your reply continues this task in the channel it came from."}
       error={send.error ? message(send.error) : undefined} />
   );
 }
@@ -210,11 +248,26 @@ export function View({ threadId }: { threadId: number }) {
     onSuccess: () => void qc.invalidateQueries({ queryKey: messagesKey(threadId) }),
   });
   // Retry re-sends the failed turn's text as a new message: no new route (U4).
+  const resendRequest = useRequestId();
   const resend = useMutation({
     mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
-      method: "POST", json: { content, client_message_id: crypto.randomUUID() },
+      method: "POST", json: { content, client_message_id: resendRequest.for(content) },
     }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
+    onSuccess: () => { resendRequest.done(); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
+  });
+  /** Regenerate: the same user message asked again as a new turn. A retry replays that turn;
+   *  regenerating a DIFFERENT message is a different submission and takes its own id. */
+  const regenRequest = useRequestId();
+  const regenerate = useMutation({
+    mutationFn: (messageId: number) => apiFetch(`/api/conversation/threads/${threadId}/regenerate`, {
+      method: "POST",
+      json: { message_id: messageId, client_message_id: regenRequest.for(String(messageId)) },
+    }),
+    onSuccess: () => {
+      regenRequest.done();
+      void qc.invalidateQueries({ queryKey: messagesKey(threadId) });
+      void qc.invalidateQueries({ queryKey: ["threads"] });
+    },
   });
   const archive = useMutation({
     mutationFn: () => apiFetch(`/api/conversation/threads/${threadId}`, { method: "DELETE" }),
@@ -314,7 +367,9 @@ export function View({ threadId }: { threadId: number }) {
       viewportRef={box} onScroll={onScroll}
       overlay={unseen > 0 && <Button variant="primary" onClick={jump}>{unseen} new events ↓</Button>}
       footer={detail && (channel
-        ? <p className="ag-muted">Read-only: this conversation comes from {channel}.</p>
+        ? (detail.channel_write && detail.external_ref
+          ? <ChannelComposer threadId={threadId} busy={busy} />
+          : <p className="ag-muted">Read-only: this conversation comes from {channel}.</p>)
         : <Composer threadId={threadId} busy={busy} />)}
     >
       {store.hasOlder && (
@@ -332,6 +387,13 @@ export function View({ threadId }: { threadId: number }) {
       {unanswered && (
         <ChatError title="The agent could not answer."
           onRetry={busy ? undefined : () => resend.mutate(rows[lastUser].content)} />
+      )}
+      {!channel && lastUser !== -1 && !busy && !unanswered && (
+        <div className="ag-row">
+          <RegenerateAction onClick={() => regenerate.mutate(rows[lastUser].id)}
+            disabled={regenerate.isPending} />
+          {regenerate.error && <span className="ag-field__error" role="alert">{message(regenerate.error)}</span>}
+        </div>
       )}
       {status && (
         <ChatStatus busy={!status.startsWith("This turn")}>{status}</ChatStatus>

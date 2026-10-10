@@ -187,8 +187,22 @@ answers. Any other job (Jira, Outlook, cron) is in its **channel thread**: `user
 sha1 of `source|view|reference` (`job:<id>` when there is no reference). The next run on the same
 issue, and a follow-up that copies its parent's source and reference, land in the same thread; an
 archived one is reactivated. Each run adds `run.started`, and the finalizer adds `run.finished`
-and, on success, the answer (`assistant.message`). Channel threads are read-only and an admin's
-only (DECISIONS.md D-E9-3).
+and, on success, the answer (`assistant.message`). Channel threads are an admin's only
+(DECISIONS.md D-E9-3). An admin **may** post into one: the reply is a `followup` job on the
+thread's own `source` and `external_ref`, with the operator's text as the job's `context`, gated
+by `conversation.channel_write` and refused with 409 when the thread has no `external_ref`. Every
+other reader still sees 404.
+
+**Regeneration.** `POST /api/conversation/threads/{id}/regenerate` re-asks a named `role='user'`
+message as a NEW turn: same content, a new `message` row, a new job. It passes the same write
+gates as a post. Retry identity is the caller's `client_message_id`, and ordering stays where it
+belongs — `ConversationOrderingObserver` defers the turn at claim time.
+
+**The attempt's fragments.** The finalizer deletes this execution's `assistant.partial` and
+`reasoning.partial` events for every outcome: the complete fragment and the answer replace them.
+The delta sink refuses a partial whose execution is no longer `running`, read after the batch
+took its thread locks — the writer thread only QUEUES the tail, so without that guard a late
+fragment would land after the cleanup and stay in the timeline for ever.
 
 **The vocabulary.** A harness's `StreamEventMapper` turns its stdout into canonical fragments:
 `assistant.text`, `assistant.reasoning`, `tool.started`, `tool.completed`, `error`, the

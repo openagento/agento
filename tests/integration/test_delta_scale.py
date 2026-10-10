@@ -216,6 +216,32 @@ def test_250_parallel_streaming_runs_stay_ordered_paced_and_lossless(conn, scale
     assert live[-1] <= 2.0, live[-10:]
     assert elapsed <= REPLAY_S + 20
 
+    # SCL-1: finalization forgets every attempt's partials, at this scale, keyed per run.
+    from agento.modules.conversation.src.finalizer import ConversationFinalizer
+
+    finalizer = ConversationFinalizer()
+    cleanup_started = time.monotonic()
+    for n, (execution_id, _) in enumerate(scale):
+        finalizer.finalize(conn=conn, job_id=900000 + n, attempt=1,
+                           execution_id=execution_id, outcome="succeeded",
+                           job_terminal=True)
+        conn.commit()
+    cleanup = time.monotonic() - cleanup_started
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT kind, COUNT(*) AS n FROM conversation_event GROUP BY kind")
+        after = {r["kind"]: r["n"] for r in cur.fetchall()}
+    conn.commit()
+    assert not [k for k in after if k.endswith(".partial")], after
+    # ... and the history the cleanup must NOT touch is still whole.
+    before = {}
+    for r in rows:
+        before[r["kind"]] = before.get(r["kind"], 0) + 1
+    for kind, n in before.items():
+        if not kind.endswith(".partial"):
+            assert after.get(kind) == n, (kind, n, after.get(kind))
+    assert cleanup <= 60, cleanup
+
 
 def service_cap_half() -> int:
     from agento.framework.database_config import DatabaseConfig

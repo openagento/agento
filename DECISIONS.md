@@ -4,6 +4,76 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-10 — The consumer's transitions run at READ COMMITTED
+
+`Consumer._db()` borrows with `isolation="READ COMMITTED"`, and `db.pooled` holds that level as a
+SESSION setting for the whole checkout, restoring the global default at return. The finalizer hook
+(§5.3) runs inside those transactions, in EVERY transition that ends an attempt — success, failure,
+abandon, retry, recovery — and under the server default a transition is wrong in two ways at once:
+
+- **Stale reads.** The transaction's FIRST read fixes a snapshot, and taking a row lock afterwards
+  does not refresh it. A finalizer that waits on a lock then reads cannot see what the session it
+  waited for committed. (A write is unaffected: an `UPDATE`/`DELETE` performs a *current* read. That
+  is why the finalizer's two cleanups are ranged statements and not a plain `SELECT` of ids followed
+  by a write by id — the select-then-write shape reads the stale snapshot and silently misses rows.
+  `test_a_partial_committed_before_the_lock_but_after_the_snapshot_is_dropped` and
+  `test_a_reply_attached_before_the_job_lock_but_after_the_snapshot_reaches_terminal` both fail if
+  either statement is converted back to it.)
+- **Gap locks.** A ranged `UPDATE`/`DELETE` on a *secondary* index takes next-key (gap) locks, and a
+  neighbouring run inserting its own `conversation_event` or `message` row lands inside a gap. At
+  100–200 parallel runs that is a deadlock, not a wait: `test_orchestration_scale` produced 52 MySQL
+  1213s with these two writes at REPEATABLE READ, and 0 at READ COMMITTED (SCL-1).
+
+READ COMMITTED answers both — every statement reads the latest committed version, and InnoDB takes
+record locks without gaps.
+
+- **At the consumer, not in the module.** It is a framework guarantee the hook contract states, so
+  every module's finalizer gets it. Set per call site instead, the hardest-to-test paths (recovery,
+  retry) would have kept the default.
+- **Nothing there needs a repeatable range read.** Every read in a transition is a point lookup
+  guarded by a row lock, where fresher is strictly better.
+- **The pool owns the setting, for the whole checkout.** `db.pooled` grew an `isolation=`
+  parameter: it applies the level in the same guarded region as the checkout ping (so a pooled
+  connection too dead to take it is discarded and replaced rather than failing the borrow) and
+  restores `@@GLOBAL.transaction_isolation` at return. `SET TRANSACTION` *without* `SESSION` was
+  tried first and is wrong here: it binds only the NEXT transaction, so a checkout that commits
+  twice — credential selection commits before the capability check, which can reach the abandon
+  finalizer — silently finishes at the server default. The pool undoing a session setting is what
+  keeps TST-2's "nothing outlives the checkout" rule true, rather than prohibiting it.
+- **One funnel, asserted.** Stale-job recovery used to open its own connection; it borrows now.
+  `test_the_consumer_borrows_every_connection_at_read_committed` walks `consumer.py`'s AST and
+  fails if any method but `_maybe_reload_bootstrap` (which never reaches a finalizer) opens one
+  directly.
+
+---
+
+## 2026-10-10 — The conversation delta sink runs at READ COMMITTED
+
+The finalizer deletes an attempt's `assistant.partial` / `reasoning.partial` events, and
+`execution_deltas.close()` only QUEUES the tail — so a partial can reach the sink after that
+cleanup committed. The sink therefore refuses a live-text fragment whose `execution` is no longer
+`running`, and reads that status after the batch has taken its threads' row locks: the finalizer
+takes the same lock before it deletes, so it either committed before the read or waits for the
+batch.
+
+- **`SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED` on the sink's own connection.** Under
+  the server default (REPEATABLE READ) every plain SELECT answers from the snapshot the
+  transaction's FIRST read took — here the cap lookups, before any lock — and taking a row lock
+  does NOT refresh it. The status check would read `running` from before the finalization and let
+  the partial through.
+- **Not a locking read.** `SELECT … FOR SHARE` would also read the latest committed row, but it
+  takes `execution` AFTER the thread lock, while the finalizer takes `execution` BEFORE it — two
+  transactions on the same two rows in opposite orders, which is a deadlock bought for nothing.
+- **Connection-local.** It is set in `ConversationDeltaSink._connection()` and binds that one
+  connection. The consumer's transitions reach the same level by their own route (above); no
+  session is changed from outside itself. The sink needs no repeatable range read: every
+  budget is seeded per execution and every write is an `INSERT IGNORE`.
+- **Guarded by a test.** `test_a_finalization_between_the_batchs_first_read_and_its_lock_is_seen`
+  finalizes from a second connection inside an open batch. Reverting the isolation line makes it
+  fail.
+
+---
+
 ## 2026-10-07 — A Tools/Skills draft is bound to its scope, held per scope
 
 The Tools and Skills screens moved from a write per checkbox to the Roles pattern: a draft, then one

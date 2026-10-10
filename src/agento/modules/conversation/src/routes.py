@@ -115,6 +115,10 @@ def show(req: Request) -> Response:
         dict(row, live=service.is_live(req.conn, conversation_id=row["id"])))
     details = service.can_see_run_details(req.conn, req.session.user, row)
     body["run_details"] = details
+    # The panel shows its channel composer only for a reader who may post (the route
+    # checks the same grant anyway; this keeps a control the reader cannot use off screen).
+    if row["user_id"] is None:
+        body["channel_write"] = service.can_write_channel(req.conn, req.session.user, row)
     body["runs"] = [_run_json(r, details)
                     for r in service.list_runs(req.conn, conversation_id=row["id"])]
     return Response(200, body)
@@ -207,18 +211,53 @@ def unblock(req: Request) -> Response:
                           "job_state": "terminal", "changed": changed})
 
 
+def _write_refusal(req: Request, row: dict) -> Response | None:
+    """What refuses a write into this thread, for EVERY write route (CLS-1).
+
+    A channel thread mirrors a Jira issue or a mailbox. A post into it continues that
+    external task as a follow-up (`complete_pending` picks the contract), so it needs the
+    grant that speaks for the operator - and something to reply to. A view that is gone
+    leaves readable history with nothing left to run the turn on.
+    """
+    if row["user_id"] is None:
+        if not service.can_write_channel(req.conn, req.session.user, row):
+            return error(403, "forbidden")
+        if not row["external_ref"]:
+            return error(409, "read_only")
+    if row["agent_view_id"] is None:
+        return error(404, "not found")
+    return None
+
+
+def regenerate(req: Request) -> Response:
+    """Re-ask a user message as a new turn (§4.1's submission, with content from a row)."""
+    row = _visible(req)
+    if row is None:
+        return error(404, "not found")
+    refusal = _write_refusal(req, row)
+    if refusal is not None:
+        return refusal
+    body = req.json if isinstance(req.json, dict) else {}
+    try:
+        client_message_id = service.check_client_message_id(body.get("client_message_id"))
+        message_id = body.get("message_id")
+        if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id < 1:
+            raise service.SubmissionError(400, "message_id must be a positive integer")
+        new_id, job_id, created = service.regenerate(
+            req.conn, conversation_id=row["id"], message_id=message_id,
+            user_id=req.session.user.id, client_message_id=client_message_id)
+    except service.SubmissionError as exc:
+        return error(exc.status, str(exc))
+    return Response(201 if created else 200, {"message_id": new_id, "job_id": job_id})
+
+
 def send(req: Request) -> Response:
     row = _visible(req)
     if row is None:
         return error(404, "not found")
-    if row["user_id"] is None:
-        # A channel thread mirrors a Jira issue or a mailbox; a panel post would not reach
-        # it (E9 §2 out of scope), so it is refused rather than silently queued.
-        return error(409, "read_only")
-    if row["agent_view_id"] is None:
-        # The view is gone: the thread is readable history, and there is nothing left to
-        # run the turn.
-        return error(404, "not found")
+    refusal = _write_refusal(req, row)
+    if refusal is not None:
+        return refusal
     body = req.json if isinstance(req.json, dict) else {}
     try:
         client_message_id = service.check_client_message_id(body.get("client_message_id"))

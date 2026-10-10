@@ -182,10 +182,14 @@ Known gaps, each deliberate:
   and as one `cursor_expired` SSE frame (before any event frame) on a reconnect. A client that sees
   it restarts from the newest page. History that has been pruned is gone, and saying so is the
   guarantee — silently serving the survivors as if they were the whole thread is not.
-- **F14 — the Node job insert emits no event.** `src/agento/modules/core/toolbox/schedule.js`
-  writes to `job` directly from the toolbox, so a job scheduled by a tool never reaches
-  `publish_service` and never dispatches `job_publish_after`. Nothing relays it into a thread. Give
-  the toolbox a publish path that goes through the framework, or have it write the outbox row too.
+- ~~**F14 — the Node job insert emits no event.**~~ — **done 2026-10-10.** `schedule.js` now wraps
+  its dedupe, its `job` insert and a `job.queued` `job_event_outbox` row in one transaction, so a
+  tool-scheduled follow-up is announced like every other turn. The thread itself was never missing:
+  `link_execution` creates or reactivates it at claim time for every job, whatever the insert path.
+  What stays open is narrower and unchanged: the Node path still cannot dispatch
+  `job_publish_after` (EVT-2 — the toolbox has no event mechanism), and `schedule.js` remains the
+  second write path to `job`, in another language, with its own dedupe. No module observes
+  `job_publish_after` today, so nothing is missing a notification.
 - **E9 left out (PRD `E9-conversations-deep-research-report.md`).** E9 shipped the live path:
   a `stream_event_mapper` per harness, channel threads for every non-panel job, the timeline
   route and the panel timeline ([docs/architecture/conversations.md](docs/architecture/conversations.md)).
@@ -199,17 +203,27 @@ Known gaps, each deliberate:
   - Metrics and OpenTelemetry counters ("Observability").
   - Channel threads for non-admins through role grants, a `conversation:raw` permission split,
     and full-text search (D-E9-3 is a proposal the owner has not decided).
-  - Writing into a channel thread from the panel (reply to Jira/Outlook, resume a channel run).
+  - ~~Writing into a channel thread from the panel~~ — **done 2026-10-10.** A post into a channel
+    thread publishes a `followup` job on the thread's own source and `external_ref`, with the
+    operator's text as the job's `context`, gated by the `conversation.channel_write` ACL resource.
+    The branch lives in `complete_pending`, so the route and `sweep_pending` share one publisher.
+    An **admin's** today: the bullet above still holds, so a non-admin gets 404 on the read before
+    the grant is consulted, and `conversation.channel_write` starts deciding when that opens.
   - Per-harness feature flags (disabling a module or shipping no mapper is the off switch today).
   - Long-polling: the REST poll stays the fallback.
 - **E9 chat UX left out (2026-10-06).** The chat UX pass shipped token streaming for claude and pi
   (coalesced partials), the reasoning fragment, tool summaries, the status line, the
   `conversation.run_details` ACL resource and server titles. Left out:
-  - A Stop button and edit-and-resend (they need the E7 stop request), and regenerate.
+  - A Stop button and edit-and-resend (they need the E7 stop request). ~~Regenerate~~ — **done
+    2026-10-10**: `POST …/regenerate` re-asks a named user message as a new turn, with the caller's
+    `client_message_id` as the retry identity.
   - Per-user grants (grants stay per role).
   - Lighter Markdown tables (they need `.ag-prose` and a new kit version).
   - Codex token streaming: `codex exec --json` sends no partial text.
-  - Deleting partial rows after a run: retention prunes them with the rest of the thread.
+  - ~~Deleting partial rows after a run~~ — **done 2026-10-10**: the finalizer deletes the
+    attempt's `assistant.partial` / `reasoning.partial` events for every outcome, over the new
+    `conversation_event(execution_id, kind)` index, and the delta sink refuses a partial whose
+    execution is no longer `running` so a queued one cannot land after the cleanup.
   - Claude reasoning text: the claude CLI sends thinking blocks with empty text, so the panel
     shows "Thought" with no body until the CLI gives a way to show it.
 - **The `§4.5` audit ordering is E7's.** The framework's audit writer must be called from inside
@@ -488,7 +502,8 @@ fan-out in the same minute into one job — and reports success.
 As of the conversations epic the Python side has exactly ONE insert into `job` —
 `publisher.insert_job()`, which both `publisher.publish()` and `publish_service.publish_job()`
 call — plus `framework/e2e.py` for the smoke stack. `schedule.js` remains the second write
-path, in the toolbox, in another language, with its own dedupe. `grep -rn -i "insert into job"
+path, in the toolbox, in another language, with its own dedupe (since 2026-10-10 it at least
+commits its job and its `job.queued` outbox row together). `grep -rn -i "insert into job"
 src/agento` is the check; a fourth hit is the bug this entry is about.
 
 ### Ungated Toolbox REST endpoints (raised during the Pi harness work)

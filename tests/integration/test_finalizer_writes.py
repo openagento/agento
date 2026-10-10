@@ -357,3 +357,171 @@ def test_a_long_answer_is_truncated_not_rejected_and_round_trips_as_utf8(conn, t
     # The event payload is bounded by the same rule.
     payload = json.loads(_outbox(conn, "assistant.message")[0]["payload"])
     assert payload["content"] == assistant["content"]
+
+
+# --- the attempt's partials (ROADMAP: delete partial rows after a run) ----------
+
+def _partials(conn, conversation_id) -> list[str]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT kind FROM conversation_event WHERE conversation_id = %s "
+                    "AND kind IN ('assistant.partial', 'reasoning.partial') ORDER BY id",
+                    (conversation_id,))
+        rows = [r["kind"] for r in cur.fetchall()]
+    conn.commit()
+    return rows
+
+
+def _write_partials(conn, conversation_id, execution_id, *, count=3, base=0) -> None:
+    """`base` shifts `source_id`: `uq_source` is the dedupe key, so two executions
+    writing the same (source_kind, source_id) would collapse into one row."""
+    with conn.cursor() as cur:
+        for seq in range(base, base + count):
+            for kind in ("assistant.partial", "reasoning.partial"):
+                service.append_event(cur, conversation_id, kind=kind,
+                                     execution_id=execution_id, source_kind="delta",
+                                     source_id=seq * 2 + (kind == "reasoning.partial"),
+                                     payload={"text": "x"})
+    conn.commit()
+
+
+@pytest.mark.parametrize("outcome,job_terminal", [
+    ("succeeded", True), ("failed", True), ("failed", False)])
+def test_the_finalizer_forgets_this_attempts_partials(conn, turn, outcome, job_terminal):
+    """Every outcome - a failed or retried attempt leaves fragments behind too."""
+    _answered(conn, turn["job_id"])
+    _write_partials(conn, turn["conversation_id"], turn["execution_id"])
+
+    _finalize(conn, turn, outcome=outcome, job_terminal=job_terminal)
+
+    assert _partials(conn, turn["conversation_id"]) == []
+
+
+def test_another_executions_partials_are_untouched(conn, turn):
+    other = str(uuid.uuid4())
+    _write_partials(conn, turn["conversation_id"], turn["execution_id"])
+    _write_partials(conn, turn["conversation_id"], other, count=2, base=100)
+
+    _finalize(conn, turn)
+
+    assert _partials(conn, turn["conversation_id"]) == ["assistant.partial",
+                                                        "reasoning.partial"] * 2
+
+
+def test_the_cleanup_reads_one_execution_through_its_index(conn, turn):
+    """CODE-8: the delete is keyed, not a scan of the thread's whole timeline.
+
+    Over a thread with real history - on a handful of rows any plan is cheap and the
+    optimizer's choice says nothing about the migration.
+    """
+    other = str(uuid.uuid4())
+    _write_partials(conn, turn["conversation_id"], other, count=3000)
+    _write_partials(conn, turn["conversation_id"], turn["execution_id"], base=9000)
+    with conn.cursor() as cur:
+        cur.execute("ANALYZE TABLE conversation_event")
+        cur.execute("EXPLAIN DELETE FROM conversation_event WHERE conversation_id = %s "
+                    "AND execution_id = %s AND kind IN ('assistant.partial', "
+                    "'reasoning.partial')", (turn["conversation_id"], turn["execution_id"]))
+        plan = cur.fetchall()
+    conn.commit()
+
+    assert [r["key"] for r in plan] == ["idx_execution_kind"], plan
+
+
+def test_the_terminal_update_finds_the_reply_through_its_job_index(conn, turn):
+    """The finalizer's by-`job_id` update (a channel reply) over real history."""
+    with conn.cursor() as cur:
+        cur.executemany(
+            "INSERT INTO message (conversation_id, role, content, job_id, job_state) "
+            "VALUES (%s, 'user', 'x', %s, 'published')",   # job_state alone is no filter
+            [(turn["conversation_id"], 500000 + i) for i in range(3000)])
+        cur.execute("ANALYZE TABLE message")
+        cur.execute("EXPLAIN UPDATE message SET job_state = 'terminal' WHERE job_id = %s "
+                    "AND job_state = 'published'", (turn["job_id"],))
+        plan = cur.fetchall()
+    conn.commit()
+
+    assert [r["key"] for r in plan] == ["idx_job_id"], plan
+
+
+
+# --- the snapshot the consumer's transaction opens before it holds any lock -------------
+#
+# `Consumer._db()` runs every transition at READ COMMITTED. Under the server default the
+# transaction's FIRST read fixes a snapshot that taking a row lock does NOT refresh, so a
+# finalizer would miss whatever another session committed while it waited.
+#
+# What these two tests cover is the FINALIZER's behaviour in that interleaving: both fail if
+# either cleanup is written as a plain `SELECT` of ids followed by a write by id (verified by
+# reintroducing that shape). They do NOT cover the isolation SETUP - `_consumer_transaction()`
+# below sets the level itself, so removing it from the consumer would not fail them. That half
+# belongs to `tests/unit/framework/test_db_pool.py`: the checkout-spanning level, its restore,
+# and the AST guard that no consumer method opens its own connection.
+
+
+@pytest.fixture
+def other_conn(conn):
+    """A second session: the publisher or the delta sink, committing mid-finalization."""
+    from .conftest import _test_connection
+    other = _test_connection(autocommit=False)
+    yield other
+    other.close()
+
+
+def _consumer_transaction(conn):
+    """Open a transaction the way `Consumer._db()` does: the level, then the early read.
+
+    That first `SELECT status FROM job` is what fixes the snapshot in the real consumer
+    (`framework/consumer.py`, `_finalize_job`), so a test that omits it cannot see the bug.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+        cur.execute("SELECT status FROM job WHERE id = 0")
+        cur.fetchall()
+
+
+def test_a_partial_committed_before_the_lock_but_after_the_snapshot_is_dropped(
+        conn, other_conn, turn):
+    """The sink commits a fragment while the finalizer's transaction is already open."""
+    _consumer_transaction(conn)
+    _write_partials(other_conn, turn["conversation_id"], turn["execution_id"], count=2)
+    _answered(other_conn, turn["job_id"])
+
+    _finalize(conn, turn)
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM conversation_event "
+                    "WHERE execution_id = %s AND kind LIKE '%%.partial'",
+                    (turn["execution_id"],))
+        left = cur.fetchone()["n"]
+    conn.commit()
+    assert left == 0
+
+
+def test_a_reply_attached_before_the_job_lock_but_after_the_snapshot_reaches_terminal(
+        conn, other_conn, turn):
+    """A channel reply whose publisher committed `published` mid-finalization.
+
+    Without the fresh read the finalizer misses the row, the reply sits at `published`
+    until the periodic `reconcile_terminal`, and the panel shows it still running.
+    """
+    with conn.cursor() as cur:
+        # A channel thread: the job's reference belongs to the external system, so
+        # `_conversation_reference` returns None and only the by-`job_id` read can find
+        # the operator's row. It is still `pending` when the snapshot is taken.
+        cur.execute("UPDATE job SET source = 'outlook' WHERE id = %s", (turn["job_id"],))
+        cur.execute("UPDATE message SET job_state = 'pending' WHERE id = %s",
+                    (turn["message_id"],))
+    conn.commit()
+    _consumer_transaction(conn)
+    with other_conn.cursor() as cur:
+        cur.execute("UPDATE message SET job_id = %s, job_state = 'published' WHERE id = %s",
+                    (turn["job_id"], turn["message_id"]))
+    other_conn.commit()
+
+    _finalize(conn, turn, outcome="failed")
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT job_state FROM message WHERE id = %s", (turn["message_id"],))
+        state = cur.fetchone()["job_state"]
+    conn.commit()
+    assert state == "terminal"

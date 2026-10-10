@@ -70,6 +70,11 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
         const pool = db.getCronPool();
         const conn = await pool.getConnection();
         try {
+          // The job and its announcement commit together. Python publishes both in one
+          // transaction (framework/publish_service.py); this path used to write neither a
+          // transaction nor the outbox row, so a job could exist that no thread ever heard
+          // about (ROADMAP F14).
+          await conn.beginTransaction();
           // Inherit the channel + reference + execution scope (agent_view_id, priority) from the
           // current job, so the follow-up runs in the same context as its parent.
           const [rows] = await conn.execute(
@@ -78,6 +83,7 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
           );
           const job = rows[0];
           if (!job || !job.source || !job.reference_id) {
+            await conn.rollback();
             log('schedule_followup', 'ERROR', `user=${user} job=${jobId} could not resolve current job`);
             return {
               content: [{ type: 'text', text: `Error: could not resolve the current job (id=${jobId}); follow-up not scheduled.` }],
@@ -98,6 +104,7 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
             [idempotencyKey]
           );
           if (dup.length > 0) {
+            await conn.rollback();
             log('schedule_followup', 'DUP', `user=${user} source=${source} ref=${reference_id} key=${idempotencyKey}`);
             return {
               content: [{ type: 'text', text:
@@ -119,6 +126,7 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
             // dedupe SELECT and this INSERT. The unique key rejects it — treat as a
             // duplicate, not an error (mirrors publisher.py).
             if (err && (err.code === 'ER_DUP_ENTRY' || err.errno === 1062)) {
+              await conn.rollback();
               log('schedule_followup', 'DUP', `user=${user} source=${source} ref=${reference_id} key=${idempotencyKey} (race)`);
               return {
                 content: [{ type: 'text', text:
@@ -127,6 +135,18 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
             }
             throw err;
           }
+
+          // `job.queued`, the same kind and payload shape the Python publisher writes
+          // (framework/publish_service.py). The relay turns it into the thread's first
+          // event; without it a follow-up surfaces only once it starts running.
+          await conn.execute(
+            `INSERT INTO job_event_outbox (job_id, execution_id, kind, payload)
+             VALUES (?, NULL, 'job.queued', ?)`,
+            [result.insertId, JSON.stringify({
+              type: 'followup', source, agent_view_id: agent_view_id ?? null, priority,
+            })]
+          );
+          await conn.commit();
 
           if (result.affectedRows > 0) {
             log('schedule_followup', 'OK', `user=${user} source=${source} ref=${reference_id} av=${agent_view_id} at=${mysqlDatetime} key=${idempotencyKey}`);
@@ -142,6 +162,10 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
                 `Follow-up already scheduled for ${reference_id} at that time (duplicate prevented).` }],
             };
           }
+        } catch (err) {
+          // A job with no announcement is the case the transaction exists to prevent.
+          await conn.rollback().catch(() => {});
+          throw err;
         } finally {
           conn.release();
         }

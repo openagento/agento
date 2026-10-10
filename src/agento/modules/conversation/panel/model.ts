@@ -16,7 +16,11 @@ export interface RunRow {
 }
 
 /** The newest runs come first. `run_details`: the reader holds `conversation.run_details`. */
-export interface ThreadDetail extends Thread { runs: RunRow[]; run_details?: boolean }
+export interface ThreadDetail extends Thread {
+  runs: RunRow[]; run_details?: boolean;
+  /** Channel threads only: the reader holds `conversation.channel_write`. */
+  channel_write?: boolean;
+}
 
 /** Events oldest first. */
 export interface TimelinePage { events: StreamEvent[]; has_older: boolean; newest_id: number | null }

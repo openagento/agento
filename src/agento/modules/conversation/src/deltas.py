@@ -112,8 +112,9 @@ class ConversationDeltaSink:
                     service.lock_conversations(cur, [
                         c for c in (self._budget(cur, r.execution_id).conversation
                                     for r in batch) if c is not None])
+                    live = self._live(cur, {r.execution_id for r in batch})
                     for record in batch:
-                        self._one(cur, record, caps)
+                        self._one(cur, record, caps, live)
                 conn.commit()
                 return
             except pymysql.err.OperationalError as exc:
@@ -139,6 +140,11 @@ class ConversationDeltaSink:
         self._conn = get_connection(DatabaseConfig.from_env())
         seconds = max(1, _sql_timeout_seconds(self._conn))
         with self._conn.cursor() as cur:
+            # READ COMMITTED, not the server default: under REPEATABLE READ every plain
+            # SELECT of a transaction answers from the snapshot its FIRST read took, and
+            # taking a row lock afterwards does not refresh it. `_live` would then read a
+            # status from before the finalizer committed and let a late partial through.
+            cur.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
             cur.execute("SET SESSION max_execution_time = %s", (seconds * 1000,))
             # MySQL applies `max_execution_time` to read-only SELECTs ONLY, and every write
             # here is an INSERT. Without this second knob the declared timeout bounded the
@@ -151,8 +157,36 @@ class ConversationDeltaSink:
 
     # -- one fragment --------------------------------------------------------
 
-    def _one(self, cur, record: DeltaRecord, caps: tuple[int, int, int]) -> None:
+    @staticmethod
+    def _live(cur, execution_ids: set[str]) -> set[str]:
+        """Which of these executions have not been finalized yet.
+
+        Read AFTER the batch has taken its threads’ row locks, which is what makes it
+        race-free: the finalizer takes the same lock before it forgets the attempt’s
+        fragments, so it either committed before this read (and we see the closed status)
+        or it waits for this batch (and its delete runs last). Without it, a partial that
+        the writer thread had already queued could land after the cleanup and sit in the
+        timeline for ever - `execution_deltas.close()` only QUEUES the tail. One keyed read
+        per batch, not per fragment (CODE-8).
+        """
+        if not execution_ids:
+            return set()
+        ids = list(execution_ids)
+        marks = ", ".join(["%s"] * len(ids))
+        cur.execute(f"SELECT execution_id, status FROM execution "
+                    f"WHERE execution_id IN ({marks})", ids)
+        closed = {r["execution_id"] for r in cur.fetchall() if r["status"] != "running"}
+        # An execution with no row at all is not a finalized one: the fragment is written,
+        # exactly as before this guard.
+        return execution_ids - closed
+
+    def _one(self, cur, record: DeltaRecord, caps: tuple[int, int, int],
+             live: set[str]) -> None:
         budget = self._budget(cur, record.execution_id)
+        if record.kind in SUPERSEDED_BY and record.execution_id not in live:
+            # The attempt is over and its fragments are already forgotten; the complete
+            # fragment (and the answer) still get through.
+            return
         if budget.truncated:
             # Already capped. A second marker would say nothing the first does not.
             return

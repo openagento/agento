@@ -67,6 +67,12 @@
       "handler": "src.routes.unblock"
     },
     {
+      "method": "POST",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/regenerate",
+      "handler": "src.routes.regenerate",
+      "json_body": true
+    },
+    {
       "method": "GET",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/events",
       "handler": "src.routes.events"
@@ -92,6 +98,10 @@
     {
       "id": "conversation.run_details",
       "title": "See run details: prompts, tool input and output, harness, credential, model, tokens, job links"
+    },
+    {
+      "id": "conversation.channel_write",
+      "title": "Write into a channel thread: post a reply that continues the external task (Jira, Outlook)"
     }
   ]
 }
