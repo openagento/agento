@@ -50,6 +50,28 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 - **Live e2e:** `tests/e2e/test_refresh_real_cli.py` moves a real credential's expiry into the
   horizon and asserts the rotation is persisted and the lease freed. It rotates a real
   single-use refresh token.
+## 2026-10-07 — A Tools/Skills draft is bound to its scope, held per scope
+
+The Tools and Skills screens moved from a write per checkbox to the Roles pattern: a draft, then one
+batch of `PUT /api/admin/config` on Save. Their scope lives in the URL (`ScopePicker`), and the
+screen stays mounted across a change of it, so the draft outlives the scope it was made in while
+`useConfigWrite` resolves the scope **at render** — an unbound draft saved after a scope change would
+write scope A's edits into scope B.
+
+- **Drafts are a map keyed by the scope query**, not one slot. The key does the binding, so no write
+  can cross scopes, and editing scope B cannot destroy scope A's unsaved work.
+- **Bound, not discarded.** Leaving a scope hides its draft, returning shows it again, and the drafts
+  die with the page like any other unsaved form. A confirm dialog before a scope change (what the
+  Roles page has, because it owns its scope `Select`) would therefore guard nothing.
+- **The draft clears in `onSuccess`, not `onSettled`**, and only after that screen's own list query
+  has refetched: a partly failed batch rejects, and the draft is the only retry path.
+
+The write carries its scope too. `useConfigWrite` reads the scope from the URL at render, and React
+Query runs a mutation from the latest render — so a scope change between the click and the request
+would send the batch to the scope now on screen. `mutate(writes)` binds `scope`/`scope_id` into the
+mutation variables at the call, so the writes land where the draft was made. The draft is also kept
+when the refresh after a save fails: the screen cannot show what is stored, so the draft stays as the
+only record of the intent.
 
 ---
 

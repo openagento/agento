@@ -156,6 +156,9 @@ backend route, so these gaps stay open, each needing a route first:
   - **kit `.ag-badge` in a narrow table cell**: like `StatusBadge`, it is cut to "S…" (`overflow:
     hidden` in a grid); the panel keeps its table badges whole at the cell (`whole()`), the kit needs
     `min-width: max-content` on both twins in a new kit version (UI-2, UI-3);
+- **Config's row action is still a text button**: `Config.tsx`'s Actions cell renders
+  `<Button variant="subtle">Edit</Button>` where UI-7 asks for an `IconAction`; every other admin
+  table was converted on 2026-10-07;
 - **no `job.succeeded` event**: a turn's success is read from the assistant message that follows it;
 - **no snapshot watermark**: a REST snapshot carries no stream event id, so the panel refetches on
   every stream (re)open instead of resuming exactly;

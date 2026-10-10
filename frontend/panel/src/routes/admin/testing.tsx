@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router";
 import { vi } from "vitest";
 import { endSession, login, QueryClientProvider, queryClient } from "@agento/api";
 import { AgentoUiProvider } from "@agento/ui";
-import { Notifications } from "@mantine/notifications";
+import { cleanNotifications, Notifications } from "@mantine/notifications";
 
 type Answer = unknown | ((body: unknown, url: URL) => unknown);
 
@@ -37,7 +37,9 @@ export async function stubApi(answers: Record<string, Answer>, role: "admin" | "
   };
 }
 
-export function teardown() { endSession(); vi.unstubAllGlobals(); queryClient.clear(); }
+// cleanNotifications: the store is global, and Mantine queues beyond its limit — a test that
+// leaves notifications behind would hide the next test's own.
+export function teardown() { endSession(); vi.unstubAllGlobals(); queryClient.clear(); cleanNotifications(); }
 
 export const renderAt = (path: string, ui: ReactNode) => render(
   <AgentoUiProvider env="test">

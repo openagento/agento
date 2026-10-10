@@ -1,32 +1,22 @@
-import { apiFetch, useQuery } from "@agento/api";
-import { EmptyState, ErrorState, LoadingState, PageHeader } from "@agento/ui";
-import { EnablementGroup, type EnablementItem } from "./Enablement";
+import { useCallback } from "react";
+import { PageHeader } from "@agento/ui";
+import type { EnablementItem, Groups } from "../enablementTree";
+import { EnablementTree } from "./EnablementTree";
 import { ScopePicker } from "./ScopePicker";
-import { AdminOnly, message, useConfigWrite, useScope } from "./shared";
+import { AdminOnly } from "./shared";
 
 type Toolsets = { toolset: string; tools: EnablementItem[] }[];
 
-function ToolList() {
-  const { ready, query } = useScope();
-  const tools = useQuery({
-    queryKey: ["admin-tools", query], enabled: ready,
-    queryFn: ({ signal }) => apiFetch<Toolsets>(`/api/admin/tools?${query}`, { signal }),
-  });
-  const write = useConfigWrite("admin-tools");
-  if (!ready) return <EmptyState title="Choose a scope" />;
-  if (tools.isPending) return <LoadingState />;
-  if (tools.error) return <ErrorState message={message(tools.error)} onRetry={() => void tools.refetch()} />;
-  if (!tools.data.length) return <EmptyState title="No tools">No enabled module declares a tool.</EmptyState>;
-  return <>{tools.data.map((t) => <EnablementGroup key={t.toolset} title={t.toolset} items={t.tools} write={write} />)}</>;
-}
-
 export function Tools() {
+  const groupsOf = useCallback((data: Toolsets): Groups =>
+    data.map((t) => ({ group: t.toolset, items: t.tools })), []);
   return (
     <AdminOnly>
       <div className="ag-stack">
         <PageHeader title="Tools" description="Which tools an agent may call. A tool is off unless it is enabled." />
         <ScopePicker />
-        <ToolList />
+        <EnablementTree listKey="admin-tools" url="/api/admin/tools" groupsOf={groupsOf}
+          emptyTitle="No tools" emptyText="No enabled module declares a tool." />
       </div>
     </AdminOnly>
   );
