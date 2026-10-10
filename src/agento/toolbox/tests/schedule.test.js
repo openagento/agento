@@ -25,12 +25,21 @@ function fakeServer() {
 //   dedupe SELECT (WHERE idempotency_key = ?) -> [ [dupRow] ] when simulating a
 //     duplicate, else [[]]
 //   INSERT -> [ {affectedRows} ]
-function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null, insertDupError = false } = {}) {
-  const calls = { getConnection: 0, executed: [], released: 0 };
+function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null, insertDupError = false,
+                         failOutbox = false, insertId = 777 } = {}) {
+  const calls = { getConnection: 0, executed: [], released: 0, begin: 0, commit: 0, rollback: 0 };
   const conn = {
+    async beginTransaction() { calls.begin += 1; },
+    async commit() { calls.commit += 1; },
+    async rollback() { calls.rollback += 1; },
     async execute(sql, params) {
       calls.executed.push({ sql, params });
       if (failExecute) throw new Error('db boom');
+      // The announcement that travels with the job (ROADMAP F14).
+      if (/job_event_outbox/i.test(sql)) {
+        if (failOutbox) throw new Error('outbox boom');
+        return [{ affectedRows: 1 }];
+      }
       if (/^\s*SELECT/i.test(sql) && /idempotency_key/i.test(sql)) return [dupRow ? [dupRow] : []];
       if (/^\s*SELECT/i.test(sql)) return [jobRow ? [jobRow] : []];
       // Simulate a lost race: the dedupe SELECT saw no row, but a concurrent
@@ -41,7 +50,7 @@ function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null, 
         err.errno = 1062;
         throw err;
       }
-      return [{ affectedRows }];
+      return [{ affectedRows, insertId }];
     },
     release() { calls.released += 1; },
   };
@@ -266,5 +275,56 @@ describe('schedule_followup rejects when it has no job to continue', () => {
     const errLog = log.mock.calls.find((c) => c[1] === 'ERROR' && /job=42/.test(c[2]));
     expect(errLog).toBeTruthy();
     expect(log.mock.calls.some((c) => /reference_id/.test(String(c[2])))).toBe(false);
+  });
+});
+
+
+describe('schedule_followup announces the job (ROADMAP F14)', () => {
+  const JOB = { source: 'jira', reference_id: 'AG-1', agent_view_id: 3, priority: 50 };
+
+  it('writes one job.queued outbox row and commits it with the job', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(JOB);
+    register(server, baseCtx({ db }));
+    await server.tools.schedule_followup.handler({
+      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+    });
+    const outbox = calls.executed.filter((c) => /job_event_outbox/i.test(c.sql));
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0].params[0]).toBe(777);                       // the job just inserted
+    expect(JSON.parse(outbox[0].params[1])).toEqual({
+      type: 'followup', source: 'jira', agent_view_id: 3, priority: 50,
+    });
+    expect(calls.begin).toBe(1);
+    expect(calls.commit).toBe(1);
+    expect(calls.rollback).toBe(0);
+  });
+
+  it('writes no outbox row on the duplicate path, and rolls back', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(JOB, { dupRow: { id: 9 } });
+    register(server, baseCtx({ db }));
+    await server.tools.schedule_followup.handler({
+      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+    });
+    expect(calls.executed.some((c) => /job_event_outbox/i.test(c.sql))).toBe(false);
+    expect(calls.commit).toBe(0);
+    expect(calls.rollback).toBe(1);
+  });
+
+  it('rolls the job back when the announcement fails', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(JOB, { failOutbox: true });
+    register(server, baseCtx({ db }));
+    const res = await server.tools.schedule_followup.handler({
+      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+    });
+    expect(res.isError).toBe(true);
+    expect(calls.commit).toBe(0);
+    expect(calls.rollback).toBeGreaterThanOrEqual(1);
+    expect(calls.released).toBe(1);
   });
 });

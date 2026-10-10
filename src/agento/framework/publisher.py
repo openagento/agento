@@ -36,6 +36,7 @@ def insert_job(
     max_attempts: int,
     requester: JobRequester | None,
     prompt: str | None = None,
+    context: str | None = None,
     harness: str | None = None,
     model: str | None = None,
 ) -> int:
@@ -54,14 +55,14 @@ def insert_job(
         """
         INSERT INTO job
             (type, source, agent_view_id, priority, reference_id,
-             idempotency_key, status, attempt, max_attempts, prompt,
+             idempotency_key, status, attempt, max_attempts, prompt, context,
              requester_key, requester_email, requester_trust, requester_meta,
              agent_type, model)
         VALUES
-            (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (agent_type.value, source, agent_view_id, priority, reference_id,
-         idempotency_key, max_attempts, prompt,
+         idempotency_key, max_attempts, prompt, context,
          requester.key if requester else None,
          requester.email if requester else None,
          requester.trust.value if requester else "claimed",

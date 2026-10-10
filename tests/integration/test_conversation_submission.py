@@ -596,3 +596,92 @@ def test_show_says_whether_the_caller_sees_run_details(conn, world):
     shown = routes._run_json(run, True)
     assert (shown["harness"], shown["provider"], shown["credential"], shown["model"]) == (
         "claude", "anthropic", "team-1", "m")
+
+
+# --- regenerate (ROADMAP E3-E5) -------------------------------------------------
+
+def _regenerate(conn, user, cid, message_id, cmid="r1"):
+    return routes.regenerate(_Req(conn, user, params={"id": str(cid)},
+                                  json={"message_id": message_id,
+                                        "client_message_id": cmid}))
+
+
+def test_regenerate_re_asks_the_named_message_as_a_new_turn(conn, world):
+    cid = _conversation(conn, world)
+    first, _, _ = service.submit_message(conn, conversation_id=cid,
+                                         user_id=world["owner"].id,
+                                         client_message_id="c1", content="pytanie")
+
+    response = _regenerate(conn, world["owner"], cid, first)
+
+    assert response.status == 201
+    assert response.body["message_id"] != first
+    with conn.cursor() as cur:
+        cur.execute("SELECT content FROM message WHERE id = %s",
+                    (response.body["message_id"],))
+        assert cur.fetchone()["content"] == "pytanie"
+    conn.commit()
+
+
+def test_a_repeated_regenerate_click_replays_into_the_same_turn(conn, world):
+    cid = _conversation(conn, world)
+    first, _, _ = service.submit_message(conn, conversation_id=cid,
+                                         user_id=world["owner"].id,
+                                         client_message_id="c1", content="pytanie")
+
+    one = _regenerate(conn, world["owner"], cid, first)
+    two = _regenerate(conn, world["owner"], cid, first)
+
+    assert (one.status, two.status) == (201, 200)
+    assert one.body == two.body
+
+
+def test_a_second_deliberate_regeneration_is_a_second_turn(conn, world):
+    cid = _conversation(conn, world)
+    first, _, _ = service.submit_message(conn, conversation_id=cid,
+                                         user_id=world["owner"].id,
+                                         client_message_id="c1", content="pytanie")
+
+    one = _regenerate(conn, world["owner"], cid, first, cmid="r1")
+    two = _regenerate(conn, world["owner"], cid, first, cmid="r2")
+
+    assert one.body["message_id"] != two.body["message_id"]
+
+
+def test_regenerate_of_a_message_in_another_thread_is_404(conn, world):
+    mine = _conversation(conn, world)
+    theirs = _conversation(conn, world)
+    elsewhere, _, _ = service.submit_message(conn, conversation_id=theirs,
+                                             user_id=world["owner"].id,
+                                             client_message_id="c1", content="pytanie")
+
+    assert _regenerate(conn, world["owner"], mine, elsewhere).status == 404
+
+
+def test_regenerate_of_an_assistant_row_is_404(conn, world):
+    """Only a user message is re-askable: the answer is not the question."""
+    cid = _conversation(conn, world)
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO message (conversation_id, role, content) "
+                    "VALUES (%s, 'assistant', 'odpowiedź')", (cid,))
+        assistant_id = cur.lastrowid
+    conn.commit()
+
+    assert _regenerate(conn, world["owner"], cid, assistant_id).status == 404
+
+
+@pytest.mark.parametrize("message_id", [0, -1, "7", 1.5, None, True])
+def test_regenerate_refuses_a_message_id_that_is_not_a_positive_integer(
+        conn, world, message_id):
+    cid = _conversation(conn, world)
+
+    assert _regenerate(conn, world["owner"], cid, message_id).status == 400
+
+
+def test_another_users_thread_cannot_be_regenerated(conn, world):
+    cid = _conversation(conn, world)
+    first, _, _ = service.submit_message(conn, conversation_id=cid,
+                                         user_id=world["owner"].id,
+                                         client_message_id="c1", content="pytanie")
+
+    assert _regenerate(conn, world["stranger"], cid, first).status == 404

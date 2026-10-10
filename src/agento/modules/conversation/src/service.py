@@ -36,7 +36,9 @@ from agento.framework.publish_service import publish_job
 
 MODULE_DIR = Path(__file__).resolve().parent.parent
 JOB_TYPE = "conversation"
+FOLLOWUP_JOB_TYPE = "followup"
 SOURCE = "conversation"
+PANEL_CHANNEL = "panel"   # conversation.channel of a panel thread; any other value is a channel thread
 MAX_CLIENT_MESSAGE_ID = 128
 MAX_TITLE = 255          # the `conversation.title` column
 
@@ -241,6 +243,7 @@ def list_timeline(conn, *, conversation_id: int, before_id: int | None,
 # scope, as are the trigger prompt and the raw text of an `error` event. The tool name, the
 # call id and the error flag stay for everyone.
 RUN_DETAILS = "conversation.run_details"
+CHANNEL_WRITE = "conversation.channel_write"
 _RUN_DETAIL_DATA = ("input", "output")
 _PROMPTED = ("run.started", "run.finished")
 
@@ -253,6 +256,18 @@ def can_see_run_details(conn, user: User, conversation: dict) -> bool:
     if conversation["agent_view_id"] is None:
         return False
     return has_operation(conn, user.role, RUN_DETAILS, conversation["workspace_id"],
+                         conversation["agent_view_id"])
+
+
+def can_write_channel(conn, user: User, conversation: dict) -> bool:
+    """Admin always; another role only with the `conversation.channel_write` grant on the
+    thread's workspace or view. A channel thread mirrors an external system, so posting
+    into it speaks to a customer - a plain `user` does not get that by reading the thread."""
+    if user.role == "admin":
+        return True
+    if conversation["agent_view_id"] is None:
+        return False
+    return has_operation(conn, user.role, CHANNEL_WRITE, conversation["workspace_id"],
                          conversation["agent_view_id"])
 
 
@@ -693,6 +708,34 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
 TITLE_CHARS = 60
 
 
+def regenerate(conn, *, conversation_id: int, message_id: int, user_id: int,
+               client_message_id: str) -> tuple[int, int, bool]:
+    """Ask the same question again, as a NEW turn. Same return as `submit_message`.
+
+    The caller names the user message to re-ask: "the newest one" stops being a stable
+    identity the moment a regeneration lands beside it. Retry identity is the caller's
+    `client_message_id` against `uq_conversation_client_message`, so a repeated click
+    replays into the same turn and a second, deliberate regeneration is a second id.
+
+    Ordering needs nothing here: `ConversationOrderingObserver` already defers a turn of a
+    thread whose earlier turn is unfinished (E3-E5 §4.4), at claim time, where the queue
+    can hold it.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT content FROM message WHERE id = %s AND conversation_id = %s "
+            "AND role = 'user'",
+            (message_id, conversation_id),
+        )
+        row = cur.fetchone()
+    conn.commit()                        # the SELECT opened a transaction
+    if row is None:
+        raise SubmissionError(404, "message not found")
+    return submit_message(conn, conversation_id=conversation_id, user_id=user_id,
+                          client_message_id=client_message_id, content=row["content"],
+                          reactivate_actor_id=user_id)
+
+
 def derive_title(content: str) -> str:
     """The first message, whitespace collapsed, cut on a word boundary to TITLE_CHARS."""
     text = " ".join(content.split())
@@ -711,7 +754,7 @@ def complete_pending(conn, message_id: int) -> int:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT m.id, m.content, m.job_id, m.job_state, m.conversation_id, "
-            "       c.agent_view_id, c.user_id "
+            "       c.agent_view_id, c.user_id, c.channel, c.external_ref "
             "FROM message m JOIN conversation c ON c.id = m.conversation_id "
             "WHERE m.id = %s",
             (message_id,),
@@ -723,21 +766,47 @@ def complete_pending(conn, message_id: int) -> int:
     if row["job_state"] != "pending":
         return row["job_id"]              # already published: nothing happened here
 
-    job_id = publish_job(
-        source=SOURCE,
-        agent_type=resolve_job_type(JOB_TYPE),
-        agent_view_id=row["agent_view_id"],
-        reference_id=f"{row['conversation_id']}:{row['id']}",
-        idempotency_key=f"conversation:{row['conversation_id']}:{row['id']}",
-        requester=JobRequester(key=f"user:{row['user_id']}", trust=RequesterTrust.ACCOUNT),
-        priority=50,
-        prompt=row["content"],
-    )
+    requester = JobRequester(key=f"user:{row['user_id']}", trust=RequesterTrust.ACCOUNT)
+    if row["channel"] == PANEL_CHANNEL:
+        job_id = publish_job(
+            source=SOURCE,
+            agent_type=resolve_job_type(JOB_TYPE),
+            agent_view_id=row["agent_view_id"],
+            reference_id=f"{row['conversation_id']}:{row['id']}",
+            idempotency_key=f"conversation:{row['conversation_id']}:{row['id']}",
+            requester=requester,
+            priority=50,
+            prompt=row["content"],
+        )
+    else:
+        # A channel thread mirrors an external system, so the turn continues THAT task:
+        # a `followup` job on the thread's own source and reference. The branch lives here,
+        # in the one publisher the route and `sweep_pending` both call (EVT-2) - a second
+        # publish path beside it would let the sweep re-publish the wrong contract.
+        job_id = publish_job(
+            source=row["channel"],
+            agent_type=resolve_job_type(FOLLOWUP_JOB_TYPE),
+            agent_view_id=row["agent_view_id"],
+            reference_id=row["external_ref"],
+            idempotency_key=f"channel-reply:{row['conversation_id']}:{row['id']}",
+            requester=requester,
+            priority=50,
+            context=row["content"],
+        )
     with conn.cursor() as cur:
+        # The JOB row first, then the message: the finalizer takes them in that order, and
+        # two transactions that take the same two rows in opposite orders deadlock (SCL-1).
+        # Reading the status under that lock is also what makes the state below correct:
+        # the job may have finished between the publish above and this attachment, and
+        # then nobody would move the turn off `published` until `reconcile_terminal`.
+        cur.execute("SELECT status FROM job WHERE id = %s FOR UPDATE", (job_id,))
+        status = (cur.fetchone() or {}).get("status")
+        # Same statuses as `reconcile_terminal`: TODO/RUNNING/PAUSED is a live or retried job.
+        state = "terminal" if status in ("SUCCESS", "FAILED", "DEAD") else "published"
         cur.execute(
-            "UPDATE message SET job_id = %s, job_state = 'published' "
+            "UPDATE message SET job_id = %s, job_state = %s "
             "WHERE id = %s AND job_state = 'pending'",
-            (job_id, message_id),
+            (job_id, state, message_id),
         )
         # Two callers can both read `pending` - the route and the sweep, or two sweeps. The
         # conditional UPDATE is what decides which one made the transition; ignoring its

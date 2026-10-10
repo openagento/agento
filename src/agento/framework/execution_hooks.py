@@ -156,6 +156,13 @@ def mint_execution_id(*, conn, job_id: int, attempt: int,
 def finalize_execution(*, conn, job_id: int, attempt: int, execution_id: str | None,
                        outcome: Literal["succeeded", "failed", "abandoned"],
                        job_terminal: bool) -> None:
+    """Run the registered finalizer in the caller's transaction (§5.3).
+
+    Contract: `conn` runs at READ COMMITTED (`Consumer._db()`). A finalizer's plain reads
+    are therefore fresh - they see what a session it waited on committed - and its ranged
+    writes take record locks without gaps, which is what keeps them safe at 100-200
+    parallel jobs (SCL-1). See DECISIONS.md, 2026-10-10.
+    """
     finalizer = _EXECUTION_FINALIZER.get()
     if finalizer is None:
         return
