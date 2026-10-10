@@ -437,3 +437,86 @@ def test_live_text_is_capped_by_half_the_bytes_too(conn, sink, run, monkeypatch)
 
     kinds = [r["kind"] for r in _ledger(conn, run)]
     assert kinds == ["reasoning.partial", "reasoning.partial", "assistant.text"]
+
+
+# --- a batch that lands after the attempt was finalized (review impl-1 F1) -------
+
+def _finalize(conn, run, outcome="succeeded") -> None:
+    from agento.modules.conversation.src.finalizer import ConversationFinalizer
+
+    ConversationFinalizer().finalize(conn=conn, job_id=run["job_id"], attempt=1,
+                                     execution_id=run["execution_id"], outcome=outcome,
+                                     job_terminal=True)
+    conn.commit()
+
+
+def test_a_partial_queued_before_finalization_is_dropped_after_it(conn, sink, run,
+                                                                  monkeypatch):
+    """`execution_deltas.close()` only QUEUES the tail, so a partial can reach the sink
+    after the finalizer forgot the attempt's fragments. It must not come back."""
+    _cap(monkeypatch)
+    sink.write([_delta(run, 1, "live", kind="assistant.partial")])
+    _finalize(conn, run)
+
+    sink.write([_delta(run, 2, "late", kind="assistant.partial")])
+
+    assert _all_events(conn, run) == []        # the live one deleted, the late one refused
+
+
+def test_a_complete_fragment_after_finalization_still_lands(conn, sink, run, monkeypatch):
+    """Only live text is dropped: a tool result that arrives late is real history."""
+    _cap(monkeypatch)
+    _finalize(conn, run, outcome="failed")
+
+    sink.write([_delta(run, 3, "", kind="tool.completed", tool_name="jira_get_issue",
+                       data={"call_id": "c1", "output": "ok"})])
+
+    assert [e["kind"] for e in _all_events(conn, run)] == ["tool.completed"]
+
+
+def test_a_partial_of_a_running_execution_is_unaffected_by_another_finalized_one(
+        conn, sink, run, monkeypatch):
+    _cap(monkeypatch)
+    other = str(uuid.uuid4())
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO execution (execution_id, job_id, attempt, status, "
+                    "conversation_id) VALUES (%s, %s, 2, 'succeeded', %s)",
+                    (other, run["job_id"], run["conversation_id"]))
+    conn.commit()
+
+    sink.write([_delta(run, 1, "live", kind="assistant.partial"),
+                DeltaRecord(execution_id=other, seq=1, kind="assistant.partial",
+                            text="dead", tool_name=None, data=None)])
+
+    assert [(e["execution_id"], e["kind"]) for e in _all_events(conn, run)] == [
+        (run["execution_id"], "assistant.partial")]
+
+
+def test_a_finalization_between_the_batchs_first_read_and_its_lock_is_seen(
+        conn, sink, run, monkeypatch):
+    """The isolation level, asserted (review impl-2 F1).
+
+    Under the server default (REPEATABLE READ) every plain SELECT of a transaction answers
+    from the snapshot its FIRST read took, and taking a row lock does not refresh it: the
+    status read would still say `running` and the late partial would land. The sink's
+    connection is READ COMMITTED, so it sees the finalization that committed in between.
+    """
+    from .conftest import _test_connection
+
+    _cap(monkeypatch)
+    real_lock = service.lock_conversations
+    other = _test_connection()
+
+    def lock_after_a_finalization(cur, ids):
+        monkeypatch.setattr(service, "lock_conversations", real_lock)
+        _finalize(other, run)                 # commits while the sink's batch is open
+        return real_lock(cur, ids)
+
+    try:
+        monkeypatch.setattr(service, "lock_conversations", lock_after_a_finalization)
+        sink.write([_delta(run, 1, "late", kind="assistant.partial")])
+    finally:
+        monkeypatch.setattr(service, "lock_conversations", real_lock)
+        other.close()
+
+    assert _all_events(conn, run) == []

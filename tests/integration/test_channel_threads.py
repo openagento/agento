@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import threading
 import time
 import uuid
@@ -23,6 +24,7 @@ from agento.modules.conversation.src.finalizer import ConversationFinalizer
 from agento.modules.conversation.src.hooks import ConversationExecutionIds
 
 from .conftest import _test_connection
+from .test_conversation_events import seen  # noqa: F401
 from .test_conversation_submission import _job_type, _Req  # noqa: F401
 
 
@@ -279,7 +281,7 @@ def test_a_non_admin_gets_404_on_every_read_of_a_channel_thread(conn, world):
     assert (listed.status, listed.body) == (200, [])
 
 
-def test_an_admin_lists_and_reads_a_channel_thread_but_cannot_post_into_it(conn, world):
+def test_an_admin_lists_and_reads_a_channel_thread(conn, world):
     cid = _channel_thread(conn, world)
     admin = world["admin"]
 
@@ -289,12 +291,143 @@ def test_an_admin_lists_and_reads_a_channel_thread_but_cannot_post_into_it(conn,
     shown = routes.show(_Req(conn, admin, params={"id": cid}))
     assert shown.status == 200 and len(shown.body["runs"]) == 1
     assert shown.body["run_details"] is True and "model" in shown.body["runs"][0]
+    assert shown.body["channel_write"] is True            # admin holds every operation
     page = routes.timeline(_Req(conn, admin, params={"id": cid}))
     assert [e["kind"] for e in page.body["events"]] == ["run.started"]
 
-    sent = routes.send(_Req(conn, admin, params={"id": cid},
-                            json={"client_message_id": "x", "content": "hi"}))
+
+# --- writing into a channel thread (ROADMAP E9, 2026-10-10) ------------------------
+
+def _reply(conn, user, cid, *, content="odpowiedź", client_message_id="r1"):
+    return routes.send(_Req(conn, user, params={"id": str(cid)},
+                            json={"client_message_id": client_message_id, "content": content}))
+
+
+def _job_row(conn, job_id) -> dict:
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM job WHERE id = %s", (job_id,))
+        row = cur.fetchone()
+    conn.commit()
+    return row
+
+
+def test_an_admin_reply_publishes_a_followup_on_the_threads_own_source(conn, world):
+    cid = _channel_thread(conn, world)
+
+    sent = _reply(conn, world["admin"], cid)
+
+    assert sent.status == 201
+    job = _job_row(conn, sent.body["job_id"])
+    # The reply continues the EXTERNAL task: the thread's own source and reference, with
+    # the operator's text where `FollowupWorkflow` reads it.
+    assert (job["type"], job["source"], job["reference_id"]) == ("followup", "jira", "AI-7")
+    assert job["context"] == "odpowiedź" and job["prompt"] is None
+    assert job["idempotency_key"].startswith("channel-reply:")
+
+
+def test_the_followup_workflow_can_execute_the_published_reply(conn, world):
+    """F9: `execute_job` raises unless the job carries `context`."""
+    from agento.framework.job_models import Job
+    from agento.framework.workflows.followup import FollowupWorkflow
+
+    cid = _channel_thread(conn, world)
+    row = _job_row(conn, _reply(conn, world["admin"], cid).body["job_id"])
+    job = Job.from_row(row)
+
+    workflow = FollowupWorkflow(runner=None, logger=logging.getLogger(__name__))
+    built = workflow.build_prompt(_FakeChannel(), job.reference_id,
+                                  instructions=job.context, config=None)
+
+    assert "odpowiedź" in built
+
+
+class _FakeChannel:
+    name = "jira"
+
+    def get_followup_fragments(self, reference_id, instructions, config=None):
+        from agento.framework.channels.base import PromptFragments
+        return PromptFragments(read_context="r", respond="w", extra=instructions)
+
+
+def test_a_plain_user_cannot_reply(conn, world):
+    """404, not 403: a channel thread is unreadable to a non-admin, so the reach gate
+    refuses before the grant is consulted. `conversation.channel_write` is the second
+    gate, and the one that decides once channel reads open to a role (ROADMAP E9)."""
+    cid = _channel_thread(conn, world)
+
+    assert _reply(conn, world["owner"], cid).status == 404
+    assert service.can_write_channel(
+        conn, world["owner"],
+        {"agent_view_id": world["view"], "workspace_id": world["workspace"]}) is False
+
+
+def test_a_reply_is_refused_when_the_thread_has_nothing_to_reply_to(conn, world):
+    cid = _channel_thread(conn, world)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE conversation SET external_ref = NULL WHERE id = %s", (cid,))
+    conn.commit()
+
+    sent = _reply(conn, world["admin"], cid)
+
     assert (sent.status, sent.body) == (409, {"error": "read_only"})
+
+
+def test_a_repeated_reply_yields_one_job_and_one_message(conn, world):
+    cid = _channel_thread(conn, world)
+
+    first = _reply(conn, world["admin"], cid)
+    again = _reply(conn, world["admin"], cid)
+
+    assert (first.body["job_id"], again.status) == (again.body["job_id"], 200)
+    assert len(_rows(conn, "SELECT id FROM message WHERE conversation_id = %s", (cid,))) == 1
+
+
+def test_a_crash_before_the_publish_is_recovered_on_the_channel_contract(conn, world):
+    """The sweep must not re-publish a channel reply as a panel `conversation` job."""
+    cid = _channel_thread(conn, world)
+    message_id, _, _ = service.submit_message(
+        conn, conversation_id=cid, user_id=world["admin"].id,
+        client_message_id="crash-1", content="odpowiedź po crashu")
+    # Back to the state a crash between the two commits leaves behind.
+    with conn.cursor() as cur:
+        cur.execute("UPDATE message SET job_state = 'pending', job_id = NULL WHERE id = %s",
+                    (message_id,))
+        cur.execute("DELETE FROM job WHERE idempotency_key LIKE 'channel-reply:%%'")
+    conn.commit()
+
+    assert service.sweep_pending(conn, grace_seconds=0) == 1
+
+    rows = _rows(conn, "SELECT job_id FROM message WHERE id = %s", (message_id,))
+    job = _job_row(conn, rows[0]["job_id"])
+    assert (job["type"], job["source"]) == ("followup", "jira")
+
+
+def test_the_finalizer_marks_a_channel_reply_terminal(conn, world):
+    cid = _channel_thread(conn, world)
+    job_id = _reply(conn, world["admin"], cid).body["job_id"]
+    execution_id = _claim(conn, job_id)   # the reply runs in the thread it was written in
+
+    ConversationFinalizer().finalize(conn=conn, job_id=job_id, attempt=1,
+                                     execution_id=execution_id, outcome="succeeded",
+                                     job_terminal=True)
+    conn.commit()
+
+    states = _rows(conn, "SELECT job_state FROM message WHERE job_id = %s", (job_id,))
+    assert [r["job_state"] for r in states] == ["terminal"]
+
+
+def test_a_retried_channel_reply_stays_published(conn, world):
+    cid = _channel_thread(conn, world)
+    job_id = _reply(conn, world["admin"], cid).body["job_id"]
+    execution_id = _claim(conn, job_id)   # the reply runs in the thread it was written in
+
+    ConversationFinalizer().finalize(conn=conn, job_id=job_id, attempt=1,
+                                     execution_id=execution_id, outcome="failed",
+                                     job_terminal=False)
+    conn.commit()
+
+    states = _rows(conn, "SELECT job_state FROM message WHERE job_id = %s", (job_id,))
+    assert [r["job_state"] for r in states] == ["published"]
 
 
 def test_the_channel_list_pages_by_its_cursor_without_overlap(conn, world, monkeypatch):
@@ -493,3 +626,164 @@ def test_a_role_granted_run_details_sees_them_on_that_scope_only(conn, world):
     assert {e["payload"].get("prompt") for e in service.project_events(conn, rows, owner, thread)
             if e["kind"] == "run.started"} == {"Fix the login page"}
     assert errors(owner) == ["raw harness error"]
+
+
+# --- review impl-1: the gaps the first round left -------------------------------
+
+def test_regenerating_in_a_channel_thread_passes_the_same_gates_as_a_reply(conn, world):
+    """F3: a regeneration is a write too - one guard, both routes (CLS-1)."""
+    cid = _channel_thread(conn, world)
+    message_id = _reply(conn, world["admin"], cid).body["message_id"]
+
+    def again(user):
+        return routes.regenerate(_Req(conn, user, params={"id": str(cid)},
+                                      json={"message_id": message_id,
+                                            "client_message_id": "again-1"}))
+
+    assert again(world["owner"]).status == 404               # cannot even see the thread
+    with conn.cursor() as cur:
+        cur.execute("UPDATE conversation SET external_ref = NULL WHERE id = %s", (cid,))
+    conn.commit()
+    assert again(world["admin"]).status == 409               # nothing left to reply to
+    with conn.cursor() as cur:
+        cur.execute("UPDATE conversation SET external_ref = 'AI-7' WHERE id = %s", (cid,))
+    conn.commit()
+    assert again(world["admin"]).status == 201
+
+
+def test_a_reply_whose_job_finished_before_it_was_attached_is_terminal(conn, world):
+    """F2: `complete_pending` publishes, THEN attaches the job id. A job that finishes in
+    between leaves the finalizer nothing to update - the publisher closes that turn."""
+    cid = _channel_thread(conn, world)
+    message_id, _, _ = service.submit_message(
+        conn, conversation_id=cid, user_id=world["admin"].id,
+        client_message_id="race-1", content="odpowiedź")
+    with conn.cursor() as cur:            # back to the state after the first commit
+        cur.execute("UPDATE message SET job_state = 'pending', job_id = NULL WHERE id = %s",
+                    (message_id,))
+    conn.commit()
+    # The finalizer runs the moment the job exists: `publish_job` is where it lands.
+    import agento.modules.conversation.src.service as service_module
+    real = service_module.publish_job
+
+    def publish_then_finish(**kwargs):
+        job_id = real(**kwargs)
+        with conn.cursor() as cur:
+            cur.execute("UPDATE job SET status = 'SUCCESS' WHERE id = %s", (job_id,))
+        conn.commit()
+        return job_id
+
+    service_module.publish_job = publish_then_finish
+    try:
+        service.complete_pending(conn, message_id)
+    finally:
+        service_module.publish_job = real
+
+    assert _rows(conn, "SELECT job_state FROM message WHERE id = %s",
+                 (message_id,))[0]["job_state"] == "terminal"
+
+
+def test_a_failed_channel_reply_reaches_terminal_without_reconciliation(conn, world):
+    cid = _channel_thread(conn, world)
+    job_id = _reply(conn, world["admin"], cid).body["job_id"]
+    execution_id = _claim(conn, job_id)
+
+    ConversationFinalizer().finalize(conn=conn, job_id=job_id, attempt=1,
+                                     execution_id=execution_id, outcome="failed",
+                                     job_terminal=True)
+    conn.commit()
+
+    assert [r["job_state"] for r in _rows(
+        conn, "SELECT job_state FROM message WHERE job_id = %s", (job_id,))] == ["terminal"]
+    assert service.reconcile_terminal(conn) == 0        # nothing left for the backstop
+
+
+def test_the_followup_workflow_executes_the_published_reply(conn, world):
+    """F9/F5: the whole `execute_job` path, not just the prompt it builds."""
+    from agento.framework.job_models import Job
+    from agento.framework.workflows.followup import FollowupWorkflow
+
+    cid = _channel_thread(conn, world)
+    job = Job.from_row(_job_row(conn, _reply(conn, world["admin"], cid).body["job_id"]))
+
+    class _Runner:
+        def __init__(self):
+            self.prompt = None
+
+        def run(self, prompt, **kwargs):
+            self.prompt = prompt
+            return "ok"
+
+    runner = _Runner()
+    workflow = FollowupWorkflow(runner=runner, logger=logging.getLogger(__name__))
+    workflow.execute = lambda channel, reference_id, **kw: runner.run(
+        workflow.build_prompt(channel, reference_id, **kw))
+
+    class _Context:
+        config = None
+
+    assert workflow.execute_job(_FakeChannel(), job, _Context()) == "ok"
+    assert "odpowiedź" in runner.prompt
+
+
+# --- recovery and the publication race, on the channel contract (review impl-2 F4) ---
+
+def test_a_crash_after_the_publish_recovers_onto_the_same_followup_job(conn, world, seen):
+    """The job is already out; only the attachment was lost. The sweep must adopt THAT job
+    (its idempotency key is the message's), not publish a second external task."""
+    cid = _channel_thread(conn, world)
+    message_id, job_id, _ = service.submit_message(
+        conn, conversation_id=cid, user_id=world["admin"].id,
+        client_message_id="after-publish", content="odpowiedź")
+    with conn.cursor() as cur:
+        cur.execute("UPDATE message SET job_state = 'pending', job_id = NULL WHERE id = %s",
+                    (message_id,))
+    conn.commit()
+    seen.clear()
+
+    assert service.sweep_pending(conn, grace_seconds=0) == 1
+
+    jobs = _rows(conn, "SELECT id, type, source FROM job "
+                       "WHERE idempotency_key LIKE 'channel-reply:%%'")
+    assert [(j["id"], j["type"], j["source"]) for j in jobs] == [(job_id, "followup", "jira")]
+    events = [e for n, e in seen if n == "conversation_message_after"]
+    assert len(events) == 1 and events[0].message_id == message_id
+    assert events[0].job_id == job_id
+    assert _rows(conn, "SELECT job_state FROM message WHERE id = %s",
+                 (message_id,))[0]["job_state"] in ("published", "terminal")
+
+
+def test_a_route_racing_the_sweep_on_a_channel_thread_announces_one_turn(conn, world, seen,
+                                                                         monkeypatch):
+    """EVT-4 on the channel contract: one transition, one event, one external task."""
+    cid = _channel_thread(conn, world)
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO message (conversation_id, role, content, "
+                    "client_message_id, job_state) VALUES (%s, 'user', 'odpowiedź', "
+                    "'c-race-channel', 'pending')", (cid,))
+        message_id = cur.lastrowid
+    conn.commit()
+    seen.clear()
+
+    done: list[int] = []
+    raced: list[bool] = []
+    original = service.publish_job
+    other = _test_connection()
+
+    def racing(**kwargs):
+        if not raced:
+            raced.append(True)
+            done.append(service.complete_pending(other, message_id))
+        return original(**kwargs)
+
+    try:
+        monkeypatch.setattr(service, "publish_job", racing)
+        first = service.complete_pending(conn, message_id)
+    finally:
+        monkeypatch.setattr(service, "publish_job", original)
+        other.close()
+
+    assert first == done[0]
+    assert len([e for n, e in seen if n == "conversation_message_after"]) == 1
+    assert len(_rows(conn, "SELECT id FROM job "
+                           "WHERE idempotency_key LIKE 'channel-reply:%%'")) == 1

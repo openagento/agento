@@ -66,7 +66,8 @@ tool's input or output) before the per-run byte cap counts it.
 | GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&limit=<n>`: one page of events, oldest first, `{events, has_older, newest_id}`; a `before` at or below the prune watermark is `409 cursor_expired` |
 | DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path) |
 | GET | `/api/conversation/threads/{id}/messages` | its messages |
-| POST | `/api/conversation/threads/{id}/messages` | `201` on the first submission, `200` on a repeat, `409 read_only` in a channel thread |
+| POST | `/api/conversation/threads/{id}/messages` | `201` on the first submission, `200` on a repeat; in a **channel** thread it posts an operator reply — `403` without `conversation.channel_write`, `409 read_only` when the thread has no `external_ref` |
+| POST | `/api/conversation/threads/{id}/regenerate` | `{message_id, client_message_id}`: asks that user message again as a new turn — `201`, `200` on a repeat of the same `client_message_id`, `404` when the id is not a user message of this thread |
 
 The PRD writes these under `/api/conversations`. A module owns `/api/<its own module name>/`
 and nothing else ([panel.md](../architecture/panel.md#module-routes)), so a module named
@@ -98,6 +99,34 @@ model, tokens and job id. `admin` has it built in; a
 `user` gets it only by a grant on the thread's workspace or view
 (`bin/agento grant:add --role user --operation conversation.run_details --workspace <code>`).
 Tool names, statuses and the fact of an error stay visible to everyone who reads the thread.
+
+### Channel write (ACL resource)
+
+A **channel** thread mirrors a Jira issue or a mailbox, so a post into it speaks to whoever is on
+the other side. The module declares `conversation.channel_write` for exactly that.
+
+**Today this means an admin.** Reading a channel thread is an admin's only (D-E9-3), and a route
+refuses what the reader cannot see with 404 before it ever consults the grant — so a `user` with
+`conversation.channel_write` still gets 404, and the grant decides nothing until channel **reads**
+open to a role (ROADMAP E9). The resource exists now because the write gate belongs beside the
+write, not because a non-admin can use it yet. Once reads open, the grant is the gate:
+`bin/agento grant:add --role user --operation conversation.channel_write --workspace <code>`.
+The reply is published by `complete_pending` as a **`followup` job on the thread's own source and
+`external_ref`**, with the operator's text as the job's `context` — so it continues the external
+task instead of starting a panel conversation. Everything else is the panel path unchanged: the
+message row and its `message.created` event commit first, the publish follows, and `sweep_pending`
+recovers a crash between them through the same one publisher.
+
+`GET /api/conversation/threads/{id}` carries `channel_write` on a channel thread, so the panel
+hides a composer the reader could not use; the route checks the grant regardless.
+
+### Regenerate
+
+`POST …/regenerate` re-asks an existing user message as a **new** turn. The caller names the
+message — "the newest one" stops being a stable identity as soon as a regeneration lands beside it
+— and supplies the `client_message_id`, so the existing `uq_conversation_client_message` makes a
+repeated click a replay and a second, deliberate regeneration a second turn. Ordering is the
+claim-time rule (§4.4): nothing new serialises here.
 
 ### Title
 
@@ -312,6 +341,15 @@ won.** The two writes have different uniqueness — the message row is pinned by
 event unconditionally beside the insert would let a replayed terminal transaction re-use the
 one message row and still emit a second event, and the relay, faithful by design, would
 deliver the same answer to the thread twice.
+
+When `job_terminal`, a **channel** reply is advanced the same way, by its stored `job_id`: the
+job's reference belongs to the external system, so there is no message reference to resolve. Over
+`message(job_id)` (migration `004`), with `reconcile_terminal` still the crash backstop.
+
+It also **deletes this attempt's `assistant.partial` and `reasoning.partial` events**, for every
+outcome — the answer replaces the keystrokes, and a failed or retried attempt leaves them behind
+too. Bounded to one execution by `conversation_event(execution_id, kind)` (migration `004`);
+retention is no longer their only cleanup.
 
 The assistant row carries no `job_id` and no `job_state`: the reply is not itself a queued
 turn, and §4.4's non-terminal check reads `user` rows only.
