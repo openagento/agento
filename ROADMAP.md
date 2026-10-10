@@ -81,6 +81,125 @@ The `{subject}_{verb}_{before|after}` naming convention is established, with eve
 
 Makes composable workspaces production-ready. Shipped: builds detect config drift and rebuild themselves at job-claim time (a checksum freshness check that supersedes the original dirty-flag design), and old builds are garbage-collected under a retention policy. Still pending: runtime-directory GC and a periodic `skill:sync` + `workspace:build --all` cron so skill-content changes are picked up on a schedule.
 
+### ⚪ Panel, RBAC and miniapps (E0 contracts agreed)
+
+E0 is the contract round for the user-facing platform: logging in, talking to an agent, running a
+versioned miniapp, and letting that miniapp perform allowed toolbox operations — deterministically,
+with no LLM in the path. The contracts were agreed on 2026-09-24 and the decisions are in
+[DECISIONS.md](DECISIONS.md). The detailed PRDs are deliberately **not** in this repo; they sit
+beside it, outside version control, as:
+
+- `PRD-E1-toolbox-auth-and-tool-execution.md` — auth context v1, per-call authorization, one
+  MCP/HTTP dispatcher (`POST /internal/tools/{name}:invoke`), transport rules, rollout order.
+- `PRD-E1.5-platform-foundation.md` — extra scope inside E1: all Compose changes and the
+  already-specified framework schema, front-loaded so the later epics stop colliding.
+- `PRD-E2-admin-panel-rbac.md` — Web API, sessions, `admin`/`user` roles, the `web` and `proxy`
+  Compose services, the panel/apps origin split.
+- `PRD-E6-miniapps-va-artifacts.md` — the Miniapps module over Versioned Artifacts, launch pinning,
+  proxy-subrequest file authorization, the SDK bridge, the Basic-auth share origin.
+
+Order: **E1 (including E1.5) → then E2, E3–E5 and E6 in parallel → E7 (administration)**.
+
+The original chain was E1 → E2 → E3–E5 → E6 → E7, but two of its links were collision hazards rather
+than real dependencies: `docker/docker-compose.yml` is generated from shared templates, and framework
+migrations are one global sequence, so every parallel track races for the next free number. E1.5 does both once, up front, in a single track; afterwards the epics touch disjoint
+files. Module migrations are numbered per module, so an epic that puts its tables in its own module can
+never collide with another's.
+
+E1.5 deliberately stops short of schema for unspecified epics — the conversation model and the miniapp
+manifest stay with E3–E5 and E6, because designing them before those epics exist buys a migration. E7
+stays last regardless: it needs E2's RBAC enforcement, not just its tables.
+
+The E1 core (PRD E1 §3–§8) is built; E1.5 is the next track: auth context v1, the `user_session`/`miniapp` profiles (invoke only, refused until E2/E6
+install a source checker), one dispatcher with per-call checks and a `tool_invocation` audit row,
+and header tokens on `/mcp`. See [docs/architecture/auth-context.md](docs/architecture/auth-context.md).
+
+E2 shipped the panel API: users, sessions, `admin`/`user` roles with per-scope grants, per-call
+`user_session` capabilities, and the launch exchange that authorizes files on the apps origin
+([docs/architecture/panel.md](docs/architecture/panel.md)). Left out of E2:
+
+- the panel frontend (E2 ships the API only) and an admin-TUI users screen;
+- per-user grants (visibility is per role), and `operation` grants beyond `artifact.launch`;
+- a DB-backed login throttle (the current one is per process);
+- rate limits for the launch redeem and `/internal/authz/app` (RULES.md SEC-12; see the zero-trust.md debt row);
+- a sequence column for exact launch eviction order (`created_at` has 1 s precision);
+- **per-run UID or container isolation (OPEN)**: until it exists, panel roles do not separate users
+  from what a shell-capable agent can read on the shared mount
+  ([docs/deployment/panel.md](docs/deployment/panel.md)).
+
+### 🟡 Conversations, history and chat (E3–E5)
+
+The `conversation` module: threads, idempotent submission, executions, the durable
+`conversation_event` log with cursor replay, SSE, `§4.5`'s unblock route, and the framework seams
+those need — route registration, streaming responses, the pre-claim hook, the three execution
+protocols and the delta sink, and the rate limiter. See
+[docs/architecture/conversations.md](docs/architecture/conversations.md) and
+[docs/modules/conversation.md](docs/modules/conversation.md).
+
+Known gaps, each deliberate:
+
+- **The open-cursor guarantee is withdrawn.** The PRD's earlier draft promised that any cursor a
+  client ever held would still replay. `§10.1`'s age prune makes that unkeepable: a cursor at or
+  below a thread's prune watermark is **expired**, answered `409 cursor_expired` on the replay route
+  and as one `cursor_expired` SSE frame (before any event frame) on a reconnect. A client that sees
+  it restarts from the newest page. History that has been pruned is gone, and saying so is the
+  guarantee — silently serving the survivors as if they were the whole thread is not.
+- **F14 — the Node job insert emits no event.** `src/agento/modules/core/toolbox/schedule.js`
+  writes to `job` directly from the toolbox, so a job scheduled by a tool never reaches
+  `publish_service` and never dispatches `job_publish_after`. Nothing relays it into a thread. Give
+  the toolbox a publish path that goes through the framework, or have it write the outbox row too.
+- **Nothing streams live deltas yet.** No shipped harness declares a `stream_event_mapper`, so the
+  `§8.2` seam is registered and unused — every run falls back to `§8.1`'s per-event behaviour.
+- **The `§4.5` audit ordering is E7's.** The framework's audit writer must be called from inside
+  `service.unblock()`'s transaction, not from an observer and not with module SQL.
+
+E6 shipped the `miniapps` module: the strict `miniapp.json` manifest, operator activation,
+launch pinning of the manifest and its actions, the `launch` auth source, single-use `miniapp`
+capabilities with a tool ceiling, the `postMessage` SDK bridge, Basic-auth shares on one origin per
+share, the strict one-parse apps path, and retention that keeps what a live launch pins
+([docs/modules/miniapps.md](docs/modules/miniapps.md)). Left out of E6:
+
+- a panel frontend that uses the bridge (the SDK ships as a library with tests);
+- an `artifact:share` command separate from `artifact:auth` (setting Basic auth makes the share);
+- a per-launch revoke when a manifest is re-activated (a launch with a stale fingerprint just loses its actions).
+
+### ⚪ Per-artifact origins for miniapps
+
+The agreed E0 design puts every miniapp on **one shared apps origin**, separate from the panel
+origin. That split is what stops agent-generated code from **reading** panel data — panel API responses, panel DOM, the
+panel session cookie. It is not by itself write protection: sibling subdomains are same-site, so an apps page can still
+*cause* a credentialed panel request. Blocking that needs separate CSRF controls (`Origin`/Fetch-Metadata checks, an
+anti-CSRF token, no credentialed CORS), specified in the E2 PRD. What the split also does not give is isolation
+**between** apps: same-origin script in one miniapp can read another's
+DOM, storage and cached credentials. This is an accepted trade — one DNS name, one certificate —
+and it holds only while every artifact reachable from a session is one that user could open anyway.
+
+The upgrade is one origin per artifact (`<code>.apps.example.com` plus a wildcard certificate). It
+is blocked on artifact codes becoming valid DNS labels: `ARTIFACT_CODE_RE` in
+`src/agento/modules/versioned_artifacts/toolbox/paths.js` allows 64 characters and a trailing
+hyphen, both illegal in a label. Until then app identity is path-derived, not host-derived. This
+supersedes the "one origin per artifact" note at the end of the Versioned artifacts section, which
+proposed the same fix for the sibling-read problem on the artifacts server itself.
+
+### ⚪ Stale internal-caller-auth wording, to sweep when PR #42 merges
+
+PR #42 (`AG-16`, toolbox east-west capability auth) closes the N5-2 gap where the toolbox took
+`agent_view_id` from the caller. Several documents still describe the pre-#42 world. They are
+**deliberately not corrected yet** — this branch does not contain #42's code, and editing them now
+would make the repo describe code that is not here.
+
+When #42 merges, run:
+
+```bash
+rg -i 'internal-caller[- ]auth|N5-2' src/ docs/ *.md
+```
+
+Deliberately no expected hit count: this very section matches the search, so any number written here is wrong as soon
+as the surrounding text is edited. Read the hits. At the time of writing they are confined to `DECISIONS.md`,
+`ROADMAP.md`, `docs/modules/github.md` and `docs/modules/bitbucket.md`. The edit rule differs by kind of text:
+**current-state** prose is corrected in place; a **historical** decision entry is left standing and
+given a `Superseded by` line — a decision log that rewrites its own past stops being evidence.
+
 ### ⚪ Admin API & Agent Studio
 
 A minimal but real control plane so operators can create workspaces and agent_views, manage scoped config overrides, attach tools from the toolbox, and manage allowlists without hand-editing JSON or SQL. API-first and binding-based — the admin frontend is a client of the API, and the same DB source of truth backs API, CLI, and runtime.
@@ -231,6 +350,7 @@ Each is a one-release compatibility shim; remove all of them together.
 | `--oauth_token` flag alias (`agento replay`, `agento e2e`) | `framework/cli/runtime.py` | drop the second flag name |
 | `_iter_module_dirs` shim | `framework/cli/_provisioning.py` | callers use `framework/module_discovery.py` |
 | Pre-0.15 `agent_view/provider`-as-harness fallback | `framework/agent_view_runtime._resolve_harness_and_provider` | keep until the data patch has demonstrably run everywhere; then delete the legacy branch |
+| `--pass` on `artifact:auth` (argv lands in shell history; use `--pass-stdin`) | `versioned_artifacts/src/commands/auth.py` | drop the flag and its warning |
 
 ### No per-job isolation inside the consumer process (raised during AG-50)
 
@@ -251,6 +371,12 @@ the queue.
 **`schedule_followup` must not be widened to cover this.** Its idempotency key
 `followup:{source}:{reference_id}:{minute}` (`schedule.js:91`) collapses a two-agent
 fan-out in the same minute into one job — and reports success.
+
+As of the conversations epic the Python side has exactly ONE insert into `job` —
+`publisher.insert_job()`, which both `publisher.publish()` and `publish_service.publish_job()`
+call — plus `framework/e2e.py` for the smoke stack. `schedule.js` remains the second write
+path, in the toolbox, in another language, with its own dedupe. `grep -rn -i "insert into job"
+src/agento` is the check; a fourth hit is the bug this entry is about.
 
 ### Ungated Toolbox REST endpoints (raised during the Pi harness work)
 

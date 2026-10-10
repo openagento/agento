@@ -33,6 +33,19 @@ function moduleToolboxFiles() {
 // the two trees at unrelated paths (/app/modules/core/<m>/toolbox vs the toolbox package root), so
 // the same specifier resolves to nothing, the file fails to load, and the module registers no tools
 // and no REST routes at all. Framework code must reach a module through the registration context.
+// The one exception: a CORE module may import the toolbox/ of another core module it lists in
+// its module.json `sequence` (MOD-1). Every core module is mounted under one parent
+// (/app/modules/core/<m>), so `../../<dep>/toolbox/x.js` resolves there exactly as in the
+// checkout, and a disabled dependency disables the importer (DECISIONS 2026-09-27, miniapps).
+const CORE = path.join(here, '..', '..', 'modules');
+function isDeclaredCoreDependency(modDir, target) {
+  if (path.dirname(modDir) !== CORE) return false;
+  const rel = path.relative(CORE, target).split(path.sep);
+  if (rel.length < 3 || rel[1] !== 'toolbox' || rel.includes('..')) return false;
+  const sequence = JSON.parse(fs.readFileSync(path.join(modDir, 'module.json'), 'utf8')).sequence || [];
+  return sequence.includes(rel[0]);
+}
+
 describe('module toolbox imports', () => {
   it('no module toolbox file imports outside its own module directory', () => {
     const offenders = [];
@@ -46,7 +59,7 @@ describe('module toolbox imports', () => {
       for (const spec of specifiers) {
         if (!spec.startsWith('.')) continue; // a bare specifier is a node_modules package
         const target = path.resolve(path.dirname(full), spec);
-        if (!target.startsWith(modDir + path.sep)) {
+        if (!target.startsWith(modDir + path.sep) && !isDeclaredCoreDependency(modDir, target)) {
           offenders.push(`${mod}/${path.relative(modDir, full)}: ${spec}`);
         }
       }
@@ -56,5 +69,13 @@ describe('module toolbox imports', () => {
 
   it('finds the module files it claims to scan', () => {
     expect(moduleToolboxFiles().length).toBeGreaterThan(5);
+  });
+
+  it('allows a core module only the toolbox/ of a core module it lists in sequence', () => {
+    const miniapps = path.join(CORE, 'miniapps');
+    expect(isDeclaredCoreDependency(miniapps, path.join(CORE, 'versioned_artifacts', 'toolbox', 'service.js'))).toBe(true);
+    expect(isDeclaredCoreDependency(miniapps, path.join(CORE, 'versioned_artifacts', 'server', 'x.js'))).toBe(false);
+    expect(isDeclaredCoreDependency(miniapps, path.join(CORE, 'jira', 'toolbox', 'x.js'))).toBe(false);
+    expect(isDeclaredCoreDependency(path.join(CORE, 'jira'), path.join(CORE, 'versioned_artifacts', 'toolbox', 'service.js'))).toBe(false);
   });
 });

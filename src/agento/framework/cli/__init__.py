@@ -42,6 +42,8 @@ _INTERACTIVE_COMMANDS = frozenset({
 _MAYBE_INTERACTIVE_COMMANDS = frozenset({
     "config:set", "config:remove",
     "credential:register",
+    # getpass needs the TTY.
+    "user:create", "user:password",
     # Shortcuts
     "co:se", "co:re", "cr:reg",
     # Legacy aliases, one cycle (ROADMAP.md) — `getpass` needs the TTY.
@@ -55,6 +57,7 @@ _MAYBE_INTERACTIVE_COMMANDS = frozenset({
 # argparse would report it as unknown.
 _LOCAL_MODULE_COMMANDS = frozenset({
     "artifact:init", "artifact:list", "artifact:publish", "artifact:delete", "artifact:auth",
+    "miniapp:activate", "miniapp:deactivate", "miniapp:list",
 })
 
 
@@ -123,6 +126,7 @@ def _register_framework_commands() -> None:
     """Register framework commands directly (no bootstrap needed)."""
     from ..admin import AdminCommand
     from ..commands import register_command
+    from .access import ACCESS_COMMANDS
     from .capability import CapabilityMintCommand, CapabilityRevokeCommand
     from .compose import DownCommand, LogsCommand, UpCommand
     from .config import (
@@ -148,6 +152,7 @@ def _register_framework_commands() -> None:
     from .cron import CronRunCommand
     from .doctor import DoctorCommand
     from .install import InstallCommand
+    from .limits import LimitsPruneCommand, OutboxPruneCommand
     from .module import (
         MakeModuleCommand,
         ModuleDisableCommand,
@@ -181,6 +186,8 @@ def _register_framework_commands() -> None:
         CredentialDeregisterCommand, CredentialMarkErrorCommand, CredentialResetCommand,
         CredentialSetPriorityCommand, CredentialUsageCommand,
         CapabilityMintCommand, CapabilityRevokeCommand,
+        LimitsPruneCommand, OutboxPruneCommand,
+        *ACCESS_COMMANDS,
         # Hidden `token:*` aliases, kept for one cycle (ROADMAP.md).
         *LEGACY_TOKEN_COMMANDS,
     ]:
@@ -188,13 +195,14 @@ def _register_framework_commands() -> None:
 
 
 _GROUP_ORDER = [
-    "project", "setup", "module", "config", "credential", "capability",
+    "project", "setup", "module", "config", "user", "grant", "credential", "capability",
     "ingress", "job", "jira", "test",
 ]
 
 _GROUP_LABELS = {
     "project": "Project", "setup": "Setup", "module": "Modules",
-    "config": "Configuration", "credential": "Credentials",
+    "config": "Configuration", "user": "Panel users", "grant": "Role grants",
+    "credential": "Credentials",
     "capability": "Capabilities", "ingress": "Ingress",
     "job": "Jobs", "jira": "Jira", "test": "Testing",
 }

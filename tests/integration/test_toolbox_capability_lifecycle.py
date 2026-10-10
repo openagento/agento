@@ -181,7 +181,7 @@ class TestStaleRecoveryRevokes:
         try:
             issue_capability(
                 conn, kind=KIND_MCP_JOB, agent_view_id=int_agent_view,
-                job_id=job_id, ttl_seconds=MCP_CAPABILITY_TTL_SECONDS,
+                job_id=job_id, ttl_seconds=MCP_CAPABILITY_TTL_SECONDS, allowed_transports=["http"],
             )
         finally:
             conn.close()

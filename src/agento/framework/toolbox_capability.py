@@ -21,23 +21,49 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import secrets
 
+from .auth_context import LEGACY_REST_SUBJECT, derive_auth_context
 from .database_config import DatabaseConfig
 from .db import get_connection
 
 KIND_MCP_JOB = "mcp_job"
 KIND_MCP_INTERACTIVE = "mcp_interactive"
 KIND_INTERNAL_REST = "internal_rest"
+KIND_USER_SESSION = "user_session"
+KIND_MINIAPP = "miniapp"
 
-_KINDS = (KIND_MCP_JOB, KIND_MCP_INTERACTIVE, KIND_INTERNAL_REST)
+_KINDS = (KIND_MCP_JOB, KIND_MCP_INTERACTIVE, KIND_INTERNAL_REST, KIND_USER_SESSION, KIND_MINIAPP)
+_USER_KINDS = (KIND_USER_SESSION, KIND_MINIAPP)
+_ACTORS = {
+    KIND_MCP_JOB: "agent",
+    KIND_MCP_INTERACTIVE: "agent",
+    KIND_INTERNAL_REST: "service",
+    KIND_USER_SESSION: "user",
+    KIND_MINIAPP: "user",
+}
+_SOURCE_KINDS = {KIND_USER_SESSION: "session", KIND_MINIAPP: "launch"}
+
+# The endpoint each transport a kind may carry is validated at, so an issued row is checked
+# exactly where the toolbox will present it. A transport with no entry cannot be issued.
+_ISSUE_ENDPOINTS = {
+    KIND_MCP_JOB: {"http": "mcp", "sse": "sse"},
+    KIND_MCP_INTERACTIVE: {"http": "mcp", "sse": "sse"},
+    KIND_INTERNAL_REST: {"http": "api"},
+    KIND_USER_SESSION: {"http": "invoke"},
+    KIND_MINIAPP: {"http": "invoke"},
+}
 
 TOKEN_BYTES = 32
 
 MCP_CAPABILITY_TTL_SECONDS = 86400
 INTERACTIVE_CAPABILITY_TTL_SECONDS = 43200
 REST_CAPABILITY_TTL_SECONDS = 120
+# A token that may travel in a query string (`?cap=` on /sse) lives shorter than a
+# header-only one: the query path lands in access logs the toolbox does not control.
+SSE_CAPABILITY_TTL_SECONDS = 14400
 
 
 def token_hash(token: str) -> str:
@@ -51,16 +77,24 @@ def issue_capability(
     agent_view_id: int | None,
     job_id: int | None = None,
     ttl_seconds: int,
+    allowed_transports: list[str],
+    subject_id: str | None = None,
+    workspace_id: int | None = None,
+    execution_id: str | None = None,
+    app: dict | None = None,
+    tool_ceiling: list[str] | None = None,
+    source_id: str | None = None,
     commit: bool = True,
 ) -> str:
     if kind not in _KINDS:
         raise ValueError(f"unknown capability kind: {kind!r}")
     if ttl_seconds <= 0:
         raise ValueError("ttl_seconds must be positive")
-    # A viewless capability exists for one purpose: a default-scope config test. Only an
-    # internal_rest one, owning no job; the toolbox accepts it on /config-test alone.
+    # A viewless service capability exists for one purpose: a default-scope config test. Only
+    # an internal_rest one, owning no job; the toolbox accepts it on /config-test alone. A
+    # user-bound capability is viewless when its call is not view-scoped.
     if agent_view_id is None:
-        if kind != KIND_INTERNAL_REST or job_id is not None:
+        if kind not in _USER_KINDS and (kind != KIND_INTERNAL_REST or job_id is not None):
             raise ValueError("only an internal_rest capability without a job may be viewless")
     elif not isinstance(agent_view_id, int) or isinstance(agent_view_id, bool) or agent_view_id <= 0:
         raise ValueError("every capability requires a positive agent_view_id")
@@ -75,20 +109,116 @@ def issue_capability(
     elif kind == KIND_MCP_INTERACTIVE:
         if job_id is not None:
             raise ValueError("mcp_interactive must not carry a job_id")
-    elif job_id is not None and not _positive_id(job_id):
+    elif kind == KIND_INTERNAL_REST and job_id is not None and not _positive_id(job_id):
         raise ValueError("internal_rest job_id must be null or a positive integer")
+    if not isinstance(allowed_transports, list) or not allowed_transports:
+        raise ValueError("allowed_transports must name at least one transport")
+    if "sse" in allowed_transports:
+        ttl_seconds = min(ttl_seconds, SSE_CAPABILITY_TTL_SECONDS)
+    if kind in (KIND_MCP_JOB, KIND_MCP_INTERACTIVE):
+        subject_id = str(agent_view_id) if subject_id is None else subject_id
+    elif not subject_id or subject_id == LEGACY_REST_SUBJECT:
+        # A new issuer names itself (`service:<component>`) or its user; nothing is invented,
+        # and the legacy constant belongs to pre-E1 rows only.
+        raise ValueError(f"{kind} requires a subject_id of its own")
+
+    if agent_view_id is not None:
+        with conn.cursor() as cur:
+            cur.execute("SELECT workspace_id FROM agent_view WHERE id = %s", (agent_view_id,))
+            found = cur.fetchone()
+        view_workspace = found["workspace_id"] if found else None
+        if view_workspace is None:
+            raise ValueError(f"agent_view {agent_view_id} does not exist")
+        if workspace_id is not None and workspace_id != view_workspace:
+            raise ValueError("workspace_id disagrees with the agent_view's workspace")
+        workspace_id = view_workspace
+    else:
+        view_workspace = None
+
+    app = app or {}
+    row = {
+        "id": None,
+        "kind": kind,
+        "actor": _ACTORS[kind],
+        "subject_id": subject_id,
+        "on_behalf_of": None,
+        "agent_view_id": agent_view_id,
+        "workspace_id": workspace_id,
+        "job_id": None if job_id is None else str(job_id),
+        "execution_id": execution_id,
+        "app_artifact_code": app.get("artifact_code"),
+        "app_version_id": app.get("version_id"),
+        "app_launch_id": app.get("launch_id"),
+        "tool_ceiling": tool_ceiling,
+        "allowed_transports": list(allowed_transports),
+        "source_kind": _SOURCE_KINDS.get(kind),
+        "source_id": source_id,
+        "created_at": 0,
+        "expires_at": ttl_seconds,
+    }
+    _validate_issuable(conn, row, view_workspace)
 
     token = secrets.token_urlsafe(TOKEN_BYTES)
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO toolbox_capability "
-            "(token_hash, kind, agent_view_id, job_id, expires_at) "
-            "VALUES (%s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL %s SECOND))",
-            (token_hash(token), kind, agent_view_id, job_id, ttl_seconds),
+            "(token_hash, kind, agent_view_id, job_id, expires_at, actor, subject_id, workspace_id, "
+            "execution_id, app_artifact_code, app_version_id, app_launch_id, tool_ceiling, "
+            "allowed_transports, source_kind, source_id) "
+            "VALUES (%s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL %s SECOND), "
+            "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                token_hash(token), kind, agent_view_id, job_id, ttl_seconds,
+                row["actor"], subject_id, workspace_id, execution_id,
+                row["app_artifact_code"], row["app_version_id"], row["app_launch_id"],
+                None if tool_ceiling is None else json.dumps(tool_ceiling),
+                json.dumps(row["allowed_transports"]), row["source_kind"], source_id,
+            ),
         )
     if commit:
         conn.commit()
     return token
+
+
+def _validate_issuable(conn, row: dict, view_workspace: int | None) -> None:
+    """Run the verifier's own derivation on the row about to be written, once per transport.
+
+    Python can then never mint a row the Node verifier would reject. A user-bound row is
+    checked against a synthetic live source that agrees with every claim — the issuer (E2/E6)
+    owns the real session/launch and is responsible for having verified it — and against the
+    TTL caps resolved for its workspace.
+    """
+    kind = row["kind"]
+    source = None
+    ttl_caps = None
+    if kind in _USER_KINDS:
+        from .auth_context import resolve_auth_ttls
+
+        ttl_caps = resolve_auth_ttls(conn, row["workspace_id"])
+        source = {
+            "kind": row["source_kind"],
+            "id": row["source_id"],
+            "user_id": row["subject_id"],
+            "workspace_id": row["workspace_id"],
+            "agent_view_id": row["agent_view_id"],
+            "launch_id": row["app_launch_id"],
+            "artifact_code": row["app_artifact_code"],
+            "version_id": row["app_version_id"],
+            "permitted_tools": [],
+            "created_at": 0,
+            "expires_at": row["expires_at"],
+        }
+    endpoints = _ISSUE_ENDPOINTS[kind]
+    if kind == KIND_INTERNAL_REST and row["agent_view_id"] is None:
+        endpoints = {"http": "config_test"}
+    for transport in row["allowed_transports"]:
+        endpoint = endpoints.get(transport)
+        derived = endpoint and derive_auth_context(
+            row=row, agent_view_workspace_id=view_workspace, source=source,
+            endpoint=endpoint, ttl_caps=ttl_caps,
+        )
+        if not derived:
+            raise ValueError(f"a {kind} capability for transport {transport!r} would fail verification")
 
 
 class CapabilityRevokeError(RuntimeError):
@@ -101,7 +231,7 @@ class CapabilityRevokeError(RuntimeError):
 
 
 @contextlib.contextmanager
-def rest_capability(*, agent_view_id: int | None, ttl_seconds: int = REST_CAPABILITY_TTL_SECONDS,
+def rest_capability(*, agent_view_id: int | None, subject_id: str, ttl_seconds: int = REST_CAPABILITY_TTL_SECONDS,
                     db_config=None):
     """Mint an ``internal_rest`` capability whose revocation is guaranteed.
 
@@ -128,7 +258,8 @@ def rest_capability(*, agent_view_id: int | None, ttl_seconds: int = REST_CAPABI
     conn = get_connection(resolved)
     try:
         token = issue_capability(
-            conn, kind=KIND_INTERNAL_REST, agent_view_id=agent_view_id, ttl_seconds=ttl_seconds
+            conn, kind=KIND_INTERNAL_REST, agent_view_id=agent_view_id, ttl_seconds=ttl_seconds,
+            allowed_transports=["http"], subject_id=subject_id,
         )
     finally:
         conn.close()
@@ -160,7 +291,7 @@ def rest_capability(*, agent_view_id: int | None, ttl_seconds: int = REST_CAPABI
         ) from None
 
 
-def capability_client(build_client, *, agent_view_id: int, db_config=None,
+def capability_client(build_client, *, agent_view_id: int, subject_id: str, db_config=None,
                       ttl_seconds: int = REST_CAPABILITY_TTL_SECONDS):
     """Return a zero-argument context manager that opens ONE freshly-authorized client.
 
@@ -174,7 +305,7 @@ def capability_client(build_client, *, agent_view_id: int, db_config=None,
 
         toolbox = capability_client(
             lambda token: ToolboxClient(url, capability_token=token),
-            agent_view_id=view.id, db_config=db_config,
+            agent_view_id=view.id, subject_id="service:jira", db_config=db_config,
         )
         with toolbox() as client:
             client.do_one_bounded_thing()
@@ -182,7 +313,8 @@ def capability_client(build_client, *, agent_view_id: int, db_config=None,
     @contextlib.contextmanager
     def _open():
         with rest_capability(
-            agent_view_id=agent_view_id, ttl_seconds=ttl_seconds, db_config=db_config
+            agent_view_id=agent_view_id, subject_id=subject_id, ttl_seconds=ttl_seconds,
+            db_config=db_config,
         ) as token, contextlib.closing(build_client(token)) as client:
             yield client
 

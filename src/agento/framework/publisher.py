@@ -9,6 +9,63 @@ from .db import get_connection
 from .event_manager import get_event_manager
 from .events import JobPublishedEvent
 from .job_models import AgentType, JobRequester
+from .job_types import JobTypeLike
+
+
+def existing_job_id(cur, idempotency_key: str) -> int | None:
+    """The id of the job already holding this key, or None.
+
+    Dedupe on the unique idempotency_key with a SELECT instead of relying on
+    INSERT IGNORE: a rejected INSERT IGNORE still burns an auto_increment id, so every
+    duplicate publish grew the job id counter (AG-22). Checking first keeps it flat.
+    """
+    cur.execute("SELECT id FROM job WHERE idempotency_key = %s LIMIT 1", (idempotency_key,))
+    row = cur.fetchone()
+    return None if row is None else row["id"]
+
+
+def insert_job(
+    cur,
+    *,
+    agent_type: JobTypeLike,
+    source: str,
+    agent_view_id: int | None,
+    priority: int,
+    reference_id: str | None,
+    idempotency_key: str,
+    max_attempts: int,
+    requester: JobRequester | None,
+    prompt: str | None = None,
+) -> int:
+    """The single INSERT both entry points use. Returns the new job id.
+
+    It does not commit: the caller owns the transaction, which is what lets
+    `publish_service` put the outbox row in it.
+    """
+    # requester is pure metadata - never part of idempotency_key or skip_if_active dedupe
+    requester_meta = (
+        json.dumps(requester.meta, allow_nan=False)  # fail loud on NaN/Inf before MySQL JSON rejects it
+        if requester and requester.meta is not None    # preserve explicit {}, only None -> NULL
+        else None
+    )
+    cur.execute(
+        """
+        INSERT INTO job
+            (type, source, agent_view_id, priority, reference_id,
+             idempotency_key, status, attempt, max_attempts, prompt,
+             requester_key, requester_email, requester_trust, requester_meta)
+        VALUES
+            (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s)
+        """,
+        (agent_type.value, source, agent_view_id, priority, reference_id,
+         idempotency_key, max_attempts, prompt,
+         requester.key if requester else None,
+         requester.email if requester else None,
+         requester.trust.value if requester else "claimed",
+         requester_meta),
+    )
+    return cur.lastrowid
+
 
 
 def publish(
@@ -56,41 +113,22 @@ def publish(
                         )
                     return False
 
-            # Dedupe on the unique idempotency_key with a SELECT instead of relying
-            # on INSERT IGNORE: a rejected INSERT IGNORE still burns an auto_increment
-            # id, so every duplicate publish grew the job id counter (AG-22). Checking
-            # first keeps the counter flat when the row already exists.
-            cur.execute(
-                "SELECT id FROM job WHERE idempotency_key = %s LIMIT 1",
-                (idempotency_key,),
-            )
-            if cur.fetchone() is not None:
+            if existing_job_id(cur, idempotency_key) is not None:
                 if logger:
                     logger.debug(f"Duplicate skipped: key={idempotency_key}")
                 return False
 
-            # requester is pure metadata - never part of idempotency_key or skip_if_active dedupe
-            requester_key = requester.key if requester else None
-            requester_email = requester.email if requester else None
-            requester_trust = requester.trust.value if requester else "claimed"
-            requester_meta = (
-                json.dumps(requester.meta, allow_nan=False)  # fail loud on NaN/Inf before MySQL JSON rejects it
-                if requester and requester.meta is not None    # preserve explicit {}, only None -> NULL
-                else None
-            )
             try:
-                cur.execute(
-                    """
-                    INSERT INTO job
-                        (type, source, agent_view_id, priority, reference_id,
-                         idempotency_key, status, attempt, max_attempts,
-                         requester_key, requester_email, requester_trust, requester_meta)
-                    VALUES
-                        (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s)
-                    """,
-                    (agent_type.value, source, agent_view_id, priority,
-                     reference_id, idempotency_key, max_attempts,
-                     requester_key, requester_email, requester_trust, requester_meta),
+                insert_job(
+                    cur,
+                    agent_type=agent_type,
+                    source=source,
+                    agent_view_id=agent_view_id,
+                    priority=priority,
+                    reference_id=reference_id,
+                    idempotency_key=idempotency_key,
+                    max_attempts=max_attempts,
+                    requester=requester,
                 )
             except pymysql.err.IntegrityError:
                 # Race: another publisher inserted the same idempotency_key between

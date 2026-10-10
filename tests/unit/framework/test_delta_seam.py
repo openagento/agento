@@ -1,0 +1,214 @@
+"""The delta seam's boundaries (PRD E3-E5 §6.4.1, §8.2, PLC-2, MOD-2).
+
+Not the queue mechanics (tests/unit/framework/test_execution_deltas.py) and not the rows
+(tests/integration/test_delta_sink.py). What is asserted here is where the line between the
+framework and the module falls, and that a run with no sink and no mapper is an ordinary run.
+"""
+from __future__ import annotations
+
+import ast
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from agento.framework import consumer, execution_deltas
+from agento.framework.harness.protocols import StreamEventMapper
+
+FRAMEWORK = Path("src/agento/framework")
+
+
+@pytest.fixture(autouse=True)
+def _reset():
+    execution_deltas._reset_for_tests()
+    yield
+    execution_deltas._reset_for_tests()
+
+
+class _Adapter:
+    def __init__(self, mapper=None) -> None:
+        if mapper is not None:
+            self.stream_event_mapper = mapper
+
+
+class _Entry:
+    def __init__(self, adapter) -> None:
+        self.adapter = adapter
+
+
+class _Mapper:
+    def __init__(self, result=None, boom=False) -> None:
+        self.result, self.boom, self.seen = result, boom, []
+
+    def map_event(self, event: dict):
+        self.seen.append(event)
+        if self.boom:
+            raise RuntimeError("the mapper is broken")
+        return self.result
+
+
+class _Sink:
+    def __init__(self) -> None:
+        self.batches = []
+
+    def write(self, batch) -> None:
+        self.batches.append(list(batch))
+
+
+def _callback(*, sink=True, mapper=_Mapper, execution_id="e1"):
+    if sink:
+        execution_deltas.sync(_Sink(), module="conversation", class_path="src.deltas.Sink")
+    instance = mapper() if isinstance(mapper, type) else mapper
+    import logging
+    return consumer._delta_callback(_Entry(_Adapter(instance)), execution_id,
+                                    logging.getLogger("t")), instance
+
+
+# --- the three conditions, each on its own ---------------------------------
+
+def test_with_no_sink_registered_nothing_is_attached(monkeypatch):
+    """A disabled module attaches no callback at all - the harness is not even read."""
+    callback, _ = _callback(sink=False)
+
+    assert callback is None
+
+
+def test_with_no_execution_id_nothing_is_attached():
+    callback, _ = _callback(execution_id=None)
+
+    assert callback is None
+
+
+def test_a_harness_with_no_mapper_streams_nothing_extra():
+    """The mapper is optional: a harness that declares none is complete, not degraded."""
+    execution_deltas.sync(_Sink(), module="conversation", class_path="src.deltas.Sink")
+    import logging
+
+    assert consumer._delta_callback(_Entry(_Adapter()), "e1", logging.getLogger("t")) is None
+
+
+def test_all_three_present_attaches_a_callback():
+    callback, _ = _callback(mapper=_Mapper({"kind": "delta", "text": "hi"}))
+
+    assert callable(callback)
+
+
+# --- what the callback does ------------------------------------------------
+
+def test_the_callback_enqueues_and_does_no_database_work(monkeypatch):
+    """It runs on the harness's stdout drain thread; a query here stalls the run."""
+    import agento.framework.db as db
+
+    monkeypatch.setattr(db, "get_connection", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("the delta callback opened a connection")))
+    callback, _ = _callback(mapper=_Mapper({"kind": "delta", "text": "hi"}))
+
+    callback('{"type": "text"}\n')
+
+    assert execution_deltas._worker.pending() >= 0      # it returned; nothing queried
+
+
+def test_a_mapper_that_returns_none_suppresses_the_event():
+    callback, mapper = _callback(mapper=_Mapper(None))
+
+    callback('{"type": "init"}')
+
+    assert mapper.seen == [{"type": "init"}]
+
+
+def test_a_line_that_is_not_json_is_ignored():
+    callback, mapper = _callback(mapper=_Mapper({"kind": "delta", "text": "x"}))
+
+    callback("not json at all\n")
+
+    assert mapper.seen == []
+
+
+def test_a_json_line_that_is_not_an_object_is_ignored():
+    callback, mapper = _callback(mapper=_Mapper({"kind": "delta", "text": "x"}))
+
+    callback("[1, 2, 3]")
+
+    assert mapper.seen == []
+
+
+def test_a_mapper_that_raises_costs_a_delta_and_never_the_run():
+    callback, _ = _callback(mapper=_Mapper(boom=True))
+
+    callback('{"type": "text"}')      # must not raise
+
+
+def test_the_sequence_is_per_run_and_increases():
+    sink = _Sink()
+    execution_deltas.sync(sink, module="conversation", class_path="src.deltas.Sink")
+    import logging
+    callback = consumer._delta_callback(
+        _Entry(_Adapter(_Mapper({"kind": "delta", "text": "x"}))), "e1",
+        logging.getLogger("t"))
+    worker = execution_deltas._worker
+    worker.stop()                      # hold the batch in the queue to read it
+    worker.thread.join(2)
+
+    for _ in range(3):
+        callback('{"type": "text"}')
+
+    assert [r.seq for r in worker._queue] == [1, 2, 3]
+
+
+# --- the framework/module boundary (PLC-2, §6.4.1) -------------------------
+
+def test_no_framework_file_writes_a_module_table():
+    """§14 puts the queue and the thread in the framework; §6.4.1 says the framework writes
+    no module table. Both hold only because the thread owns the mechanics and not the rows."""
+    hits = subprocess.run(
+        ["grep", "-rnE", r"(INSERT|UPDATE|DELETE)[^\n]*(execution_delta|conversation_event)",
+         str(FRAMEWORK)],
+        capture_output=True, text=True).stdout.strip()
+
+    assert hits == "", hits
+
+
+def test_the_delta_mechanics_module_contains_no_sql_at_all():
+    source = (FRAMEWORK / "execution_deltas.py").read_text().upper()
+
+    for verb in ("INSERT ", "UPDATE ", "DELETE ", "SELECT "):
+        assert verb not in source, verb
+
+
+def test_the_framework_delta_path_names_no_vendor():
+    """PLC-2: `kind` is the framework's vocabulary, so a reader never has to know which CLI
+    produced the run. An AST check on string literals, not a text search - prose about a
+    harness is legitimate and a word ban fires on it."""
+    vendors = {"claude", "codex", "anthropic", "openai", "pi"}
+    tree = ast.parse((FRAMEWORK / "execution_deltas.py").read_text())
+    literals = {n.value.strip("\"'").lower() for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+
+    assert not (literals & vendors)
+
+
+def test_the_mapper_protocol_is_structural_and_optional():
+    """Read with `getattr`, never declared on `AgentHarnessAdapter`: that protocol is
+    runtime_checkable, so a declared member would stop every existing harness loading."""
+    from agento.framework.harness.protocols import AgentHarnessAdapter
+
+    assert isinstance(_Mapper(), StreamEventMapper)
+    assert "stream_event_mapper" not in AgentHarnessAdapter.__protocol_attrs__
+
+
+def test_the_consumer_stops_the_delta_worker_on_its_way_out():
+    """CODE-4: `execution_deltas.shutdown()` had no production caller, so the daemon thread
+    outlived the module it writes for. A call-graph check, not a text search: what matters is
+    that the consumer's own shutdown path is what calls it, and before `dispatch_shutdown`.
+    """
+    tree = ast.parse((FRAMEWORK / "consumer.py").read_text())
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "shutdown"
+             and isinstance(n.func.value, ast.Name) and n.func.value.id == "execution_deltas"]
+    plain = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "dispatch_shutdown"]
+
+    assert len(calls) == 1
+    assert calls[0].lineno < plain[0].lineno       # drain while the sink is still live

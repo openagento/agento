@@ -1,0 +1,84 @@
+{
+  "_comment": "One canonical app-path contract (PRD E6 \u00a76.2), read by tests/unit/web/test_app_path.py (web's parse_app_path) and by the artifacts-server served-path vitest. `raw` is the X-Forwarded-Uri the proxy sends; `upstream` is the path web returns, or null for a refusal.",
+  "accept": [
+    {
+      "raw": "/a/site/v/v-20260927-101500-ab12/",
+      "upstream": "/site/v/v-20260927-101500-ab12/"
+    },
+    {
+      "raw": "/a/site/v/v-20260927-101500-ab12/index.html?x=1",
+      "upstream": "/site/v/v-20260927-101500-ab12/index.html"
+    },
+    {
+      "raw": "/a/site/v/v-20260927-101500-ab12/css/app.css",
+      "upstream": "/site/v/v-20260927-101500-ab12/css/app.css"
+    },
+    {
+      "raw": "/a/site/v/v-20260927-101500-ab12/sub/",
+      "upstream": "/site/v/v-20260927-101500-ab12/sub/"
+    },
+    {
+      "raw": "/a/site/v/v-20260927-101500-ab12/file%20a.txt",
+      "upstream": "/site/v/v-20260927-101500-ab12/file%20a.txt"
+    },
+    {
+      "raw": "/a/site/v/v-20260927-101500-ab12/(x).js",
+      "upstream": "/site/v/v-20260927-101500-ab12/%28x%29.js"
+    },
+    {
+      "raw": "/a/site/v/v-20260927-101500-ab12/%41b~_-.txt",
+      "upstream": "/site/v/v-20260927-101500-ab12/Ab~_-.txt"
+    },
+    {
+      "raw": "/a/site/v/v-20260927-101500-ab12/%C5%82%C3%B3d%C5%BA.txt",
+      "upstream": "/site/v/v-20260927-101500-ab12/%C5%82%C3%B3d%C5%BA.txt"
+    },
+    {
+      "raw": "/a/a/v/v-20260927-101500-ab12/x",
+      "upstream": "/a/v/v-20260927-101500-ab12/x"
+    },
+    {
+      "raw": "/a/site/v/v-20260927-101500-ab12/100%25.txt",
+      "upstream": "/site/v/v-20260927-101500-ab12/100%25.txt"
+    },
+    {
+      "raw": "/a/site/v/v-20260927-101500-ab12/%252e%252e/x",
+      "upstream": "/site/v/v-20260927-101500-ab12/%252e%252e/x"
+    }
+  ],
+  "reject": [
+    "/a/site/v/v-20260927-101500-ab12/../../../other/v/v-20260927-101500-cd34/index.html",
+    "/a/site/v/v-20260927-101500-ab12/%2e%2e/%2e%2e/%2e%2e/other/v/v-20260927-101500-cd34/",
+    "/a/site/v/v-20260927-101500-ab12/%2E%2E/x",
+    "/a/site/v/v-20260927-101500-ab12/./x",
+    "/a/site/v/v-20260927-101500-ab12/.auth",
+    "/a/site/v/v-20260927-101500-ab12/sub/.hidden",
+    "/a/site/v/v-20260927-101500-ab12/a%2fb",
+    "/a/site/v/v-20260927-101500-ab12/a%2Fb",
+    "/a/site/v/v-20260927-101500-ab12/a%5cb",
+    "/a/site/v/v-20260927-101500-ab12/a\\b",
+    "/a/site/v/v-20260927-101500-ab12/a%00b",
+    "/a/site/v/v-20260927-101500-ab12/a%0Ab",
+    "/a/site/v/v-20260927-101500-ab12/a%7Fb",
+    "/a/site/v/v-20260927-101500-ab12//x",
+    "/a/site/v/v-20260927-101500-ab12/x//",
+    "/a/site/v/v-20260927-101500-ab12/%zz",
+    "/a/site/v/v-20260927-101500-ab12/%C5",
+    "/a/site/v/v-20260927-101500-ab12",
+    "/a/Site/v/v-20260927-101500-ab12/",
+    "/a/site/V/v-20260927-101500-ab12/",
+    "/a/site/current/",
+    "/a/site/",
+    "/a/-site/v/v-20260927-101500-ab12/",
+    "/a/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/v/v-20260927-101500-ab12/",
+    "/a/site/v/v-20260927-101500-AB12/",
+    "/a/site/v/v-2026927-101500-ab12/",
+    "/a/si%74e/v/v-20260927-101500-ab12/",
+    "/a/site/%76/v-20260927-101500-ab12/",
+    "/a//site/v/v-20260927-101500-ab12/",
+    "/b/site/v/v-20260927-101500-ab12/",
+    "a/site/v/v-20260927-101500-ab12/",
+    "",
+    "/a/site/v/v-20260927-101500-ab12/x\n"
+  ]
+}

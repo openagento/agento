@@ -65,20 +65,33 @@
 | `artifact:list` | List the artifacts the store holds ([details](artifact-list.md)) |
 | `artifact:delete <artifact_code>` | Remove an artifact, its versions and its served pages; asks first, and has no tool equivalent ([details](artifact-delete.md)) |
 | `artifact:publish <artifact_code> <version_id> --expected <version_id>` | Point an artifact's current at a version ([details](artifact-publish.md)) |
-| `artifact:auth <artifact_code> [--user <u>] [--pass <p>] [--disable] [--show]` | Set, rotate, show or disable an artifact's HTTP Basic auth; has no tool equivalent ([details](artifact-auth.md)) |
+| `artifact:auth <artifact_code> [--user <u>] [--pass-stdin] [--disable] [--show]` | Set, rotate, show or disable an artifact's HTTP Basic auth; has no tool equivalent ([details](artifact-auth.md)) |
+| **Miniapps** | |
+| `miniapp:activate <artifact_code> <version_id> [--actions a,b]` / `miniapp:deactivate <artifact_code> <version_id>` / `miniapp:list` | Let a version run as a miniapp with a fixed action set, stop it, or list activations; no tool equivalent ([details](miniapp.md)) |
 | **Admin** | |
 | `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |
 | `config:resolve <module> [--scope=S] [--scope-id=N] [--json]` | Resolve effective config values with source info |
+| **Panel users and grants** | |
+| `user:create <username> [--role R]` | Create a panel user; password from a prompt or stdin, never argv ([details](user.md)) |
+| `user:list` / `user:set-role <u> <role>` / `user:activate <u>` / `user:deactivate <u>` / `user:password <u>` | Manage panel users; a role change or deactivation ends their sessions and launches ([details](user.md)) |
+| `grant:add --role R (--tool T \| --operation O) (--workspace C \| --agent-view C)` | Grant a role a tool or `artifact.launch` in one scope ([details](grant.md)) |
+| `grant:list [--role R]` / `grant:remove <id>` | List or remove grants; removal ends that role's launches in the scope ([details](grant.md)) |
 | **Capabilities** | |
-| `capability:mint --kind K --agent-view C [--ttl N]` | Mint a toolbox capability token; prints it on stdout ([details](capability.md)) |
+| `capability:mint --kind K --agent-view C [--transport T] [--ttl N]` | Mint a toolbox capability token; prints it on stdout ([details](capability.md)) |
 | `capability:revoke` | Revoke a capability — reads the raw token from **stdin** ([details](capability.md)) |
 | **Jobs** | |
 | `job:list [--status S] [--source SRC] [--agent-view C] [--limit N]` | List recent jobs; surfaces failed/dead jobs with their error ([details](job-pause-resume.md)) |
 | `job:pause <job_id>` | Pause a running job (SIGTERM, keep session) ([details](job-pause-resume.md)) |
 | `job:resume <job_id>` | Resume a paused job (re-queue for consumer) ([details](job-pause-resume.md)) |
+| **Conversations** (the `conversation` module; all three are cron passes an operator can also run by hand) | |
+| `conversation:sweep` (`co:sw`) | Finish stranded submissions and reconcile finished jobs ([details](../modules/conversation.md)) |
+| `conversation:relay` (`co:rel`) | Relay framework job events into conversation threads, and prune the relayed rows. ONE process by contract: a second would invert a thread's event order |
+| `conversation:retention` (`co:ret`) | Prune conversation events, auto-archive idle threads, delete archived ones, sweep executions no thread owns — in that order ([details](../modules/conversation.md)) |
 | **Operations** | |
 | `consumer` | Start job consumer loop |
+| `limits:prune` (`li:pr`) | Delete expired rate-limit buckets |
+| `outbox:prune` (`ou:pr`) | Delete job-event outbox rows and closed defer stretches past `core/outbox/retention_days` |
 | `jira:periodic:sync` | Sync Jira recurring tasks to crontab |
 | `jira:periodic:configure [--check] [--project K]... [K ...]` | Create/verify the periodic status + Frequency field and sync its options from `frequency_map` across projects (setup command; uses the Jira admin token — `jira/jira_admin_token` paired with `jira/jira_admin_user`, falling back to `jira/jira_user`). Project keys may be given positionally or via `--project`. `--check` = read-only report, exit 1 on any inconsistency or if it could not be verified |
 | `publish <kind> [--agent-view C]` | Publish a job (jira-cron, jira-todo, jira-mention). Publishing is **per-view**: a deployment with no active agent_view fails with an actionable message instead of publishing on global config |

@@ -75,10 +75,11 @@ def compose_flags() -> list[str]:
     return flags
 
 
-def run_toolbox(flags: list[str], argv: list[str], payload: dict) -> tuple[dict, subprocess.CompletedProcess]:
-    """Exec the toolbox CLI with a JSON payload on stdin; return (body, result)."""
+def run_toolbox(flags: list[str], argv: list[str], payload: dict,
+                cli: str = TOOLBOX_CLI) -> tuple[dict, subprocess.CompletedProcess]:
+    """Exec a toolbox CLI (this module's by default) with a JSON payload on stdin; return (body, result)."""
     result = subprocess.run(
-        ["docker", "compose", *flags, "exec", "-T", "toolbox", "node", TOOLBOX_CLI, *argv],
+        ["docker", "compose", *flags, "exec", "-T", "toolbox", "node", cli, *argv],
         input=json.dumps(payload),
         capture_output=True,
         text=True,

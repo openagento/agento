@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
 
 from ._toolbox import compose_flags, fail_on_error, run_toolbox
@@ -24,8 +25,13 @@ class VersionedArtifactAuthCommand:
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("artifact_code", help="Artifact code, e.g. openagento-website")
         parser.add_argument("--user", default=None, help="Basic auth user (default: the artifact code)")
-        parser.add_argument("--pass", dest="password", default=None,
-                            help="Basic auth password (default: a strong random one)")
+        password = parser.add_mutually_exclusive_group()
+        password.add_argument("--pass-stdin", action="store_true",
+                              help="Read the password from stdin, or a prompt on a terminal "
+                                   "(default: a strong random one)")
+        # Deprecated: argv lands in shell history and `ps`. Removal: ROADMAP.md.
+        password.add_argument("--pass", dest="password", default=None,
+                              help="Deprecated, use --pass-stdin")
         parser.add_argument("--disable", action="store_true", help="Turn Basic auth off")
         parser.add_argument("--show", action="store_true", help="Show the current credential instead of changing it")
         parser.add_argument("--actor", default="admin", help="Who is running this command")
@@ -44,7 +50,14 @@ class VersionedArtifactAuthCommand:
             print(f"Basic auth for '{args.artifact_code}':")
             print(f"  user:     {body.get('auth_user')}")
             print(f"  password: {body.get('password')}")
+            _print_share(body)
             return
+
+        if args.pass_stdin:
+            args.password = _read_password()
+        elif args.password is not None:
+            print("Warning: --pass puts the password in shell history and `ps`; use --pass-stdin.",
+                  file=sys.stderr)
 
         body, result = run_toolbox(
             flags, ["--op", "auth", "--actor", args.actor],
@@ -65,4 +78,24 @@ class VersionedArtifactAuthCommand:
         print(f"Basic auth enabled for '{args.artifact_code}':")
         print(f"  user:     {body.get('auth_user')}")
         print(f"  password: {body.get('password')}")
+        _print_share(body)
         print("Pass these to whoever needs to open the preview; the password is shown only now unless you --show it.")
+
+
+def _print_share(body: dict) -> None:
+    url = body.get("share_url")
+    print(f"  share:    {url}" if url else "  share:    not configured (AGENTO_SHARE_HOST is empty or invalid)")
+
+
+def _read_password() -> str:
+    if sys.stdin.isatty():
+        password = getpass.getpass("Password: ")
+        if getpass.getpass("Repeat password: ") != password:
+            print("Error: FAILED: passwords do not match", file=sys.stderr)
+            raise SystemExit(1)
+    else:
+        password = sys.stdin.read().rstrip("\r\n")
+    if not password:
+        print("Error: FAILED: the password is empty", file=sys.stderr)
+        raise SystemExit(1)
+    return password

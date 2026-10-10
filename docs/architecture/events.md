@@ -90,8 +90,50 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 | `job_resume_after` | `JobResumedEvent` | `job` | After CLI `job:resume` re-queues a paused job (status → TODO) |
 | `job_finalize_before` | `JobFinalizeEvent` | `job, job_result, elapsed_ms, verdict` | After `rc=0`, **before** the SUCCESS UPDATE. The mutable `verdict` field lets an observer veto a "ghost success"; **no in-tree observer sets it** — `verdict` stays `None` by default |
 | `job_finalize_after` | `JobFinalizeEvent` | `job, job_result, elapsed_ms, verdict` | After the terminal status (`SUCCESS`/`TODO`/`FAILED`/`DEAD`) commits. `verdict=None` (the in-tree default) means SUCCESS; a populated `verdict` — if a future module sets one — means the run was vetoed |
+| `job_claim_before` | `JobClaimBeforeEvent` | `job_id, verdict, delay_ms` | Inside the claim transaction, **before** the row goes RUNNING. An observer may set `verdict = ClaimVerdict.DEFER` and a `delay_ms` to hold the job for another tick |
+| `job_defer_after` | `JobDeferAfterEvent` | `job_id, stretch_seq, defer_count, reason` | When a block ends — once per stretch, carrying the number of deferrals it collapsed |
+| `execution_start_after` | `ExecutionEvent` | `execution_id, job_id, attempt` | After the run's capabilities commit — the attempt has begun |
+| `execution_finish_after` | `ExecutionEvent` | `execution_id, job_id, attempt` | After a transition ends the attempt with a result (`succeeded` / `failed`) |
+| `execution_abandon_after` | `ExecutionEvent` | `execution_id, job_id, attempt` | After a transition ends the attempt without one — a pool wait, a pause, a stale recovery |
+| `conversation_create_after` | `ConversationCreatedEvent` | `conversation_id, agent_view_id, user_id` | After a new thread commits |
+| `conversation_message_after` | `ConversationMessageEvent` | `conversation_id, message_id, job_id` | After a user turn is accepted **and** its job published, so the `job_id` names a job that exists. Dispatched by the call that publishes — the submission, or §4.4's sweep finishing a `pending` message — so an idempotent replay, which publishes nothing, announces nothing |
+| `conversation_archive_after` | `ConversationArchivedEvent` | `conversation_id, actor_id, reason` | After a thread is archived. **One event for both paths** — the owner archiving by hand and §10.1 retiring an idle thread — because both go through one service function. `actor_id` is `None` exactly when no human did it; `reason` is `manual` or `idle` |
+| `conversation_reactivate_after` | `ConversationReactivatedEvent` | `conversation_id, actor_id` | After an archived thread is brought back |
+| `conversation_delete_after` | `ConversationDeletedEvent` | `conversation_id` | After the delete commits. Notification only: the row and everything cascading from it are gone, so an observer has nothing to read and nothing it does can change the outcome |
+| `conversation_unblock_after` | `ConversationUnblockedEvent` | `conversation_id, message_id, actor_id` | After an operator releases a thread blocked on a paused turn |
+
+The conversation events carry **ids only** — never a title, a message body or any other raw
+external input (EVT-3). An observer that needs the text reads the row it is told about.
+
+**No in-tree observer listens to any of them, and that is deliberate** (EVT-7). Every durable
+write in a conversation is elsewhere — the `conversation_event` row, written in the same
+transaction as the change, and the framework outbox relayed after it — so an observer here can
+only ever be an optional reaction. These events exist as the seam `app/code` and later epics
+extend. The `conversation` module ships exactly one observer, on `job_claim_before`, because a
+claim veto is a decision and not a reaction.
 
 `job_fail_after` fires on every failure, then one of `job_retry_after`, `job_blocked_after`, or `job_dead_after` also fires.
+
+`job_claim_before` is the **one dispatch in the framework that is not fail-open**: an observer that
+raises has not decided "yes", so the job is deferred, not claimed. It runs on the claim's own cursor
+inside the claim transaction, so the deferral, the new `scheduled_after` and the bookkeeping commit
+together — a deferred job was never RUNNING and its attempt count is untouched. The delay travels in
+the event, never in framework config: the framework clamps it to `[250 ms, 30 s]` and rounds it **up**
+to whole seconds, because `job.scheduled_after` is a second-precision `TIMESTAMP` and a sub-second
+delay would store as no delay at all. See `src/agento/framework/defer.py`.
+
+The three `execution_*` events carry **three ids and nothing else**. An observer that needs
+the outcome reads the module's own row; an event that carried the error would put agent
+output and exception text in front of every observer of every run (SEC-6). They fire only
+**after** the transaction that produced them commits — an observer must not see an attempt a
+rollback never started, or an execution a rollback un-ended. The seam that writes the module's
+row is `ExecutionFinalizer` (`framework/execution_hooks.py`); with none registered the events
+still fire and nothing is written. See [../modules/conversation.md](../modules/conversation.md).
+
+Deferrals are collapsed into a **stretch** (`job_defer_stretch`): one row opened at the first
+deferral, bumped at every later one, and announced **once, when the block ends**. A job refused
+every poll tick for a minute is one `job_defer_after`, not sixty. `outbox:prune` prunes closed
+stretches with the same retention as the outbox; an open stretch is never pruned, whatever its age.
 
 `job_finalize_before` fires after a `rc=0` run, before the SUCCESS commit. The framework's **verdict plumbing stays in place** for future modules: an observer may set `verdict` (a `Verdict` dataclass with `retryable`, `reason: VerifyReason`, `fresh_start`, `detail`, `blocked`); a non-`None` verdict converts the apparent success into a `JobVerificationFailed` exception that routes through the normal retry/blocked/dead path, and `verdict.fresh_start=True` additionally clears `job.session_id` so the next retry starts a fresh agent session. **No in-tree observer uses this today.** The `app_monitor` module ships `McpHealthTelemetryObserver` on this event for **telemetry only** — it records two nullable per-attempt signals (`toolbox_mcp_calls`, `toolbox_mcp_connected`) on the `job` row and optionally emails ops, but never sets a verdict and never disrupts job flow. See [src/agento/modules/app_monitor/README.md](../../src/agento/modules/app_monitor/README.md).
 
@@ -119,7 +161,7 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 
 | Event | Data Class | Fields | When |
 |-------|-----------|--------|------|
-| `config_save_after` | `ConfigSavedEvent` | `path, encrypted` | After CLI `config:set` commits a value |
+| `config_save_after` | `ConfigSavedEvent` | `path, encrypted` | After `config_write.write_config` commits a value (`config:set`, the admin TUI, the panel admin config) |
 | `setup_upgrade_before` | `SetupBeforeEvent` | `dry_run` | Before `setup:upgrade` begins work |
 | `setup_upgrade_after` | `SetupCompleteEvent` | `result, dry_run` | After `setup:upgrade` finishes all work |
 | `migration_apply_after` | `MigrationAppliedEvent` | `version, module, path` | After a SQL migration is applied |
@@ -211,7 +253,9 @@ No event contract changed — that is the point of the reclassification.
 
 ### Config & Setup Lifecycle
 
-`config_save_after` fires only from CLI `config:set`, not from internal bootstrap config resolution.
+`config_save_after` fires only from `config_write.write_config` (`config:set`, the admin TUI and the panel
+admin config), not from internal bootstrap config resolution. `web` never runs `bootstrap()`, so a panel
+save dispatches it to no observer. Panel sign-in and launches dispatch no event for the same reason.
 
 ## Event Data Mutability
 

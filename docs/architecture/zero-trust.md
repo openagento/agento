@@ -30,6 +30,7 @@ change adds is a finding (`RULES.md` SEC).
 | `/opt/cron-agent/env` holds `MYSQL_*`, `CONFIG__*`, and `AGENTO_*` (including `AGENTO_ENCRYPTION_KEY`) and is mode `0644`, so every uid in the cron container can read it. | `framework/docker/cron/entrypoint.sh` | Debt |
 | A run's capability token is in that run's own MCP config in the shared workspace, and every agent process is uid `agent`. A shell-capable agent that reads a co-tenant's live token acts as that co-tenant's view until the token is revoked (a job token at the job's end). | run MCP config; `toolbox_capability` | Debt — the co-tenant half of [DECISIONS.md](../../DECISIONS.md) 2026-08-23 Toolbox east-west auth (OPEN, see ROADMAP) |
 | An MCP session whose capability has no `job_id` (kind `mcp_interactive`, minted by `agent_view:prepare-run` or an operator) gets Outlook reads and actions that are not bound to a trigger. | `modules/outlook/toolbox/outlook.js` | Accepted for interactive `agento run` — [DECISIONS.md](../../DECISIONS.md) 2026-07-04; other callers are debt |
+| `web` has no rate limit on the launch redeem (`POST /launch` on apps) or on `/internal/authz/app`, which `proxy` calls for each apps file request. Each request does a DB read for a caller that is not yet authenticated (SEC-12). Sign-in has an in-process throttle. Behind `proxy`, every request has the proxy's address, so an address limit in `web` needs a trusted client-address header first. | `src/agento/web/api.py`, `src/agento/framework/docker/proxy/Caddyfile` | Debt — owner to decide: a limit in `proxy`, or a trusted forwarded address in `web` |
 | The agent holds its own harness OAuth credential. | per-run HOME (for example `.claude/.credentials.json`), written from the encrypted `credential` row | Part of the model (SEC-1) |
 | The agent holds an SSH key for git. | per-run HOME `.ssh/id_rsa`, written by `workspace_build` from the encrypted `agent_view/identity/ssh_private_key` | Accepted — the git push identity, [DECISIONS.md](../../DECISIONS.md) 2026-06-19 D-2 |
 
@@ -84,13 +85,23 @@ same way: an `internal_rest` capability, scope from the row. It is the one route
 one. `run_id` on an MCP URL names an interactive run's desk directory only — it grants no scope, and
 a `job_id` on the URL may only agree with the capability's job.
 
-**Three kinds, each with the smallest privilege that works:**
+**Five kinds, each with the smallest privilege that works:**
 
 | Kind | Holder | Reaches | TTL |
 |------|--------|---------|-----|
-| `mcp_job` | a consumer-run job | `/mcp`, `/sse` | the job's lifetime |
-| `mcp_interactive` | one interactive `agento run` | `/mcp`, `/sse` | 12 h |
-| `internal_rest` | Python publishers, channels, onboarding | `/api/*`, scoped `/health` | 120 s |
+| `mcp_job` | a consumer-run job | `/mcp`, `/sse`, `/messages`, invoke | the job's lifetime |
+| `mcp_interactive` | one interactive `agento run` | `/mcp`, `/sse`, `/messages`, invoke | 12 h |
+| `internal_rest` | Python publishers, channels, onboarding | `/api/*`, scoped `/health`, `/config-test` | 120 s |
+| `user_session` | the Web API, for a logged-in user | invoke only | `core/auth/capability_ttl`, single use |
+| `miniapp` | the Web API, for a miniapp launch | invoke only | `core/auth/capability_ttl`, single use |
+
+Invoke is `POST /internal/tools/{name}:invoke`. The two user kinds need a live source (session or
+launch) on every call. The `web` module ships the `session` checker (E2) and the `miniapps` module
+the `launch` checker (E6). A `miniapp` capability also carries a `tool_ceiling` — the launch's
+allowed actions — and the app triple, which every `tool_invocation` row records
+([../modules/miniapps.md](../modules/miniapps.md)). Every
+tool call on every transport goes through one dispatcher that authorizes it per call and writes a
+`tool_invocation` audit row — see [auth-context.md](auth-context.md).
 
 `mcp_job` cannot be minted by hand ([`capability:mint`](../cli/capability.md) refuses it): its
 lifetime is bound to the job's terminal transition, and a hand-minted one would outlive the code that
@@ -123,6 +134,12 @@ status — a failing revoke rolls the status back, leaving the job `RUNNING` for
 **Where tokens come from.** The consumer mints one per job; `agent_view:prepare-run` mints one per
 interactive run; both are injected into the run's own MCP config entry only, matched by origin **and**
 path (`/mcp` or `/sse`), never by substring — an operator's third-party MCP server never receives it.
+On `/mcp` the token goes in an `Authorization: Bearer` header and the URL stays unchanged; only an
+`/sse` entry gets `?cap=`. Every token carries `allowed_transports` (`http` or `sse`), checked per
+endpoint with no default, so an `["http"]` token is refused on `/sse` and `/messages`. For now
+the toolbox still reads `?cap=` on `/mcp`, `/api`, `/config-test` and `/health` as well (until the
+retirement rule applies); the invoke endpoint refuses it. See
+[auth-context.md](auth-context.md).
 Operators mint the other two kinds with [`capability:mint`](../cli/capability.md). A minted token is a
 credential: stdout once, onward only through stdin or a mode-0600 file, never argv, a log, or shell
 history. Any capability the framework persists from agent output is replaced with `cap=***` first.
@@ -178,6 +195,14 @@ secrets.env (host filesystem) — holds only AGENTO_ENCRYPTION_KEY
 CONFIG__* ENV overrides take precedence over core_config_data (plaintext)
 ```
 
+## What `web` holds
+
+`web` (the panel API) holds no upstream tool credential and no `AGENTO_ENCRYPTION_KEY`. Its one
+secret is the internal proxy secret (volume `proxy-internal`), which authenticates `forward_auth`. It stores only
+SHA-256 hashes of session tokens, launch tokens and exchange codes. For each panel tool call it
+mints one single-use `user_session` capability and sends it to the toolbox; the raw token is never
+persisted or logged. See [panel.md](panel.md).
+
 ## What the Agent CAN Access
 
 - Its own OAuth credential (Claude/Codex/Pi) — written into its per-run HOME from the encrypted `credential` row
@@ -206,9 +231,10 @@ authorize them; see ROADMAP.md.
 
 The published half of that volume (`storage/versioned-artifacts/published`) is mounted
 read-only into one more container, `artifacts`, which serves it over HTTP. That container
-declares no `networks:` key, so Compose leaves it alone on the project `default` network
-while every other service names `agento-net` — the agent cannot resolve its name, let
-alone read an artifact it was never granted. It is published on `127.0.0.1` only. Putting
+declares no `networks:` key, so Compose leaves it on the project `default` network, which
+it shares with `proxy` alone, while every other service names `agento-net` — the agent
+cannot resolve its name, let alone read an artifact it was never granted. It publishes no
+host port; `proxy` is the only route to its files. Putting
 it on `agento-net` "for consistency" would make every artifact readable by every agent in
 every agent_view over plain HTTP, with the `allowed_artifacts` allowlist bypassed and no
 audit row written. It also holds no `env_file:` and no `environment:`, so the second

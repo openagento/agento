@@ -30,6 +30,161 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
 
 ---
 
+## 2026-09-28 — E3–E5: the job-type contract, the outbox, and the four execution protocols
+
+- **A job type is declared in a module manifest, never in a framework enum (§4.2).** The framework
+  resolves `agent_type` through a registry the modules fill, so `conversation` naming its own type
+  costs the framework no knowledge of it (PLC-2). The column widened to `VARCHAR` (migration `043`)
+  for the same reason: an `ENUM` is a framework-side list of every module that will ever exist.
+
+- **The consumer reaches a module table through an outbox, never directly (§6.4.1).** The consumer
+  runs in the cron container and its transaction cannot name `conversation_event` without the
+  framework knowing a module's schema. So it writes `job_event_outbox` — framework-owned, module-
+  agnostic — and `conversation:relay` moves those rows into threads. **One** relay process, by
+  contract: two would interleave and invert the order that `conversation_event.id` is supposed to
+  give a thread. `UNIQUE (source_kind, source_id)` on the event table is what makes the relay
+  idempotent, so a crashed tick re-runs instead of duplicating.
+
+- **Four seams, not one execution hook (§5.1–§5.3, §8.2).** `ExecutionIdProvider`,
+  `ExecutionFinalizer`, `ResumeSessionResolver` and `ExecutionDeltaSink` are separate because they
+  fire at different moments and a module may want one without the others — a module that records
+  executions need not also stream deltas. Each seam holds **at most one** implementation, checked by
+  one generic validator: two finalizers would each believe they owned the terminal write. Every seam
+  falls back to today's behaviour when nothing registers it (MOD-2), which is what lets the whole
+  `conversation` module be disabled.
+
+- **The framework never parses a harness's stream format.** The delta path asks the harness through
+  an optional `stream_event_mapper` and carries the result over a bounded queue to the module's sink;
+  the framework side holds no SQL and the module side holds every `INSERT`. An import-layering test
+  enforces it. Three things must all be true or a run streams nothing extra: a registered sink, an
+  `execution_id`, and a harness that declares the mapper. Any one missing attaches no callback, so
+  nothing is buffered and nothing is dropped.
+
+---
+
+## 2026-09-28 — E3–E5: the panel paths are `/api/conversation/threads…`, not `/api/conversations/…`
+
+The PRD and the plan both write the routes as `/api/conversations/{id}` while also calling them
+"a **module** route under the conversation prefix (§11)". The two cannot both hold, and §11 is the
+one that is a rule: a module owns `/api/<its own module name>/` and nothing else
+(`framework/route_rules.py`), which is what keeps one module out of another's URL space and out of
+every built-in path. The module is named `conversation`, so:
+
+- the prefix is `/api/conversation/` — singular, because the module directory is;
+- the prefix ends in `/`, so a route needs a segment under it: there is no `/api/conversation`
+  collection route to declare. `threads` is that segment.
+
+Renaming the module to `conversations` to recover the PRD's spelling was rejected: the name is also
+the config namespace (`conversation/retention/*`), the event prefix and the module directory, so the
+URL's plural would be paid for in every other contract. The alternative — exempting this module from
+the prefix rule — trades a URL's spelling for the rule that bounds every module's reach.
+
+So the shipped paths are `/api/conversation/threads`, `/api/conversation/threads/{id}`,
+`…/{id}/messages`, `…/{id}/messages/{message_id}/unblock`, `…/{id}/events` and `…/{id}/events/stream`.
+Nothing has shipped under the other spelling, so there is no compatibility route to keep (CODE-5).
+
+---
+
+## 2026-09-28 — E3–E5: migration numbers, and E7 as a prerequisite of E4
+
+- **Framework migrations `043`–`047` belong to this epic; E7 starts at `048`.** Both neighbouring PRDs
+  defer: E6 takes no framework numbers (`PRD-E6…md:65` — its own tables live in its module sequence),
+  and E7 says explicitly (`PRD-E7…md:450`) that "PRD E3–E5 §3.4 is the controlling list … and takes
+  `043` onward for all of them". Coordinating the range once, here, is what stops two epics from
+  writing `043` in parallel branches and discovering it at merge.
+
+- **E7 §4.3.1 and §8.1 are prerequisites of the E4 slice, not later integrations.** E4's gate needs
+  `job_stop_request`, all three of its acknowledging paths (the consumer monitor, the pre-spawn status
+  re-check, the stop-request pass) and the `admin_audit` migration in place; without them a paused
+  turn cannot be proved unblockable end to end. The dependency runs that way round because this epic
+  owns the `ExecutionFinalizer` seam and E7 calls it, not the reverse.
+
+- **The §4.5 audit row is written inside the unblock transaction, never by an observer.** Observer
+  failures are swallowed and logged (`framework/event_manager.py:40-50`), so an audit row dispatched as
+  an event is an audit row that can silently not exist. E7 calls the framework's audit writer from
+  inside `service.unblock()`'s transaction; the two commit together or neither does.
+
+- **E3–E5 ships first; the unblock route carries no audit write today.** `service.unblock()` is
+  implemented, guarded, evented and tested here, and `conversation` writes **no SQL against
+  `admin_audit`** — a test greps the module for it. `admin_audit`, its writer and its retention are
+  framework-owned (PRD E7 §14: "one table several components write") and `conversation` therefore
+  declares **no** E7 dependency in `sequence` (MOD-1). When E7 §8.1's migration lands it adds one call
+  from `service.unblock()` to the framework's transaction-aware writer, on that transaction's own
+  cursor, with `meta = {conversation_id, message_id}`. This is ordering, not a runtime branch: there is
+  no "does the table exist?" check anywhere in the code.
+
+---
+
+## 2026-09-27 — E6 miniapps: shares in the artifacts server, one path parser, core-dependency imports
+
+- **S1: shares are checked by the `artifacts` server, not by `web`.** Owner decision, answered
+  "A: artifacts server (Recommended)". The server already holds the scrypt sidecar it verifies
+  against and has no DB or secret; routing shares through `web` would put a Basic credential and a
+  launch credential behind one service, which PRD E6 §9 keeps apart. A share origin is
+  `<token>.<AGENTO_SHARE_HOST>`, one per share (§9.1). `proxy` rewrites it to `/s/<token>/…`; the
+  record `published/.shares/<token>` names the artifact, and the server serves it only when that
+  artifact's `.auth` sidecar names the same token back, so a stale record opens nothing. `web`'s
+  `/internal/authz/share` is gone. The artifacts server does its own SEC-12 limits (failures per
+  address, requests per credential) because it is plain `node:http`.
+- **One parse per request path (PRD E6 §6.2).** `web` parses the raw `X-Forwarded-Uri` once
+  (`web/app_path.py`), decides on it, and returns the canonical path in `X-Agento-Upstream-Path`;
+  `proxy` fetches exactly that path. The artifacts server routes on the raw request target
+  (`server/served-path.js`), never on `new URL()`, which resolves `..` and `%2e%2e` before a check
+  can see them. Both refuse dot segments, encoded separators, backslashes and dotfiles. There is no
+  `current` route on the apps origin: a launch resolves `current` in the panel and pins it.
+- **Retention and launches share one MySQL named lock**, `va_ret:` + sha1(code) (fixture
+  `tests/fixtures/retention_lock_v1.json`). The prune takes it without waiting and skips when busy;
+  `create_launch` waits 5 s and answers 503. A named lock belongs to a connection and survives
+  COMMIT, so the prune does the acquire, the live-launch query, the deletes and the release on one
+  borrowed connection.
+- **Contract vs reality: a core module may import a core dependency's `toolbox/` files.** The
+  guard `tests/module-toolbox-imports.test.js` forbade any module toolbox file importing outside its
+  own module. `miniapps` needs `versioned_artifacts`' `service.js` (the only code that may reach the
+  Git backend, so re-implementing the read would break that boundary), `paths.js`, `audit.js`,
+  and `errors.js`. Evidence that the path resolves in the containers: both
+  `docker/docker-compose.dev.yml` and the generated template mount every core module under one
+  parent, `/app/modules/core/<m>`. The exception is narrow: core module → a core module listed in
+  its own `sequence` (MOD-1), `toolbox/` files only. A user module (`app/code/`, mounted at
+  `/app/modules/user`) still may not.
+- **The role-grant rule is framework mechanism (PLC-4).** The `session` checker (`web`) and the
+  `launch` checker (`miniapps`) both bound a capability by the user's grants, so the SQL moved from
+  `web` to `src/agento/toolbox/capability.js` (`GRANTS_SQL`, `grantsFor`). The verifier hands every
+  checker `grants(role, kind)` bound to the capability row's own scope (TBX-4: from the call
+  context, not an import); a checker without it refuses.
+- **The toolbox honours `module:disable` (MOD-1).** It mounts `app/etc` read-only and
+  `scanModules()` drops a module set to `false` in `modules.json` (absent file or key, or an
+  unparseable file, mean enabled, as `module_status.is_enabled`). So a disabled module loads no
+  toolbox code: no tools (next MCP session), no auth sources or REST routes (next toolbox start).
+  This applies to every module, not only miniapps. `web` also reads the file per request for
+  miniapps, so a launch is files-only, an action is 404 and the catalogue is empty at once, with
+  no toolbox restart.
+- **Activation is operator-only and has no event.** It happens in the toolbox (Node), which has no
+  event mechanism; it writes a `versioned_artifact_audit` row. A tool would let a self-asserted
+  `agent_view_id` decide what a user's browser may call.
+- **The launch spec is a tool (`miniapp_get_launch_spec`), not an event or a seam in `web`.**
+  `web` never runs `bootstrap()`; the answer it needs is one protocol call (EVT-8), made with the
+  user's own `user_session` capability, so a user without the grant gets a files-only launch.
+
+---
+
+## 2026-09-26 — Toolbox rate limits: failures per address, requests per capability
+
+- **`express-rate-limit`, declared directly.** It was already installed through the MCP SDK, and
+  CodeQL's missing-rate-limiting check recognizes it. A hand-written limiter would not clear the alerts.
+- **Mounted once with `app.use()` before every route**, so module REST routes, invoke and a route
+  added later are limited too. Answering the five routes CodeQL named would leave the rest.
+- **Two keys.** All sandbox runs share one container address, so an address limit on every request
+  would let one agent throttle the others. The address limit counts only 401/403 (60/min): that
+  bounds a random-token flood, where each token would get a new bucket. Authorized traffic is limited
+  per capability (600/min), keyed by the token's SHA-256, never the raw token.
+- **Constants, no env knob.** The capability limit is per run, so `AGENTO_CONSUMER_MAX_WORKERS` does
+  not change it.
+- **Not changed:** CodeQL's clear-text-logging alerts on `artifact:auth` (printing the credential
+  once on stdout is that command's purpose, the same rule as a minted capability) and the
+  missing-rate-limiting alerts on the test-only server in `tests/sse-transport-auth.test.js`.
+
+---
+
 ## 2026-09-26 — scrypt key derivation for stored secrets
 
 - **Problem.** The AES key for every `obscure` config value and every `credential` row was a bare
@@ -143,6 +298,207 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
   plan has proof, or is an `ASSUMPTION` with a spike step) had the largest effect in the replay.
 - **Owner approval:** Marcin Klauza, 2026-09-25 — approved applying the drafted rules and loop changes
   ("Apply all"), on main first, with `RULES.md` at the repo root.
+
+## 2026-09-25 — E2 panel, sessions, launches and RBAC
+
+Contract deviations (PRD E2 / E1.5 against the code, built as below):
+
+- **The `session` checker receives the capability's scope.** A session is not scoped to a view, the
+  capability row is. The verifier calls `check(sourceId, {capability_kind, workspace_id,
+  agent_view_id, query})`, and the checker computes the role's permitted tools for that scope. It
+  does not echo a stored list.
+- **Visibility is per role, not per user.** With two roles the PRD's `role → grants` model gives
+  per-role visibility. Per-user grants are a follow-up.
+- **The exchange code is a POST form field, not the `code` query parameter.** A one-time code in a
+  URL reaches history, a `Referer` and logs, and a prefetch or a scanner can consume it. The panel
+  submits a form to `https://apps…/launch`; there is no GET route. The `code` log redaction stays.
+- **No manifest seam in E2.** `launch.manifest_fingerprint` and `allowed_actions` are NOT NULL; E2
+  writes `sha256("")` and `[]`. An event would need `bootstrap()` in `web`, which would resolve every
+  module's config, and a veto observer that fails to load would fail open. E6 designs the seam.
+- **`current` resolves through the toolbox.** `POST /api/launches` calls
+  `versioned_artifact_get_current` with a `user_session` capability instead of mounting the store
+  into `web`. So a launch needs that tool grant **and** the `artifact.launch` operation grant in the
+  scope, and the tool must be enabled there.
+
+Choices:
+
+- **The redeem needs no proxy secret.** The exchange code (30 s, once, hashed) is the credential; the
+  redeem also requires `Origin` = panel and a form body.
+- **Panel cookie `SameSite=Strict`, launch cookie `SameSite=Lax`.** The launch cookie must survive the
+  top-level navigation after the cross-origin form post.
+- **The CSRF token is HMAC-SHA256(session token, `agento-csrf`).** Nothing to store, and a page that
+  cannot read the HttpOnly cookie cannot compute it.
+- **One atomic `UPDATE … JOIN user` redeems.** `rowcount == 1` wins; concurrent redeems give one token.
+- **Deny responses clear dead launch cookies.** Caddy returns the `forward_auth` deny response,
+  `Set-Cookie` included, to the client (measured in the Task 0 spike).
+- **Launch eviction orders by `created_at`, which has 1 s precision.** Ties break by id. A sequence
+  column is a follow-up if exact order ever matters.
+- **Launch ids are 32 hex characters**, so each launch cookie name is fixed-length and a bad name is
+  refused before any DB read.
+- **Login throttle is in-process** (10 failures per username per 15 min). A DB-backed throttle when
+  `web` runs more than one replica.
+- **`config_write.write_config` vs `save_config`.** `write_config` is the shared commit-and-dispatch
+  step (`config:set`, admin TUI); `save_config` adds validation and the not-a-secret proof that the
+  panel needs, because `web` holds no encryption key. The admin TUI skips value validation because
+  tool gate keys have no schema.
+- **Every access write locks its `user` rows in one ordered `SELECT … FOR UPDATE`**, and
+  `create_launch` locks the user row and re-checks the grant in the same transaction, so a launch
+  racing a role or grant change is either refused or revoked with it.
+- **Operator seeding for launches** (Task 0): `artifact:init --source` runs on the host, and the view
+  needs `versioned_artifacts/allowed_artifacts` plus `tool:enable` for `versioned_artifact` and
+  `versioned_artifact_get_current`.
+
+---
+
+## 2026-09-25 — E1.5 platform foundation: Caddy proxy, secret-authenticated subrequests, string version ids
+
+- **Caddy, not nginx.** `forward_auth` is the `auth_request` subrequest, `tls internal` terminates
+  TLS with no certificate step, and the log `filter` encoder redacts query values. nginx needs a
+  `map` per redacted parameter and has no internal CA.
+- **The subrequest carries a secret, not a network position.** `web` shares `agento-net` with
+  `sandbox`, so being reachable proves nothing. The proxy's entrypoint writes a random secret into the
+  `proxy-internal` volume, which only `proxy` and `web` mount; `web` reads it per request, so start
+  order does not matter. The proxy sets it only inside `forward_auth`, never on a forwarded request.
+- **The `X-Agento-*` header namespace is the proxy's.** The proxy strips every client header in it,
+  so any header the proxy adds later is protected by the same one rule.
+- **The error log is redacted too.** Caddy's `http.log.error` logger writes the raw URI when an
+  upstream fails; a global logger with the same `cap`/`code` filter covers it. Measured, not assumed.
+- **The artifacts host port is removed with nothing in its place.** Previews and Basic-auth shares
+  go dark until E2/E6 implement the decisions behind `/internal/authz/{app,share}`. A second,
+  unauthenticated path to the same files would make that authorization worthless.
+- **`app_version_id` is `VARCHAR(64)`** (`042`). A VA version id is a string; `036`/`037` declared
+  `BIGINT`. The verifier checks a bounded string, not the VA grammar — that belongs where the id is
+  made. The shared fixture is held to the grammar by the Node suite.
+- **`role_grant` has no exactly-one-scope CHECK.** MySQL 8.0 refuses a CHECK on a column with an FK
+  referential action (ER 3823), and the cascade is what removes grants with their agent_view. Writers
+  set exactly one scope; readers treat both or neither as no grant.
+- **The fixture's table rows are data only.** Nothing maps a `user`/`launch` row into an auth source
+  yet (that is E2), so no mapper ships; the integration test inserts the rows against the real schema.
+
+---
+
+## 2026-09-24 — E1 toolbox auth: one dispatcher, per-call checks, TTL config in `core/auth/*`
+
+- **Every tool call goes through one `executeTool()`.** The MCP SDK validates arguments before a
+  per-tool handler runs, so an invalid call would never reach our code and go unaudited. We replace
+  the SDK's `tools/call` handler with the dispatcher; the SDK keeps `tools/list`.
+- **The audit row is written first.** A failed insert answers `unavailable` and runs nothing. The row
+  holds a SHA-256 of the arguments, never their values.
+- **Single use is one `UPDATE … WHERE consumed_at IS NULL`.** The row count decides the winner; no
+  lock and no second store of bearers.
+- **Strict argument validation** (`z.object(...).strict()`): an unknown key is `invalid_arguments`.
+  This is stricter than the SDK default, which drops unknown keys without an error.
+- **TTL bounds live at `core/auth/*`, not `auth/*`** (the PRD's path). A config path starts with its
+  module, and the framework's module is `core`. Hard ceilings are in code; config can only narrow.
+- **`/mcp` gets the token in a header; `/sse` keeps `?cap=`.** An SSE client sends no headers, so the
+  query path stays for it, with a 4 h ceiling for any token that may travel on `sse`. New MCP tokens
+  are `["http"]`; the migration backfill gives legacy rows both transports on the same 4 h clock.
+- **Source checkers come from modules.** A module exports `authSources`; the toolbox collects them at
+  startup and drops a kind that two modules claim. E1 ships none, so user kinds fail closed.
+- **`on_behalf_of` is always null** until something verifies delegation; a non-null value is refused.
+- **Invoke builds the tool registry per request.** It costs about 0.5 ms, so there is no cache.
+- **Enabling a tool takes effect in the next MCP session**, not in the open one. Disabling takes
+  effect on the next call. Widening an open session would run `register()` for tools the scope does
+  not grant.
+- **Thrown tool errors reach the caller as a fixed `tool failed`.** A thrown message can quote an
+  upstream response body; the log gets only the error class. An `isError` result is the tool's own
+  answer: MCP passes it to the agent as before E1 (the agent needs "issue not found" to recover),
+  and invoke drops it, so a browser or miniapp caller gets only the error code.
+
+## 2026-09-24 — E0 contracts for panel, toolbox and miniapps
+
+E0 fixes the shared semantics so E1–E7 can start without re-deciding them. The detailed PRDs are
+intentionally **not** in this repo (owner decision) — they live beside it, outside version control.
+Each decision below stands on its own.
+
+### Identity and capability
+
+- **`kind` is kept and `actor` is added beside it, not in place of it.** Existing `toolbox_capability`
+  rows migrate without a rewrite. `kind` describes a token's *purpose*; it never stands in for who the
+  caller is.
+- **Per-kind actor invariants, never a default.** A blanket `actor = agent` would label the platform's
+  own viewless `internal_rest` config-test capability an agent. Each legacy kind gets one fail-closed
+  row of required and must-be-null fields; a row whose claims cannot be derived fails verification. A
+  permissive default on an identity field is exactly the failure the field was added to prevent.
+- **Legacy `internal_rest` maps to one reserved subject constant** (`service:legacy-internal-rest`),
+  not a per-row guess and not a rejection. `035_toolbox_capability.sql` stores no component identity,
+  so the row cannot say which service issued it; rejecting breaks live callers and inventing a subject
+  is fabrication. The constant is allowed a fixed endpoint set, no delegation and no app scope, and it
+  retires by TTL expiry — no drain step.
+- **The auth context is verified once and carried in one structure, not re-derived per transport.**
+  MCP and HTTP must not drift on what a caller is allowed to be.
+
+### Transport
+
+- **`?cap=` stays as an MCP-client compatibility path while `Authorization` becomes the runtime path.**
+  The SSE transport hands the client a bare URL which the client posts to verbatim with no headers, so
+  a header-only `/messages` would 401 every legitimate SSE client. Removing the query path first breaks
+  clients that cannot set headers.
+- **Transport is a capability claim, not a property of the request.** A bearer moves freely between a
+  header and a query string, so "query tokens get a shorter TTL" is unenforceable as a request
+  property. Tokens carry an explicit `allowed_transports`, checked per endpoint, with no default —
+  missing or empty fails verification once the migration backfill has run.
+
+### Miniapps, artifacts and origins
+
+- **Miniapps is a separate module over Versioned Artifacts, not a VA feature.** VA stays free of user
+  and RBAC concepts: it owns files, drafts, versions and the `current` pointer; Miniapps owns the
+  manifest, user access, launch and actions.
+- **Miniapp files are authorized by a reverse-proxy subrequest to the Web API**, rather than by moving
+  file serving into Python. That keeps the artifacts service credential-free and keeps a single
+  authorization source. The apps origin serves **only** immutable `/v/<id>/` paths — `current` is resolved once, by
+  authenticated launch creation on the panel origin, and pinned on the launch. Keeping a `current` route on the apps
+  origin would break launch pinning and cannot be repaired by a proxy rewrite: concurrent launches each set their own
+  `Path=/` cookie, so the credential is ambiguous, and it is opaque to the proxy anyway, so the pinned version is not
+  knowable before the authorization subrequest that validates it.
+- **The artifacts service loses its published host port when E6 activates.** An authorization layer
+  with a second, unauthorized path to the same bytes authorizes nothing.
+- **One apps origin shared by all miniapps, separate from the panel origin.** Owner decision, waiving
+  PRD E0 §6 requirement 5 (app↔app isolation). The panel/apps split is what stops agent-generated code
+  from **reading** panel data — responses, DOM, session cookie — and is not negotiable. It is not write
+  protection on its own: sibling subdomains are same-site, so `SameSite` does not stop an apps page
+  causing a credentialed panel request. Writes are blocked by separate CSRF controls, which are part
+  of the same decision, not an optional extra. App↔app isolation is traded for one DNS name
+  and one certificate, and is only valid while every artifact reachable from one session is one that
+  user could open anyway. Upgrade path (per-artifact origins) is in ROADMAP.md.
+- **Artifact codes are path segments, not host labels.** The shared apps origin therefore needs no
+  DNS-safe identifier, no host→artifact mapping and no sanitising step. The VA grammar
+  (`toolbox/paths.js`) allows 64 characters and a trailing hyphen, both illegal in a DNS label — which
+  is also what blocks the per-artifact-origin upgrade.
+- **The Basic-auth share gets its own origin, mandatory for E6.** Browsers attach cached Basic
+  credentials automatically per origin, so sharing an origin with agent-generated scripts would put
+  those credentials inside the miniapp trust domain. This is a credential boundary, and it is not
+  covered by the two-origin decision above. The share origin grants no CORS permission to the panel or
+  apps origins. Shipping without a separate share origin needs a new explicit owner waiver.
+- **Shares need one origin *per share*, not one share origin.** Share content is agent-authored HTML
+  and JavaScript served behind a single fixed Basic realm, and browsers replay cached Basic
+  credentials per origin+realm — so one shared share-origin lets script in one share read another
+  share's DOM and fetch its files with its credentials. The label is an opaque generated **share
+  token**, not the artifact code, so unlike the apps-origin upgrade this is not blocked on the VA
+  code grammar. The single-origin fallback is a separate, explicit waiver.
+
+### Sequencing
+
+- **The platform foundation is front-loaded into E1, as E1.5.** All Compose changes and the framework
+  schema the contracts already pin to field level (`user`, `session`, `launch`, `role_grant`, the
+  `toolbox_capability` columns) ship once, in one track, before E2/E3–E5/E6 fan out. The two things
+  this removes were never real dependencies — a generated Compose file and a single global migration
+  sequence are *collision hazards*, not dependencies, and serializing four tracks behind them costs more than doing the
+  work once.
+- **Front-loading stops at the edge of what is specified.** The conversation model and the miniapp
+  manifest are deliberately undefined (PRD E2 §6 lists what its API "must not foreclose"), so E1.5 does
+  not create their tables. Designing schema for an epic that does not exist buys a migration when the
+  epic disagrees. Those tables live in their owning **module**, whose migrations are numbered per
+  module — which is why two epics can both add `001` and never collide.
+- **E7 stays last.** It needs E2's RBAC *enforcement*, not merely its tables, so no amount of
+  front-loading parallelizes it.
+
+### Documentation
+
+- **Contracts describe the post-#42 system, with pending items marked.** E0 must unblock E1–E7, all of
+  which land after PR #42.
+- **Historical records are superseded in place, never rewritten.** A decision log that edits its own
+  past stops being evidence. Corrections are appended with a `Superseded by` line.
 
 ---
 

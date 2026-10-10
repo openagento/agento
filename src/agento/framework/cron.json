@@ -4,6 +4,16 @@
             "name": "logrotate",
             "schedule": "0 2 * * *",
             "raw_command": "/usr/sbin/logrotate /opt/cron-agent/logrotate-agent.conf --state /app/logs/logrotate.state"
+        },
+        {
+            "name": "limits_prune",
+            "schedule": "*/15 * * * *",
+            "command": "limits:prune"
+        },
+        {
+            "name": "outbox_prune",
+            "schedule": "30 3 * * *",
+            "command": "outbox:prune"
         }
     ]
 }

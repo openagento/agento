@@ -20,6 +20,10 @@ class JobContext:
     # Short-lived internal_rest capability for the discovery flow. `repr=False` so a
     # dataclass repr in a log line can never carry it.
     capability_token: str | None = field(default=None, repr=False)
+    # The harness session this turn continues, resolved through §5.2's seam and honoured
+    # only when the harness declares `resume`. `None` means a fresh session, which is what
+    # every workflow saw before the seam existed.
+    resume_session_id: str | None = None
 
 
 class Workflow(ABC):

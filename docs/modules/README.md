@@ -9,7 +9,7 @@ modules/
   my-ecommerce/
     module.json       # Manifest: metadata, tools, field schemas
     config.json       # Default config values (non-secret)
-    di.json           # Capability bindings: channels, workflows, commands
+    di.json           # Capability bindings: channels, job_types, workflows, commands
     system.json       # Config field schemas with types and labels
     events.json       # Event observer declarations
     data_patch.json   # Data patch declarations
@@ -72,4 +72,7 @@ bin/agento config:set my_system/tools/mysql_my_prod/pass
 - [Outlook / Microsoft 365 email channel](outlook.md) — DMARC-gated, allow-listed inbound email channel
 - [Bitbucket Cloud PR-review channel](bitbucket.md) — watches an agent's open PRs and queues review work
 - [GitHub PR-review channel](github.md) — watches an agent's open GitHub PRs and queues review work
+- [Miniapps](miniapps.md) — activate a versioned artifact version as a panel-launched app with a fixed action set
 - [Versioned artifacts](versioned-artifacts.md) — drafts, immutable versions, and an atomic current pointer for file trees
+- [Web](web.md) — panel launch limit and the toolbox `session` auth source
+- [Conversation](conversation.md) — chat threads, message history, executions and the event log

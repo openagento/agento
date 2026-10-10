@@ -151,27 +151,35 @@ def scan_all_modules(core_dir: str, user_dir: str) -> list:
     cron and onboarding are silently skipped — which is exactly what happened to PyPI
     extensions when only ``bootstrap`` learned about the container mount.
 
-    Order encodes shadowing: core, then local ``app/code`` (which may override core), then
-    container-mounted PyPI extensions, which never shadow a name already present.
+    Derived from :func:`module_dirs_by_name`, so the parsed-manifest callers and the
+    raw-directory callers select the SAME directory for a name: core, then local
+    ``app/code`` (which overrides core), then container-mounted PyPI extensions, which
+    never shadow a name already present. Two selectors meant a local module could override
+    core for validation and the web routes while bootstrap still loaded both copies.
     """
-    from .module_loader import scan_modules
+    from .module_loader import parse_module_dir
 
-    manifests = list(scan_modules(core_dir)) + list(scan_modules(user_dir))
-    seen = {m.name for m in manifests}
-    for m in scan_modules(CONTAINER_EXTENSION_DIR):
-        if m.name not in seen:
-            manifests.append(m)
-            seen.add(m.name)
+    manifests = []
+    for _name, module_dir in module_dirs_by_name(core_dir, user_dir):
+        manifest = parse_module_dir(module_dir)
+        if manifest is not None:
+            manifests.append(manifest)
     return manifests
 
 
-def module_dirs_for_validation(core_dir, user_dir) -> list[tuple[str, Path]]:
-    """``[(module_name, module_dir)]`` for validation, honouring shadowing.
+def module_dirs_by_name(core_dir, user_dir) -> list[tuple[str, Path]]:
+    """``[(module_name, module_dir)]`` — every module the framework considers, with shadowing.
 
     Same set and same precedence as :func:`scan_all_modules` (core, then local ``app/code``
     which may override core, then container-mounted extensions which never shadow an existing
-    name) — but returned as directories, because validation reads the raw manifest files
-    rather than parsed manifests.
+    name) — but returned as directories, for the callers that read the raw manifest files
+    rather than parsed manifests: ``module:validate`` and ``web``'s route composition.
+
+    Anything that derives its own roots instead of calling one of these two is how a module
+    becomes visible to one part of the framework and invisible to another — which is exactly
+    what happened to PyPI extensions twice: first when only ``bootstrap`` knew about the
+    container mount, then when ``compose_routes`` listed core and ``app/code`` by hand and an
+    installed extension's declared routes all answered 404.
     """
     out: list[tuple[str, Path]] = []
     seen: set[str] = set()

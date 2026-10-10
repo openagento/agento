@@ -7,6 +7,14 @@ import { createBackend } from './git-backend.js';
 import { recordAudit } from './audit.js';
 import * as published from './published-tree.js';
 import { generatePassword, defaultAuthUser, hashSecret } from './auth.js';
+import { SHARE_TOKEN_RE, shareUrl } from './share-host.js';
+import { createHash, randomBytes } from 'node:crypto';
+
+/** The MySQL named lock web's `create_launch` takes too (fixture retention_lock_v1.json). */
+export const retentionLockName = (code) => `va_ret:${createHash('sha1').update(code).digest('hex')}`;
+/** What the prune keeps: versions a live launch pins (the same fixture; run against the real schema). */
+export const LIVE_LAUNCH_VERSIONS_SQL = 'SELECT DISTINCT version_id FROM launch WHERE artifact_code = ? '
+  + 'AND revoked_at IS NULL AND expires_at > NOW()';
 
 // A resolved value is not typed: resolveModuleFieldStrict returns an ENV string
 // verbatim and a DB override's raw column value; only a config.json default keeps
@@ -78,7 +86,7 @@ const isNameTaken = (err) => err instanceof ArtifactError
   && err.code === ERROR_CODES.ARTIFACT_ALREADY_EXISTS;
 
 export function createService({ config = {}, db = null, log = null, jobId = null, agentViewId = null,
-  actor = null, backend = null, admin = false, crypto = null } = {}) {
+  actor = null, backend = null, admin = false, crypto = null, env = process.env } = {}) {
   const storageRoot = asStorageRoot(config.storage_root);
   const publishedRoot = asStorageRoot(config.published_root, 'published_root');
   const keepVersions = asNonNegInt(config['serving/keep_versions'], 'serving/keep_versions');
@@ -201,32 +209,48 @@ export function createService({ config = {}, db = null, log = null, jobId = null
   // that nothing checks. The DB row only DECORATES — a failed upsert costs the
   // recoverable copy, never the enforcement — the same degradation `init`'s INSERT has.
   // The CALLER holds the lifecycle lock.
+  //
+  // The share token (PRD E6 §9) lives in the sidecar beside the hash: a rotation keeps
+  // it, and the server serves a share only when the record and the sidecar name each
+  // other, so a stale record never opens a later artifact of the same code.
   const applyAuth = async (artifactCode, { user, password }) => {
     const enc = encryptSecret(password);
-    await published.writeAuthSidecar(publishedRoot, artifactCode, { user, ...hashSecret(password) });
+    const prior = (await published.readAuthSidecar(publishedRoot, artifactCode))?.share;
+    const share = SHARE_TOKEN_RE.test(prior ?? '') ? prior : randomBytes(16).toString('hex');
+    await published.writeAuthSidecar(publishedRoot, artifactCode, { user, ...hashSecret(password), share });
+    await published.writeShareRecord(publishedRoot, share, artifactCode);
     const db2 = pool();
     if (db2) {
       try {
         await db2.execute(
-          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc)
-           VALUES (?, 1, ?, ?)
-           ON DUPLICATE KEY UPDATE auth_enabled = 1, auth_user = VALUES(auth_user), auth_secret_enc = VALUES(auth_secret_enc)`,
-          [artifactCode, user, enc]);
+          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc, share_token)
+           VALUES (?, 1, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE auth_enabled = 1, auth_user = VALUES(auth_user),
+             auth_secret_enc = VALUES(auth_secret_enc), share_token = VALUES(share_token)`,
+          [artifactCode, user, enc, share]);
       } catch (err) {
         log?.('versioned_artifacts', 'ERROR',
           `auth credential not recorded for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
       }
     }
+    return share;
+  };
+  /** The token the sidecar names, if any. Its record goes with the sidecar: a share needs a Basic credential. */
+  const shareOf = async (artifactCode) => {
+    const share = (await published.readAuthSidecar(publishedRoot, artifactCode))?.share;
+    return SHARE_TOKEN_RE.test(share ?? '') ? share : null;
   };
   const clearAuth = async (artifactCode) => {
+    const share = await shareOf(artifactCode);
     const removed = await published.removeAuthSidecar(publishedRoot, artifactCode);
+    if (share) await published.removeShareRecord(publishedRoot, share);
     const db2 = pool();
     if (db2) {
       try {
         await db2.execute(
-          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc)
-           VALUES (?, 0, NULL, NULL)
-           ON DUPLICATE KEY UPDATE auth_enabled = 0, auth_user = NULL, auth_secret_enc = NULL`,
+          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc, share_token)
+           VALUES (?, 0, NULL, NULL, NULL)
+           ON DUPLICATE KEY UPDATE auth_enabled = 0, auth_user = NULL, auth_secret_enc = NULL, share_token = NULL`,
           [artifactCode]);
       } catch (err) {
         log?.('versioned_artifacts', 'ERROR',
@@ -278,10 +302,38 @@ export function createService({ config = {}, db = null, log = null, jobId = null
     }
 
     /** Retention is maintenance, never a reason to fail the operation that triggered it. */
+    /** Retention never deletes a version a live launch serves (PRD E6 §5). web's
+     *  `create_launch` holds the same named lock from reading `current` to committing
+     *  the launch, so a launch either lands before this reads the live set or reads a
+     *  `current` this prune keeps. A named lock belongs to its connection, so one
+     *  borrowed connection carries the whole step. Busy lock or failed query: skip, the
+     *  next save prunes — keeping files is the safe side. */
     async function pruneQuietly(artifactCode) {
-      try { await published.pruneVersions(publishedRoot, artifactCode, keepVersions); }
-      catch (err) {
-        log?.('versioned_artifacts', 'ERROR', `preview retention failed for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
+      if (!keepVersions) return;
+      const db2 = pool();
+      if (!db2) {
+        // No DB, no launches: nothing can be pinned.
+        try { await published.pruneVersions(publishedRoot, artifactCode, keepVersions); }
+        catch (err) { log?.('versioned_artifacts', 'ERROR', `preview retention failed for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`); }
+        return;
+      }
+      let conn;
+      try {
+        conn = await db2.getConnection();
+        const name = retentionLockName(artifactCode);
+        const [[{ got }]] = await conn.query('SELECT GET_LOCK(?, 0) AS got', [name]);
+        if (Number(got) !== 1) return;
+        try {
+          const [rows] = await conn.query(LIVE_LAUNCH_VERSIONS_SQL, [artifactCode]);
+          await published.pruneVersions(publishedRoot, artifactCode, keepVersions,
+            new Set(rows.map((r) => r.version_id)));
+        } finally {
+          await conn.query('SELECT RELEASE_LOCK(?)', [name]);
+        }
+      } catch (err) {
+        log?.('versioned_artifacts', 'ERROR', `preview retention skipped for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
+      } finally {
+        conn?.release();
       }
     }
 
@@ -421,8 +473,8 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             const user = defaultAuthUser(finalCode);
             const password = generatePassword();
             try {
-              await withLock(lifecycleLock(finalCode), () => applyAuth(finalCode, { user, password }));
-              basicAuth = { user, password };
+              const share = await withLock(lifecycleLock(finalCode), () => applyAuth(finalCode, { user, password }));
+              basicAuth = { user, password, share_url: shareUrl(share, env, log) };
             } catch (err) {
               log?.('versioned_artifacts', 'ERROR',
                 `basic auth not enabled for '${finalCode}': ${errorFacts(err) ?? 'unknown'}`);
@@ -459,7 +511,9 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, 'this session may not delete artifacts');
           }
           return withLock(lifecycleLock(artifactCode), async () => {
+            const share = await shareOf(artifactCode);
             const removedPublished = await published.removeArtifact(publishedRoot, artifactCode);
+            if (share) await published.removeShareRecord(publishedRoot, share);
             const removedStore = await be.removeArtifact(storageRoot, artifactCode);
             if (!removedPublished && !removedStore) {
               throw new ArtifactError(ERROR_CODES.ARTIFACT_NOT_FOUND, 'artifact not found');
@@ -499,8 +553,9 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             }
             const finalUser = (user && String(user).trim()) || defaultAuthUser(artifactCode);
             const finalPass = (password && String(password)) || generatePassword();
-            await applyAuth(artifactCode, { user: finalUser, password: finalPass });
-            return { artifact_code: artifactCode, auth_enabled: true, auth_user: finalUser, password: finalPass };
+            const share = await applyAuth(artifactCode, { user: finalUser, password: finalPass });
+            return { artifact_code: artifactCode, auth_enabled: true, auth_user: finalUser, password: finalPass,
+              share_url: shareUrl(share, env, log) };
           });
         }, (r) => ({ description: r.auth_enabled ? 'enabled' : 'disabled' }));
       },
@@ -516,7 +571,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         let row;
         try {
           const [rows] = await db2.query(
-            'SELECT auth_enabled, auth_user, auth_secret_enc FROM versioned_artifact WHERE artifact_code = ?',
+            'SELECT auth_enabled, auth_user, auth_secret_enc, share_token FROM versioned_artifact WHERE artifact_code = ?',
             [artifactCode]);
           row = rows?.[0];
         } catch (err) {
@@ -524,7 +579,8 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         }
         if (!row || !row.auth_enabled) return { artifact_code: artifactCode, auth_enabled: false };
         return { artifact_code: artifactCode, auth_enabled: true, auth_user: row.auth_user,
-          password: row.auth_secret_enc ? decryptSecret(row.auth_secret_enc) : null };
+          password: row.auth_secret_enc ? decryptSecret(row.auth_secret_enc) : null,
+          share_url: shareUrl(row.share_token, env, log) };
       },
 
       // ------------------------------------------------------------- reads
@@ -532,6 +588,18 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         await assertArtifactAllowed(artifactCode);
         const current = await be.getCurrent(storageRoot, artifactCode);
         return { ...current, preview_url: published.previewUrl(publicBaseUrl, artifactCode) };
+      },
+      /** One file at the root of a version, as bytes, or null. Mechanism for a module
+       *  that gives a root file a meaning (miniapps reads `miniapp.json`); a read, so no
+       *  audit row. */
+      async readVersionFile(artifactCode, versionId, name, maxBytes = 64 * 1024) {
+        validateArtifactCode(artifactCode);
+        validateVersionId(versionId);
+        if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)) {
+          throw new ArtifactError(ERROR_CODES.INVALID_PATH, 'invalid file name');
+        }
+        await assertArtifactAllowed(artifactCode);
+        return be.readVersionFile(storageRoot, artifactCode, versionId, name, maxBytes);
       },
       async listVersions(artifactCode, opts = {}) {
         await assertArtifactAllowed(artifactCode);

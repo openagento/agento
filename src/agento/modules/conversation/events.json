@@ -1,0 +1,5 @@
+{
+  "job_claim_before": [
+    {"name": "conversation_turn_ordering", "class": "src.hooks.ConversationOrderingObserver", "order": 100}
+  ]
+}

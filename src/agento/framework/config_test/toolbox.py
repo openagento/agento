@@ -37,7 +37,7 @@ class ToolboxUrlError(ValueError):
     """``core/toolbox/url`` is not a usable internal endpoint."""
 
 
-def _resolve_toolbox_url(conn) -> str:
+def resolve_toolbox_url(conn) -> str:
     """``core/toolbox/url``, validated, or the compose default.
 
     A single per-path read — never ``resolve_all()`` and never ``get_module()``,
@@ -164,7 +164,7 @@ def run_toolbox_test(conn, config_path: str, *, scope: str, scope_id: int = 0) -
             code="SCOPE_ID_INVALID",
         )
     try:
-        url = _resolve_toolbox_url(conn)
+        url = resolve_toolbox_url(conn)
     except ToolboxUrlError as e:
         return TestResult(ERROR, str(e), code="TOOLBOX_URL_INVALID")
 
@@ -177,7 +177,8 @@ def run_toolbox_test(conn, config_path: str, *, scope: str, scope_id: int = 0) -
         # for exactly the scope being tested — viewless for the default one. It rides in
         # a header, never the URL, and is revoked the moment the one request returns.
         with rest_capability(
-            agent_view_id=scope_id if scope == "agent_view" else None
+            agent_view_id=scope_id if scope == "agent_view" else None,
+            subject_id="service:config-test",
         ) as token:
             # POST, not GET: this triggers a live authentication attempt against a
             # third party. A side-effecting GET lands in proxy logs and browser
