@@ -1,6 +1,6 @@
 # Docker Containers
 
-Eight containers with one runner (`runner-<i>`, one per `AGENTO_RUNNER_COUNT`), on three
+Seven containers with one runner (`runner-<i>`, one per `AGENTO_RUNNER_COUNT`), on three
 bridge networks: `db-net`, `exec-net` and `web-net` ([Network](#network)). `artifacts`
 declares no `networks:` key and deliberately joins none of them. `proxy` is the only other
 service on the project `default` network that `artifacts` sits on.
@@ -12,11 +12,14 @@ service on the project `default` network that `artifacts` sits on.
 | **cron** | agento-cron | Job consumer + cron scheduler + Python CLI. Starts no agent CLI: it asks a runner | Python |
 | **toolbox** | agento-toolbox | MCP server — credential broker, tool execution | Node.js |
 | **mysql** | mysql:8.0 | Job queue DB (`cron_agent`) | — |
-| **sandbox** | agento-sandbox | Interactive agent execution (ad-hoc) | Python |
 | **artifacts** | agento-toolbox | Static HTTP for the `versioned_artifacts` published tree | Node.js |
 | **web** | agento-cron | Panel API (sign-in, roles and grants, admin, launches), the launch redeem, and `/internal/authz/app` for the proxy; one backend with `cron`: the same env file (with the encryption key) and DB user (DECISIONS.md D-BACKEND-1); also the internal proxy secret; no upstream tool credential ([panel.md](panel.md)) | Python |
 | **runner-1** | agento-cron | Where every agent CLI runs. No database, no key, no `env_file`. The worker in cron sends it runs over a Unix socket ([runner.md](runner.md)). More runners: `runner-2` … | Python |
 | **proxy** | caddy:2.11 | TLS, the panel / apps / share origins, `forward_auth` to `web`; the only route to artifact files | — |
+
+The `agento-sandbox` image has no service. It holds the agent CLIs and is the base of the
+`agento-cron` image, so every runner has them. `agento run` and `agento doctor` exec into
+`runner-1`.
 
 ## Volume Mounts
 
@@ -24,7 +27,7 @@ service on the project `default` network that `artifacts` sits on.
 
 | Mount | Containers | Access | Purpose |
 |-------|-----------|--------|---------|
-| `modules/` | cron, toolbox, sandbox | read-only | Module manifests + config.json |
+| `modules/` (`app/code`, core modules) | cron, runner-<i>, web, toolbox | read-only | Module manifests + config.json |
 | `logs/` | cron, toolbox | read-write | Structured JSON logs |
 
 ### Toolbox-Only
@@ -32,7 +35,7 @@ service on the project `default` network that `artifacts` sits on.
 | Mount | Access | Purpose |
 |-------|--------|---------|
 | `app/etc` → `/app/etc` | read-only | `modules.json`: a module off with `module:disable` loads no toolbox code — no tools from the next MCP session, no auth sources or REST routes from the next start. |
-| `storage/versioned-artifacts/` → `/srv/versioned-artifacts` | read-write | `versioned_artifacts` store (bare repos + draft checkouts) and its published tree (materialized versions plus the `current` symlink). Mounted into **toolbox only** — the sandbox and cron never see it, so the agent reaches versioned content exclusively through gated MCP tools. |
+| `storage/versioned-artifacts/` → `/srv/versioned-artifacts` | read-write | `versioned_artifacts` store (bare repos + draft checkouts) and its published tree (materialized versions plus the `current` symlink). Mounted into **toolbox only** — the runners, cron and web never see it, so the agent reaches versioned content exclusively through gated MCP tools. |
 
 ### Artifacts-Only
 
@@ -43,7 +46,7 @@ service on the project `default` network that `artifacts` sits on.
 
 The `artifacts` service declares **no `networks:` key** and carries no `env_file:` or
 `environment:`. Compose therefore leaves it on the project's `default` network while every
-other service names `db-net`, `exec-net` or `web-net` — measured: the sandbox cannot resolve the name
+other service names `db-net`, `exec-net` or `web-net` — measured: a runner (exec-net) cannot resolve the name
 `artifacts`. It publishes **no host port**: the only other container on `default` is `proxy`,
 which is the only route to these files, and it serves only `/a/<code>/v/<id>/` paths after
 `web` authorizes them against a live launch ([panel.md](panel.md)). Shares are E6's and every
@@ -51,12 +54,18 @@ share request is denied until then, so VA `preview_url` links and Basic-auth sha
 reachable from the host. Putting it on `exec-net` would let every agent in every
 agent_view read every artifact over plain HTTP, bypassing `allowed_artifacts` with no audit row.
 
-### Agent-Only (cron + sandbox)
+### Workspace (cron, runner-<i>, web)
 
-| Mount | Purpose |
-|-------|---------|
-| `workspace/` | Agent workspace — AGENTS.md, SOUL.md, systems/, app/, tmp/ |
-| `tokens/` | OAuth credentials (Claude, Codex) |
+| Mount | Containers | Purpose |
+|-------|-----------|---------|
+| `workspace/` → `/workspace` | cron, runner-<i>, web | Agent workspace — AGENTS.md, SOUL.md, systems/, the per-run HOMEs under `artifacts/`, and temporary HOMEs under `.tmp/`. `web` needs it for a `local` config tester: the model check starts its CLI in a runner with a temporary HOME the runner sees at the same path ([runner.md](runner.md)). A runner gives a live run dir to the run's own uid ([runner.md](runner.md#per-run-uid)); this needs a Linux file system, see there. |
+
+### Runner sockets
+
+| Volume | Containers | Access | Purpose |
+|--------|-----------|--------|---------|
+| `runner-<i>-sock` | runner-<i> | read-write | `/run/agento-runner`: the socket (made by root `listen.py`) and the root-only notes of live run dirs |
+| `runner-<i>-sock` | cron, web | read-only | `/run/agento-runner/runner-<i>/`: the backend sends runs and tester CLIs to the runner. No other service mounts it: an agent in another runner would pass the peer check |
 
 The SSH identity is **not** a mount. The non-secret SSH files (`id_rsa.pub`, `config`, `known_hosts`)
 are written per run into the run HOME under `workspace/artifacts/`; the private key is delivered
@@ -98,7 +107,7 @@ that shares one of its networks. DNS names match service names.
 | Network | Members | Why |
 |---|---|---|
 | `db-net` | mysql, cron, web, toolbox | the services that hold a DB user |
-| `exec-net` | runner-<i>, sandbox, toolbox, proxy | agents reach the toolbox and the panel origin |
+| `exec-net` | runner-<i>, toolbox, proxy | agents reach the toolbox and the panel origin |
 | `web-net` | proxy, web | the proxy reaches `web` |
 
 None is `internal`: agents and vendor CLIs need egress. MySQL publishes its port on host
@@ -110,7 +119,7 @@ Reachability ("yes" = a TCP connect works, not "trusted"):
 |---|---|---|---|---|---|---|
 | web | — | yes (nothing listens) | no | yes | yes | yes |
 | cron | yes | — | Unix socket only | yes | yes | no |
-| runner, sandbox | no | no | — | yes | no | yes |
+| runner | no | no | — | yes | no | yes |
 | toolbox | yes | yes (nothing listens) | yes (nothing listens on TCP) | — | yes | yes |
 
 The security claims are the "no" cells. Where a cell says yes but the caller is not

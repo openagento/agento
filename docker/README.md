@@ -16,10 +16,10 @@ Containerized environment for running AI coding assistants.
 Interactive agent sessions are launched per `agent_view` via the framework CLI:
 
 ```bash
-agento run <agent_view_code>    # Runs the configured agent (claude/codex/pi) in sandbox
+agento run <agent_view_code>    # Runs the configured agent (claude/codex/pi) in runner-1
 ```
 
-The command resolves the agent_view's provider + HOME (from the materialized workspace build) and spawns an interactive session in the `sandbox` container. See [docs/cli/run.md](../docs/cli/run.md) for details.
+The command resolves the agent_view's provider + HOME (from the materialized workspace build) and spawns an interactive session in the `runner-1` container. See [docs/cli/run.md](../docs/cli/run.md) for details.
 
 ## Runners
 
@@ -60,7 +60,8 @@ cd docker && HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f docker-compos
 ### Rebuilding for a Different User
 
 If you switch users or deploy to a new server, force a rebuild of every image
-that bakes `HOST_UID`/`HOST_GID` (sandbox, cron-via-sandbox, toolbox):
+that bakes `HOST_UID`/`HOST_GID` (sandbox, cron-via-sandbox, toolbox). The `sandbox`
+service only builds the base image; it never starts (`scale: 0`):
 
 Dev images are tagged per compose project (`agento-sandbox:${COMPOSE_PROJECT_NAME:-agento}`),
 so a build in one checkout never overwrites another checkout's images.
@@ -68,7 +69,7 @@ so a build in one checkout never overwrites another checkout's images.
 ```bash
 P=${COMPOSE_PROJECT_NAME:-agento}
 docker rmi agento-sandbox:$P agento-toolbox:$P
-cd docker && HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f docker-compose.dev.yml build sandbox toolbox
+cd docker && HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f docker-compose.dev.yml build sandbox toolbox cron
 ```
 
 ## Jira Agent
@@ -77,19 +78,19 @@ Automatically executes Jira tasks using Claude Code, with a MySQL-backed job que
 See [cron/app/README.md](cron/app/README.md) for architecture, CLI commands, file structure, and monitoring.
 
 **Services:**
-- **cron container** — runs cron daemon + consumer process (based on sandbox image + Python)
+- **cron container** — runs cron daemon + consumer process (based on the sandbox image + Python)
 - **mysql** — job queue database (`cron_agent`), auto-initialized from `cron/app/src/sql/`
 - **toolbox** — MCP server (credential broker for Jira, MySQL, email tools)
 
 ### Security: Zero-Trust Credential Model
 
-Kontener `sandbox` **nie ma dostępu do credentials narzędzi** (JIRA_TOKEN, JIRA_USER itp.). Kontener `cron` ma dziś dostęp do części sekretów (znany dług, zob. [zero-trust.md](../docs/architecture/zero-trust.md#known-exceptions-and-debt)). Jedynym pośrednikiem do narzędzi jest `toolbox`:
+Kontenery `runner-<i>` **nie mają dostępu do credentials narzędzi** (JIRA_TOKEN, JIRA_USER itp.). Backend (`cron`, `web`) jest zaufany i trzyma klucz szyfrowania oraz część sekretów; granicą jest runner (DECISIONS.md D-BACKEND-2). Jedynym pośrednikiem do narzędzi jest `toolbox`:
 
 - **Toolbox** jest brokerem credentials — przechowuje tokeny, filtruje zapytania, loguje dostęp
 - **Cron** komunikuje się z Jirą wyłącznie przez `POST http://toolbox:3001/api/jira/search` (read)
 - **Claude CLI** łączy się z toolbox przez MCP do mutacji (komentarze, zmiany statusów)
 - Konfiguracja użytkownika (email) jest w `.cron.env` jako `CONFIG__JIRA__USER`
-- `secrets.env` jest montowany do kontenerów `toolbox` i `cron` (nigdy do `sandbox`) — montowanie do `cron` to znany dług, zob. [zero-trust.md](../docs/architecture/zero-trust.md#known-exceptions-and-debt)
+- `secrets.env` jest montowany do kontenerów `toolbox` i `cron` (nigdy do `runner-<i>`) — `cron` należy do zaufanego backendu (D-BACKEND-2)
 
 ### Build & Deployment
 
@@ -98,9 +99,8 @@ Kontener `sandbox` **nie ma dostępu do credentials narzędzi** (JIRA_TOKEN, JIR
 ```bash
 cd docker
 
-# 1. Build images (sandbox base must exist first)
-HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose build sandbox
-docker compose build cron
+# 1. Build images (one call: cron builds FROM the sandbox service's image)
+HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose build sandbox cron
 
 # 2. Start services (mysql auto-creates tables on first start)
 docker compose up -d cron
@@ -298,7 +298,7 @@ If you see "Permission denied" errors when running `claude` or `codex`:
 
    ```bash
    docker rmi agento-sandbox:${COMPOSE_PROJECT_NAME:-agento} agento-sandbox:uid-*
-   bin/run-sandbox.sh
+   cd docker && HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose -f docker-compose.dev.yml build sandbox cron
    ```
 
 2. **Fix ownership of auth directories**:
@@ -310,7 +310,7 @@ If you see "Permission denied" errors when running `claude` or `codex`:
 3. **Quick test as root** (for debugging only):
 
    ```bash
-   docker compose run --user root --rm sandbox bash
+   docker compose exec -u root runner-1 bash
    ```
 
 

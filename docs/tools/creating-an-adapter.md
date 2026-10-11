@@ -182,7 +182,7 @@ The `healthcheck` function is called by the scoped diagnostic `/health?test=true
 
 **The scoped diagnostic is authenticated.** It requires an `internal_rest` capability
 (`Authorization: Bearer <token>`) and answers `401` without one — it reports which backends are
-reachable, which is an infrastructure oracle for anything inside the sandbox. Bare `/health` stays
+reachable, which is an infrastructure oracle for anything inside a runner. Bare `/health` stays
 unauthenticated **liveness only**. See [docs/cli/capability.md](../cli/capability.md).
 
 > **Rule for every adapter: the `error` a healthcheck returns is a stable public contract, not free

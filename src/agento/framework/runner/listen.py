@@ -1,10 +1,12 @@
 """Socket activation for the runner. Runs as root, as a script (no package import, no
-module code, no dispatch: EVT-3), before the server drops to ``agent``.
+module code, no dispatch: EVT-3).
 
 It makes the socket directory ``root:root 0755``, unlinks a stale socket, binds and
-listens (mode 0666, so the worker can connect), and execs the server as ``agent`` with
-the listener on fd 3. ``agent`` cannot unlink, rename or bind anything in that directory,
-so only this container's server answers on the name until the container stops.
+listens (mode 0666, so the worker can connect), and execs the server with the listener on
+fd 3. The server stays root (with only the compose capabilities) and starts each run as its
+own uid; it runs no module code (docs/architecture/runner.md#per-run-uid). No run uid can
+unlink, rename or bind anything in that directory, so only this container's server answers
+on the name until the container stops.
 """
 import contextlib
 import os
@@ -25,4 +27,4 @@ listener.listen(128)
 os.dup2(listener.fileno(), 3)
 os.set_inheritable(3, True)  # dup2 onto itself keeps it close-on-exec
 os.environ["LISTEN_FDS"] = "1"
-os.execvp("gosu", ["gosu", "agent", sys.executable, "-m", "agento.framework.runner.server"])
+os.execv(sys.executable, [sys.executable, "-m", "agento.framework.runner.server"])

@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS job (
 
     UNIQUE KEY uq_job_idempotency (idempotency_key),
     KEY idx_job_dequeue (status, scheduled_after),
+    KEY idx_job_auth_wait (status, error_class, id),
     KEY idx_job_schedule (schedule_id),
     KEY idx_job_agent_view (agent_view_id),
     KEY idx_job_priority_created (priority DESC, created_at ASC),
@@ -492,4 +493,5 @@ INSERT INTO schema_migration (version) VALUES
     ('048_credential_login'),
     ('049_tool_invocation_run_execution_index'),
     ('050_role'),
-    ('051_job_runner_ref');
+    ('051_job_runner_ref'),
+    ('052_job_auth_wait_index');

@@ -558,12 +558,48 @@ def test_config_test_unreachable_toolbox_names_no_origin(web, toolbox):
                     "message": admin_api.TEST_ERROR_MESSAGES["TOOLBOX_UNREACHABLE"]}
 
 
-def test_config_test_refuses_a_local_tester(web, toolbox, monkeypatch):
+def _local(monkeypatch, result, reloads):
     monkeypatch.setattr(config_test, "tester_for_field", lambda path: config_test.TesterRef(
         kind=config_test.KIND_LOCAL, label="pair", module="m", module_dir=Path("/m"), class_path="src.t:T"))
+    monkeypatch.setattr(admin_api, "_harness_reloader", lambda: lambda: reloads.append(1))
+    calls = []
+    monkeypatch.setattr(config_test, "run_config_test", lambda conn, path, **kw: calls.append((path, kw)) or result)
+    return calls
+
+
+@pytest.mark.parametrize(("result", "expected"), [
+    (config_test.TestResult("ok", "model m is in the account's model list", code="MODEL_OK"),
+     {"status": "ok", "code": "MODEL_OK", "message": "model m is in the account's model list"}),
+    (config_test.TestResult("fail", "model m is not known", code="MODEL_UNKNOWN"),
+     {"status": "fail", "code": "MODEL_UNKNOWN", "message": "model m is not known"}),
+    (config_test.TestResult("error", "the tester raised KeyError: /app/secret", code="TESTER_RAISED"),
+     {"status": "error", "code": "TESTER_RAISED", "message": admin_api.TEST_ERROR_GENERIC}),
+    (config_test.TestResult("error", "could not import /m/src", code="TESTER_UNAVAILABLE"),
+     {"status": "error", "code": "TESTER_UNAVAILABLE",
+      "message": admin_api.TEST_ERROR_MESSAGES["TESTER_UNAVAILABLE"]}),
+])
+def test_config_test_runs_a_local_tester_in_web(web, toolbox, monkeypatch, result, expected):
+    """C1: web runs a local tester in-process, after the harness registry is current; an
+    error gets the same fixed text as a toolbox error (SEC-6)."""
+    reloads = []
+    calls = _local(monkeypatch, result, reloads)
     r = _test(web, "m/key")
-    assert r.status_code == 400 and "config:test" in r.json()["error"]
+    assert (r.status_code, r.json()) == (200, expected)
+    assert calls == [("m/key", {"scope": "agent_view", "scope_id": 3})] and reloads == [1]
     assert not toolbox.called
+
+
+def test_config_test_local_tester_with_no_harness_registry_is_an_error_never_fail(web, toolbox, monkeypatch):
+    calls = _local(monkeypatch, None, [])
+
+    def broken():
+        raise RuntimeError("bad manifest /app/code/x")
+
+    monkeypatch.setattr(admin_api, "_harness_reloader", lambda: broken)
+    body = _test(web, "m/key").json()
+    assert body == {"status": "error", "code": "TESTER_UNAVAILABLE",
+                    "message": admin_api.TEST_ERROR_MESSAGES["TESTER_UNAVAILABLE"]}
+    assert calls == []
 
 
 def test_config_test_refuses_a_field_with_no_tester(web, toolbox):

@@ -1,12 +1,12 @@
 # `agento run` — Run the configured agent CLI
 
-Spawns the agent CLI inside the `sandbox` container, with `HOME` and the working directory set to a per-run artifacts directory copied from the agent_view's current workspace build. Credentials, instructions, and skills are all resolved naturally from that HOME. The **SSH private key is not** — it is never written to `/workspace` at all; it rides the existing name-only `env` channel into a per-run `ssh-agent` (see [identity docs](../config/identity.md)). The exact CLI command is built by the harness's registered `CommandBuilder` — no harness-specific logic lives in the `run` command itself.
+Spawns the agent CLI inside the `runner-1` container, with `HOME` and the working directory set to a per-run artifacts directory copied from the agent_view's current workspace build. Credentials, instructions, and skills are all resolved naturally from that HOME. The **SSH private key is not** — it is never written to `/workspace` at all; it rides the existing name-only `env` channel into a per-run `ssh-agent` (see [identity docs](../config/identity.md)). The exact CLI command is built by the harness's registered `CommandBuilder` — no harness-specific logic lives in the `run` command itself.
 
 Two modes are selected automatically by presence of a prompt argument:
 
 | Invocation | Mode | Semantics |
 |---|---|---|
-| `agento run <code>` | **Interactive** | Opens a TTY session inside the sandbox (`docker exec -it`). Signals, paste, arrow keys work as if the CLI were local. The agent's own per-action approval prompts apply — unless you pass `--yolo`. |
+| `agento run <code>` | **Interactive** | Opens a TTY session inside `runner-1` (`docker exec -it`). Signals, paste, arrow keys work as if the CLI were local. The agent's own per-action approval prompts apply — unless you pass `--yolo`. |
 | `agento run <code> "<prompt>"` | **Headless (one-shot)** | Runs the agent with the given prompt, streams output to your terminal, then exits with the agent's exit code (`docker compose exec -T`). Stdin is closed. Add `--pretty` for a readable stream. |
 
 Shortcut: `ru`.
@@ -24,7 +24,7 @@ The session opens straight at the prompt: for Claude, Agento pre-accepts the "tr
 folder" dialog for the run dir and, with `--yolo`, skips the bypass-mode confirmation —
 both default to "No, exit" in Claude Code 2.1.x ([details](../modules/claude.md#per-run-setup)).
 
-The agent runs inside the isolated `sandbox` container with no upstream service credentials of its own except one documented exception — the SSH private key used for git, see [DECISIONS.md](../../DECISIONS.md) D-SSH-1 —, and its toolbox capability is scoped to that one agent_view and expires. The toolbox is designed to be the only container that holds tool credentials. Concurrent runs share the `agent` UID and the workspace mount, so this is not a boundary between mutually hostile views — see the co-tenant limit and the other known gaps in [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
+The agent runs inside `runner-1` with no upstream service credentials of its own except one documented exception — the SSH private key used for git, see [DECISIONS.md](../../DECISIONS.md) D-SSH-1 —, and its toolbox capability is scoped to that one agent_view and expires. The toolbox is designed to be the only container that holds tool credentials. An `agento run` session runs as `agent` in `runner-1`, beside live job runs that each get their own uid; the workspace mount is shared, so this is not a boundary between mutually hostile views — see the co-tenant limit and the other known gaps in [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
 
 ### `--harness`, `--model`, `--credential` — pin one run
 
@@ -115,9 +115,9 @@ Exit code of the agent CLI is propagated to the shell, so headless mode composes
 
 1. Calls `docker compose exec -T -u root cron /opt/cron-agent/launch.sh -- /opt/cron-agent/run.sh agent_view:prepare-run <code>` (`run.sh` is the thin wrapper that execs `python -m agento.framework.cli`) to run the **same pre-spawn pipeline the consumer runs for a real job**. The `-u root` is the launcher's entry, not the command's: `launch.sh` clears the environment, imports the root-only `/opt/cron-agent/env` and drops every id to `agent` with `setpriv` before it runs the CLI, so `prepare-run` itself runs as `agent` — the same uid the consumer's cron jobs use (see [cron-privileges.md](../architecture/cron-privileges.md) — running it as root would leave the per-run credentials and the shared build dir owned by uid 0, unreadable by the agent CLI in step 3 and by the consumer afterwards): claims a credential from the LRU pool for the view's own scope (stamping `used_at`; a provider that needs none simply gets no credential), materializes a unique per-run artifacts directory under `workspace/artifacts/<workspace>/<agent_view>/<run_id>/`, writes that credential into the artifacts HOME via the harness's `WorkspaceAdapter`, and asks the harness's `CommandBuilder` for the unified CLI **command** plus any **env-delivered credentials**. It also mints an **`mcp_interactive` capability** for the view and injects it into the run dir's MCP config (an `Authorization: Bearer` header on `/mcp`), because the toolbox refuses an unauthenticated session — the token stays out of the JSON cron prints back, which reaches the host terminal and its shell history ([details](capability.md)). When a prompt is provided, the host passes `--prompt <prompt>` so cron returns the **headless** command instead of the interactive one; `--yolo` is forwarded the same way so the builder produces the interactive command in bypass mode. The host code itself stays agent-agnostic.
 2. Validates that a build exists on the host at `workspace/build/<workspace>/<agent_view>/current/`.
-3. Executes the returned command inside `sandbox` with `HOME` and `-w` (cwd) both set to the per-run artifacts dir. Any API-key values from the `env` field are injected via docker's **name-only** `-e KEY` form so the secret never appears in `ps`/argv — the value is read from the parent process's environment:
-   - **Interactive:** `os.environ.update(env); os.execvp("docker", [..., "exec", "-it", "-u", "agent", "-e", "HOME=…", "-e", "TERM=…", *[("-e", k) for k in env], "-w", <working_dir>, "sandbox", *command])` — replaces the current process so the TTY transfer is clean.
-   - **Headless:** `subprocess.run([..., "exec", "-T", "-u", "agent", "-e", "HOME=…", *[("-e", k) for k in env], "-w", <working_dir>, "sandbox", *command], env={**os.environ, **env}, stdin=subprocess.DEVNULL)` — waits for completion and propagates the exit code. With `--pretty` the same argv runs under `subprocess.Popen(..., stdout=subprocess.PIPE)` so the host can render each event line; `stdin`, env and the exit code are identical, and `stderr` stays inherited.
+3. Executes the returned command inside `runner-1` (`EXEC_SERVICE` in `cli/_project.py`) with `HOME` and `-w` (cwd) both set to the per-run artifacts dir. Any API-key values from the `env` field are injected via docker's **name-only** `-e KEY` form so the secret never appears in `ps`/argv — the value is read from the parent process's environment:
+   - **Interactive:** `os.environ.update(env); os.execvp("docker", [..., "exec", "-it", "-u", "agent", "-e", "HOME=…", "-e", "TERM=…", *[("-e", k) for k in env], "-w", <working_dir>, "runner-1", *command])` — replaces the current process so the TTY transfer is clean.
+   - **Headless:** `subprocess.run([..., "exec", "-T", "-u", "agent", "-e", "HOME=…", *[("-e", k) for k in env], "-w", <working_dir>, "runner-1", *command], env={**os.environ, **env}, stdin=subprocess.DEVNULL)` — waits for completion and propagates the exit code. With `--pretty` the same argv runs under `subprocess.Popen(..., stdout=subprocess.PIPE)` so the host can render each event line; `stdin`, env and the exit code are identical, and `stderr` stays inherited.
 
    The SSH private key travels this same name-only `env` channel: `prepare-run` returns it in the
    `env` dict as `AGENTO_SSH_PRIVATE_KEY`, so the **host CLI process** holds the decrypted key for the
@@ -201,7 +201,7 @@ Full contract: [../architecture/harness-contract.md](../architecture/harness-con
 
 ## Inspection
 
-Two cron-side commands let you inspect what `agento run` would resolve, without spawning the sandbox.
+Two cron-side commands let you inspect what `agento run` would resolve, without spawning the agent CLI.
 
 ### `agent_view:runtime` — read-only debug (no side effects)
 

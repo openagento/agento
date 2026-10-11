@@ -428,19 +428,14 @@ def render_compose(
     *,
     python_version: str,
     extensions: list[str],
-    sandbox_packages: list[SandboxPackage],
     runner_count: int = 1,
 ) -> str:
     """Substitute placeholders in the docker-compose template.
 
     Template placeholders:
     - ``{{ python_version }}`` — replaced with ``"3.12"`` etc.
-    - line ``      # {{ extension_mounts_sandbox }}`` — replaced with mount
-      lines for each enabled PyPI extension (or removed when none).
-    - line ``      # {{ extension_mounts_cron }}`` — same, for the cron service.
-    - line ``        # {{ sandbox_package_args }}`` — replaced with one
-      ``<KEY>: ${<KEY>:-<default>}`` per ``sandbox_packages`` entry (or removed
-      when no agent module ships one).
+    - line ``      # {{ extension_mounts_cron }}`` — replaced with mount lines for
+      each enabled PyPI extension (or removed when none).
     - the block from ``  # {{ runner }}`` to ``  # {{ /runner }}`` — one copy per
       runner, ``{{ i }}`` = 1..``runner_count``; then every other line with ``{{ i }}``
       (cron's socket mounts and depends_on, the socket volumes) — one copy per runner.
@@ -454,15 +449,6 @@ def render_compose(
         ]
         return "\n".join(lines) + "\n"
 
-    def sandbox_args_block() -> str:
-        if not sandbox_packages:
-            return ""
-        lines = [
-            f"        {pkg.version_env_key}: ${{{pkg.version_env_key}:-{pkg.default_range}}}"
-            for pkg in sandbox_packages
-        ]
-        return "\n".join(lines) + "\n"
-
     start, end = "  # {{ runner }}\n", "  # {{ /runner }}\n"
     count = max(1, runner_count)
     if start in template:
@@ -473,19 +459,37 @@ def render_compose(
         m[0].replace("{{ i }}", str(i)) for i in range(1, count + 1)), template, flags=re.M)
     template = template.replace("{{ runner_count }}", str(count))
     rendered = template.replace(
-        "      # {{ extension_mounts_sandbox }}\n",
-        mount_block("/opt/agento-src"),
-    )
-    rendered = rendered.replace(
         "      # {{ extension_mounts_cron }}\n",
         mount_block("/opt/agento-src"),
     )
-    rendered = rendered.replace(
-        "        # {{ sandbox_package_args }}\n",
-        sandbox_args_block(),
-    )
     rendered = rendered.replace("{{ python_version }}", python_version)
     return rendered
+
+
+def build_sandbox_image(project_dir: Path, version: str | None = None) -> int:
+    """Build ``agento-sandbox:<version>`` with ``docker build``; return the exit code.
+
+    The image has no compose service: nothing runs it, and the cron image (so every
+    ``runner-<i>``) is ``FROM`` it. ``version`` defaults to ``AGENTO_VERSION`` in
+    ``docker/.env``, the tag the compose file's ``SANDBOX_IMAGE`` resolves to. The CLI
+    pins come from each agent module's ``sandbox_packages`` declaration, overridden by
+    ``docker/.env``.
+    """
+    env_path = project_dir / "docker" / ".env"
+    env = parse_env_file(env_path) if env_path.is_file() else {}
+    tag = f"agento-sandbox:{version or env.get('AGENTO_VERSION') or 'latest'}"
+    args = [
+        "--build-arg", f"HOST_UID={env.get('HOST_UID', '1000')}",
+        "--build-arg", f"HOST_GID={env.get('HOST_GID', '1000')}",
+    ]
+    for pkg in enumerate_sandbox_packages(project_dir):
+        args.extend([
+            "--build-arg",
+            f"{pkg.version_env_key}={env.get(pkg.version_env_key, pkg.default_range)}",
+        ])
+    log_info(f"Building base image {tag}...")
+    ctx = project_dir / ".agento" / "docker" / "sandbox"
+    return subprocess.run(["docker", "build", "-t", tag, *args, str(ctx)]).returncode
 
 
 def build_base_images(project_dir: Path, version: str) -> None:
@@ -500,30 +504,24 @@ def build_base_images(project_dir: Path, version: str) -> None:
     on Docker Hub.
 
     Call AFTER ``materialize_docker_context()`` and BEFORE any
-    ``docker compose build``. Build args mirror
+    ``docker compose build``. Toolbox and cron build args mirror
     ``src/agento/framework/cli/templates/docker-compose.yml`` — kept in sync by
     ``TestBuildBaseImagesTemplateDriftGuard``.
     """
+    # Order matters: sandbox before cron (cron's FROM resolves SANDBOX_IMAGE).
+    sandbox_tag = f"agento-sandbox:{version}"
+    if (code := build_sandbox_image(project_dir, version)) != 0:
+        log_error(f"Failed to build base image {sandbox_tag}.")
+        sys.exit(code)
+
     env_path = project_dir / "docker" / ".env"
     env = parse_env_file(env_path) if env_path.is_file() else {}
-    host_uid = env.get("HOST_UID", "1000")
-    host_gid = env.get("HOST_GID", "1000")
-    sandbox_tag = f"agento-sandbox:{version}"
     ctx_root = project_dir / ".agento" / "docker"
-
     host_ids = [
-        "--build-arg", f"HOST_UID={host_uid}",
-        "--build-arg", f"HOST_GID={host_gid}",
+        "--build-arg", f"HOST_UID={env.get('HOST_UID', '1000')}",
+        "--build-arg", f"HOST_GID={env.get('HOST_GID', '1000')}",
     ]
-    sandbox_args = list(host_ids)
-    for pkg in enumerate_sandbox_packages(project_dir):
-        sandbox_args.extend([
-            "--build-arg",
-            f"{pkg.version_env_key}={env.get(pkg.version_env_key, pkg.default_range)}",
-        ])
-    # Order matters: sandbox before cron (cron's FROM resolves SANDBOX_IMAGE).
     specs = [
-        ("sandbox", ctx_root / "sandbox", sandbox_args),
         ("toolbox", ctx_root / "toolbox", host_ids),
         ("cron", ctx_root / "cron",
             ["--build-arg", f"SANDBOX_IMAGE={sandbox_tag}"]),
@@ -545,13 +543,10 @@ def regenerate_compose(project_dir: Path) -> None:
 
     Reads enabled extensions from ``app/etc/modules.json``, detects the
     project venv's Python version, substitutes mount lines, writes the result.
-    Sandbox build args (CLI version pins) are sourced from each agent module's
-    ``sandbox_packages`` di.json declaration — adding a new agent requires no
-    framework edit here.
+    The sandbox image has no service here: :func:`build_sandbox_image` builds it.
     """
     py_ver = detect_python_version(project_dir / ".venv")
     extensions = enumerate_enabled_extensions(project_dir)
-    sandbox_packages = enumerate_sandbox_packages(project_dir)
     template = get_template("docker-compose.yml")
     env_path = project_dir / "docker" / ".env"
     dotenv = parse_env_file(env_path) if env_path.is_file() else {}
@@ -559,7 +554,6 @@ def regenerate_compose(project_dir: Path) -> None:
         template,
         python_version=py_ver,
         extensions=extensions,
-        sandbox_packages=sandbox_packages,
         # Lowering it: drain first, or jobs of a removed runner stay RUNNING (docker/README.md).
         runner_count=int(os.environ.get("AGENTO_RUNNER_COUNT") or dotenv.get("AGENTO_RUNNER_COUNT") or 1),
     )

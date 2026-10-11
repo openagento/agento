@@ -15,7 +15,7 @@ They run on a **free** OpenRouter model, so the money cost is zero; they still n
 Docker stack, a healthy ``openrouter`` credential and network, hence ``@pytest.mark.e2e``
 and the ``AGENTO_E2E=1`` opt-in.
 
-The MCP bridge is exercised against a **mock** MCP server started inside the sandbox, not
+The MCP bridge is exercised against a **mock** MCP server started inside runner-1, not
 the live Toolbox: the real Toolbox's tools touch production Jira/MySQL/Bitbucket, and an
 e2e test must not have side effects there. Everything else — Pi, the bridge, the model,
 the transport — is real.
@@ -28,6 +28,7 @@ import subprocess
 
 import pytest
 
+from agento.framework.cli._project import EXEC_SERVICE
 from tests.e2e._stack import MODULES_DIR as _MODULES_DIR
 from tests.e2e._stack import PROJECT_ROOT as _PROJECT_ROOT
 
@@ -44,7 +45,7 @@ CHEAP_MODEL = "openai/gpt-oss-20b"
 def _compose_container(service: str) -> str | None:
     """Resolve a running container for a compose service in THIS project.
 
-    Hardcoding `agento-3-sandbox-1` ties the test to one checkout and, worse, could address
+    Hardcoding `agento-3-runner-1-1` ties the test to one checkout and, worse, could address
     a different stack on a machine running several. Ask compose instead, honouring
     COMPOSE_PROJECT_NAME, and fall back to a label filter.
     """
@@ -72,7 +73,7 @@ def _compose_container(service: str) -> str | None:
     return None
 
 
-SANDBOX = _compose_container("sandbox") if _E2E_ENABLED else None
+RUNNER = _compose_container(EXEC_SERVICE) if _E2E_ENABLED else None
 CRON = _compose_container("cron") if _E2E_ENABLED else None
 
 # A raw MCP `inputSchema` — nested object, string enum, optional field. Spike S1 asked
@@ -128,11 +129,11 @@ def _docker(args: list[str], *, timeout: int = 240) -> subprocess.CompletedProce
 
 
 def _stack_up() -> bool:
-    return bool(SANDBOX) and bool(CRON)
+    return bool(RUNNER) and bool(CRON)
 
 
 def _pi_available() -> bool:
-    return _docker(["exec", SANDBOX, "sh", "-c", "command -v pi"], timeout=30).returncode == 0
+    return _docker(["exec", RUNNER, "sh", "-c", "command -v pi"], timeout=30).returncode == 0
 
 
 def _openrouter_key() -> str | None:
@@ -175,11 +176,11 @@ pytestmark = [
     ),
     pytest.mark.skipif(
         _E2E_ENABLED and not _stack_up(),
-        reason="the compose sandbox/cron services are not running — start the stack",
+        reason="the compose runner-1/cron services are not running — start the stack",
     ),
     pytest.mark.skipif(
         _E2E_ENABLED and _stack_up() and not _pi_available(),
-        reason="the pi CLI is not in the sandbox image — rebuild it",
+        reason="the pi CLI is not in the runner image — rebuild it",
     ),
     pytest.mark.skipif(
         _E2E_ENABLED and _stack_up() and not _KEY,
@@ -204,23 +205,23 @@ def _run_pi(
     extra_flags: str = "",
     with_mock: bool = False,
 ) -> tuple[int, list[dict], str, str]:
-    """Run the real Pi CLI in the sandbox. Returns (rc, ndjson events, stderr, mock log)."""
+    """Run the real Pi CLI in runner-1. Returns (rc, ndjson events, stderr, mock log)."""
     setup = [f"rm -rf {workdir}", f"mkdir -p {workdir}/.pi", f"cd {workdir}"]
     if with_bridge:
         subprocess.run(
-            ["docker", "exec", "-i", SANDBOX, "sh", "-c", f"mkdir -p {workdir}/.pi && cat > {workdir}/.pi/agento-toolbox.js"],
+            ["docker", "exec", "-i", RUNNER, "sh", "-c", f"mkdir -p {workdir}/.pi && cat > {workdir}/.pi/agento-toolbox.js"],
             input=_bridge_source(), capture_output=True, text=True, timeout=60,
         )
         cfg = json.dumps({"url": bridge_url})
         subprocess.run(
-            ["docker", "exec", "-i", SANDBOX, "sh", "-c", f"cat > {workdir}/.pi/agento-toolbox.json"],
+            ["docker", "exec", "-i", RUNNER, "sh", "-c", f"cat > {workdir}/.pi/agento-toolbox.json"],
             input=cfg, capture_output=True, text=True, timeout=60,
         )
         setup = [f"cd {workdir}"]
 
     if with_mock:
         subprocess.run(
-            ["docker", "exec", "-i", SANDBOX, "sh", "-c", "cat > /tmp/e2e_mock_mcp.js"],
+            ["docker", "exec", "-i", RUNNER, "sh", "-c", "cat > /tmp/e2e_mock_mcp.js"],
             input=_MOCK_SERVER, capture_output=True, text=True, timeout=60,
         )
 
@@ -245,7 +246,7 @@ def _run_pi(
     child_env = {**os.environ, "OPENROUTER_API_KEY": _KEY or "", "PI_PROMPT": prompt}
     res = subprocess.run(
         ["docker", "exec", "-e", "OPENROUTER_API_KEY", "-e", "PI_PROMPT",
-         SANDBOX, "sh", "-c", script],
+         RUNNER, "sh", "-c", script],
         capture_output=True, text=True, timeout=300, env=child_env,
     )
     out = res.stdout

@@ -24,7 +24,7 @@ ctr() {  # the one running container of a service
   [ "$(printf '%s\n' "$ids" | grep -c .)" = 1 ] || { echo "Need one running '$1' in '$PROJECT'." >&2; return 1; }
   echo "$ids"
 }
-for s in web cron runner-1 sandbox toolbox mysql proxy; do ctr "$s" >/dev/null || exit 1; done
+for s in web cron runner-1 toolbox mysql proxy; do ctr "$s" >/dev/null || exit 1; done
 
 pass=0; fail=0
 ok()  { echo "  ok   $1"; pass=$((pass+1)); }
@@ -78,17 +78,15 @@ yes_tcp cron toolbox 3001
 yes_tcp cron mysql 3306
 no_route cron proxy 443
 
-for from in runner-1 sandbox; do
-  echo "3. $from"
-  no_route "$from" web 8000
-  no_route "$from" cron 22
-  yes_tcp "$from" toolbox 3001
-  no_route "$from" mysql 3306
-  yes_tcp "$from" proxy 443
-  if [ -n "$GATEWAY" ]; then no_tcp "$from" "$GATEWAY" "$MYSQL_HOST_PORT"; else bad "no gateway for ${PROJECT}_exec-net"; fi
-  [ "$DESKTOP" = 1 ] && echo "  skip $from -> host.docker.internal (Docker Desktop)" \
-    || no_tcp "$from" host.docker.internal "$MYSQL_HOST_PORT"
-done
+echo "3. runner-1"
+no_route runner-1 web 8000
+no_route runner-1 cron 22
+yes_tcp runner-1 toolbox 3001
+no_route runner-1 mysql 3306
+yes_tcp runner-1 proxy 443
+if [ -n "$GATEWAY" ]; then no_tcp runner-1 "$GATEWAY" "$MYSQL_HOST_PORT"; else bad "no gateway for ${PROJECT}_exec-net"; fi
+[ "$DESKTOP" = 1 ] && echo "  skip runner-1 -> host.docker.internal (Docker Desktop)" \
+  || no_tcp runner-1 host.docker.internal "$MYSQL_HOST_PORT"
 
 echo "4. toolbox"
 yes_tcp toolbox web 8000

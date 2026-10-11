@@ -9,7 +9,7 @@ one we drive the REAL pipeline with ``agento e2e``:
   on what it is configured for,
 - name the credential under test (``--credential``); the run claims only that
   credential, so the rest of the pool is untouched,
-- claim exactly that job and run it in the sandbox: credential materialization,
+- claim exactly that job and run it in runner-1: credential materialization,
   the real agent CLI, the toolbox, finalize,
 - assert the command passed its checks (SUCCESS, model, tokens, output, toolbox
   connected).

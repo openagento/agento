@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import subprocess
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
@@ -381,10 +382,16 @@ class TestRunJob:
     @patch("agento.framework.consumer.RemoteRunner")
     @patch("agento.framework.consumer.get_connection")
     def test_run_job_cron(self, mock_conn, MockRunner, mock_get_ch, mock_get_wf, sample_config, sample_db_config, sample_consumer_config):
+        from pathlib import Path
+
+        from agento.framework.runner import client as runner_client
         mock_conn.return_value = MagicMock()
         mock_result = _make_claude_result()
         mock_workflow = MagicMock()
         mock_workflow.execute_job.return_value = mock_result
+        homes = []
+        mock_workflow.execute_job.side_effect = lambda *a: (
+            homes.append(Path(MockRunner.call_args.args[1].home_dir).is_dir()) or mock_result)
         mock_get_wf.return_value.return_value = mock_workflow
 
         mock_channel = MagicMock()
@@ -412,7 +419,11 @@ class TestRunJob:
         assert ctx.provider == "anthropic"
         assert ctx.timeout_seconds == sample_consumer_config.job_timeout_seconds
         assert ctx.model is None
-        assert ctx.home_dir is None
+        # No agent_view: a private temp HOME under the shared tmp, there during the run
+        # and removed after it.
+        assert Path(ctx.home_dir).parent == runner_client.shared_tmp()
+        assert homes == [True]
+        assert not Path(ctx.home_dir).exists()
         assert ctx.credential is self._token_resolver_mock.resolve.return_value
         assert ctx.extra_env == {}  # no agent_view ⇒ no git identity env
         assert isinstance(result, _JobResult)
@@ -681,6 +692,161 @@ class TestRunJob:
         mock_runner = MockRunner.return_value
         mock_runner.execute.assert_not_called()
         mock_workflow.execute_job.assert_called_once()
+
+
+def _crash(session_id: str | None = "sess-crash") -> RuntimeError:
+    exc = RuntimeError("claude exited with code 1")
+    exc.session_id = session_id
+    return exc
+
+
+class TestProcessRetry:
+    """WI-5: a process crash with a session id is resumed once, in the same attempt."""
+
+    @pytest.fixture(autouse=True)
+    def _wire(self, sample_db_config, sample_consumer_config):
+        from agento.framework.agent_view_runtime import AgentViewRuntime
+        runtime = AgentViewRuntime()
+        runtime.harness = "claude"
+        runtime.provider = "anthropic"
+        self.status = {"status": "RUNNING"}
+        conn, self.cursor = _mock_connection()
+        self.cursor.fetchone.side_effect = lambda: self.status
+        self.workflow = MagicMock()
+        with (
+            patch("agento.framework.consumer.resolve_agent_view_runtime", return_value=runtime),
+            patch("agento.framework.consumer.CredentialResolver") as resolver_cls,
+            patch("agento.framework.consumer.get_connection", return_value=conn),
+            patch("agento.framework.consumer.RemoteRunner") as runner_cls,
+            patch("agento.framework.consumer.get_channel"),
+            patch("agento.framework.consumer.get_workflow_class") as wf_cls,
+            patch("agento.framework.consumer.count_credentials_for_scope", return_value=(2, 1)),
+            patch("agento.framework.consumer.mark_credential_error") as self.poison,
+            patch("agento.framework.consumer.throttle_credential") as self.throttle,
+            patch("agento.framework.consumer.redact_exception",
+                  side_effect=lambda exc, *s: exc) as self.redact,
+            patch("agento.framework.consumer.runner_client.alive",
+                  return_value="dead") as self.alive,
+        ):
+            resolver_cls.return_value.resolve.return_value = _mock_resolved_token()
+            wf_cls.return_value.return_value = self.workflow
+            self.runner = runner_cls.return_value
+            self.consumer = Consumer(sample_db_config, sample_consumer_config,
+                                     logging.getLogger("test"))
+            yield
+
+    def _run(self, **job):
+        return self.consumer._run_job(_make_job(attempt=1, status=JobStatus.RUNNING, **job))
+
+    def test_a_crash_with_a_session_id_is_resumed_once_and_succeeds(self):
+        self.workflow.execute_job.side_effect = _crash()
+        self.runner.execute.return_value = _make_claude_result(session_id="sess-crash")
+
+        result = self._run()
+
+        self.runner.execute.assert_called_once()
+        request = self.runner.execute.call_args.args[0]
+        assert (request.prompt, request.session_id) == ("", "sess-crash")
+        assert result.session_id == "sess-crash"
+
+    @pytest.mark.parametrize("state", ["alive", "unknown"])
+    def test_a_crash_whose_run_may_still_go_on_is_not_retried(self, state):
+        # DECISIONS.md 2026-10-09: `unknown` blocks resume like `alive`.
+        self.alive.return_value = state
+        first = _crash()
+        self.workflow.execute_job.side_effect = first
+        with pytest.raises(RuntimeError) as exc_info:
+            self._run()
+        assert exc_info.value is first
+        self.alive.assert_called_once_with(self.runner.runner_ref, "job:1")
+        self.runner.execute.assert_not_called()
+
+    def test_a_crash_whose_run_is_dead_is_retried(self):
+        self.workflow.execute_job.side_effect = _crash()
+        self.runner.execute.return_value = _make_claude_result(session_id="sess-crash")
+        self._run()
+        self.alive.assert_called_once_with(self.runner.runner_ref, "job:1")
+        self.runner.execute.assert_called_once()
+
+    def test_a_second_crash_leaves_for_the_durable_retry(self):
+        self.workflow.execute_job.side_effect = _crash()
+        second = _crash()
+        self.runner.execute.side_effect = second
+
+        with pytest.raises(RuntimeError) as exc_info:
+            self._run()
+
+        assert exc_info.value is second
+        self.runner.execute.assert_called_once()  # never a third call
+        self.redact.assert_any_call(second, None, None)
+
+    @pytest.mark.parametrize("exc", [
+        _crash(session_id=None),
+        subprocess.TimeoutExpired(cmd="claude", timeout=1),
+    ])
+    def test_no_session_id_or_not_a_plain_crash_is_not_retried(self, exc):
+        self.workflow.execute_job.side_effect = exc
+        with pytest.raises(type(exc)):
+            self._run()
+        self.runner.execute.assert_not_called()
+
+    def test_a_harness_without_resume_is_not_retried(self):
+        from dataclasses import replace
+
+        from agento.framework.harness import get_harness
+        entry = get_harness("claude")
+        descriptor = replace(entry.descriptor,
+                             capabilities=replace(entry.descriptor.capabilities, resume=False))
+        self.workflow.execute_job.side_effect = _crash()
+        with (
+            patch("agento.framework.consumer.get_harness",
+                  return_value=replace(entry, descriptor=descriptor)),
+            pytest.raises(RuntimeError),
+        ):
+            self._run()
+        self.runner.execute.assert_not_called()
+
+    def test_a_paused_job_is_not_retried(self):
+        self.status = {"status": "PAUSED"}
+        self.workflow.execute_job.side_effect = _crash()
+        with pytest.raises(RuntimeError):
+            self._run()
+        self.runner.execute.assert_not_called()
+
+    @pytest.mark.parametrize("cls", ["AuthenticationError", "UsageLimitError"])
+    def test_a_classified_first_failure_is_not_retried(self, cls):
+        from agento.framework.agent_manager import errors
+        exc = getattr(errors, cls)("rejected")
+        exc.session_id = "sess-crash"
+        self.workflow.execute_job.side_effect = exc
+        with pytest.raises(getattr(errors, cls)):
+            self._run()
+        self.runner.execute.assert_not_called()
+
+    def test_a_crash_then_an_auth_error_poisons_and_redacts(self):
+        from agento.framework.agent_manager.errors import AuthenticationError
+        self.workflow.execute_job.side_effect = _crash()
+        auth = AuthenticationError("401 Not logged in")
+        self.runner.execute.side_effect = auth
+
+        with pytest.raises(AuthenticationError):
+            self._run()
+
+        self.poison.assert_called_once()
+        self.redact.assert_any_call(auth, None, None)
+        assert auth.retry_with_other_token is True
+
+    def test_a_crash_then_a_usage_limit_throttles_and_redacts(self):
+        from agento.framework.agent_manager.errors import UsageLimitError
+        self.workflow.execute_job.side_effect = _crash()
+        limit = UsageLimitError("usage limit reached")
+        self.runner.execute.side_effect = limit
+
+        with pytest.raises(UsageLimitError):
+            self._run()
+
+        self.throttle.assert_called_once()
+        self.redact.assert_any_call(limit, None, None)
 
 
 # ---- Section 7: Finalization ----
@@ -995,6 +1161,59 @@ class TestFinalize:
         # It DOES commit: this attempt's execution is abandoned, because the process it
         # described has exited (§5.3). With no finalizer registered that commit is empty.
         mock_conn.commit.assert_called_once()
+
+    @patch("agento.framework.consumer.get_connection")
+    def test_finalize_auth_wait_reschedules_with_refund_and_no_revoke(
+        self, mock_get_conn, sample_config, sample_db_config, sample_consumer_config,
+    ):
+        """WI-6: a job with no usable credential waits for one (TODO, refund, no revoke)."""
+        from datetime import UTC, timedelta
+
+        from agento.framework.agent_manager.errors import (
+            CredentialsUnavailableError,
+            auth_wait_retry_at,
+        )
+
+        mock_conn, mock_cursor = _mock_connection(row={"status": "RUNNING"})
+        mock_get_conn.return_value = mock_conn
+        consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
+        job = _make_job(attempt=3, max_attempts=3,
+                        created_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1))
+        error = CredentialsUnavailableError("no credential", pool_retry_at=auth_wait_retry_at())
+
+        consumer._finalize_job(job, error=error, job_result=None, elapsed_ms=10)
+
+        sqls = [c[0][0] for c in mock_cursor.execute.call_args_list]
+        sql = _last_job_update(mock_cursor)[0]
+        assert "TODO" in sql and "DEAD" not in sql
+        assert "attempt = GREATEST(attempt - 1, 0)" in sql
+        assert not [s for s in sqls if "toolbox_capability" in s]  # no revoke
+
+    @patch("agento.framework.consumer.get_connection")
+    def test_finalize_auth_wait_older_than_the_cap_goes_dead(
+        self, mock_get_conn, sample_config, sample_db_config, sample_consumer_config,
+    ):
+        """WI-6 bound (SCL-1): a job that waited past AUTH_WAIT_MAX stops waiting."""
+        from datetime import UTC, timedelta
+
+        from agento.framework.agent_manager.errors import (
+            CredentialsUnavailableError,
+            auth_wait_retry_at,
+        )
+
+        mock_conn, mock_cursor = _mock_connection(row={"status": "RUNNING"})
+        mock_get_conn.return_value = mock_conn
+        consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
+        job = _make_job(attempt=1, max_attempts=3,
+                        created_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=25))
+        error = CredentialsUnavailableError("no credential", pool_retry_at=auth_wait_retry_at())
+
+        with patch("agento.framework.consumer.get_event_manager") as em:
+            consumer._finalize_job(job, error=error, job_result=None, elapsed_ms=10)
+
+        assert "DEAD" in _last_job_update(mock_cursor)[0]
+        names = [c.args[0] for c in em.return_value.dispatch.call_args_list]
+        assert "job_dead_after" in names
 
 
 # ---- Section 8: Lifecycle ----

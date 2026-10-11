@@ -12,7 +12,7 @@ agento job:resume <job_id>   # Re-queue paused job for consumer pickup
 ## job:list — see recent / failed jobs
 
 List jobs newest-first, optionally filtered — useful for spotting dead-lettered failures that otherwise
-only surface via the admin TUI or a configured alert email.
+only surface via the admin panel Jobs screen or a configured alert email.
 
 ```bash
 agento job:list                            # 20 most recent jobs
@@ -68,7 +68,7 @@ No new mechanisms are introduced. Resume reuses the existing retry-resume infras
 
 ## Known limitation
 
-Session storage is not scoped per agent_view. All sessions share `/workspace/.claude/` and `/workspace/.codex/`. Collisions are impossible (UUIDs), but if an operator inspects these directories by hand, transcripts from all agent_views appear side-by-side. Per-agent_view isolation can come later with the cron/sandbox container split.
+Session storage is not scoped per agent_view. All sessions share `/workspace/.claude/` and `/workspace/.codex/`. Collisions are impossible (UUIDs), but if an operator inspects these directories by hand, transcripts from all agent_views appear side-by-side. Per-agent_view isolation can come later, with per-run isolation in the runners.
 
 ## Stale job recovery
 

@@ -14,7 +14,7 @@ DEV = ROOT / "docker" / "docker-compose.dev.yml"
 
 
 @pytest.mark.parametrize("text", [
-    render_compose(TEMPLATE.read_text(), python_version="3.12", extensions=[], sandbox_packages=[]),
+    render_compose(TEMPLATE.read_text(), python_version="3.12", extensions=[]),
     DEV.read_text(),
 ], ids=["template", "dev"])
 def test_mysql_allows_600_connections(text):

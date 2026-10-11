@@ -70,7 +70,8 @@ runs bypass the sandbox through a CLI flag (below), and the same file is the HOM
 *interactive* `agento run` uses — a generated "never ask" there would silently remove
 that session's approval prompts. Only this field puts those keys in the file.
 
-In `agento admin` the field is on the **agent_view** node, beside the harness selector —
+In the admin panel Config screen (and in the deprecated `agento admin`) the field is on the
+**agent_view** node, beside the harness selector —
 it is listed only when this view's harness is `codex` (see
 [harness contract](../architecture/harness-contract.md#harness_option--showing-the-field-where-it-is-set)).
 

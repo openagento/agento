@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agento.framework.cli._project import EXEC_SERVICE
 from agento.framework.cli.run import RunCommand, _load_stream_renderer
 
 _INTERACTIVE_CLAUDE = ["claude"]
@@ -25,6 +26,11 @@ _HEADLESS_CODEX = [
     "--skip-git-repo-check",
     "--model", "gpt-5.4",
 ]
+
+
+def test_agento_run_execs_into_the_first_runner():
+    """The sandbox service is gone; runner-1 has the same image, /workspace and no secret."""
+    assert EXEC_SERVICE == "runner-1"
 
 
 def _base_runtime(harness="claude", model="claude-opus-4-6", *, prompt=False):
@@ -167,7 +173,7 @@ class TestRunCommand:
         assert argv[:4] == ["docker", "compose", "-f", str(compose)]
         assert "exec" in argv
         assert "-it" in argv
-        assert "sandbox" in argv
+        assert EXEC_SERVICE in argv
         assert argv[-1] == "claude"
         assert "HOME=/workspace/artifacts/it/dev_01/run" in argv
         # cwd is the per-run artifacts dir (mirrors the consumer's job layout).
@@ -233,9 +239,9 @@ class TestRunCommand:
 
         argv = mock_run.call_args.args[0]
         assert "-T" in argv and "-it" not in argv
-        # After "sandbox" comes the ssh-prelude wrapper: bash -c <script> <arg0> <cmd...>
+        # After the service comes the ssh-prelude wrapper: bash -c <script> <arg0> <cmd...>
         # (bash, not sh: the key is delivered through a process substitution)
-        idx = argv.index("sandbox") + 1
+        idx = argv.index(EXEC_SERVICE) + 1
         assert argv[idx:idx + 2] == ["bash", "-c"]
         assert argv[idx + 3] == "agento-ssh-prelude"
         assert argv[idx + 4:] == _HEADLESS_CLAUDE
@@ -255,7 +261,7 @@ class TestRunCommand:
             RunCommand().execute(_make_prompt_args())
         assert exc.value.code == 0
         argv = mock_run.call_args.args[0]
-        idx = argv.index("sandbox") + 1
+        idx = argv.index(EXEC_SERVICE) + 1
         assert argv[idx:idx + 2] == ["bash", "-c"]
         assert argv[idx + 3] == "agento-ssh-prelude"
         assert argv[idx + 4:] == _HEADLESS_CODEX
@@ -272,7 +278,7 @@ class TestRunCommand:
         _, argv = mock_execvp.call_args.args
         u_idx = argv.index("-u")
         assert argv[u_idx + 1] == "agent"
-        assert argv.index("-u") < argv.index("sandbox")
+        assert argv.index("-u") < argv.index(EXEC_SERVICE)
 
     def test_headless_runs_as_agent_user(self, tmp_path):
         project_root, compose = _project_layout(tmp_path)
@@ -289,7 +295,7 @@ class TestRunCommand:
         argv = mock_run.call_args.args[0]
         u_idx = argv.index("-u")
         assert argv[u_idx + 1] == "agent"
-        assert argv.index("-u") < argv.index("sandbox")
+        assert argv.index("-u") < argv.index(EXEC_SERVICE)
 
     def test_headless_propagates_exit_code(self, tmp_path):
         project_root, compose = _project_layout(tmp_path)

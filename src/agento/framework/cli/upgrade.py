@@ -256,10 +256,6 @@ class UpgradeCommand:
             # Without this, compose merges the override's build: section over
             # ours and the managed Dockerfile is never built.
             build_base_images(project_root, version)
-            result = subprocess.run([*compose, "build", "sandbox"])
-            if result.returncode != 0:
-                log_error("Failed to build sandbox image.")
-                sys.exit(result.returncode)
             result = subprocess.run([*compose, "build", "toolbox", "cron"])
             if result.returncode != 0:
                 log_error("Failed to build toolbox/cron images.")

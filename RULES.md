@@ -33,7 +33,7 @@ repeats only the ranked goals below, word for word.
 
 Ranked. When two goals conflict, the higher goal wins.
 
-1. **Zero trust** — the agent holds no tool credential. Tool secrets live only in the toolbox. (SEC)
+1. **Zero trust** — the agent holds no tool credential. Tool secrets live only in the toolbox. The backend (`cron`, `web`) is trusted; the runner is the boundary. (SEC)
 2. **Mechanism vs meaning** — the framework is mechanism and names no vendor. Modules give
    meaning. (PLC)
 3. **Least privilege** — every tool is declared, off unless enabled, and gated per tool. (TBX)
@@ -57,8 +57,9 @@ what SEC-1 or CFG-1 allows; it is not an exception.
 
 **SEC-1 Credential boundary.** The agent holds no tool credential (upstream API token, tool DB
 user, SMTP password) and cannot read one. It holds only its own harness/provider credential in its
-per-run HOME, and what zero-trust.md lists. Tool credentials live in the toolbox. A change makes cron
-decrypt nothing beyond what a run needs to start, and passes no tool credential between containers.
+per-run HOME, and what zero-trust.md lists. Tool credentials live in the toolbox. The backend (`cron`, `web`) is trusted
+and may decrypt what it needs (D-BACKEND-2; Owner, 2026-10-10). A change passes no tool credential
+to a runner or an agent, and no decrypted secret to the browser (D-PANEL-ADMIN-1).
 An exception is an accepted exception (see above) whose DECISIONS.md entry lists every residual
 channel it accepts, with its lifetime. Other docs point to that entry; they do not restate it.
 
@@ -135,7 +136,7 @@ route. Mount it once, before every route, so a new route is limited with no opt-
 `rate-limit.js`). Key a limit by the credential's hash, or by the client address. Never key by a raw
 credential (SEC-6). Count authentication failures (401, 403) per client address, because a flood of
 random tokens gets a new credential key on each request. Where many callers share one address (all
-sandbox runs), the address limit counts failures only, so one caller cannot throttle the others'
+runs in one runner), the address limit counts failures only, so one caller cannot throttle the others'
 authorized traffic. A limit is never the only guard: authentication still runs on every request. A
 server that only a test starts is exempt.
 

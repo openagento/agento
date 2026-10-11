@@ -22,7 +22,7 @@ set -uo pipefail
 #      the proxy entrypoint refuses to start.
 #   5. neither a `cap` value nor a launch exchange `code` reaches the proxy or web logs — with
 #      web up, and with web stopped (the error-log path).
-#   6. `artifacts` publishes no host port and does not resolve from sandbox.
+#   6. `artifacts` publishes no host port and does not resolve from runner-1.
 #   7. the panel + launch flow (docker/smoke/panel-launch-smoke.py): log in, launch, redeem by
 #      POST through the apps origin, file with / without the cookie, a spoofed
 #      X-Forwarded-Uri, replay, a miniapp action (allowed, refused, and its audit row with
@@ -68,7 +68,7 @@ resolve_container() {
 }
 PROXY="$(resolve_container proxy)" || exit 1
 WEB="$(resolve_container web)" || exit 1
-SANDBOX="$(resolve_container sandbox)" || exit 1
+RUNNER="$(resolve_container runner-1)" || exit 1
 ARTIFACTS="$(resolve_container artifacts)" || exit 1
 CRON="$(resolve_container cron)" || exit 1
 MYSQL="$(resolve_container mysql)" || exit 1
@@ -205,7 +205,7 @@ printf '%s' "$logs" | grep -q 'REDACTED' && ok "query values logged as REDACTED"
 
 echo "6. artifacts"
 [ -z "$(docker port "$ARTIFACTS")" ] && ok "no published host port" || bad "artifacts publishes a host port"
-docker exec "$SANDBOX" getent hosts artifacts >/dev/null 2>&1 && bad "artifacts resolves from sandbox" || ok "artifacts does not resolve from sandbox"
+docker exec "$RUNNER" getent hosts artifacts >/dev/null 2>&1 && bad "artifacts resolves from runner-1" || ok "artifacts does not resolve from runner-1"
 
 echo "7. panel and launch flow"
 VIEW="${SMOKE_AGENT_VIEW:-dev_01}"

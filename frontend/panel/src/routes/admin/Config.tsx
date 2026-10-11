@@ -1,6 +1,6 @@
 // The TUI config screen (framework/admin/screens/config.py): modules on the left, the fields of
 // the picked module (or one of its tools) at the picked scope on the right, an editor per field.
-// `tester` is "" when the field declares none. `web` holds no encryption key: a secret is never shown and never written here (plan, fact 3).
+// `tester` is "" when the field declares none. A secret is never shown and never written here.
 import { useState } from "react";
 import {
   Alert, Badge, Grid, Group, JsonInput, Modal, MultiSelect, NavLink, NumberInput, SegmentedControl, Select, Stack, Switch,

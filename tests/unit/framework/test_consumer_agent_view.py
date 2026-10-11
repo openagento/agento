@@ -271,7 +271,12 @@ class TestRunJobWithAgentView:
 
         MockRunner.assert_called_once()
         assert MockRunner.call_args.args[1].working_dir == "/workspace"
-        assert MockRunner.call_args.args[1].home_dir is None
+        # No run dir of its own: a private temp HOME, never `/workspace` (test_consumer.py
+        # test_run_job_cron checks it is removed after the run).
+        from pathlib import Path
+
+        from agento.framework.runner import client as runner_client
+        assert Path(MockRunner.call_args.args[1].home_dir).parent == runner_client.shared_tmp()
 
     @patch("agento.framework.consumer.get_workflow_class")
     @patch("agento.framework.consumer.get_channel")

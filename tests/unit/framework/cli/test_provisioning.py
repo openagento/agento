@@ -11,6 +11,7 @@ import pytest
 from agento.framework.cli._provisioning import (
     SandboxPackage,
     build_base_images,
+    build_sandbox_image,
     bump_agento_version,
     detect_python_version,
     ensure_storage_dirs,
@@ -160,14 +161,14 @@ class TestRenderCompose:
 
     def test_substitutes_python_version(self):
         out = render_compose(
-            self.TEMPLATE, python_version="3.13", extensions=[], sandbox_packages=[],
+            self.TEMPLATE, python_version="3.13", extensions=[],
         )
         assert "python3.13" in out
         assert "PY=3.13" in out
 
     def test_no_extensions_removes_placeholder_line(self):
         out = render_compose(
-            self.TEMPLATE, python_version="3.12", extensions=[], sandbox_packages=[],
+            self.TEMPLATE, python_version="3.12", extensions=[],
         )
         assert "extension_mounts_cron" not in out
         # Placeholder line is gone — no orphan comment markers in output.
@@ -178,7 +179,6 @@ class TestRenderCompose:
             self.TEMPLATE,
             python_version="3.12",
             extensions=["ext_a", "ext_b"],
-            sandbox_packages=[],
         )
         assert "/site-packages/ext_a:/opt/agento-src/ext_a:ro" in out
         assert "/site-packages/ext_b:/opt/agento-src/ext_b:ro" in out
@@ -390,19 +390,6 @@ class TestRegenerateCompose:
         assert "extension_mounts_sandbox" not in content
         assert "extension_mounts_cron" not in content
 
-    def test_includes_sandbox_package_pins_from_core_modules(self, tmp_path: Path):
-        # Core agent modules ship sandbox_packages declarations — regenerate_compose
-        # must inject those into the sandbox build-args block (or the sandbox image
-        # would have no CLI version pinning at all).
-        proj = self._seed_project(tmp_path)
-        regenerate_compose(proj)
-        content = (proj / "docker" / "docker-compose.yml").read_text()
-        # The marker line must not survive rendering.
-        assert "sandbox_package_args" not in content
-        # Claude + codex ship with the framework; both should appear under sandbox.args.
-        assert "CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-" in content
-        assert "CODEX_VERSION: ${CODEX_VERSION:-" in content
-
 
 class TestBuildBaseImages:
     """build_base_images guarantees agento-<service>:<version> tags exist before
@@ -440,6 +427,20 @@ class TestBuildBaseImages:
         # Each invocation starts with `docker build`.
         for inv in invocations:
             assert inv[:2] == ["docker", "build"]
+
+    @patch("agento.framework.cli._provisioning.subprocess.run")
+    def test_sandbox_image_alone_takes_the_compose_tag(self, mock_run, tmp_path: Path):
+        # module:enable rebuilds only this image: its tag must be the one the compose
+        # file's SANDBOX_IMAGE resolves to (AGENTO_VERSION in docker/.env).
+        proj = self._seed_project(tmp_path)
+        mock_run.return_value = type("R", (), {"returncode": 3})()
+
+        assert build_sandbox_image(proj) == 3
+
+        inv = list(mock_run.call_args.args[0])
+        assert inv[:4] == ["docker", "build", "-t", "agento-sandbox:0.9.4"]
+        assert "CLAUDE_CODE_VERSION=~2.1.150" in inv
+        assert inv[-1] == str(proj / ".agento" / "docker" / "sandbox")
 
     @patch("agento.framework.cli._provisioning.subprocess.run")
     def test_passes_host_uid_gid_to_sandbox_and_toolbox(
@@ -515,11 +516,9 @@ class TestBuildBaseImagesTemplateDriftGuard:
     """Catches future docker-compose.yml template changes that add build args
     without updating build_base_images.
 
-    Renders the template against the current core registry, then parses the
-    output for build-arg keys per service. Both sides (template + helper) read
-    from the same di.json declarations, so the assertion is that any agent
-    module shipping a sandbox_packages entry shows up in BOTH the rendered
-    compose and the loop in build_base_images."""
+    Renders the template, then parses the output for build-arg keys per
+    service. The sandbox image has no compose service: only build_base_images
+    builds it, with the pins from each module's sandbox_packages entry."""
 
     def test_helper_matches_rendered_template_build_args(self):
         import re
@@ -527,13 +526,7 @@ class TestBuildBaseImagesTemplateDriftGuard:
         from agento.framework.cli._templates import get_template
 
         template = get_template("docker-compose.yml")
-        core_packages = enumerate_sandbox_packages()
-        rendered = render_compose(
-            template,
-            python_version="3.12",
-            extensions=[],
-            sandbox_packages=core_packages,
-        )
+        rendered = render_compose(template, python_version="3.12", extensions=[])
 
         lines = rendered.splitlines()
         service_re = re.compile(r"^  (\w+):\s*$")
@@ -560,11 +553,10 @@ class TestBuildBaseImagesTemplateDriftGuard:
                 elif not line.startswith("        "):
                     in_args = False
 
-        # Sandbox args = static (HOST_UID/HOST_GID) + one env key per registered
-        # sandbox_package. Toolbox/cron are agent-agnostic.
-        registry_keys = {pkg.version_env_key for pkg in core_packages}
+        # No sandbox service: build_base_images is the only builder of the sandbox
+        # image (its pins: TestBuildBaseImagesCliPins). Toolbox/cron are agent-agnostic.
+        assert "sandbox" not in actual
         expected = {
-            "sandbox": {"HOST_UID", "HOST_GID"} | registry_keys,
             "toolbox": {"HOST_UID", "HOST_GID"},
             "cron": {"SANDBOX_IMAGE"},
         }
@@ -839,71 +831,6 @@ class TestEnumerateSandboxPackages:
         assert all(p.harness != "no_sandbox" for p in pkgs)
 
 
-class TestRenderComposeWithSandboxPackages:
-    """The sandbox build-args block is rendered from the registry. Test the
-    renderer in isolation: 0 packages removes the marker line; N packages
-    expands into N indented `KEY: ${KEY:-default}` lines under `args:`."""
-
-    TEMPLATE = (
-        "services:\n"
-        "  sandbox:\n"
-        "    build:\n"
-        "      context: ./sandbox\n"
-        "      args:\n"
-        "        HOST_UID: ${HOST_UID:-1000}\n"
-        "        # {{ sandbox_package_args }}\n"
-        "    image: agento-sandbox:latest\n"
-    )
-
-    def test_zero_packages_removes_marker_line(self):
-        out = render_compose(
-            self.TEMPLATE, python_version="3.12", extensions=[], sandbox_packages=[],
-        )
-        assert "sandbox_package_args" not in out
-        # HOST_UID stays on its own line; no stray blank line where the marker was.
-        assert "HOST_UID: ${HOST_UID:-1000}\n    image:" in out
-
-    def test_single_package_renders_one_line(self):
-        pkg = SandboxPackage(
-            harness="claude", manager="npm", package="@anthropic-ai/claude-code",
-            binary="claude", version_env_key="CLAUDE_CODE_VERSION", default_range="~2.1.142",
-        )
-        out = render_compose(
-            self.TEMPLATE, python_version="3.12", extensions=[], sandbox_packages=[pkg],
-        )
-        assert "CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-~2.1.142}" in out
-        assert "sandbox_package_args" not in out
-
-    def test_multiple_packages_render_in_order(self):
-        pkgs = [
-            SandboxPackage(
-                harness="claude", manager="npm", package="@anthropic-ai/claude-code",
-                binary="claude", version_env_key="CLAUDE_CODE_VERSION",
-                default_range="~2.1.142",
-            ),
-            SandboxPackage(
-                harness="codex", manager="npm", package="@openai/codex",
-                binary="codex", version_env_key="CODEX_VERSION",
-                default_range="~0.128.0",
-            ),
-            SandboxPackage(
-                harness="hermes", manager="npm", package="@example/hermes",
-                binary="hermes", version_env_key="HERMES_VERSION",
-                default_range="~1.0.0",
-            ),
-        ]
-        out = render_compose(
-            self.TEMPLATE, python_version="3.12", extensions=[], sandbox_packages=pkgs,
-        )
-        # Each pin renders once, in declared order.
-        positions = [
-            out.index("CLAUDE_CODE_VERSION:"),
-            out.index("CODEX_VERSION:"),
-            out.index("HERMES_VERSION:"),
-        ]
-        assert positions == sorted(positions)
-
-
 class TestNewAgentRegistersWithoutFrameworkEdit:
     """Pins the registry contract: dropping a new agent module under app/code/
     with a sandbox_packages entry must make it discoverable to all CLI
@@ -914,11 +841,9 @@ class TestNewAgentRegistersWithoutFrameworkEdit:
     won't be installed in the image yet — but the registry contract is in
     place, which is the structural fix.)"""
 
-    def test_new_agent_appears_in_enumeration_and_rendered_compose(
+    def test_new_agent_appears_in_enumeration_and_sandbox_build(
         self, tmp_path: Path,
     ):
-        from agento.framework.cli._templates import get_template
-
         mod = tmp_path / "app" / "code" / "hermes"
         mod.mkdir(parents=True)
         (mod / "module.json").write_text(json.dumps({"name": "hermes", "version": "0.1.0"}))
@@ -931,12 +856,11 @@ class TestNewAgentRegistersWithoutFrameworkEdit:
         assert hermes.binary == "hermes"
         assert hermes.default_range == "~1.0.0"
 
-        # 2. Rendered compose carries the new build arg.
-        template = get_template("docker-compose.yml")
-        rendered = render_compose(
-            template, python_version="3.12", extensions=[], sandbox_packages=pkgs,
-        )
-        assert "HERMES_VERSION: ${HERMES_VERSION:-~1.0.0}" in rendered
+        # 2. The sandbox image build carries the new build arg.
+        with patch("agento.framework.cli._provisioning.subprocess.run") as mock_run:
+            mock_run.return_value = type("R", (), {"returncode": 0})()
+            build_base_images(tmp_path, "0.9.6")
+        assert "HERMES_VERSION=~1.0.0" in list(mock_run.call_args_list[0].args[0])
 
 
 class TestEnsureStorageDirs:
@@ -991,7 +915,6 @@ class TestArtifactsService:
             get_template("docker-compose.yml"),
             python_version="3.12",
             extensions=[],
-            sandbox_packages=[],
         )
         return _service_block(rendered, "artifacts")
 
@@ -1081,7 +1004,6 @@ class TestDocumentedContainerInventory:
             get_template("docker-compose.yml"),
             python_version="3.12",
             extensions=[],
-            sandbox_packages=[],
         )
         # Only the block under `services:` — a 2-space key elsewhere is a network name.
         body = rendered.split("\nservices:\n", 1)[1]
@@ -1126,7 +1048,6 @@ def _rendered_template() -> str:
         get_template("docker-compose.yml"),
         python_version="3.12",
         extensions=[],
-        sandbox_packages=[],
     )
 
 
@@ -1145,15 +1066,20 @@ class TestPlatformFoundationServices:
     """E1.5 §2: the proxy is the only route to artifact files. WS7: each service sits on
     exactly the networks of the reachability table (docs/architecture/containers.md)."""
 
-    def test_runs_the_eight_services(self, load):
-        assert _services(load()) == {
-            "sandbox", "toolbox", "cron", "artifacts", "mysql", "web", "proxy", "runner-1",
+    def test_runs_the_seven_services(self, load):
+        # The dev file keeps `sandbox` only to build the cron image's base (scale 0).
+        assert _services(load()) - {"sandbox"} == {
+            "toolbox", "cron", "artifacts", "mysql", "web", "proxy", "runner-1",
         }
 
     def test_each_service_sits_on_its_networks_only(self, load):
-        # The security claims are the cells with no shared network: runner/sandbox reach
+        # The security claims are the cells with no shared network: a runner reaches
         # neither mysql nor web, cron reaches no proxy. Only proxy joins `default`.
         content = load()
+        if "sandbox" in _services(content):
+            block = _service_block(content, "sandbox")
+            assert "    scale: 0" in block.splitlines()
+            assert "    network_mode: none" in block.splitlines()
         assert {name: set(_items(_service_block(content, name), "networks"))
                 for name in _services(content)} == {
             "mysql": {"db-net"},
@@ -1161,10 +1087,9 @@ class TestPlatformFoundationServices:
             "web": {"db-net", "web-net"},
             "toolbox": {"db-net", "exec-net"},
             "runner-1": {"exec-net"},
-            "sandbox": {"exec-net"},
             "proxy": {"exec-net", "web-net", "default"},
             "artifacts": set(),
-        }
+        } | ({"sandbox": set()} if "sandbox" in _services(content) else {})
         assert "agento-net" not in content
 
     def test_artifacts_has_no_network_and_no_host_port(self, load):
@@ -1238,7 +1163,7 @@ def test_web_mounts_the_same_extensions_as_cron():
     from agento.framework.cli._templates import get_template
 
     content = render_compose(get_template("docker-compose.yml"), python_version="3.12",
-                             extensions=["acme_ext"], sandbox_packages=[])
+                             extensions=["acme_ext"])
     mount = "../.venv/lib/python3.12/site-packages/acme_ext:/opt/agento-src/acme_ext:ro"
     assert mount in _items(_service_block(content, "web"), "volumes")
     assert mount in _items(_service_block(content, "cron"), "volumes")

@@ -19,7 +19,7 @@ STORE = re.compile(r"MYSQL_|AGENTO_ENCRYPTION_KEY|CONFIG__|PASSWORD|secrets\.env
 def _sources():
     for count in (1, 2):
         yield pytest.param(render_compose(TEMPLATE.read_text(), python_version="3.12",
-                                          extensions=[], sandbox_packages=[],
+                                          extensions=[],
                                           runner_count=count), count, id=f"template-{count}")
     yield pytest.param(DEV.read_text(), 1, id="dev")
 

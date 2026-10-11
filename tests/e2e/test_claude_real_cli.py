@@ -23,7 +23,7 @@ import time
 
 import pytest
 
-from agento.framework.cli._project import compose_file_flags
+from agento.framework.cli._project import EXEC_SERVICE, compose_file_flags
 from agento.framework.cli.run import _fetch_runtime
 from agento.framework.harness import HarnessRunContext, RunRequest
 from agento.framework.ssh_prelude import wrap_with_ssh_prelude
@@ -121,7 +121,7 @@ def _resume(view: tuple[str, dict], session_id: str) -> subprocess.CompletedProc
     env_args = [a for k in secret_env for a in ("-e", k)]
     return subprocess.run(
         ["docker", "compose", *flags, "exec", "-T", "-u", "agent", "-e", f"HOME={home}",
-         *env_args, "-w", ctx.working_dir, "sandbox", *wrap_with_ssh_prelude(cmd)],
+         *env_args, "-w", ctx.working_dir, EXEC_SERVICE, *wrap_with_ssh_prelude(cmd)],
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300,
         env={**os.environ, **secret_env}, cwd=str(base._PROJECT_ROOT / "docker"),
     )
@@ -191,7 +191,7 @@ def test_resume_of_an_unknown_session_raises_with_the_cli_text(view):
 def _interactive_screen(view: tuple[str, dict], *extra: str, wait: float = 60) -> str:
     """Start ``agento run <view>`` on a pty and return the screen text it shows.
 
-    Teardown sends ``/exit`` so the CLI in the sandbox ends too; a kill is the fallback.
+    Teardown sends ``/exit`` so the CLI in the runner ends too; a kill is the fallback.
     """
     try:
         pid, fd = pty.fork()
