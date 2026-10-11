@@ -161,8 +161,8 @@ class ConversationDeltaSink:
     def _live(cur, execution_ids: set[str]) -> set[str]:
         """Which of these executions have not been finalized yet.
 
-        Read AFTER the batch has taken its threads’ row locks, which is what makes it
-        race-free: the finalizer takes the same lock before it forgets the attempt’s
+        Read AFTER the batch has taken its threads' row locks, which is what makes it
+        race-free: the finalizer takes the same lock before it forgets the attempt's
         fragments, so it either committed before this read (and we see the closed status)
         or it waits for this batch (and its delete runs last). Without it, a partial that
         the writer thread had already queued could land after the cleanup and sit in the
