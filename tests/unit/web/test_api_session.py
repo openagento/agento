@@ -56,6 +56,16 @@ def test_login_sets_the_cookie_and_returns_a_valid_csrf_token(web, auth):
     assert r.headers["cache-control"] == "no-store"
 
 
+def test_login_ignores_a_presented_session_cookie(web, auth, monkeypatch):
+    looked_up = []
+    monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: looked_up.append(t))
+    r = httpx.post(f"{web}/api/session", json={"username": "alice", "password": PASSWORD},
+                   headers={**panel_headers(), "Cookie": "__Host-agento-session=attacker-fixed"})
+    assert r.status_code == 200
+    assert r.headers["set-cookie"].startswith(f"__Host-agento-session={TOKEN};")
+    assert looked_up == []
+
+
 def test_bad_credentials_get_one_body(web, auth):
     wrong = _login(web, password="wrong password!!")
     unknown = _login(web, username="nobody")
