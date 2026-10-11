@@ -6,7 +6,7 @@ import { apiFetch, useMutation, useQuery, useQueryClient } from "@agento/api";
 import {
   Button, ConfirmDialog, CopyButton, DataTable, IconAction, PageHeader, StatusBadge, TextField, Timestamp, type Column,
 } from "@agento/ui";
-import { AdminOnly, CREDENTIAL_ERROR_HINT, message, whole } from "./shared";
+import { CREDENTIAL_ERROR_HINT, message, whole } from "./shared";
 
 interface LimitWindow { label: string; used_pct: number; resets_at: string | null }
 interface Limits { windows: LimitWindow[]; balance_usd: number | null }
@@ -241,26 +241,24 @@ export function Credentials() {
   ];
 
   return (
-    <AdminOnly>
-      <div className="ag-stack">
-        <PageHeader title="Credentials" description="Harness credentials, their status, the vendor limits and the last 24 hours of usage." />
-        <DataTable caption="Credentials" columns={columns} rows={creds.data} rowKey={(c) => String(c.id)}
-          onRowActivate={setDetail} loading={creds.isPending} error={creds.error ? message(creds.error) : null}
-          onRetry={() => void creds.refetch()} emptyTitle="No credentials" />
-        {creds.data?.some(inError) && <Text size="sm" c="dimmed">{CREDENTIAL_ERROR_HINT}</Text>}
-        <ConfirmDialog opened={action !== null} danger={action?.kind === "disable"} busy={run.isPending}
-          title={action?.kind === "disable" ? "Disable this credential?" : "Clear the error?"}
-          confirmLabel={action?.kind === "disable" ? "Disable" : "Clear error"}
-          onCancel={() => setAction(null)} onConfirm={() => action && run.mutate(action)}>
-          <p>{action?.kind === "disable"
-            ? `${action.credential.label} is no longer picked for a run.`
-            : `${action?.credential.label} is picked for runs again.`}</p>
-        </ConfirmDialog>
-        <UsageDrawer c={detail} onClose={() => setDetail(null)} />
-        <LoginModal c={relogin} loginId={start.data?.id ?? null} startError={start.error ? message(start.error) : null}
-          onRetry={() => relogin && beginLogin(relogin)}
-          onClose={() => { open.current = null; setRelogin(null); start.reset(); }} />
-      </div>
-    </AdminOnly>
+    <div className="ag-stack">
+      <PageHeader title="Credentials" description="Harness credentials, their status, the vendor limits and the last 24 hours of usage." />
+      <DataTable caption="Credentials" columns={columns} rows={creds.data} rowKey={(c) => String(c.id)}
+        onRowActivate={setDetail} loading={creds.isPending} error={creds.error ? message(creds.error) : null}
+        onRetry={() => void creds.refetch()} emptyTitle="No credentials" />
+      {creds.data?.some(inError) && <Text size="sm" c="dimmed">{CREDENTIAL_ERROR_HINT}</Text>}
+      <ConfirmDialog opened={action !== null} danger={action?.kind === "disable"} busy={run.isPending}
+        title={action?.kind === "disable" ? "Disable this credential?" : "Clear the error?"}
+        confirmLabel={action?.kind === "disable" ? "Disable" : "Clear error"}
+        onCancel={() => setAction(null)} onConfirm={() => action && run.mutate(action)}>
+        <p>{action?.kind === "disable"
+          ? `${action.credential.label} is no longer picked for a run.`
+          : `${action?.credential.label} is picked for runs again.`}</p>
+      </ConfirmDialog>
+      <UsageDrawer c={detail} onClose={() => setDetail(null)} />
+      <LoginModal c={relogin} loginId={start.data?.id ?? null} startError={start.error ? message(start.error) : null}
+        onRetry={() => relogin && beginLogin(relogin)}
+        onClose={() => { open.current = null; setRelogin(null); start.reset(); }} />
+    </div>
   );
 }

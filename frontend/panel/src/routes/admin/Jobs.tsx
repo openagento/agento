@@ -6,7 +6,7 @@ import { apiFetch, useQuery } from "@agento/api";
 import {
   CodeBlock, IconAction, DataTable, ErrorState, LoadingState, PageHeader, SectionHeader, StatusBadge, Timestamp, type Column,
 } from "@agento/ui";
-import { AdminOnly, durationOf, jobTone, message, whole, type JobHead, type JobRow } from "./shared";
+import { durationOf, jobTone, message, whole, type JobHead, type JobRow } from "./shared";
 
 interface JobDetail extends JobRow {
   model: string | null; error_message: string | null; result_summary: string | null; prompt: string | null; output: string | null;
@@ -80,19 +80,17 @@ export function Jobs() {
   const rows = jobs.data?.filter((j) => !needle || SEARCHED.map((k) => String(j[k] ?? "")).join(" ").toLowerCase().includes(needle));
   const open = (j: JobHead) => setOpenId(j.id);
   return (
-    <AdminOnly>
-      <div className="ag-stack">
-        <PageHeader title="Jobs" description="The job queue. Activate a row for its detail." />
-        <Group gap="sm" align="flex-end">
-          <SegmentedControl aria-label="Status" data={STATUSES} value={status}
-            onChange={(v) => setParams((p) => { const n = new URLSearchParams(p); if (v === "All") n.delete("status"); else n.set("status", v); return n; })} />
-          <TextInput aria-label="Search jobs" placeholder="Search…" value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
-        </Group>
-        <DataTable caption="Jobs" columns={jobColumns(open)} rows={rows} rowKey={(j) => String(j.id)} onRowActivate={open}
-          loading={jobs.isPending} error={jobs.error ? message(jobs.error) : null} onRetry={() => void jobs.refetch()}
-          emptyTitle="No jobs" />
-        <JobDrawer id={openId} onClose={() => setOpenId(null)} />
-      </div>
-    </AdminOnly>
+    <div className="ag-stack">
+      <PageHeader title="Jobs" description="The job queue. Activate a row for its detail." />
+      <Group gap="sm" align="flex-end">
+        <SegmentedControl aria-label="Status" data={STATUSES} value={status}
+          onChange={(v) => setParams((p) => { const n = new URLSearchParams(p); if (v === "All") n.delete("status"); else n.set("status", v); return n; })} />
+        <TextInput aria-label="Search jobs" placeholder="Search…" value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
+      </Group>
+      <DataTable caption="Jobs" columns={jobColumns(open)} rows={rows} rowKey={(j) => String(j.id)} onRowActivate={open}
+        loading={jobs.isPending} error={jobs.error ? message(jobs.error) : null} onRetry={() => void jobs.refetch()}
+        emptyTitle="No jobs" />
+      <JobDrawer id={openId} onClose={() => setOpenId(null)} />
+    </div>
   );
 }

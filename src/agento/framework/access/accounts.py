@@ -1,10 +1,11 @@
 """Platform users, roles and role grants (PRD E2 §5, §5.1).
 
 Every write owns its transaction: it takes all its ``user`` row locks in one statement in
-ascending id order, re-checks the acting admin inside that transaction, writes, revokes what
-the change invalidates, and commits. ``create_launch`` locks its user row the same way, so a
-launch sees either the old access (and is revoked with the rest) or the new one.
-``actor_id=None`` is an operator at the CLI or TUI: no actor check.
+ascending id order, re-checks the actor inside that transaction (still active, still the role
+the route check authorized), writes, revokes what the change invalidates, and commits.
+``create_launch`` locks its user row the same way, so a launch sees either the old access (and
+is revoked with the rest) or the new one. ``actor`` is ``(user id, role)``; ``None`` is an
+operator at the CLI or TUI: no actor check.
 """
 from __future__ import annotations
 
@@ -19,9 +20,24 @@ from .passwords import dummy_verify, hash_password, verify_password
 BUILTIN_ROLES = ("admin", "user")
 ROLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,15}$")
 GRANT_KINDS = ("tool", "operation")
-ADMIN_OPERATIONS = frozenset({"users.manage", "grants.manage", "config.write", "admin.read", "credentials.manage"})
 # Framework operations: checked by grant for every role, admin included (web/api.py create_launch).
 FRAMEWORK_OPERATIONS = {"artifact.launch": "Launch a miniapp"}
+# Admin panel leaves, per screen: global role_grant rows (kind operation, no scope). A route names
+# its leaf (web/api.py Route.acl); admin holds them all.
+ADMIN_SCREENS = {
+    "Dashboard": {"admin.dashboard": "View"},
+    "Jobs": {"admin.jobs": "View"},
+    "Agents": {"admin.agents": "View"},
+    "Credentials": {"admin.credentials": "View", "admin.credentials.edit": "Sign in, clear error, disable"},
+    "Tools": {"admin.tools": "View"},
+    "Skills": {"admin.skills": "View"},
+    "Config": {"admin.config": "View", "admin.config.edit": "Edit, test, and switch tools and skills"},
+    "Users": {"admin.users": "View", "admin.users.create": "Create", "admin.users.edit": "Edit"},
+    "Roles": {"admin.roles": "View", "admin.roles.create": "Create", "admin.roles.edit": "Edit and grant",
+              "admin.roles.delete": "Delete"},
+    "Miniapps": {"miniapps": "Use"},
+}
+ADMIN_RESOURCES = frozenset(leaf for leaves in ADMIN_SCREENS.values() for leaf in leaves)
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _GRANT_LOCK = "agento.role_grant"
 MAX_GRANT_NAMES = 1000
@@ -33,6 +49,9 @@ _SCOPE_MATCH = (
     "((agent_view_id = %s AND workspace_id IS NULL)"
     " OR (agent_view_id IS NULL AND workspace_id = %s))"
 )
+# The rows a role page counts: one scope, or none for an admin panel operation.
+_COUNTED = ("((workspace_id IS NULL) <> (agent_view_id IS NULL)"
+            " OR (workspace_id IS NULL AND agent_view_id IS NULL AND grant_kind = 'operation'))")
 
 
 @dataclass(frozen=True)
@@ -58,20 +77,30 @@ def _lock_users(cur, where: str, params: tuple) -> dict[int, dict]:
     return {r["id"]: r for r in cur.fetchall()}
 
 
-def _check_actor(locked: dict[int, dict], actor_id: int | None) -> None:
-    if actor_id is None:
+Actor = tuple[int, str]
+
+
+def _check_actor(locked: dict[int, dict], actor: Actor | None) -> None:
+    """The actor's locked row is still active and still has the role the route check saw."""
+    if actor is None:
         return
-    row = locked.get(actor_id)
-    if not row or row["role"] != "admin" or not row["is_active"]:
+    row = locked.get(actor[0])
+    if not row or row["role"] != actor[1] or not row["is_active"]:
         raise AccessError("not allowed")
 
 
-def _lock_actor_and(cur, actor_id: int | None, *user_ids: int) -> dict[int, dict]:
-    ids = sorted({i for i in (actor_id, *user_ids) if i is not None})
+def _admin_only(actor: Actor | None) -> None:
+    """Only admin creates, edits or assigns an admin account (SEC-7)."""
+    if actor is not None and actor[1] != "admin":
+        raise AccessError("not allowed")
+
+
+def _lock_actor_and(cur, actor: Actor | None, *user_ids: int) -> dict[int, dict]:
+    ids = sorted({i for i in (actor and actor[0], *user_ids) if i is not None})
     if not ids:
         return {}
     locked = _lock_users(cur, "id IN (" + ",".join(["%s"] * len(ids)) + ")", tuple(ids))
-    _check_actor(locked, actor_id)
+    _check_actor(locked, actor)
     return locked
 
 
@@ -116,13 +145,15 @@ def _hash(password: str) -> str:
         raise AccessError(str(exc)) from None
 
 
-def create_user(conn, username: str, role: str, password: str | None, *, actor_id: int | None = None) -> User:
+def create_user(conn, username: str, role: str, password: str | None, *, actor: Actor | None = None) -> User:
     _check_username(username)
     password_hash = _hash(password) if password is not None else None
 
     def work(cur):
-        _lock_actor_and(cur, actor_id)
+        _lock_actor_and(cur, actor)
         _check_role(cur, role)
+        if role == "admin":
+            _admin_only(actor)
         try:
             cur.execute(
                 "INSERT INTO `user` (username, password_hash, role) VALUES (%s, %s, %s)",
@@ -187,14 +218,15 @@ def _require_target(locked: dict[int, dict], user_id: int) -> dict:
 
 
 def update_user(conn, user_id: int, *, role: str | None = None, active: bool | None = None,
-                password: str | None = None, actor_id: int | None = None) -> None:
+                password: str | None = None, actor: Actor | None = None) -> None:
     """Apply every given field in one transaction: all of them or none."""
     if active is not None and not isinstance(active, bool):
         raise AccessError("is_active must be a boolean")
     password_hash = _hash(password) if password is not None else None
 
     def work(cur):
-        _require_target(_lock_actor_and(cur, actor_id, user_id), user_id)
+        if _require_target(_lock_actor_and(cur, actor, user_id), user_id)["role"] == "admin" or role == "admin":
+            _admin_only(actor)
         if role is not None:
             _check_role(cur, role)
             try:
@@ -213,16 +245,16 @@ def update_user(conn, user_id: int, *, role: str | None = None, active: bool | N
     _in_transaction(conn, work)
 
 
-def set_role(conn, user_id: int, role: str, *, actor_id: int | None = None) -> None:
-    update_user(conn, user_id, role=role, actor_id=actor_id)
+def set_role(conn, user_id: int, role: str, *, actor: Actor | None = None) -> None:
+    update_user(conn, user_id, role=role, actor=actor)
 
 
-def set_active(conn, user_id: int, active: bool, *, actor_id: int | None = None) -> None:
-    update_user(conn, user_id, active=active, actor_id=actor_id)
+def set_active(conn, user_id: int, active: bool, *, actor: Actor | None = None) -> None:
+    update_user(conn, user_id, active=active, actor=actor)
 
 
-def set_password(conn, user_id: int, password: str, *, actor_id: int | None = None) -> None:
-    update_user(conn, user_id, password=password, actor_id=actor_id)
+def set_password(conn, user_id: int, password: str, *, actor: Actor | None = None) -> None:
+    update_user(conn, user_id, password=password, actor=actor)
 
 
 def declared_tools(*, enabled_only: bool = False) -> set[str]:
@@ -241,7 +273,7 @@ def declared_tools(*, enabled_only: bool = False) -> set[str]:
 def grantable_operations() -> dict[str, str]:
     """``{id: title}`` of the operations an admin may grant: the built-in ones plus every
     ``acl_resources`` entry a module declares in ``di.json`` (Magento ``acl.xml``). Admin has
-    them all built in (``may``/``can_see_*`` check the role first)."""
+    them all built in (``can_see_*`` check the role first)."""
     from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
     from ..module_discovery import module_dirs_by_name
     from ..module_validator import acl_resource_declarations
@@ -270,6 +302,10 @@ def _check_scope(workspace_id, agent_view_id) -> None:
 def _check_grant(kind: str, name: str, workspace_id, agent_view_id) -> None:
     if kind not in GRANT_KINDS:
         raise AccessError(f"grant kind must be one of {', '.join(GRANT_KINDS)}")
+    if name in ADMIN_RESOURCES:
+        if kind != "operation" or workspace_id is not None or agent_view_id is not None:
+            raise AccessError(f"{name} is an admin panel operation: it takes no workspace or agent_view")
+        return
     _check_scope(workspace_id, agent_view_id)
     if kind == "operation" and name not in (operations := grantable_operations()):
         raise AccessError(f"operation must be one of {', '.join(sorted(operations))}")
@@ -278,11 +314,11 @@ def _check_grant(kind: str, name: str, workspace_id, agent_view_id) -> None:
 
 
 def add_grant(conn, role: str, kind: str, name: str, *, workspace_id: int | None = None,
-              agent_view_id: int | None = None, actor_id: int | None = None) -> int:
+              agent_view_id: int | None = None) -> int:
+    """An operator write (CLI): the panel writes through ``set_role_grants``."""
     _check_grant(kind, name, workspace_id, agent_view_id)
 
     def work(cur):
-        _lock_actor_and(cur, actor_id)
         _grant_lock(cur)
         _check_role(cur, role)
         cur.execute(
@@ -333,14 +369,14 @@ def _revoke_role_launches(cur, role: str, workspace_id, agent_view_id) -> None:
     )
 
 
-def remove_grant(conn, grant_id: int, *, actor_id: int | None = None) -> None:
+def remove_grant(conn, grant_id: int) -> None:
+    """An operator write (CLI), as ``add_grant``."""
     def work(cur):
         cur.execute("SELECT role, workspace_id, agent_view_id FROM role_grant WHERE id = %s", (grant_id,))
         grant = cur.fetchone()
         if not grant:
             raise AccessError("grant not found")
-        locked = _lock_users(cur, "role = %s OR id = %s", (grant["role"], actor_id))
-        _check_actor(locked, actor_id)
+        _lock_users(cur, "role = %s", (grant["role"],))
         cur.execute("DELETE FROM role_grant WHERE id = %s", (grant_id,))
         if cur.rowcount != 1:
             raise AccessError("grant not found")
@@ -356,29 +392,38 @@ def _names(value, what: str) -> set[str]:
 
 
 def set_role_grants(conn, role: str, *, workspace_id: int | None = None, agent_view_id: int | None = None,
-                    tools: list[str], operations: list[str], actor_id: int | None = None) -> dict:
+                    tools: list[str], operations: list[str], actor: Actor | None = None) -> dict:
     """Make the role's grants at exactly this scope the given names, in one transaction.
 
-    A name already granted at the view's workspace is never inserted at the view (it is
-    redundant); a view row that is already there stays. Removing anything ends the role's
-    launches in the scope, as ``remove_grant`` does. Returns ``{added, removed}`` (counts).
+    No scope is the admin panel: its operations are ``ADMIN_RESOURCES``, and an actor that is not
+    admin adds or removes only the ones its own role holds. A name already granted at the view's
+    workspace is never inserted at the view (it is redundant); a view row that is already there
+    stays. Removing anything ends the role's launches in the scope, as ``remove_grant`` does.
+    Returns ``{added, removed}`` (counts).
     """
-    _check_scope(workspace_id, agent_view_id)
+    is_global = workspace_id is None and agent_view_id is None
+    if not is_global:
+        _check_scope(workspace_id, agent_view_id)
     want_tools, want_ops = _names(tools, "tools"), _names(operations, "operations")
     if len(want_tools) + len(want_ops) > MAX_GRANT_NAMES:
         raise AccessError(f"at most {MAX_GRANT_NAMES} names per scope")
-    if unknown := want_ops - (operations_known := set(grantable_operations())):
+    operations_known = set(ADMIN_RESOURCES) if is_global else set(grantable_operations())
+    if unknown := want_ops - operations_known:
         raise AccessError(f"operation must be one of {', '.join(sorted(operations_known))}")
-    if unknown := sorted(want_tools - declared_tools()):
+    if is_global and want_tools:
+        raise AccessError("the admin panel scope takes no tools")
+    if not is_global and (unknown := sorted(want_tools - declared_tools())):
         raise AccessError(f"no module declares tool {unknown[0]!r}")
     # ponytail: the tree lists the tools of enabled modules only, so a row for a tool of a
     # disabled module is outside this write and kept (it works again when the module does).
-    replaceable = {("tool", n) for n in declared_tools(enabled_only=True)} | {("operation", n) for n in operations_known}
+    replaceable = {("operation", n) for n in operations_known}
+    if not is_global:
+        replaceable |= {("tool", n) for n in declared_tools(enabled_only=True)}
     want = {("tool", n) for n in want_tools} | {("operation", n) for n in want_ops}
 
     def work(cur):
-        locked = _lock_users(cur, "role = %s OR id = %s", (role, actor_id))
-        _check_actor(locked, actor_id)
+        locked = _lock_users(cur, "role = %s OR id = %s", (role, actor and actor[0]))
+        _check_actor(locked, actor)
         _grant_lock(cur)
         _check_role(cur, role)
         inherited: set = set()
@@ -401,9 +446,14 @@ def set_role_grants(conn, role: str, *, workspace_id: int | None = None, agent_v
         have = {(r["grant_kind"], r["name"]) for r in current}
         # A redundant view row (the workspace grants it too) stays: dropping it changes no access
         # but would end the role's launches here.
-        drop = [r["id"] for r in current if (key := (r["grant_kind"], r["name"])) in replaceable
-                and key not in want and key not in inherited]
+        dropped = [r for r in current if (key := (r["grant_kind"], r["name"])) in replaceable
+                   and key not in want and key not in inherited]
+        drop = [r["id"] for r in dropped]
         add = sorted(want - have - inherited)
+        # Under the grant lock, so the actor's own leaves cannot change while this checks them.
+        if is_global and actor is not None and actor[1] != "admin" and \
+                ({n for _k, n in add} | {r["name"] for r in dropped}) - _held(cur, actor[1]):
+            raise AccessError("not allowed")
         if drop:
             cur.execute("DELETE FROM role_grant WHERE id IN (" + ",".join(["%s"] * len(drop)) + ")", drop)
             _revoke_role_launches(cur, role, workspace_id, agent_view_id)
@@ -430,9 +480,10 @@ def list_roles(conn) -> list[dict]:
         cur.execute(
             "SELECT r.code, r.label, COALESCE(u.n, 0) AS users, COALESCE(g.n, 0) AS scopes FROM role r"
             " LEFT JOIN (SELECT role, COUNT(*) AS n FROM `user` GROUP BY role) u ON u.role = r.code"
-            # A valid row has exactly one scope, so the two distinct counts never overlap.
-            " LEFT JOIN (SELECT role, COUNT(DISTINCT workspace_id) + COUNT(DISTINCT agent_view_id) AS n"
-            "  FROM role_grant WHERE (workspace_id IS NULL) <> (agent_view_id IS NULL) GROUP BY role) g"
+            # A valid row has one scope or none (the admin panel), so the three counts never overlap.
+            " LEFT JOIN (SELECT role, COUNT(DISTINCT workspace_id) + COUNT(DISTINCT agent_view_id)"
+            "  + MAX(workspace_id IS NULL AND agent_view_id IS NULL) AS n"
+            f"  FROM role_grant WHERE {_COUNTED} GROUP BY role) g"
             " ON g.role = r.code ORDER BY r.label"
         )
         return [{"code": r["code"], "label": r["label"], "builtin": r["code"] in BUILTIN_ROLES,
@@ -440,12 +491,13 @@ def list_roles(conn) -> list[dict]:
 
 
 def role_scopes(conn, role: str) -> list[dict]:
-    """``[{workspace_id, agent_view_id, tools, operations}]``: grant counts per scope."""
+    """``[{workspace_id, agent_view_id, tools, operations}]``: grant counts per scope; both ids
+    ``None`` is the admin panel."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT workspace_id, agent_view_id, SUM(grant_kind = 'tool') AS tools,"
             " SUM(grant_kind = 'operation') AS operations FROM role_grant"
-            " WHERE role = %s AND (workspace_id IS NULL) <> (agent_view_id IS NULL)"
+            f" WHERE role = %s AND {_COUNTED}"
             " GROUP BY workspace_id, agent_view_id ORDER BY workspace_id, agent_view_id",
             (role,),
         )
@@ -464,13 +516,13 @@ def _duplicate_role(exc: pymysql.err.IntegrityError) -> AccessError:
                        else "a role with this code already exists")
 
 
-def create_role(conn, code: str, label: str, *, actor_id: int | None = None) -> dict:
+def create_role(conn, code: str, label: str, *, actor: Actor | None = None) -> dict:
     if not isinstance(code, str) or not ROLE_CODE_RE.fullmatch(code):
         raise AccessError("code must match ^[a-z][a-z0-9_]{1,15}$")
     label = _check_label(label)
 
     def work(cur):
-        _lock_actor_and(cur, actor_id)
+        _lock_actor_and(cur, actor)
         try:
             cur.execute("INSERT INTO role (code, label) VALUES (%s, %s)", (code, label))
         except pymysql.err.IntegrityError as exc:
@@ -489,12 +541,12 @@ def _lock_role(cur, code: str) -> None:
         raise AccessError("role not found")
 
 
-def rename_role(conn, code: str, label: str, *, actor_id: int | None = None) -> None:
+def rename_role(conn, code: str, label: str, *, actor: Actor | None = None) -> None:
     """The label only: the code is the key ``user.role`` and ``role_grant.role`` hold."""
     label = _check_label(label)
 
     def work(cur):
-        _lock_actor_and(cur, actor_id)
+        _lock_actor_and(cur, actor)
         _lock_role(cur, code)
         try:
             cur.execute("UPDATE role SET label = %s WHERE code = %s", (label, code))
@@ -508,14 +560,14 @@ def _in_use(n: int) -> AccessError:
     return AccessError("1 user has this role" if n == 1 else f"{n} users have this role")
 
 
-def delete_role(conn, code: str, *, actor_id: int | None = None) -> None:
+def delete_role(conn, code: str, *, actor: Actor | None = None) -> None:
     """A built-in role or a role with users is refused. Its grants go with it (FK cascade);
     no launch needs a revoke, because no user holds the role."""
     if code in BUILTIN_ROLES:
         raise AccessError("a built-in role cannot be deleted")
 
     def work(cur):
-        _lock_actor_and(cur, actor_id)
+        _lock_actor_and(cur, actor)
         _lock_role(cur, code)
         cur.execute("SELECT COUNT(*) AS n FROM `user` WHERE role = %s", (code,))
         if n := cur.fetchone()["n"]:
@@ -607,5 +659,23 @@ def scope_is_active(conn, agent_view_id: int | None) -> bool:
         return cur.fetchone() is not None
 
 
-def may(user: User, operation: str) -> bool:
-    return user.role == "admin" and user.is_active and operation in ADMIN_OPERATIONS
+def _held(cur, role: str) -> set[str]:
+    cur.execute(
+        "SELECT name FROM role_grant WHERE role = %s AND grant_kind = 'operation'"
+        " AND workspace_id IS NULL AND agent_view_id IS NULL", (role,),
+    )
+    return {r["name"] for r in cur.fetchall()} & ADMIN_RESOURCES
+
+
+def held_admin(conn, role: str) -> list[str]:
+    """The admin panel leaves the role holds: all of them for admin."""
+    if role == "admin":
+        return sorted(ADMIN_RESOURCES)
+    with conn.cursor() as cur:
+        return sorted(_held(cur, role))
+
+
+def may(conn, user: User, acl: str | tuple[str, ...]) -> bool:
+    """Does the user hold the leaf, or (a tuple) any one of the leaves?"""
+    leaves = {acl} if isinstance(acl, str) else set(acl)
+    return user.is_active and not leaves.isdisjoint(held_admin(conn, user.role))

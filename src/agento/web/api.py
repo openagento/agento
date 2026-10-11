@@ -49,6 +49,8 @@ class Route:
     # "session": a live panel session (and, for a write, the CSRF token); "login": no session.
     auth: str = "session"
     json_body: bool = False
+    # An admin panel leaf the session's user must hold (a tuple: any one of them); server._run checks it.
+    acl: str | tuple[str, ...] | None = None
 
 
 def error(status: int, message: str) -> Response:
@@ -158,7 +160,7 @@ def display_settings(conn) -> dict[str, str] | None:
 
 
 def _session_json(conn, session: sessions.Session, token: str) -> dict:
-    return {"user": user_json(session.user), "csrf_token": sessions.csrf_token(token),
+    return {"user": {**user_json(session.user), "acl": accounts.held_admin(conn, session.user.role)}, "csrf_token": sessions.csrf_token(token),
             "expires_at": _iso(session.expires_at), "display": display_settings(conn)}
 
 
@@ -186,9 +188,9 @@ def _access_error(exc: accounts.AccessError) -> Response:
     return error(404 if msg.endswith("not found") else 400, msg)
 
 
-def _forbidden_unless(req: Request, operation: str) -> Response | None:
-    # The role comes from this request's session lookup (the DB), never from the cookie.
-    return None if accounts.may(req.session.user, operation) else error(403, "forbidden")
+def _actor(req: Request) -> accounts.Actor:
+    """The ``(id, role)`` the route check authorized; the writer re-checks it on the locked row."""
+    return req.session.user.id, req.session.user.role
 
 
 def agent_views(req: Request) -> Response:
@@ -236,29 +238,24 @@ def invoke(req: Request) -> Response:
 
 
 def admin_list_users(req: Request) -> Response:
-    return _forbidden_unless(req, "users.manage") or Response(
-        200, [user_json(u) for u in accounts.list_users(req.conn)])
+    return Response(200, [user_json(u) for u in accounts.list_users(req.conn)])
 
 
 def admin_create_user(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "users.manage"):
-        return denied
     body = _body(req)
     password = body.get("password")
     if password is not None and not isinstance(password, str):
         return error(400, "password must be a string")
     try:
         user = accounts.create_user(req.conn, body.get("username"), body.get("role"), password,
-                                    actor_id=req.session.user.id)
+                                    actor=_actor(req))
     except accounts.AccessError as exc:
         return _access_error(exc)
     return Response(201, user_json(user))
 
 
 def admin_update_user(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "users.manage"):
-        return denied
-    body, user_id, actor = _body(req), int(req.params["id"]), req.session.user.id
+    body, user_id = _body(req), int(req.params["id"])
     if not {"role", "is_active", "password"} & body.keys():
         return error(400, "nothing to change")
     if "is_active" in body and not isinstance(body["is_active"], bool):
@@ -269,7 +266,7 @@ def admin_update_user(req: Request) -> Response:
         return error(400, "role must be a string")
     try:
         accounts.update_user(req.conn, user_id, role=body.get("role"), active=body.get("is_active"),
-                             password=body.get("password"), actor_id=actor)
+                             password=body.get("password"), actor=_actor(req))
     except accounts.AccessError as exc:
         return _access_error(exc)
     return Response(200, user_json(accounts.get_user(req.conn, user_id)))
@@ -522,10 +519,10 @@ ROUTES: list[Route] = [
     _r("GET", "/api/launches", list_launches),
     _r("DELETE", r"/api/launches/(?P<id>[0-9a-f]{32})", end_launch),
     _r("POST", r"/api/launches/(?P<id>[0-9a-f]{32})/actions/(?P<tool>[a-z0-9_]{1,64})", launch_action, json_body=True),
-    _r("GET", r"/api/agent-views/(?P<id>[1-9][0-9]{0,9})/miniapps", agent_view_miniapps),
-    _r("GET", "/api/admin/users", admin_list_users),
-    _r("POST", "/api/admin/users", admin_create_user, json_body=True),
-    _r("PATCH", r"/api/admin/users/(?P<id>[0-9]{1,10})", admin_update_user, json_body=True),
+    _r("GET", r"/api/agent-views/(?P<id>[1-9][0-9]{0,9})/miniapps", agent_view_miniapps, acl="miniapps"),
+    _r("GET", "/api/admin/users", admin_list_users, acl="admin.users"),
+    _r("POST", "/api/admin/users", admin_create_user, json_body=True, acl="admin.users.create"),
+    _r("PATCH", r"/api/admin/users/(?P<id>[0-9]{1,10})", admin_update_user, json_body=True, acl="admin.users.edit"),
 ]
 
 # Last: admin_api imports the request types above and adds its routes to ROUTES. Its own module

@@ -4,7 +4,7 @@ import { useNavigate } from "react-router";
 import { Copy, Settings } from "lucide-react";
 import { apiFetch, useQuery } from "@agento/api";
 import { DataTable, IconAction, PageHeader, StatusBadge, type BadgeTone, type Column } from "@agento/ui";
-import { AdminOnly, message, whole } from "./shared";
+import { message, whole } from "./shared";
 
 interface Agent { id: number; code: string; label: string; workspace_code: string; ingress_count: number; build_status: string }
 
@@ -39,13 +39,11 @@ export function Agents() {
   const agents = useQuery({ queryKey: ["admin-agents"], queryFn: ({ signal }) => apiFetch<Agent[]>("/api/admin/agents", { signal }) });
   const open = (a: Agent) => void navigate(`/admin/config?scope=agent_view&scope_id=${a.id}`);
   return (
-    <AdminOnly>
-      <div className="ag-stack">
-        <PageHeader title="Agents" description="Agent views, their workspace, ingress bindings and last workspace build." />
-        <DataTable caption="Agent views" columns={columns(open)} rows={agents.data} rowKey={(a) => String(a.id)}
-          loading={agents.isPending} error={agents.error ? message(agents.error) : null} onRetry={() => void agents.refetch()}
-          emptyTitle="No agent views" />
-      </div>
-    </AdminOnly>
+    <div className="ag-stack">
+      <PageHeader title="Agents" description="Agent views, their workspace, ingress bindings and last workspace build." />
+      <DataTable caption="Agent views" columns={columns(open)} rows={agents.data} rowKey={(a) => String(a.id)}
+        loading={agents.isPending} error={agents.error ? message(agents.error) : null} onRetry={() => void agents.refetch()}
+        emptyTitle="No agent views" />
+    </div>
   );
 }

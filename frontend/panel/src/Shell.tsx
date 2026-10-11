@@ -3,7 +3,7 @@ import type { ComponentType } from "react";
 import { AppShell, Burger, Group, NavLink, Text, useComputedColorScheme, useMantineColorScheme } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
 import { NavLink as RouterLink, Outlet, useLocation, useNavigate } from "react-router";
-import { logout, useSession, type PanelModule } from "@agento/api";
+import { logout, useCan, useSession, type PanelModule } from "@agento/api";
 import {
   AppWindow, Blocks, Bot, House, KeyRound, LayoutDashboard, ListChecks, LogOut, Moon, Settings, ShieldCheck, Sparkles, Sun,
   Users, Wrench,
@@ -35,21 +35,24 @@ const navItem = (to: string, label: string, Icon: Parameters<typeof icon>[0], pa
     active={to === "/" ? pathname === "/" : pathname === to || pathname.startsWith(to + "/")} />
 );
 
-const ADMIN: [string, string, Parameters<typeof icon>[0]][] = [
-  ["/", "Dashboard", LayoutDashboard], ["/admin/jobs", "Jobs", ListChecks], ["/admin/agents", "Agents", Bot],
-  ["/admin/credentials", "Credentials", KeyRound], ["/admin/tools", "Tools", Wrench], ["/admin/skills", "Skills", Sparkles],
-  ["/admin/config", "Config", Settings], ["/users", "Users", Users],
+/** Each screen and the admin leaves that show it (any one is enough): Users holds the Roles tab too. */
+const ADMIN: [string, string, Parameters<typeof icon>[0], string[]][] = [
+  ["/", "Dashboard", LayoutDashboard, ["admin.dashboard"]], ["/admin/jobs", "Jobs", ListChecks, ["admin.jobs"]],
+  ["/admin/agents", "Agents", Bot, ["admin.agents"]], ["/admin/credentials", "Credentials", KeyRound, ["admin.credentials"]],
+  ["/admin/tools", "Tools", Wrench, ["admin.tools"]], ["/admin/skills", "Skills", Sparkles, ["admin.skills"]],
+  ["/admin/config", "Config", Settings, ["admin.config"]], ["/users", "Users", Users, ["admin.users", "admin.roles"]],
 ];
 
 /** The NavbarLinksGroup pattern (frontend/lookbook/NavbarLinksGroup) as a nested Mantine NavLink.
- *  A convenience only: every /api/admin route refuses a user-role session (403). */
+ *  A convenience only: every /api/admin route refuses a session without its leaf (403). */
 export function AdminNav({ onNavigate }: { onNavigate: () => void }) {
-  const user = useSession();
+  const acl = useSession()?.acl ?? [];
   const { pathname } = useLocation();
-  if (user?.role !== "admin") return null;
+  const items = ADMIN.filter(([, , , leaves]) => leaves.some((l) => acl.includes(l)));
+  if (!items.length) return null;
   return (
     <NavLink label="Administration" fw={500} leftSection={icon(ShieldCheck)} defaultOpened childrenOffset="md">
-      {ADMIN.map(([to, label, Icon]) => navItem(to, label, Icon, pathname, onNavigate))}
+      {items.map(([to, label, Icon]) => navItem(to, label, Icon, pathname, onNavigate))}
     </NavLink>
   );
 }
@@ -57,6 +60,8 @@ export function AdminNav({ onNavigate }: { onNavigate: () => void }) {
 export function Shell({ modules }: { modules: PanelModule[] }) {
   const [opened, { toggle, close }] = useDisclosure();
   const user = useSession();
+  const dashboard = useCan("admin.dashboard");
+  const miniapps = useCan("miniapps");
   const navigate = useNavigate();
   const location = useLocation();
   const { setColorScheme } = useMantineColorScheme();
@@ -78,10 +83,10 @@ export function Shell({ modules }: { modules: PanelModule[] }) {
       </AppShell.Header>
       <AppShell.Navbar p="md" aria-label="Main">
         <AppShell.Section grow>
-          {/* An admin's Home is the Dashboard, in the Administration group. */}
-          {user?.role !== "admin" && navItem("/", "Home", House, location.pathname, close)}
+          {/* With the Dashboard leaf, Home is the Dashboard, in the Administration group. */}
+          {!dashboard && navItem("/", "Home", House, location.pathname, close)}
           {modules.map((m) => <ModuleNav key={m.id} module={m} onNavigate={close} />)}
-          {navItem("/miniapps", "Miniapps", AppWindow, location.pathname, close)}
+          {miniapps && navItem("/miniapps", "Miniapps", AppWindow, location.pathname, close)}
           <AdminNav onNavigate={close} />
         </AppShell.Section>
         <AppShell.Section pt="md" style={{ borderTop: "1px solid var(--mantine-color-default-border)" }}>

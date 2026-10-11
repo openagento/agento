@@ -92,8 +92,8 @@ def test_two_admins_demoting_each_other_do_not_deadlock(conn):
         _reset(conn)
         a = accounts.create_user(conn, "root-a", "admin", PASSWORD)
         b = accounts.create_user(conn, "root-b", "admin", PASSWORD)
-        results, errors = _race(partial(accounts.set_role, user_id=b.id, role="user", actor_id=a.id),
-                                partial(accounts.set_role, user_id=a.id, role="user", actor_id=b.id))
+        results, errors = _race(partial(accounts.set_role, user_id=b.id, role="user", actor=(a.id, "admin")),
+                                partial(accounts.set_role, user_id=a.id, role="user", actor=(b.id, "admin")))
         assert errors == []
         roles = {accounts.get_user(conn, a.id).role, accounts.get_user(conn, b.id).role}
         assert roles == {"admin", "user"}
@@ -113,11 +113,8 @@ def test_two_grant_removals_on_one_role_do_not_deadlock(conn, scopes):
 
 
 def test_two_admins_adding_the_same_grant_get_one_row(conn, scopes):
-    a = accounts.create_user(conn, "root-a", "admin", PASSWORD)
-    b = accounts.create_user(conn, "root-b", "admin", PASSWORD)
-    add = lambda actor: lambda c: accounts.add_grant(  # noqa: E731
-        c, "user", "operation", "artifact.launch", agent_view_id=scopes["av1"], actor_id=actor)
-    results, errors = _race(add(a.id), add(b.id))
+    add = lambda c: accounts.add_grant(c, "user", "operation", "artifact.launch", agent_view_id=scopes["av1"])  # noqa: E731
+    results, errors = _race(add, add)
     assert errors == []
     assert len(accounts.list_grants(conn)) == 1
     assert results[0] == results[1] == accounts.list_grants(conn)[0]["id"]
@@ -159,10 +156,10 @@ def test_update_user_applies_every_field_or_none(conn):
     admin = accounts.create_user(conn, "root", "admin", PASSWORD)
     alice = accounts.create_user(conn, "alice", "user", PASSWORD)
     with pytest.raises(accounts.AccessError):
-        accounts.update_user(conn, alice.id, role="admin", password="short", actor_id=admin.id)
+        accounts.update_user(conn, alice.id, role="admin", password="short", actor=(admin.id, "admin"))
     assert accounts.get_user(conn, alice.id).role == "user"
     # Self-demotion with a password change: one transaction, so both land (no partial commit, no 403).
-    accounts.update_user(conn, admin.id, role="user", password="another long password", actor_id=admin.id)
+    accounts.update_user(conn, admin.id, role="user", password="another long password", actor=(admin.id, "admin"))
     assert accounts.get_user(conn, admin.id).role == "user"
     assert accounts.authenticate(conn, "root", "another long password") is not None
 
@@ -174,8 +171,8 @@ def test_update_user_by_an_actor_demoted_concurrently_changes_nothing(conn):
         b = accounts.create_user(conn, "root-b", "admin", PASSWORD)
         alice = accounts.create_user(conn, "alice", "user", PASSWORD)
         _results, errors = _race(
-            partial(accounts.set_role, user_id=b.id, role="user", actor_id=a.id),
-            partial(accounts.update_user, user_id=alice.id, role="admin", active=False, actor_id=b.id))
+            partial(accounts.set_role, user_id=b.id, role="user", actor=(a.id, "admin")),
+            partial(accounts.update_user, user_id=alice.id, role="admin", active=False, actor=(b.id, "admin")))
         assert errors == []
         after = accounts.get_user(conn, alice.id)
         assert (after.role, after.is_active) in {("user", True), ("admin", False)}

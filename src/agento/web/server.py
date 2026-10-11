@@ -25,7 +25,7 @@ from fastapi import FastAPI
 from starlette.datastructures import Headers
 from starlette.routing import BaseRoute, Match
 
-from agento.framework.access import sessions
+from agento.framework.access import accounts, sessions
 
 from . import api, rate_limit, security
 from .streaming import StreamingResponse
@@ -211,14 +211,14 @@ class Call:
                 req.json = json.loads(body)
             except ValueError:
                 return api.error(400, "invalid JSON")
-        return self._run(route.handler, req, session=route.auth == "session", write=write)
+        return self._run(route.handler, req, session=route.auth == "session", write=write, acl=route.acl)
 
     def _internal(self, handler, body: bytes):
         return self._run(handler, api.Request(
             method=self.command, path=self.path, headers=self.headers, body=body,
             cookies=self.cookies, origins=security.Origins.from_env()))
 
-    def _run(self, handler, req: api.Request, *, session=False, write=False):
+    def _run(self, handler, req: api.Request, *, session=False, write=False, acl=None):
         try:
             req.conn = conn = self._db()
             if session:
@@ -232,6 +232,9 @@ class Call:
                     return _too_many(identity.retry_after)
                 req.session_token = token = req.cookies.get(security.SESSION_COOKIE)
                 if write and not sessions.csrf_valid(token, self.headers.get("X-CSRF-Token")):
+                    return api.error(403, "forbidden")
+                # The role comes from this request's session lookup (the DB), never from the cookie.
+                if acl is not None and not accounts.may(conn, req.session.user, acl):
                     return api.error(403, "forbidden")
             return handler(req)
         except Exception as exc:

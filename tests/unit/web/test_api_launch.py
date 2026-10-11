@@ -32,6 +32,7 @@ def signed_in(monkeypatch):
     monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: session if t == TOKEN else None)
     monkeypatch.setattr(api, "_resolve_scope", lambda req, body: (1, body["agent_view_id"]))
     monkeypatch.setattr(accounts, "has_operation", lambda *a: True)
+    monkeypatch.setattr(accounts, "held_admin", lambda conn, role: ["miniapps"])
     monkeypatch.setattr(launches, "retention_lock", lambda conn, code: contextlib.nullcontext())
 
 
