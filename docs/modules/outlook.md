@@ -178,7 +178,8 @@ parity test against the Python twin.
    Any other non-pass (`none`/`bestguesspass`/`temperror`/missing) just means the domain has no usable
    DMARC policy — info log only, no breach, no alert, still no job. The verdict is parsed from the
    **first** `Authentication-Results` header (the one Exchange Online Protection prepends — lower
-   headers are untrusted, anti-spoof).
+   headers are untrusted, anti-spoof). Quoted strings and `(comments)` in it are ignored, and a `pass`
+   whose `header.from` domain is not the domain of the Graph `From` address counts as `fail`.
 4. **Publish to the agent_view** — in **direct mode** (solo mailbox) the publisher publishes the
    job to that mailbox's view. In **routed mode** (shared mailbox) the sender is matched against
    `outlook_sender` bindings and, after a **per-view allow-list refinement** against the routed-to

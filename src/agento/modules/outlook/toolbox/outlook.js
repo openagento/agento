@@ -230,7 +230,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, graphAuthF
   const allowedSenders = loadAllowedSenders(cfg);
   const restrictRead = parseBool(cfg.restrict_read_to_allowed_senders, true);
   const surfaceAllowed = (addr, headers) =>
-    !restrictRead || (matchesWhitelist(addr || '', allowedSenders) && parseDmarcVerdict(headers) === 'pass');
+    !restrictRead || (matchesWhitelist(addr || '', allowedSenders) && parseDmarcVerdict(headers, addr || '') === 'pass');
 
   // THREAD READ (opt-in, DEFAULT OFF): let a headless job READ earlier messages/attachments of the SAME
   // Outlook conversation that triggered it. Extends the READ scope only — ACTIONS (reply/mark_processed)
