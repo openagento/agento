@@ -107,5 +107,7 @@ describe("safeNext", () => {
   it.each([
     ["/conversations/3?x=1", "/conversations/3?x=1"], [null, "/"], ["//evil.example", "/"],
     ["https://evil.example/", "/"], ["/\\evil.example", "/"], ["/login?next=/x", "/"], ["javascript:alert(1)", "/"],
+    ["/.//evil.example", "/"], ["/%2e//evil.example", "/"], ["/a/..//evil.example", "/"],
+    ["/login/.././/evil.example", "/"], ["/%2F%2Fevil.example", "/%2F%2Fevil.example"],
   ])("%s → %s", (input, out) => expect(safeNext(input)).toBe(out));
 });

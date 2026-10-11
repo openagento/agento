@@ -230,8 +230,9 @@ function collect(fd, rel, out, limits, counters) {
   for (const entry of readdirAt(fd)) {
     const name = entry.name;
     // The worktree's `.git` is the pointer `worktree add` writes, and a `.git` on the
-    // desk is agent-supplied. Neither crosses.
-    if (rel === '' && name === '.git') continue;
+    // desk is agent-supplied. Neither crosses — at ANY depth: a nested `.git` makes Git
+    // treat the directory as a submodule and run its agent-written config.
+    if (name === '.git') continue;
     const childRel = rel ? `${rel}/${name}` : name;
 
     if (entry.isDirectory()) {

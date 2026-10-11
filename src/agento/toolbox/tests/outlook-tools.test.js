@@ -612,6 +612,16 @@ describe('S3: read tools are restricted to allowed_senders (default on)', () => 
     expect(r.content[0].text).not.toContain('"subject"'); // body withheld
   });
 
+  it('ANTI-SPOOF: outlook_get_message BLOCKS a DMARC pass for another header.from domain', async () => {
+    const otherDomain = [{ name: 'Authentication-Results', value: 'dmarc=pass action=none header.from=evil.com' }];
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okMsg('sklep@mycompanystudio.com', otherDomain)));
+    const s = makeServer();
+    register(s, ctxWithOutlook());
+    const r = await s.tools.outlook_get_message.handler({ message_id: 'm1' });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).not.toContain('"subject"');
+  });
+
   it('FAIL-CLOSED: outlook_get_message BLOCKS an allow-listed sender with NO DMARC header', async () => {
     // No internetMessageHeaders at all → verdict undeterminable → not surfaced.
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ subject: 'S', from: { emailAddress: { address: 'sklep@mycompanystudio.com' } } }) }));

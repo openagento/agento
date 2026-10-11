@@ -11,20 +11,34 @@ const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
  * only (first-header-wins) — trusting a lower, attacker-controllable header would let a spoofer
  * forge `dmarc=pass`.
  *
+ * A `pass` is for the domain in its `header.from`. When the caller passes the Graph From address and
+ * that domain differs, the verdict is `fail`: the mail passed DMARC for some other From than the one the
+ * allow-list checked (two From headers, an address list, a parser disagreement).
+ *
  * @param {Array<{name:string,value:string}>} headers internetMessageHeaders from Graph
+ * @param {string} [fromAddress] the Graph from.emailAddress.address the allow-list checked
  * @returns {string|null} lowercased verdict ("pass"|"fail"|"none"|...) or null when unavailable
  */
-export function parseDmarcVerdict(headers) {
+export function parseDmarcVerdict(headers, fromAddress) {
   if (!Array.isArray(headers)) return null;
   const ar = headers.find(
     (h) => h && typeof h.name === 'string' && h.name.toLowerCase() === 'authentication-results'
   );
   if (!ar || typeof ar.value !== 'string') return null;
-  // Anchor to a real Authentication-Results token boundary (start-of-string, whitespace, or ';') so a
-  // literal "dmarc=pass" substring inside an attacker-influenced field (a quoted local-part, smtp.helo,
-  // etc.) or a different key (x-dmarc=) can't forge a pass — we must read the actual `dmarc` method.
-  const m = ar.value.match(/(?:^|[\s;])dmarc=(\w+)/i);
-  return m ? m[1].toLowerCase() : null;
+  // Quoted strings and (comments) carry attacker text (a quoted local-part, a helo comment), so they go
+  // first — an unclosed one takes the rest of the value with it (fail-closed). Then anchor to a real
+  // token boundary (start-of-string, whitespace, or ';') so a "dmarc=pass" substring inside another
+  // field (smtp.helo, etc.) or a different key (x-dmarc=) can't forge a pass.
+  let value = ar.value.replace(/"(?:[^"\\]|\\.)*(?:"|$)/g, '""');
+  for (let prev; prev !== value;) { prev = value; value = value.replace(/\([^()]*\)/g, ' '); }
+  value = value.replace(/\(.*$/s, '');
+  const m = value.match(/(?:^|[\s;])dmarc=(\w+)([^;]*)/i);
+  if (!m) return null;
+  const verdict = m[1].toLowerCase();
+  const headerFrom = m[2].match(/(?:^|\s)header\.from=([^\s;]+)/i);
+  if (verdict === 'pass' && fromAddress !== undefined && headerFrom
+      && headerFrom[1].toLowerCase() !== String(fromAddress).split('@').pop().trim().toLowerCase()) return 'fail';
+  return verdict;
 }
 
 /**
@@ -321,7 +335,7 @@ export function createDeltaHandler(
         }
         // DMARC is the second half of the same gate: an allow-listed address is worthless if
         // anyone can spoof it.
-        const dmarc = parseDmarcVerdict(headers);
+        const dmarc = parseDmarcVerdict(headers, m.from?.emailAddress?.address ?? '');
         if (dmarc !== 'pass') continue;
         messages.push({
           id: m.id,

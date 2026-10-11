@@ -17,7 +17,12 @@ import { mirrorIn, mirrorOut, emptyDesk } from './desk-io.js';
 // has LOWER precedence than an in-tree `.gitattributes`, so the agent's committed
 // file would still win — see ATTRIBUTES below, which uses the one location that
 // outranks the tree.
-const HARDEN = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.symlinks=false'];
+// `fsmonitor` and `ignoreSubmodules`: a nested repository in a worktree must never get
+// its own config read — `status` would run its fsmonitor and its filter drivers.
+const HARDEN = [
+  '-c', 'core.hooksPath=/dev/null', '-c', 'core.symlinks=false',
+  '-c', 'core.fsmonitor=false', '-c', 'diff.ignoreSubmodules=all',
+];
 
 // A tree the agent controls must not decide how Git reads that tree. An agent who
 // commits a `.gitattributes` can otherwise make every reading path transform bytes:
