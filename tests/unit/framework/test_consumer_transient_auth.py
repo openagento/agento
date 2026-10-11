@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agento.framework.agent_manager.errors import TransientAuthError
 from agento.framework.consumer import Consumer
 
@@ -72,10 +74,44 @@ def test_transient_auth_sets_failover_flag_when_a_healthy_token_remains():
     assert exc.retry_with_other_token is True
 
 
-def test_transient_auth_leaves_failover_flag_false_when_pool_exhausted():
+def test_transient_auth_with_no_healthy_token_left_becomes_an_auth_wait():
+    """WI-6: the token is throttled first, then the job waits for a credential."""
+    from agento.framework.agent_manager.errors import CredentialsUnavailableError
+
     exc = TransientAuthError("401 OAuth access token has been revoked")
-    _call(healthy=0, exc=exc)
+    exc.agent_output = "agent said this"
+    marker = datetime(2030, 1, 1)
+    with (
+        patch("agento.framework.consumer.auth_wait_retry_at", return_value=marker),
+        pytest.raises(CredentialsUnavailableError) as exc_info,
+    ):
+        _call(healthy=0, exc=exc)
     assert exc.retry_with_other_token is False
+    assert exc_info.value.__cause__ is exc
+    assert exc_info.value.pool_retry_at is marker  # one retry time for every entry path
+    assert exc_info.value.agent_output == "agent said this"
+
+
+def test_a_poisoned_credential_with_no_healthy_token_left_becomes_an_auth_wait():
+    from agento.framework.agent_manager.errors import CredentialsUnavailableError
+
+    exc = TransientAuthError("401 Invalid authentication credentials")
+    with pytest.raises(CredentialsUnavailableError) as exc_info:
+        _call(healthy=0, exc=exc, rotatable=False)
+    assert exc_info.value.__cause__ is exc
+
+
+def test_a_failed_pool_count_is_not_an_auth_wait():
+    """Only a counted ``healthy == 0`` converts; an unknown count re-raises the auth error."""
+    exc = TransientAuthError("401 OAuth access token has been revoked")
+    with (
+        patch("agento.framework.consumer.get_connection"),
+        patch("agento.framework.consumer.throttle_credential"),
+        patch("agento.framework.consumer.count_credentials_for_scope",
+              side_effect=RuntimeError("db down")),
+        patch("agento.framework.consumer.get_event_manager"),
+    ):
+        _consumer()._handle_transient_auth(_job(), _token(), "claude", exc)
 
 
 def test_transient_auth_attributes_failure_to_resolved_token_when_token_id_absent():

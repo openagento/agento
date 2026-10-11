@@ -145,7 +145,7 @@ Skills are **opt-in**: the resolved value must be `1` for a skill to be material
 - `1` → enabled
 - `0` → disabled (explicit; an `agent_view`/`workspace` `0` overrides an inherited `1`)
 
-The admin TUI **Skills** screen (`agento admin`) lists all synced skills alphabetically with a checkbox per skill for the chosen scope.
+The admin panel **Skills** screen (and the deprecated admin TUI, `agento admin`) lists all synced skills alphabetically with a checkbox per skill for the chosen scope.
 
 ### Integration with Workspace Builds
 

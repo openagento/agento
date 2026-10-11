@@ -34,8 +34,15 @@ def _no_usage_db(monkeypatch):
     monkeypatch.setattr(RemoteRunner, "_record_usage", lambda self, event: None)
 
 
+def _rundir(tmp_path):
+    """A run dir: the server accepts only one under /workspace/artifacts or /workspace/.tmp."""
+    path = tmp_path / "workspace" / "artifacts" / "ws" / "av" / "1"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _ctx(tmp_path, tag="job:1", **kw) -> HarnessRunContext:
-    return HarnessRunContext(harness="claude", provider="anthropic", working_dir=str(tmp_path),
+    return HarnessRunContext(harness="claude", provider="anthropic", working_dir=str(_rundir(tmp_path)),
                              credential_required=False, tag=tag, timeout_seconds=30, **kw)
 
 
@@ -113,7 +120,10 @@ def test_a_context_and_a_result_round_trip_with_their_types():
 # --- execute end to end, through the real harness ------------------------------------
 
 @pytest.mark.usefixtures("builtin_harnesses")
-def test_a_harness_run_goes_through_the_socket_whole(runner_server, tmp_path, monkeypatch):
+def test_a_harness_run_goes_through_the_socket_whole(start_runner, tmp_path, monkeypatch):
+    """Through the real run worker process (``python -m ...runner.worker``), which loads the
+    harness registry itself."""
+    start_runner(spawn=server.spawn_worker)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "claude").write_text(textwrap.dedent(f"""\
@@ -266,6 +276,8 @@ def test_a_lost_runner_is_a_retryable_error_with_the_session(start_runner, tmp_p
 # --- SEC-12: peer check and the two limiters ---------------------------------------------
 
 def test_a_peer_inside_the_runner_gets_nothing(start_runner, tmp_path):
+    """An agent, or a process `agento run` execs into runner-1 (EXEC_SERVICE), is in the
+    runner's own PID namespace: its peer pid is not 0, so the socket serves it nothing."""
     start_runner(peer=lambda conn: 4242, make_runner=_child(["true"]))
 
     assert client.alive("runner-1.sock:" + server.BOOT, "job:1") == "unknown"
@@ -336,7 +348,7 @@ def test_the_accept_rate_bounds_authorized_connections(start_runner):
 
 def test_max_procs_refuses_the_next_child(start_runner, tmp_path):
     start_runner(max_procs=1, max_control=4)
-    busy = client.pty(["sleep", "30"], str(tmp_path))
+    busy = client.pty(["sleep", "30"], str(_rundir(tmp_path)))
     try:
         assert _wait(lambda: client.alive("runner-1.sock:" + server.BOOT, "x") == "dead")
         with pytest.raises(RuntimeError, match="busy"):
@@ -358,14 +370,15 @@ def test_a_request_line_over_the_limit_is_refused(runner_server):
 
 # --- run: a vendor CLI that is not a run --------------------------------------------------
 
-def test_run_returns_output_and_gives_the_env_to_the_child(runner_server):
+def test_run_returns_output_and_gives_the_env_to_the_child(runner_server, tmp_path):
+    home = str(_rundir(tmp_path))
     proc = client.run([sys.executable, "-c",
                        "import os,sys; print(os.environ.get('HOME')); "
                        f"sys.stdout.write('z' * {BIG})"],
-                      env={"HOME": "/h"}, timeout=30)
+                      env={"HOME": home}, timeout=30)
 
     lines = proc.stdout.split("\n")
-    assert (proc.returncode, lines[0]) == (0, "/h")
+    assert (proc.returncode, lines[0]) == (0, home)
     assert len(lines[1]) == BIG
 
 
@@ -419,7 +432,7 @@ def test_no_descendant_outlives_its_run(runner_server, tmp_path, op):
     pid_file = tmp_path / "pid"
     argv = ["sh", "-c", f"trap '' HUP; sleep 60 & echo $! > {pid_file}; sleep 60"]
     if op == "pty":
-        sock = client.pty(argv, str(tmp_path))
+        sock = client.pty(argv, str(_rundir(tmp_path)))
         assert _wait(lambda: pid_file.exists() and pid_file.read_text().strip())
         sock.close()
     else:

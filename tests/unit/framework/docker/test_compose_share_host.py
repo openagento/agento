@@ -26,7 +26,7 @@ pytestmark = pytest.mark.skipif(
 def _compose_files(tmp_path: Path) -> list[Path]:
     rendered = tmp_path / "template" / "docker-compose.yml"
     rendered.parent.mkdir()
-    rendered.write_text(render_compose(TEMPLATE.read_text(), python_version="3.12", extensions=[], sandbox_packages=[]))
+    rendered.write_text(render_compose(TEMPLATE.read_text(), python_version="3.12", extensions=[]))
     dev = tmp_path / "dev" / "docker-compose.dev.yml"
     dev.parent.mkdir()
     shutil.copy(DEV, dev)

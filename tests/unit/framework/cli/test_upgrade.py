@@ -266,6 +266,8 @@ class TestUpgradeCommand:
             and "build" in call.args[0]
         ]
         assert len(compose_builds) >= 1
+        # No compose service builds the sandbox image: build_base_images already did.
+        assert not any("sandbox" in inv for inv in compose_builds)
 
     @patch("agento.framework.cli.upgrade.build_base_images")
     @patch("agento.framework.cli.upgrade.regenerate_compose")

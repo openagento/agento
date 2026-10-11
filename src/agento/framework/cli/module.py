@@ -79,11 +79,11 @@ def _set_module_state(name: str, enabled: bool) -> None:
         print("Regenerated docker-compose.yml")
 
     if pins:
-        from ._provisioning import materialize_docker_context
+        from ._provisioning import build_sandbox_image, materialize_docker_context
 
         verb = "installs" if enabled else "removes"
         print(f"Sandbox image {verb}: {', '.join(sorted(pins))} — rebuilding")
-        # The MANAGED compose file builds `<project>/.agento/docker/sandbox`, so that is the
+        # The managed build uses `<project>/.agento/docker/sandbox`, so that is the
         # context to re-render — not the in-package Dockerfile, which only the dev compose
         # file builds. `force=True` because the agento-core version stamp has not changed,
         # and without it the copy is skipped and the stale image (missing or still carrying
@@ -91,11 +91,14 @@ def _set_module_state(name: str, enabled: bool) -> None:
         materialize_docker_context(project_root, force=True)
         flags = compose_file_flags(project_root)
         if flags:
-            build = subprocess.run(["docker", "compose", *flags, "build", "sandbox"])
-            if build.returncode != 0:
+            # The runners use the cron image, which is FROM the sandbox image: rebuild both.
+            ok = build_sandbox_image(project_root) == 0 and subprocess.run(
+                ["docker", "compose", *flags, "build", "cron"]).returncode == 0
+            if not ok:
                 print(
-                    "Warning: sandbox rebuild failed — run 'docker compose build sandbox' "
-                    "before the next job, or the declared agent CLI will be missing."
+                    "Warning: image rebuild failed — run 'agento upgrade --version "
+                    "<installed version>' before the next job, or the declared agent CLI "
+                    "will be missing."
                 )
 
     if needs_compose:

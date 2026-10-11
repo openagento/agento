@@ -116,7 +116,8 @@ agento config:set claude/settings '{"advisorModel":"fable"}' \
 The merge is nested, so a `permissions` block from the operator does not wipe the
 `permissions.defaultMode` Agento derives from `claude/trust_level`.
 
-In `agento admin` the field is on the **agent_view** node, beside the harness selector —
+In the admin panel Config screen (and in the deprecated `agento admin`) the field is on the
+**agent_view** node, beside the harness selector —
 it is listed only when this view's harness is `claude` (see
 [harness contract](../architecture/harness-contract.md#harness_option--showing-the-field-where-it-is-set)).
 

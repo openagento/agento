@@ -98,8 +98,8 @@ would silently delete every jira schedule.
 `docker compose exec -u agent cron …` would hand the exec's own environment to the command.
 Every cron exec the CLI builds therefore enters as **root** and goes through the launcher
 (`cli/_cron_exec.py`). A structural test pins it: **no `-u agent` in a compose exec whose
-service is `cron`**. The two execs in `cli/run.py` that target the **`sandbox`** service keep
-`-u agent`.
+service is `cron`**. The two execs in `cli/run.py` that target **`runner-1`** (`EXEC_SERVICE`)
+keep `-u agent`.
 
 ## Residual
 

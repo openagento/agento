@@ -2,7 +2,7 @@
 
 The cron service holds the credential store in its environment, so an ``exec -u agent
 cron …`` hands it to the command directly — no ``env -i``, no fd. The guard asserts over
-the argv the CLI actually builds, not over source text, and pins the two ``sandbox``
+the argv the CLI actually builds, not over source text, and pins the two runner
 execs that must keep ``-u agent`` so a later sweep cannot silently take them.
 """
 from __future__ import annotations
@@ -99,11 +99,12 @@ def test_no_cron_exec_in_the_cli_source_still_names_the_agent_user():
     assert offenders == []
 
 
-def test_the_sandbox_execs_still_run_as_agent():
-    """The sandbox has no launcher and no store — routing it would break every run."""
+def test_the_runner_execs_still_run_as_agent():
+    """`agento run` execs into the runner (EXEC_SERVICE), which has no launcher and no store —
+    routing it through the cron launcher would break every run."""
     source = (CLI_DIR / "run.py").read_text()
     tree = ast.parse(source)
-    sandbox_execs = 0
+    runner_execs = 0
     for node in ast.walk(tree):
         if not isinstance(node, ast.List):
             continue
@@ -111,10 +112,11 @@ def test_the_sandbox_execs_still_run_as_agent():
             e.value for e in node.elts
             if isinstance(e, ast.Constant) and isinstance(e.value, str)
         ]
-        if "exec" in literals and "sandbox" in literals:
-            sandbox_execs += 1
-            assert "agent" in literals, "a sandbox exec lost -u agent"
-    assert sandbox_execs == 2
+        names = [e.id for e in node.elts if isinstance(e, ast.Name)]
+        if "exec" in literals and "EXEC_SERVICE" in names:
+            runner_execs += 1
+            assert "agent" in literals, "a runner exec lost -u agent"
+    assert runner_execs == 2
 
 
 # --- the canary ---------------------------------------------------------------------------

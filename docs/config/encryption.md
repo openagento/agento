@@ -32,9 +32,9 @@ echo "AGENTO_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> ../secrets.env
 > `obscure` values in the cron/consumer/CLI while resolving module config — **except** fields that
 > declare `access: "toolbox_only"`. Those are skipped by `bootstrap()` and by `resolve_all()`, and a
 > direct `.get()` on one raises `ToolboxOnlyConfigError`; the Outlook Graph credentials are declared
-> that way. Still open: `app_monitor` intentionally consumes its obscure SMTP password cron-side (to
-> send breach alerts), so it cannot simply be marked toolbox-only — migrating that transport is
-> tracked separately, see [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
+> that way. `app_monitor` uses its obscure SMTP password in `cron` (to send breach alerts). That is
+> part of the model: the backend (`cron`, `web`) is trusted (DECISIONS.md D-BACKEND-2). See
+> [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
 
 > **Don't** pass secrets as the positional `value` arg (`config:set path my-secret`). That leaks the value into `ps aux` for the duration of the command and into `~/.bash_history` / `~/.zsh_history` forever. Always omit the value so agento prompts / reads stdin. See [cli/config.md](../cli/config.md#secrets--never-pass-on-the-command-line) for the full rationale.
 

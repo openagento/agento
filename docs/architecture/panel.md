@@ -220,9 +220,10 @@ the admin screens, `config:*`, `module:list` and the tool-requirement gate inclu
 directory without a `module.json` is not a module to any of them.
 
 Loading the registry **never calls `bootstrap()` and never decrypts anything**: `di.json`
-and `modules.json` are already mounted read-only, and `web` shares a network with
-`sandbox`, so holding a module's secrets to serve a URL would be blast radius bought for
-nothing. There is nothing to clear on reload either — the table is composed once, and a
+and `modules.json` are already mounted read-only, so serving a URL needs no module secret.
+The one other registry `web` loads is the harness registry, for a `local` config tester
+(`harness_reloader`, framework/harness/loader.py), which loads no observer and dispatches
+no event. There is nothing to clear on reload either — the table is composed once, and a
 module's routes appear or disappear when `web` restarts, which `module:enable` already does.
 
 The same pass registers each enabled module's `job_types` from that `di.json`. A route that

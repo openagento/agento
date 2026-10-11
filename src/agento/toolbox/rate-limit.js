@@ -2,7 +2,7 @@
 // before any route, so a route added later is limited with no opt-in.
 //
 // Two limits, in this order:
-// 1. Auth failures (401/403) per client address. Every sandbox run shares one address, so this
+// 1. Auth failures (401/403) per client address. Every agent run shares one address, so this
 //    counts only failures: it bounds a random-token flood (each random token would get a fresh
 //    bucket in limit 2) without throttling authorized traffic. A held `GET /sse` counts as one
 //    pending request until its stream closes, which the ceiling allows for.

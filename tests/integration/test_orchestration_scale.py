@@ -43,12 +43,19 @@ DEADLINE_S = 300.0
 REPO = Path(__file__).resolve().parents[2]
 _RAMPS: dict[int, float] = {}
 # The runner in its own process, as in a deployment, so its CPU/RSS/threads are its own.
-# On SIGTERM it prints them; its children are the CLIs it spawned.
+# On SIGTERM it prints them; its children are the CLIs it spawned. The test is not root, so
+# the privileged uid steps are the fakes (tests/runner_fakes.py); the run-dir rule is the
+# real one, against the test's workspace (AGENTO_WORKSPACE_DIR, see _start_runner).
 RUNNER = """
 import json, os, resource, signal, socket, sys, threading, time
 from unittest.mock import patch
+from _pytest.monkeypatch import MonkeyPatch
 from agento.framework.bootstrap import bootstrap
+from agento.framework.runner import uids
 from agento.framework.runner.server import Server
+from tests.runner_fakes import FakeUids
+mp = MonkeyPatch()
+mp.setattr(uids, "run_dir", FakeUids(mp).real_run_dir)
 with patch("agento.framework.module_status.read_module_status", return_value={}):
     bootstrap(db_conn=None, quiet=True)
 peak = [0]
@@ -66,6 +73,15 @@ while True:
     peak[0] = max(peak[0], threading.active_count())
     time.sleep(0.05)
 """
+
+
+def _start_runner(sock: Path, monkeypatch) -> subprocess.Popen:
+    """``RUNNER`` with this test's workspace: the parent of the artifacts root the consumer
+    uses (``int_agent_view`` moves it under tmp_path), so its run dirs pass the real rule."""
+    from agento.framework import artifacts_dir
+    monkeypatch.setenv("AGENTO_WORKSPACE_DIR", os.path.dirname(artifacts_dir.ARTIFACTS_DIR))
+    return subprocess.Popen([sys.executable, "-c", RUNNER, str(sock)], cwd=REPO,
+                            stdout=subprocess.PIPE, text=True)
 
 
 def _seed(n: int, agent_view_id: int) -> int:
@@ -134,8 +150,7 @@ def test_orchestration_scale(n, int_agent_view, int_db_config, tmp_path, monkeyp
     monkeypatch.setenv("AGENTO_RUNNER_SOCKET_DIR", str(sock_dir))
     sock = Path(runner_client.socket_path("runner-1.sock"))  # where the consumer connects
     sock.parent.mkdir()
-    runner = subprocess.Popen([sys.executable, "-c", RUNNER, str(sock)],
-                              stdout=subprocess.PIPE, text=True)
+    runner = _start_runner(sock, monkeypatch)
     deadline = time.monotonic() + 60
     while not sock.exists():
         assert runner.poll() is None and time.monotonic() < deadline, "runner did not start"
@@ -256,3 +271,78 @@ def test_orchestration_scale(n, int_agent_view, int_db_config, tmp_path, monkeyp
     _RAMPS[n] = metrics["ramp_s"]
     if n == N_VALUES[1] and N_VALUES[0] in _RAMPS:
         assert _RAMPS[n] <= RAMP_GROWTH_MAX * _RAMPS[N_VALUES[0]], metrics
+
+
+@pytest.mark.e2e
+def test_every_crash_is_resumed_once_at_scale(int_agent_view, int_db_config, monkeypatch):
+    """WI-5 at `CONCURRENT_WORKERS_STRESS_TEST` (SCL-1): every run crashes once after it
+    filed its session. Each job makes exactly 2 runner calls (the crash, then one resume in
+    the same attempt), all finish SUCCESS on attempt 1, and no job takes a third call."""
+    from collections import Counter
+
+    from agento.framework.runner.client import RemoteRunner
+
+    n = CONCURRENT_WORKERS_STRESS_TEST
+    probe = _test_connection(autocommit=True)
+    with probe.cursor() as cur:
+        cur.execute("SHOW VARIABLES LIKE 'max_connections'")
+        if int(cur.fetchone()["Value"]) < n + CONNECTION_HEADROOM:
+            probe.close()
+            pytest.skip(f"MySQL max_connections below {n + CONNECTION_HEADROOM}")
+
+    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 8192), hard))
+    monkeypatch.setenv("PATH", f"{FIXTURES_DIR / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_CRASH_UNLESS_RESUME", "1")  # before the runner starts: it passes env on
+    _seed(n, int_agent_view)
+    sock_dir = Path(tempfile.mkdtemp(prefix="rb", dir="/tmp"))
+    monkeypatch.setenv("AGENTO_RUNNER_SOCKET_DIR", str(sock_dir))
+    sock = Path(runner_client.socket_path("runner-1.sock"))
+    sock.parent.mkdir()
+    runner = _start_runner(sock, monkeypatch)
+    deadline = time.monotonic() + 60
+    while not sock.exists():
+        assert runner.poll() is None and time.monotonic() < deadline, "runner did not start"
+        time.sleep(0.05)
+
+    calls: Counter[str] = Counter()
+    calls_lock = threading.Lock()
+    real_execute = RemoteRunner.execute
+
+    def counted_execute(self, request):
+        with calls_lock:
+            calls[self.context.tag] += 1
+        return real_execute(self, request)
+
+    consumer = Consumer(int_db_config, ConsumerConfig(max_workers=n), logging.getLogger("bench"))
+
+    def watch() -> None:
+        stop_at = time.monotonic() + DEADLINE_S
+        while not consumer._shutdown.is_set():
+            with probe.cursor() as cur:
+                cur.execute("SELECT SUM(status NOT IN ('TODO', 'RUNNING')) AS done FROM job")
+                if int(cur.fetchone()["done"] or 0) == n + 1 or time.monotonic() > stop_at:
+                    consumer._shutdown.set()
+            time.sleep(0.05)
+
+    handlers = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+    try:
+        with patch.object(RemoteRunner, "execute", counted_execute), \
+             patch.object(Consumer, "_maybe_reload_bootstrap", lambda self: None):
+            # Warm-up alone, as above: it builds the view's workspace.
+            consumer._execute_job(consumer._try_dequeue())
+            threading.Thread(target=watch, daemon=True).start()
+            consumer.run()
+    finally:
+        signal.signal(signal.SIGTERM, handlers[0])
+        signal.signal(signal.SIGINT, handlers[1])
+        bootstrap._sync_delta_worker()
+        runner.send_signal(signal.SIGTERM)
+        runner.communicate(timeout=30)
+        shutil.rmtree(sock_dir, ignore_errors=True)
+        probe.close()
+
+    jobs = fetch_all_jobs()
+    assert [j["status"] for j in jobs] == ["SUCCESS"] * (n + 1)
+    assert {j["attempt"] for j in jobs} == {1}  # no durable retry
+    assert {calls[f"job:{j['id']}"] for j in jobs} == {2}  # one crash + one resume, never a third

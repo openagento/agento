@@ -21,19 +21,18 @@ change adds is a finding (`RULES.md` SEC).
 
 | Item | Where | Status |
 |---|---|---|
-| **A headless agent runs in the cron container, and its CLI subprocess inherits the consumer env: `AGENTO_ENCRYPTION_KEY` (from `secrets.env`) and `MYSQL_USER`/`MYSQL_PASSWORD` (the same `cron_agent` login the toolbox uses). With both, the agent can read and decrypt every stored credential.** Only interactive `agento run` uses the `sandbox` container. | `framework/harness/subprocess_runner.py` (`env = {**os.environ, …}`) | Debt — P0. Fix: pass an allow-listed env to the agent subprocess |
-| `bootstrap()` decrypts DEFAULT-scope `obscure` config while it resolves module config, so cron, the consumer (each hot-reload), and the CLI hold decrypted secrets for a short time. A field marked `"access": "toolbox_only"` (the Outlook Graph secret, certificate, and certificate password) is never resolved by Python. | `framework/bootstrap.py` | Debt — each such field needs `"access": "toolbox_only"`; fix tracked in [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md) |
-| The `jira` observer decrypts an agent_view's `jira/jira_token` cron-side on each bootstrap until that view's account id is resolved, only to check that it is set. | `modules/jira/src/observers.py` (`module_ready_after`) | Debt |
-| `app_monitor` uses the `obscure` SMTP password **cron-side** to send breach alerts. | `modules/app_monitor/src/observers.py` | Debt — same fix as `bootstrap()` (move to a toolbox transport) |
-| `secrets.env` is mounted into the cron service (`env_file`). | `framework/cli/templates/docker-compose.yml` | Debt |
+| `bootstrap()` decrypts DEFAULT-scope `obscure` config while it resolves module config, so `cron`, the consumer (each hot-reload), and the CLI hold decrypted secrets for a short time. A field marked `"access": "toolbox_only"` (the Outlook Graph secret, certificate, and certificate password) is never resolved by Python. | `framework/bootstrap.py` | Part of the model (D-BACKEND-2): the backend is trusted. `"access": "toolbox_only"` keeps a field away from Python where a channel needs that ([toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md)) |
+| The `jira` observer decrypts an agent_view's `jira/jira_token` in `cron` on each bootstrap until that view's account id is resolved, only to check that it is set. | `modules/jira/src/observers.py` (`module_ready_after`) | Part of the model (D-BACKEND-2) |
+| `app_monitor` uses the `obscure` SMTP password in `cron` to send breach alerts. | `modules/app_monitor/src/observers.py` | Part of the model (D-BACKEND-2) |
+| `secrets.env` is mounted into the `cron` and `web` services (`env_file`). | `framework/cli/templates/docker-compose.yml` | Part of the model (D-BACKEND-2) |
 | `CONFIG__*` ENV values are plaintext in every container that has them. A field with `"allowEnv": false` refuses the ENV source. | ENV level of the config fallback | Part of the model (CFG-1) |
-| Concurrent runs share the `agent` UID and the workspace mount, so a shell-capable agent can read a co-tenant's live capability off disk. | per-run MCP config in the run's artifacts directory, in one `runner-<i>` | Debt — needs per-run UID or container isolation ([ROADMAP.md](../../ROADMAP.md)) |
+| Concurrent runs shared the `agent` UID, so a shell-capable agent could read a co-tenant's live capability, credential and HOME off disk. | per-run MCP config in the run's artifacts directory, in one `runner-<i>` | Closed on a Linux host — each run has its own uid, and its run dir is `2770` to that uid and the toolbox ([runner.md](runner.md#per-run-uid)). Debt: on Docker Desktop (macOS) the `/workspace` bind mount does not enforce owners or modes, so runs there are not kept apart; and what `agent` leaves world-readable outside a run dir (another view's workspace build) stays readable to every run |
 | A run's secrets (its harness credential, env and capability token) cross the runner socket in memory, from the worker to the runner. Never argv, a file or a log. | `framework/runner/` ([runner.md](runner.md)) | Part of the model (SEC-1) |
 | Operator code in `app/code` (cron jobs, observers, data patches) runs in `cron` with the database credentials and the key in its environment. | `cron` (the worker) | Accepted — trusted operator code, [DECISIONS.md](../../DECISIONS.md) 2026-10-09 (O4) |
 | The attended operator login (`credential:register` on a TTY) started the vendor CLI in `cron`. | `framework/agent_manager/auth.py` | Closed — it runs the panel's login (`start_web_login`) in a runner and reads the code from the operator's terminal (`attended_login`); `cron` starts no CLI (`runner/test_spawn_guard.py`) |
 | An MCP session whose capability has no `job_id` (kind `mcp_interactive`, minted by `agent_view:prepare-run` or an operator) gets Outlook reads and actions that are not bound to a trigger. | `modules/outlook/toolbox/outlook.js` | Accepted for interactive `agento run` — [DECISIONS.md](../../DECISIONS.md) 2026-07-04; other callers are debt |
 | `web` has no rate limit on the launch redeem (`POST /launch` on apps) or on `/internal/authz/app`, which `proxy` calls for each apps file request. Each request does a DB read for a caller that is not yet authenticated (SEC-12). Sign-in has an in-process throttle. Behind `proxy`, every request has the proxy's address, so an address limit in `web` needs a trusted client-address header first. | `src/agento/web/api.py`, `src/agento/framework/docker/proxy/Caddyfile` | Debt — owner to decide: a limit in `proxy`, or a trusted forwarded address in `web` |
-| On Docker Desktop an agent container can open a TCP connection to MySQL through `host.docker.internal`, which Desktop forwards to host loopback, where MySQL is published. The network split does not close it; the runner and sandbox hold no DB user, so MySQL authentication is the guard. On Linux the route fails (`docker/smoke/runner-net-smoke.sh`). | Docker Desktop host networking | Debt — DECISIONS.md 2026-10-09 Network split; the owner has not accepted it yet |
+| On Docker Desktop an agent container can open a TCP connection to MySQL through `host.docker.internal`, which Desktop forwards to host loopback, where MySQL is published. The network split does not close it; the runners hold no DB user, so MySQL authentication is the guard. On Linux the route fails (`docker/smoke/runner-net-smoke.sh`). | Docker Desktop host networking | Debt — DECISIONS.md 2026-10-09 Network split; the owner has not accepted it yet |
 | The agent holds its own harness OAuth credential. | per-run HOME (for example `.claude/.credentials.json`), written from the encrypted `credential` row | Part of the model (SEC-1) |
 | The agent holds an SSH key for git. | per-run HOME `.ssh/id_rsa`, written by `workspace_build` from the encrypted `agent_view/identity/ssh_private_key` | Accepted — the git push identity, [DECISIONS.md](../../DECISIONS.md) 2026-06-19 D-2 |
 
@@ -43,7 +42,7 @@ The sections below show the **target model**. Where the code differs today, the 
 
 ```
 ┌────────────────────────────────────┐
-│  Agent (runner-<i>/sandbox)        │
+│  Agent (runner-<i>)                │
 │                                    │
 │  Has: workspace, tokens (OAuth),   │
 │       an SSH signing socket (not   │
@@ -110,8 +109,8 @@ stores only its SHA-256 hash, together with `kind`, `agent_view_id`, an optional
 up, and uses **that row's** `agent_view_id` / `job_id`. A query string or request body may still
 carry an `agent_view_id`, but it is only compared with the capability's scope — a mismatch is refused
 (400), never honoured. So with the capability issued to its own run, an agent cannot select another
-view — a guarantee rather than a hope. What it does not cover is an agent that obtains a *different*
-run's capability off the shared workspace; see the co-tenant limit below.
+view — a guarantee rather than a hope. An agent that tries to take a *different* run's capability
+off the shared workspace meets the per-run uid; see the co-tenant section below.
 
 `POST /config-test` (a live credential probe, see [testers](../config/testers.md)) is guarded the
 same way: an `internal_rest` capability, scope from the row. It is the one route that also accepts a
@@ -178,21 +177,23 @@ Operators mint the other two kinds with [`capability:mint`](../cli/capability.md
 credential: stdout once, onward only through stdin or a mode-0600 file, never argv, a log, or shell
 history. Any capability the framework persists from agent output is replaced with `cap=***` first.
 
-**What a capability does NOT protect against: a co-tenant run on the same host.** A run's token is
-written into that run's own MCP config, inside its own artifacts directory. Concurrent runs are
-isolated by *directory*, not by *identity*: every agent process the consumer spawns runs as the same
-`agent` account, and the cron container mounts the whole workspace, so file permissions cannot keep
-one run out of another run's config file. A shell-capable agent that reads a co-tenant's live token
-authenticates as that co-tenant's view. Mode `0600` does not change this — same UID, same access.
+**A co-tenant run on the same host: the per-run uid.** A run's token is written into that run's own
+MCP config, inside its own run dir. A capability alone cannot stop a co-tenant that reads the file:
+it authenticates as that co-tenant's view. So each run is also an OS identity: the root runner
+server starts every run as its own uid from the runner's range, gives the run dir to that uid with
+mode `2770` (the toolbox reaches it through the run's group), and gives it back to `agent` only after
+every process of the uid is stopped ([runner.md](runner.md#per-run-uid)). Another run is "other" to
+that dir and cannot read the token, the harness credential or the HOME, and cannot signal the run.
 
-That is a residual limitation, not a regression: before capabilities the toolbox served **any**
-caller on the network with **any** requested scope, so the same agent needed no theft at all. What
-capabilities add is a bound on the window — a job token is revoked at the job's terminal transition,
-so a stolen token dies with the run it came from — and a complete audit trail of which row a request
-resolved through. Closing it fully needs a per-run **identity** boundary (a distinct UID per run, or
-a container per run), which is the sandbox-segmentation half of the same work item and is tracked in
-[ROADMAP.md](../../ROADMAP.md). Until then, treat concurrent runs in one deployment as mutually
-trusting, and do not rely on view separation as a boundary between mutually hostile tenants.
+What is left:
+
+- **Docker Desktop (macOS).** The host bind mount of `/workspace` shows every file as `root` and does
+  not enforce modes, so there the runs work but are not kept apart. Use a Linux host (or a Linux
+  volume) where views must not trust each other.
+- **What `agent` makes world-readable** outside a run dir stays readable to every run, for example
+  another view's workspace build (instructions and skills, no credential).
+- A capability still bounds the window: a job token is revoked at the job's terminal transition, and
+  every request is in the audit trail with the row it resolved through.
 
 **Why not a shared secret, and why not segmentation alone** — see the 2026-08-23 entry in
 [DECISIONS.md](../../DECISIONS.md).
@@ -220,7 +221,7 @@ You cannot accidentally `import secrets` in agent code because it's a different 
 ```
 secrets.env (host filesystem) — holds only AGENTO_ENCRYPTION_KEY
     │
-    ├──► cron container (env_file in docker-compose) — debt, see the table above
+    ├──► cron and web containers (env_file in docker-compose) — the trusted backend (D-BACKEND-2)
     └──► toolbox container (env_file in docker-compose)
               │
               └── decrypts tool credentials (Jira, SMTP, DB logins, API tokens)
@@ -232,8 +233,9 @@ CONFIG__* ENV overrides take precedence over core_config_data (plaintext)
 ## What the backend holds
 
 `web` (the panel API) and `cron` (the worker) are one trusted backend (DECISIONS.md
-D-BACKEND-1): one image, the same `env_file` with `AGENTO_ENCRYPTION_KEY`, and one DB user.
-The cost: a compromise of the browser-facing `web` process exposes the key and so the
+D-BACKEND-1, D-BACKEND-2). The trust boundary is the runner, not the backend: the backend may
+decrypt what it needs, and no keyholder service is planned. One image, the same `env_file`
+with `AGENTO_ENCRYPTION_KEY`, and one DB user. The cost: a compromise of the browser-facing `web` process exposes the key and so the
 plaintext credentials. `web` holds no upstream tool credential. It also holds the internal
 proxy secret (volume `proxy-internal`), which authenticates `forward_auth`. It stores only
 SHA-256 hashes of session tokens, launch tokens and exchange codes. For each panel tool call it
@@ -313,8 +315,8 @@ Git-over-SSH is the one place where the agent side handles a credential. How it 
   it cannot read the key.
 - If the key cannot be delivered safely the wrapper **drops** it — it never falls back to a file.
 
-What this does **not** give you: all agent_views run as the same uid in one container, so a same-uid
-peer is not barred from the wrapper's pre-`exec` environ, the inherited descriptor or the live agent
+What this does **not** give you: each run has its own uid (see the co-tenant row), but a process in the
+same run is not barred from the wrapper's pre-`exec` environ, the inherited descriptor or the live agent
 socket. (The runner server's heap **is** barred — see `framework/process_hardening.py`. The consumer
 has no agent beside it.)
 This is a large reduction in exposure, **not** an

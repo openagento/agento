@@ -10,8 +10,8 @@ one we drive the REAL pipeline:
 - pick a cheap model for the harness (``agent_view/model``),
 - force the credential under test to win pool selection by giving it the lowest
   priority (``credential:set-priority``; lower wins),
-- run ``agento run <agent_view> "<prompt>"`` which shells into the Docker
-  sandbox, materializes the credential, and invokes the real agent CLI,
+- run ``agento run <agent_view> "<prompt>"`` which execs into runner-1,
+  materializes the credential, and invokes the real agent CLI,
 - assert the run exits 0 (auth + model + execution all worked).
 
 The matrix is DISCOVERED, never hardcoded: harness/provider/credential_scope come

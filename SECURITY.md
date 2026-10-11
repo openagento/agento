@@ -40,7 +40,7 @@ The following are considered security vulnerabilities:
 
 Agento uses a zero-trust container architecture:
 
-- The **sandbox** (where interactive `agento run` executes) holds no tool or database credential and has no
+- A **runner** (`runner-<i>`, where every agent CLI runs, `agento run` too) holds no tool or database credential and has no
   database access. It receives the **harness/provider** API credential its own run needs, and one documented
   exception: the SSH private key used for git, delivered per run into a private `ssh-agent` and never written
   to disk (a dated, scoped waiver — see [DECISIONS.md](DECISIONS.md) D-SSH-1). Known gaps: [zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt).
@@ -53,6 +53,6 @@ Agento uses a zero-trust container architecture:
   backend (`cron` and `web`), and one for the toolbox with only the tables its SQL uses (no `credential`).
 - The **toolbox** is designed to be the only container that holds tool credentials (known gaps: [zero-trust.md](docs/architecture/zero-trust.md#known-exceptions-and-debt)), exposed via controlled MCP tool interfaces. The SSH exception above is the one credential that does not come from it.
 - Config encryption uses AES-256-CBC for sensitive fields, with the key derived from `AGENTO_ENCRYPTION_KEY` by scrypt and a per-value salt.
-- `web` (the panel API) and `cron` are one trusted backend: the same env file, with `AGENTO_ENCRYPTION_KEY`, and one DB user. A compromise of `web` therefore exposes the key and the plaintext credentials. A harness credential re-login started in the panel runs the vendor CLI in a runner; `web` encrypts the pasted code with the key ([zero-trust.md](docs/architecture/zero-trust.md#what-the-backend-holds), DECISIONS.md D-BACKEND-1).
+- `web` (the panel API) and `cron` are one trusted backend: the same env file, with `AGENTO_ENCRYPTION_KEY`, and one DB user. The trust boundary is the runner, not the backend: the backend may decrypt what it needs, and no keyholder service is planned (DECISIONS.md D-BACKEND-2). A compromise of `web` therefore exposes the key and the plaintext credentials. A harness credential re-login started in the panel runs the vendor CLI in a runner; `web` encrypts the pasted code with the key ([zero-trust.md](docs/architecture/zero-trust.md#what-the-backend-holds), DECISIONS.md D-BACKEND-1).
 
 See [docs/architecture/zero-trust.md](docs/architecture/zero-trust.md) for the credential model and its known exceptions, and [docs/architecture/](docs/architecture/) for full details.

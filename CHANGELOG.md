@@ -16,6 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Codex forces the access-token JWT `exp` into the past in the throw-away HOME, because Codex
   0.157 refreshes at startup only on an expired JWT. A refused refresh token ("could not be
   refreshed", Claude 2.1.291 and Codex) is now a transient auth error, not an unclassified one.
+- **The panel Test button runs `local` testers** (for example `agent_view/model` and the SSH
+  identity tester). `web` runs them in its own process, as `config:test` does in `cron`, with the
+  same redacted result codes. `web` registers the harnesses of the enabled modules again when
+  `modules.json` changes, so `module:enable` needs no `web` restart. `web` now mounts every
+  `runner-<i>-sock` read-only, like `cron`. See [docs/config/testers.md](docs/config/testers.md).
+- **One in-attempt retry after a runner crash.** When a run fails with an unclassified crash and
+  has a session id, and the harness can resume, the consumer resumes it once in the same attempt,
+  with the same credential, lease and HOME. A paused job is never retried. A failure of the retry
+  takes the same path as a first failure (poison, throttle, redaction). Log line: `process_retry`.
+- **`AUTH_REQUIRED` wait for an exhausted credential pool.** A job whose pool has no enabled or
+  healthy credential now waits (`TODO`, attempt refunded, `job.error_class =
+  'CredentialsUnavailableError'`) and tries again after 15 minutes, instead of going `DEAD`. A job
+  older than 24 hours goes `DEAD` as before. A new or refreshed credential pulls up to 200 waiting
+  jobs forward. New index `idx_job_auth_wait` (migration `052_job_auth_wait_index`). See
+  [docs/architecture/publisher-consumer.md](docs/architecture/publisher-consumer.md).
+- **Per-run uid in the runner.** Each run starts as its own uid from a fixed range per runner
+  (20000 + 256 per runner), so one run cannot read another run's files or capability. The runner
+  server runs as root with a small capability set and runs no harness code; a worker process runs
+  the harness as the run uid. The run dir is shared by group with the toolbox, which now drops to
+  `agent` with every run gid. The Linux live acceptance is still open (ROADMAP.md). See
+  [docs/architecture/runner.md](docs/architecture/runner.md).
 - **Harness native-config passthrough per agent_view (AG-27).** Three new config fields hand each
   harness a blob of its own native config, deep-merged over the block Agento generates (operator
   wins), so no new Agento code is needed per CLI setting: `claude/settings` (JSON →
@@ -30,7 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `"harness_option": true`, the same shape as `provider_option` one axis up. The config path is
   unchanged (`{module}/{field}`), so `config:set` and `runtime_config_fields` are untouched.
 - **Network split.** `agento-net` is replaced by `db-net` (mysql, cron, web, toolbox),
-  `exec-net` (runners, sandbox, toolbox, proxy) and `web-net` (proxy, web). No agent container
+  `exec-net` (runners, toolbox, proxy) and `web-net` (proxy, web). No agent container
   reaches MySQL, `web` or `cron` over the network. **Upgrade:** a `docker-compose.override.yml`
   that names `agento-net` must use `exec-net` or `db-net`
   ([override docs](docs/deployment/docker-compose-override.md)). New smoke:
@@ -90,6 +111,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CliInvoker.interactive_command()` gained a `yolo` keyword; each agent module decides its own flag.
 
 ### Changed
+- **The backend is trusted (D-BACKEND-2).** `cron` and `web` may decrypt what they need; the trust
+  boundary is the runner. The planned keyholder service is dropped. RULES.md and AGENTS.md goal 1
+  and SEC-1 say so, and zero-trust.md marks the backend rows `Part of the model`. Tool secrets
+  still live only in the toolbox.
+- **Deprecated:** the admin TUI (`agento admin`). Use the admin panel. The TUI stays in v1.0.0
+  and is removed after it; the CLI commands stay. The command writes a deprecation line to stderr,
+  and [docs/cli/admin.md](docs/cli/admin.md) gives the CLI command for each action that the panel
+  does not do.
+- **Lifecycle events reach a thread in about 1 s, not up to 60 s.** `conversation:relay` now loops
+  inside one cron run (one pass per second, for 55 s). One invocation holds the lock
+  `conversation_relay`; a second one exits at once, so there is still only one relay.
 - **`web` and `cron` are one trusted backend (D-BACKEND-1).** `web` now gets the same
   `env_file` as `cron`, so it holds `AGENTO_ENCRYPTION_KEY`; both use the `agento_backend` DB
   user. A compromise of `web` now exposes the key. The service names do not change. A panel
@@ -159,6 +191,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them as regexes (`ingress:list` shows existing rows) — this is a note, not a migration.
 
 ### Removed
+- **The idle `sandbox` compose service.** The sandbox image stays (the cron image builds on it).
+  `agento run` and `agento doctor` exec into `runner-1`. **Upgrade:** a
+  `docker-compose.override.yml` that names `sandbox:` makes a service with no image; remove that
+  block.
+- **`execution.harness_session_id`** (never read or written). `job.session_id` is the one session
+  store. Migration `conversation/005_drop_harness_session_id.sql`.
 - **The same-uid hardening stack in `cron`.** No agent runs in `cron` now (the runner runs
   them), so `drop.py`, `split-env.py`, `framework/store_env.py`,
   `framework/credential_store_env.py`, `launch.sh --store` and the CLI's `make_non_dumpable()`

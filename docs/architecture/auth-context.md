@@ -165,7 +165,7 @@ about 0.5 ms per call, so there is no cache. The two config queries per call com
 - The proxy strips every caller-supplied `X-Agento-*` and identity header before it forwards a
   request (`src/agento/framework/docker/proxy/Caddyfile`).
 - `/internal/authz/*` authenticates the proxy with a secret that only `proxy` and `web` can read.
-  `docker/smoke/proxy-smoke.sh` shows that a direct call from `sandbox` is denied, with and
+  `docker/smoke/proxy-smoke.sh` shows that a direct call from `cron` is denied, with and
   without a launch cookie.
 - The proxy redacts `cap` and `code` in its logs, with an acceptance test.
 

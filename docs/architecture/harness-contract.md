@@ -110,9 +110,13 @@ The module supplies one object implementing `AgentHarnessAdapter`, which wires t
 
 **Where it runs.** The runner that `create_runner(ctx)` builds, its output parser and its
 `stream_event_mapper` run in a `runner-<i>` service, not in `cron`
-([runner.md](runner.md)). The consumer uses `RemoteRunner`, which has the same `Runner`
-protocol, so a workflow sees no difference. The runner has no database: a harness runner
-reads no DB and no module config (it gets `harness_config` on the context). Usage goes back
+([runner.md](runner.md)). There they run in a run worker process, as the run's own uid,
+never in the root runner server ([runner.md](runner.md#per-run-uid)). So a `Runner` must not
+need root, a passwd entry for its uid, or write access outside its run dir (the context's
+`home_dir`, else `working_dir`), which it owns for the run. The
+consumer uses `RemoteRunner`, which has the same `Runner` protocol, so a workflow sees no
+difference. The runner has no database: a harness runner reads no DB and no module config
+(it gets `harness_config` on the context). Usage goes back
 as a `usage` event (`SubprocessRunner.observe(on_usage=…)`); the worker writes the row. A
 vendor CLI that is not a run (a login, a model list) goes through `runner.client.run` or
 `runner.client.pty`, never `subprocess` in the module (`test_spawn_guard.py`).
@@ -317,8 +321,8 @@ malformed one — a silently dropped blob is a silently dropped deny-list. See
 
 #### `harness_option` — showing the field where it is set
 
-The passthrough is set per agent_view, so `agento admin` lists it under the **agent_view**
-node, next to the harness selector, and hides the passthroughs belonging to the other
+The passthrough is set per agent_view, so the admin panel (and the deprecated `agento admin`)
+lists it under the **agent_view** node, next to the harness selector, and hides the passthroughs belonging to the other
 harnesses. The `system.json` field asks for that itself:
 
 ```json

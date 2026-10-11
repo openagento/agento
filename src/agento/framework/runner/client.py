@@ -220,9 +220,16 @@ def signal(ref: str | None, tag: str, sig: int) -> bool:
 
 
 def shared_tmp() -> Path:
-    """A ``0700`` parent for a temporary HOME the runner sees at the same path."""
+    """The parent of a temporary HOME the runner sees at the same path (``/workspace/.tmp``)."""
     from ..workspace_paths import BASE_WORKSPACE_DIR
 
-    path = Path(BASE_WORKSPACE_DIR) / ".tmp"
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return traversable(Path(BASE_WORKSPACE_DIR) / ".tmp")
+
+
+def traversable(path: Path) -> Path:
+    """``path`` with mode ``0711``: a run uid passes through it into its own HOME (the runner
+    gives that HOME to the run uid), but cannot list it."""
+    path.mkdir(mode=0o711, parents=True, exist_ok=True)
+    if path.stat().st_mode & 0o777 != 0o711:
+        path.chmod(0o711)
     return path

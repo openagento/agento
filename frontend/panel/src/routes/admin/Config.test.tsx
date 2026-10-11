@@ -107,4 +107,17 @@ describe("Config", () => {
     expect(api.calls("POST", "/api/admin/config/test")[0].body).toEqual({ path: "jira/token", scope: "default", scope_id: 0 });
     expect(await within(screen.getByRole("dialog")).findByText(/Last test:/)).toBeInTheDocument();
   });
+
+  it("a local tester (the model check) has a Test button and its result shows like any other", async () => {
+    const model = field({ path: "agent_view/model", label: "Model", value: "gpt-5", tester: "local" });
+    const api = await stubApi({ ...base, "/api/admin/config": [model],
+      "POST /api/admin/config/test": { status: "ok", code: "MODEL_OK", message: "model gpt-5 is in the account's model list" } });
+    renderAt("/admin/config", <Config />);
+    await screen.findByText("Model");
+    editOf("Model");
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Test" }));
+    await vi.waitFor(() => expect(api.calls("POST", "/api/admin/config/test")).toHaveLength(1));
+    expect(api.calls("POST", "/api/admin/config/test")[0].body).toEqual({ path: "agent_view/model", scope: "default", scope_id: 0 });
+    expect(await within(screen.getByRole("dialog")).findByText(/in the account's model list/)).toBeInTheDocument();
+  });
 });

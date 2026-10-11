@@ -12,7 +12,7 @@ Agento runs as Docker containers with strict security separation between the AI 
        │                                    ▼                                │
 ┌──────┴──────┐                      ┌─────────────┐    publish/consume  ┌──────────┐
 │   Human     │                      │  Agent      │                    │   Cron   │
-│  (reporter) │                      │  (sandbox)  │                    │ consumer │
+│  (reporter) │                      │ (runner-<i>)│                    │ consumer │
 └─────────────┘                      └─────────────┘                    └──────────┘
 ```
 

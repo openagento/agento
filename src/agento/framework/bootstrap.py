@@ -26,15 +26,8 @@ from .events import (
 )
 from .execution_hooks import SEAMS as EXECUTION_SEAMS
 from .execution_hooks import clear as clear_execution_hooks
-from .harness import (
-    AgentHarnessAdapter,
-    DuplicateCredentialScopeError,
-    DuplicateHarnessError,
-    ObscureRuntimeConfigError,
-    parse_harness_declarations,
-    register_harness,
-)
 from .harness import clear as clear_harnesses
+from .harness.loader import load_harnesses
 from .ingress_identity import clear_regex_identity_types, register_regex_identity_type
 from .job_models import AgentType
 from .job_types import (
@@ -194,7 +187,7 @@ def bootstrap(
         _load_channels(m)
         _load_job_types(m)
         _load_workflows(m)
-        _load_agent_harnesses(m)
+        load_harnesses([m])
         _load_commands(m)
         _load_onboarding(m)
         _load_routers(m)
@@ -332,61 +325,6 @@ def _load_workflows(m: ModuleManifest) -> None:
             logger.debug("Registered workflow %r from module %s", decl["type"], m.name)
         except Exception:
             logger.exception("Failed to load workflow %r from module %s", decl.get("type"), m.name)
-
-
-def _load_agent_harnesses(m: ModuleManifest) -> None:
-    """Register every ``agent_harnesses`` declaration from one module.
-
-    Replaces the five enum-keyed loaders (runtimes / config_writers / cli_invokers /
-    auth_strategies / transcript_readers). The descriptor is built from the declaration
-    itself, so the framework knows a harness's metadata without importing its code.
-    """
-    for decl in parse_harness_declarations(Path(m.path) / "di.json", m.name):
-        try:
-            cls = import_class(m.path, decl.class_path)
-            adapter = cls()
-            if not isinstance(adapter, AgentHarnessAdapter):
-                logger.error(
-                    "Harness %r from module %s does not implement AgentHarnessAdapter, skipping",
-                    decl.descriptor.id, m.name,
-                )
-                continue
-            register_harness(
-                decl.descriptor,
-                adapter,
-                decl.module,
-                decl.runtime_config_fields,
-                dict(getattr(m, "config", {}) or {}),
-            )
-            logger.debug("Registered harness %r from module %s", decl.descriptor.id, m.name)
-        except (
-            DuplicateHarnessError,
-            DuplicateCredentialScopeError,
-            ObscureRuntimeConfigError,
-        ):
-            # A collision is NOT survivable: swallowing it would silently make the
-            # first-registered harness win, and a duplicate credential scope would let
-            # one harness serve another's credential pool. `module:validate` catches
-            # this before setup:upgrade touches the DB; if it still reaches here, the
-            # deployment is misconfigured and must not come up half-wired.
-            #
-            # A bad `runtime_config_fields` allow-list joins them for the same reason:
-            # it is a SECURITY misconfiguration (a secret declared readable at command
-            # construction, or a field whose schema cannot prove it is not one). Letting
-            # the generic handler below skip the harness would turn that into a confusing
-            # "no harness registered" at job time, with the real cause buried in a log
-            # line nobody reads. Fail the boot instead.
-            logger.exception(
-                "Fatal harness registration error for %r from module %s",
-                decl.descriptor.id, m.name,
-            )
-            raise
-        except Exception:
-            # Other failures (bad import, adapter blows up in __init__) stay per-module:
-            # one broken third-party module must not take the whole consumer down.
-            logger.exception(
-                "Failed to load harness %r from module %s", decl.descriptor.id, m.name
-            )
 
 
 def _load_commands(m: ModuleManifest) -> None:

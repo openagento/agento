@@ -120,6 +120,103 @@ batch.
 
 ---
 
+## 2026-10-10 — The backend is trusted; no keyholder service (D-BACKEND-2)
+
+Owner, 2026-10-10: "i dont get why backend is untrusted. i want it to be trusted and we need to
+change maybe CLAUDE.md or RULES.md to make it happen. so skip this point, write decision, change
+project principles and go on with the rest of followups." Plan: `pr61-review-comments-b284ea`
+(WI-1), PR #61 review comment C3.
+
+- **D-BACKEND-2: the trust boundary is the runner, not the backend.** `cron` and `web` are one
+  trusted backend (D-BACKEND-1). They hold the key, by design:
+  - `AGENTO_ENCRYPTION_KEY` (the shared `env_file`, `secrets.env`) and the `agento_backend` DB
+    user;
+  - they decrypt `credential` rows (select, lease, capture, re-login, limits, the model tester);
+  - `bootstrap()` decrypts DEFAULT-scope `obscure` config, and module observers in `cron` use
+    what they need (the `jira` token check, the `app_monitor` SMTP password).
+  zero-trust.md marks each of these rows `Part of the model (D-BACKEND-2)`.
+- **The strict keyholder path is dropped, not deferred.** PRD §31.12–15 and §32 D/E (move select,
+  lease, decrypt and capture to the toolbox or a keyholder service, so no browser-facing process
+  holds the key) are not planned. The ROADMAP bullet is deleted.
+- **What stays.** Tool secrets live in the toolbox, because the agent reaches the toolbox and
+  never the backend. `"access": "toolbox_only"` and `"allowEnv": false` stay: they keep a field
+  away from Python where a channel needs that. A change passes no tool credential to a runner or an
+  agent, and no decrypted secret to the browser (D-PANEL-ADMIN-1, RULES.md SEC-1).
+- **The panel runs `local` testers.** With the backend trusted, there is no reason to keep module
+  code out of `web`. `web` runs a `local` tester in its own process, as `config:test` does in
+  `cron`, and registers the harnesses of the enabled modules again when `modules.json` changes
+  (`harness_reloader()`). Chosen over a web→cron request table: no new table, poller or frontend
+  polling. To reach a runner, `web` mounts every `runner-<i>-sock` read-only, like `cron`.
+- **Amends:** RULES.md goal 1 and SEC-1 (owner, 2026-10-10); O1's "the strict path is a ROADMAP
+  follow-up"; D-BACKEND-1's "`local` testers and replay stay in the TUI"; D-PANEL-ADMIN-1's
+  "a `local` tester would load module code into `web`"; the 2026-10-07 model tester's "CLI and TUI
+  only"; the Network split's "only cron and runner-<i> mount it". Each keeps its text and has an
+  appended amended line (DOC-2).
+
+## 2026-10-10 — The admin TUI is deprecated
+
+saipix, PR #61 review, 2026-10-10 (comment C2): "We should mark whole TUI code as obsolete. We will
+keep it in v1.0.0 for backward compatibility but users should migrate to admin panel. We will still
+keep cli commands longterm." Plan: `pr61-review-comments-b284ea` (WI-3).
+
+- **Deprecated, not removed.** `agento admin` writes one line to stderr when it starts, and its
+  help text says "(deprecated)". The TUI stays in v1.0.0 and is removed after it (ROADMAP.md
+  "Deprecation removals").
+- **The panel is the path; the CLI stays long term.** Each action that the panel does not do has a
+  CLI command ([docs/cli/admin.md](docs/cli/admin.md)). Docs give the panel or CLI path first.
+- **No new TUI work.** The "TUI module titles" follow-up is deleted from ROADMAP.md.
+- **`framework/admin/data.py` stays** after the removal: `web` uses it (`web/admin_api.py`,
+  `web/api.py`).
+- This amends the 2026-10-02 entry ("the TUI stays the fallback").
+
+## 2026-10-10 — `job.session_id` is the one session store
+
+Owner, 2026-10-10, in the plan session: "job.session_id is the one store (Recommended)". Plan:
+`pr61-review-comments-b284ea` (WI-8), PR #61 review comment C3.
+
+- **One store.** Resume and pause read and write `job.session_id`. The unused column
+  `execution.harness_session_id` (declared, never read or written) is dropped by the conversation
+  module's migration `005_drop_harness_session_id.sql`.
+- **Why `job` and not `execution`:** `job` is a framework table, so resume works with the
+  conversation module off (MOD-2). `execution` is module-owned.
+- The ROADMAP follow-up named the other direction ("make `execution.harness_session_id` the only
+  place"); this entry replaces it.
+
+## 2026-10-10 — Per-run uid in the runner
+
+Plan: `pr61-review-comments-b284ea` (WI-9), PR #61 review comment C3. It closes the zero-trust.md
+co-tenant row: concurrent runs in one runner shared the `agent` uid, so one run could read another
+run's live capability off disk. O7 (one long-lived runner pool, not a container per run) stands.
+
+- **A root server that runs no harness code.** The runner server runs as root with
+  `cap_drop: [ALL]` and only `SETUID`, `SETGID`, `CHOWN`, `FOWNER`, `FSETID`, `DAC_READ_SEARCH`,
+  `KILL`; `no-new-privileges:true` stays. It allocates a uid, prepares the run dir, spawns a
+  process as that uid, relays bytes and cleans up. It no longer calls `bootstrap()` or the harness
+  registry.
+- **One unprivileged worker per run.** `python -m agento.framework.runner.worker` runs as the run
+  uid (primary gid = uid, no other group). It reads the request, with the run's secrets, on stdin
+  (never argv or a file, O8), calls `harness_reloader()` and the harness `Runner`, and writes the
+  `wire` NDJSON events to stdout. So the `Runner` protocol stays open: an HTTP runner runs in the
+  worker like a subprocess runner. `_run` and `_pty` drop to the run uid too.
+- **A fixed uid range per runner.** `RUN_UID_BASE = 20000`, `RUN_UID_SLOTS = 256`; runner `i` owns
+  `RUN_UID_BASE + (i-1) * RUN_UID_SLOTS` and the next 255. A server with `AGENTO_RUNNER_MAX_PROCS`
+  above `RUN_UID_SLOTS` does not start, so two runners never overlap. These are module constants,
+  not env knobs: a knob comes when an operator asks.
+- **The run dir is shared by group with the toolbox.** The toolbox writes into a live run dir
+  (desks, Jira attachments). The server accepts a HOME only under `/workspace/artifacts/` or
+  `/workspace/.tmp/`, opened one component at a time with no symlink, and walks it on descriptors
+  to `uid:uid`. A file with another hard link keeps its owner on the way in (its inode can be outside the dir); on the way back one that the retiring run's uid or gid holds is changed too. Dirs get `2770`; files keep their mode, because a CLI checks some of them (ssh
+  refuses a group-writable `~/.ssh/config`) and the toolbox writes only files it creates
+  (`0660`). The run umask is `002`. The toolbox drops to `agent` with every run gid as a
+  supplementary group (`setpriv --groups`, not `gosu`). Another run is "other" and gets nothing.
+- **Cleanup before the terminal frame.** After exit (also after a kill) the server kills every
+  process of the uid (`kill(-1)` from a child with that uid, so a `setsid` descendant dies too),
+  gives the dir back to `agent:agent`, frees the uid, and only then sends the held `result` /
+  `error` / `done`. So credential capture starts only when the HOME is `agent`'s again.
+- **`signal`** reaches every process of the run uid the same way.
+
+---
+
 ## 2026-10-07 — A Tools/Skills draft is bound to its scope, held per scope
 
 The Tools and Skills screens moved from a write per checkbox to the Roles pattern: a draft, then one
@@ -195,9 +292,9 @@ entries below give the detail where one exists.
 
 | ID | Decision | Where |
 |---|---|---|
-| O1 | Credential path = MVC with one trusted backend. `cron` selects, leases, decrypts and captures credentials; `web` and `cron` share the key and one DB user. The strict path (the toolbox holds the credentials) is a ROADMAP follow-up. | D-BACKEND-1 |
-| O2 | No process retry inside one attempt. The durable retry with resume stays the only retry. | struck; ROADMAP follow-up |
-| O3 | No `AUTH_REQUIRED` wait state. An exhausted credential pool still ends the job `DEAD`. | struck; ROADMAP follow-up |
+| O1 | Credential path = MVC with one trusted backend. `cron` selects, leases, decrypts and captures credentials; `web` and `cron` share the key and one DB user. The strict path (the toolbox holds the credentials) is a ROADMAP follow-up. *Amended 2026-10-10 by D-BACKEND-2.* | D-BACKEND-1 |
+| O2 | No process retry inside one attempt. The durable retry with resume stays the only retry. *Done 2026-10-10 (cheap form, PR #61).* | struck; ROADMAP follow-up |
+| O3 | No `AUTH_REQUIRED` wait state. An exhausted credential pool still ends the job `DEAD`. *Done 2026-10-10 (cheap form, PR #61).* | struck; ROADMAP follow-up |
 | O4 | `app/code` in `cron` is trusted operator code. | same-uid stack entry |
 | O5 | `TranscriptReader` leaves the harness contract (5 → 4 members). | below |
 | O6 | The execution model stays module-owned. | below |
@@ -245,6 +342,8 @@ Plan: `refactor-runtime-split` WS7 (§31.3; owner approval S4, O10). It replaces
   in docs/architecture/containers.md#network, and `docker/smoke/runner-net-smoke.sh` checks
   each cell. The security claims are the "no" cells: no agent container reaches `mysql`, `web`
   or `cron`, and `cron` does not reach `proxy`.
+  *Amended 2026-10-10: the idle `sandbox` service is retired; `agento run` and `doctor` exec into
+  `runner-1`. The sandbox image stays.*
 - **No network is `internal`.** Agents and vendor CLIs need egress, and `cron` calls vendor APIs
   (credential refresh, limits).
 - **The Docker Desktop gap.** Desktop forwards `host.docker.internal` (also its raw IP) to host
@@ -258,6 +357,8 @@ Plan: `refactor-runtime-split` WS7 (§31.3; owner approval S4, O10). It replaces
   another PID namespace) trusts every container that mounts `runner-<i>-sock`, so only cron
   and runner-<i> mount it (another runner's agent is pid 0 too); `pid: host` or
   `pid: service:runner-<i>` would break it.
+  *Amended 2026-10-10 by D-BACKEND-2:* `web` mounts every socket read-only too (panel `local`
+  testers); it is a trusted backend process like `cron`.
 - **The override file breaks loudly (CODE-5).** A user `docker-compose.override.yml` that names
   `agento-net` fails at `docker compose up` with an undefined-network error. We keep no
   `agento-net` alias: an empty alias network would let such an override start, with its service
@@ -298,6 +399,7 @@ Plan: `refactor-runtime-split` WS11 (O1 = MVC).
 - **Not changed:** no new panel feature that the key would allow. D-PANEL-ADMIN-1 stands: no
   secret value goes to or from the browser; secret writes, `local` testers and replay stay
   in the TUI.
+  *Amended 2026-10-10 by D-BACKEND-2: the panel runs `local` testers; the TUI is deprecated.*
 
 ## 2026-10-09 — The same-uid hardening stack leaves `cron`; `app/code` there is trusted (O4)
 
@@ -332,6 +434,8 @@ Plan: `refactor-runtime-split` WS5 (O7, O8). Details: [docs/architecture/runner.
 - **Socket activation.** A root script binds the socket in a root 0755 directory and starts
   the server as `agent` with the listener on fd 3. An agent cannot replace the socket, so a
   boot id on that name can only change with a container start.
+  *Amended 2026-10-10 by Per-run uid in the runner: the server runs as root and starts each run
+  as its own uid.*
 - **`unknown` is never `dead`.** An owner that does not answer blocks recovery and resume; no
   timeout changes that. A wrong `dead` runs one session twice; a wrong `unknown` only waits.
 - **`signal` carries the boot id to the server.** The server sends a signal only for its own
@@ -455,6 +559,7 @@ have harness, credentail provider and model - that should be somehow tested."
   reads the pool with `list_credentials` and decrypts only the row a run would take.
 - **CLI and TUI only.** `web` does not load module code, so the panel refuses local testers; a panel
   button needs a web→cron request (ROADMAP.md).
+  *Amended 2026-10-10 by D-BACKEND-2.* `web` runs the tester in its own process.
 
 ## 2026-10-06 — Roles are rows; admin stays the one code with built-in admin operations
 
@@ -620,6 +725,7 @@ Plan: `~/.claude/plans/web-admin-panel-improvements-664a27.md` (Phases 3–4).
 
 The owner asked (2026-10-02): "implement all screens from TUI admin in the React Mantine admin panel.
 Leave TUI as fallback mechanism." Plan: `~/.claude/plans/tui-admin-screens-mantine-panel-0b52dd.md`.
+*Amended 2026-10-10: the TUI is deprecated.*
 
 - **D-PANEL-ADMIN-1: `web` reads config but never a secret value.** `GET /api/admin/config` sends
   `secret`, `is_set` and `source` for a secret field (one predicate, `config_schema.is_secret_field`,
@@ -636,6 +742,8 @@ Leave TUI as fallback mechanism." Plan: `~/.claude/plans/tui-admin-screens-manti
   `status`/`error_source`, or a fixed message per tester code. Job content (`prompt`, `output`,
   `error_message`, cut to 500 chars as in the TUI) is shown to an admin; this exception waits for
   the owner's confirmation.
+  *Amended 2026-10-10 by D-BACKEND-2:* the panel runs `local` testers; the TUI is deprecated, and
+  each remaining action has a CLI command.
 - **D-PANEL-ADMIN-2: `web` mints the tester's `internal_rest` capability on the server side.** It
   calls `config_test.run_config_test`, which mints a two-minute `internal_rest` token for one
   `/config-test` request and revokes it. The token never reaches the browser; the route is

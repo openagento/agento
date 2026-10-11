@@ -5,7 +5,7 @@ import { ARTIFACT_CODE_RE, DRAFT_ID_RE, VERSION_ID_RE } from './paths.js';
 
 /** The bind-mount point, and the ONLY trust anchor on the desk side.
  *
- *  Not the job directory: the sandbox mounts `../workspace:/workspace` read-write, so
+ *  Not the job directory: the runner mounts `../workspace:/workspace` read-write, so
  *  `<ws>`, `<av>` and `<job_id>` are all agent-writable, and an assert rooted at the job
  *  dir proves nothing the moment the job dir is itself a symlink to `/`. The mount pins
  *  this path; everything below it is walked, never resolved. */
@@ -69,14 +69,16 @@ export function openDirAt(fd, name) {
  *  This module is synchronous, so a blocked open hangs the whole toolbox event loop for
  *  every session, and `mkfifo` needs no privilege. With the flag the open returns a
  *  descriptor whose `fstat` reports the FIFO, rejectable before a byte is read. */
+// Group bits (0o660, 0o770): the desk is in a run dir owned by the run's uid, and the toolbox
+// reaches it as a member of the run's group (docs/architecture/runner.md#per-run-uid).
 export function openFileAt(fd, name, write = false) {
   const flags = write ? (O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW) : (O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
-  try { return fs.openSync(at(fd, name), flags, 0o600); }
+  try { return fs.openSync(at(fd, name), flags, 0o660); }
   catch (err) { const e = refusal(fd, name, err); if (e) throw e; return null; }
 }
 
 export const mkdirAt = (fd, name) => {
-  try { fs.mkdirSync(at(fd, name), 0o700); }
+  try { fs.mkdirSync(at(fd, name), 0o770); }
   catch (err) { if (err?.code !== 'EEXIST') throw new ArtifactError(ERROR_CODES.STORAGE_OPERATION_FAILED, 'the desk could not be created', { cause: err }); }
 };
 export const readdirAt = (fd, name) =>

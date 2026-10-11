@@ -25,8 +25,11 @@ chown -R agent /app/logs 2>/dev/null || true
 # Idempotent and metadata-only — fast even on large dirs. The `|| true` guards
 # against partially-inaccessible mounts; if chown can't fix it here, the
 # diagnostic in prepare_artifacts_dir will surface a clear error.
-if [ -d /workspace/artifacts ]; then
-    chown -R agent:agent /workspace/artifacts 2>/dev/null || true
+# Never an entry of a run uid (20000 and up, framework/runner/uids.py): that run may be live
+# in a runner, and its runner gives the dir back itself (or at its next start). Not in a
+# runner: cron does it, and a runner start must not wait for a walk of every artifact.
+if [ "${1:-}" != runner ] && [ -d /workspace/artifacts ]; then
+    find /workspace/artifacts -uid -20000 ! -user agent -exec chown -h agent:agent {} + 2>/dev/null || true
 fi
 
 # No SSH identity may survive in a passwd home. `ssh` resolves ~/.ssh through getpwuid(),

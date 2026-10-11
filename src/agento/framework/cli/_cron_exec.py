@@ -5,8 +5,8 @@ Every cron exec therefore enters as **root** and drops privileges through the la
 which builds the environment from the persisted whitelist, exactly as the entrypoint and
 the crontab do.
 
-This is only for the ``cron`` service. The ``sandbox`` service (``cli/run.py``) has no
-launcher and keeps ``-u agent``.
+This is only for the ``cron`` service. The runner exec (``EXEC_SERVICE`` in ``cli/run.py``)
+has no launcher and keeps ``-u agent``.
 """
 from __future__ import annotations
 
