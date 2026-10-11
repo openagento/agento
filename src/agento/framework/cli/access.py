@@ -147,6 +147,8 @@ def _scope_ids(conn, args) -> tuple[int | None, int | None]:
         if not row:
             _fail(f"workspace '{args.workspace}' not found")
         return row["id"], None
+    if args.agent_view is None:
+        return None, None  # the admin panel: add_grant refuses a missing scope for any other name
     from ..workspace import get_agent_view_by_code
 
     view = get_agent_view_by_code(conn, args.agent_view)
@@ -158,16 +160,18 @@ def _scope_ids(conn, args) -> tuple[int | None, int | None]:
 class GrantAddCommand(_Command):
     name = "grant:add"
     shortcut = "gr:ad"
-    help = "Grant a role a tool or an operation in one workspace or agent_view"
+    help = "Grant a role a tool or an operation in one workspace or agent_view, or an admin panel operation"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--role", required=True, help="Role code (role:list)")
         what = parser.add_mutually_exclusive_group(required=True)
         what.add_argument("--tool")
-        operations = accounts.grantable_operations()
+        operations = accounts.grantable_operations() | \
+            {leaf: f"{screen}: {title}" for screen, leaves in accounts.ADMIN_SCREENS.items()
+             for leaf, title in leaves.items()}
         what.add_argument("--operation", choices=sorted(operations),
                           help="; ".join(f"{k}: {v}" for k, v in sorted(operations.items())))
-        where = parser.add_mutually_exclusive_group(required=True)
+        where = parser.add_mutually_exclusive_group()
         where.add_argument("--workspace", help="Workspace code")
         where.add_argument("--agent-view", dest="agent_view", help="Agent view code")
 
@@ -202,7 +206,8 @@ class GrantListCommand(_Command):
 
     def run(self, conn, args) -> None:
         for g in accounts.list_grants(conn, args.role):
-            scope = f"agent_view={g['agent_view_id']}" if g["agent_view_id"] else f"workspace={g['workspace_id']}"
+            scope = f"agent_view={g['agent_view_id']}" if g["agent_view_id"] else \
+                f"workspace={g['workspace_id']}" if g["workspace_id"] else "global"
             print(f"  {g['id']:>5}  {g['role']:<16} {g['grant_kind']:<9} {g['name']:<40} {scope}")
 
 

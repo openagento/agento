@@ -1,19 +1,13 @@
 // Shared by the admin screens (plan "Admin TUI screens in the Mantine panel"). The API refuses a
-// user-role session (403); the role check here only avoids showing an empty screen.
+// session without the screen's leaf (403); each screen shows that as its error.
 import type { ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { Box } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { apiFetch, ApiError, refreshDisplay, useMutation, useQueryClient, useSession } from "@agento/api";
-import { EmptyState, type BadgeTone } from "@agento/ui";
+import { apiFetch, ApiError, refreshDisplay, useMutation, useQueryClient } from "@agento/api";
+import type { BadgeTone } from "@agento/ui";
 
 export const message = (e: unknown) => (e instanceof ApiError ? e.message : "The request failed.");
-
-export function AdminOnly({ children }: { children: ReactNode }) {
-  const me = useSession();
-  if (me?.role !== "admin") return <EmptyState title="Not available">Only an administrator opens this screen.</EmptyState>;
-  return <>{children}</>;
-}
 
 export type ScopeKind = "default" | "workspace" | "agent_view";
 export interface Scope { scope: ScopeKind; scopeId: number }

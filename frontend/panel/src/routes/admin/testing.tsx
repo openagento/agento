@@ -1,5 +1,5 @@
 // Test support for the admin screens: a fetch stub routed by "METHOD /path" (or "/path" for a GET),
-// a signed-in session with the given role, and the providers a screen needs. A `null` answer is a 204;
+// a signed-in session holding the given admin leaves (every leaf: the admin role), and the providers a screen needs. A `null` answer is a 204;
 // an answer may be a Promise (a slow write) or a Response (an error status).
 import { render } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -11,12 +11,19 @@ import { cleanNotifications, Notifications } from "@mantine/notifications";
 
 type Answer = unknown | ((body: unknown, url: URL) => unknown);
 
-export async function stubApi(answers: Record<string, Answer>, role: "admin" | "user" = "admin") {
+export const ALL_LEAVES = [
+  "admin.dashboard", "admin.jobs", "admin.agents", "admin.credentials", "admin.credentials.edit", "admin.tools",
+  "admin.skills", "admin.config", "admin.config.edit", "admin.users", "admin.users.create", "admin.users.edit",
+  "admin.roles", "admin.roles.create", "admin.roles.edit", "admin.roles.delete", "miniapps",
+];
+
+export async function stubApi(answers: Record<string, Answer>, acl: string[] = ALL_LEAVES) {
+  const role = acl === ALL_LEAVES ? "admin" : "user";
   const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
     const url = new URL(String(input), window.location.origin);
     const method = init?.method ?? "GET";
     if (url.pathname === "/api/session") {
-      return new Response(JSON.stringify({ user: { id: 1, username: "ann", role, is_active: true }, csrf_token: "t", expires_at: "x" }));
+      return new Response(JSON.stringify({ user: { id: 1, username: "ann", role, is_active: true, acl }, csrf_token: "t", expires_at: "x" }));
     }
     const key = [`${method} ${url.pathname}${url.search}`, `${method} ${url.pathname}`, method === "GET" ? url.pathname : ""]
       .find((k) => k && k in answers);

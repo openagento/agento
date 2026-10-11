@@ -4,7 +4,8 @@
 import { apiFetch } from "./apiFetch";
 import { ApiError } from "./errors";
 
-export interface User { id: number; username: string; role: string; is_active: boolean }
+/** `acl`: the admin leaves the user holds (the admin role holds every one). */
+export interface User { id: number; username: string; role: string; is_active: boolean; acl: string[] }
 /** The panel display settings (`admin/locale/*`); null when the `admin` module is disabled. */
 export interface Display { date_format: "us" | "eu" | "iso"; timezone: string }
 

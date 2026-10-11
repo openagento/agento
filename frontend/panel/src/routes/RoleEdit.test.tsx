@@ -21,9 +21,13 @@ const RESOURCES = {
     tool("jira_delete", { enabled: false }),
   ] }],
 };
+const view = (id: string, granted = false, builtin = false) => ({ id, title: "View", granted, builtin });
+const GLOBAL = { admin: [
+  { screen: "Jobs", leaves: [view("admin.jobs", true)] }, { screen: "Users", leaves: [view("admin.users")] },
+] };
 const base = {
   "/api/admin/scopes": SCOPES, "/api/admin/roles/support": ROLE,
-  "/api/admin/roles/support/resources": RESOURCES,
+  "/api/admin/roles/support/resources": (_: unknown, url: URL) => (url.search === "?scope=global" ? GLOBAL : RESOURCES),
   "PUT /api/admin/roles/support/resources": { added: 1, removed: 0 },
 };
 afterEach(teardown);
@@ -147,9 +151,36 @@ describe("RoleEdit", () => {
     expect(screen.getByRole("textbox", { name: "Name" })).toHaveValue("Helpdesk EU");
   });
 
-  it("the admin role says what it has built in", async () => {
-    await stubApi({ ...base, "/api/admin/roles/admin": { ...ROLE, code: "admin", label: "Administrator", builtin: true } });
+  it("the Admin panel place shows only the Admin section and saves the global leaves", async () => {
+    const api = await stubApi({ ...base, "/api/admin/roles/support": { ...ROLE,
+      scopes: [...ROLE.scopes, { workspace_id: null, agent_view_id: null, tools: 0, operations: 1 }] } });
+    at("/users/roles/support?tab=resources&scope=global&scope_id=0");
+    const users = await box("Users");
+    expect(api.calls("GET", "/api/admin/roles/support/resources")[0].url.search).toBe("?scope=global");
+    expect(screen.queryByRole("checkbox", { name: "Operations" })).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Scope" })).toHaveValue("Admin panel (everywhere)");
+    fireEvent.click(users);
+    save();
+    await vi.waitFor(() => expect(api.calls("PUT", "/api/admin/roles/support/resources")).toHaveLength(1));
+    expect(api.calls("PUT", "/api/admin/roles/support/resources")[0].body)
+      .toEqual({ scope: "global", admin: ["admin.jobs", "admin.users"] });
+  });
+
+  it("offers the Admin panel place first, with its count, even with no workspace", async () => {
+    await stubApi({ ...base, "/api/admin/scopes": { workspaces: [], agent_views: [] },
+      "/api/admin/roles/support": { ...ROLE, scopes: [{ workspace_id: null, agent_view_id: null, tools: 0, operations: 1 }] } });
+    at("/users/roles/support?tab=resources");
+    expect(await box("Users")).not.toBeChecked();
+    fireEvent.click(screen.getByRole("combobox", { name: "Scope" }));
+    expect(await screen.findByRole("option", { name: "Admin panel (everywhere) 1" })).toBeInTheDocument();
+  });
+
+  it("the admin role's admin leaves are built in and locked", async () => {
+    await stubApi({ ...base, "/api/admin/roles/admin": { ...ROLE, code: "admin", label: "Administrator", builtin: true, scopes: [] },
+      "/api/admin/roles/admin/resources": { admin: [{ screen: "Jobs", leaves: [view("admin.jobs", false, true)] }] } });
     at("/users/roles/admin?tab=resources");
-    expect(await screen.findByText(/Administrator has user management/)).toBeInTheDocument();
+    expect(await box("View")).toBeChecked();
+    expect(await box("View")).toBeDisabled();
+    expect(screen.getByText("Built in")).toBeInTheDocument();
   });
 });

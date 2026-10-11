@@ -114,19 +114,25 @@ so a role that a user has cannot be deleted; `role_grant.role` cascades, so a de
 go with it. Every writer (`create_user`, `update_user`, `add_grant`, `set_role_grants`) checks the
 code against `role` inside its transaction, and the foreign key is the backstop.
 
-`admin` is the one code with the built-in admin operations `users.manage`, `grants.manage`,
-`config.write`, `admin.read` and `credentials.manage` (`accounts.may`); they are not grantable, so a
-new role is a `user`-like role (DECISIONS.md 2026-10-06 Roles are rows). Everything else comes from
-`role_grant` rows:
+Access comes from `role_grant` rows:
 
 - `grant_kind = 'tool'`: the role may call that tool, if it is enabled there;
 - `grant_kind = 'operation'`: an ACL resource — the built-in `artifact.launch`, or one a module
   declares in `di.json` (`"acl_resources": [{"id": "<module>.<name>", "title": "…"}]`, the Magento
   `acl.xml` pattern). `admin` has every module-declared resource built in; `artifact.launch` is a
   grant for every role, `admin` included. The conversation module declares
-  `conversation.run_details` (DECISIONS.md D-E9-6).
+  `conversation.run_details` (DECISIONS.md D-E9-6);
+- `grant_kind = 'operation'` with **no scope**: an admin panel leaf (`accounts.ADMIN_SCREENS`) — one
+  per admin screen (`admin.dashboard`, `admin.jobs`, `admin.agents`, `admin.credentials`,
+  `admin.tools`, `admin.skills`, `admin.config`, `admin.users`, `admin.roles`, `miniapps`) and one per
+  action (`admin.credentials.edit`, `admin.config.edit` — also the Tools and Skills switches,
+  `admin.users.create|edit`, `admin.roles.create|edit|delete`). `admin` holds every leaf built in.
+  Each panel route names its leaf (`Route.acl`), and `server._run` checks `accounts.may` before the
+  handler; the session's `user.acl` lists the leaves the panel shows. A role that is not admin
+  grants only the leaves it holds, and only an `admin` creates, edits or assigns an admin account
+  (DECISIONS.md D-ADMIN-ACL-1).
 
-A row has exactly one scope. A workspace grant reaches the workspace and every view in it. A view
+Any other row has exactly one scope. A workspace grant reaches the workspace and every view in it. A view
 grant reaches only that view. The same SQL rule is used in Python (`accounts._granted`) and in the
 toolbox (`src/agento/toolbox/capability.js` `GRANTS_SQL`, handed to every auth source as
 `grants`); the fixture
@@ -135,19 +141,22 @@ and needs no list of roles.
 
 ### Panel: Users → Roles
 
-All behind `grants.manage`:
+Leaves: `admin.roles` to read, `admin.roles.create`, `admin.roles.edit` (PATCH and PUT resources),
+`admin.roles.delete`. The role list (`GET /api/admin/roles`) also answers `admin.users`,
+`admin.users.create` and `admin.users.edit`: the Users tab shows and picks a role by its label from it. A role that holds only `admin.roles` opens on the Roles tab.
 
 | Method | Path | Answer |
 |---|---|---|
 | GET | `/api/admin/roles` | `[{code, label, builtin, users, scopes}]` — `scopes` counts the scopes with a grant |
 | POST | `/api/admin/roles` | `{code, label}` → 201 the role |
-| GET | `/api/admin/roles/{code}` | the role plus `scopes: [{workspace_id, agent_view_id, tools, operations}]` |
+| GET | `/api/admin/roles/{code}` | the role plus `scopes: [{workspace_id, agent_view_id, tools, operations}]` (both ids `null`: the admin panel) |
 | PATCH | `/api/admin/roles/{code}` | `{label}` (the code never changes) |
 | DELETE | `/api/admin/roles/{code}` | 204; 400 with the reason (built in, or "3 users have this role") |
 | GET | `/api/admin/roles/{code}/resources?scope=&scope_id=` | the tree, below |
-| PUT | `/api/admin/roles/{code}/resources` | `{scope, scope_id, tools[], operations[]}` → `{added, removed}` (counts) |
+| PUT | `/api/admin/roles/{code}/resources` | `{scope, scope_id, tools[], operations[]}`, or `{scope: "global", admin[]}` → `{added, removed}` (counts) |
 
-`scope` is `workspace` or `agent_view`; a grant has no default scope (400). An unknown role or scope
+`scope` is `global` (the admin panel, no `scope_id`), `workspace` or `agent_view`; a grant has no
+default scope (400). An unknown role or scope
 id is 404.
 
 The role page shows the role's resources at one scope as a checkbox tree (Magento *Role
@@ -156,7 +165,8 @@ toolsets: [{toolset, tools: [{name, enabled, granted, inherited}]}]}`: `granted`
 this scope; `inherited` (agent_view scope only) is a row at the view's workspace, which already
 reaches the view; `builtin` is `admin` with a module-declared resource; `enabled` is the tool's
 effective `is_enabled` at the scope — a grant does not enable a tool. The tools are those of the
-enabled modules (the Tools screen's list).
+enabled modules (the Tools screen's list). At `scope=global` it answers only
+`{admin: [{screen, leaves: [{id, title, granted, builtin}]}]}`.
 
 `PUT …/resources` (`accounts.set_role_grants`) makes the role's rows at **exactly that scope** the
 given names, in one transaction under the `agento.role_grant` named lock, with the role's users and
@@ -241,31 +251,32 @@ never ships panel JavaScript. See [../development/frontend.md](../development/fr
 
 The admin TUI's screens, for an admin in the panel ([frontend.md](../development/frontend.md#admin-screens)).
 The handlers are in `src/agento/web/admin_api.py` and read through `framework/admin/data.py`, the
-TUI's read layer. Every route needs a session and its operation; a `user` gets 403. Writes pass
+TUI's read layer. Every route needs a session and its leaf (`Route.acl`); without it the answer is
+403. `GET /api/admin/scopes` opens with any admin screen leaf. Writes pass
 the CSRF controls above. A scope is `?scope=default|workspace|agent_view&scope_id=N` on a GET, and
 `{scope, scope_id}` in a body; a bad one is 400, and an id that does not exist is 404.
 
-| Method | Path | Operation | Answer |
+| Method | Path | Leaf | Answer |
 |---|---|---|---|
-| GET | `/api/admin/scopes` | `admin.read` | workspaces and agent_views, for the scope picker |
-| GET | `/api/admin/dashboard` | `admin.read` | health, version, module count, recent jobs, credentials, agent views |
-| GET | `/api/admin/jobs[?status=]` | `admin.read` | the newest 50 jobs; status `TODO`, `RUNNING`, `SUCCESS`, `FAILED` or `DEAD` |
-| GET | `/api/admin/jobs/<id>` | `admin.read` | the job, with prompt, output, summary and error cut to 500 chars |
-| GET | `/api/admin/agents` | `admin.read` | agent_views with workspace, ingress count and last build status |
-| GET | `/api/admin/credentials` | `admin.read` | credentials with 24 h usage, `type`, `limits` and `limits_at`; `status` and `error_source`, never the error message or the token |
-| POST | `/api/admin/credentials/<id>/clear-error` | `credentials.manage` | 204 |
-| POST | `/api/admin/credentials/<id>/disable` | `credentials.manage` | 204 (the same as `credential:deregister`) |
-| POST | `/api/admin/credentials/<id>/login` | `credentials.manage` | 201 `{id}`; 404 no credential; 400 the scope declares no `interactive_oauth` mode (a harness without `start_web_login` gets 201, then `failed: unsupported`); 409 disabled, not `oauth`, or a login already active |
-| GET | `/api/admin/credential-logins/<id>` | `credentials.manage` | `{status, verify_url, user_code, needs_code, error_code, expires_at}`; 404 no login |
-| POST | `/api/admin/credential-logins/<id>/code` | `credentials.manage` | `{code}`, 1–300 printable ASCII characters, no space; 204; 400 a bad code; 409 not `waiting`, no code expected, or a code already sent |
-| POST | `/api/admin/credential-logins/<id>/cancel` | `credentials.manage` | 204; 404 no active login |
-| GET | `/api/admin/tools` | `admin.read` | tools per toolset with `enabled`, `explicit_here`, `blocked_by` |
-| GET | `/api/admin/skills` | `admin.read` | skills with `enabled`, `explicit_here` |
-| GET | `/api/admin/config/modules` | `admin.read` | modules with config, and their tools that have fields |
-| GET | `/api/admin/config?module=` | `admin.read` | the module's fields: source, editable, options, tester; `secret` and `is_set`, and `value` only when not secret |
-| PUT | `/api/admin/config` | `config.write` | `{path, reset}`; a secret path is refused |
-| DELETE | `/api/admin/config` | `config.write` | 204; a secret path is refused, no override is 404 |
-| POST | `/api/admin/config/test` | `config.write` | `{status, code, message}`; an `error` has a fixed message per code |
+| GET | `/api/admin/scopes` | any admin leaf | workspaces and agent_views, for the scope picker |
+| GET | `/api/admin/dashboard` | `admin.dashboard` | health, version, module count, recent jobs, credentials, agent views |
+| GET | `/api/admin/jobs[?status=]` | `admin.jobs` | the newest 50 jobs; status `TODO`, `RUNNING`, `SUCCESS`, `FAILED` or `DEAD` |
+| GET | `/api/admin/jobs/<id>` | `admin.jobs` | the job, with prompt, output, summary and error cut to 500 chars |
+| GET | `/api/admin/agents` | `admin.agents` | agent_views with workspace, ingress count and last build status |
+| GET | `/api/admin/credentials` | `admin.credentials` | credentials with 24 h usage, `type`, `limits` and `limits_at`; `status` and `error_source`, never the error message or the token |
+| POST | `/api/admin/credentials/<id>/clear-error` | `admin.credentials.edit` | 204 |
+| POST | `/api/admin/credentials/<id>/disable` | `admin.credentials.edit` | 204 (the same as `credential:deregister`) |
+| POST | `/api/admin/credentials/<id>/login` | `admin.credentials.edit` | 201 `{id}`; 404 no credential; 400 the scope declares no `interactive_oauth` mode (a harness without `start_web_login` gets 201, then `failed: unsupported`); 409 disabled, not `oauth`, or a login already active |
+| GET | `/api/admin/credential-logins/<id>` | `admin.credentials.edit` | `{status, verify_url, user_code, needs_code, error_code, expires_at}`; 404 no login |
+| POST | `/api/admin/credential-logins/<id>/code` | `admin.credentials.edit` | `{code}`, 1–300 printable ASCII characters, no space; 204; 400 a bad code; 409 not `waiting`, no code expected, or a code already sent |
+| POST | `/api/admin/credential-logins/<id>/cancel` | `admin.credentials.edit` | 204; 404 no active login |
+| GET | `/api/admin/tools` | `admin.tools` | tools per toolset with `enabled`, `explicit_here`, `blocked_by` |
+| GET | `/api/admin/skills` | `admin.skills` | skills with `enabled`, `explicit_here` |
+| GET | `/api/admin/config/modules` | `admin.config` | modules with config, and their tools that have fields |
+| GET | `/api/admin/config?module=` | `admin.config` | the module's fields: source, editable, options, tester; `secret` and `is_set`, and `value` only when not secret |
+| PUT | `/api/admin/config` | `admin.config.edit` | `{path, reset}`; a secret path is refused |
+| DELETE | `/api/admin/config` | `admin.config.edit` | 204; a secret path is refused, no override is 404 |
+| POST | `/api/admin/config/test` | `admin.config.edit` | `{status, code, message}`; an `error` has a fixed message per code |
 
 **Never a secret, never the decryptor.** `web` holds the encryption key (D-BACKEND-1), but the
 admin API never sends a secret value. A secret field (`obscure`

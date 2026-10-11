@@ -9,7 +9,7 @@ export {
   hub, EventSourceHub, backoff,
   type StreamEvent, type StreamHandlers, type StreamState,
 } from "./hub";
-export { useDisplay, useSession } from "./useSession";
+export { useCan, useDisplay, useSession } from "./useSession";
 // Modules import Query through this package only (one QueryClient, one teardown).
 export { useQuery, useMutation, useQueryClient, QueryClientProvider } from "@tanstack/react-query";
 export {

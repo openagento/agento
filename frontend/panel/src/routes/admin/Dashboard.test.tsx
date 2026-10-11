@@ -25,7 +25,7 @@ describe("Home", () => {
   });
 
   it("is a greeting for a user, with no admin request", async () => {
-    const api = await stubApi({}, "user");
+    const api = await stubApi({}, []);
     renderAt("/", <Home />);
     expect(await screen.findByText("Hello, ann")).toBeInTheDocument();
     expect(api.calls("GET", "/api/admin/dashboard")).toEqual([]);

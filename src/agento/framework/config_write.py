@@ -311,7 +311,7 @@ def validate_config_write(conn, path: str, value: str, scope: str, scope_id: int
 
 
 def write_config(conn, path: str, value: str, *, scope: str, scope_id: int,
-                 actor_id: int | None = None) -> tuple[bool, list[tuple[str, str]]]:
+                 actor: tuple[int, str] | None = None) -> tuple[bool, list[tuple[str, str]]]:
     """Write with dependent repair in one transaction, commit, dispatch ``config_save_after``.
 
     No validation: the admin TUI calls this directly because it also writes the schema-less
@@ -324,12 +324,12 @@ def write_config(conn, path: str, value: str, *, scope: str, scope_id: int,
 
     conn.begin()
     try:
-        if actor_id is not None:
+        if actor is not None:
             from .access.accounts import AccessError, _lock_actor_and
 
             try:
                 with conn.cursor() as cur:
-                    _lock_actor_and(cur, actor_id)
+                    _lock_actor_and(cur, actor)
             except AccessError as exc:
                 raise ConfigWriteError(str(exc)) from None
         encrypted, reset = set_config_with_dependents(conn, path, value, scope=scope, scope_id=scope_id)
@@ -342,7 +342,7 @@ def write_config(conn, path: str, value: str, *, scope: str, scope_id: int,
 
 
 def save_config(conn, path: str, value: str, *, scope: str, scope_id: int, allow_secret: bool,
-                actor_id: int | None = None) -> tuple[bool, list[tuple[str, str]]]:
+                actor: tuple[int, str] | None = None) -> tuple[bool, list[tuple[str, str]]]:
     """Validate, then ``write_config``. Returns ``(encrypted, reset)``."""
     validate_config_write(conn, path, value, scope, scope_id, allow_secret=allow_secret)
-    return write_config(conn, path, value, scope=scope, scope_id=scope_id, actor_id=actor_id)
+    return write_config(conn, path, value, scope=scope, scope_id=scope_id, actor=actor)

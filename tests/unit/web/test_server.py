@@ -183,12 +183,13 @@ def test_an_authenticated_caller_survives_another_callers_shared_address_refusal
     """SEC-12: "the address limit counts failures only, so one caller cannot throttle the
     others' authorized traffic". Behind one NAT, the brute force and the colleague share an
     address; refusing the colleague is the attacker throttling them."""
-    from agento.framework.access import sessions
+    from agento.framework.access import accounts, sessions
     from agento.web import security
     from agento.web import server as server_module
 
     monkeypatch.setattr(server_module, "connect", lambda: None)
     monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: _a_session())
+    monkeypatch.setattr(accounts, "held_admin", lambda conn, role: [])
 
     response = httpx.get(f"{base_url}/api/session", headers={"Cookie": f"{security.SESSION_COOKIE}=real"})
 
