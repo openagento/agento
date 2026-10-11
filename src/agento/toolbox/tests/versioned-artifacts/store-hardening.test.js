@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, rm, readdir, readFile, writeFile, unlink } from 'node:fs/promises';
+import { mkdtemp, rm, readdir, readFile, writeFile, unlink, appendFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -97,5 +98,31 @@ describe('the neutralization line is not reachable from the tree', () => {
       { encoding: 'utf8' });
 
     expect(resolved).toContain('text: unset');
+  });
+});
+
+describe('a nested repository in a draft cannot run its own config', () => {
+  it('runs no fsmonitor and no filter driver from a nested .git during recovery', async () => {
+    await be.init(root, 'site', { files: [{ path: 'a.txt', content: 'a\n' }] });
+    const d = await be.createDraft(root, 'site', 'current', 'x');
+    const sub = path.join(root, 'site', 'worktrees', d.draft_id, 'sub');
+    const marker = path.join(root, 'PWNED');
+    const git = (...args) => execFileSync('git', ['-C', sub, '-c', 'user.name=a', '-c', 'user.email=a@b', ...args]);
+
+    execFileSync('git', ['init', '-q', sub]);
+    await writeFile(path.join(sub, 'f.txt'), 'one\n');
+    await writeFile(path.join(sub, '.gitattributes'), 'f.txt filter=x\n');
+    git('add', '.');
+    git('commit', '-q', '-m', 's');
+    // A saved version that already holds `sub` as a gitlink, as one made before
+    // the desk filtered nested `.git` could.
+    await be.commitDraft(root, 'site', d.draft_id, 'm');
+    await appendFile(path.join(sub, '.git', 'config'),
+      `[core]\n\tfsmonitor = "touch ${marker}; false"\n[filter "x"]\n\tclean = "touch ${marker}; cat"\n`);
+    await writeFile(path.join(sub, 'f.txt'), 'two\n');
+
+    await be.recoverDraft(root, 'site', d.draft_id);
+
+    expect(existsSync(marker)).toBe(false);
   });
 });

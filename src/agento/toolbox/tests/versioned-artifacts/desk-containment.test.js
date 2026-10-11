@@ -268,6 +268,24 @@ describe.skipIf(!linux)('mirrorOut reads agent bytes into the store', () => {
     expect(tree(dest)).toEqual(['a.txt']);
   });
 
+  it('never copies a nested .git out of the desk', () => {
+    const { dir, fd } = desk({ 'a.txt': 'x', 'sub/b.txt': 'y' });
+    fs.mkdirSync(path.join(dir, 'sub', '.git'));
+    fs.writeFileSync(path.join(dir, 'sub', '.git', 'config'), '[core]\n\tfsmonitor = touch /tmp/pwned\n');
+    const dest = newTmp();
+    mirrorOut(fd, dest, {});
+    expect(tree(dest)).toEqual(['a.txt', 'sub/b.txt']);
+  });
+
+  it('removes a nested .git already in the destination', () => {
+    const { fd } = desk({ 'sub/b.txt': 'y' });
+    const dest = newTmp();
+    fs.mkdirSync(path.join(dest, 'sub', '.git'), { recursive: true });
+    fs.writeFileSync(path.join(dest, 'sub', '.git', 'config'), '[core]');
+    mirrorOut(fd, dest, {});
+    expect(tree(dest)).toEqual(['sub/b.txt']);
+  });
+
   it('deletes destination files absent from the desk but keeps .git', () => {
     const { fd } = desk({ 'kept.txt': 'new' });
     const dest = newTmp();
