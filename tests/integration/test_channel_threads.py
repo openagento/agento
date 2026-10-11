@@ -436,16 +436,16 @@ def test_the_channel_list_pages_by_its_cursor_without_overlap(conn, world, monke
     real = service.config
     monkeypatch.setattr(service, "config", lambda c, path: 2 if path == "history/page_size"
                         else real(c, path))
-    seen, before = [], None
+    listed, before = [], None
     for _ in range(4):
         query = {"scope": "channels", **({"before": before} if before else {})}
         page = routes.index(_Req(conn, world["admin"], query=query)).body
         if not page:
             break
-        seen += [t["id"] for t in page]
+        listed += [t["id"] for t in page]
         before = page[-1]["cursor"]
 
-    assert sorted(seen) == sorted(ids) and len(seen) == len(set(seen))
+    assert sorted(listed) == sorted(ids) and len(listed) == len(set(listed))
 
 
 def test_tool_payloads_are_an_admins_only(conn, world):
@@ -728,7 +728,7 @@ def test_the_followup_workflow_executes_the_published_reply(conn, world):
 
 # --- recovery and the publication race, on the channel contract (review impl-2 F4) ---
 
-def test_a_crash_after_the_publish_recovers_onto_the_same_followup_job(conn, world, seen):
+def test_a_crash_after_the_publish_recovers_onto_the_same_followup_job(conn, world, seen):  # noqa: F811
     """The job is already out; only the attachment was lost. The sweep must adopt THAT job
     (its idempotency key is the message's), not publish a second external task."""
     cid = _channel_thread(conn, world)
@@ -753,7 +753,7 @@ def test_a_crash_after_the_publish_recovers_onto_the_same_followup_job(conn, wor
                  (message_id,))[0]["job_state"] in ("published", "terminal")
 
 
-def test_a_route_racing_the_sweep_on_a_channel_thread_announces_one_turn(conn, world, seen,
+def test_a_route_racing_the_sweep_on_a_channel_thread_announces_one_turn(conn, world, seen,  # noqa: F811
                                                                          monkeypatch):
     """EVT-4 on the channel contract: one transition, one event, one external task."""
     cid = _channel_thread(conn, world)
