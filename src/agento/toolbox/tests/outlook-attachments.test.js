@@ -210,6 +210,20 @@ describe('AC2 outlook_get_attachment', () => {
     expect(fetchMock.mock.calls.every((c) => !String(c[0]).endsWith('/$value'))).toBe(true);
   });
 
+  it('(b) BLOCKS a DMARC pass for another header.from domain and issues NO $value GET', async () => {
+    const otherDomain = [{ name: 'Authentication-Results', value: 'dmarc=pass action=none header.from=evil.com' }];
+    const fetchMock = router([
+      { test: (u) => u.includes('$select=from'), res: () => okJson({ from: { emailAddress: { address: 'sklep@mycompanystudio.com' } }, internetMessageHeaders: otherDomain }) },
+      metaFile(),
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+    const s = makeServer();
+    register(s, ctxWithOutlook());
+    const r = await s.tools.outlook_get_attachment.handler({ message_id: 'm1', attachment_id: 'att1' });
+    expect(r.isError).toBe(true);
+    expect(fetchMock.mock.calls.every((c) => !String(c[0]).endsWith('/$value'))).toBe(true);
+  });
+
   it('(c) rejects metadata size > 25 MB with no write', async () => {
     const fetchMock = router([gateOk, metaFile({ size: MAX + 1 })]);
     vi.stubGlobal('fetch', fetchMock);
