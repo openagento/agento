@@ -21,6 +21,7 @@ ALLOWED = {
     # The runner: where the CLIs start.
     "framework/runner/server.py": "the runner's own ops",
     "framework/runner/listen.py": "root socket activation, execs the server",
+    "framework/runner/uids.py": "the root server's `kill -1` as a run uid",
     "framework/harness/subprocess_runner.py": "the run; constructed only in the runner",
     # Framework CLI in cron (run.sh), which itself goes through the runner.
     "framework/admin/screens/agents.py": "run.sh workspace:build",
@@ -34,7 +35,7 @@ ALLOWED = {
     "framework/cli/doctor.py": "host docker",
     "framework/cli/install.py": "host docker, uv",
     "framework/cli/module.py": "host docker compose",
-    "framework/cli/run.py": "host docker compose exec sandbox",
+    "framework/cli/run.py": "host docker compose exec runner-1",
     "framework/cli/upgrade.py": "host docker, uv",
     "modules/versioned_artifacts/src/commands/_toolbox.py": "host docker compose exec toolbox",
 }
@@ -67,7 +68,7 @@ def test_the_list_has_no_dead_entry():
 
 def test_the_runner_server_imports_no_database_or_store():
     """The runner holds no secret: its own modules import nothing that reads the store."""
-    for name in ("server.py", "wire.py", "listen.py"):
+    for name in ("server.py", "wire.py", "listen.py", "uids.py"):
         tree = ast.parse((SRC / "framework" / "runner" / name).read_text())
         modules = {n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
         modules |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}

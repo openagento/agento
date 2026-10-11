@@ -312,10 +312,6 @@ def _run_post_install(project_dir: Path, *, existing_db: bool = False) -> None:
     # (FROM agento-toolbox:${AGENTO_VERSION}) has a base to layer on.
     log_info("Building Docker images (first run can take a few minutes)...")
     build_base_images(project_dir, get_package_version())
-    result = subprocess.run([*compose_cmd, "build", "sandbox"])
-    if result.returncode != 0:
-        log_error("Failed to build sandbox image. Run 'docker compose build' manually.")
-        return
     result = subprocess.run([*compose_cmd, "build", "toolbox", "cron"])
     if result.returncode != 0:
         log_error("Failed to build toolbox/cron images. Run 'docker compose build' manually.")

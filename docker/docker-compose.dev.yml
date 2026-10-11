@@ -1,6 +1,9 @@
 name: agento
 
 services:
+  # Build only: the base of the cron image (additional_contexts below). It never runs;
+  # agents run in runner-<i>. `scale: 0` keeps `up` from starting it (a `profiles:` entry
+  # would hide it from `service:sandbox`); `network_mode: none` for a stray `run`.
   sandbox:
     build:
       context: ../src/agento/framework/docker/sandbox
@@ -12,23 +15,8 @@ services:
         CODEX_VERSION: ${CODEX_VERSION:-0.157.0}
         PI_VERSION: ${PI_VERSION:-0.84.1}
     image: agento-sandbox:${COMPOSE_PROJECT_NAME:-agento}
-    volumes:
-      - ../workspace:/workspace
-      - ../app/code:/app/code:ro
-      - ../app/etc:/app/etc
-      - ../logs:/app/logs
-    environment:
-      - TZ=Europe/Warsaw
-    stdin_open: true
-    tty: true
-    security_opt:
-      - no-new-privileges:true
-    networks:
-      - exec-net
-    depends_on:
-      toolbox:
-        condition: service_healthy
-    restart: unless-stopped
+    scale: 0
+    network_mode: none
 
   toolbox:
     build:
@@ -52,6 +40,8 @@ services:
       # The panel origin a miniapp page gives the bridge; create_draft returns it.
       - AGENTO_PANEL_HOST=${AGENTO_PANEL_HOST:-panel.localhost}
       - AGENTO_PROXY_PORT=${AGENTO_PROXY_PORT:-8443}
+      # The entrypoint gives the toolbox every run gid of every runner (runner.md#per-run-uid).
+      - AGENTO_RUNNER_COUNT=1
     env_file:
       - path: .toolbox.env
         required: true
@@ -147,6 +137,10 @@ services:
       - ../app/etc:/app/etc:ro
       - ../src/agento:/opt/agento-src/agento:ro
       - runner-1-sock:/run/agento-runner
+    # Root with only these caps: a uid per run, the run dir's owner, the kill
+    # (docs/architecture/runner.md#per-run-uid). No DAC_OVERRIDE: it never writes in a run dir.
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, FOWNER, FSETID, DAC_READ_SEARCH, KILL]
     security_opt:
       - no-new-privileges:true
     networks:
@@ -163,7 +157,7 @@ services:
   # Compose puts a service with no `networks:` key on the project's `default` network, and every
   # other service here names db-net, exec-net or web-net, so this container shares it with
   # `proxy` alone.
-  # Measured: the sandbox cannot even resolve the name `artifacts`. It publishes no host port:
+  # Measured: a runner (exec-net) cannot even resolve the name `artifacts`. It publishes no host port:
   # the proxy is the only route to these files (PRD E1.5 §2.3).
   # The service mounts storage/versioned-artifacts/published EXACTLY, never the store root, and
   # no other module writes into that tree. docker-compose.override.yml is user-owned and Compose
@@ -191,8 +185,9 @@ services:
 
   # The panel API, the launch redeem and the apps authorization (E2). The toolbox reaches it
   # on db-net, so it trusts no identity header unless the request carries the proxy
-  # secret (agento/web/server.py). No agent reaches it: sandbox and runners are on exec-net. web and cron are one trusted backend (DECISIONS.md
-  # D-BACKEND-1): one image, the same env_file (with the encryption key), one DB user.
+  # secret (agento/web/server.py). No agent reaches it: the runners are on exec-net. web and cron
+  # are one trusted backend (DECISIONS.md D-BACKEND-1): one image, the same env_file (with the
+  # encryption key), one DB user.
   # Only the runner-<i> services hold no secret.
   web:
     image: agento-cron:${COMPOSE_PROJECT_NAME:-agento}
@@ -204,7 +199,10 @@ services:
       - path: ../secrets.env
         required: false
     # AGENTO_*_HOST / AGENTO_PROXY_PORT: the browser-facing origins, same defaults as proxy.
-    # app/code + app/etc: the module inventory cron sees; web still never runs bootstrap().
+    # app/code + app/etc: the module inventory cron sees; web never runs bootstrap(), it loads
+    # only the harness registry for a `local` config tester (framework/harness/loader.py).
+    # The runner socket, AGENTO_RUNNER_COUNT and /workspace: a local tester (the model check)
+    # starts its CLI in a runner, with a temporary HOME the runner sees at the same path.
     environment:
       - TZ=Europe/Warsaw
       - MYSQL_HOST=mysql
@@ -216,11 +214,14 @@ services:
       - AGENTO_PANEL_HOST=${AGENTO_PANEL_HOST:-panel.localhost}
       - AGENTO_APPS_HOST=${AGENTO_APPS_HOST:-apps.localhost}
       - AGENTO_PROXY_PORT=${AGENTO_PROXY_PORT:-8443}
+      - AGENTO_RUNNER_COUNT=1
     volumes:
       - ../src/agento:/opt/agento-src/agento:ro
       - ../app/code:/app/code:ro
       - ../app/etc:/app/etc:ro
+      - ../workspace:/workspace
       - proxy-internal:/run/agento:ro
+      - runner-1-sock:/run/agento-runner/runner-1:ro
     security_opt:
       - no-new-privileges:true
     networks:

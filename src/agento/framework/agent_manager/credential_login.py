@@ -24,6 +24,7 @@ from pathlib import Path
 import pymysql
 
 from .. import crypto
+from ..runner import client
 from ..workspace_paths import BASE_WORKSPACE_DIR
 from .auth import credentials_from_auth
 from .credential_store import register_credential_and_dispatch
@@ -260,7 +261,8 @@ def run_login(conn: pymysql.Connection, login_id: int, logger: logging.Logger, t
     if start is None:
         _finish(conn, login_id, "unsupported", logger)
         return
-    tmp_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    client.traversable(tmp_root.parent)  # a run uid passes through both (runner.md)
+    client.traversable(tmp_root)
     home = Path(tempfile.mkdtemp(prefix=f"{login_id}-", dir=tmp_root))  # 0700
     login = None
     try:

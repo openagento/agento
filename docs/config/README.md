@@ -205,7 +205,8 @@ backstop, never a replacement for it.
 ## Testing a stored value
 
 A field may declare a **tester** — a probe that answers "does this credential actually work?",
-reachable as `agento config:test <path>` and as `t` in the admin TUI. The probe runs in the process
+reachable as the **Test** button in the admin panel, as `agento config:test <path>`, and as `t` in the
+deprecated admin TUI. The probe runs in the process
 that already holds the credential (the toolbox for network credentials, the declaring module for the
 SSH keypair), so the framework never decrypts a secret in order to test one. Results are four-state:
 `ok`, `fail`, `not_configured`, `error` — `error` means "could not check", which is not the same

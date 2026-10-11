@@ -98,9 +98,8 @@ class ConversationResumeSessions:
     here as well would replace a resume of the interrupted run with a resume of the previous
     turn, and the interrupted turn's work would be lost.
 
-    The session comes from the previous turn's JOB row. `execution.harness_session_id` is
-    the eventual home for it, but nothing writes that column until the finalizer lands, and
-    a resolver that reads an always-NULL column resumes nothing.
+    The session comes from the previous turn's JOB row: `job.session_id` is the one place a
+    harness session id is kept.
     """
 
     def resolve(self, *, conn, job_id: int, attempt: int) -> str | None:

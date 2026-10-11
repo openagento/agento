@@ -109,12 +109,12 @@ def _register_fake(*, fields=None, schema=None):
 
 def _register_pi():
     """Register the shipped `pi` harness through the production loader."""
-    from agento.framework.bootstrap import _load_agent_harnesses
+    from agento.framework.harness.loader import load_harnesses
     from agento.framework.module_loader import scan_modules
 
     root = Path(__file__).resolve().parents[3].parent / "src" / "agento" / "modules"
     clear()
-    _load_agent_harnesses({m.name: m for m in scan_modules(str(root))}["pi"])
+    load_harnesses([{m.name: m for m in scan_modules(str(root))}["pi"]])
 
 
 class _Svc:
@@ -351,17 +351,17 @@ class TestRealBootstrapPath:
         assert cfg["api_secret"]["type"] == "obscure"
 
     def test_the_real_loader_passes_module_and_allowlist(self):
-        """Goes through `_load_agent_harnesses`, the function bootstrap() calls.
+        """Goes through `load_harnesses`, the function bootstrap() calls.
 
         Calling `register_harness` by hand here would pass even if the loader forgot
         an argument — which is precisely the bug this is meant to catch.
         """
-        from agento.framework.bootstrap import _load_agent_harnesses
+        from agento.framework.harness.loader import load_harnesses
         from agento.framework.module_loader import scan_modules
 
         clear()
         manifest = {m.name: m for m in scan_modules(str(FIXTURES))}["fake_harness"]
-        _load_agent_harnesses(manifest)
+        load_harnesses([manifest])
 
         entry = get_harness("fake")
         assert entry.module == "fake_harness"
@@ -375,7 +375,7 @@ class TestRealBootstrapPath:
         """An obscure field must fail through the loader, not only via a direct call."""
         import shutil
 
-        from agento.framework.bootstrap import _load_agent_harnesses
+        from agento.framework.harness.loader import load_harnesses
         from agento.framework.module_loader import scan_modules
 
         mod = tmp_path / "fake_harness"
@@ -387,7 +387,7 @@ class TestRealBootstrapPath:
         clear()
         manifest = {m.name: m for m in scan_modules(str(tmp_path))}["fake_harness"]
         with pytest.raises(ObscureRuntimeConfigError, match="obscure"):
-            _load_agent_harnesses(manifest)
+            load_harnesses([manifest])
 
     def test_duplicates_are_refused_at_registration_too(self):
         """Both layers, per the plan — a direct caller bypasses the manifest parser."""
@@ -692,12 +692,12 @@ class TestShippedHarnessesLoadThroughBootstrap:
     """
 
     def _load(self, module: str):
-        from agento.framework.bootstrap import _load_agent_harnesses
+        from agento.framework.harness.loader import load_harnesses
         from agento.framework.module_loader import scan_modules
 
         root = Path(__file__).resolve().parents[3].parent / "src" / "agento" / "modules"
         manifest = {m.name: m for m in scan_modules(str(root))}[module]
-        _load_agent_harnesses(manifest)
+        load_harnesses([manifest])
         return manifest
 
     @pytest.mark.parametrize("module", ["claude", "codex", "pi"])
@@ -715,7 +715,7 @@ class TestShippedHarnessesLoadThroughBootstrap:
 
         entries = list(list_harnesses())
         assert entries, (
-            f"module {module!r} registered no harness through _load_agent_harnesses"
+            f"module {module!r} registered no harness through load_harnesses"
         )
         entry = entries[0]
         assert entry.module == module

@@ -148,7 +148,7 @@ time. The authoritative check is **Pi's own catalogue** — not OpenRouter's API
 does the matching:
 
 ```bash
-docker compose exec sandbox pi --offline --list-models | grep '<your model>'
+docker compose exec runner-1 pi --offline --list-models | grep '<your model>'
 ```
 
 (OpenRouter's `GET /api/v1/models` lists 406 ids and is useful for browsing, but a model
@@ -215,7 +215,8 @@ agento config:set pi/settings '{"autoApprove": false}' --scope=agent_view --scop
 Agento generates exactly one key here (`defaultProjectTrust: "trusted"`, see above), so
 the merge is a shallow update rather than a recursive one.
 
-In `agento admin` the field is on the **agent_view** node, beside the harness selector —
+In the admin panel Config screen (and in the deprecated `agento admin`) the field is on the
+**agent_view** node, beside the harness selector —
 it is listed only when this view's harness is `pi` (see
 [harness contract](../architecture/harness-contract.md#harness_option--showing-the-field-where-it-is-set)).
 
@@ -362,9 +363,9 @@ unit test could:
 | The Ollama catalogue carried **no `apiKey`**, and Pi hides a model whose provider has no key — every Ollama run exited with `No API key found for ollama.` before reaching the model, i.e. the credential-free provider never worked. | the catalogue's *shape* was asserted; that Pi requires a placeholder key is stated only in Pi's `models.md` |
 
 A third failure was environmental but worth knowing: **the cron image is built `FROM` the
-sandbox image**, so adding a harness CLI to `sandbox` needs *both* rebuilt. Until cron is
-rebuilt the consumer fails every job of the new harness with `rc=127 exec: pi: not found`,
-while `agento run` (which uses the sandbox) works — an asymmetry that reads like a code bug.
+sandbox image**, so adding a harness CLI to the sandbox image needs *both* rebuilt. Until cron is
+rebuilt every run of the new harness fails with `rc=127 exec: pi: not found`, because the
+runners use the cron image. `module:enable` rebuilds both.
 
 Results, credential 25 (`openrouter`) and `qwen2.5:0.5b` (Ollama):
 

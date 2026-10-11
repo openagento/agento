@@ -1,21 +1,25 @@
 # Admin TUI
 
+> **Deprecated.** Use the admin panel (`https://panel.<host>/`). `agento admin` stays until
+> v1.0.0 for backward compatibility, and then it is removed. The CLI commands stay. The command
+> writes a deprecation line to stderr when it starts (DECISIONS.md 2026-10-10, The admin TUI is
+> deprecated).
+
 `agento admin` launches an interactive terminal interface for operational visibility and configuration management. Built with [Textual](https://textual.textualize.io/), it runs inside the Docker cron container and provides keyboard-first navigation with mouse support.
 
 ![Admin Config Screen](../images/admin-config.png)
 
 The same screens are in the web panel for an admin (`https://panel.<host>/`, the
-**Administration** group): see [Panel admin screens](../architecture/panel.md#admin-screens). The
-TUI stays as the fallback. It is the only place for what the `web` container cannot do:
+**Administration** group): see [Panel admin screens](../architecture/panel.md#admin-screens). Use
+the panel. For the actions that the panel does not do, use the CLI command in the table:
 
-| Action | Why only here |
-|---|---|
-| Replay a job (`p`) | it starts from the cron container, which sends the run to a runner |
-| Build a workspace (`b`) | it writes `workspace/build/` in the cron container |
-| Set or edit a secret (`obscure` or `toolbox_only`) | not built in the panel: no secret value goes to or from the browser (D-PANEL-ADMIN-1) |
-| See a `CONFIG__*` value set only on the `cron` service | `web` reads the same `secrets.env`, not `cron`'s own `environment:` |
-| Read a credential's error message | `web` sends no error text to the browser |
-| Run a `local`-kind config tester | `web` does not load module code |
+| Action | Why not in the panel | CLI command |
+|---|---|---|
+| Replay a job (`p`) | it starts from the cron container, which sends the run to a runner | `agento replay <job_id>` |
+| Build a workspace (`b`) | it writes `workspace/build/` in the cron container | `agento workspace:build --agent-view <code>` |
+| Set or edit a secret (`obscure` or `toolbox_only`) | not built in the panel: no secret value goes to or from the browser (D-PANEL-ADMIN-1) | `agento config:set <path>` (no value: it reads the value from stdin, so the secret is not in argv or shell history) |
+| See a `CONFIG__*` value set only on the `cron` service | `web` reads the same `secrets.env`, not `cron`'s own `environment:` | `agento config:list <module>` (the `[env]` source) |
+| Read a credential's error message | `web` sends no error text to the browser | `agento credential:list --json` (`error_msg`) |
 
 A secret's editor opens empty, because neither the TUI nor the panel reads the stored secret to
 show it. Save with an empty box keeps the stored secret; type a new value to replace it.
@@ -150,7 +154,7 @@ Schema-driven configuration editor. Shows **all** fields declared in every modul
 | `e` or double-click | Edit selected field (opens editor popup) |
 | `d` | Delete DB override (field falls back to parent scope, with confirmation) |
 | `m` | Toggle mode: Browse All / Overrides Only |
-| `t` | Test the selected field's credential or connection (fields that declare a tester) |
+| `t` | Test the selected field's credential or connection (fields that declare a tester). The panel has the same **Test** button, and the CLI has `agento config:test <path>` |
 
 **Source tags** on each field:
 

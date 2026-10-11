@@ -352,7 +352,7 @@ no npm dependency — and it is deliberately the least privileged container in t
 
 | | |
 |---|---|
-| `networks:` | **absent**, so Compose leaves it on the project's `default` network, which it shares with `proxy` alone, while every other service names `db-net`, `exec-net` or `web-net`. Measured: the sandbox cannot resolve the name `artifacts`. |
+| `networks:` | **absent**, so Compose leaves it on the project's `default` network, which it shares with `proxy` alone, while every other service names `db-net`, `exec-net` or `web-net`. Measured: a runner cannot resolve the name `artifacts`. |
 | `env_file:` / `environment:` | **absent.** It holds no secret and no DB handle. |
 | `ports:` | **absent** (removed in E1.5). `proxy` is the only route to the files: the apps origin serves `/a/<code>/v/<version_id>/…` after a `forward_auth` subrequest to `web`, which allows a request only under a live launch (E2, [../architecture/panel.md](../architecture/panel.md)). Basic-auth shares reach it on their own origins (see **Shares**). `preview_url` links stay dark: no route serves `current`. |
 | volumes | `storage/versioned-artifacts/published` (read-only), `app/etc` (read-only), and the modules tree. Never the store root. |

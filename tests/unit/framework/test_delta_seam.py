@@ -14,7 +14,7 @@ import pytest
 
 from agento.framework import consumer, execution_deltas
 from agento.framework.harness.protocols import StreamEventMapper
-from agento.framework.runner.server import map_line
+from agento.framework.runner.worker import map_line
 
 FRAMEWORK = Path("src/agento/framework")
 

@@ -84,7 +84,7 @@ ever used inside the toolbox).
 (the verified account's `username`) so the agent's PR commits are **authored by — and link to — this
 Bitbucket account**. Bitbucket links a commit only when the author email matches a *verified* email on
 the account, which is exactly the email used here. `workspace:build` materializes these into the
-sandbox's `~/.gitconfig` (see [identity docs](../config/identity.md)); override anytime with
+run HOME's `~/.gitconfig` (see [identity docs](../config/identity.md)); override anytime with
 `config:set agent_view/identity/git_author_*`.
 
 Offline alternative — set everything manually:

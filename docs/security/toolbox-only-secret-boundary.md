@@ -1,7 +1,9 @@
 # Security hardening: toolbox-only secret boundary in Python bootstrap
 
-**Status:** Items 1, 2, 4 and 5 **delivered 2026-08-23** for the Outlook fields; item 3
-(`app_monitor` SMTP) stays open. **Surfaced by:** the Outlook regex+priority sender-routing review
+**Status:** Items 1, 2, 4 and 5 **delivered 2026-08-23** for the Outlook fields. Item 3
+(`app_monitor` SMTP) is **dropped 2026-10-10**: the backend (`cron`, `web`) is trusted and may
+decrypt what it needs (DECISIONS.md D-BACKEND-2). The `toolbox_only` mechanism stays for a field
+that a channel keeps away from Python. **Surfaced by:** the Outlook regex+priority sender-routing review
 (2026-07-24), where this was confirmed **pre-existing** and **out of scope** for that routing feature.
 See [DECISIONS.md](../../DECISIONS.md) (2026-07-24, 2026-08-23) and [ROADMAP.md](../../ROADMAP.md).
 
@@ -46,13 +48,13 @@ a naive per-caller opt-out is both incomplete (consumer + ENV) and harmful (brea
    read is a bug), while the bulk `resolve_all()` walk skips it. The ENV source is refused separately
    by `allowEnv: false`, so `CONFIG__OUTLOOK__OUTLOOK_CLIENT_SECRET` cannot smuggle the value back in,
    and `module:validate` fails a deploy that sets one.
-3. ⬜ **Open.** Migrate `app_monitor`'s cron-side SMTP breach transport to a **toolbox-owned
-   transport** (do not restore Python-side SMTP decryption). This is why the boundary is enforced
-   per field rather than for every `obscure` field at once.
+3. ~~Migrate `app_monitor`'s SMTP breach transport in `cron` to a toolbox-owned transport.~~
+   **Dropped 2026-10-10 (D-BACKEND-2):** `cron` is the trusted backend, so it may use the SMTP
+   password. The boundary stays per field, not for every `obscure` field at once.
 4. ✅ **Delivered (documentation half).** `zero-trust.md` now states exactly what is enforced
    (`toolbox_only` fields) and what is not (other `obscure` fields, the mounted `secrets.env`, the
    plaintext `CONFIG__*` path), instead of claiming a blanket invariant. The compose mount itself
-   stays until item 3 removes the last cron-side consumer.
+   stays: `cron` and `web` are the trusted backend (D-BACKEND-2).
 5. ✅ **Delivered.** `tests/unit/framework/test_toolbox_only_config.py` proves the decryptor is
    never invoked for a `toolbox_only` field on either source, that a direct `get()` raises, that the
    bulk `resolve_all()` omits the path rather than raising, and that an ENV key cannot smuggle the

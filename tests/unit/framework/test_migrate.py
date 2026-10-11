@@ -223,6 +223,11 @@ class TestApplyMigration:
         assert "KEY idx_tool_invocation_run_execution (run_execution_id)" in sql
         assert "('049_tool_invocation_run_execution_index')" in sql
 
+    def test_fresh_init_includes_job_auth_wait_index(self):
+        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
+        assert "KEY idx_job_auth_wait (status, error_class, id)" in sql
+        assert "('052_job_auth_wait_index')" in sql
+
     def test_every_framework_migration_is_marked_applied_in_fresh_init(self):
         """The class guard: 000_init.sql is the schema a NEW project starts from, so a
         migration whose marker is missing runs against a schema that already has its effect

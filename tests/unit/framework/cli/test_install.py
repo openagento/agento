@@ -421,11 +421,10 @@ class TestRunPostInstall:
         self, mock_ver, mock_build_base, mock_run, tmp_path: Path
     ):
         self._seed_project(tmp_path)
-        # Make subprocess returns succeed on sandbox/toolbox/cron, then fail
+        # Make subprocess returns succeed on toolbox/cron, then fail
         # on `up -d` so _run_post_install exits before the setup-done wait
         # loop sleeps for 2 minutes in tests.
         outcomes = iter([
-            type("R", (), {"returncode": 0})(),  # compose build sandbox
             type("R", (), {"returncode": 0})(),  # compose build toolbox cron
             type("R", (), {"returncode": 1})(),  # compose up -d → bail out
         ])
@@ -439,6 +438,8 @@ class TestRunPostInstall:
         # Easiest assertion: build_base_images was called and at least one
         # compose subprocess.run also happened.
         assert mock_run.call_count >= 1
+        # The sandbox image has no compose service; build_base_images built it.
+        assert not any("sandbox" in call.args[0] for call in mock_run.call_args_list)
 
     @patch("agento.framework.cli.install.grant_migrate_user", return_value=False)
     @patch("agento.framework.cli.install.subprocess.run")
@@ -465,7 +466,7 @@ class TestRunPostInstall:
         self, mock_ver, mock_build_base, mock_run, mock_grant, tmp_path: Path
     ):
         self._seed_project(tmp_path)
-        outcomes = iter([type("R", (), {"returncode": rc})() for rc in (0, 0, 1)])
+        outcomes = iter([type("R", (), {"returncode": rc})() for rc in (0, 1)])
         mock_run.side_effect = lambda *a, **kw: next(outcomes)
 
         _run_post_install(tmp_path)

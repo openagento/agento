@@ -70,7 +70,8 @@ and write one event.
 
 Two writers, and neither is the agent:
 
-1. **The outbox relay** (`conversation:relay`, every minute) drains `job_event_outbox` — the
+1. **The outbox relay** (`conversation:relay`, a pass about every second, so an event lands
+   about 1 s after its transition) drains `job_event_outbox` — the
    framework-owned, module-agnostic table the consumer writes job transitions into. It classifies
    **by `job.source` first**, never by the reference value: a non-conversation job is relayed with
    no event, a conversation job with a resolvable reference becomes an event, and anything else is

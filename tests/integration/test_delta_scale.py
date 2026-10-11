@@ -17,7 +17,7 @@ import uuid
 import pytest
 
 from agento.framework import consumer, execution_deltas
-from agento.framework.runner.server import map_line
+from agento.framework.runner.worker import map_line
 from agento.modules.claude.src.stream_event_mapper import ClaudeStreamEventMapper
 from agento.modules.conversation.src import service
 from agento.modules.conversation.src.deltas import ConversationDeltaSink

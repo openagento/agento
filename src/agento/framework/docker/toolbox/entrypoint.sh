@@ -14,4 +14,16 @@ if [ -d /srv/versioned-artifacts ]; then
     done
 fi
 
-exec gosu agent "$@"
+# Drop to agent with every run uid's own group as a supplementary group, so the toolbox
+# reads and writes a live run dir (owner = the run uid, group = its gid, mode 2770). The
+# range is RUN_UID_BASE + RUN_UID_SLOTS per runner (framework/runner/uids.py; a test keeps
+# the two in step). Not gosu: its initgroups would drop these groups. umask 002: the run uid
+# can change what the toolbox writes there.
+RUN_UID_BASE=20000
+RUN_UID_SLOTS=256
+count="${AGENTO_RUNNER_COUNT:-1}"
+run_gids="$(seq "$RUN_UID_BASE" $((RUN_UID_BASE + count * RUN_UID_SLOTS - 1)) | paste -sd, -)"
+HOME="$(getent passwd agent | cut -d: -f6)"
+export HOME
+umask 002
+exec setpriv --reuid "$(id -u agent)" --regid "$(id -g agent)" --groups "$run_gids" "$@"

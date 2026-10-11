@@ -14,6 +14,7 @@ from agento.framework.cli import _provisioning
 from agento.framework.cli._provisioning import render_compose
 
 ROOT = Path(__file__).parents[4]
+RUNNER_CAPS = ["SETUID", "SETGID", "CHOWN", "FOWNER", "FSETID", "DAC_READ_SEARCH", "KILL"]
 TEMPLATE = ROOT / "src" / "agento" / "framework" / "cli" / "templates" / "docker-compose.yml"
 HAS_COMPOSE = shutil.which("docker") is not None and subprocess.run(
     ["docker", "compose", "version"], capture_output=True).returncode == 0
@@ -32,15 +33,23 @@ def test_one_service_per_runner_wired_to_the_worker(tmp_path, count):
     """No secret and no shared PID namespace: runner/test_runner_boundary.py."""
     path = tmp_path / "docker-compose.yml"
     path.write_text(render_compose(TEMPLATE.read_text(), python_version="3.12", extensions=["ext"],
-                                   sandbox_packages=[], runner_count=count))
+                                   runner_count=count))
     config = _services(path)
     services = config["services"]
     runners = sorted(n for n in services if n.startswith("runner-"))
     cron = services["cron"]
     cron_workspace = next(v for v in cron["volumes"] if v["target"] == "/workspace")
 
+    web = services["web"]
+    toolbox = services["toolbox"]
+
     assert runners == [f"runner-{i}" for i in range(1, count + 1)]
     assert cron["environment"]["AGENTO_RUNNER_COUNT"] == str(count)
+    # web runs a local config tester (C1): its CLI starts in a runner, HOME on /workspace.
+    assert web["environment"]["AGENTO_RUNNER_COUNT"] == str(count)
+    assert next(v for v in web["volumes"] if v["target"] == "/workspace")["source"] == cron_workspace["source"]
+    # The toolbox gets every run uid's group (its entrypoint reads the count).
+    assert toolbox["environment"]["AGENTO_RUNNER_COUNT"] == str(count)
     assert set(runners) <= set(cron["depends_on"])
     # SEC-7: another runner's agent is pid 0 too, so each socket has its own volume.
     mounts = {n: {v.get("source") for v in s.get("volumes", [])} for n, s in services.items()}
@@ -50,9 +59,14 @@ def test_one_service_per_runner_wired_to_the_worker(tmp_path, count):
         workspace = next(v for v in runner["volumes"] if v["target"] == "/workspace")
         assert workspace["source"] == cron_workspace["source"]
         sock = next(v["source"] for v in runner["volumes"] if v["target"] == "/run/agento-runner")
-        assert {n for n, m in mounts.items() if sock in m} == {"cron", name}
-        assert any(v["source"] == sock and v["target"] == f"/run/agento-runner/runner-{i}"
-                   and v.get("read_only") for v in cron["volumes"])
+        assert {n for n, m in mounts.items() if sock in m} == {"cron", "web", name}
+        for backend in (cron, web):
+            assert any(v["source"] == sock and v["target"] == f"/run/agento-runner/runner-{i}"
+                       and v.get("read_only") for v in backend["volumes"])
+        # A root server that only changes users, owners and signals (runner.md).
+        assert runner["cap_drop"] == ["ALL"]
+        assert sorted(runner["cap_add"]) == sorted(RUNNER_CAPS)
+        assert "no-new-privileges:true" in runner["security_opt"]
         assert any(v["target"] == "/opt/agento-src/ext" for v in runner["volumes"])
 
 
@@ -62,7 +76,6 @@ def test_the_count_comes_from_docker_env(tmp_path, monkeypatch):
     (tmp_path / "docker" / ".env").write_text("AGENTO_RUNNER_COUNT=3\n")
     monkeypatch.setattr(_provisioning, "detect_python_version", lambda _venv: "3.12")
     monkeypatch.setattr(_provisioning, "enumerate_enabled_extensions", lambda _p: [])
-    monkeypatch.setattr(_provisioning, "enumerate_sandbox_packages", lambda _p: [])
 
     _provisioning.regenerate_compose(tmp_path)
 

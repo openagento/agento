@@ -66,6 +66,15 @@ def test_the_table_exists(table):
     )
 
 
+def test_execution_keeps_no_session_id():
+    # `job.session_id` is the one session store (migration 004).
+    assert not _rows(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = %s "
+        "AND TABLE_NAME = 'execution' AND COLUMN_NAME = 'harness_session_id'",
+        (TEST_DB,),
+    )
+
+
 @pytest.mark.parametrize(
     "table,columns",
     [

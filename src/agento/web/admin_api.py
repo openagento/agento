@@ -5,6 +5,8 @@ allow-list of fields: a row from ``framework.admin.data`` is never sent as it is
 """
 from __future__ import annotations
 
+import functools
+import logging
 import re
 from dataclasses import asdict
 from datetime import datetime
@@ -314,6 +316,15 @@ TEST_ERROR_MESSAGES = {
     "TOOLBOX_BAD_BODY": "The toolbox answer cannot be read.",
 }
 TEST_ERROR_GENERIC = "The test could not check this value. Run bin/agento config:test for the details."
+log = logging.getLogger(__name__)
+
+
+@functools.cache
+def _harness_reloader():
+    """web runs no bootstrap(); a local tester (the model check) needs the harness registry."""
+    from agento.framework.harness.loader import harness_reloader
+
+    return harness_reloader()
 
 
 def run_tester(req: Request) -> Response:
@@ -330,8 +341,14 @@ def run_tester(req: Request) -> Response:
     if ref is None:
         return error(400, "this field declares no tester")
     if ref.kind == config_test.KIND_LOCAL:
-        # A local tester is module code: web does not load it.
-        return error(400, f"run this test in the admin TUI or with bin/agento config:test {path}")
+        # In-process, as config:test does in cron (D-BACKEND-2). The registry follows
+        # modules.json, so module:enable needs no web restart.
+        try:
+            _harness_reloader()()
+        except Exception as exc:
+            log.warning("config test: the harness registry cannot load (%s)", type(exc).__name__)
+            return Response(200, {"status": config_test.ERROR, "code": "TESTER_UNAVAILABLE",
+                                  "message": TEST_ERROR_MESSAGES["TESTER_UNAVAILABLE"]})
     result = config_test.run_config_test(req.conn, path, scope=scope[0], scope_id=scope[1])
     message = (TEST_ERROR_MESSAGES.get(result.code, TEST_ERROR_GENERIC) if result.status == config_test.ERROR
                else result.message)

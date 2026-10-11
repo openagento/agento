@@ -3,7 +3,9 @@ from __future__ import annotations
 import itertools
 import logging
 import random
+import shutil
 import signal
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -26,7 +28,13 @@ from .agent_manager.credential_store import (
     renew_credential_leases,
     throttle_credential,
 )
-from .agent_manager.errors import AuthenticationError, TransientAuthError, UsageLimitError
+from .agent_manager.errors import (
+    AuthenticationError,
+    CredentialsUnavailableError,
+    TransientAuthError,
+    UsageLimitError,
+    auth_wait_retry_at,
+)
 from .agent_view_runtime import resolve_agent_view_runtime
 from .bootstrap import bootstrap, dispatch_reload, dispatch_shutdown, get_module_config
 from .channels.registry import get_channel
@@ -114,6 +122,10 @@ _DEFAULT_TRANSIENT_AUTH_THROTTLE = timedelta(minutes=15)
 # wake and re-hit the same wall in the same instant.
 _POOL_RETRY_JITTER_SECONDS = (60, 300)
 
+# A job that waits for a credential (``CredentialsUnavailableError``) stops waiting and goes
+# DEAD once it is this old (``job.created_at``), so an abandoned pool cannot hold jobs forever.
+_AUTH_WAIT_MAX = timedelta(hours=24)
+
 
 def _should_resume(
     *, attempt: int, session_id: str | None, pid_alive: bool, can_resume: bool
@@ -192,7 +204,7 @@ CLAIM_SQL = """
 # an internal identifier leaking into a public contract.
 _CREDENTIAL_ERRORS = frozenset({
     "AuthenticationError", "TransientAuthError", "UsageLimitError",
-    "CredentialsBusyError", "CredentialLeasedError",
+    "CredentialsBusyError", "CredentialLeasedError", "CredentialsUnavailableError",
 })
 _HARNESS_ERRORS = frozenset({
     "CalledProcessError", "JobVerificationFailed", "StaleJobRecovery",
@@ -207,6 +219,23 @@ def failure_kind(error_class: str | None) -> str:
     if error_class in _HARNESS_ERRORS:
         return "harness_error"
     return "internal"
+
+
+def _raise_if_auth_wait(healthy: int | None, scope: str | None, exc: Exception) -> None:
+    """After an auth failure left NO healthy credential in the scope, the job waits for one.
+
+    Raises ``CredentialsUnavailableError`` from ``exc``, so the resolver path and this path
+    store the same ``job.error_class``. ``None`` (the count failed) keeps the auth error.
+    The agent output moves to the new error, because ``_finalize_job`` reads it from there.
+    """
+    if healthy != 0:
+        return
+    wait = CredentialsUnavailableError(
+        f"No healthy credential left for scope={scope}; waiting for a new or refreshed one.",
+        pool_retry_at=auth_wait_retry_at(),
+    )
+    wait.agent_output = getattr(exc, "agent_output", None)  # type: ignore[attr-defined]
+    raise wait from exc
 
 
 # The fragment vocabulary a mapper may emit (E9 §3.2). "gap"/"truncated" are the framework's
@@ -777,7 +806,7 @@ class Consumer:
         # Pre-initialised for the outer `finally`: argument evaluation would raise
         # UnboundLocalError before the call if anything above raised, so "the callee
         # tolerates None" is not enough.
-        home_dir = credential = harness = lease_owner = None
+        home_dir = credential = harness = lease_owner = temp_home = None
         capability_token = rest_capability_token = None
         # Whether the lease was actually ACQUIRED, which is not the same as having issued an
         # owner: only a refresh-imminent credential is leased. The detector below depends on
@@ -898,6 +927,10 @@ class Consumer:
             except Exception as exc:
                 redact_exception(exc, capability_token, rest_capability_token)
                 raise
+            if home_dir is None:
+                # No agent_view: a private HOME the runner gives the run uid, never
+                # `/workspace` itself; removed in the outer `finally`.
+                temp_home = tempfile.mkdtemp(prefix=f"job-{job.id}-", dir=runner_client.shared_tmp())
 
             em.dispatch("agent_view_run_start_before", AgentViewRunStartedEvent(
                 job=job,
@@ -940,7 +973,7 @@ class Consumer:
                     provider=provider_desc.id,
                     model=model_override,
                     working_dir=str(artifacts_dir) if artifacts_dir else "/workspace",
-                    home_dir=str(home_dir) if home_dir else None,
+                    home_dir=str(home_dir) if home_dir else temp_home,
                     timeout_seconds=self._consumer_config.job_timeout_seconds,
                     credential_required=provider_desc.credential_required,
                     credential=credential,
@@ -988,8 +1021,10 @@ class Consumer:
                         f"Resuming session {job.session_id} for job {job.id} "
                         f"(attempt={job.attempt}, prev_pid={job.pid})"
                     )
-                    result = runner.execute(
-                        RunRequest(prompt="", session_id=job.session_id, model=model_override)
+                    result = self._execute_with_one_retry(
+                        job, runner, model_override, can_resume=True,
+                        call=lambda: runner.execute(RunRequest(
+                            prompt="", session_id=job.session_id, model=model_override)),
                     )
                     result.prompt = f"[RESUME] session_id={job.session_id}"
                     summary = f"resumed session_id={job.session_id} {result.stats_line}"
@@ -1033,7 +1068,11 @@ class Consumer:
                     capability_token=rest_capability_token,
                     resume_session_id=resume_session_id,
                 )
-                result = workflow.execute_job(channel, job, context)
+                result = self._execute_with_one_retry(
+                    job, runner, model_override,
+                    can_resume=harness_entry.descriptor.capabilities.resume,
+                    call=lambda: workflow.execute_job(channel, job, context),
+                )
 
                 summary = (
                     result.raw_output
@@ -1078,10 +1117,47 @@ class Consumer:
                     success=success,
                 ))
         finally:
+            if temp_home:
+                shutil.rmtree(temp_home, ignore_errors=True)
             self._finish_credential_lifecycle(
                 job, harness, credential, home_dir,
                 success=success, lease_owner=lease_owner, leased=leased,
             )
+
+    def _execute_with_one_retry(
+        self, job: Job, runner, model_override: str | None, *,
+        can_resume: bool, call: Callable[[], RunResult],
+    ) -> RunResult:
+        """Run ``call``; after a plain process crash, resume the session once.
+
+        Only an exception whose type is exactly ``RuntimeError`` (a classified subclass
+        keeps its own path) that carries a ``session_id``, when the harness can resume and
+        the job is still RUNNING (a pause is never retried) and the run's owner answers
+        ``dead`` (``unknown`` blocks resume, DECISIONS.md 2026-10-09). The second call uses the same
+        credential, lease and HOME. Its exception leaves this method, so the caller's
+        handlers (poison, throttle, redaction) treat it like a first-call failure. A retry
+        inside one attempt is not a state change, so no event (EVT-1).
+        """
+        try:
+            return call()
+        except Exception as exc:
+            session_id = getattr(exc, "session_id", None)
+            if not (type(exc) is RuntimeError and session_id and can_resume
+                    and self._still_running(job.id)
+                    and runner_client.alive(runner.runner_ref, f"job:{job.id}") == "dead"):
+                raise
+        self.logger.info("process_retry", extra={"job_id": job.id, "attempt": job.attempt})
+        return runner.execute(RunRequest(prompt="", session_id=session_id, model=model_override))
+
+    def _still_running(self, job_id: int) -> bool:
+        """Whether the job row is still RUNNING. A failed read counts as not running."""
+        try:
+            with self._db() as conn, conn.cursor() as cur:
+                cur.execute("SELECT status FROM job WHERE id = %s", (job_id,))
+                row = cur.fetchone()
+        except Exception:
+            return False
+        return bool(row) and row["status"] == JobStatus.RUNNING.value
 
     def _renew_leases(self) -> None:
         """Push the deadline forward on every refresh lease this process still holds.
@@ -1209,6 +1285,7 @@ class Consumer:
             exc.credential_id if exc.credential_id is not None
             else getattr(credential, "id", None)
         )
+        healthy = None
         try:
             with self._db() as conn:
                 mark_credential_error(
@@ -1241,6 +1318,7 @@ class Consumer:
                 "credential_auth_failed_after observer failed",
                 extra={"job_id": job.id, "credential_id": credential_id},
             )
+        _raise_if_auth_wait(healthy, scope, exc)
 
     def _handle_usage_limit(
         self,
@@ -1552,8 +1630,16 @@ class Consumer:
                         # known recovery time wins over blind backoff; ``None`` (no recovery
                         # time, e.g. pure row-lock contention) falls through to ordinary retry.
                         pool_retry_at = getattr(error, "pool_retry_at", None)
+                        # SCL-1 bound: an auth wait ends at _AUTH_WAIT_MAX after the job was
+                        # made. It skips both the wait and the ordinary retry (the class is
+                        # retryable to the policy) and goes DEAD.
+                        auth_wait_expired = (
+                            isinstance(error, CredentialsUnavailableError)
+                            and job.created_at
+                            < datetime.now(UTC).replace(tzinfo=None) - _AUTH_WAIT_MAX
+                        )
 
-                        if pool_retry_at is not None:
+                        if pool_retry_at is not None and not auth_wait_expired:
                             # Reschedule for just after the pool recovers, plus a randomised
                             # gap to clear the boundary and de-sync waiting jobs.
                             # ``pool_retry_at`` is naive UTC (from ``throttled_until`` or
@@ -1572,7 +1658,7 @@ class Consumer:
                             after = ("job_retry_after", JobRetryingEvent(
                                 job=job, error=error, delay_seconds=max(int(delay), 0),
                                 elapsed_ms=elapsed_ms))
-                        elif decision.should_retry:
+                        elif decision.should_retry and not auth_wait_expired:
                             scheduled_after = datetime.now(UTC) + timedelta(seconds=decision.delay_seconds)
                             how = dict(status="TODO", revoke=True, write_failed=True,
                                        outcome="failed", terminal=False)
@@ -1593,7 +1679,9 @@ class Consumer:
                             scheduled_after = None
                             how = dict(status="DEAD", revoke=True, write_failed=True,
                                        outcome="failed", terminal=True)
-                            level, message = logging.WARNING, f"Job dead-lettered: {decision.reason}"
+                            level, message = logging.WARNING, "Job dead-lettered: " + (
+                                f"waited for a credential longer than {_AUTH_WAIT_MAX}"
+                                if auth_wait_expired else decision.reason)
                             after = ("job_dead_after", JobDeadEvent(
                                 job=job, error=error, elapsed_ms=elapsed_ms))
 
@@ -1657,6 +1745,7 @@ class Consumer:
             else getattr(credential, "id", None)
         )
         until = datetime.now(UTC).replace(tzinfo=None) + _DEFAULT_TRANSIENT_AUTH_THROTTLE
+        healthy = None
         try:
             with self._db() as conn:
                 throttle_credential(conn, credential_id, until, str(exc), logger=self.logger)
@@ -1684,3 +1773,4 @@ class Consumer:
                 "credential_auth_throttled_after observer failed",
                 extra={"job_id": job.id, "credential_id": credential_id},
             )
+        _raise_if_auth_wait(healthy, scope, exc)

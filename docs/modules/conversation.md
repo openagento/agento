@@ -269,6 +269,12 @@ The framework records its own job transitions (`job.queued`, `job.claimed`, `job
 is framework-owned and names no module (PLC-2). `conversation:relay` — one cron entry, one
 process — turns the rows that belong to a thread into `conversation_event` rows.
 
+Cron starts it every minute, and one invocation runs a pass (up to 500 outbox rows and 500
+tool calls) every second for 55 s, so an event lands about 1 s after its transition. The
+invocation holds the MySQL named lock `conversation_relay` for its whole run: when two
+invocations overlap, the second one exits at once with no pass. It prunes relayed rows
+once, at the end.
+
 **The classification order is the contract.** A row is classified by `job.source` first,
 never by its reference value:
 

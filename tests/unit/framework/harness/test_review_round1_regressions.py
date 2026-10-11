@@ -339,8 +339,8 @@ class TestCollisionsAreNotSurvivable:
         clear()
 
     def test_bootstrap_propagates_a_scope_collision(self):
-        from agento.framework.bootstrap import _load_agent_harnesses
         from agento.framework.harness import DuplicateCredentialScopeError
+        from agento.framework.harness.loader import load_harnesses
 
         register_builtin_harnesses()  # claims scope 'claude'
 
@@ -349,13 +349,13 @@ class TestCollisionsAreNotSurvivable:
         manifest.path = FIXTURES / "scope_collision"
 
         with pytest.raises(DuplicateCredentialScopeError):
-            _load_agent_harnesses(manifest)
+            load_harnesses([manifest])
 
     def test_bootstrap_still_tolerates_an_unimportable_adapter(self, tmp_path):
         """One broken third-party module must not take the consumer down."""
         import json
 
-        from agento.framework.bootstrap import _load_agent_harnesses
+        from agento.framework.harness.loader import load_harnesses
 
         mod = tmp_path / "broken"
         mod.mkdir()
@@ -369,7 +369,7 @@ class TestCollisionsAreNotSurvivable:
         manifest.name = "broken"
         manifest.path = mod
 
-        _load_agent_harnesses(manifest)  # must not raise
+        load_harnesses([manifest])  # must not raise
 
         from agento.framework.harness import find_harness
 

@@ -9,8 +9,8 @@ Two things this deliberately does NOT do:
 
 * **It does not call `bootstrap()` and resolves no configuration.** A `di.json` and
   `modules.json` are already mounted read-only; reading them needs no registry, no DB and
-  no decryptor. `web` shares a network with `sandbox`, so holding a module's secrets to
-  serve a URL would be blast radius bought for nothing.
+  no decryptor. The one registry `web` needs, the harnesses for a `local` config tester,
+  comes from `harness_reloader()` (framework/harness/loader.py), which loads no observer.
 * **It does not clear anything on reload.** The two registries `bootstrap()` owns are
   cleared per poll tick because the consumer re-bootstraps in-process. This one is composed
   once, and `web` never re-bootstraps: enabling or disabling a module's routes takes effect

@@ -1,10 +1,12 @@
 # Config Testers — "Test connection" for a config field
 
 A field in a module's `system.json` can declare a **tester**: a probe that answers "do these stored
-values actually work?" It surfaces in two places, both of which run the same probe:
+values actually work?" It surfaces in these places, and each one runs the same probe:
 
+- the **Test** button on a field in the admin panel Config screen (every tester kind, `local`
+  included: `web` runs a `local` tester in its own process)
 - `agento config:test <path>` — the CLI, `--all` for every declared field
-- `t` on a highlighted field in the admin TUI Config screen
+- `t` on a highlighted field in the admin TUI Config screen (the TUI is deprecated; use the panel)
 
 ## Why this exists
 
@@ -180,7 +182,7 @@ on, and the first link that does not hold is the result:
 It reads the pool without a write (never `select_credential`), and each harness checks the model
 its own way through the optional `check_model` member
 ([harness-contract.md](../architecture/harness-contract.md#checking-a-model-id)). Like every local
-tester it runs only from `config:test` and the admin TUI `t` key; the panel refuses local testers.
+tester it runs from the panel **Test** button, `config:test` and the admin TUI `t` key.
 
 ## Rules the framework enforces
 

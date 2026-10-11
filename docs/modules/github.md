@@ -109,7 +109,7 @@ on failure it offers retry/abort and writes nothing; on success it captures the 
 `agent_view/identity/git_author_name` (the verified `login`) and `agent_view/identity/git_author_email`,
 defaulting to `<id>+<login>@users.noreply.github.com`. GitHub links a commit to an account only when the
 author email is a **verified** email on it — the `users.noreply` form always links and needs no address
-the operator has to verify. `workspace:build` materializes these into the sandbox's `~/.gitconfig` (see
+the operator has to verify. `workspace:build` materializes these into the run HOME's `~/.gitconfig` (see
 [identity docs](../config/identity.md)); override anytime with `config:set agent_view/identity/git_author_*`.
 
 Offline alternative — set everything manually:

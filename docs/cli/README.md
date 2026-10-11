@@ -71,7 +71,7 @@
 | **Miniapps** | |
 | `miniapp:activate <artifact_code> <version_id> [--actions a,b]` / `miniapp:deactivate <artifact_code> <version_id>` / `miniapp:list` | Let a version run as a miniapp with a fixed action set, stop it, or list activations; no tool equivalent ([details](miniapp.md)) |
 | **Admin** | |
-| `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
+| `admin` | Launch interactive TUI dashboard (deprecated: use the admin panel; [details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |
 | `config:resolve <module> [--scope=S] [--scope-id=N] [--json]` | Resolve effective config values with source info |
 | **Panel users, roles and grants** | |
@@ -89,7 +89,7 @@
 | `job:resume <job_id>` | Resume a paused job (re-queue for consumer) ([details](job-pause-resume.md)) |
 | **Conversations** (the `conversation` module; all three are cron passes an operator can also run by hand) | |
 | `conversation:sweep` (`co:sw`) | Finish stranded submissions and reconcile finished jobs ([details](../modules/conversation.md)) |
-| `conversation:relay` (`co:rel`) | Relay framework job events into conversation threads, and prune the relayed rows. ONE process by contract: a second would invert a thread's event order |
+| `conversation:relay` (`co:rel`) | Relay framework job events into conversation threads, and prune the relayed rows. One run passes every second for 55 s. ONE process by contract: a second would invert a thread's event order, so a run that finds the `conversation_relay` lock held exits at once ([details](../modules/conversation.md#the-outbox-relay)) |
 | `conversation:retention` (`co:ret`) | Prune conversation events, auto-archive idle threads, delete archived ones, sweep executions no thread owns — in that order ([details](../modules/conversation.md)) |
 | **Operations** | |
 | `consumer` | Start job consumer loop |
