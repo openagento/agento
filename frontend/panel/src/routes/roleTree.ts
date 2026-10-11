@@ -5,7 +5,12 @@ import type { TreeNodeData } from "@mantine/core";
 
 export interface OperationResource { id: string; title: string; granted: boolean; inherited: boolean; builtin: boolean }
 export interface ToolResource { name: string; enabled: boolean; granted: boolean; inherited: boolean }
-export interface RoleResources { operations: OperationResource[]; toolsets: { toolset: string; tools: ToolResource[] }[] }
+/** An admin panel leaf (global scope only); `builtin` for the admin role. */
+export interface AdminLeaf { id: string; title: string; granted: boolean; builtin: boolean }
+/** The API sends `admin` for the global scope and `operations` + `toolsets` for a place; the page fills the rest with []. */
+export interface RoleResources {
+  operations: OperationResource[]; toolsets: { toolset: string; tools: ToolResource[] }[]; admin: { screen: string; leaves: AdminLeaf[] }[];
+}
 
 /** What a leaf row shows beside its label: `id` dimmed, then the badges. */
 export interface LeafInfo { id?: string; off?: boolean; via?: boolean; builtin?: boolean }
@@ -14,6 +19,8 @@ export type NodeState = "checked" | "indeterminate" | "none";
 
 const opValue = (id: string) => `op:${id}`;
 const toolValue = (name: string) => `tool:${name}`;
+const admValue = (id: string) => `adm:${id}`;
+const admLeaves = (res: RoleResources) => res.admin.flatMap((s) => s.leaves);
 const leafOf = (value: string, label: string, info: LeafInfo): TreeNodeData => ({ value, label, nodeProps: info });
 
 /** A group whose own name matches keeps all its leaves; otherwise only the leaves that match.
@@ -30,7 +37,12 @@ export function toTreeData(res: RoleResources, search: string): TreeNodeData[] {
     return group(`grp:ts:${ts.toolset}`, ts.toolset, tools.map((t) =>
       leafOf(toolValue(t.name), t.name, { off: !t.enabled, via: t.inherited })));
   });
+  const screens = res.admin.flatMap((s) => {
+    const leaves = hit("Admin", s.screen) ? s.leaves : s.leaves.filter((l) => hit(l.title, l.id));
+    return group(`grp:admin:${s.screen}`, s.screen, leaves.map((l) => leafOf(admValue(l.id), l.title, { id: l.id, builtin: l.builtin })));
+  });
   return [
+    ...group("grp:admin", "Admin", screens),
     ...group("grp:ops", "Operations", ops.map((o) =>
       leafOf(opValue(o.id), o.title, { id: o.id, via: o.inherited, builtin: o.builtin }))),
     ...group("grp:tools", "Tools", toolsets),
@@ -64,6 +76,7 @@ export function lockedLeaves(res: RoleResources): Set<string> {
   return new Set([
     ...res.operations.filter((o) => o.builtin || o.inherited).map((o) => opValue(o.id)),
     ...res.toolsets.flatMap((ts) => ts.tools.filter((t) => t.inherited).map((t) => toolValue(t.name))),
+    ...admLeaves(res).filter((l) => l.builtin).map((l) => admValue(l.id)),
   ]);
 }
 
@@ -73,12 +86,16 @@ export function initialChecked(res: RoleResources): Set<string> {
     ...lockedLeaves(res),
     ...res.operations.filter((o) => o.granted).map((o) => opValue(o.id)),
     ...res.toolsets.flatMap((ts) => ts.tools.filter((t) => t.granted).map((t) => toolValue(t.name))),
+    ...admLeaves(res).filter((l) => l.granted).map((l) => admValue(l.id)),
   ]);
 }
 
 /** The PUT body names: checked leaves minus the locked ones that have no row here; a redundant row
- *  (granted and inherited) is sent, so a save keeps it. */
-export function toPayload(checked: ReadonlySet<string>, res: RoleResources): { tools: string[]; operations: string[] } {
+ *  (granted and inherited) is sent, so a save keeps it. The global scope sends only `admin`. */
+export function toPayload(checked: ReadonlySet<string>, res: RoleResources): { tools: string[]; operations: string[] } | { admin: string[] } {
+  if (res.admin.length) {
+    return { admin: admLeaves(res).filter((l) => checked.has(admValue(l.id)) && (l.granted || !l.builtin)).map((l) => l.id) };
+  }
   return {
     tools: res.toolsets.flatMap((ts) => ts.tools)
       .filter((t) => checked.has(toolValue(t.name)) && !(t.inherited && !t.granted)).map((t) => t.name),

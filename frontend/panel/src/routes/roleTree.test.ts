@@ -17,7 +17,13 @@ const RES: RoleResources = {
     ] },
     { toolset: "miniapps", tools: [{ name: "miniapp_list", enabled: true, granted: false, inherited: false }] },
   ],
+  admin: [],
 };
+const leaf = (id: string, title: string, granted = false, builtin = false) => ({ id, title, granted, builtin });
+const GLOBAL: RoleResources = { operations: [], toolsets: [], admin: [
+  { screen: "Jobs", leaves: [leaf("admin.jobs", "View", true)] },
+  { screen: "Users", leaves: [leaf("admin.users", "View"), leaf("admin.users.edit", "Edit", true)] },
+] };
 
 describe("roleTree", () => {
   it("builds groups with leaf values and drops empty groups on search", () => {
@@ -69,5 +75,24 @@ describe("roleTree", () => {
     expect(toPayload(cleared, RES)).toEqual({ tools: ["jira_comment"], operations: ["app.report"] });
     expect(changeCount(checked, initialChecked(RES))).toBe(0);
     expect(changeCount(new Set([...checked, "tool:jira_delete"]), checked)).toBe(1);
+  });
+
+  it("builds the admin group per screen and sends the checked leaves as the global payload", () => {
+    const [admin] = toTreeData(GLOBAL, "");
+    expect(admin.value).toBe("grp:admin");
+    expect(admin.children?.map((n) => [n.value, n.children?.map((l) => l.value)])).toEqual([
+      ["grp:admin:Jobs", ["adm:admin.jobs"]], ["grp:admin:Users", ["adm:admin.users", "adm:admin.users.edit"]],
+    ]);
+    expect(toTreeData(GLOBAL, "users")[0].children?.map((n) => n.value)).toEqual(["grp:admin:Users"]);
+    const checked = initialChecked(GLOBAL);
+    expect([...checked].sort()).toEqual(["adm:admin.jobs", "adm:admin.users.edit"]);
+    expect(toPayload(new Set([...checked, "adm:admin.users"]), GLOBAL))
+      .toEqual({ admin: ["admin.jobs", "admin.users", "admin.users.edit"] });
+  });
+
+  it("locks every built-in admin leaf and never sends one without a row", () => {
+    const res: RoleResources = { ...GLOBAL, admin: [{ screen: "Jobs", leaves: [leaf("admin.jobs", "View", false, true)] }] };
+    expect([...lockedLeaves(res)]).toEqual(["adm:admin.jobs"]);
+    expect(toPayload(initialChecked(res), res)).toEqual({ admin: [] });
   });
 });

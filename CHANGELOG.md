@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Admin panel access per role.** The role page has a third scope, **Admin panel (everywhere)**,
+  with one leaf per admin screen (Dashboard, Jobs, Agents, Credentials, Tools, Skills, Config, Users,
+  Roles, Miniapps) and one per action (view, create, edit, delete). A role sees and calls only the
+  screens and actions it holds; `admin` holds them all. A role grants only leaves it holds, and only
+  `admin` touches an admin account. `grant:add --operation admin.users --role support` adds one with
+  no scope. Migration `053_admin_leaves` gives every existing role the Miniapps screen. See
+  [docs/architecture/panel.md](docs/architecture/panel.md#roles-and-grants).
 - **The panel Test button runs `local` testers** (for example `agent_view/model` and the SSH
   identity tester). `web` runs them in its own process, as `config:test` does in `cron`, with the
   same redacted result codes. `web` registers the harnesses of the enabled modules again when

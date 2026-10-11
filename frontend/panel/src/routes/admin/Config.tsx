@@ -11,7 +11,7 @@ import { useSearchParams } from "react-router";
 import { apiFetch, refreshDisplay, useMutation, useQuery, useQueryClient } from "@agento/api";
 import { Button, ConfirmDialog, DataTable, EmptyState, ErrorState, LoadingState, PageHeader, type Column } from "@agento/ui";
 import { ScopePicker } from "./ScopePicker";
-import { AdminOnly, message, useConfigWrite, useScope, whole } from "./shared";
+import { message, useConfigWrite, useScope, whole } from "./shared";
 
 export interface Field {
   path: string; label: string; description: string; type: string; source: string; editable: boolean;
@@ -178,30 +178,28 @@ export function Config() {
     return n;
   });
   return (
-    <AdminOnly>
-      <div className="ag-stack">
-        <PageHeader title="Config" description="Module and tool settings at a scope." />
-        <ScopePicker />
-        {modules.isPending ? <LoadingState /> : modules.error
-          ? <ErrorState message={message(modules.error)} onRetry={() => void modules.refetch()} />
-          : !module ? <EmptyState title="No configurable modules" /> : (
-            <Grid>
-              <Grid.Col span={{ base: 12, md: 3 }}>
-                <nav aria-label="Modules">
-                  {list.map((m) => (
-                    <NavLink key={m.name} label={moduleTitle(m.name)} active={m.name === module && !tool} defaultOpened={m.name === module}
-                      onClick={() => pick(m.name)} childrenOffset="md">
-                      {m.tools.length ? m.tools.map((t) => (
-                        <NavLink key={t} label={t} active={m.name === module && t === tool} onClick={() => pick(m.name, t)} />
-                      )) : undefined}
-                    </NavLink>
-                  ))}
-                </nav>
-              </Grid.Col>
-              <Grid.Col span={{ base: 12, md: 9 }}><Fields module={module} tool={tool} /></Grid.Col>
-            </Grid>
-          )}
-      </div>
-    </AdminOnly>
+    <div className="ag-stack">
+      <PageHeader title="Config" description="Module and tool settings at a scope." />
+      <ScopePicker />
+      {modules.isPending ? <LoadingState /> : modules.error
+        ? <ErrorState message={message(modules.error)} onRetry={() => void modules.refetch()} />
+        : !module ? <EmptyState title="No configurable modules" /> : (
+          <Grid>
+            <Grid.Col span={{ base: 12, md: 3 }}>
+              <nav aria-label="Modules">
+                {list.map((m) => (
+                  <NavLink key={m.name} label={moduleTitle(m.name)} active={m.name === module && !tool} defaultOpened={m.name === module}
+                    onClick={() => pick(m.name)} childrenOffset="md">
+                    {m.tools.length ? m.tools.map((t) => (
+                      <NavLink key={t} label={t} active={m.name === module && t === tool} onClick={() => pick(m.name, t)} />
+                    )) : undefined}
+                  </NavLink>
+                ))}
+              </nav>
+            </Grid.Col>
+            <Grid.Col span={{ base: 12, md: 9 }}><Fields module={module} tool={tool} /></Grid.Col>
+          </Grid>
+        )}
+    </div>
   );
 }

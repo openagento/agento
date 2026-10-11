@@ -18,8 +18,20 @@ describe("the Administration nav group", () => {
     expect(screen.getByRole("link", { name: "Jobs" })).toHaveAttribute("data-active");
   });
 
-  it("is hidden for a user", async () => {
-    await stubApi({}, "user");
+  it("lists only the screens a role holds", async () => {
+    await stubApi({}, ["admin.jobs", "admin.users"]);
+    renderAt("/", <AdminNav onNavigate={() => {}} />);
+    expect(screen.getAllByRole("link").map((a) => a.textContent)).toEqual(["Jobs", "Users"]);
+  });
+
+  it("opens Users for a role that holds only Roles", async () => {
+    await stubApi({}, ["admin.roles"]);
+    renderAt("/", <AdminNav onNavigate={() => {}} />);
+    expect(screen.getAllByRole("link").map((a) => a.textContent)).toEqual(["Users"]);
+  });
+
+  it("is hidden when no admin leaf is held", async () => {
+    await stubApi({}, ["miniapps"]);
     renderAt("/", <AdminNav onNavigate={() => {}} />);
     expect(screen.queryByText("Administration")).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();

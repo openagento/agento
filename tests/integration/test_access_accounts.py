@@ -101,17 +101,40 @@ def test_set_password_revokes_sessions(conn, scopes):
     assert accounts.authenticate(conn, "alice", "another long password") == alice
 
 
-def test_actor_must_be_active_admin(conn):
+def test_actor_must_be_active_with_the_role_the_route_check_saw(conn):
     admin = accounts.create_user(conn, "root", "admin", PASSWORD)
     plain = accounts.create_user(conn, "alice", "user", PASSWORD)
-    with pytest.raises(AccessError):
-        accounts.set_role(conn, plain.id, "admin", actor_id=plain.id)
-    with pytest.raises(AccessError):
-        accounts.create_user(conn, "bob", "user", PASSWORD, actor_id=plain.id)
+    with pytest.raises(AccessError, match="not allowed"):
+        accounts.create_user(conn, "bob", "user", PASSWORD, actor=(plain.id, "admin"))  # stale role
+    accounts.set_role(conn, admin.id, "user")
+    with pytest.raises(AccessError, match="not allowed"):  # demoted after the route check
+        accounts.set_password(conn, plain.id, "another long password", actor=(admin.id, "admin"))
+    accounts.set_role(conn, admin.id, "admin")
     accounts.set_active(conn, admin.id, False)
-    with pytest.raises(AccessError):
-        accounts.set_role(conn, plain.id, "admin", actor_id=admin.id)
-    assert accounts.get_user(conn, plain.id).role == "user"
+    with pytest.raises(AccessError, match="not allowed"):
+        accounts.set_active(conn, plain.id, False, actor=(admin.id, "admin"))
+    assert accounts.get_user(conn, plain.id) == plain
+
+
+def test_only_admin_touches_an_admin_account(conn):
+    """SEC-7: a role holding the Users leaves edits user accounts, never an admin's."""
+    accounts.create_role(conn, "support", "Support")
+    admin = accounts.create_user(conn, "root", "admin", PASSWORD)
+    sam = accounts.create_user(conn, "sam", "support", PASSWORD)
+    alice = accounts.create_user(conn, "alice", "user", PASSWORD)
+    actor = (sam.id, "support")
+    for change in ({"password": "a stolen long password"}, {"role": "user"}, {"active": False}):
+        with pytest.raises(AccessError, match="not allowed"):
+            accounts.update_user(conn, admin.id, actor=actor, **change)
+    with pytest.raises(AccessError, match="not allowed"):
+        accounts.set_role(conn, alice.id, "admin", actor=actor)
+    with pytest.raises(AccessError, match="not allowed"):
+        accounts.create_user(conn, "eve", "admin", PASSWORD, actor=actor)
+    assert accounts.authenticate(conn, "root", PASSWORD) == admin
+    assert accounts.get_user(conn, alice.id).role == "user"
+    accounts.set_active(conn, alice.id, False, actor=actor)
+    assert accounts.create_user(conn, "bob", "user", PASSWORD, actor=actor).role == "user"
+    accounts.set_role(conn, alice.id, "admin", actor=(admin.id, "admin"))
 
 
 def test_unknown_target_is_refused(conn):
@@ -195,9 +218,7 @@ def test_remove_grant_revokes_launches_of_that_role_in_that_scope(conn, scopes):
     _session_and_launch(conn, root.id, scopes["ws1"], scopes["av1"])
     _session_and_launch(conn, other.id, scopes["ws2"], scopes["av2"])
     gid = accounts.add_grant(conn, "user", "operation", "artifact.launch", workspace_id=scopes["ws1"])
-    with pytest.raises(AccessError):
-        accounts.remove_grant(conn, gid, actor_id=alice.id)
-    accounts.remove_grant(conn, gid, actor_id=root.id)
+    accounts.remove_grant(conn, gid)
     assert accounts.list_grants(conn) == []
     assert _revoked(conn, alice.id) == (False, True)
     assert _revoked(conn, root.id) == (False, False)
@@ -206,30 +227,68 @@ def test_remove_grant_revokes_launches_of_that_role_in_that_scope(conn, scopes):
         accounts.remove_grant(conn, gid)
 
 
-def test_may():
-    admin = accounts.User(1, "root", "admin", True)
-    assert accounts.may(admin, "config.write")
-    assert not accounts.may(admin, "artifact.launch")
-    assert not accounts.may(accounts.User(2, "a", "user", True), "config.write")
-    assert not accounts.may(accounts.User(3, "b", "admin", False), "config.write")
+def test_may_reads_the_global_admin_panel_rows(conn, scopes):
+    accounts.create_role(conn, "support", "Support")
+    accounts.set_role_grants(conn, "support", tools=[], operations=["admin.jobs", "admin.users"])
+    # A scoped row is never an admin panel operation.
+    accounts.add_grant(conn, "support", "operation", "artifact.launch", workspace_id=scopes["ws1"])
+    sam = accounts.User(3, "sam", "support", True)
+    assert accounts.held_admin(conn, "support") == ["admin.jobs", "admin.users"]
+    assert accounts.held_admin(conn, "admin") == sorted(accounts.ADMIN_RESOURCES)
+    assert accounts.may(conn, sam, "admin.jobs")
+    assert not accounts.may(conn, sam, "admin.config")
+    assert accounts.may(conn, sam, ("admin.config", "admin.users"))  # a tuple is any of
+    assert not accounts.may(conn, accounts.User(3, "sam", "support", False), "admin.jobs")
+    assert accounts.may(conn, accounts.User(1, "root", "admin", True), "admin.roles.delete")
+    assert not accounts.may(conn, accounts.User(2, "alice", "user", True), "admin.jobs")
+    assert {r["code"]: r["scopes"] for r in accounts.list_roles(conn)}["support"] == 2
+    assert {"workspace_id": None, "agent_view_id": None, "tools": 0, "operations": 2} \
+        in accounts.role_scopes(conn, "support")
+
+
+@pytest.mark.parametrize("tools,operations,refusal", [
+    (["miniapp_list"], [], "takes no tools"),
+    ([], ["artifact.launch"], "operation must be one of"),
+])
+def test_global_scope_takes_admin_panel_operations_only(conn, tools, operations, refusal):
+    with pytest.raises(AccessError, match=refusal):
+        accounts.set_role_grants(conn, "user", tools=tools, operations=operations)
+
+
+def test_a_role_grants_only_the_admin_panel_leaves_it_holds(conn):
+    for code in ("support", "helpdesk"):
+        accounts.create_role(conn, code, code.title())
+    accounts.set_role_grants(conn, "support", tools=[], operations=["admin.roles.edit", "admin.jobs"])
+    accounts.set_role_grants(conn, "helpdesk", tools=[], operations=["admin.config"])
+    sam = accounts.create_user(conn, "sam", "support", PASSWORD)
+    actor = (sam.id, "support")
+    for operations in (["admin.config", "admin.users"], []):  # adds one it lacks; removes one it lacks
+        with pytest.raises(AccessError, match="not allowed"):
+            accounts.set_role_grants(conn, "helpdesk", tools=[], operations=operations, actor=actor)
+    assert accounts.held_admin(conn, "helpdesk") == ["admin.config"]
+    got = accounts.set_role_grants(conn, "helpdesk", tools=[], operations=["admin.config", "admin.jobs"], actor=actor)
+    assert got == {"added": 1, "removed": 0}
+    accounts.set_role_grants(conn, "helpdesk", tools=[], operations=["admin.config", "admin.users"],
+                             actor=(accounts.create_user(conn, "root", "admin", PASSWORD).id, "admin"))
+    assert accounts.held_admin(conn, "helpdesk") == ["admin.config", "admin.users"]
 
 
 def test_role_crud(conn):
     root = accounts.create_user(conn, "root", "admin", PASSWORD)
     plain = accounts.create_user(conn, "alice", "user", PASSWORD)
     with pytest.raises(AccessError, match="not allowed"):
-        accounts.create_role(conn, "support", "Support", actor_id=plain.id)
+        accounts.create_role(conn, "support", "Support", actor=(plain.id, "admin"))
     for code in ("Support", "s", "9lives", "x" * 17, "a-b"):
         with pytest.raises(AccessError, match="code must match"):
             accounts.create_role(conn, code, "Support")
     with pytest.raises(AccessError, match="label"):
         accounts.create_role(conn, "support", "  ")
-    assert accounts.create_role(conn, "support", " Support ", actor_id=root.id)["label"] == "Support"
+    assert accounts.create_role(conn, "support", " Support ", actor=(root.id, "admin"))["label"] == "Support"
     with pytest.raises(AccessError, match="code already exists"):
         accounts.create_role(conn, "support", "Other")
     with pytest.raises(AccessError, match="label already exists"):
         accounts.create_role(conn, "other", "Support")
-    accounts.rename_role(conn, "support", "Support desk", actor_id=root.id)
+    accounts.rename_role(conn, "support", "Support desk", actor=(root.id, "admin"))
     with pytest.raises(AccessError, match="role not found"):
         accounts.rename_role(conn, "nobody", "Nobody")
     with pytest.raises(AccessError, match="label already exists"):
@@ -278,7 +337,7 @@ def test_role_scopes_and_list_counts(conn, scopes):
     accounts.add_grant(conn, "support", "tool", "versioned_artifact_get_current", workspace_id=scopes["ws1"])
     accounts.add_grant(conn, "support", "tool", "versioned_artifact_get_current", agent_view_id=scopes["av2"])
     _insert_raw_grant(conn, {"role": "support", "grant_kind": "tool", "name": "t", "workspace": None,
-                             "agent_view": None}, scopes)  # no scope: matches nothing, counted nowhere
+                             "agent_view": None}, scopes)  # a tool with no scope: matches nothing, counted nowhere
     assert accounts.role_scopes(conn, "support") == [
         {"workspace_id": None, "agent_view_id": scopes["av2"], "tools": 1, "operations": 0},
         {"workspace_id": scopes["ws1"], "agent_view_id": None, "tools": 1, "operations": 1},
@@ -297,8 +356,8 @@ def test_set_role_grants_replaces_one_scope(conn, scopes):
     other = accounts.create_user(conn, "carol", "user", PASSWORD)
     with pytest.raises(AccessError, match="not allowed"):
         accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=[], operations=[],
-                                 actor_id=alice.id)
-    got = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], actor_id=root.id,
+                                 actor=(alice.id, "admin"))
+    got = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], actor=(root.id, "admin"),
                                    tools=["versioned_artifact_get_current", "miniapp_list"],
                                    operations=["artifact.launch"])
     assert got == {"added": 3, "removed": 0}
@@ -347,7 +406,6 @@ def test_set_role_grants_keeps_rows_of_a_disabled_module(conn, scopes, monkeypat
 
 
 @pytest.mark.parametrize("kwargs,message", [
-    ({"tools": [], "operations": []}, "exactly one"),
     ({"workspace_id": 1, "agent_view_id": 1, "tools": [], "operations": []}, "exactly one"),
     ({"agent_view_id": 1, "tools": ["no_such_tool"], "operations": []}, "declares"),
     ({"agent_view_id": 1, "tools": [], "operations": ["users.manage"]}, "operation must be one of"),

@@ -14,9 +14,9 @@ Shortcuts: `ro:li`, `ro:cr`, `ro:de`.
 
 - A code matches `^[a-z][a-z0-9_]{1,15}$` and cannot be changed later. A label has 1 to 64
   characters and is unique. Rename a label in the panel (Users → Roles → the role → Role info).
-- A new role is a `user`-like role: the admin operations (`users.manage`, `grants.manage`,
-  `config.write`, `admin.read`, `credentials.manage`) stay bound to the code `admin` and cannot
-  be granted.
+- A new role has no admin panel access until it is granted admin panel leaves
+  (`grant:add --role support --operation admin.jobs`, or the role page's **Admin panel** scope).
+  `admin` holds every leaf built in, and only an `admin` creates or edits an admin account.
 - To delete a role that users have, first move them: `user:set-role <username> <other role>`.
 
 ```bash

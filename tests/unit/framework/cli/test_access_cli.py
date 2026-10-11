@@ -89,7 +89,6 @@ def test_role_delete_refusal_exits_nonzero(mock_connect, monkeypatch, capsys):
     ["--role", "user", "--tool", "t", "--operation", "artifact.launch", "--agent-view", "v"],
     ["--role", "user", "--agent-view", "v"],
     ["--role", "user", "--tool", "t", "--workspace", "w", "--agent-view", "v"],
-    ["--role", "user", "--tool", "t"],
     ["--role", "user", "--operation", "users.manage", "--agent-view", "v"],
 ])
 def test_grant_add_usage_errors(argv):
@@ -107,6 +106,33 @@ def test_grant_add_operation_at_an_agent_view(mock_connect, monkeypatch):
     cmd.execute(_parse(cmd, ["--role", "user", "--operation", "artifact.launch", "--agent-view", "dev"]))
     assert add.call_args.args[1:] == ("user", "operation", "artifact.launch")
     assert add.call_args.kwargs == {"workspace_id": None, "agent_view_id": 42}
+
+
+@patch.object(access, "_connect")
+def test_grant_add_admin_panel_operation_has_no_scope(mock_connect, monkeypatch, capsys):
+    add = MagicMock(return_value=8)
+    monkeypatch.setattr(accounts, "add_grant", add)
+    cmd = access.GrantAddCommand()
+    cmd.execute(_parse(cmd, ["--role", "support", "--operation", "admin.users"]))
+    assert add.call_args.args[1:] == ("support", "operation", "admin.users")
+    assert add.call_args.kwargs == {"workspace_id": None, "agent_view_id": None}
+    monkeypatch.setattr(accounts, "list_grants", lambda conn, role: [
+        {"id": 8, "role": "support", "grant_kind": "operation", "name": "admin.users",
+         "workspace_id": None, "agent_view_id": None}])
+    cmd = access.GrantListCommand()
+    cmd.execute(_parse(cmd, []))
+    assert capsys.readouterr().out.rstrip().endswith("global")
+
+
+@pytest.mark.parametrize("kind,name,workspace_id,agent_view_id", [
+    ("operation", "artifact.launch", None, None),  # a scoped operation needs its scope
+    ("tool", "jira_add_comment", None, None),
+    ("operation", "admin.users", 1, None),  # an admin panel operation takes none
+    ("tool", "admin.users", None, None),
+])
+def test_check_grant_refuses_the_wrong_scope(kind, name, workspace_id, agent_view_id):
+    with pytest.raises(accounts.AccessError):
+        accounts._check_grant(kind, name, workspace_id, agent_view_id)
 
 
 @patch.object(access, "_connect")

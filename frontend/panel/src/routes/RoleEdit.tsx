@@ -2,17 +2,17 @@
 // are a checkbox tree per scope; the checked leaves are a Set held here (roleTree.ts), saved with one PUT.
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
-import { Info, ShieldCheck, Wrench } from "lucide-react";
+import { LayoutDashboard, ShieldCheck, Wrench } from "lucide-react";
 import {
-  Alert, Anchor, Badge, Breadcrumbs, Divider, Group, Paper, Select, Stack, Tabs, Text,
+  Anchor, Badge, Breadcrumbs, Divider, Group, Paper, Select, Stack, Tabs, Text,
   TextInput, ThemeIcon, Tooltip, type TreeNodeData,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { apiFetch, useMutation, useQuery, useQueryClient } from "@agento/api";
-import { Button, ConfirmDialog, EmptyState, ErrorState, LoadingState, PageHeader } from "@agento/ui";
+import { Button, ConfirmDialog, ErrorState, LoadingState, PageHeader } from "@agento/ui";
 import { ResourceTree, UnsavedBar } from "./ResourceTree";
 import { useScopes, type Scopes } from "./admin/ScopePicker";
-import { AdminOnly, message, useScope } from "./admin/shared";
+import { message } from "./admin/shared";
 import {
   changeCount, initialChecked, lockedLeaves, toPayload, toTreeData,
   type LeafInfo, type RoleResources,
@@ -20,10 +20,10 @@ import {
 
 interface RoleScope { workspace_id: number | null; agent_view_id: number | null; tools: number; operations: number }
 interface RoleDetail { code: string; label: string; builtin: boolean; users: number; scopes: RoleScope[] }
-type ScopeKey = string; // "workspace:2", "agent_view:3"
+type ScopeKey = string; // "global:0", "workspace:2", "agent_view:3"
 
-const ADMIN_NOTE = "Administrator has user management, configuration, credentials and every module resource built in. "
-  + "Tools and launching miniapps still come from what you check here.";
+/** The admin panel leaves have no workspace or view: one place, first in the picker. */
+const GLOBAL = { value: "global:0", label: "Admin panel (everywhere)" };
 
 function RoleInfo({ role }: { role: RoleDetail }) {
   const qc = useQueryClient();
@@ -57,8 +57,11 @@ function RoleInfo({ role }: { role: RoleDetail }) {
 }
 
 /** The level-1 group icon, and the badges a role leaf shows after its label. */
-const roleIcon = (node: TreeNodeData): ReactNode => node.value === "grp:ops" || node.value === "grp:tools"
-  ? <ThemeIcon variant="light" size="sm" radius="sm">{node.value === "grp:ops" ? <ShieldCheck size={14} /> : <Wrench size={14} />}</ThemeIcon>
+const GROUP_ICON: Record<string, ReactNode> = {
+  "grp:admin": <LayoutDashboard size={14} />, "grp:ops": <ShieldCheck size={14} />, "grp:tools": <Wrench size={14} />,
+};
+const roleIcon = (node: TreeNodeData): ReactNode => GROUP_ICON[node.value]
+  ? <ThemeIcon variant="light" size="sm" radius="sm">{GROUP_ICON[node.value]}</ThemeIcon>
   : null;
 
 function roleInfo(node: TreeNodeData, via: string): ReactNode {
@@ -85,13 +88,13 @@ function roleInfo(node: TreeNodeData, via: string): ReactNode {
   );
 }
 
-const keyOf = (s: RoleScope): ScopeKey => (s.agent_view_id ? `agent_view:${s.agent_view_id}` : `workspace:${s.workspace_id}`);
+const keyOf = (s: RoleScope): ScopeKey =>
+  s.agent_view_id ? `agent_view:${s.agent_view_id}` : s.workspace_id ? `workspace:${s.workspace_id}` : GLOBAL.value;
 
 function RoleResourcesTab({ role }: { role: RoleDetail }) {
   const qc = useQueryClient();
   const scopes = useScopes();
-  const [, setParams] = useSearchParams();
-  const url = useScope();
+  const [params, setParams] = useSearchParams();
   const [edits, setEdits] = useState<{ at: ScopeKey; set: Set<string> } | null>(null);
   const [pending, setPending] = useState<ScopeKey | null>(null);
 
@@ -103,15 +106,17 @@ function RoleResourcesTab({ role }: { role: RoleDetail }) {
     { group: "Workspaces", items: options("workspace", scopes.data?.workspaces) },
     { group: "Agent views", items: options("agent_view", scopes.data?.agent_views) },
   ].filter((g) => g.items.length);
-  const all = groups.flatMap((g) => g.items);
-  // The URL scope when it names a known place; else the first place with access, else the first place.
-  const fromUrl = url.ready && url.scope !== "default" ? `${url.scope}:${url.scopeId}` : null;
-  const current = all.find((o) => o.value === fromUrl)?.value ?? all.find((o) => counts.has(o.value))?.value ?? all[0]?.value;
-  const [kind, id] = current ? (current.split(":") as ["workspace" | "agent_view", string]) : [null, null];
+  const all = [GLOBAL, ...groups.flatMap((g) => g.items)];
+  // The URL scope when it names a known place; else the first place with access, else the Admin panel.
+  const fromUrl = `${params.get("scope")}:${params.get("scope_id")}`;
+  const current = all.find((o) => o.value === fromUrl)?.value ?? all.find((o) => counts.has(o.value))?.value ?? GLOBAL.value;
+  const [kind, id] = current.split(":");
+  const global = current === GLOBAL.value;
 
   const resources = useQuery({
-    queryKey: ["role-resources", role.code, current], enabled: Boolean(current),
-    queryFn: ({ signal }) => apiFetch<RoleResources>(`/api/admin/roles/${role.code}/resources?scope=${kind}&scope_id=${id}`, { signal }),
+    queryKey: ["role-resources", role.code, current], enabled: scopes.isSuccess,
+    queryFn: async ({ signal }) => ({ operations: [], toolsets: [], admin: [], ...await apiFetch<Partial<RoleResources>>(
+      `/api/admin/roles/${role.code}/resources?scope=${kind}${global ? "" : `&scope_id=${id}`}`, { signal }) }),
   });
   const server = useMemo(() => resources.data && initialChecked(resources.data), [resources.data]);
   const locked = useMemo(() => resources.data ? lockedLeaves(resources.data) : new Set<string>(), [resources.data]);
@@ -126,7 +131,7 @@ function RoleResourcesTab({ role }: { role: RoleDetail }) {
     mutationFn: (sent: NonNullable<typeof edits>) => {
       const [k, i] = sent.at.split(":");
       return apiFetch(`/api/admin/roles/${role.code}/resources`, {
-        method: "PUT", json: { scope: k, scope_id: Number(i), ...toPayload(sent.set, resources.data!) },
+        method: "PUT", json: { scope: k, ...(k === "global" ? {} : { scope_id: Number(i) }), ...toPayload(sent.set, resources.data!) },
       });
     },
     onSuccess: async (_r, sent) => {
@@ -158,18 +163,16 @@ function RoleResourcesTab({ role }: { role: RoleDetail }) {
 
   if (scopes.isPending) return <LoadingState />;
   if (scopes.error) return <ErrorState message={message(scopes.error)} onRetry={() => void scopes.refetch()} />;
-  if (!current) return <EmptyState title="No workspace yet">Access is given in a workspace or an agent view.</EmptyState>;
 
   return (
     <Stack gap="md">
-      {role.code === "admin" && <Alert variant="light" icon={<Info size={16} />}>{ADMIN_NOTE}</Alert>}
       <Paper withBorder radius="md">
         <Group p="md" justify="space-between" wrap="wrap" gap="sm">
           <Stack gap={0}>
             <Text fw={600}>Where</Text>
             <Text fz="sm" c="dimmed">A role may use a resource only in the place it is given. A workspace gives it to every agent view in it.</Text>
           </Stack>
-          <Select aria-label="Scope" data={groups} value={current} onChange={pick} allowDeselect={false} searchable miw={280}
+          <Select aria-label="Scope" data={[GLOBAL, ...groups]} value={current} onChange={pick} allowDeselect={false} searchable miw={280}
             disabled={save.isPending}
             renderOption={({ option }) => (
               <Group flex={1} justify="space-between" wrap="nowrap" gap="xs">
@@ -215,30 +218,28 @@ export function RoleEdit() {
     return next;
   });
   return (
-    <AdminOnly>
-      <Stack gap="md">
-        <Breadcrumbs>
-          <Anchor component={Link} to="/users/roles" fz="sm">Roles</Anchor>
-          <Text fz="sm" c="dimmed">{role.data?.label ?? code}</Text>
-        </Breadcrumbs>
-        {role.isPending ? <LoadingState /> : role.error
-          ? <ErrorState message={message(role.error)} onRetry={() => void role.refetch()} />
-          : (
-            <>
-              <PageHeader title={<Group gap="sm" component="span">{role.data.label}
-                {role.data.builtin && <Badge variant="light" color="gray">Built-in</Badge>}</Group>}
-                description={<Text component="span" ff="monospace" fz="sm">{role.data.code}</Text>} />
-              <Tabs variant="outline" value={tab} onChange={setTab}>
-                <Tabs.List>
-                  <Tabs.Tab value="info">Role info</Tabs.Tab>
-                  <Tabs.Tab value="resources">Role resources</Tabs.Tab>
-                </Tabs.List>
-                <Tabs.Panel value="info" pt="md"><RoleInfo role={role.data} /></Tabs.Panel>
-                <Tabs.Panel value="resources" pt="md"><RoleResourcesTab role={role.data} /></Tabs.Panel>
-              </Tabs>
-            </>
-          )}
-      </Stack>
-    </AdminOnly>
+    <Stack gap="md">
+      <Breadcrumbs>
+        <Anchor component={Link} to="/users/roles" fz="sm">Roles</Anchor>
+        <Text fz="sm" c="dimmed">{role.data?.label ?? code}</Text>
+      </Breadcrumbs>
+      {role.isPending ? <LoadingState /> : role.error
+        ? <ErrorState message={message(role.error)} onRetry={() => void role.refetch()} />
+        : (
+          <>
+            <PageHeader title={<Group gap="sm" component="span">{role.data.label}
+              {role.data.builtin && <Badge variant="light" color="gray">Built-in</Badge>}</Group>}
+              description={<Text component="span" ff="monospace" fz="sm">{role.data.code}</Text>} />
+            <Tabs variant="outline" value={tab} onChange={setTab}>
+              <Tabs.List>
+                <Tabs.Tab value="info">Role info</Tabs.Tab>
+                <Tabs.Tab value="resources">Role resources</Tabs.Tab>
+              </Tabs.List>
+              <Tabs.Panel value="info" pt="md"><RoleInfo role={role.data} /></Tabs.Panel>
+              <Tabs.Panel value="resources" pt="md"><RoleResourcesTab role={role.data} /></Tabs.Panel>
+            </Tabs>
+          </>
+        )}
+    </Stack>
   );
 }

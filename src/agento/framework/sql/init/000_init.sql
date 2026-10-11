@@ -262,8 +262,8 @@ CREATE TABLE tool_invocation (
     KEY idx_tool_invocation_run_execution (run_execution_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Roles are rows (050_role). `admin` and `user` are seeded; `admin` stays the one code with the
--- built-in admin operations (accounts.may).
+-- Roles are rows (050_role). `admin` and `user` are seeded; `admin` holds every admin panel
+-- operation built in (accounts.held_admin), another role holds the ones granted to it.
 CREATE TABLE IF NOT EXISTS role (
     code       VARCHAR(16) NOT NULL PRIMARY KEY,
     label      VARCHAR(64) NOT NULL,
@@ -338,8 +338,9 @@ CREATE TABLE IF NOT EXISTS launch (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Role grants (E1.5, PRD E2 §5.1): a role may use a toolbox tool or a platform operation.
--- Exactly one of workspace_id / agent_view_id should be set. MySQL 8.0 refuses a CHECK on a
--- column with an FK referential action (ER 3823), so the rule is E2's: writers set exactly one,
+-- Exactly one of workspace_id / agent_view_id should be set, or neither for an admin panel
+-- operation (accounts.ADMIN_RESOURCES). MySQL 8.0 refuses a CHECK on a column with an FK
+-- referential action (ER 3823), so the rule is the writers' (accounts._check_grant); the scoped
 -- readers treat a row with both or neither as no grant.
 CREATE TABLE IF NOT EXISTS role_grant (
     id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -358,6 +359,9 @@ CREATE TABLE IF NOT EXISTS role_grant (
     CONSTRAINT fk_role_grant_agent_view FOREIGN KEY (agent_view_id)
         REFERENCES agent_view (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 053: every role keeps the Miniapps screen, now an admin panel operation.
+INSERT INTO role_grant (role, grant_kind, name) VALUES ('user', 'operation', 'miniapps');
 
 -- PRD E3-E5 §7.5 — the request limiter's counters. DB-backed, because an in-process
 -- counter limits one replica each and the panel may run several.
@@ -494,4 +498,5 @@ INSERT INTO schema_migration (version) VALUES
     ('049_tool_invocation_run_execution_index'),
     ('050_role'),
     ('051_job_runner_ref'),
-    ('052_job_auth_wait_index');
+    ('052_job_auth_wait_index'),
+    ('053_admin_leaves');

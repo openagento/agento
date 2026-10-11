@@ -1,13 +1,13 @@
-// Users and roles (PRD E2 §5): admin only. The API enforces the role; this screen only
-// renders what the routes answer.
+// Users and roles (PRD E2 §5). The API checks the leaves; this screen only renders what the
+// routes answer.
 import { useState } from "react";
-import { useLocation, useNavigate } from "react-router";
+import { Navigate, useLocation, useNavigate } from "react-router";
 import { UserCheck, UserX } from "lucide-react";
 import { Avatar, Group, Select, Tabs, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { apiFetch, ApiError, useMutation, useQuery, useQueryClient, useSession, type User } from "@agento/api";
+import { apiFetch, ApiError, useCan, useMutation, useQuery, useQueryClient, useSession, type User } from "@agento/api";
 import {
-  Button, ConfirmDialog, IconAction, DataTable, EmptyState, FormSection, PageHeader, SelectField, StatusBadge, TextField,
+  Button, ConfirmDialog, IconAction, DataTable, FormSection, PageHeader, SelectField, StatusBadge, TextField,
   type Column,
 } from "@agento/ui";
 import { Roles, useRoles } from "./Roles";
@@ -63,7 +63,7 @@ function UserTable() {
   });
 
   // The UsersRolesTable pattern from ui.mantine.dev (frontend/lookbook/UsersRolesTable): the role is
-  // changed in its cell. A user cannot change their own role or deactivate themselves here.
+  // changed in its cell.
   const columns: Column<User>[] = [
     { id: "username", header: "User", sortValue: (u) => u.username, cell: (u) => (
       <Group gap="sm" wrap="nowrap">
@@ -74,14 +74,14 @@ function UserTable() {
         </div>
       </Group>
     ) },
-    { id: "role", header: "Role", sortValue: (u) => u.role, cell: (u) => u.id === me?.id ? <Text fz="sm">{u.role}</Text> : (
+    { id: "role", header: "Role", sortValue: (u) => u.role, cell: (u) => (
       <Select data={roles} value={u.role} variant="unstyled" allowDeselect={false} aria-label={`Role of ${u.username}`}
         disabled={update.isPending} w={120}
         onChange={(role) => role && role !== u.role && update.mutate({ id: u.id, patch: { role } })} />
     ) },
     { id: "active", header: "Status", sortValue: (u) => (u.is_active ? 1 : 0),
       cell: (u) => <StatusBadge tone={u.is_active ? "info" : "neutral"}>{u.is_active ? "Active" : "Inactive"}</StatusBadge> },
-    { id: "actions", header: "Actions", cell: (u) => u.id === me?.id ? null : u.is_active
+    { id: "actions", header: "Actions", cell: (u) => u.is_active
       ? <IconAction danger label="Deactivate" icon={<UserX size={16} />} onClick={() => setDeactivate(u)} />
       : <IconAction label="Activate" icon={<UserCheck size={16} />} disabled={update.isPending} onClick={() => update.mutate({ id: u.id, patch: { is_active: true } })} /> },
   ];
@@ -101,17 +101,17 @@ function UserTable() {
 }
 
 export function Users() {
-  const me = useSession();
   const navigate = useNavigate();
   const tab = useLocation().pathname.startsWith("/users/roles") ? "roles" : "users";
-  if (me?.role !== "admin") return <EmptyState title="Not available">Only an administrator manages users.</EmptyState>;
+  const users = useCan("admin.users"), roles = useCan("admin.roles");
+  if (tab === "users" && !users && roles) return <Navigate to="/users/roles" replace />;
   return (
     <div className="ag-stack">
       <PageHeader title="Users" description="Who can sign in to the panel, and what each role may do." />
       <Tabs value={tab} onChange={(t) => void navigate(t === "roles" ? "/users/roles" : "/users")}>
         <Tabs.List>
-          <Tabs.Tab value="users">Users</Tabs.Tab>
-          <Tabs.Tab value="roles">Roles</Tabs.Tab>
+          {users && <Tabs.Tab value="users">Users</Tabs.Tab>}
+          {roles && <Tabs.Tab value="roles">Roles</Tabs.Tab>}
         </Tabs.List>
         <Tabs.Panel value="users" pt="md"><div className="ag-stack"><UserTable /><CreateUser /></div></Tabs.Panel>
         <Tabs.Panel value="roles" pt="md"><Roles /></Tabs.Panel>

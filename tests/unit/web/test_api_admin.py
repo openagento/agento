@@ -20,6 +20,8 @@ from .conftest import panel_headers
 TOKEN = "session-token-value"
 ADMIN = accounts.User(id=1, username="root", role="admin", is_active=True)
 USER = accounts.User(id=2, username="alice", role="user", is_active=True)
+SUPPORT_USER = accounts.User(id=3, username="sam", role="support", is_active=True)
+ADMIN_ACTOR = (ADMIN.id, "admin")
 COOKIES = {"__Host-agento-session": TOKEN}
 
 
@@ -47,9 +49,39 @@ def test_admin_routes_exist():
     assert {r.method for r in ADMIN_ROUTES} == {"GET", "POST", "PATCH", "DELETE", "PUT"}
 
 
+def test_every_admin_route_names_known_leaves():
+    """Class guard: an /api/admin route with no `acl` would be open to every session."""
+    for route in ADMIN_ROUTES:
+        leaves = (route.acl,) if isinstance(route.acl, str) else route.acl
+        assert leaves and set(leaves) <= accounts.ADMIN_RESOURCES, route.pattern.pattern
+    # The check runs in the session branch of server._run only.
+    assert all(r.auth == "session" for r in api.ROUTES if r.acl is not None)
+
+
+def test_a_role_reaches_exactly_the_routes_of_its_leaves(web, monkeypatch):
+    _as(monkeypatch, SUPPORT_USER)
+    monkeypatch.setattr(accounts, "held_admin", lambda conn, role: ["admin.jobs"] if role == "support" else [])
+    monkeypatch.setattr(data, "get_jobs", lambda conn, status=None, strict=False: [])
+    assert _call(web, "GET", "/api/admin/jobs").status_code == 200
+    assert _call(web, "GET", "/api/admin/users").status_code == 403
+    monkeypatch.setattr(data, "get_workspaces", lambda conn: [])
+    monkeypatch.setattr(data, "get_agent_views", lambda conn: [])
+    assert _call(web, "GET", "/api/admin/scopes").status_code == 200  # any admin leaf opens it
+
+
+@pytest.mark.parametrize("leaf", ["admin.users", "admin.users.create", "admin.users.edit"])
+def test_a_users_leaf_reads_the_role_labels_but_not_a_role(web, monkeypatch, leaf):
+    _as(monkeypatch, SUPPORT_USER)
+    monkeypatch.setattr(accounts, "held_admin", lambda conn, role: [leaf] if role == "support" else [])
+    monkeypatch.setattr(accounts, "list_roles", lambda conn: [])
+    assert _call(web, "GET", "/api/admin/roles").status_code == 200
+    assert _call(web, "GET", "/api/admin/roles/support").status_code == 403
+
+
 @pytest.mark.parametrize("route", ADMIN_ROUTES, ids=lambda r: f"{r.method} {r.pattern.pattern}")
 def test_user_role_gets_403_on_every_admin_route(web, monkeypatch, route):
     _as(monkeypatch, USER)
+    monkeypatch.setattr(accounts, "held_admin", lambda conn, role: ["miniapps"])
     for name in ("create_user", "update_user", "set_role", "set_active", "set_password", "add_grant", "remove_grant",
                  "list_users", "list_grants", "list_roles", "role_scopes", "create_role", "rename_role", "delete_role",
                  "set_role_grants"):
@@ -71,10 +103,10 @@ def test_admin_user_management(web, monkeypatch):
     monkeypatch.setattr(accounts, "list_users", lambda conn: [ADMIN, created])
     r = _call(web, "POST", "/api/admin/users", {"username": "bob", "role": "user", "password": "correct horse battery"})
     assert r.status_code == 201 and r.json()["username"] == "bob"
-    assert create.call_args.kwargs["actor_id"] == ADMIN.id
+    assert create.call_args.kwargs["actor"] == ADMIN_ACTOR
     assert _call(web, "PATCH", "/api/admin/users/9", {"role": "admin", "password": "x" * 12}).status_code == 200
     assert update.call_count == 1  # every field in one service call: one transaction
-    assert update.call_args.kwargs == {"role": "admin", "active": None, "password": "x" * 12, "actor_id": ADMIN.id}
+    assert update.call_args.kwargs == {"role": "admin", "active": None, "password": "x" * 12, "actor": ADMIN_ACTOR}
     assert [u["username"] for u in _call(web, "GET", "/api/admin/users").json()] == ["root", "bob"]
 
 
@@ -103,7 +135,7 @@ def test_admin_roles_list_detail_and_writes(web, monkeypatch):
     monkeypatch.setattr(accounts, "create_role", create)
     r = _call(web, "POST", "/api/admin/roles", {"code": "support", "label": "Support"})
     assert r.status_code == 201 and r.json()["code"] == "support"
-    assert create.call_args.args[1:] == ("support", "Support") and create.call_args.kwargs == {"actor_id": ADMIN.id}
+    assert create.call_args.args[1:] == ("support", "Support") and create.call_args.kwargs == {"actor": ADMIN_ACTOR}
     rename = MagicMock()
     monkeypatch.setattr(accounts, "rename_role", rename)
     assert _call(web, "PATCH", "/api/admin/roles/support", {"label": "Support"}).json() == SUPPORT
@@ -212,7 +244,7 @@ def test_put_role_resources_replaces_one_scope(web, monkeypatch):
     assert r.status_code == 200 and r.json() == {"added": 2, "removed": 1}
     assert put.call_args.args[1:] == ("support",)
     assert put.call_args.kwargs == {"agent_view_id": 3, "tools": ["jira_add_comment"],
-                                    "operations": ["artifact.launch"], "actor_id": ADMIN.id}
+                                    "operations": ["artifact.launch"], "actor": ADMIN_ACTOR}
     monkeypatch.setattr(accounts, "set_role_grants",
                         MagicMock(side_effect=accounts.AccessError("no module declares tool 'x'")))
     r = _call(web, "PUT", "/api/admin/roles/support/resources",
@@ -220,6 +252,25 @@ def test_put_role_resources_replaces_one_scope(web, monkeypatch):
     assert r.status_code == 400 and r.json()["error"] == "no module declares tool 'x'"
     assert _call(web, "PUT", "/api/admin/roles/support/resources",
                  {"scope": "default", "tools": [], "operations": []}).status_code == 400
+
+
+def test_role_resources_global_scope_is_the_admin_panel(web, monkeypatch):
+    _as(monkeypatch, ADMIN)
+    _roles(monkeypatch, SUPPORT)
+    held = accounts.held_admin
+    monkeypatch.setattr(accounts, "held_admin", lambda conn, role: ["admin.jobs"] if role == "support" else held(conn, role))
+    tree = _call(web, "GET", "/api/admin/roles/support/resources?scope=global").json()
+    assert list(tree) == ["admin"]
+    assert [s["screen"] for s in tree["admin"]] == list(accounts.ADMIN_SCREENS)
+    leaves = {leaf["id"]: leaf for s in tree["admin"] for leaf in s["leaves"]}
+    assert set(leaves) == accounts.ADMIN_RESOURCES
+    assert [k for k, v in leaves.items() if v["granted"]] == ["admin.jobs"]
+    assert not any(v["builtin"] for v in leaves.values())
+    put = MagicMock(return_value={"added": 1, "removed": 0})
+    monkeypatch.setattr(accounts, "set_role_grants", put)
+    r = _call(web, "PUT", "/api/admin/roles/support/resources", {"scope": "global", "admin": ["admin.users"]})
+    assert r.status_code == 200
+    assert put.call_args.kwargs == {"tools": [], "operations": ["admin.users"], "actor": ADMIN_ACTOR}
 
 
 def test_the_raw_grants_api_is_gone(web, monkeypatch):
@@ -235,7 +286,7 @@ def test_admin_config_uses_the_web_form(web, monkeypatch):
     r = _call(web, "PUT", "/api/admin/config", {"path": "web/launch/max_concurrent", "value": "3",
                                                 "scope": "workspace", "scope_id": 2})
     assert r.status_code == 200 and r.json() == {"path": "web/launch/max_concurrent", "reset": ["agent_view/provider"]}
-    assert save.call_args.kwargs == {"scope": "workspace", "scope_id": 2, "allow_secret": False, "actor_id": ADMIN.id}
+    assert save.call_args.kwargs == {"scope": "workspace", "scope_id": 2, "allow_secret": False, "actor": ADMIN_ACTOR}
 
 
 def test_admin_config_refusal_text_reaches_the_admin(web, monkeypatch):

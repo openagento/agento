@@ -23,6 +23,20 @@ const at = (path: string) => renderAt(path, (
 const row = (label: string) => screen.getAllByText(label).map((e) => e.closest("tr")).find(Boolean) as HTMLElement;
 
 describe("Roles", () => {
+  it("sends a role that holds only Roles from /users to the Roles tab", async () => {
+    await stubApi(base, ["admin.roles"]);
+    at("/users");
+    expect(await screen.findByText("2 places")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Users" })).toBeNull();
+  });
+
+  it("shows each user's role label to a role that holds only Users", async () => {
+    await stubApi({ ...base, "/api/admin/users": [{ id: 2, username: "bob", role: "ops", is_active: true }] }, ["admin.users"]);
+    at("/users");
+    expect(await screen.findByDisplayValue("Ops")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Roles" })).toBeNull();
+  });
+
   it("lists roles on /users/roles with user count and access", async () => {
     await stubApi(base);
     at("/users/roles");

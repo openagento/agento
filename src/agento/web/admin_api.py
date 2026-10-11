@@ -1,6 +1,6 @@
-"""Admin panel API: what the admin TUI shows, and the writes ``web`` can do without a key.
+"""Admin panel API: what the admin TUI shows, and the admin writes of the panel.
 
-Every handler checks its operation first. Every response is built from an explicit
+Each route names its admin panel leaf (``acl``); server.py checks it before the handler. Every response is built from an explicit
 allow-list of fields: a row from ``framework.admin.data`` is never sent as it is.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from agento.framework.access import accounts
 from agento.framework.admin import data
 
 from . import api
-from .api import Request, Response, Route, _access_error, _body, _forbidden_unless, _iso, _positive_int, _r, error
+from .api import Request, Response, Route, _access_error, _actor, _body, _iso, _positive_int, _r, error
 
 _SCOPES = ("default", "workspace", "agent_view")
 _SCOPE_TABLES = {"workspace": "workspace", "agent_view": "agent_view"}
@@ -49,8 +49,6 @@ def config_scope(req: Request, src: dict) -> tuple[str, int] | Response:
 
 
 def scopes(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "admin.read"):
-        return denied
     return Response(200, {
         "workspaces": [{"id": w["id"], "code": w["code"], "label": w["label"], "is_active": bool(w["is_active"])}
                        for w in data.get_workspaces(req.conn)],
@@ -68,8 +66,6 @@ def _credential_head(t: dict) -> dict:
 
 
 def dashboard(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "admin.read"):
-        return denied
     d = data.get_dashboard_data(req.conn)
     return Response(200, {
         "version": d.version, "python_version": d.python_version, "db_connected": d.db_connected,
@@ -103,8 +99,6 @@ def _cut(value):
 
 
 def jobs(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "admin.read"):
-        return denied
     status = req.query.get("status")
     if status is not None and status not in JOB_STATUSES:
         return error(400, f"status must be one of {', '.join(JOB_STATUSES)}")
@@ -112,8 +106,6 @@ def jobs(req: Request) -> Response:
 
 
 def job_detail(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "admin.read"):
-        return denied
     row = data.get_job_detail(req.conn, int(req.params["id"]))
     if row is None:
         return error(404, "not found")
@@ -122,15 +114,11 @@ def job_detail(req: Request) -> Response:
 
 
 def agents(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "admin.read"):
-        return denied
     keys = ("id", "code", "label", "workspace_code", "ingress_count", "build_status")
     return Response(200, [{k: a[k] for k in keys} for a in data.get_agents_summary(req.conn)])
 
 
 def credentials(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "admin.read"):
-        return denied
     usage = ("token_limit", "tokens_used", "call_count", "pct_free")
     # `limits` is what credential:limits read from the provider: windows and a balance, no secret.
     return Response(200, [{**_credential_head(t), **{k: t[k] for k in usage}, "type": t.get("type"),
@@ -146,8 +134,6 @@ def _credential_exists(conn, credential_id: int) -> bool:
 
 
 def _credential_write(req: Request, write) -> Response:
-    if denied := _forbidden_unless(req, "credentials.manage"):
-        return denied
     credential_id = int(req.params["id"])
     if not _credential_exists(req.conn, credential_id):
         return error(404, "not found")
@@ -187,8 +173,6 @@ _LOGIN_CODE = re.compile(r"[!-~]{1,300}")
 def start_credential_login(req: Request) -> Response:
     from agento.framework.agent_manager import credential_login
 
-    if denied := _forbidden_unless(req, "credentials.manage"):
-        return denied
     result = credential_login.request_login(req.conn, int(req.params["id"]), req.session.user.id,
                                             _interactive_oauth_scopes())
     if isinstance(result, str):
@@ -199,8 +183,6 @@ def start_credential_login(req: Request) -> Response:
 def credential_login_state(req: Request) -> Response:
     from agento.framework.agent_manager import credential_login
 
-    if denied := _forbidden_unless(req, "credentials.manage"):
-        return denied
     row = credential_login.get_login(req.conn, int(req.params["id"]))
     if row is None:
         return error(404, "not found")
@@ -212,8 +194,6 @@ def credential_login_state(req: Request) -> Response:
 def credential_login_code(req: Request) -> Response:
     from agento.framework.agent_manager import credential_login
 
-    if denied := _forbidden_unless(req, "credentials.manage"):
-        return denied
     code = _body(req).get("code")
     if not isinstance(code, str) or not _LOGIN_CODE.fullmatch(code):
         return error(400, "the code must be 1 to 300 printable characters with no space")
@@ -228,19 +208,13 @@ def credential_login_code(req: Request) -> Response:
 def cancel_credential_login(req: Request) -> Response:
     from agento.framework.agent_manager import credential_login
 
-    if denied := _forbidden_unless(req, "credentials.manage"):
-        return denied
     if not credential_login.cancel_login(req.conn, int(req.params["id"])):
         return error(404, "not found")
     return Response(204)
 
 
-def _scoped(req: Request, operation: str) -> tuple[str, int] | Response:
-    return _forbidden_unless(req, operation) or config_scope(req, req.query)
-
-
 def tools(req: Request) -> Response:
-    scope = _scoped(req, "admin.read")
+    scope = config_scope(req, req.query)
     if isinstance(scope, Response):
         return scope
     return Response(200, [{"toolset": toolset, "tools": [asdict(t) for t in items]}
@@ -248,7 +222,7 @@ def tools(req: Request) -> Response:
 
 
 def skills(req: Request) -> Response:
-    scope = _scoped(req, "admin.read")
+    scope = config_scope(req, req.query)
     if isinstance(scope, Response):
         return scope
     keys = ("name", "path", "enabled", "explicit_here")  # a skill has no `requires` master
@@ -256,8 +230,6 @@ def skills(req: Request) -> Response:
 
 
 def config_modules(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "admin.read"):
-        return denied
     return Response(200, [{"name": m.name, "tools": sorted(m.tools)} for m in data.get_module_schemas()])
 
 
@@ -272,7 +244,7 @@ def _config_field(f: data.ResolvedField) -> dict:
 
 
 def get_config(req: Request) -> Response:
-    scope = _scoped(req, "admin.read")
+    scope = config_scope(req, req.query)
     if isinstance(scope, Response):
         return scope
     module = req.query.get("module")
@@ -284,8 +256,6 @@ def get_config(req: Request) -> Response:
 def delete_config(req: Request) -> Response:
     from agento.framework import config_write
 
-    if denied := _forbidden_unless(req, "config.write"):
-        return denied
     body = _body(req)
     scope = config_scope(req, body)
     if isinstance(scope, Response):
@@ -330,8 +300,6 @@ def _harness_reloader():
 def run_tester(req: Request) -> Response:
     from agento.framework import config_test
 
-    if denied := _forbidden_unless(req, "config.write"):
-        return denied
     body = _body(req)
     scope = config_scope(req, body)
     if isinstance(scope, Response):
@@ -358,8 +326,6 @@ def run_tester(req: Request) -> Response:
 def set_config(req: Request) -> Response:
     from agento.framework.config_write import ConfigWriteError, save_config
 
-    if denied := _forbidden_unless(req, "config.write"):
-        return denied
     body = _body(req)
     scope = config_scope(req, body)
     if isinstance(scope, Response):
@@ -368,7 +334,7 @@ def set_config(req: Request) -> Response:
         # No secret value from the browser (D-PANEL-ADMIN-1): allow_secret=False writes only a provably plain field.
         _encrypted, reset = save_config(
             req.conn, body.get("path"), body.get("value"), scope=scope[0], scope_id=scope[1],
-            allow_secret=False, actor_id=req.session.user.id,
+            allow_secret=False, actor=_actor(req),
         )
     except ConfigWriteError as exc:
         return error(403, "forbidden") if str(exc) == "not allowed" else error(400, str(exc))
@@ -381,12 +347,10 @@ def _role(conn, code: str) -> dict | None:
 
 
 def roles(req: Request) -> Response:
-    return _forbidden_unless(req, "grants.manage") or Response(200, accounts.list_roles(req.conn))
+    return Response(200, accounts.list_roles(req.conn))
 
 
 def role_detail(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
     code = req.params["code"]
     if not (role := _role(req.conn, code)):
         return error(404, "not found")
@@ -394,66 +358,66 @@ def role_detail(req: Request) -> Response:
 
 
 def create_role(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
     body = _body(req)
     try:
-        role = accounts.create_role(req.conn, body.get("code"), body.get("label"), actor_id=req.session.user.id)
+        role = accounts.create_role(req.conn, body.get("code"), body.get("label"), actor=_actor(req))
     except accounts.AccessError as exc:
         return _access_error(exc)
     return Response(201, role)
 
 
 def update_role(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
     code, body = req.params["code"], _body(req)
     if "label" not in body:
         return error(400, "nothing to change")
     try:
-        accounts.rename_role(req.conn, code, body["label"], actor_id=req.session.user.id)
+        accounts.rename_role(req.conn, code, body["label"], actor=_actor(req))
     except accounts.AccessError as exc:
         return _access_error(exc)
     return Response(200, _role(req.conn, code))
 
 
 def delete_role(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
     try:
-        accounts.delete_role(req.conn, req.params["code"], actor_id=req.session.user.id)
+        accounts.delete_role(req.conn, req.params["code"], actor=_actor(req))
     except accounts.AccessError as exc:
         return _access_error(exc)
     return Response(204)
 
 
 def _role_scope(req: Request, src: dict) -> tuple[str, int] | Response:
-    """A known role and one grant scope (a grant has no default scope)."""
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
+    """A known role and one grant scope: ``global`` (the admin panel), a workspace or a view."""
     if not _role(req.conn, req.params["code"]):
         return error(404, "not found")
+    if src.get("scope") == "global":
+        return "global", 0
     scope = config_scope(req, src)
     if not isinstance(scope, Response) and scope[0] == "default":
-        return error(400, "scope must be one of workspace, agent_view")
+        return error(400, "scope must be one of global, workspace, agent_view")
     return scope
 
 
 def role_resources(req: Request) -> Response:
     """The role page tree: each resource ``granted`` at exactly this scope, ``inherited`` from the
-    view's workspace (a workspace grant reaches every view in it), or ``builtin`` (admin)."""
+    view's workspace (a workspace grant reaches every view in it), or ``builtin`` (admin). The
+    global scope is the admin panel leaves only."""
     scope = _role_scope(req, req.query)
     if isinstance(scope, Response):
         return scope
     code, (kind, scope_id) = req.params["code"], scope
+    if kind == "global":
+        held = set(accounts.held_admin(req.conn, code))
+        return Response(200, {"admin": [
+            {"screen": screen, "leaves": [{"id": leaf, "title": title, "granted": leaf in held,
+                                           "builtin": code == "admin"} for leaf, title in leaves.items()]}
+            for screen, leaves in accounts.ADMIN_SCREENS.items()]})
     view_id, workspace_id = (scope_id, None) if kind == "agent_view" else (None, scope_id)
     with req.conn.cursor() as cur:
         if view_id is not None:
             cur.execute("SELECT workspace_id FROM agent_view WHERE id = %s", (view_id,))
             workspace_id = cur.fetchone()["workspace_id"]
         cur.execute(
-            "SELECT grant_kind, name, agent_view_id FROM role_grant WHERE role = %s AND ("
-            "(agent_view_id = %s AND workspace_id IS NULL) OR (agent_view_id IS NULL AND workspace_id = %s))",
+            f"SELECT grant_kind, name, agent_view_id FROM role_grant WHERE role = %s AND {accounts._SCOPE_MATCH}",
             (code, view_id, workspace_id),
         )
         rows = cur.fetchall()
@@ -480,44 +444,47 @@ def set_role_resources(req: Request) -> Response:
     if isinstance(scope, Response):
         return scope
     kind, scope_id = scope
+    names = {"tools": [], "operations": body.get("admin")} if kind == "global" else \
+        {f"{kind}_id": scope_id, "tools": body.get("tools"), "operations": body.get("operations")}
     try:
-        result = accounts.set_role_grants(
-            req.conn, req.params["code"], **{f"{kind}_id": scope_id},
-            tools=body.get("tools"), operations=body.get("operations"), actor_id=req.session.user.id,
-        )
+        result = accounts.set_role_grants(req.conn, req.params["code"], **names, actor=_actor(req))
     except accounts.AccessError as exc:
         return _access_error(exc)
     return Response(200, result)
 
 
 _ROLE = r"/api/admin/roles/(?P<code>[a-z][a-z0-9_]{1,15})"
+_CRED = r"/api/admin/credentials/(?P<id>[0-9]{1,10})"
+_LOGIN = r"/api/admin/credential-logins/(?P<id>[0-9]{1,19})"
+_CRED_EDIT = "admin.credentials.edit"
 
 ROUTES: list[Route] = [
-    _r("GET", "/api/admin/scopes", scopes),
-    _r("GET", "/api/admin/dashboard", dashboard),
-    _r("GET", "/api/admin/jobs", jobs),
-    _r("GET", r"/api/admin/jobs/(?P<id>[0-9]{1,19})", job_detail),
-    _r("GET", "/api/admin/agents", agents),
-    _r("GET", "/api/admin/credentials", credentials),
-    _r("POST", r"/api/admin/credentials/(?P<id>[0-9]{1,10})/clear-error", clear_credential_error),
-    _r("POST", r"/api/admin/credentials/(?P<id>[0-9]{1,10})/disable", disable_credential),
-    _r("POST", r"/api/admin/credentials/(?P<id>[0-9]{1,10})/login", start_credential_login),
-    _r("GET", r"/api/admin/credential-logins/(?P<id>[0-9]{1,19})", credential_login_state),
-    _r("POST", r"/api/admin/credential-logins/(?P<id>[0-9]{1,19})/code", credential_login_code, json_body=True),
-    _r("POST", r"/api/admin/credential-logins/(?P<id>[0-9]{1,19})/cancel", cancel_credential_login),
-    _r("GET", "/api/admin/tools", tools),
-    _r("GET", "/api/admin/skills", skills),
-    _r("GET", "/api/admin/config/modules", config_modules),
-    _r("GET", "/api/admin/config", get_config),
-    _r("PUT", "/api/admin/config", set_config, json_body=True),
-    _r("DELETE", "/api/admin/config", delete_config, json_body=True),
-    _r("POST", "/api/admin/config/test", run_tester, json_body=True),
-    _r("GET", "/api/admin/roles", roles),
-    _r("POST", "/api/admin/roles", create_role, json_body=True),
-    _r("GET", _ROLE, role_detail),
-    _r("PATCH", _ROLE, update_role, json_body=True),
-    _r("DELETE", _ROLE, delete_role),
-    _r("GET", _ROLE + "/resources", role_resources),
-    _r("PUT", _ROLE + "/resources", set_role_resources, json_body=True),
+    _r("GET", "/api/admin/scopes", scopes, acl=tuple(sorted(accounts.ADMIN_RESOURCES - {"miniapps"}))),
+    _r("GET", "/api/admin/dashboard", dashboard, acl="admin.dashboard"),
+    _r("GET", "/api/admin/jobs", jobs, acl="admin.jobs"),
+    _r("GET", r"/api/admin/jobs/(?P<id>[0-9]{1,19})", job_detail, acl="admin.jobs"),
+    _r("GET", "/api/admin/agents", agents, acl="admin.agents"),
+    _r("GET", "/api/admin/credentials", credentials, acl="admin.credentials"),
+    _r("POST", _CRED + "/clear-error", clear_credential_error, acl=_CRED_EDIT),
+    _r("POST", _CRED + "/disable", disable_credential, acl=_CRED_EDIT),
+    _r("POST", _CRED + "/login", start_credential_login, acl=_CRED_EDIT),
+    _r("GET", _LOGIN, credential_login_state, acl=_CRED_EDIT),
+    _r("POST", _LOGIN + "/code", credential_login_code, json_body=True, acl=_CRED_EDIT),
+    _r("POST", _LOGIN + "/cancel", cancel_credential_login, acl=_CRED_EDIT),
+    _r("GET", "/api/admin/tools", tools, acl="admin.tools"),
+    _r("GET", "/api/admin/skills", skills, acl="admin.skills"),
+    _r("GET", "/api/admin/config/modules", config_modules, acl="admin.config"),
+    _r("GET", "/api/admin/config", get_config, acl="admin.config"),
+    _r("PUT", "/api/admin/config", set_config, json_body=True, acl="admin.config.edit"),
+    _r("DELETE", "/api/admin/config", delete_config, json_body=True, acl="admin.config.edit"),
+    _r("POST", "/api/admin/config/test", run_tester, json_body=True, acl="admin.config.edit"),
+    # The Users tab shows and picks a role by its label from this list, so every Users leaf reads it.
+    _r("GET", "/api/admin/roles", roles, acl=("admin.roles", "admin.users", "admin.users.create", "admin.users.edit")),
+    _r("POST", "/api/admin/roles", create_role, json_body=True, acl="admin.roles.create"),
+    _r("GET", _ROLE, role_detail, acl="admin.roles"),
+    _r("PATCH", _ROLE, update_role, json_body=True, acl="admin.roles.edit"),
+    _r("DELETE", _ROLE, delete_role, acl="admin.roles.delete"),
+    _r("GET", _ROLE + "/resources", role_resources, acl="admin.roles"),
+    _r("PUT", _ROLE + "/resources", set_role_resources, json_body=True, acl="admin.roles.edit"),
 ]
 api.ROUTES.extend(ROUTES)

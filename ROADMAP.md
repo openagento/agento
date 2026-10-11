@@ -120,10 +120,9 @@ E2 shipped the panel API: users, sessions, `admin`/`user` roles with per-scope g
 
 - an admin-TUI users screen (the panel frontend shipped in E8, below);
 - per-user grants (visibility is per role), and `operation` grants beyond `artifact.launch`;
-- **custom admin-like roles**: roles are rows since 2026-10-06, but the admin operations
-  (`users.manage`, `grants.manage`, `config.write`, `admin.read`, `credentials.manage`) stay bound
-  to the code `admin` and are not grantable, so a new role is `user`-like (DECISIONS.md 2026-10-06
-  Roles are rows);
+- ~~custom admin-like roles~~: done 2026-10-11 — admin screens and their actions are grantable
+  leaves (DECISIONS.md D-ADMIN-ACL-1). Follow-up: filter the Jobs and Agents lists per view for a
+  role that is not admin (today a leaf shows every view);
 - **renaming a role code**: only the label can change; the code is the key `user.role`,
   `role_grant.role` and the toolbox hold;
 - a DB-backed login throttle (the current one is per process);

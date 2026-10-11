@@ -4,6 +4,39 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-11 — Admin panel screens are role resources (D-ADMIN-ACL-1)
+
+Plan: `~/.claude/plans/admin-acl-leaves-175585.md`. Owner approval, 2026-10-11: "We should restrict
+what users can see in admin panel in this new tree section "Admin" … each menu sidebar … Miniapps …
+For entities like Users, Roles and others where we have CRUD, we should add each CRUD resource to the
+tree as leaves", with the answers "1. ok [leaves are global] 2. ok [a user grants only leaves they
+hold; only admin assigns admin] 3. dont build any safety guards not to delete admin user. we always
+have cli and we can create users that way. 4. ok".
+
+- **One leaf per admin screen, one per CRUD action** (`accounts.ADMIN_SCREENS`, 17 leaves, Miniapps
+  included). A leaf is a `role_grant` row with `grant_kind = 'operation'` and **no scope**: admin
+  screens list every view, so a leaf cannot be narrower than global. No new kind and no schema
+  change: the scoped readers (`_SCOPE_MATCH`, the toolbox `GRANTS_SQL`) already treat a row with no
+  scope as no grant. `_check_grant` keeps the two apart: a leaf takes no scope, any other name needs
+  exactly one. Migration `053_admin_leaves` grants `miniapps` to every role that is not admin, so no
+  one loses the screen.
+- **One check, on the route.** Each panel route names its leaf (`Route.acl`); `server._run` checks
+  `accounts.may` before the handler. This replaces the 22 per-handler `_forbidden_unless` guards and
+  the five coarse operations (`users.manage`, `grants.manage`, `config.write`, `admin.read`,
+  `credentials.manage`). A test fails when an `/api/admin` route names no known leaf.
+- **`admin` holds every leaf built in** (Magento's "All"); another role holds the leaves granted to it.
+- **The writers keep their in-transaction actor check (RULES.md SEC-9).** The actor is
+  `(id, role)`, the pair the route check authorized; the writer refuses when the locked row is
+  inactive or its role changed. Inside the same transaction: only an `admin` actor creates, edits
+  (role, active, password) or assigns an admin account (SEC-7); and an actor that is not admin adds
+  or removes only the leaves its own role holds, read under the `agento.role_grant` lock. Accepted
+  residual window: a leaf taken from the actor's role while its request is past the route check
+  applies from the next request.
+- **No last-admin guard** (owner, decision 3): the CLI (`user:create`, `user:set-role`) is the way
+  back.
+- Amends 2026-10-06 Roles are rows (that entry has the reversal bullet) and closes the ROADMAP.md
+  item "custom admin-like roles".
+
 ## 2026-10-10 — The consumer's transitions run at READ COMMITTED
 
 `Consumer._db()` borrows with `isolation="READ COMMITTED"`, and `db.pooled` holds that level as a
@@ -535,6 +568,8 @@ see beautiful tree of resources with checkboxes. You can, again inspire by Magen
   model, left as a ROADMAP.md follow-up. The checks that compare the code `"admin"` (accounts,
   launches, the conversation service) keep working because `admin` is a seeded row with the same
   code.
+  - *Reversed 2026-10-11 (D-ADMIN-ACL-1):* the five admin operations are gone; admin screens and
+    their actions are grantable global leaves, and `admin` holds them all built in.
 - **The code is never renamed; the label is.** The code is the key `user.role` and `role_grant.role`
   hold and the toolbox reads (`GRANTS_SQL`), so the toolbox needed no change.
 - **One write per scope: `set_role_grants` replaces the role's rows at exactly one scope.** The

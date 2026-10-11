@@ -120,8 +120,10 @@ npm test            # build, lint, then every unit test and every story in headl
 
 ## Admin screens
 
-The admin TUI's screens are in the panel under the **Administration** group, for an admin only:
+The admin TUI's screens are in the panel under the **Administration** group:
 Dashboard (`/`), Jobs, Agents, Credentials, Tools, Skills and Config (`/admin/<name>`), plus Users.
+A screen shows only when the session's `user.acl` holds its leaf (`useCan("admin.jobs")`); `admin`
+holds every leaf ([panel.md](../architecture/panel.md#roles-and-grants)).
 Each is a lazy route in `panel/src/routes/admin/`, so the entry chunk stays inside its budget. They
 call `/api/admin/*` ([panel.md](../architecture/panel.md#admin-screens)).
 
@@ -216,7 +218,7 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 | CSRF in memory only, A → logout → B leaves nothing, a stale response is dropped | `packages/api/src/api.test.ts` |
 | Stream reconnect, refused stream, `cursor_expired`, backoff, `?after=` | `packages/api/src/hub.test.ts` |
 | Popup blocked, API refusal closes the window, bridge before POST, code in no URL or cache | `panel/src/launch.test.ts` |
-| Roles list, Delete kept for a built-in or used role, Add role; the role tree saves one PUT, locked leaves are never sent, a search keeps hidden checks, a scope switch asks before it discards | `panel/src/routes/Roles.test.tsx`, `panel/src/routes/RoleEdit.test.tsx`, `panel/src/routes/roleTree.test.ts` |
+| Roles list, Delete kept for a built-in or used role, Add role; the role tree saves one PUT, locked leaves are never sent, a search keeps hidden checks, a scope switch asks before it discards, the global scope shows the Admin leaves | `panel/src/routes/Roles.test.tsx`, `panel/src/routes/RoleEdit.test.tsx`, `panel/src/routes/roleTree.test.ts` |
 | Probe 404 / 2xx / network error → nav and NotAvailable | `panel/src/registry.test.tsx` |
 | The example miniapp decodes the toolbox action envelope | `packages/miniapp-kit/kit.test.ts` |
 | Dialog focus trap and focus return | `packages/ui/src/components/Forms.stories.tsx` (`DialogFocus`) |
