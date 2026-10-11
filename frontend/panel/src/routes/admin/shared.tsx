@@ -87,7 +87,7 @@ const JOB_TONE: Record<string, BadgeTone> = { TODO: "pending", RUNNING: "running
 export const jobTone = (status: string): BadgeTone => JOB_TONE[status] ?? "neutral";
 
 /** `credential.error_msg` never reaches the browser (SEC-6): the panel names where to read it. */
-export const CREDENTIAL_ERROR_HINT = "See the message with bin/agento credential:list or the admin TUI.";
+export const CREDENTIAL_ERROR_HINT = "See the message with bin/agento credential:list.";
 
 /** A badge in a table cell, kept whole: auto layout would cut it to "S…". The badge itself stays
  * equal to its kit twin (UI-2); the cell keeps it whole. */

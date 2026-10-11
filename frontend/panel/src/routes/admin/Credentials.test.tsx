@@ -54,7 +54,7 @@ describe("Credentials", () => {
       // A server that leaked error_msg would still not get it rendered.
       { ...cred(3, { status: "error", error_source: "operator" }), error_msg: "sk-secret-leak" }] });
     renderAt("/admin/credentials", <Credentials />);
-    expect(await screen.findByText(/bin\/agento credential:list or the admin TUI/)).toBeInTheDocument();
+    expect(await screen.findByText(/bin\/agento credential:list\./)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Usage" }));
     expect(await within(await screen.findByRole("dialog")).findByText(/Set by an operator/)).toBeInTheDocument();
     expect(screen.queryByText(/sk-secret-leak/)).toBeNull();

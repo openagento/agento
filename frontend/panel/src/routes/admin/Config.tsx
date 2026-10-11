@@ -22,7 +22,7 @@ interface TestResult { status: "ok" | "fail" | "error" | "not_configured"; code?
 
 const SOURCE_COLOR: Record<string, string> = { env: "blue", db: "green", "db:inherited": "teal", json: "gray", none: "gray" };
 const TEST_COLOR: Record<TestResult["status"], string> = { ok: "green", fail: "red", error: "orange", not_configured: "gray" };
-export const SECRET_HINT = "Set secrets with bin/agento config:set or the admin TUI.";
+export const SECRET_HINT = "Set secrets with bin/agento config:set.";
 
 /** No module declares a title (module.json has `name` only): "agent_view" → "Agent View". */
 const moduleTitle = (name: string) => name.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
@@ -35,7 +35,9 @@ const valueCell = (f: Field) => f.secret
 function FieldInput({ field, value, onChange, disabled }: {
   field: Field; value: string; onChange: (v: string) => void; disabled: boolean;
 }) {
-  const common = { label: "Value", disabled, maxLength: field.max_length ?? undefined };
+  // A stored secret shows a mask, never its value: the placeholder is not a value, so Save cannot write it.
+  const common = { label: "Value", disabled, maxLength: field.max_length ?? undefined,
+    placeholder: field.secret && field.is_set ? "****" : undefined };
   const options = field.options ?? [];
   switch (field.type) {
     case "boolean":

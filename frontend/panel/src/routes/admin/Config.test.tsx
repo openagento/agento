@@ -52,11 +52,21 @@ describe("Config", () => {
     expect(screen.getByText("Set")).toBeInTheDocument();
     editOf("Token");
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText(/bin\/agento config:set or the admin TUI/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/bin\/agento config:set\./)).toBeInTheDocument();
     expect(within(dialog).getByRole("textbox", { name: "Value" })).toBeDisabled();
     expect(within(dialog).getByRole("textbox", { name: "Value" })).toHaveValue("");
+    expect(within(dialog).getByRole("textbox", { name: "Value" })).toHaveAttribute("placeholder", "****");
     expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled();
     expect(screen.queryByDisplayValue(/hunter2/)).toBeNull();
+  });
+
+  it("a secret with no value shows no mask", async () => {
+    await stubApi({ ...base, "/api/admin/config": [field({ path: "jira/token", label: "Token", type: "obscure", secret: true, is_set: false, value: null })] });
+    renderAt("/admin/config", <Config />);
+    expect(await screen.findByText("Not set")).toBeInTheDocument();
+    editOf("Token");
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("textbox", { name: "Value" })).not.toHaveAttribute("placeholder");
   });
 
   it("Save PUTs the value at the scope and names the reset dependents", async () => {
