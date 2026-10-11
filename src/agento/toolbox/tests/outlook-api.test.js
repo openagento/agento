@@ -69,6 +69,30 @@ describe('parseDmarcVerdict (first Authentication-Results header wins — anti-s
     expect(parseDmarcVerdict([{ name: 'Authentication-Results',
       value: 'x-dmarc=pass; dmarc=fail' }])).toBe('fail');
   });
+
+  it('ANTI-SPOOF: a "dmarc=pass" inside a quoted string or a comment does NOT forge a pass', () => {
+    const verdict = (value) => parseDmarcVerdict([{ name: 'Authentication-Results', value }]);
+    expect(verdict('spf=fail smtp.mailfrom="a dmarc=pass"@evil.com; dmarc=fail')).toBe('fail');
+    expect(verdict('spf=fail smtp.mailfrom="a;dmarc=pass"@evil.com; dmarc=fail')).toBe('fail');
+    expect(verdict('spf=fail (helo x dmarc=pass) ; dmarc=fail')).toBe('fail');
+    expect(verdict('spf=fail (a (b) dmarc=pass) ; dmarc=fail')).toBe('fail');
+    // Unclosed: everything after the opener is dropped, so no verdict at all.
+    expect(verdict('spf=fail smtp.mailfrom="a dmarc=pass; dmarc=fail')).toBeNull();
+    expect(verdict('spf=fail (helo dmarc=pass; dmarc=fail')).toBeNull();
+  });
+
+  it('keeps a real verdict that carries a comment', () => {
+    expect(parseDmarcVerdict([{ name: 'Authentication-Results',
+      value: 'spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=corp.com; dmarc=pass action=none header.from=corp.com' }],
+    'bob@corp.com')).toBe('pass');
+  });
+
+  it('ANTI-SPOOF: a pass for a different header.from domain than the From address is a fail', () => {
+    const headers = [{ name: 'Authentication-Results', value: 'dmarc=pass action=none header.from=evil.com' }];
+    expect(parseDmarcVerdict(headers, 'boss@corp.com')).toBe('fail');
+    expect(parseDmarcVerdict(headers, 'x@EVIL.com')).toBe('pass');
+    expect(parseDmarcVerdict(headers)).toBe('pass');
+  });
 });
 
 describe('isAutoReply (RFC 3834 Auto-Submitted + common vendor headers)', () => {
@@ -599,6 +623,12 @@ describe('inbound gate inside the delta handler', () => {
 
   it('drops a DMARC-failing message from an allow-listed sender', async () => {
     const res = await runDelta([msg('m1', 'bob@corp.com', 'dmarc=fail')], ['*@corp.com']);
+    expect(res.body.messages).toEqual([]);
+  });
+
+  it('ANTI-SPOOF: drops an allow-listed From whose dmarc=pass is for another header.from domain', async () => {
+    const res = await runDelta(
+      [msg('m1', 'boss@corp.com', 'dmarc=pass action=none header.from=evil.com')], ['*@corp.com']);
     expect(res.body.messages).toEqual([]);
   });
 
