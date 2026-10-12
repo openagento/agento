@@ -107,7 +107,7 @@ service cannot create an artifact at all.
 > that agent_view put bytes on the artifacts port.
 
 > **Delete is the operator's, and only the operator's.** A panel user with the
-> `admin.artifacts.delete` leaf deletes an artifact — see [Panel administration](#panel-administration).
+> `versioned_artifacts.delete` leaf deletes an artifact — see [Panel administration](#panel-administration).
 > There is no tool equivalent: ownership scopes rather than authorizes, so a self-asserted identity must not
 > be able to unmake an immutable history. For an agent the creation cap is therefore still a
 > one-way ratchet, and a human is what resets it.
@@ -368,15 +368,16 @@ unknown artifact or version, `400` for a malformed id, `500` for a store failure
 ## Panel administration
 
 `web` serves the artifact admin API under `/api/versioned_artifacts/`. It reads the store
-through the toolbox `/admin` endpoint above, as `service:web:user:<id>`. Each route checks
-its admin leaf (a `di.json` route cannot name one yet, so the handler checks it).
+through the toolbox `/admin` endpoint above, as `service:web:user:<id>`. Each route names
+its leaf in `di.json` `acl`, and `web` checks it before the handler (`403`). The module's
+`acl.json` declares the leaves (screen "Artifacts").
 
 | Route | Leaf | Does |
 |---|---|---|
-| `GET /api/versioned_artifacts/artifacts` | `admin.artifacts` | Every artifact in the store |
-| `GET /api/versioned_artifacts/artifacts/<code>/versions` | `admin.artifacts` | The versions, newest first, each with its `ok` audit rows (`events`) |
-| `POST /api/versioned_artifacts/artifacts/<code>/publish` `{version_id, expected_current_version}` | `admin.artifacts.publish` | Make a version current (also a rollback). `409` carries `current_version` |
-| `DELETE /api/versioned_artifacts/artifacts/<code>` | `admin.artifacts.delete` | Delete the artifact. `204`, also for a code that is already gone |
+| `GET /api/versioned_artifacts/artifacts` | `versioned_artifacts` | Every artifact in the store |
+| `GET /api/versioned_artifacts/artifacts/<code>/versions` | `versioned_artifacts` | The versions, newest first, each with its `ok` audit rows (`events`) |
+| `POST /api/versioned_artifacts/artifacts/<code>/publish` `{version_id, expected_current_version}` | `versioned_artifacts.publish` | Make a version current (also a rollback). `409` carries `current_version` |
+| `DELETE /api/versioned_artifacts/artifacts/<code>` | `versioned_artifacts.delete` | Delete the artifact. `204`, also for a code that is already gone |
 
 **Delete** runs in this order, under the retention lock `va_ret:<sha1(code)>` that launch and
 approve also take:

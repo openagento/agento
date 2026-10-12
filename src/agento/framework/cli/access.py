@@ -10,7 +10,7 @@ import getpass
 import sys
 from typing import NoReturn
 
-from ..access import accounts
+from ..access import accounts, acl
 from ..access.accounts import AccessError
 from ..db import get_connection_or_exit
 from .runtime import _load_framework_config
@@ -166,9 +166,13 @@ class GrantAddCommand(_Command):
         parser.add_argument("--role", required=True, help="Role code (role:list)")
         what = parser.add_mutually_exclusive_group(required=True)
         what.add_argument("--tool")
-        operations = accounts.grantable_operations() | \
-            {leaf: f"{screen}: {title}" for screen, leaves in accounts.ADMIN_SCREENS.items()
-             for leaf, title in leaves.items()}
+        try:
+            operations = accounts.grantable_operations() | \
+                {leaf: f"{screen}: {title}" for screen, leaves in acl.registry().screens for leaf, title in leaves}
+        except acl.AclError:
+            # Every command builds this parser, so a bad acl.json must not stop module:validate,
+            # which reports it. add_grant still refuses: it reads the registry again.
+            operations = {}
         what.add_argument("--operation", choices=sorted(operations),
                           help="; ".join(f"{k}: {v}" for k, v in sorted(operations.items())))
         where = parser.add_mutually_exclusive_group()

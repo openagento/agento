@@ -25,7 +25,7 @@ from fastapi import FastAPI
 from starlette.datastructures import Headers
 from starlette.routing import BaseRoute, Match
 
-from agento.framework.access import accounts, sessions
+from agento.framework.access import accounts, acl, sessions
 
 from . import api, rate_limit, security
 from .streaming import StreamingResponse
@@ -74,6 +74,13 @@ def _unavailable(exc: Exception) -> api.Response:
     # Fail closed: a limiter that cannot count is not a limiter (SEC-12).
     sys.stderr.write(f"rate limiter unavailable: {type(exc).__name__}\n")
     return _UNAVAILABLE
+
+
+def acl_allows(conn, user: accounts.User, route_acl) -> bool:
+    """The route check for a signed-in user: "self" needs only the session (the handler
+    scopes); a leaf or a tuple of leaves needs one of them held. "anonymous" is never asked
+    here: compose_routes allows it only on auth="login", which has no session branch."""
+    return route_acl == acl.SELF or accounts.may(conn, user, route_acl)
 
 
 def _match(method: str, path: str) -> tuple[api.Route | None, bool]:
@@ -211,14 +218,14 @@ class Call:
                 req.json = json.loads(body)
             except ValueError:
                 return api.error(400, "invalid JSON")
-        return self._run(route.handler, req, session=route.auth == "session", write=write, acl=route.acl)
+        return self._run(route.handler, req, session=route.auth == "session", write=write, route_acl=route.acl)
 
     def _internal(self, handler, body: bytes):
         return self._run(handler, api.Request(
             method=self.command, path=self.path, headers=self.headers, body=body,
             cookies=self.cookies, origins=security.Origins.from_env()))
 
-    def _run(self, handler, req: api.Request, *, session=False, write=False, acl=None):
+    def _run(self, handler, req: api.Request, *, session=False, write=False, route_acl=None):
         try:
             req.conn = conn = self._db()
             if session:
@@ -234,7 +241,7 @@ class Call:
                 if write and not sessions.csrf_valid(token, self.headers.get("X-CSRF-Token")):
                     return api.error(403, "forbidden")
                 # The role comes from this request's session lookup (the DB), never from the cookie.
-                if acl is not None and not accounts.may(conn, req.session.user, acl):
+                if not acl_allows(conn, req.session.user, route_acl):
                     return api.error(403, "forbidden")
             return handler(req)
         except Exception as exc:
@@ -414,17 +421,27 @@ app.add_middleware(Sec12)
 
 
 def compose_routes() -> None:
-    """Add every enabled module's routes to `api.ROUTES` and register its observers, once at
-    startup (`module:enable` restarts `web`)."""
+    """Add every enabled module's routes to `api.ROUTES`, install the ACL registry of the same
+    module set, and register its observers, once at startup (`module:enable` restarts `web`).
+
+    Every composed route, built-ins too, must name a valid `acl`: a missing or unknown one
+    stops `web` here, not at the first request (D-ADMIN-ACL-2, SEC-9)."""
     from agento.framework.bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
     from agento.framework.module_discovery import module_dirs_by_name
+    from agento.framework.route_rules import RouteDeclarationError, acl_error
 
-    from .routes_registry import load_module_observers, load_module_routes
+    from .routes_registry import enabled_dirs, load_module_observers, load_module_routes
 
     etc = Path("/app/etc") if Path("/app/etc").is_dir() else Path.cwd() / "app" / "etc"
     # The shared discovery carries the extension mount and shadowing rules (PyPI routes too).
     dirs = module_dirs_by_name(CORE_MODULES_DIR, USER_MODULES_DIR)
-    api.ROUTES.extend(load_module_routes(etc, dirs))
+    routes = [*api.ROUTES, *load_module_routes(etc, dirs)]
+    registry = acl.load(enabled_dirs(etc, dirs))
+    for route in routes:
+        if problem := acl_error(route.acl, registry.resources, auth=route.auth):
+            raise RouteDeclarationError(f"route {route.method} {route.pattern.pattern}: {problem}")
+    acl.install(registry)
+    api.ROUTES[:] = routes
     load_module_observers(etc, dirs)
 
 

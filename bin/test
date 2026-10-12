@@ -59,7 +59,7 @@ for dir in "$PROJECT_DIR"/src/agento/modules/*; do
   mod_name=$(basename "$dir")
   [[ "$mod_name" == _* ]] && continue
 
-  for f in module.json di.json system.json config.json events.json cron.json data_patch.json; do
+  for f in module.json di.json acl.json system.json config.json events.json cron.json data_patch.json; do
     [ -f "$dir/$f" ] && json_files+=("$dir/$f")
   done
 done
@@ -70,10 +70,13 @@ for dir in "$PROJECT_DIR"/app/code/*; do
   mod_name=$(basename "$dir")
   [[ "$mod_name" == _* ]] && continue
 
-  for f in module.json di.json system.json config.json events.json cron.json data_patch.json; do
+  for f in module.json di.json acl.json system.json config.json events.json cron.json data_patch.json; do
     [ -f "$dir/$f" ] && json_files+=("$dir/$f")
   done
 done
+
+# The framework ACL file (core panel leaves)
+json_files+=("$PROJECT_DIR/src/agento/framework/access/acl.json")
 
 # Toolbox package.json
 [ -f "$PROJECT_DIR/src/agento/toolbox/package.json" ] && json_files+=("$PROJECT_DIR/src/agento/toolbox/package.json")

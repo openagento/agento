@@ -95,8 +95,9 @@ describe("a preview launch", () => {
     fetchMock.mockResolvedValueOnce(json(200, { ...created, launch_id: "L2" }));
     const out = await openLaunch({ agentViewId: 1, artifactCode: "app", preview: true }, new Set(["L1"]), w);
     expect(out).toMatchObject({ kind: "opened", launch_id: "L2" });
+    expect(new URL(String(fetchMock.mock.calls.at(-1)?.[0])).pathname).toBe("/api/miniapps/previews");
     expect(JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body)))
-      .toEqual({ agent_view_id: 1, artifact_code: "app", preview: true });
+      .toEqual({ agent_view_id: 1, artifact_code: "app" });
   });
 });
 

@@ -9,37 +9,17 @@ operator at the CLI or TUI: no actor check.
 """
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 
 import pymysql
 
+from . import acl
 from .passwords import dummy_verify, hash_password, verify_password
 
 BUILTIN_ROLES = ("admin", "user")
 ROLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,15}$")
 GRANT_KINDS = ("tool", "operation")
-# Framework operations: checked by grant for every role, admin included (web/api.py create_launch).
-FRAMEWORK_OPERATIONS = {"artifact.launch": "Launch a miniapp"}
-# Admin panel leaves, per screen: global role_grant rows (kind operation, no scope). A route names
-# its leaf (web/api.py Route.acl); admin holds them all.
-ADMIN_SCREENS = {
-    "Dashboard": {"admin.dashboard": "View"},
-    "Jobs": {"admin.jobs": "View"},
-    "Agents": {"admin.agents": "View"},
-    "Credentials": {"admin.credentials": "View", "admin.credentials.edit": "Sign in, clear error, disable"},
-    "Tools": {"admin.tools": "View"},
-    "Skills": {"admin.skills": "View"},
-    "Config": {"admin.config": "View", "admin.config.edit": "Edit, test, and switch tools and skills"},
-    "Users": {"admin.users": "View", "admin.users.create": "Create", "admin.users.edit": "Edit"},
-    "Roles": {"admin.roles": "View", "admin.roles.create": "Create", "admin.roles.edit": "Edit and grant",
-              "admin.roles.delete": "Delete"},
-    "Miniapps": {"miniapps": "Use", "miniapps.approve": "Approve, revoke and preview"},
-    "Artifacts": {"admin.artifacts": "View", "admin.artifacts.publish": "Make current",
-                  "admin.artifacts.delete": "Delete"},
-}
-ADMIN_RESOURCES = frozenset(leaf for leaves in ADMIN_SCREENS.values() for leaf in leaves)
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _GRANT_LOCK = "agento.role_grant"
 MAX_GRANT_NAMES = 1000
@@ -273,27 +253,16 @@ def declared_tools(*, enabled_only: bool = False) -> set[str]:
 
 
 def grantable_operations() -> dict[str, str]:
-    """``{id: title}`` of the operations an admin may grant: the built-in ones plus every
-    ``acl_resources`` entry a module declares in ``di.json`` (Magento ``acl.xml``). Admin has
-    them all built in (``can_see_*`` check the role first)."""
-    from ..bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
-    from ..module_discovery import module_dirs_by_name
-    from ..module_validator import acl_resource_declarations
-
-    out = dict(FRAMEWORK_OPERATIONS)
-    for _name, module_dir in module_dirs_by_name(CORE_MODULES_DIR, USER_MODULES_DIR):
-        try:
-            manifest = json.loads((module_dir / "module.json").read_text())
-        except (OSError, ValueError):
-            continue
-        out.update(acl_resource_declarations(module_dir, manifest if isinstance(manifest, dict) else {}))
-    return out
+    """``{id: title}`` of the operations an admin may grant: every ``acl.json`` ``operations``
+    entry of the framework and the enabled modules. Admin has the module ones built in
+    (``can_see_*`` check the role first)."""
+    return dict(acl.registry().operations)
 
 
 def is_builtin_resource(role: str, operation: str) -> bool:
-    """Admin has every module-declared ACL resource built in (the module checks the role before
-    the grant); a framework operation is a grant for every role."""
-    return role == "admin" and operation not in FRAMEWORK_OPERATIONS
+    """Admin has every module operation built in (the module checks the role before the
+    grant); a framework operation is a grant for every role."""
+    return role == "admin" and operation not in acl.registry().core_operations
 
 
 def _check_scope(workspace_id, agent_view_id) -> None:
@@ -304,7 +273,7 @@ def _check_scope(workspace_id, agent_view_id) -> None:
 def _check_grant(kind: str, name: str, workspace_id, agent_view_id) -> None:
     if kind not in GRANT_KINDS:
         raise AccessError(f"grant kind must be one of {', '.join(GRANT_KINDS)}")
-    if name in ADMIN_RESOURCES:
+    if name in acl.registry().resources:
         if kind != "operation" or workspace_id is not None or agent_view_id is not None:
             raise AccessError(f"{name} is an admin panel operation: it takes no workspace or agent_view")
         return
@@ -397,7 +366,7 @@ def set_role_grants(conn, role: str, *, workspace_id: int | None = None, agent_v
                     tools: list[str], operations: list[str], actor: Actor | None = None) -> dict:
     """Make the role's grants at exactly this scope the given names, in one transaction.
 
-    No scope is the admin panel: its operations are ``ADMIN_RESOURCES``, and an actor that is not
+    No scope is the admin panel: its operations are the ACL leaves (``acl.registry()``), and an actor that is not
     admin adds or removes only the ones its own role holds. A name already granted at the view's
     workspace is never inserted at the view (it is redundant); a view row that is already there
     stays. Removing anything ends the role's launches in the scope, as ``remove_grant`` does.
@@ -409,7 +378,7 @@ def set_role_grants(conn, role: str, *, workspace_id: int | None = None, agent_v
     want_tools, want_ops = _names(tools, "tools"), _names(operations, "operations")
     if len(want_tools) + len(want_ops) > MAX_GRANT_NAMES:
         raise AccessError(f"at most {MAX_GRANT_NAMES} names per scope")
-    operations_known = set(ADMIN_RESOURCES) if is_global else set(grantable_operations())
+    operations_known = set(acl.registry().resources) if is_global else set(grantable_operations())
     if unknown := want_ops - operations_known:
         raise AccessError(f"operation must be one of {', '.join(sorted(operations_known))}")
     if is_global and want_tools:
@@ -679,13 +648,14 @@ def _held(cur, role: str) -> set[str]:
         "SELECT name FROM role_grant WHERE role = %s AND grant_kind = 'operation'"
         " AND workspace_id IS NULL AND agent_view_id IS NULL", (role,),
     )
-    return {r["name"] for r in cur.fetchall()} & ADMIN_RESOURCES
+    return {r["name"] for r in cur.fetchall()} & acl.registry().resources
 
 
 def held_admin(conn, role: str) -> list[str]:
-    """The admin panel leaves the role holds: all of them for admin."""
+    """The admin panel leaves the role holds: all of them for admin. A leaf of a disabled
+    module is not in the registry, so nobody holds it until the module is enabled again."""
     if role == "admin":
-        return sorted(ADMIN_RESOURCES)
+        return sorted(acl.registry().resources)
     with conn.cursor() as cur:
         return sorted(_held(cur, role))
 

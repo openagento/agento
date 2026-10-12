@@ -11,11 +11,13 @@ import pytest
 
 from agento.framework.access import accounts, launches, sessions
 from agento.framework.event_manager import EventManager
-from agento.modules.miniapps.src import routes
+from agento.modules.miniapps.src import routes as handlers
 from agento.modules.versioned_artifacts.src import admin as va_admin
 from agento.web import api, security, toolbox_client
 
-from .conftest import _test_connection
+from .conftest import _test_connection, routed
+
+routes = routed("miniapps", handlers)
 
 CODE = "ma-app"
 V1, V2 = "v-20260101-000000-aaaa", "v-20260102-000000-bbbb"
@@ -123,9 +125,10 @@ def _approve(conn, world, user=None, view=None, **body):
                                body=body))
 
 
-def _launch(conn, world, user=None, **body):
-    return routes.create_launch(_req(conn, user or world["user"],
-                                     body={"agent_view_id": world["view"], "artifact_code": CODE, **body}))
+def _launch(conn, world, user=None, *, as_preview=False, **body):
+    handler = routes.create_preview if as_preview else routes.create_launch
+    return handler(_req(conn, user or world["user"],
+                        body={"agent_view_id": world["view"], "artifact_code": CODE, **body}))
 
 
 def _rows(conn, sql, params=()):
@@ -260,15 +263,17 @@ def test_preview_launches_current_with_no_actions_even_over_an_older_approval(co
     _approve(conn, world)
     store.artifacts[CODE]["versions"][V2] = C2
     store.artifacts[CODE]["current"] = V2
-    r = _launch(conn, world, user=world["admin"], preview=True)
+    r = _launch(conn, world, user=world["admin"], as_preview=True)
     assert r.status == 201
     assert _pinned(conn, r.body["launch_id"]) == (V2, [])
     assert store.calls[-1][3] == {"version": "current"}
 
 
 def test_preview_needs_the_approve_leaf(conn, world, store):
-    assert _launch(conn, world, preview=True).status == 404
+    assert _launch(conn, world, as_preview=True).status == 403
     assert store.calls == []
+    accounts.add_grant(conn, "user", "operation", "miniapps.approve")
+    assert _launch(conn, world, as_preview=True).status == 201
 
 
 def test_preview_of_an_artifact_with_no_current_is_409(conn, world, store, monkeypatch):
@@ -276,7 +281,7 @@ def test_preview_of_an_artifact_with_no_current_is_409(conn, world, store, monke
         return toolbox_client.InvokeResult(400, {"error_code": "INVALID_PATH"})
 
     monkeypatch.setattr(toolbox_client, "admin_request", no_current)
-    assert _launch(conn, world, user=world["admin"], preview=True).status == 409
+    assert _launch(conn, world, user=world["admin"], as_preview=True).status == 409
 
 
 @pytest.mark.parametrize(("body", "status"), [
@@ -284,6 +289,7 @@ def test_preview_of_an_artifact_with_no_current_is_409(conn, world, store, monke
     ({"agent_view_id": None}, 400),
     ({"workspace_id": 1}, 400),
     ({"preview": "yes"}, 400),
+    ({"preview": True}, 400),  # a preview is its own route: POST /api/miniapps/previews
 ])
 def test_launch_input_errors(conn, world, store, body, status):
     assert _launch(conn, world, **body).status == status
