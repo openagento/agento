@@ -178,6 +178,12 @@ stretches with the same retention as the outbox; an open stretch is never pruned
 
 `agent_view_run_start_before` fires after per-job config files are generated but before the CLI subprocess starts. The `agent_view` module observes this event to write `AGENTS.md` and `SOUL.md` into the artifacts directory.
 
+### Artifacts
+
+| Event | Data Class | Fields | When |
+|-------|-----------|--------|------|
+| `artifact_delete_after` | `ArtifactDeleteAfterEvent` | `artifact_code` | In `web`, after a panel delete removed the store and committed the `versioned_artifact` row delete. The `miniapps` observer deletes the artifact's approval rows. An observer error does not fail the delete |
+
 ### Routing
 
 | Event | Data Class | Fields | When |
@@ -251,8 +257,10 @@ No event contract changed — that is the point of the reclassification.
 ### Config & Setup Lifecycle
 
 `config_save_after` fires only from `config_write.write_config` (`config:set`, the admin TUI and the panel
-admin config), not from internal bootstrap config resolution. `web` never runs `bootstrap()`, so a panel
-save dispatches it to no observer. Panel sign-in and launches dispatch no event for the same reason.
+admin config), not from internal bootstrap config resolution. `web` never runs `bootstrap()`, but
+it loads the `events.json` observers of the enabled modules when it composes its routes
+(`routes_registry.load_module_observers`), so a panel save reaches the same observers as
+`config:set`. Panel sign-in and launches dispatch no event.
 
 ## Event Data Mutability
 

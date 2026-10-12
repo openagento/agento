@@ -41,6 +41,12 @@ describe('discoverAuthSources', () => {
     return discoverAuthSources();
   }
 
+  async function discoverPins() {
+    vi.resetModules();
+    const { discoverRetentionPins } = await import('../config-loader.js');
+    return discoverRetentionPins();
+  }
+
   it('collects the source checkers modules export', async () => {
     moduleWith('sessions', "export const authSources = [['session', async () => null]];\n");
     const entries = await discover();
@@ -72,5 +78,25 @@ describe('discoverAuthSources', () => {
   it('finds nothing when no module exports authSources (E1 ships none)', async () => {
     moduleWith('plain', 'export function register() {}\n');
     expect(await discover()).toEqual([]);
+  });
+
+  // The same seam for retention: a module adds SQL that pins versions against the prune.
+  it('collects the retention pins modules export, and skips a malformed one', async () => {
+    moduleWith('apps', "export const retentionPins = ['SELECT v AS version_id FROM t WHERE c = ?', 42];\n");
+    moduleWith('plain', 'export function register() {}\n');
+    expect(await discoverPins()).toEqual(['SELECT v AS version_id FROM t WHERE c = ?']);
+    expect(logs.join('\n')).toMatch(/malformed retentionPins/);
+  });
+
+  it('leaves out the pins of a disabled module', async () => {
+    moduleWith('apps', "export const retentionPins = ['SELECT 1'];\n");
+    fs.mkdirSync(path.join(tmpDir, '_etc_'));
+    fs.writeFileSync(path.join(tmpDir, '_etc_', 'modules.json'), JSON.stringify({ apps: false }));
+    process.env.APP_ETC_DIR = path.join(tmpDir, '_etc_');
+    try {
+      expect(await discoverPins()).toEqual([]);
+    } finally {
+      delete process.env.APP_ETC_DIR;
+    }
   });
 });

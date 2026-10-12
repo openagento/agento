@@ -66,16 +66,13 @@ A `user` sees nothing until you grant its role access in a scope. A scope is one
 one agent_view:
 
 ```bash
-bin/agento grant:add --role user --tool versioned_artifact_get_current --agent-view dev_01
 bin/agento grant:add --role user --operation artifact.launch --agent-view dev_01
-bin/agento tool:enable versioned_artifact --agent-view dev_01
-bin/agento tool:enable versioned_artifact_get_current --agent-view dev_01
 ```
 
-A grant never enables a tool. A tool that `is_enabled` turns off at that scope is refused for
-every role, `admin` included. To launch an artifact, a role needs both grants above in the
-artifact's scope, and the view must be allowed to use the artifact (its own, or listed in
-`versioned_artifacts/allowed_artifacts`).
+To open a miniapp, a role needs `artifact.launch` in the view, and an admin must approve the app
+for that view on the panel page **Apps** (`/apps/<code>`). The approval pins one version and its
+actions. A new version that the agent publishes waits for the next approval. See
+[../modules/miniapps.md](../modules/miniapps.md).
 
 ## Launch limits
 
@@ -91,7 +88,10 @@ The launch lifetime is `core/auth/launch_max_ttl`, and the session lifetime is
 
 ## What `web` holds
 
-`web` has no `env_file`, no `AGENTO_ENCRYPTION_KEY`, and it never runs `bootstrap()`. It
+`web` and `cron` are one trusted backend (DECISIONS.md D-BACKEND-1, D-BACKEND-2): the same
+`env_file` (`secrets.env`, with `AGENTO_ENCRYPTION_KEY`) and one DB user. `web` never runs
+`bootstrap()`. It reaches the artifact store only through the toolbox `/admin` endpoint, with a
+viewless `internal_rest` capability that it mints per call (subject `service:web:user:<id>`). It
 stores only SHA-256 hashes of session tokens, launch tokens and exchange codes. It mounts
 `app/code` and `app/etc` read-only, so it sees the same module list as `cron` when it checks a
 grant or a config write. The admin config form refuses every field that it cannot prove is not a

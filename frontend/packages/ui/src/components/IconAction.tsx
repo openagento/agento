@@ -1,5 +1,5 @@
 import { ActionIcon, Tooltip } from "@mantine/core";
-import { Archive, RefreshCw } from "lucide-react";
+import { Archive, CircleCheck, CircleStop, ExternalLink, RefreshCw, Trash2 } from "lucide-react";
 import type { ComponentPropsWithRef, ReactNode } from "react";
 
 /** An action as an icon. `label` is its hover title and its accessible name (RULES.md UI-7).
@@ -19,4 +19,22 @@ export function ArchiveAction(props: Omit<ComponentPropsWithRef<"button">, "chil
 
 export function RegenerateAction(props: Omit<ComponentPropsWithRef<"button">, "children" | "color">) {
   return <IconAction label="Regenerate" icon={<RefreshCw size={16} />} {...props} />;
+}
+
+type Named = Omit<ComponentPropsWithRef<"button">, "children" | "color"> & { label?: string };
+
+export function OpenAction({ label = "Open", ...p }: Named) {
+  return <IconAction label={label} icon={<ExternalLink size={16} />} {...p} />;
+}
+
+export function MakeCurrentAction({ label = "Make current", ...p }: Named) {
+  return <IconAction label={label} icon={<CircleCheck size={16} />} {...p} />;
+}
+
+export function EndAction({ label = "End", ...p }: Named) {
+  return <IconAction danger label={label} icon={<CircleStop size={16} />} {...p} />;
+}
+
+export function DeleteAction({ label = "Delete", ...p }: Named) {
+  return <IconAction danger label={label} icon={<Trash2 size={16} />} {...p} />;
 }

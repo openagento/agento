@@ -16,6 +16,7 @@ import pytest
 import respx
 
 from agento.framework.access import accounts, launches, sessions
+from agento.modules.miniapps.src.activation import APPROVE_SQL
 from agento.web.toolbox_client import invoke_launch_action
 
 from .conftest import _test_connection
@@ -24,8 +25,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 _DRIVER = Path(__file__).parent / "node" / "verify_capability.mjs"
 SQL = {k: v.replace("?", "%s") for k, v in
        json.loads((_ROOT / "tests" / "fixtures" / "miniapp_sql_v1.json").read_text()).items() if k.endswith("_sql")}
-V1 = "v-20260101-000000-aaaa"
-FP, OTHER_FP = "a" * 64, "b" * 64
+V1, V2 = "v-20260101-000000-aaaa", "v-20260102-000000-bbbb"
+CONTENT = "c" * 40
 TOOL = "versioned_artifact_get_current"
 URL = f"http://toolbox:3001/internal/tools/{TOOL}:invoke"
 
@@ -57,23 +58,29 @@ def scope(conn):
         cur.execute("INSERT IGNORE INTO workspace (code, label) VALUES ('e6-chk', 'e6')")
         cur.execute("SELECT id FROM workspace WHERE code = 'e6-chk'")
         ws = cur.fetchone()["id"]
-        cur.execute("INSERT IGNORE INTO agent_view (workspace_id, code, label) VALUES (%s, 'e6-chk-view', 'v')", (ws,))
-        cur.execute("SELECT id FROM agent_view WHERE code = 'e6-chk-view'")
-        view = cur.fetchone()["id"]
-    return ws, view
+        for code in ("e6-chk-view", "e6-chk-view2"):
+            cur.execute("INSERT IGNORE INTO agent_view (workspace_id, code, label) VALUES (%s, %s, 'v')", (ws, code))
+        cur.execute("SELECT id FROM agent_view WHERE code IN ('e6-chk-view', 'e6-chk-view2') ORDER BY code")
+        view, view2 = (r["id"] for r in cur.fetchall())
+    return ws, view, view2
+
+
+def _approve(conn, view, version=V1):
+    with conn.cursor() as cur:
+        cur.execute(APPROVE_SQL, ("e6-chk", view, version, CONTENT, json.dumps([TOOL]), "service:web:user:1"))
 
 
 @pytest.fixture
 def launched(conn, scope):
-    """alice may launch in the view and call TOOL; e6-chk V1 is activated; a redeemed pinned launch."""
-    ws, view = scope
+    """alice may launch in the view; e6-chk V1 is approved there with TOOL; a redeemed launch of it.
+
+    alice holds no tool grant: the approval is the grant (O-2)."""
+    ws, view, _view2 = scope
     user = accounts.create_user(conn, "alice", "user", "correct horse battery")
     accounts.add_grant(conn, "user", "operation", "artifact.launch", agent_view_id=view)
-    accounts.add_grant(conn, "user", "tool", TOOL, agent_view_id=view)
-    with conn.cursor() as cur:
-        cur.execute(SQL["activate_sql"], ("e6-chk", V1, FP, json.dumps([TOOL]), "admin"))
+    _approve(conn, view)
     launch, code = launches.create_launch(conn, user, workspace_id=ws, agent_view_id=view, artifact_code="e6-chk",
-                                          version_id=V1, manifest_fingerprint=FP, allowed_actions=[TOOL])
+                                          version_id=V1, allowed_actions=[TOOL])
     assert launches.redeem(conn, launch.id, code)
     return sessions.create_session(conn, user)[0], launch
 
@@ -93,24 +100,29 @@ def _verify(token: str):
 
 
 def test_the_toolbox_accepts_a_minted_miniapp_capability_with_its_ceiling_and_app(conn, launched):
+    """Its tools are the approval's actions, with no role tool grant (O-2)."""
     session, launch = launched
     verified = _verify(_mint(conn, session, launch))
     assert verified is not None
     ctx = verified["context"]
     assert (ctx["kind"], ctx["tool_ceiling"], verified["single_use"]) == ("miniapp", [TOOL], True)
     assert ctx["app"] == {"artifact_code": "e6-chk", "version_id": V1, "launch_id": launch.id}
-    assert verified["permitted_tools"] == [TOOL]  # the role's grants for the scope
+    assert verified["permitted_tools"] == [TOOL]
 
 
-@pytest.mark.parametrize("change", ["deactivate", "other_fingerprint", "revoke_launch", "remove_operation"])
-def test_the_toolbox_refuses_it_once_the_launch_or_activation_is_gone(conn, launched, change):
+@pytest.mark.parametrize("change", ["revoke_approval", "approve_other_version", "approve_other_view_only",
+                                    "revoke_launch", "remove_operation"])
+def test_the_toolbox_refuses_it_once_the_launch_or_approval_is_gone(conn, scope, launched, change):
     session, launch = launched
     token = _mint(conn, session, launch)
     with conn.cursor() as cur:
-        if change == "deactivate":
-            cur.execute(SQL["deactivate_sql"], ("e6-chk", V1))
-        elif change == "other_fingerprint":
-            cur.execute(SQL["activate_sql"], ("e6-chk", V1, OTHER_FP, json.dumps([TOOL]), "admin"))
+        if change == "revoke_approval":
+            cur.execute("DELETE FROM miniapp_activation WHERE artifact_code = 'e6-chk'")
+        elif change == "approve_other_version":
+            _approve(conn, scope[1], V2)
+        elif change == "approve_other_view_only":
+            cur.execute("DELETE FROM miniapp_activation WHERE artifact_code = 'e6-chk'")
+            _approve(conn, scope[2])
         elif change == "revoke_launch":
             cur.execute("UPDATE launch SET revoked_at = NOW() WHERE id = %s", (launch.id,))
         else:
@@ -118,16 +130,11 @@ def test_the_toolbox_refuses_it_once_the_launch_or_activation_is_gone(conn, laun
     assert _verify(token) is None
 
 
-def test_the_activation_statements_match_the_schema(conn):
+def test_the_approval_upsert_and_the_retention_pin_match_the_schema(conn, scope):
+    _ws, view, view2 = scope
+    _approve(conn, view)
+    _approve(conn, view, V2)  # the upsert: one row per (artifact, view)
+    _approve(conn, view2)
     with conn.cursor() as cur:
-        cur.execute(SQL["activate_sql"], ("e6-chk", V1, FP, json.dumps(["a"]), "admin"))
-        cur.execute(SQL["activate_sql"], ("e6-chk", V1, OTHER_FP, json.dumps(["b"]), "ops"))  # the upsert
-        cur.execute(SQL["activation_sql"], ("e6-chk", V1))
-        rows = cur.fetchall()
-        assert len(rows) == 1 and rows[0]["manifest_fingerprint"] == OTHER_FP
-        assert json.loads(rows[0]["allowed_actions"]) == ["b"]
-        # The catalogue asks for exact (code, current) pairs: another activated version is not read.
-        cur.execute(SQL["activate_sql"], ("e6-chk", "v-20260102-000000-bbbb", FP, json.dumps([]), "admin"))
-        cur.execute(SQL["catalogue_sql"], ("e6-chk", V1, "e6-none", V1))
-        assert [(r["artifact_code"], r["version_id"]) for r in cur.fetchall()] == [("e6-chk", V1)]
-        assert cur.execute(SQL["deactivate_sql"], ("e6-chk", V1)) == 1
+        cur.execute(SQL["retention_pin_sql"], ("e6-chk",))
+        assert sorted(r["version_id"] for r in cur.fetchall()) == [V1, V2]

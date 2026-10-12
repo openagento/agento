@@ -183,7 +183,7 @@ export async function resolveAuthTtls(query, workspaceId) {
 }
 
 // Endpoints where a query-string token is refused outright — the header is the only source.
-const HEADER_ONLY_ENDPOINTS = ['invoke'];
+const HEADER_ONLY_ENDPOINTS = ['invoke', 'admin'];
 
 export function createRequireCapability(verify, { endpoint }, log) {
   return async function requireCapability(req, res, next) {

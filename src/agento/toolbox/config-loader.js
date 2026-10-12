@@ -698,9 +698,9 @@ function createFileManager(moduleConfigs, log) {
  * dropped with an ERROR — neither checker could be trusted to be the right one, and a
  * missing checker fails closed.
  */
-export async function discoverAuthSources() {
-  const found = new Map();
-  const contested = new Set();
+/** One named export from each enabled module's toolbox files, as `[moduleName, value]`. */
+async function collectExports(name) {
+  const out = [];
   for (const mod of scanModules()) {
     for (const file of discoverToolboxFiles(mod._path)) {
       let toolModule;
@@ -710,15 +710,23 @@ export async function discoverAuthSources() {
         logToolboxRest('discovery', 'ERROR', `${mod.name}: failed to load ${path.basename(file)}: ${errorCategory(err)}`);
         continue;
       }
-      if (!Array.isArray(toolModule.authSources)) continue;
-      for (const [kind, check] of toolModule.authSources) {
-        if (typeof kind !== 'string' || typeof check !== 'function') {
-          logToolboxRest('discovery', 'ERROR', `${mod.name} exports a malformed authSources entry`);
-          continue;
-        }
-        if (found.has(kind)) contested.add(kind);
-        found.set(kind, check);
+      if (Array.isArray(toolModule[name])) out.push([mod.name, toolModule[name]]);
+    }
+  }
+  return out;
+}
+
+export async function discoverAuthSources() {
+  const found = new Map();
+  const contested = new Set();
+  for (const [modName, entries] of await collectExports('authSources')) {
+    for (const [kind, check] of entries) {
+      if (typeof kind !== 'string' || typeof check !== 'function') {
+        logToolboxRest('discovery', 'ERROR', `${modName} exports a malformed authSources entry`);
+        continue;
       }
+      if (found.has(kind)) contested.add(kind);
+      found.set(kind, check);
     }
   }
   for (const kind of contested) {
@@ -726,6 +734,22 @@ export async function discoverAuthSources() {
     logToolboxRest('discovery', 'ERROR', `auth source '${kind}' is claimed by more than one module; refusing it`);
   }
   return [...found.entries()];
+}
+
+/**
+ * Collect the SQL that modules export as `retentionPins = [sql, ...]`: each selects the
+ * `version_id`s of one artifact (one `artifact_code` parameter) that the versioned_artifacts
+ * prune must keep. A disabled module's pins are gone with it.
+ */
+export async function discoverRetentionPins() {
+  const pins = [];
+  for (const [modName, entries] of await collectExports('retentionPins')) {
+    for (const sql of entries) {
+      if (typeof sql === 'string' && sql) pins.push(sql);
+      else logToolboxRest('discovery', 'ERROR', `${modName} exports a malformed retentionPins entry`);
+    }
+  }
+  return pins;
 }
 
 /**
@@ -747,6 +771,7 @@ export async function registerModuleRestApis(context) {
     loadScopedDbOverridesStrict,
     listActiveAgentViewIds,
     fileManager,
+    retentionPins: await discoverRetentionPins(),
   };
 
   const sorted = [...modules].sort((a, b) => (a.order || 100) - (b.order || 100));
@@ -861,6 +886,7 @@ export async function registerTools(server, context, agentViewId = null, preload
     isToolEnabled: enabledCheck,
     fileManager,
     agentViewId,
+    retentionPins: await discoverRetentionPins(),
   };
 
   // Build offload config for the result offload middleware

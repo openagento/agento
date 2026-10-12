@@ -203,7 +203,8 @@ def test_the_shipped_conversation_module_loads_its_own_routes(etc, tmp_path):
     from agento.framework.bootstrap import CORE_MODULES_DIR
 
     (etc / "modules.json").write_text(json.dumps({"conversation": True}))
-    routes = load_module_routes(etc, _dirs(Path(CORE_MODULES_DIR)))
+    routes = [r for r in load_module_routes(etc, _dirs(Path(CORE_MODULES_DIR)))
+              if r.pattern.pattern.startswith("^/api/conversation/")]
 
     assert {f"{r.method} {r.pattern.pattern}" for r in routes} == {
         "POST ^/api/conversation/threads$",
@@ -220,6 +221,23 @@ def test_the_shipped_conversation_module_loads_its_own_routes(etc, tmp_path):
         "(?P<message_id>[0-9]{1,19})/unblock$",
     }
     assert all(r.auth == "session" for r in routes)
+
+
+def test_the_shipped_miniapps_module_loads_its_own_routes(etc):
+    from agento.framework.bootstrap import CORE_MODULES_DIR
+
+    (etc / "modules.json").write_text(json.dumps({"miniapps": True}))
+    approval = "/api/miniapps/apps/(?P<code>[a-z0-9-]{1,64})/views/(?P<view>[0-9]{1,10})/approval"
+    assert {f"{r.method} {r.pattern.pattern}" for r in load_module_routes(etc, _dirs(Path(CORE_MODULES_DIR)))
+            if r.pattern.pattern.startswith("^/api/miniapps/")} == {
+        "POST ^/api/miniapps/launches$",
+        "GET ^/api/miniapps/agent-views$",
+        "GET ^/api/miniapps/agent-views/(?P<id>[0-9]{1,10})/catalogue$",
+        f"GET ^{approval}$",
+        f"POST ^{approval}$",
+        f"DELETE ^{approval}$",
+        "GET ^/api/miniapps/apps/(?P<code>[a-z0-9-]{1,64})/approvals$",
+    }
 
 
 def test_the_shipped_conversation_module_registers_its_job_type(etc):
@@ -359,3 +377,32 @@ def test_an_installed_extensions_routes_are_composed(etc, tmp_path, monkeypatch)
     server.compose_routes()
     assert seen, "compose_routes() derives its own roots instead of using module discovery"
     assert any(r.pattern.match("/api/demo/hello") for r in api.ROUTES)
+
+
+OBSERVER = '''
+SEEN = []
+
+
+class Seen:
+    def execute(self, event):
+        SEEN.append(event)
+'''
+
+
+@pytest.mark.parametrize(("enabled", "count"), [(True, 1), (False, 0)])
+def test_web_registers_the_observers_of_enabled_modules_only(etc, code, monkeypatch, enabled, count):
+    """`web` never runs bootstrap(): an event a route dispatches (artifact_delete_after) must
+    still reach the observers of the enabled modules."""
+    from agento.framework import event_manager
+    from agento.web.routes_registry import load_module_observers
+
+    monkeypatch.setattr(event_manager, "_EVENT_MANAGER", None)
+    mod = _module(code, "demo", [ROUTE])
+    (mod / "src" / "observers.py").write_text(OBSERVER)
+    (mod / "events.json").write_text(json.dumps({"demo_thing_after": [
+        {"name": "demo_seen", "class": "src.observers.Seen"}]}))
+    _status(etc, {"demo": enabled})
+
+    load_module_observers(etc, _dirs(code))
+
+    assert event_manager.get_event_manager().observer_count("demo_thing_after") == count

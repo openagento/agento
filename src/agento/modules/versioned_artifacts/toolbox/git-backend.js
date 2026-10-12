@@ -597,6 +597,14 @@ export function createBackend({ newVersionId = defaultVersionId, hooks = {} } = 
     catch (err) { throw new ArtifactError(ERROR_CODES.STORAGE_OPERATION_FAILED, 'the artifact store could not be read', { cause: err }); }
   }
 
+  /** The immutable identity of a version's whole tree: its Git tree id. Equal bytes give an
+   *  equal id across re-creation, which a version id (from the clock) does not. */
+  async function versionContentId(storageRoot, artifactCode, versionId) {
+    const { repo, treeish } = await resolveSelector(storageRoot, artifactCode, { versionId });
+    try { return out(await gitBare(repo, ['rev-parse', '--verify', `${treeish}^{tree}`], { maxBytes: 4096 })).trim(); }
+    catch (err) { throw new ArtifactError(ERROR_CODES.STORAGE_OPERATION_FAILED, 'the artifact store could not be read', { cause: err }); }
+  }
+
   async function listArtifacts(storageRoot) {
     const artifacts = [];
     for (const e of await listDirOrEmpty(storageRoot)) {
@@ -805,6 +813,6 @@ export function createBackend({ newVersionId = defaultVersionId, hooks = {} } = 
     init, getCurrent, listVersions, publish, materialize, materializePublished, sweepScratch,
     createDraft, commitDraft, saveVersion, diff, discardDraft,
     recoverDraft, draftState, reconcileDrafts, listOpenDrafts, listArtifacts, getDraftPath,
-    readOwningView, removeArtifact, readVersionFile,
+    readOwningView, removeArtifact, readVersionFile, versionContentId,
   };
 }

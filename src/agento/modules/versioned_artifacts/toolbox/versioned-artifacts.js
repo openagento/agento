@@ -31,23 +31,17 @@ const versionId = () => z.string().regex(VERSION_ID_RE);
 const selectorId = (args) => selectorSourceId({ draftId: args.draft_id, versionId: args.version_id });
 
 export async function register(server, context) {
-  const { app, log, moduleConfigs, isToolEnabled, db, jobId, agentViewId, artifactsDir } = context;
+  const { app, log, moduleConfigs, isToolEnabled, db, jobId, agentViewId, artifactsDir, retentionPins } = context;
 
   // The service is constructed ONCE per register(), before the first
   // server.tool(...), and a construction failure registers nothing: a bad
   // storage_root or limit surfaces at boot, in the operator's log, with no tool
   // exposed — never as ten identical runtime errors seen only by the model.
-  // The framework's AES helper, resolved the SAME container-only way `cli.js` resolves
-  // its DB handle: `/opt/agento-toolbox-src/` exists only inside the toolbox, so a static
-  // import would break the Vitest suite. A test may inject `context.crypto` instead; when
-  // neither resolves, `crypto` is null and only the auth features refuse (AUTH_UNAVAILABLE).
-  const crypto = context.crypto ?? await import('/opt/agento-toolbox-src/crypto.js').catch(() => null);
-
   let service;
   try {
     service = createService({
       config: moduleConfigs?.versioned_artifacts ?? {},
-      db, log, jobId, agentViewId, crypto,
+      db, log, jobId, agentViewId, retentionPins,
     });
   } catch (err) {
     log?.('versioned_artifacts', 'ERROR', `configuration rejected: ${errorFacts(err) ?? 'unknown'}`);

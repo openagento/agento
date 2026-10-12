@@ -180,7 +180,6 @@ class TestShortcutPatternCompliance:
 
         sets = {
             "_LOCAL_COMMANDS": cli._LOCAL_COMMANDS,
-            "_LOCAL_MODULE_COMMANDS": cli._LOCAL_MODULE_COMMANDS,
             "_INTERACTIVE_COMMANDS": cli._INTERACTIVE_COMMANDS,
             "_MAYBE_INTERACTIVE_COMMANDS": cli._MAYBE_INTERACTIVE_COMMANDS,
         }

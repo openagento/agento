@@ -55,7 +55,7 @@ describe('the routes name the endpoints the rules are written for', () => {
         .map(m => [m[1], m[2]]),
     );
     expect(routes).toEqual({
-      '/sse': 'sse', '/messages': 'messages', '/mcp': 'mcp', '/config-test': 'config_test', '/api': 'api',
+      '/sse': 'sse', '/messages': 'messages', '/mcp': 'mcp', '/config-test': 'config_test', '/api': 'api', '/admin': 'admin',
     });
     expect(src).toMatch(/const healthGuard = requireCapability\(\{ endpoint: 'health' \}/);
     expect(src).toMatch(/installInvokeRoute\(app, \{\s*guard: requireCapability\(\{ endpoint: 'invoke' \}/);
@@ -64,7 +64,7 @@ describe('the routes name the endpoints the rules are written for', () => {
 
 describe('new profiles are accepted only at invoke', () => {
   for (const kind of Object.keys(userRows)) {
-    for (const endpoint of ['mcp', 'sse', 'messages', 'api', 'config_test']) {
+    for (const endpoint of ['mcp', 'sse', 'messages', 'api', 'config_test', 'admin']) {
       it(`${kind} at ${endpoint} → 403`, async () => {
         const row = { ...userRows[kind], allowed_transports: ['sse', 'http'] };
         expect(await present(guardFor(row, endpoint))).toBe(403);
@@ -74,6 +74,29 @@ describe('new profiles are accepted only at invoke', () => {
       expect(await present(guardFor(userRows[kind], 'invoke'))).toBe(200);
     });
   }
+});
+
+// `admin` is the backend's store-admin endpoint: no profile lists it, and only a viewless
+// internal_rest (minted by web or cron, never by a runner) reaches it.
+describe('the admin endpoint', () => {
+  const refused = {
+    mcp_job: capabilityRow('mcp_job'),
+    mcp_interactive: capabilityRow('mcp_interactive'),
+    'view-bound internal_rest': capabilityRow('internal_rest'),
+    ...userRows,
+  };
+  for (const [name, row] of Object.entries(refused)) {
+    it(`${name} at admin → 403`, async () => {
+      expect(await present(guardFor(row, 'admin'))).toBe(403);
+    });
+  }
+  it('a query-string token at admin → 401, even for a row valid there', async () => {
+    const guard = guardFor(capabilityRow('internal_rest', { agent_view_id: null }), 'admin');
+    expect(await present(guard, { query: { cap: 'tok' } })).toBe(401);
+  });
+  it('a viewless internal_rest at admin → accepted', async () => {
+    expect(await present(guardFor(capabilityRow('internal_rest', { agent_view_id: null }), 'admin'))).toBe(200);
+  });
 });
 
 describe('transports', () => {

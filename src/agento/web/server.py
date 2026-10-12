@@ -414,17 +414,18 @@ app.add_middleware(Sec12)
 
 
 def compose_routes() -> None:
-    """Add every enabled module's routes to `api.ROUTES`, once at startup (`module:enable`
-    restarts `web`)."""
+    """Add every enabled module's routes to `api.ROUTES` and register its observers, once at
+    startup (`module:enable` restarts `web`)."""
     from agento.framework.bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
     from agento.framework.module_discovery import module_dirs_by_name
 
-    from .routes_registry import load_module_routes
+    from .routes_registry import load_module_observers, load_module_routes
 
     etc = Path("/app/etc") if Path("/app/etc").is_dir() else Path.cwd() / "app" / "etc"
     # The shared discovery carries the extension mount and shadowing rules (PyPI routes too).
-    api.ROUTES.extend(load_module_routes(etc, module_dirs_by_name(CORE_MODULES_DIR,
-                                                                 USER_MODULES_DIR)))
+    dirs = module_dirs_by_name(CORE_MODULES_DIR, USER_MODULES_DIR)
+    api.ROUTES.extend(load_module_routes(etc, dirs))
+    load_module_observers(etc, dirs)
 
 
 # The query may carry `cap` or an exchange code: no access log, `Sec12` logs the path (SEC-6).

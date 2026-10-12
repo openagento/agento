@@ -87,7 +87,7 @@ describe('verifyCapability', () => {
   });
 
   it('rejects a guard that names no endpoint, or an unknown one, without touching the DB', async () => {
-    for (const opts of [undefined, {}, { endpoint: 'admin' }, { kinds: ['mcp_job'] }]) {
+    for (const opts of [undefined, {}, { endpoint: 'root' }, { kinds: ['mcp_job'] }]) {
       const query = fakeQuery([row]);
       expect(await createVerifier(query)('t', opts)).toBeNull();
       expect(query).not.toHaveBeenCalled();

@@ -63,13 +63,7 @@
 | `workspace:build-status [--agent-view <code>]` | Show workspace build history ([details](workspace-build.md)) |
 | `workspace:ssh-purge [--dry-run]` | **Deprecated (removal in v0.17+)** — delete SSH private keys left on disk by older versions ([details](workspace-build.md#workspacessh-purge)) |
 | **Versioned artifacts** | |
-| `artifact:init <artifact_code> [--source <dir>]` | Create a versioned artifact from a host directory; operator equivalent of `versioned_artifact_init` ([details](artifact-init.md)) |
-| `artifact:list` | List the artifacts the store holds ([details](artifact-list.md)) |
-| `artifact:delete <artifact_code>` | Remove an artifact, its versions and its served pages; asks first, and has no tool equivalent ([details](artifact-delete.md)) |
-| `artifact:publish <artifact_code> <version_id> --expected <version_id>` | Point an artifact's current at a version ([details](artifact-publish.md)) |
-| `artifact:auth <artifact_code> [--user <u>] [--pass-stdin] [--disable] [--show]` | Set, rotate, show or disable an artifact's HTTP Basic auth; has no tool equivalent ([details](artifact-auth.md)) |
-| **Miniapps** | |
-| `miniapp:activate <artifact_code> <version_id> [--actions a,b]` / `miniapp:deactivate <artifact_code> <version_id>` / `miniapp:list` | Let a version run as a miniapp with a fixed action set, stop it, or list activations; no tool equivalent ([details](miniapp.md)) |
+| `artifact:auth <artifact_code> [--user <u>] [--pass-stdin] [--disable]` | Set, rotate or disable an artifact's HTTP Basic auth. The password goes to the terminal only. No tool equivalent. List, history, make current and delete are in the panel ([details](artifact-auth.md)) |
 | **Admin** | |
 | `admin` | Launch interactive TUI dashboard (deprecated: use the admin panel; [details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |

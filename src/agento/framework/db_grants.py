@@ -18,8 +18,8 @@ TOOLBOX_GRANTS = {
     "user": "SELECT",
     "workspace": "SELECT",
     "job": "SELECT, INSERT",
-    "miniapp_activation": "SELECT, INSERT, UPDATE, DELETE",
-    "versioned_artifact": "SELECT, INSERT, UPDATE, DELETE",
+    "miniapp_activation": "SELECT",  # web writes approvals; the checker and the retention pin read
+    "versioned_artifact": "SELECT, INSERT, UPDATE",  # web deletes the row (D-MINIAPP-2)
     "versioned_artifact_audit": "INSERT",
     "tool_invocation": "SELECT, INSERT, UPDATE",
     "toolbox_capability": "SELECT, UPDATE",

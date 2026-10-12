@@ -1,7 +1,14 @@
 {
-  "commands": [
-    {"name": "miniapp:activate", "class": "src.commands.activate.MiniappActivateCommand"},
-    {"name": "miniapp:deactivate", "class": "src.commands.deactivate.MiniappDeactivateCommand"},
-    {"name": "miniapp:list", "class": "src.commands.list.MiniappListCommand"}
+  "routes": [
+    {"method": "POST", "path": "/api/miniapps/launches", "handler": "src.routes.create_launch", "json_body": true},
+    {"method": "GET", "path": "/api/miniapps/agent-views", "handler": "src.routes.launch_views"},
+    {"method": "GET", "path": "/api/miniapps/agent-views/(?P<id>[0-9]{1,10})/catalogue", "handler": "src.routes.catalogue"},
+    {"method": "GET", "path": "/api/miniapps/apps/(?P<code>[a-z0-9-]{1,64})/approvals", "handler": "src.routes.approvals"},
+    {"method": "GET", "path": "/api/miniapps/apps/(?P<code>[a-z0-9-]{1,64})/views/(?P<view>[0-9]{1,10})/approval",
+     "handler": "src.routes.approval"},
+    {"method": "POST", "path": "/api/miniapps/apps/(?P<code>[a-z0-9-]{1,64})/views/(?P<view>[0-9]{1,10})/approval",
+     "handler": "src.routes.approve", "json_body": true},
+    {"method": "DELETE", "path": "/api/miniapps/apps/(?P<code>[a-z0-9-]{1,64})/views/(?P<view>[0-9]{1,10})/approval",
+     "handler": "src.routes.revoke"}
   ]
 }
