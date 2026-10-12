@@ -41,7 +41,7 @@ def test_miniapp_build_names_only_declared_tools():
     declared = {
         tool["name"]
         for module in ("versioned_artifacts", "miniapps")
-        for tool in json.loads((MODULES / module / "module.json").read_text())["tools"]
+        for tool in json.loads((MODULES / module / "module.json").read_text()).get("tools", [])
     }
     text = (MODULES / "miniapps/skills/miniapp-build/SKILL.md").read_text()
     named = set(re.findall(r"`((?:versioned_artifact|miniapp)_[a-z_]+)`", text))

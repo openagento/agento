@@ -5,7 +5,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 import { Markdown } from "./Markdown";
 import { ChatComposer, ChatError, RunInfo, ToolCall } from "./Chat";
-import { ArchiveAction, RegenerateAction } from "./IconAction";
+import { ArchiveAction, DeleteAction, EndAction, MakeCurrentAction, OpenAction, RegenerateAction } from "./IconAction";
 import { CopyButton } from "./CopyButton";
 import { MenuButton, ThreadList } from "./ChatShell";
 
@@ -157,6 +157,17 @@ describe("icon actions (RULES.md UI-7)", () => {
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Archive");
     fireEvent.click(archive);
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("the named actions have a default name, a name of their own, and danger where they destroy", () => {
+    render(<><OpenAction /><OpenAction label="Preview" /><EndAction /><DeleteAction /><MakeCurrentAction /></>,
+      { wrapper: AgentoUiProvider });
+    expect(screen.getAllByRole("button").map((b) => b.getAttribute("aria-label")))
+      .toEqual(["Open", "Preview", "End", "Delete", "Make current"]);
+    expect(screen.getAllByRole("button").every((b) => b.textContent === "")).toBe(true);
+    const color = (name: string) => screen.getByRole("button", { name }).getAttribute("style");
+    expect(color("Delete")).toBe(color("End"));
+    expect(color("Delete")).not.toBe(color("Open"));
   });
 
   it("the run details icon opens its rows", async () => {

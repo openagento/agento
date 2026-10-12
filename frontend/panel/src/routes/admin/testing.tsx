@@ -14,7 +14,8 @@ type Answer = unknown | ((body: unknown, url: URL) => unknown);
 export const ALL_LEAVES = [
   "admin.dashboard", "admin.jobs", "admin.agents", "admin.credentials", "admin.credentials.edit", "admin.tools",
   "admin.skills", "admin.config", "admin.config.edit", "admin.users", "admin.users.create", "admin.users.edit",
-  "admin.roles", "admin.roles.create", "admin.roles.edit", "admin.roles.delete", "miniapps",
+  "admin.roles", "admin.roles.create", "admin.roles.edit", "admin.roles.delete", "miniapps", "miniapps.approve",
+  "admin.artifacts", "admin.artifacts.publish", "admin.artifacts.delete",
 ];
 
 export async function stubApi(answers: Record<string, Answer>, acl: string[] = ALL_LEAVES) {

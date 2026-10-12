@@ -4,6 +4,67 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-11 — Miniapp approval per artifact and view pins a version (D-MINIAPP-2)
+
+Plan: `~/.claude/plans/artifacts-miniapps-panel-v2-a80bd2.md` (O-1, O-2, O-5, O-6, O-7). Owner reply,
+2026-10-11: `/loop-skill implement plan …`, i.e. "implement the plan as recommended". That reply is
+the CODE-5 waiver for each break below. **O-2 is a pending owner item**: it widens authority, and the
+owner can veto it before merge (then the checker reads role tool grants again).
+
+- **One approval per (artifact, agent_view)** (`miniapp_activation`, SQL 002). It pins
+  `approved_version_id` **and** `approved_content_id` (the git tree id). A version id can repeat after
+  an artifact is deleted and made again; the content id cannot, so a launch whose resolved content
+  differs is `409` and the row is deleted. A launch serves the approved version, not `current`; a
+  newer `current` shows `update_waiting` in the catalogue. Only `current` can be approved, with a
+  compare-and-set on `expected_version_id`, under the retention lock (`va_ret:`), so prune cannot
+  remove what is being pinned. SQL 002 drops the old per-version rows (O-7): each live app needs one
+  approval after the upgrade.
+- **O-2: the approval is the grant.** The `launch` checker reads no role tool grant: its tools are
+  the approval's `allowed_actions` (∩ the ceiling ∩ `is_enabled`). It still requires
+  `artifact.launch` in the view and the approval row for the launch's view and version.
+- **`web` writes, the toolbox reads.** The approval is written by `web` (the trusted backend,
+  D-BACKEND-1); the toolbox has `SELECT` only on `miniapp_activation`. Every store read goes through
+  the toolbox `/admin` endpoint (`POST /admin/miniapps/<code>/resolve`).
+- **One actor spelling: `service:web:user:<id>`.** The same string is the `/admin` capability
+  subject, `activated_by` and the `versioned_artifact_audit` actor (`miniapp.approve`,
+  `miniapp.revoke`). There is no event: `web` is the one writer.
+- **Leaves, checked in the handler.** `miniapps` (catalogue) and `miniapps.approve` (approve, revoke,
+  preview). A module route in `di.json` cannot name a leaf, so `miniapps/src/routes.py` checks
+  `accounts.may` (403). The scoped `artifact.launch` check answers 404.
+- **Preview** launches `current` with no action; it needs `miniapps.approve`.
+- **Removed (CODE-5, waived):** the MCP tools `miniapp`, `miniapp_get_launch_spec`, `miniapp_list`
+  (a data patch removes their switches and grants); the CLI `miniapp:activate/deactivate/list` and the
+  miniapps Node CLI (O-5); `launch.manifest_fingerprint` is now always the no-manifest constant.
+- **URL moves (O-6):** `POST /api/launches` → `POST /api/miniapps/launches`;
+  `GET /api/agent-views/<id>/miniapps` → `GET /api/miniapps/agent-views/<id>/catalogue`. Launch
+  actions, list, end and redeem stay framework routes.
+- **Artifact admin is the panel's, through `/admin` (P2, P4).** `web` serves
+  `/api/versioned_artifacts/artifacts` (list), `…/<code>/versions` (history, joined with the `ok`
+  audit rows in one query), `…/<code>/publish` (make current, the toolbox CAS) and
+  `DELETE …/<code>`, with the leaves `admin.artifacts`, `admin.artifacts.publish` and
+  `admin.artifacts.delete`, checked in the handler. Every store read or write goes through the
+  toolbox `/admin` endpoint as `service:web:user:<id>`.
+- **One delete path, in this order** (plan §2.4), under the retention lock `va_ret:`: revoke the
+  artifact's live launches (committed; a failure removes nothing), then the toolbox delete
+  (`ARTIFACT_NOT_FOUND` counts as done, so a retry finishes a partial delete), then the
+  `versioned_artifact` row (`web` deletes it; the toolbox lost its `DELETE` grant), then
+  `artifact_delete_after`. The `miniapps` observer deletes the approval rows. That is hygiene, not
+  the boundary: an approval pins a `content_id`, so it cannot approve a re-created artifact's bytes,
+  and the dispatcher swallows an observer error.
+- **`web` loads module observers.** `web` never runs `bootstrap()`, so `compose_routes` now also loads
+  the `events.json` observers of the enabled modules (`load_module_observers`). Side effect: a panel
+  `config_save_after` reaches the same observers as `config:set`.
+- **O-3: only an agent creates an artifact.** `artifact:init`, `artifact:list`, `artifact:publish`,
+  `artifact:delete`, the VA Node CLI and `_LOCAL_MODULE_COMMANDS` are removed (CODE-5, waived). The
+  toolbox admin service cannot `init`.
+- **O-4: no share password readback.** The encrypted copy (`auth_secret_enc`), `getAuth` and
+  `artifact:auth --show` are removed; SQL 005 drops `auth_secret_enc` and the unused `owner` column
+  (ownership is the store marker). A lost password is rotated. `artifact:auth` is a thin cron
+  command: it calls `POST /admin/versioned-artifacts/<code>/auth` as `service:cli:<actor>` (no
+  `docker exec`) and prints the password to the terminal only.
+
+---
+
 ## 2026-10-11 — Admin panel screens are role resources (D-ADMIN-ACL-1)
 
 Plan: `~/.claude/plans/admin-acl-leaves-175585.md`. Owner approval, 2026-10-11: "We should restrict
@@ -962,10 +1023,12 @@ Nothing has shipped under the other spelling, so there is no compatibility route
   This applies to every module, not only miniapps. `web` also reads the file per request for
   miniapps, so a launch is files-only, an action is 404 and the catalogue is empty at once, with
   no toolbox restart.
-- **Activation is operator-only and has no event.** It happens in the toolbox (Node), which has no
+- **Activation is operator-only and has no event.** *Amended 2026-10-11 by D-MINIAPP-2: an admin
+  approves per (artifact, view) through `web`.* It happens in the toolbox (Node), which has no
   event mechanism; it writes a `versioned_artifact_audit` row. A tool would let a self-asserted
   `agent_view_id` decide what a user's browser may call.
 - **The launch spec is a tool (`miniapp_get_launch_spec`), not an event or a seam in `web`.**
+  *Superseded 2026-10-11 by D-MINIAPP-2: the tool is removed; `web` reads the approval row.*
   `web` never runs `bootstrap()`; the answer it needs is one protocol call (EVT-8), made with the
   user's own `user_session` capability, so a user without the grant gets a files-only launch.
 
@@ -983,7 +1046,8 @@ Nothing has shipped under the other spelling, so there is no compatibility route
   per capability (600/min), keyed by the token's SHA-256, never the raw token.
 - **Constants, no env knob.** The capability limit is per run, so `AGENTO_CONSUMER_MAX_WORKERS` does
   not change it.
-- **Not changed:** CodeQL's clear-text-logging alerts on `artifact:auth` (printing the credential
+- **Not changed:** *Amended 2026-10-11 by D-MINIAPP-2: `artifact:auth` now runs in cron through
+  `/admin`, and `--show` is removed; it still prints a new password once.* CodeQL's clear-text-logging alerts on `artifact:auth` (printing the credential
   once on stdout is that command's purpose, the same rule as a minted capability) and the
   missing-rate-limiting alerts on the test-only server in `tests/sse-transport-auth.test.js`.
 
@@ -1122,7 +1186,9 @@ Contract deviations (PRD E2 / E1.5 against the code, built as below):
 - **No manifest seam in E2.** `launch.manifest_fingerprint` and `allowed_actions` are NOT NULL; E2
   writes `sha256("")` and `[]`. An event would need `bootstrap()` in `web`, which would resolve every
   module's config, and a veto observer that fails to load would fail open. E6 designs the seam.
-- **`current` resolves through the toolbox.** `POST /api/launches` calls
+- **`current` resolves through the toolbox.** *Amended 2026-10-11 by D-MINIAPP-2: a launch
+  resolves the approved version through the toolbox `/admin` endpoint; no tool grant is needed.*
+  `POST /api/launches` calls
   `versioned_artifact_get_current` with a `user_session` capability instead of mounting the store
   into `web`. So a launch needs that tool grant **and** the `artifact.launch` operation grant in the
   scope, and the tool must be enabled there.
@@ -1151,7 +1217,8 @@ Choices:
 - **Every access write locks its `user` rows in one ordered `SELECT … FOR UPDATE`**, and
   `create_launch` locks the user row and re-checks the grant in the same transaction, so a launch
   racing a role or grant change is either refused or revoked with it.
-- **Operator seeding for launches** (Task 0): `artifact:init --source` runs on the host, and the view
+- **Operator seeding for launches** (Task 0): *Amended 2026-10-11 by D-MINIAPP-2: `artifact:init` is
+  removed; an agent creates the artifact (O-3).* `artifact:init --source` runs on the host, and the view
   needs `versioned_artifacts/allowed_artifacts` plus `tool:enable` for `versioned_artifact` and
   `versioned_artifact_get_current`.
 
@@ -1594,11 +1661,15 @@ agent_views. Under one uid, that boundary does not exist; Option B is what would
   URL), so the namespace SCOPES cooperating views rather than authorizing them. (Closed by AG-16: the
   view now comes from the session's capability row.) The fix is
   session-bound identity in the framework, not a module-local check — see ROADMAP.md.
-- **Cost, accepted:** `artifact:delete` is the operator's alone — destroying an immutable history is
+- **Cost, accepted:** *Amended 2026-10-11 by D-MINIAPP-2: delete moved to the panel (leaf
+  `admin.artifacts.delete`); it is still not a tool.* `artifact:delete` is the operator's alone — destroying an immutable history is
   not something a self-asserted identity may do — so for an agent the cap is still a one-way ratchet
   and a human is what resets it.
 
 ## 2026-09-06 — VersionedArtifacts: artifact creation is a host command, not an HTTP route
+
+*Amended 2026-10-11 by D-MINIAPP-2: superseded. `artifact:init`, its Node CLI and
+`_LOCAL_MODULE_COMMANDS` are removed; only an agent creates an artifact (O-3).*
 
 - **Decision:** `artifact:init` runs on the host and pipes a payload into
   `docker compose exec -T toolbox node …/cli.js`. It stays the operator's equivalent of the tool —

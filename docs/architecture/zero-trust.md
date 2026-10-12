@@ -114,8 +114,10 @@ off the shared workspace meets the per-run uid; see the co-tenant section below.
 
 `POST /config-test` (a live credential probe, see [testers](../config/testers.md)) is guarded the
 same way: an `internal_rest` capability, scope from the row. It is the one route that also accepts a
-**viewless** `internal_rest` capability, which tests the default scope; every other guard refuses
-one. `run_id` on an MCP URL names an interactive run's desk directory only — it grants no scope, and
+**viewless** `internal_rest` capability, which tests the default scope. The other route that
+takes one is `/admin/*`, the store administration of the backend (`web` for the panel,
+`cron` for `artifact:auth`); it takes
+nothing else, so no agent capability reaches it. Every other guard refuses a viewless one. `run_id` on an MCP URL names an interactive run's desk directory only — it grants no scope, and
 a `job_id` on the URL may only agree with the capability's job.
 
 **Five kinds, each with the smallest privilege that works:**
@@ -124,7 +126,7 @@ a `job_id` on the URL may only agree with the capability's job.
 |------|--------|---------|-----|
 | `mcp_job` | a consumer-run job | `/mcp`, `/sse`, `/messages`, invoke | the job's lifetime |
 | `mcp_interactive` | one interactive `agento run` | `/mcp`, `/sse`, `/messages`, invoke | 12 h |
-| `internal_rest` | Python publishers, channels, onboarding | `/api/*`, scoped `/health`, `/config-test` | 120 s |
+| `internal_rest` | Python publishers, channels, onboarding; viewless: the backend's store admin | `/api/*`, scoped `/health`, `/config-test`; viewless: `/config-test`, `/admin/*` | 120 s |
 | `user_session` | the Web API, for a logged-in user | invoke only | `core/auth/capability_ttl`, single use |
 | `miniapp` | the Web API, for a miniapp launch | invoke only | `core/auth/capability_ttl`, single use |
 
@@ -279,9 +281,11 @@ there to operate on, and no generic `git` operation on it is ever exposed to the
 `versioned_artifact_*` tools, each additionally bounded to the artifacts that scope may use —
 the artifacts it created itself plus its `allowed_artifacts` grant. Creation is one of
 those tools: the agent owns the whole lifecycle, and what is withheld from it is the host
-*path*, not the operation. `versioned_artifact_init` names a code and nothing else, while the
-`artifact:init` CLI keeps `--source` — a host directory read is not something the toolbox may
-be asked for over a listener that authenticates no caller. Note that the `agent_view_id` those
+*path*, not the operation. `versioned_artifact_init` names a code and nothing else, and only
+an agent creates an artifact: there is no host-directory import (O-3). The backend administers
+the store (list, history, make current, delete, share auth) through the toolbox `/admin`
+endpoint only: `web` for the panel artifact API, `cron` for `artifact:auth`. The share
+password is kept only as a one-way hash, so no service can read it back (O-4). Note that the `agent_view_id` those
 per-scope gates read is asserted by the caller, so they scope cooperating views rather than
 authorize them; see ROADMAP.md.
 

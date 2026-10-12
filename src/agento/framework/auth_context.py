@@ -26,6 +26,7 @@ ENDPOINT_TRANSPORT = {
     "invoke": "http",
     "api": "http",
     "config_test": "http",
+    "admin": "http",
     "health": "http",
 }
 ENDPOINTS = tuple(ENDPOINT_TRANSPORT)
@@ -137,7 +138,9 @@ def derive_auth_context(*, row, agent_view_workspace_id=None, source=None, endpo
     execution_id = row.get("execution_id")
     tool_ceiling = row.get("tool_ceiling")
     viewless = agent_view_id is None
-    endpoints = ("config_test",) if row["kind"] == "internal_rest" and viewless else profile["endpoints"]
+    # ``admin`` is in no profile: only a viewless internal_rest reaches it, and only the
+    # backend (web, cron) can mint one — a runner has no DB.
+    endpoints = ("config_test", "admin") if row["kind"] == "internal_rest" and viewless else profile["endpoints"]
     if endpoint not in endpoints:
         return None
 

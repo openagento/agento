@@ -41,7 +41,6 @@ export const routes: RouteObject[] = [
       { path: "admin/tools", lazy: async () => ({ Component: (await import("./routes/admin/Tools")).Tools }) },
       { path: "admin/skills", lazy: async () => ({ Component: (await import("./routes/admin/Skills")).Skills }) },
       { path: "admin/config", lazy: async () => ({ Component: (await import("./routes/admin/Config")).Config }) },
-      { path: "miniapps", lazy: async () => ({ Component: (await import("./routes/Miniapps")).Miniapps }) },
       ...moduleRoutes(MODULES),
       { path: "*", lazy: async () => ({ Component: (await import("./routes/NotFound")).NotFound }) },
     ],

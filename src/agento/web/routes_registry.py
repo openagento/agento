@@ -9,8 +9,8 @@ Two things this deliberately does NOT do:
 
 * **It does not call `bootstrap()` and resolves no configuration.** A `di.json` and
   `modules.json` are already mounted read-only; reading them needs no registry, no DB and
-  no decryptor. The one registry `web` needs, the harnesses for a `local` config tester,
-  comes from `harness_reloader()` (framework/harness/loader.py), which loads no observer.
+  no decryptor. The harnesses for a `local` config tester come from `harness_reloader()`
+  (framework/harness/loader.py); the observers come from `load_module_observers` below.
 * **It does not clear anything on reload.** The two registries `bootstrap()` owns are
   cleared per poll tick because the consumer re-bootstraps in-process. This one is composed
   once, and `web` never re-bootstraps: enabling or disabling a module's routes takes effect
@@ -23,8 +23,9 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
+from agento.framework.bootstrap import _load_observers
 from agento.framework.job_types import register_job_type
-from agento.framework.module_loader import import_class
+from agento.framework.module_loader import import_class, parse_module_dir
 from agento.framework.module_status import is_enabled, read_module_status
 from agento.framework.route_rules import (
     RouteDeclarationError,
@@ -74,15 +75,13 @@ def load_module_routes(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]) -
     resolves its type in this process, and `web` never runs `bootstrap()`, which is the
     only other place they are registered.
     """
-    status_path = Path(etc_dir) / "modules.json"
-    status = read_module_status(status_path) if status_path.is_file() else {}
     # A built-in path is taken before any module is read: a module cannot shadow sign-in.
     taken = {f"{r.method} {r.pattern.pattern.strip('^$')}": "web" for r in ROUTES}
 
     routes: list[Route] = []
-    for name, module_dir in module_dirs:
+    for name, module_dir in _enabled(etc_dir, module_dirs):
         di = module_dir / "di.json"
-        if not di.is_file() or not is_enabled(name, status):
+        if not di.is_file():
             continue
         try:
             manifest = json.loads(di.read_text())
@@ -92,3 +91,18 @@ def load_module_routes(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]) -
             register_job_type(value, module=name)
         routes += [_route(name, module_dir, d, taken) for d in manifest.get("routes", [])]
     return routes
+
+
+def load_module_observers(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]) -> None:
+    """Register every enabled module's observers, so an event a route dispatches reaches them
+    (``artifact_delete_after``). Called once at startup; it imports classes and reads no config."""
+    for _name, module_dir in _enabled(etc_dir, module_dirs):
+        manifest = parse_module_dir(module_dir)
+        if manifest is not None:
+            _load_observers(manifest)
+
+
+def _enabled(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]):
+    status_path = Path(etc_dir) / "modules.json"
+    status = read_module_status(status_path) if status_path.is_file() else {}
+    return [(name, d) for name, d in module_dirs if is_enabled(name, status)]

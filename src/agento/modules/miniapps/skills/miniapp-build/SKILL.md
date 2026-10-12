@@ -6,7 +6,7 @@ description: Use when a user asks for a miniapp, an app, a tool page, a dashboar
 # Build a miniapp
 
 A **miniapp** is a set of static files in one version of a versioned artifact. A user opens it
-from the Agento panel (**Miniapps → Open**). The page runs in the user's browser. It can call a
+from the Agento panel (**Apps → Open**). The page runs in the user's browser. It can call a
 fixed list of toolbox tools, its **actions**, through the panel. Each action runs with the rights
 of the signed-in user. Nothing else runs: there is no server of yours, no build and no LLM.
 
@@ -20,10 +20,10 @@ instructions.
 |---|---|---|
 | saved | an immutable version exists; its files are readable over HTTP | you: `versioned_artifact_save_version` |
 | published | it is the artifact's current version; a launch opens current | you: `versioned_artifact_publish` |
-| activated | an operator approved this exact version and its actions | an operator only: `miniapp:activate` |
+| approved | an admin approved this version and its actions for one agent_view | an admin only, in the panel |
 
-A version that is not activated still opens, but **every action fails**. You cannot activate.
-Every new version needs a new activation.
+A view opens only its approved version. You cannot approve. A new version needs a new approval;
+until then the view keeps the old one.
 
 ## Never do these
 
@@ -34,7 +34,7 @@ Every new version needs a new activation.
 | `fetch` or XHR to Jira, Anthropic, any external host or `localhost` | The page gets data only from actions or from data you put in the file. |
 | An LLM call when the page runs | No LLM is in the action path. If the app needs AI text, **you** write it now and put it in the file. |
 | An external script, stylesheet or CDN; inline `style`; `innerHTML` with data | See the `miniapp-ui` skill. |
-| "The app is live", "I tested it", or a preview link given as "the app" | You cannot open the page, and actions need an operator. Say what is done and what is not. |
+| "The app is live", "I tested it", or a preview link given as "the app" | You cannot open the page, and the app needs an admin approval. Say what is done and what is not. |
 
 ## Decide before you write
 
@@ -140,26 +140,10 @@ of the app may not see. New data means a new version.
 Tell the user, in their language:
 
 - the `artifact_code` and the `version_id`, and that the version is saved and published;
-- that the actions work only after an operator runs these steps (`<view>` is the agent_view code):
-
-```bash
-uv run bin/agento miniapp:activate <artifact_code> <version_id>
-uv run bin/agento tool:enable miniapp --agent-view <view>
-uv run bin/agento tool:enable miniapp_get_launch_spec --agent-view <view>
-uv run bin/agento tool:enable miniapp_list --agent-view <view>
-uv run bin/agento tool:enable versioned_artifact --agent-view <view>
-uv run bin/agento tool:enable versioned_artifact_get_current --agent-view <view>
-uv run bin/agento grant:add --role user --tool miniapp_get_launch_spec --agent-view <view>
-uv run bin/agento grant:add --role user --tool miniapp_list --agent-view <view>
-uv run bin/agento grant:add --role user --tool versioned_artifact_get_current --agent-view <view>
-uv run bin/agento grant:add --role user --operation artifact.launch --agent-view <view>
-# and for each action in miniapp.json:
-uv run bin/agento tool:enable <action> --agent-view <view>
-uv run bin/agento grant:add --role user --tool <action> --agent-view <view>
-```
-
-- that every new version needs `miniapp:activate` again;
-- then: open the panel, **Miniapps → Open**.
+- that an admin approves it at `<panel_origin>/apps/<artifact_code>`, and enables each action tool
+  for that view (`tool:enable <action> --agent-view <view>`);
+- that every new version needs a new approval;
+- then: open the panel, **Apps → Open**.
 
 Do not say that you tested the app. Do not give the preview address as the app.
 
@@ -188,5 +172,5 @@ button on each row, an "Approve selected" button, comments added one by one.
 | Stopped after writing files | Files in a draft are not a version: `save_version`, then `publish`. |
 | No `miniapp.json` | The panel cannot run actions without it. Write it. |
 | `panelOrigin: location.origin` | That is the apps origin: the bridge never gets ready and every action hangs. Use `panel_origin` from `create_draft`. |
-| Gave the preview link as "the app" | The app opens from the panel, after activation. |
-| Said "it works" | Say: saved and published; actions wait for an operator. |
+| Gave the preview link as "the app" | The app opens from the panel, after approval. |
+| Said "it works" | Say: saved and published; the app waits for an admin to approve it. |

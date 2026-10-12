@@ -37,8 +37,8 @@ set -uo pipefail
 # SMOKE_AGENT_VIEW (default: dev_01): the user `e2-smoke-user` (a fresh random password
 # each run, via stdin), two role grants, two tool gates, the artifact `e2-smoke`, and
 # `e2-smoke` appended to that view's versioned_artifacts/allowed_artifacts; E6 adds the
-# miniapp artifact `e6-smoke` (with a miniapp.json), its activation, the miniapp tool gates
-# and grants, and a Basic credential (fresh random password each run) on `e2-smoke`.
+# miniapp artifact `e6-smoke` (with a miniapp.json; the smoke approves it through the API),
+# the `miniapps.approve` leaf, and a Basic credential (fresh random password each run) on `e2-smoke`.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
@@ -71,6 +71,7 @@ WEB="$(resolve_container web)" || exit 1
 RUNNER="$(resolve_container runner-1)" || exit 1
 ARTIFACTS="$(resolve_container artifacts)" || exit 1
 CRON="$(resolve_container cron)" || exit 1
+TOOLBOX="$(resolve_container toolbox)" || exit 1
 MYSQL="$(resolve_container mysql)" || exit 1
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
@@ -223,31 +224,45 @@ else
   docker exec "$CRON" $RUN user:set-role e2-smoke-user user >/dev/null
   docker exec "$CRON" $RUN grant:add --role user --tool versioned_artifact_get_current --agent-view "$VIEW" >/dev/null
   docker exec "$CRON" $RUN grant:add --role user --operation artifact.launch --agent-view "$VIEW" >/dev/null
+  # Preview and Approve (an admin panel leaf: global, no scope).
+  docker exec "$CRON" $RUN grant:add --role user --operation miniapps.approve >/dev/null
   for tool in versioned_artifact versioned_artifact_get_current; do
     docker exec "$CRON" $RUN tool:enable "$tool" --agent-view "$VIEW" >/dev/null
   done
+  # Agents create artifacts (O-3) and the store is toolbox-only, so the smoke makes its
+  # artifacts in the toolbox, through the service, as the view, under an operator-named code
+  # (a second run gets ARTIFACT_ALREADY_EXISTS, never a renamed copy).
+  seed_artifact() {
+    python3 -c 'import base64, json, os, sys; d = sys.argv[1]; print(json.dumps([{"path": f, "encoding": "base64",
+"content": base64.b64encode(open(os.path.join(d, f), "rb").read()).decode()} for f in sorted(os.listdir(d))]))' "$2" \
+    | docker exec -i -e CODE="$1" -e VIEW_ID="$VIEW_ID" "$TOOLBOX" node --input-type=module -e '
+import { loadModuleConfigs } from "/opt/agento-toolbox-src/config-loader.js";
+import * as db from "/opt/agento-toolbox-src/db.js";
+import { createService } from "/app/modules/core/versioned_artifacts/toolbox/service.js";
+const chunks = []; for await (const c of process.stdin) chunks.push(c);
+const config = { ...(await loadModuleConfigs()).versioned_artifacts, allowed_artifacts: process.env.CODE };
+await createService({ config, db, agentViewId: Number(process.env.VIEW_ID), actor: "proxy-smoke" })
+  .init(process.env.CODE, { files: JSON.parse(Buffer.concat(chunks).toString()) });
+process.exit(0);'
+  }
   mkdir "$SEED/src" && echo '<h1>e2 smoke</h1>' > "$SEED/src/index.html"
-  (cd "$PROJECT_DIR" && uv run bin/agento artifact:init e2-smoke --source "$SEED/src" --actor proxy-smoke) >/dev/null 2>&1 || true
+  seed_artifact e2-smoke "$SEED/src" >/dev/null 2>&1 || true
   allowed="$(sql "SELECT value FROM core_config_data WHERE scope = 'agent_view' AND scope_id = $VIEW_ID AND path = 'versioned_artifacts/allowed_artifacts'")"
   case ",${allowed// /}," in
     *,e2-smoke,*) ;;
     *) docker exec "$CRON" $RUN config:set versioned_artifacts/allowed_artifacts "${allowed:+$allowed,}e2-smoke" --agent-view "$VIEW" >/dev/null ;;
   esac
-  # E6: a miniapp artifact whose first version carries a manifest; the smoke activates it.
+  # E6: a miniapp artifact whose first version carries a manifest; the smoke approves it.
   mkdir "$SEED/app" && echo '<h1>e6 smoke</h1>' > "$SEED/app/index.html"
   echo '{"schema": 1, "title": "E6 smoke", "actions": ["versioned_artifact_get_current"]}' > "$SEED/app/miniapp.json"
-  (cd "$PROJECT_DIR" && uv run bin/agento artifact:init e6-smoke --source "$SEED/app" --actor proxy-smoke) >/dev/null 2>&1 || true
-  for tool in miniapp miniapp_get_launch_spec; do
-    docker exec "$CRON" $RUN tool:enable "$tool" --agent-view "$VIEW" >/dev/null
-  done
-  docker exec "$CRON" $RUN grant:add --role user --tool miniapp_get_launch_spec --agent-view "$VIEW" >/dev/null
+  seed_artifact e6-smoke "$SEED/app" >/dev/null 2>&1 || true
   allowed="$(sql "SELECT value FROM core_config_data WHERE scope = 'agent_view' AND scope_id = $VIEW_ID AND path = 'versioned_artifacts/allowed_artifacts'")"
   case ",${allowed// /}," in
     *,e6-smoke,*) ;;
     *) docker exec "$CRON" $RUN config:set versioned_artifacts/allowed_artifacts "${allowed:+$allowed,}e6-smoke" --agent-view "$VIEW" >/dev/null ;;
   esac
   if python3 "$SCRIPT_DIR/panel-launch-smoke.py" "$PORT" "$SEED/pw" "$VIEW_ID" e2-smoke "$CRON" "$PROXY" "$WEB" \
-      e6-smoke "$MYSQL" "$PROJECT_DIR"; then
+      e6-smoke "$MYSQL"; then
     ok "panel and launch flow"
   else
     bad "panel and launch flow"

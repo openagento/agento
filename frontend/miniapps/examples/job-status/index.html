@@ -33,10 +33,6 @@
         <tbody id="runs"></tbody>
       </table>
     </ag-table>
-    <h2 class="ag-section-header">Miniapps in this view</h2>
-    <div class="ag-row"><button class="ag-button ag-button--primary" type="button" id="load" disabled>Load</button></div>
-    <ul class="ag-list" id="apps"></ul>
-    <p class="ag-muted" id="status" role="status"></p>
   </main>
 
   <!-- The data an agent wrote into this version. -->
@@ -45,11 +41,6 @@
      "runs": [{"id": "run-41", "state": "succeeded"}, {"id": "run-40", "state": "failed"}]}
   </script>
   <script type="module">
-    import { createAgentoSdk } from "/_ui/1.0.0/agento-bridge.js";
-
-    // The panel origin comes from this app's own instructions, never from a message or the URL.
-    const PANEL_ORIGIN = "https://panel.localhost:8443";
-    const status = document.getElementById("status");
     const card = document.getElementById("job-card");
     const data = JSON.parse(document.getElementById("data").textContent);
 
@@ -63,36 +54,6 @@
       for (const v of [r.id, r.state]) { const td = document.createElement("td"); td.textContent = v; tr.append(td); }
       return tr;
     }));
-
-    // An action answers the toolbox envelope {ok, result: {content: [{text: "<json>"}], isError}}.
-    function toolPayload(body) {
-      if (!body?.ok || body.result?.isError) return null;
-      try { return JSON.parse(body.result.content[0].text); } catch { return null; }
-    }
-
-    // The one declared action (miniapp.json): it runs in the toolbox with the signed-in user's
-    // rights, through the panel. The page sees only {status, body}.
-    const load = document.getElementById("load");
-    try {
-      const sdk = createAgentoSdk({ panelOrigin: PANEL_ORIGIN });
-      sdk.ready.then(() => { status.textContent = "Connected to the panel."; load.disabled = false; });
-      load.addEventListener("click", async () => {
-        load.disabled = true;
-        const { status: code, body } = await sdk.callAction("miniapp_list", {});
-        load.disabled = false;
-        const payload = code === 200 ? toolPayload(body) : null;
-        if (!payload) { status.textContent = `The action was refused (${code}).`; return; }
-        const rows = Array.isArray(payload.miniapps) ? payload.miniapps : [];
-        document.getElementById("apps").replaceChildren(...rows.map((m) => {
-          const li = document.createElement("li");
-          li.textContent = `${m.title ?? m.artifact_code} (${m.artifact_code})`;
-          return li;
-        }));
-        status.textContent = rows.length ? "" : "No activated miniapps in this view.";
-      });
-    } catch (e) {
-      status.textContent = "Open this app from the Agento panel.";
-    }
   </script>
 </body>
 </html>

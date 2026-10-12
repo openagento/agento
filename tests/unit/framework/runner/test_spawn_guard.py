@@ -37,7 +37,6 @@ ALLOWED = {
     "framework/cli/module.py": "host docker compose",
     "framework/cli/run.py": "host docker compose exec runner-1",
     "framework/cli/upgrade.py": "host docker, uv",
-    "modules/versioned_artifacts/src/commands/_toolbox.py": "host docker compose exec toolbox",
 }
 
 
