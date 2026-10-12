@@ -32,21 +32,9 @@ _MAYBE_INTERACTIVE_COMMANDS = frozenset({
     "config:set", "config:remove",
     "credential:register",
     # getpass needs the TTY.
-    "user:create", "user:password",
+    "user:create", "user:password", "artifact:auth",
     # Shortcuts
-    "co:se", "co:re", "cr:reg", "us:cr", "us:pa",
-})
-
-
-# Host-local commands that are nevertheless provided by a MODULE, so they still
-# need bootstrap() to register them with argparse. Without this split, a module
-# command added to _LOCAL_COMMANDS would skip module registration entirely and
-# argparse would report it as unknown.
-_LOCAL_MODULE_COMMANDS = frozenset({
-    "artifact:init", "artifact:list", "artifact:publish", "artifact:delete", "artifact:auth",
-    "miniapp:activate", "miniapp:deactivate", "miniapp:list",
-    # Shortcuts
-    "ar:in", "ar:li", "ar:pu", "ar:de", "ar:au", "mi:ac", "mi:de", "mi:li",
+    "co:se", "co:re", "cr:reg", "us:cr", "us:pa", "ar:au",
 })
 
 
@@ -65,7 +53,7 @@ def _should_proxy(argv: list[str]) -> bool:
     if "--local" in argv:
         return False  # Escape hatch
     cmd = _get_command(argv)
-    return cmd is not None and cmd not in (_LOCAL_COMMANDS | _LOCAL_MODULE_COMMANDS)
+    return cmd is not None and cmd not in _LOCAL_COMMANDS
 
 
 def _proxy_to_docker(argv: list[str]) -> None:

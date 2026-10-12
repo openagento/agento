@@ -1,11 +1,11 @@
 """E2 panel + launch flow through the real proxy (step 7 of proxy-smoke.sh). Stdlib only.
 
 usage: panel-launch-smoke.py <port> <password file> <agent_view id> <artifact code> <cron container> <proxy> <web>
-                              <miniapp code> <mysql container> <project dir>
+                              <miniapp code> <mysql container>
 
 Signs in as the seeded `e2-smoke-user`, launches the seeded artifact, redeems through the apps
 origin, and checks the file gate, a spoofed X-Forwarded-Uri, the replay, a miniapp action and
-its audit row (E6), a role change, and that no credential reached a log.
+its audit row (E6: preview, approve, launch), a role change, and that no credential reached a log.
 Prints one line per check and only status codes: no token is ever printed.
 """
 from __future__ import annotations
@@ -22,7 +22,7 @@ import urllib.request
 _resolve = socket.getaddrinfo
 socket.getaddrinfo = lambda h, *a, **k: _resolve("127.0.0.1" if h.endswith(".localhost") else h, *a, **k)
 
-port, pw_file, view_id, code, cron, proxy, web, app_code, mysql, project_dir = sys.argv[1:11]
+port, pw_file, view_id, code, cron, proxy, web, app_code, mysql = sys.argv[1:10]
 PANEL, APPS = f"https://panel.localhost:{port}", f"https://apps.localhost:{port}"
 CTX = ssl._create_unverified_context()  # tls internal: the dev CA is not trusted on the host
 failed = 0
@@ -77,8 +77,9 @@ session, _ = cookie(h, "__Host-agento-session")
 seen.append(session)
 panel = {**xhr, "Cookie": f"__Host-agento-session={session}", "X-CSRF-Token": json.loads(body)["csrf_token"]}
 
-status, _h, body = call("POST", f"{PANEL}/api/launches", body={"agent_view_id": int(view_id), "artifact_code": code},
-                        headers=panel)
+# The smoke user holds the miniapps.approve leaf: a preview launches `current` files-only.
+status, _h, body = call("POST", f"{PANEL}/api/miniapps/launches",
+                        body={"agent_view_id": int(view_id), "artifact_code": code, "preview": True}, headers=panel)
 check("create a launch", status, 201)
 if status != 201:
     sys.exit(1)
@@ -116,30 +117,30 @@ def sql(query):
                           input=query, capture_output=True, text=True).stdout.strip()
 
 
-def launch_app():
-    status, _h, body = call("POST", f"{PANEL}/api/launches",
-                            body={"agent_view_id": int(view_id), "artifact_code": app_code}, headers=panel)
+def launch_app(**extra):
+    status, _h, body = call("POST", f"{PANEL}/api/miniapps/launches",
+                            body={"agent_view_id": int(view_id), "artifact_code": app_code, **extra}, headers=panel)
     return status, (json.loads(body) if status == 201 else None)
 
 
-# E6: a launch before activation is files-only; after `miniapp:activate` it pins the manifest.
-# A rerun finds the version activated by the last run: deactivate it, so the run starts files-only.
-for old in filter(None, sql(f"SELECT version_id FROM miniapp_activation WHERE artifact_code = '{app_code}'").split()):
-    subprocess.run(["uv", "run", "bin/agento", "miniapp:deactivate", app_code, old, "--actor", "proxy-smoke"],
-                   cwd=project_dir, capture_output=True, check=True)
-status, first = launch_app()
-check("launch the miniapp artifact before activation", status, 201)
+# E6: no approval in the view, no launch; a preview is files-only; after Approve the launch pins
+# the approved actions. A rerun finds the approval of the last run: revoke it first.
+approval = f"{PANEL}/api/miniapps/apps/{app_code}/views/{view_id}/approval"
+call("DELETE", approval, headers=panel)
+check("launch the miniapp artifact before approval", launch_app()[0], 404)
+status, first = launch_app(preview=True)
+check("preview the miniapp artifact", status, 201)
 if first:
     app_version = first["version_id"]
-    subprocess.run(["uv", "run", "bin/agento", "miniapp:activate", app_code, app_version, "--actor", "proxy-smoke"],
-                   cwd=project_dir, capture_output=True, check=True)
     seen.append(first["redeem"]["fields"]["code"])
     status, h, _ = call("POST", first["redeem"]["url"], body=first["redeem"]["fields"], headers=navigate, form=True)
     seen.append(cookie(h, f"__Host-agento-launch-{first['launch_id']}")[0] or "")
     action = f"{PANEL}/api/launches/{first['launch_id']}/actions/versioned_artifact_get_current"
-    check("action on a redeemed files-only launch", call("POST", action, body={"arguments": {}}, headers=panel)[0], 403)
+    check("action on a redeemed preview launch", call("POST", action, body={"arguments": {}}, headers=panel)[0], 403)
+    check("approve the current version",
+          call("POST", approval, body={"expected_version_id": app_version}, headers=panel)[0], 200)
     status, app = launch_app()
-    check("launch the activated miniapp", status, 201)
+    check("launch the approved miniapp", status, 201)
     if app:
         seen.append(app["redeem"]["fields"]["code"])
         status, h, _ = call("POST", app["redeem"]["url"], body=app["redeem"]["fields"], headers=navigate, form=True)

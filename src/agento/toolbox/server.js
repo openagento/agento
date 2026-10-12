@@ -352,6 +352,9 @@ app.get('/health', async (req, res) => {
 // opt-in, and cannot forget it. Handlers read req.capability; a caller-supplied
 // agent_view_id in a body may only MATCH it, never override it.
 app.use('/api', requireCapability({ endpoint: 'api' }, logToolboxRest));
+// Store administration (/admin/<module>/...): a viewless internal_rest only, which only the
+// backend (web, cron) can mint. No agent capability reaches it. Bodies are JSON, parsed here.
+app.use('/admin', requireCapability({ endpoint: 'admin' }, logToolboxRest), express.json());
 
 // Register module REST APIs and start Playwright in parallel, then listen
 Promise.allSettled([

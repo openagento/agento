@@ -402,8 +402,7 @@ of a hyphenated segment, a longer prefix only to break a collision (`co:res`). A
 needs none. A command has no shortcut only when its derived code collides with a sibling's
 (`bitbucket:publish-comments` / `publish-changes`). The host routes by the raw argv string before it
 resolves a shortcut, so a shortcut goes into each set in `framework/cli/__init__.py` that holds its
-command (`_LOCAL_COMMANDS`, `_LOCAL_MODULE_COMMANDS`, `_INTERACTIVE_COMMANDS`,
-`_MAYBE_INTERACTIVE_COMMANDS`). If not, the shortcut runs in the wrong container or without a TTY.
+command (`_LOCAL_COMMANDS`, `_INTERACTIVE_COMMANDS`, `_MAYBE_INTERACTIVE_COMMANDS`). If not, the shortcut runs in the wrong container or without a TTY.
 `tests/unit/framework/test_command_shortcuts.py` guards both. Show the shortcut in the command's
 `docs/cli/` page.
 

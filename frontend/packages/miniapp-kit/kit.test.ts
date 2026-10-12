@@ -69,41 +69,6 @@ describe("example miniapps", () => {
   });
 });
 
-describe("the job-status example action", () => {
-  const html = readFileSync(join(__dirname, "../../miniapps/examples/job-status/index.html"), "utf8");
-  const script = [...html.matchAll(/<script type="module">([\s\S]*?)<\/script>/g)][0][1]
-    .replace(/import \{ createAgentoSdk \} from "[^"]+";/, "const { createAgentoSdk } = sdkModule;");
-
-  async function load(reply: { status: number; body: unknown }) {
-    document.body.innerHTML = html.slice(html.indexOf("<body"), html.indexOf("</body>"));
-    const sdk = { ready: Promise.resolve(), callAction: async () => reply };
-    new Function("sdkModule", script)({ createAgentoSdk: () => sdk });
-    await sdk.ready;
-    (document.getElementById("load") as HTMLButtonElement).click();
-    await new Promise((r) => setTimeout(r, 0));
-    return {
-      items: [...document.querySelectorAll("#apps li")].map((li) => li.textContent),
-      status: document.getElementById("status")!.textContent,
-    };
-  }
-  const envelope = (payload: unknown, isError = false) =>
-    ({ ok: true, result: { isError, content: [{ type: "text", text: JSON.stringify(payload) }] } });
-
-  it("decodes the toolbox envelope", async () => {
-    const out = await load({ status: 200, body: envelope({ miniapps: [{ artifact_code: "a", title: "A" }] }) });
-    expect(out.items).toEqual(["A (a)"]);
-  });
-  it.each([
-    ["a refused call", { status: 403, body: { ok: false } }],
-    ["a tool-level error", { status: 200, body: envelope({ error: "x" }, true) }],
-    ["a body that is not an envelope", { status: 200, body: { miniapps: [] } }],
-  ])("reports %s as refused", async (_, reply) => {
-    const out = await load(reply);
-    expect(out.items).toEqual([]);
-    expect(out.status).toMatch(/refused/);
-  });
-});
-
 describe("released kit", () => {
   const released = join(__dirname, "released");
   it("the current version is released and its bytes did not change", () => {

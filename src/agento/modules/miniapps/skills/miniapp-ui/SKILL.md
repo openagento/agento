@@ -32,7 +32,7 @@ Load the kit from the apps origin. Write plain HTML; set every text with `textCo
 </html>
 ```
 
-Add `miniapp.json` next to `index.html`: `{"schema": 1, "title": "…", "actions": []}`. An action is a declared tool name; it works only after an operator activates the version.
+Add `miniapp.json` next to `index.html`: `{"schema": 1, "title": "…", "actions": []}`. An action is a declared tool name; it works only after an admin approves the version for the view.
 
 ## Layout rules
 

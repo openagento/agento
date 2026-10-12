@@ -52,8 +52,8 @@ is internal and is never exposed.
 
 `versioned_artifact_init` takes `artifact_code` and an optional `title`, and nothing else: no
 file payload and no path, so the agent fills version 1 through a draft on its desk like any
-other change. The CLI keeps the host-directory import — see
-[artifact:init](../cli/artifact-init.md).
+other change. Only an agent creates an artifact: there is no `artifact:init` command and no
+host-directory import (D-MINIAPP-2, amended 2026-10-11).
 
 ## Scoping: which artifacts an agent may create and use
 
@@ -64,8 +64,8 @@ A caller may use an artifact when **either** holds:
   exists with its owner, or it does not exist); or
 - the code is listed in that scope's `allowed_artifacts`.
 
-An artifact with **no** owner recorded — every one created before this, and every one the
-administrative CLI creates — is reachable only through `allowed_artifacts`. That is the same
+An artifact with **no** owner recorded — every one created before owners existed — is
+reachable only through `allowed_artifacts`. That is the same
 rule such artifacts already followed, so nothing needs migrating.
 
 The second is the operator's grant, and it is also the **handoff**: one
@@ -83,17 +83,18 @@ not — so a refusal would be advice it has no way to act on. The suffix is appe
 spliced over a number the name already ends with, so a taken `plan-2024` becomes
 `plan-2024-2` and never `plan-2`.
 
-Two callers are exempt and get `ARTIFACT_ALREADY_EXISTS` instead: the administrative CLI,
-and any `init` on a code the operator pre-granted. Both name an address on purpose, and
-publishing at a different one would answer a request nobody made.
+One caller is exempt and gets `ARTIFACT_ALREADY_EXISTS` instead: any `init` on a code the
+operator pre-granted. That names an address on purpose, and publishing at a different one
+would answer a request nobody made.
 
 **Always use the returned code.** Echoing back the requested one addresses the wrong
 artifact on every following call.
 
 `limits/max_agent_artifacts` caps creation, counted over the artifacts **that caller may
 use** — never over the store. A store-wide count would answer "how many artifacts does every
-other agent_view hold", and — with `artifact:delete` reachable only by an operator — it would
-let one view lock creation out for everyone until a human intervened. The administrative CLI is exempt from ownership and from the cap.
+other agent_view hold", and — with delete reachable only by a panel user — it would
+let one view lock creation out for everyone until a human intervened. The toolbox admin
+service cannot create an artifact at all.
 
 > **Session-bound identity.** `agent_view_id` comes from the MCP session's capability row
 > (AG-16), not from the URL, so a caller cannot name another view. What remains open is the
@@ -105,9 +106,9 @@ let one view lock creation out for everyone until a human intervened. The admini
 > moves `current`. Enabling `versioned_artifact_save_version` is therefore the decision to let
 > that agent_view put bytes on the artifacts port.
 
-> **Delete is the operator's, and only the operator's.** `artifact:delete` removes all three
-> places in one step — see [docs/cli/artifact-delete.md](../cli/artifact-delete.md). There is no
-> tool equivalent: ownership scopes rather than authorizes, so a self-asserted identity must not
+> **Delete is the operator's, and only the operator's.** A panel user with the
+> `admin.artifacts.delete` leaf deletes an artifact — see [Panel administration](#panel-administration).
+> There is no tool equivalent: ownership scopes rather than authorizes, so a self-asserted identity must not
 > be able to unmake an immutable history. For an agent the creation cap is therefore still a
 > one-way ratchet, and a human is what resets it.
 
@@ -202,10 +203,7 @@ agent replaces with a symlink between the check and the write cannot redirect it
 | `versioned_artifacts/limits/max_diff_bytes` | 1 MiB | Diffs past this are truncated, not refused |
 | `versioned_artifacts/limits/max_agent_artifacts` | 50 | Artifacts one agent_view may create. Bounds ownership, **not disk** — the store keeps every version, and `keep_versions` bounds only the previews |
 | `versioned_artifacts/security/allow_symlinks` | `false` | Only `false` is supported; `true` is rejected at construction |
-| `versioned_artifacts/security/basic_auth_default` | `false` | Give newly created artifacts HTTP Basic auth automatically. Off by default; a null is off. Needs `AGENTO_ENCRYPTION_KEY` — see **Basic auth** |
-
-`artifact:init` reads the three import limits from the running toolbox before it
-walks `--source`, so raising one with `config:set` takes effect on the admin path too.
+| `versioned_artifacts/security/basic_auth_default` | `false` | Give newly created artifacts HTTP Basic auth automatically. Off by default; a null is off. See **Basic auth** |
 
 A limit that cannot be parsed as a positive integer stops the module at boot rather than
 degrading into "no limit".
@@ -213,7 +211,7 @@ degrading into "no limit".
 ## Enable checklist
 
 The toolbox image gains `git` with this module, so an existing deployment must rebuild it
-before the first `artifact:init` — otherwise every artifact operation fails with
+before the first `versioned_artifact_init` — otherwise every artifact operation fails with
 `STORAGE_OPERATION_FAILED`, and the toolbox log reads
 `cause: GitFailure code=ENOENT exit=-1` — the spawn found no `git` at all. (The log holds
 the OS error code, never git's own output; see the Audit section.) `agento upgrade` rebuilds it;
@@ -229,11 +227,10 @@ Tools are opt-in. The master switch alone leaves all ten children disabled — e
 gated on its own key and merely `requires` the master.
 
 An agent that gets `versioned_artifact_init` needs no artifact created for it and no
-`allowed_artifacts` entry — it creates under any free name and owns what it created. The two
-lines below are for the other case: an operator-seeded artifact under a code of their choosing.
+`allowed_artifacts` entry — it creates under any free name and owns what it created. To make
+the agent create under a code of your choice, pre-grant that code (first line below).
 
 ```bash
-uv run bin/agento artifact:init demo-site --source ./some/dir
 uv run bin/agento config:set versioned_artifacts/allowed_artifacts demo-site
 for t in versioned_artifact versioned_artifact_init versioned_artifact_list versioned_artifact_get_current \
          versioned_artifact_list_versions versioned_artifact_create_draft \
@@ -309,11 +306,9 @@ a third process acquired in the gap.
 
 **Recovery contract.** If step 3 fails or the process dies between 2 and 3, the store
 says v3 while HTTP still serves v2. The repair is the *ordinary* call with
-`expected_current_version` equal to the version you want served:
-
-```bash
-uv run bin/agento artifact:publish demo-site v-20260905-154012-a3f2 --expected v-20260905-154012-a3f2
-```
+`expected_current_version` equal to the version you want served. Through the panel admin API,
+that is `POST /api/versioned_artifacts/artifacts/<code>/publish` with both ids equal to the
+version that is current now.
 
 Steps 1 and 3 are idempotent, and the three-argument CAS in step 2 is then a no-op that
 *verifies* — it succeeds precisely when `current` really is that version and fails with
@@ -326,7 +321,12 @@ a bare success, and never a thrown error that would invite a retry the CAS must 
 **Retention** keeps the newest `serving/keep_versions` preview directories per artifact —
 `10` by default. Set it to `0` to keep every one. With a positive value the newest N survive, plus whatever
 `current` actually resolves to — read from the link itself, never from what a caller
-believed it had just installed — plus every version a **live launch** pins (PRD E6 §5). The
+believed it had just installed — plus every version a **live launch** pins (PRD E6 §5), plus
+every version a module **retention pin** names. A module pins versions by exporting
+`retentionPins = [sql]` from a `toolbox/*.js` file: each statement takes one `artifact_code`
+parameter and selects `version_id`. The toolbox collects them from the enabled modules, so a
+disabled module pins nothing; a pin query that fails skips the prune, like a failed live-launch
+query. `miniapps` pins each approved version. The
 prune and web's `create_launch` take the same MySQL named lock, `va_ret:` + sha1(code)
 (fixture `tests/fixtures/retention_lock_v1.json`): the prune tries it without waiting and skips
 this round when it is busy or the DB is down (the next save prunes again); `create_launch` waits
@@ -343,6 +343,63 @@ A `save_version` materializes its new version into the published tree too, and a
 `preview_path`. That step can never fail the save: the version is already in the store,
 so a published tree that cannot be written costs the preview and logs, and the save
 returns `preview_path: null`.
+
+## Admin routes (toolbox)
+
+The trusted backend (`web`, `cron`) administers the store through the toolbox, under `/admin`.
+That endpoint takes only a viewless `internal_rest` capability
+([auth-context.md](../architecture/auth-context.md#profiles)), and the audit actor is the
+capability's `subject_id`. No tool does the same.
+
+| Route | Does |
+|---|---|
+| `GET /admin/versioned-artifacts` | Every artifact in the store (`artifacts`) |
+| `GET /admin/versioned-artifacts/<code>/versions` | The versions of one artifact (`versions`) |
+| `POST /admin/versioned-artifacts/<code>/publish` `{version_id, expected_current_version}` | Make a version current (the CAS of `publish`). `409` carries the real `current_version` |
+| `DELETE /admin/versioned-artifacts/<code>` | Remove the artifact, as `remove` |
+| `POST /admin/versioned-artifacts/<code>/auth` `{user?, password?, disable?}` | Set, rotate or disable share auth |
+| `POST /admin/miniapps/<code>/resolve` `{version}` | (`miniapps`) A version, or `current`: serve its tree again if it was pruned, and answer `{version_id, content_id, manifest}` |
+
+`content_id` is the identity of the version's whole tree: equal bytes give an equal id. A
+version id comes from the clock, so it can repeat after an artifact is deleted and made again;
+the content id cannot match different bytes. Errors are `{error_code, message}`: `404` for an
+unknown artifact or version, `400` for a malformed id, `500` for a store failure.
+
+## Panel administration
+
+`web` serves the artifact admin API under `/api/versioned_artifacts/`. It reads the store
+through the toolbox `/admin` endpoint above, as `service:web:user:<id>`. Each route checks
+its admin leaf (a `di.json` route cannot name one yet, so the handler checks it).
+
+| Route | Leaf | Does |
+|---|---|---|
+| `GET /api/versioned_artifacts/artifacts` | `admin.artifacts` | Every artifact in the store |
+| `GET /api/versioned_artifacts/artifacts/<code>/versions` | `admin.artifacts` | The versions, newest first, each with its `ok` audit rows (`events`) |
+| `POST /api/versioned_artifacts/artifacts/<code>/publish` `{version_id, expected_current_version}` | `admin.artifacts.publish` | Make a version current (also a rollback). `409` carries `current_version` |
+| `DELETE /api/versioned_artifacts/artifacts/<code>` | `admin.artifacts.delete` | Delete the artifact. `204`, also for a code that is already gone |
+
+**Delete** runs in this order, under the retention lock `va_ret:<sha1(code)>` that launch and
+approve also take:
+
+1. Revoke every live launch of the artifact (`launches.revoke_for_artifact`, committed). If this
+   fails, nothing is removed.
+2. Remove the store and the published tree through the toolbox. `ARTIFACT_NOT_FOUND` counts as
+   done, so a retry after a partial delete finishes the work. Any other failure stops here.
+3. Delete the `versioned_artifact` row.
+4. Dispatch `artifact_delete_after` (`ArtifactDeleteAfterEvent`). The `miniapps` observer deletes
+   the artifact's approval rows (`miniapp_activation`). An observer error does not fail the
+   delete: an approval pins a `content_id`, so an old row cannot approve the bytes of a new
+   artifact with the same code.
+
+Only an agent creates an artifact (O-3); the panel has no create. The module panel shows these
+routes: `/artifacts` lists every artifact (code, title, current, share, open drafts), and
+`/artifacts/<code>` lists the versions with their audit rows (a `miniapp.approve` row shows an
+approval), with **Make current** and **Delete** (type the code to confirm). When Make current
+answers `preview_stale`, the page shows a warning and **Repair** (publish again with both ids
+equal to the new current). An **Approvals** section lists the approvals per view from the
+`miniapps` route `GET /api/miniapps/apps/<code>/approvals`, each linking to `/apps/<code>?view=<id>`;
+on any error (miniapps off, no `miniapps.approve`) the section does not show. The page hides an
+action when the user does not hold its leaf; the API checks the leaf again.
 
 ## The serving container
 
@@ -397,25 +454,24 @@ container; what the gate guarantees is that it no longer *serves*. See DECISIONS
 
 ## Basic auth
 
-An artifact can gate its served pages behind HTTP Basic auth. The password is kept in two
-forms that never meet, because the container that *enforces* auth is the one with no secret:
+An artifact can gate its served pages behind HTTP Basic auth. The password is kept in one
+form only: a one-way scrypt hash in `published/<code>/.auth` — a sibling of `v/` and
+`current`, so retention and the `current` swap never touch it, and a dotfile the server
+refuses to serve. The serving container holds no key and no DB handle, so a hash is the only
+credential it can be trusted with.
 
-* the **serving container** reads only a one-way scrypt hash from `published/<code>/.auth`
-  — a sibling of `v/` and `current`, so retention and the `current` swap never touch it, and
-  a dotfile the server refuses to serve. It holds no encryption key and no DB handle, so a
-  hash is the only credential it can be trusted with;
-* the **`versioned_artifact` row** keeps the password AES-encrypted (the same `obscure`
-  mechanism as config), so an operator can read it back or rotate it.
+**There is no readback** (O-4, amended 2026-10-11). The password is shown once, when it is
+set, and no readable copy is kept anywhere. A lost password is rotated, never read back.
+The `versioned_artifact` row keeps only `auth_enabled`, `auth_user` and `share_token`.
 
-The sidecar is what the server actually enforces, so it is written first; a failed DB
-upsert costs only the recoverable copy, never the protection. A present-but-corrupt `.auth`
+The sidecar is what the server actually enforces, so it is written first. A present-but-corrupt `.auth`
 fails **closed** (`401`), never open. Basic auth applies only on a share origin; the apps origin is
 authorized by the launch, and the two credentials never meet on one origin (PRD E6 §9).
 
 `security/basic_auth_default` (off by default; a null is off) decides whether a **new**
 artifact is gated automatically. When it is, `versioned_artifact_init` returns the
-credential **once** so the agent can hand it to the user. Enabling it needs
-`AGENTO_ENCRYPTION_KEY`; without it the artifact is still created, just served open.
+credential **once** so the agent can hand it to the user. If setting it fails, the artifact
+is still created, just served open, and no credential is returned.
 
 ### Shares
 
@@ -442,8 +498,9 @@ origin per share keeps one share's script from replaying another's credential.
   it already), skip the address count: callers behind one address never throttle each other's
   authorized traffic. A known credential that then fails (rotated) is forgotten and counted.
 
-Setting, rotating, showing or disabling auth is operator-only — the
-[`artifact:auth`](../cli/artifact-auth.md) CLI, with **no tool equivalent**, so a
+Setting, rotating or disabling auth is operator-only — the
+[`artifact:auth`](../cli/artifact-auth.md) CLI (it runs in `cron` and calls the toolbox
+`/admin` endpoint as `service:cli:<actor>`), with **no tool equivalent**, so a
 self-asserted `agent_view_id` can never change who may read a published tree. Each change
 writes a `versioned_artifact.auth.set` audit row.
 

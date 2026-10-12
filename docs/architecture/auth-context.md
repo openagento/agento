@@ -36,9 +36,18 @@ derived is a rejection. It is never a permissive default.
 |-------------------|---------|---------------------------------------------|--------|------------|
 | `mcp_job`         | agent   | sse, messages, mcp, invoke                  | —      | no         |
 | `mcp_interactive` | agent   | sse, messages, mcp, invoke                  | —      | no         |
-| `internal_rest`   | service | api, config_test, health (viewless: config_test only) | — | no  |
+| `internal_rest`   | service | api, config_test, health (viewless: config_test, admin only) | — | no  |
 | `user_session`    | user    | invoke                                      | session | yes       |
 | `miniapp`         | user    | invoke                                      | launch | yes        |
+
+No profile lists `admin`. Only a **viewless** `internal_rest` reaches it, and only the backend
+(`web`, `cron`) can mint one: a runner has no database. `admin` is the toolbox's
+`/admin/<module>/...` namespace for store administration (list, publish, delete an artifact;
+resolve a miniapp version). The handler takes the actor from the row's `subject_id`, never from
+the request body. The backend names who acts inside the subject: `web` uses
+`service:web:user:<id>` (the panel artifact API and the miniapp approval), and the cron
+`artifact:auth` command uses `service:cli:<actor>`. An `internal_rest` subject always starts with
+`service:`.
 
 Each endpoint uses one transport: `sse` and `messages` use `sse`, and all other endpoints use
 `http`. The row's `allowed_transports` must contain the transport of the endpoint. The column
@@ -88,7 +97,8 @@ Migration `036_toolbox_capability_auth_context` backfills the rows that existed 
    `artifact_code`, `version_id`), or `null` when the source is revoked.
 3. The verifier checks the capability **and** its source on every call. The `web` module ships
    the `session` checker (E2); the `miniapps` module ships the `launch` checker (E6), which also
-   requires the version to be still activated with the fingerprint the launch pinned.
+   requires an approval for the launch's view that still pins the launch's version. Its tools are
+   that approval's actions, not the role's tool grants (D-MINIAPP-2).
 4. Call a tool with `POST /internal/tools/{name}:invoke`, header `Authorization: Bearer <token>`,
    body = the tool arguments as JSON. Mint a new capability for each call: the first call
    consumes a single-use token, and a second call with it gets 403.
@@ -134,6 +144,7 @@ operator who pins `/sse` mints with `capability:mint --transport sse`.
 | Endpoint | Token in | Rule |
 |---|---|---|
 | `POST /internal/tools/{name}:invoke` | `Authorization: Bearer` only | A `?cap=` gets 401, even beside a valid header |
+| `/admin/*` | `Authorization: Bearer` only | A `?cap=` gets 401. The row must allow `http` |
 | `/mcp`, `/api/*`, `/config-test`, `/health` | `Authorization: Bearer` | The row must allow `http`. The toolbox still reads `?cap=` here until the retirement rule below applies |
 | `/sse` + `/messages` | `?cap=` permitted | The row must allow `sse`. Only for clients that cannot send headers |
 

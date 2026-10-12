@@ -35,7 +35,9 @@ ADMIN_SCREENS = {
     "Users": {"admin.users": "View", "admin.users.create": "Create", "admin.users.edit": "Edit"},
     "Roles": {"admin.roles": "View", "admin.roles.create": "Create", "admin.roles.edit": "Edit and grant",
               "admin.roles.delete": "Delete"},
-    "Miniapps": {"miniapps": "Use"},
+    "Miniapps": {"miniapps": "Use", "miniapps.approve": "Approve, revoke and preview"},
+    "Artifacts": {"admin.artifacts": "View", "admin.artifacts.publish": "Make current",
+                  "admin.artifacts.delete": "Delete"},
 }
 ADMIN_RESOURCES = frozenset(leaf for leaves in ADMIN_SCREENS.values() for leaf in leaves)
 USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -623,6 +625,19 @@ def visible_agent_views(conn, user: User) -> list[dict]:
         params = (user.role,)
     with conn.cursor() as cur:
         cur.execute(sql + " ORDER BY v.code", params)
+        return list(cur.fetchall())
+
+
+def operation_views(conn, role: str, operation: str) -> list[dict]:
+    """The views where the role holds the operation (view or workspace grant), in one query."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT v.id, v.code, v.label, v.workspace_id FROM agent_view v WHERE EXISTS ("
+            "SELECT 1 FROM role_grant g WHERE g.role = %s AND g.grant_kind = 'operation' AND g.name = %s AND ("
+            "(g.agent_view_id = v.id AND g.workspace_id IS NULL)"
+            " OR (g.agent_view_id IS NULL AND g.workspace_id = v.workspace_id))) ORDER BY v.code",
+            (role, operation),
+        )
         return list(cur.fetchall())
 
 

@@ -308,6 +308,15 @@ class ConversationDeletedEvent:
 
 
 @dataclass
+class ArtifactDeleteAfterEvent:
+    """A versioned artifact deleted from the panel (D-MINIAPP-2), dispatched after the store and
+    the ``versioned_artifact`` row are gone. Hygiene only: no security check depends on an
+    observer (a launch checks the pinned content)."""
+
+    artifact_code: str
+
+
+@dataclass
 class ConversationUnblockedEvent:
     """An operator released a thread blocked on a paused turn (PRD E3-E5 §4.5)."""
 

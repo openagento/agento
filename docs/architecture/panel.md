@@ -57,14 +57,15 @@ credentialed CORS.
 
 ```
 panel page                      web                                  proxy / apps origin
-   | POST /api/launches {agent_view_id, artifact_code}
+   | POST /api/miniapps/launches {agent_view_id, artifact_code, preview?}
    |------------------------------>| can_reach + artifact.launch? else 404
+   |                               | approval for (artifact, view)? else 404
+   |                               |   (preview: leaf miniapps.approve, `current`, no action)
    |                               | retention lock (va_ret:<sha1(code)>, 5 s) taken
-   |                               | versioned_artifact_get_current via the toolbox
-   |                               |   (a user_session capability, one call)
-   |                               | miniapp_get_launch_spec for that version (E6)
+   |                               | toolbox /admin resolve of the approved version:
+   |                               |   served tree restored, content_id equal? else 409
    |                               | create_launch: user row locked, grant re-checked,
-   |                               |   cap applied, spec pinned, only hashes stored
+   |                               |   cap applied, version and actions pinned, only hashes stored
    |                               | retention lock released
    |<------------------------------| 201 {launch_id, version_id, redeem: {url, fields}}
    | form POST (target=_blank) to https://apps…/launch, fields launch_id + code
@@ -98,12 +99,15 @@ panel page                      web                                  proxy / app
 - The redeem does not need the proxy secret: the exchange code is the credential. It needs the exact panel `Origin`. It does not check `Sec-Fetch-Site`: panel and apps can be two sites (`panel.localhost` and `apps.localhost` are), so the browser sends `cross-site`.
 - A 403 from `/internal/authz/app` clears every presented launch cookie whose launch is no longer
   live. Caddy returns the deny response, headers included, to the client (measured).
-- A version that is not an activated miniapp gets the no-manifest constants in `launch`:
-  `manifest_fingerprint = sha256("")`, `allowed_actions = []` — it serves files and authorizes no
-  action. An activated one pins its fingerprint and actions; see
-  [../modules/miniapps.md](../modules/miniapps.md). A toolbox failure while reading the spec is
-  `503`, never a files-only guess.
-- `GET /api/agent-views/<id>/miniapps` lists the activated miniapps the user may launch there. A reachable view without `artifact.launch` answers an empty list, not 404: the view is already in the user's list.
+- A launch serves the version approved for the view and pins its `allowed_actions`; a preview
+  serves `current` and authorizes no action. See [../modules/miniapps.md](../modules/miniapps.md).
+  A toolbox failure is `503`, never a files-only guess.
+- `GET /api/miniapps/agent-views` (leaf `miniapps` or `miniapps.approve`) lists the views where the user may launch. It is the
+  `miniapps` panel probe: without the leaf it answers 403 and the Apps entry is hidden.
+- `GET /api/miniapps/apps/<code>/views/<id>/approval` (leaf `miniapps.approve` and `artifact.launch`
+  in the view) answers the approval (or `null`) and `current` with its manifest actions, for the
+  approval page `/apps/<code>`.
+- `GET /api/miniapps/agent-views/<id>/catalogue` lists the apps approved for the view. A reachable view without `artifact.launch` answers an empty list, not 404: the view is already in the user's list.
 
 ## Roles and grants
 
@@ -125,7 +129,7 @@ Access comes from `role_grant` rows:
 - `grant_kind = 'operation'` with **no scope**: an admin panel leaf (`accounts.ADMIN_SCREENS`) — one
   per admin screen (`admin.dashboard`, `admin.jobs`, `admin.agents`, `admin.credentials`,
   `admin.tools`, `admin.skills`, `admin.config`, `admin.users`, `admin.roles`, `miniapps`) and one per
-  action (`admin.credentials.edit`, `admin.config.edit` — also the Tools and Skills switches,
+  action (`admin.credentials.edit`, `miniapps.approve` (approve, revoke, preview; checked in the handler), `admin.config.edit` — also the Tools and Skills switches,
   `admin.users.create|edit`, `admin.roles.create|edit|delete`). `admin` holds every leaf built in.
   Each panel route names its leaf (`Route.acl`), and `server._run` checks `accounts.may` before the
   handler; the session's `user.acl` lists the leaves the panel shows. A role that is not admin
@@ -277,6 +281,13 @@ the CSRF controls above. A scope is `?scope=default|workspace|agent_view&scope_i
 | PUT | `/api/admin/config` | `admin.config.edit` | `{path, reset}`; a secret path is refused |
 | DELETE | `/api/admin/config` | `admin.config.edit` | 204; a secret path is refused, no override is 404 |
 | POST | `/api/admin/config/test` | `admin.config.edit` | `{status, code, message}`; an `error` has a fixed message per code |
+
+**Artifacts.** The artifact admin API is `/api/versioned_artifacts/...` (leaves
+`admin.artifacts`, `admin.artifacts.publish`, `admin.artifacts.delete`): list, history, make
+current, delete. The `versioned_artifacts` panel shows it at `/artifacts` (list) and
+`/artifacts/<code>` (versions with their audit rows, make current, delete after the code is typed). `web` reads and writes the store only through the toolbox `/admin` endpoint, as
+`service:web:user:<id>`. A delete revokes the artifact's live launches first. See
+[versioned-artifacts.md](../modules/versioned-artifacts.md#panel-administration).
 
 **Never a secret, never the decryptor.** `web` holds the encryption key (D-BACKEND-1), but the
 admin API never sends a secret value. A secret field (`obscure`

@@ -16,7 +16,7 @@ a panel button and a miniapp button look the same.
 | `frontend/lookbook/` | The ui.mantine.dev patterns, copied as a Storybook catalogue (see [Lookbook](#lookbook)) |
 | `frontend/packages/api/` (`@agento/api`) | `apiFetch`, the session, the query client, the stream hub, the panel module contract |
 | `frontend/panel/` | The app: shell, router, login, users and roles, miniapp launches, the admin screens (`src/routes/admin/`) |
-| `src/agento/modules/<core module>/panel/` | A core module's screens (today: `conversation`) |
+| `src/agento/modules/<core module>/panel/` | A core module's screens (today: `conversation`, `miniapps`, `versioned_artifacts`) |
 | `frontend/miniapps/examples/` | Hand-written example miniapps |
 
 Built output (gitignored, shipped in the wheel):
@@ -180,7 +180,9 @@ export default panel;
 a `RegistryContractError` when a module breaks the contract. The panel shows the screen only when
 the probe answers 2xx; a disabled module's routes answer 404, so it fails closed. A module panel may
 import `react`, `react-router`, `@agento/ui`, `@agento/api` and its own files — a test checks the
-import graph.
+import graph. So the launch handshake (`openLaunch`, which uses the miniapp bridge) is in
+`@agento/api`, and a row action icon is a named action of `@agento/ui` (`OpenAction`,
+`EndAction`, `DeleteAction`, `MakeCurrentAction`).
 
 ## The miniapp kit
 
@@ -217,7 +219,9 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 |---|---|
 | CSRF in memory only, A → logout → B leaves nothing, a stale response is dropped | `packages/api/src/api.test.ts` |
 | Stream reconnect, refused stream, `cursor_expired`, backoff, `?after=` | `packages/api/src/hub.test.ts` |
-| Popup blocked, API refusal closes the window, bridge before POST, code in no URL or cache | `panel/src/launch.test.ts` |
+| Popup blocked, API refusal closes the window, bridge before POST, code in no URL or cache, a preview never reuses an approved launch | `packages/api/src/launch.test.ts` |
+| Apps catalogue, approval page (approve CAS, revoke, preview) | `modules/miniapps/panel/miniapps.test.tsx` |
+| Artifacts list, versions, make current CAS, delete after the code is typed | `modules/versioned_artifacts/panel/artifacts.test.tsx` |
 | Roles list, Delete kept for a built-in or used role, Add role; the role tree saves one PUT, locked leaves are never sent, a search keeps hidden checks, a scope switch asks before it discards, the global scope shows the Admin leaves | `panel/src/routes/Roles.test.tsx`, `panel/src/routes/RoleEdit.test.tsx`, `panel/src/routes/roleTree.test.ts` |
 | Probe 404 / 2xx / network error → nav and NotAvailable | `panel/src/registry.test.tsx` |
 | The example miniapp decodes the toolbox action envelope | `packages/miniapp-kit/kit.test.ts` |

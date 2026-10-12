@@ -1,4 +1,6 @@
-"""One panel tool call: mint a single-use `user_session` capability and invoke E1's route.
+"""Backend calls to the toolbox: one panel tool call (a single-use `user_session`
+capability on E1's invoke route), one miniapp action, or one store-admin call (a viewless
+`internal_rest` capability on the `/admin` endpoint).
 
 The raw capability lives only in this call's locals: it travels in the Authorization
 header (never a query string), and nothing here logs or returns it.
@@ -13,7 +15,7 @@ import httpx
 from agento.framework.access.sessions import Session
 from agento.framework.auth_context import resolve_auth_ttls
 from agento.framework.config_test.toolbox import resolve_toolbox_url
-from agento.framework.toolbox_capability import issue_capability
+from agento.framework.toolbox_capability import issue_capability, rest_capability
 
 _UNAVAILABLE = {"ok": False, "error": {"code": "toolbox_unavailable", "message": "toolbox unavailable"}}
 
@@ -78,12 +80,30 @@ def invoke_launch_action(conn, session: Session, launch_id: str, tool: str, argu
     return _post(conn, tool, arguments, token, timeout)
 
 
+def web_subject(user) -> str:
+    """The subject ``web`` mints for a panel user's store call: the toolbox audit actor (D-MINIAPP-2)."""
+    return f"service:web:user:{user.id}"
+
+
+def admin_request(conn, method: str, path: str, *, subject_id: str, body: dict | None = None,
+                  timeout: float = 30.0) -> InvokeResult:
+    """One call to ``/admin/<path>`` on the toolbox (store administration).
+
+    The capability is viewless ``internal_rest``, the only kind the ``admin`` endpoint
+    admits; ``subject_id`` (``service:…``) names who acts, and the toolbox audits it. It is
+    revoked when the one request returns.
+    """
+    with rest_capability(agent_view_id=None, subject_id=subject_id) as token:
+        return _send(method, f"{resolve_toolbox_url(conn)}/admin/{path}", body, token, timeout)
+
+
 def _post(conn, tool: str, arguments: dict, token: str, timeout: float) -> InvokeResult:
+    return _send("POST", f"{resolve_toolbox_url(conn)}/internal/tools/{tool}:invoke", arguments, token, timeout)
+
+
+def _send(method: str, url: str, body: dict | None, token: str, timeout: float) -> InvokeResult:
     try:
-        r = httpx.post(
-            f"{resolve_toolbox_url(conn)}/internal/tools/{tool}:invoke",
-            json=arguments, headers={"Authorization": f"Bearer {token}"}, timeout=timeout,
-        )
+        r = httpx.request(method, url, json=body, headers={"Authorization": f"Bearer {token}"}, timeout=timeout)
     except httpx.HTTPError:
         return InvokeResult(503, _UNAVAILABLE)
     try:

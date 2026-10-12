@@ -5,7 +5,7 @@ import { useDisclosure } from "@mantine/hooks";
 import { NavLink as RouterLink, Outlet, useLocation, useNavigate } from "react-router";
 import { logout, useCan, useSession, type PanelModule } from "@agento/api";
 import {
-  AppWindow, Blocks, Bot, House, KeyRound, LayoutDashboard, ListChecks, LogOut, Moon, Settings, ShieldCheck, Sparkles, Sun,
+  Blocks, Bot, House, KeyRound, LayoutDashboard, ListChecks, LogOut, Moon, Settings, ShieldCheck, Sparkles, Sun,
   Users, Wrench,
 } from "lucide-react";
 import { useAvailable } from "./availability";
@@ -61,7 +61,6 @@ export function Shell({ modules }: { modules: PanelModule[] }) {
   const [opened, { toggle, close }] = useDisclosure();
   const user = useSession();
   const dashboard = useCan("admin.dashboard");
-  const miniapps = useCan("miniapps");
   const navigate = useNavigate();
   const location = useLocation();
   const { setColorScheme } = useMantineColorScheme();
@@ -86,7 +85,6 @@ export function Shell({ modules }: { modules: PanelModule[] }) {
           {/* With the Dashboard leaf, Home is the Dashboard, in the Administration group. */}
           {!dashboard && navItem("/", "Home", House, location.pathname, close)}
           {modules.map((m) => <ModuleNav key={m.id} module={m} onNavigate={close} />)}
-          {miniapps && navItem("/miniapps", "Miniapps", AppWindow, location.pathname, close)}
           <AdminNav onNavigate={close} />
         </AppShell.Section>
         <AppShell.Section pt="md" style={{ borderTop: "1px solid var(--mantine-color-default-border)" }}>

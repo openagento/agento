@@ -247,7 +247,7 @@ def test_may_reads_the_global_admin_panel_rows(conn, scopes):
 
 
 @pytest.mark.parametrize("tools,operations,refusal", [
-    (["miniapp_list"], [], "takes no tools"),
+    (["versioned_artifact_list"], [], "takes no tools"),
     ([], ["artifact.launch"], "operation must be one of"),
 ])
 def test_global_scope_takes_admin_panel_operations_only(conn, tools, operations, refusal):
@@ -358,30 +358,30 @@ def test_set_role_grants_replaces_one_scope(conn, scopes):
         accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=[], operations=[],
                                  actor=(alice.id, "admin"))
     got = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], actor=(root.id, "admin"),
-                                   tools=["versioned_artifact_get_current", "miniapp_list"],
+                                   tools=["versioned_artifact_get_current", "versioned_artifact_list"],
                                    operations=["artifact.launch"])
     assert got == {"added": 3, "removed": 0}
-    accounts.add_grant(conn, "user", "tool", "miniapp_list", agent_view_id=scopes["av2"])
+    accounts.add_grant(conn, "user", "tool", "versioned_artifact_list", agent_view_id=scopes["av2"])
     _session_and_launch(conn, alice.id, scopes["ws1"], scopes["av1"])
     _session_and_launch(conn, other.id, scopes["ws2"], scopes["av2"])
     same = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], operations=["artifact.launch"],
-                                    tools=["miniapp_list", "versioned_artifact_get_current"])
+                                    tools=["versioned_artifact_list", "versioned_artifact_get_current"])
     assert same == {"added": 0, "removed": 0}
     assert _revoked(conn, alice.id) == (False, False)  # nothing removed: no launch ends
-    got = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=["miniapp_list"],
+    got = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=["versioned_artifact_list"],
                                    operations=[])
     assert got == {"added": 0, "removed": 2}
-    assert _rows(conn, "user", scopes, "av1") == [("tool", "miniapp_list")]
-    assert _rows(conn, "user", scopes, "av2") == [("tool", "miniapp_list")]  # other scope untouched
+    assert _rows(conn, "user", scopes, "av1") == [("tool", "versioned_artifact_list")]
+    assert _rows(conn, "user", scopes, "av2") == [("tool", "versioned_artifact_list")]  # other scope untouched
     assert _revoked(conn, alice.id) == (False, True)
     assert _revoked(conn, other.id) == (False, False)
 
 
 def test_set_role_grants_skips_names_the_workspace_already_grants(conn, scopes):
-    accounts.add_grant(conn, "user", "tool", "miniapp_list", workspace_id=scopes["ws1"])
+    accounts.add_grant(conn, "user", "tool", "versioned_artifact_list", workspace_id=scopes["ws1"])
     accounts.add_grant(conn, "user", "operation", "artifact.launch", agent_view_id=scopes["av1"])
     accounts.add_grant(conn, "user", "operation", "artifact.launch", workspace_id=scopes["ws1"])
-    got = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=["miniapp_list"],
+    got = accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=["versioned_artifact_list"],
                                    operations=["artifact.launch"])
     # Not inserted at the view (redundant); the redundant view row already there stays.
     assert got == {"added": 0, "removed": 0}
@@ -396,20 +396,20 @@ def test_set_role_grants_skips_names_the_workspace_already_grants(conn, scopes):
 
 
 def test_set_role_grants_keeps_rows_of_a_disabled_module(conn, scopes, monkeypatch):
-    accounts.add_grant(conn, "user", "tool", "miniapp_list", agent_view_id=scopes["av1"])
-    enabled = accounts.declared_tools(enabled_only=True) - {"miniapp_list"}
+    accounts.add_grant(conn, "user", "tool", "versioned_artifact_list", agent_view_id=scopes["av1"])
+    enabled = accounts.declared_tools(enabled_only=True) - {"versioned_artifact_list"}
     real = accounts.declared_tools
     monkeypatch.setattr(accounts, "declared_tools", lambda enabled_only=False: enabled if enabled_only else real())
     assert accounts.set_role_grants(conn, "user", agent_view_id=scopes["av1"], tools=[], operations=[]) == {
         "added": 0, "removed": 0}
-    assert _rows(conn, "user", scopes, "av1") == [("tool", "miniapp_list")]
+    assert _rows(conn, "user", scopes, "av1") == [("tool", "versioned_artifact_list")]
 
 
 @pytest.mark.parametrize("kwargs,message", [
     ({"workspace_id": 1, "agent_view_id": 1, "tools": [], "operations": []}, "exactly one"),
     ({"agent_view_id": 1, "tools": ["no_such_tool"], "operations": []}, "declares"),
     ({"agent_view_id": 1, "tools": [], "operations": ["users.manage"]}, "operation must be one of"),
-    ({"agent_view_id": 1, "tools": "miniapp_list", "operations": []}, "list of names"),
+    ({"agent_view_id": 1, "tools": "versioned_artifact_list", "operations": []}, "list of names"),
     ({"agent_view_id": 1, "tools": [f"t{i}" for i in range(1001)], "operations": []}, "at most 1000"),
 ])
 def test_set_role_grants_validation(conn, kwargs, message):

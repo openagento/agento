@@ -56,9 +56,9 @@ CLI-managed control over what each agent_view can do: `tool:enable`/`tool:disabl
 
 Generic versioned file/directory trees: mutable **drafts**, immutable **versions**, and an atomic
 **current** pointer, backed by local Git that never surfaces in the public contract. Shipped as the
-core module `versioned_artifacts` (eleven opt-in MCP tools covering the whole lifecycle, with
-`artifact:init` / `artifact:list` / `artifact:publish` as equivalent operator commands and
-`artifact:delete` as an operator-only one), with a toolbox-only storage volume, per-`agent_view`
+core module `versioned_artifacts` (eleven opt-in MCP tools covering the whole lifecycle; since
+2026-10-11 list, history, make current and delete are the panel admin API, and only an agent
+creates an artifact — DECISIONS.md D-MINIAPP-2), with a toolbox-only storage volume, per-`agent_view`
 artifact allowlist, filesystem locking, crash recovery and a `versioned_artifact_audit` trail. A
 separate `artifacts` container serves the published tree on loopback, and disabling the module makes
 it answer 503. See
@@ -163,6 +163,17 @@ backend route, so these gaps stay open, each needing a route first:
   every stream (re)open instead of resuming exactly;
 - **the release must build the frontend**: CI and `release.yml` run `npm ci && npm run build`
   before `uv build`, and the wheel hook refuses a wheel without the panel.
+- **artifact admin follow-ups** (2026-10-11, D-MINIAPP-2):
+  - a version-to-version diff in the panel;
+  - per-tool enablement decoupled from the agent (G2): enabling an action tool for a miniapp also
+    gives it to the view's agent;
+  - share auth in the panel (today only the cron `artifact:auth`);
+  - artifact ownership that authorizes, not only scopes;
+  - a per-workspace artifact list (`admin.artifacts` is global);
+  - an acl on a `di.json` route, so a module handler does not check its own leaf;
+  - `service.init` keeps a `files` argument for test fixtures only; move the fixtures to a
+    draft and remove it;
+  - an index on `launch.artifact_code` (the delete revoke scans the table).
 
 ### 🟡 Conversations, history and chat (E3–E5)
 
@@ -236,7 +247,7 @@ share, the strict one-parse apps path, and retention that keeps what a live laun
 
 - a panel frontend that uses the bridge (the SDK ships as a library with tests);
 - an `artifact:share` command separate from `artifact:auth` (setting Basic auth makes the share);
-- a per-launch revoke when a manifest is re-activated (a launch with a stale fingerprint just loses its actions).
+- a per-launch revoke when an approval changes (a live launch of an old version just loses its actions).
 
 ### ⚪ Per-artifact origins for miniapps
 
@@ -524,7 +535,8 @@ Two more gaps the same change makes reachable without an operator, neither of th
   in the Versioned artifacts milestone.
 - ~~**No `artifact:delete` exists**, so the creation cap is a one-way ratchet.~~ **Shipped
   2026-09-15** — `artifact:delete` removes both roots and the row under the init lock, CLI only.
-  The cap is still a lockout of every other view until an operator runs it.
+  The cap is still a lockout of every other view until an operator runs it. *2026-10-11: the delete
+  moved to the panel (`admin.artifacts.delete`); the ratchet is the same.*
 
 Also unclosed on the serving side: `artifacts-server.js` answers `/` with an index of every
 artifact code, and agent-authored HTML now reaches that port with no operator step. Same-origin

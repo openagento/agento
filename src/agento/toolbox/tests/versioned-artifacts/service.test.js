@@ -287,17 +287,18 @@ describe('listing the artifacts a scope may use', () => {
     expect(site.open_drafts).toEqual([{ draft_id: d.draft_id, base_version: site.current_version }]);
   });
 
-  it('takes title, owner and created_at from the metadata row when one exists', async () => {
+  it('takes title and created_at from the metadata row when one exists; there is no owner field', async () => {
     const created = new Date('2026-09-11T08:30:00Z');
     const [site] = await withMeta([
-      { artifact_code: 'site', title: 'Marketing site', owner: 'a@b.c', created_at: created },
+      { artifact_code: 'site', title: 'Marketing site', created_at: created },
     ]).listArtifacts();
-    expect(site).toMatchObject({ title: 'Marketing site', owner: 'a@b.c', created_at: created });
+    expect(site).toMatchObject({ title: 'Marketing site', created_at: created });
+    expect(site).not.toHaveProperty('owner');   // D-MINIAPP-2: the owner marker lives in the store
   });
 
   it('lists an artifact that has no metadata row yet', async () => {
-    const [site] = await withMeta([{ artifact_code: 'unrelated', title: 't', owner: 'o' }]).listArtifacts();
-    expect(site).toMatchObject({ artifact_code: 'site', title: null, owner: null, created_at: null });
+    const [site] = await withMeta([{ artifact_code: 'unrelated', title: 't' }]).listArtifacts();
+    expect(site).toMatchObject({ artifact_code: 'site', title: null, created_at: null });
   });
 
   it('still lists the store when the metadata table cannot be read', async () => {
@@ -425,12 +426,9 @@ describe('the artifacts an agent_view may create', () => {
     expect(String(capped[0].reason)).toMatch(/ARTIFACT_LIMIT_REACHED/);
   });
 
-  it('exempts the administrator from the namespace and the cap', async () => {
-    // `admin: true` is set by cli.js alone: `artifact:init` must keep creating any code.
-    const admin = createService({ config: cfg({ allowed_artifacts: '', 'limits/max_agent_artifacts': 1 }),
-      db: null, log: vi.fn(), admin: true });
-    await admin.init('operator-one');
-    expect((await admin.init('operator-two')).artifact_code).toBe('operator-two');
+  it('lets the store admin create nothing: creation is the agent job (O-3)', async () => {
+    const admin = createService({ config: cfg({ allowed_artifacts: '' }), db: null, log: vi.fn(), admin: true });
+    await expect(admin.init('operator-one')).rejects.toMatchObject({ code: 'ARTIFACT_ACCESS_DENIED' });
   });
 });
 
@@ -440,17 +438,16 @@ describe('remove', () => {
     await expect(svc.remove('site')).rejects.toMatchObject({ code: 'ARTIFACT_ACCESS_DENIED' });
   });
 
-  it('removes the published tree, the store and the row', async () => {
-    const deleted = [];
-    const pool = { execute: async (sql, params) => { deleted.push([sql, params]); } };
+  it('removes the published tree and the store; web deletes the row', async () => {
+    const sql = [];
+    const pool = { execute: async (q) => { sql.push(q); } };
     const admin = createService({ config: cfg(), db: { getCronPool: () => pool }, log: vi.fn(),
       actor: 'admin', admin: true });
     const r = await admin.remove('site');
     expect(r).toMatchObject({ artifact_code: 'site', removed_store: true, removed_published: true });
     await expect(stat(path.join(root, 'site'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(path.join(pub, 'site'))).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(deleted.some(([sql, params]) => /DELETE FROM versioned_artifact\b/.test(sql) && params[0] === 'site'))
-      .toBe(true);
+    expect(sql.filter((q) => /DELETE FROM versioned_artifact\b/.test(q))).toEqual([]);
   });
 
   // The half-cleaned state is exactly what an operator reaches for this command to

@@ -15,7 +15,7 @@ const RES: RoleResources = {
       { name: "jira_comment", enabled: true, granted: true, inherited: true },
       { name: "jira_delete", enabled: false, granted: false, inherited: false },
     ] },
-    { toolset: "miniapps", tools: [{ name: "miniapp_list", enabled: true, granted: false, inherited: false }] },
+    { toolset: "versioned_artifacts", tools: [{ name: "versioned_artifact_list", enabled: true, granted: false, inherited: false }] },
   ],
   admin: [],
 };
@@ -29,7 +29,7 @@ describe("roleTree", () => {
   it("builds groups with leaf values and drops empty groups on search", () => {
     const full = toTreeData(RES, "");
     expect(full.map((n) => n.value)).toEqual(["grp:ops", "grp:tools"]);
-    expect(full[1].children?.map((n) => n.value)).toEqual(["grp:ts:jira", "grp:ts:miniapps"]);
+    expect(full[1].children?.map((n) => n.value)).toEqual(["grp:ts:jira", "grp:ts:versioned_artifacts"]);
     const found = toTreeData(RES, "DELETE");
     expect(found.map((n) => n.value)).toEqual(["grp:tools"]);
     expect(found[0].children?.[0].children?.map((n) => n.value)).toEqual(["tool:jira_delete"]);
@@ -60,9 +60,9 @@ describe("roleTree", () => {
     expect([...cleared].sort()).toEqual([
       "op:app.report", "op:artifact.launch", "op:conversation.run_details", "tool:jira_comment", "tool:jira_search",
     ]);
-    const [visible] = toTreeData(RES, "miniapp_list");
+    const [visible] = toTreeData(RES, "versioned_artifact_list");
     const one = toggle(cleared, visible, true, locked);
-    expect(one.has("tool:miniapp_list")).toBe(true);
+    expect(one.has("tool:versioned_artifact_list")).toBe(true);
     expect(one.has("tool:jira_delete")).toBe(false);
   });
 

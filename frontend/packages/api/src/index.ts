@@ -15,3 +15,4 @@ export { useQuery, useMutation, useQueryClient, QueryClientProvider } from "@tan
 export {
   assertPanelModule, PANEL_CONTRACT_VERSION, RegistryContractError, type PanelModule, type PanelRoute,
 } from "./contract";
+export { endLaunch, openLaunch, reconcileLaunches, trackedLaunchIds, type LaunchOutcome, type LaunchRequest } from "./launch";

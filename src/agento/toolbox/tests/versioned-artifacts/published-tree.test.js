@@ -19,8 +19,8 @@ const cfg = (over = {}) => ({ storage_root: root, published_root: pub, allowed_a
   'limits/max_diff_bytes': 1048576, 'limits/max_agent_artifacts': 50, 'security/allow_symlinks': false,
   'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', ...over });
 
-const mk = (over = {}, backend = undefined) => createService({
-  config: cfg(over), db: null, log: vi.fn(), actor: 'a@b.c', ...(backend ? { backend } : {}),
+const mk = (over = {}, backend = undefined, extra = {}) => createService({
+  config: cfg(over), db: null, log: vi.fn(), actor: 'a@b.c', ...(backend ? { backend } : {}), ...extra,
 });
 
 beforeEach(async () => {
@@ -279,20 +279,22 @@ describe('save version', () => {
 describe('retention and live launches', () => {
   const LOCK = JSON.parse(fs.readFileSync(
     path.join(path.dirname(new URL(import.meta.url).pathname), '../../../../../tests/fixtures/retention_lock_v1.json'), 'utf8'));
-  const fakeDb = ({ got = 1, pinned = [], liveFails = false } = {}) => {
+  const fakeDb = ({ got = 1, pinned = [], liveFails = false, modulePinned = [], pinFails = false } = {}) => {
     const calls = [];
     const conn = {
       query: async (sql, params) => {
         calls.push([sql, params]);
         if (/GET_LOCK/.test(sql)) return [[{ got }]];
         if (/FROM launch/.test(sql)) { if (liveFails) throw new Error('db down'); return [pinned.map((v) => ({ version_id: v }))]; }
+        if (/FROM module_pin/.test(sql)) { if (pinFails) throw new Error('db down'); return [modulePinned.map((v) => ({ version_id: v }))]; }
         return [[{}]];
       },
       release: () => calls.push(['release']),
     };
     return { calls, db: { getCronPool: () => ({ getConnection: async () => conn, execute: async () => [[]], query: async () => [[]] }) } };
   };
-  const mkDb = (db, over = {}) => createService({ config: cfg({ 'serving/keep_versions': 1, ...over }), db, log: vi.fn(), actor: 'a@b.c' });
+  const mkDb = (db, over = {}, retentionPins = []) => createService({
+    config: cfg({ 'serving/keep_versions': 1, ...over }), db, log: vi.fn(), actor: 'a@b.c', retentionPins });
 
   it('runs the live-launch query the integration test runs against the real schema', () => {
     expect(LIVE_LAUNCH_VERSIONS_SQL).toBe(LOCK.live_launch_versions_sql);
@@ -324,5 +326,65 @@ describe('retention and live launches', () => {
       expect(fs.existsSync(vDir(v1))).toBe(true);
       expect(calls.at(-1)).toEqual(['release']);
     }
+  });
+
+  // A module may pin versions too (`retentionPins`, collected by config-loader): miniapps
+  // keeps each approved version's tree. The pin runs on the same connection, under the lock.
+  const PIN = 'SELECT approved_version_id AS version_id FROM module_pin WHERE artifact_code = ?';
+
+  it('keeps a version a module retention pin names', async () => {
+    const v1 = (await svc.getCurrent('site')).current_version;
+    const { calls, db } = fakeDb({ modulePinned: [v1] });
+    const s = mkDb(db, {}, [PIN]);
+    const v2 = await mkVersion('<h1>v2</h1>\n');
+    await s.publish('site', v2, v1);
+    const v3 = await mkVersion('<h1>v3</h1>\n');
+    await s.publish('site', v3, v2);
+    expect(fs.existsSync(vDir(v1))).toBe(true);    // pinned by the module
+    expect(fs.existsSync(vDir(v2))).toBe(false);
+    expect(calls.filter(([sql]) => sql === PIN).every(([, p]) => p[0] === 'site')).toBe(true);
+  });
+
+  it('skips the prune when a module pin query fails', async () => {
+    const v1 = (await svc.getCurrent('site')).current_version;
+    const { db } = fakeDb({ pinFails: true });
+    const s = mkDb(db, {}, [PIN]);
+    const v2 = await mkVersion('<h1>v2</h1>\n');
+    await s.publish('site', v2, v1);
+    expect(fs.existsSync(vDir(v1))).toBe(true);
+  });
+});
+
+// The admin resolve route (miniapps) needs a version's tree served and its content identity.
+describe('ensureServed and versionContentId', () => {
+  it('re-materializes a pruned version tree, and is a no-op when it is there', async () => {
+    const s = mk({ 'serving/keep_versions': 1, allowed_artifacts: '' }, undefined, { admin: true });
+    const v1 = (await s.getCurrent('site')).current_version;
+    const v2 = await mkVersion('<h1>v2</h1>\n');
+    await s.publish('site', v2, v1);
+    expect(fs.existsSync(vDir(v1))).toBe(false);
+    await s.ensureServed('site', v1);
+    expect(await readFile(path.join(vDir(v1), 'index.html'), 'utf8')).toBe('<h1>v1</h1>\n');
+    await s.ensureServed('site', v1);
+    expect(await readlink(currentLink())).toBe(path.join('v', v2));   // the pointer is not moved
+  });
+
+  it('names the content of a version: equal bytes, equal id; other bytes, other id', async () => {
+    const v1 = (await svc.getCurrent('site')).current_version;
+    const v2 = await mkVersion('<h1>v2</h1>\n');
+    const v3 = await mkVersion('<h1>v2</h1>\n');
+    const id1 = await svc.versionContentId('site', v1);
+    expect(id1).toMatch(/^[0-9a-f]{40}$/);
+    expect(await svc.versionContentId('site', v2)).toBe(await svc.versionContentId('site', v3));
+    expect(await svc.versionContentId('site', v2)).not.toBe(id1);
+  });
+
+  it('refuses a version or an artifact the store does not hold, and one the scope may not use', async () => {
+    await expect(svc.versionContentId('site', 'v-20990101-000000-dead')).rejects.toMatchObject({ code: 'VERSION_NOT_FOUND' });
+    await expect(svc.ensureServed('site', 'v-20990101-000000-dead')).rejects.toMatchObject({ code: 'VERSION_NOT_FOUND' });
+    const s = mk({ allowed_artifacts: '' });
+    const v1 = (await svc.getCurrent('site')).current_version;
+    await expect(s.versionContentId('site', v1)).rejects.toMatchObject({ code: 'ARTIFACT_ACCESS_DENIED' });
+    await expect(s.ensureServed('site', v1)).rejects.toMatchObject({ code: 'ARTIFACT_ACCESS_DENIED' });
   });
 });

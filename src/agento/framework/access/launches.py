@@ -2,7 +2,8 @@
 
 A launch pins ``(artifact_code, version_id)`` and a scope. The panel gets a one-time exchange
 code; redeeming it (one POST, 30 s) sets the per-launch cookie that ``authorize_files`` checks
-on every file request. E2 writes the no-manifest constants: E6 owns the manifest.
+on every file request. ``manifest_fingerprint`` always holds the no-manifest constant: the
+miniapps approval pins the version's content instead (D-MINIAPP-2).
 """
 from __future__ import annotations
 
@@ -107,12 +108,11 @@ def retention_lock(conn, artifact_code: str):
 
 
 def create_launch(conn, user: User, *, workspace_id: int, agent_view_id: int | None,
-                  artifact_code: str, version_id: str, manifest_fingerprint: str = NO_MANIFEST_FINGERPRINT,
+                  artifact_code: str, version_id: str,
                   allowed_actions: list[str] | tuple[str, ...] = ()) -> tuple[Launch, str]:
     """Return the launch and its raw exchange code; the code is never stored.
 
-    The defaults are a files-only launch (no manifest, no actions). E6 passes the
-    activated manifest's fingerprint and actions.
+    No actions is a files-only launch; miniapps passes the approved actions.
     """
     ttl = resolve_auth_ttls(conn, workspace_id)["launch_max_ttl"]
     cap = max_concurrent(conn, workspace_id)
@@ -133,7 +133,7 @@ def create_launch(conn, user: User, *, workspace_id: int, agent_view_id: int | N
             " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() + INTERVAL %s SECOND, %s,"
             " NOW() + INTERVAL %s SECOND)",
             (launch_id, token_hash(secrets.token_urlsafe(32)), user.id, artifact_code, version_id,
-             manifest_fingerprint, json.dumps(list(allowed_actions)), workspace_id, agent_view_id, ttl,
+             NO_MANIFEST_FINGERPRINT, json.dumps(list(allowed_actions)), workspace_id, agent_view_id, ttl,
              token_hash(code),
              EXCHANGE_TTL_SECONDS),
         )
@@ -214,6 +214,14 @@ def revoke_launch(conn, user: User, launch_id: str) -> bool:
         done = cur.rowcount == 1
     conn.commit()
     return done
+
+
+def revoke_for_artifact(conn, artifact_code: str) -> None:
+    """End every live launch of the artifact, and commit (the panel delete does this first)."""
+    with conn.cursor() as cur:
+        cur.execute("UPDATE launch SET revoked_at = NOW() WHERE artifact_code = %s AND revoked_at IS NULL",
+                    (artifact_code,))
+    conn.commit()
 
 
 def list_launches(conn, user: User) -> list[Launch]:
