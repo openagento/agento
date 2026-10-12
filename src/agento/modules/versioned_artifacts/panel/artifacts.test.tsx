@@ -102,7 +102,7 @@ describe("the artifact page", () => {
   });
 
   it("hides the write actions without their leaves", async () => {
-    await stubApi({ [BASE]: LIST, [`${BASE}/approver/versions`]: VERSIONS }, ["admin.artifacts"]);
+    await stubApi({ [BASE]: LIST, [`${BASE}/approver/versions`]: VERSIONS }, ["versioned_artifacts"]);
     detailAt();
     await screen.findByText("Adds CSV export");
     await waitFor(() => expect(screen.queryByRole("button", { name: "Make current" })).toBeNull());

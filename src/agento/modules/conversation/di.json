@@ -33,59 +33,70 @@
       "method": "POST",
       "path": "/api/conversation/threads",
       "handler": "src.routes.create",
-      "json_body": true
+      "json_body": true,
+      "acl": "self"
     },
     {
       "method": "GET",
       "path": "/api/conversation/threads",
-      "handler": "src.routes.index"
+      "handler": "src.routes.index",
+      "acl": "self"
     },
     {
       "method": "GET",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})",
-      "handler": "src.routes.show"
+      "handler": "src.routes.show",
+      "acl": "self"
     },
     {
       "method": "DELETE",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})",
-      "handler": "src.routes.destroy"
+      "handler": "src.routes.destroy",
+      "acl": "self"
     },
     {
       "method": "GET",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/messages",
-      "handler": "src.routes.messages"
+      "handler": "src.routes.messages",
+      "acl": "self"
     },
     {
       "method": "POST",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/messages",
       "handler": "src.routes.send",
-      "json_body": true
+      "json_body": true,
+      "acl": "self"
     },
     {
       "method": "POST",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/messages/(?P<message_id>[0-9]{1,19})/unblock",
-      "handler": "src.routes.unblock"
+      "handler": "src.routes.unblock",
+      "acl": "self"
     },
     {
       "method": "POST",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/regenerate",
       "handler": "src.routes.regenerate",
-      "json_body": true
+      "json_body": true,
+      "acl": "self"
     },
     {
       "method": "GET",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/events",
-      "handler": "src.routes.events"
+      "handler": "src.routes.events",
+      "acl": "self"
     },
     {
       "method": "GET",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/timeline",
-      "handler": "src.routes.timeline"
+      "handler": "src.routes.timeline",
+      "acl": "self"
     },
     {
       "method": "GET",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/events/stream",
-      "handler": "src.stream.open_stream"
+      "handler": "src.stream.open_stream",
+      "acl": "self"
     }
   ],
   "execution_hooks": {
@@ -93,15 +104,5 @@
     "resume_session_resolver": "src.hooks.ConversationResumeSessions",
     "execution_finalizer": "src.finalizer.ConversationFinalizer",
     "execution_delta_sink": "src.deltas.ConversationDeltaSink"
-  },
-  "acl_resources": [
-    {
-      "id": "conversation.run_details",
-      "title": "See run details: prompts, tool input and output, harness, credential, model, tokens, job links"
-    },
-    {
-      "id": "conversation.channel_write",
-      "title": "Write into a channel thread: post a reply that continues the external task (Jira, Outlook)"
-    }
-  ]
+  }
 }

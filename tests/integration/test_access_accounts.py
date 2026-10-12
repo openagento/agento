@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from agento.framework.access import accounts
+from agento.framework.access import accounts, acl
 from agento.framework.access.accounts import AccessError
 
 from .access_fixtures import conn, scopes  # noqa: F401 (fixtures; tests take them as arguments, F811)
@@ -234,7 +234,7 @@ def test_may_reads_the_global_admin_panel_rows(conn, scopes):
     accounts.add_grant(conn, "support", "operation", "artifact.launch", workspace_id=scopes["ws1"])
     sam = accounts.User(3, "sam", "support", True)
     assert accounts.held_admin(conn, "support") == ["admin.jobs", "admin.users"]
-    assert accounts.held_admin(conn, "admin") == sorted(accounts.ADMIN_RESOURCES)
+    assert accounts.held_admin(conn, "admin") == sorted(acl.registry().resources)
     assert accounts.may(conn, sam, "admin.jobs")
     assert not accounts.may(conn, sam, "admin.config")
     assert accounts.may(conn, sam, ("admin.config", "admin.users"))  # a tuple is any of
@@ -244,6 +244,16 @@ def test_may_reads_the_global_admin_panel_rows(conn, scopes):
     assert {r["code"]: r["scopes"] for r in accounts.list_roles(conn)}["support"] == 2
     assert {"workspace_id": None, "agent_view_id": None, "tools": 0, "operations": 2} \
         in accounts.role_scopes(conn, "support")
+
+
+def test_a_disabled_modules_leaves_are_held_by_nobody(conn, monkeypatch):
+    """The registry holds the enabled modules only; the role_grant row stays for a re-enable."""
+    accounts.create_role(conn, "support", "Support")
+    accounts.set_role_grants(conn, "support", tools=[], operations=["admin.jobs", "miniapps"])
+    monkeypatch.setattr(acl, "_REGISTRY", acl.load([]))  # miniapps disabled
+    assert accounts.held_admin(conn, "support") == ["admin.jobs"]
+    assert "miniapps" not in accounts.held_admin(conn, "admin")
+    assert any(g["name"] == "miniapps" for g in accounts.list_grants(conn, "support"))
 
 
 @pytest.mark.parametrize("tools,operations,refusal", [

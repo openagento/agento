@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`acl.json`: panel leaves and operations per module** (D-ADMIN-ACL-2). The framework and each
+  module declare their admin screens, leaves and scoped operations in `acl.json`, the Magento
+  `acl.xml`. Every panel route names an `acl` (a leaf, a list of leaves, `self` or `anonymous`); a
+  route with a missing or unknown `acl` fails `module:validate` and stops `web` at start. A leaf of a
+  disabled module leaves the role tree. The artifact leaves are now `versioned_artifacts`,
+  `versioned_artifacts.publish` and `versioned_artifacts.delete`; a miniapp preview is
+  `POST /api/miniapps/previews` (a `preview` key on `/api/miniapps/launches` is `400`). See
+  [docs/modules/README.md](docs/modules/README.md#acljson).
 - **Admin panel access per role.** The role page has a third scope, **Admin panel (everywhere)**,
   with one leaf per admin screen (Dashboard, Jobs, Agents, Credentials, Tools, Skills, Config, Users,
   Roles, Miniapps) and one per action (view, create, edit, delete). A role sees and calls only the
@@ -75,7 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a second) and proven at 250 parallel runs. Codex passes `-c model_reasoning_summary=auto` and
   shows its reasoning summary. The panel shows the chat layout, tool summaries, one status line,
   one error per turn with a retry, collapsed reasoning, code highlight and a phone drawer.
-- **ACL resources declared by modules.** `di.json` `acl_resources: [{id, title}]` makes an
+- **ACL resources declared by modules.** A module's `acl.json` `operations: [{id, title}]` makes an
   operation grantable (`grant:add --operation`, the panel role page); `admin` has all. The
   conversation module declares `conversation.run_details`: prompts, tool input and output, harness,
   provider, credential label, model, tokens and job links are shown to a non-admin only with this

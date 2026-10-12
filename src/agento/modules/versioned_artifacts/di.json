@@ -6,12 +6,13 @@
     }
   ],
   "routes": [
-    {"method": "GET", "path": "/api/versioned_artifacts/artifacts", "handler": "src.routes.list_artifacts"},
+    {"method": "GET", "path": "/api/versioned_artifacts/artifacts", "handler": "src.routes.list_artifacts",
+     "acl": "versioned_artifacts"},
     {"method": "GET", "path": "/api/versioned_artifacts/artifacts/(?P<code>[a-z0-9-]{1,64})/versions",
-     "handler": "src.routes.versions"},
+     "handler": "src.routes.versions", "acl": "versioned_artifacts"},
     {"method": "POST", "path": "/api/versioned_artifacts/artifacts/(?P<code>[a-z0-9-]{1,64})/publish",
-     "handler": "src.routes.make_current", "json_body": true},
+     "handler": "src.routes.make_current", "json_body": true, "acl": "versioned_artifacts.publish"},
     {"method": "DELETE", "path": "/api/versioned_artifacts/artifacts/(?P<code>[a-z0-9-]{1,64})",
-     "handler": "src.routes.delete"}
+     "handler": "src.routes.delete", "acl": "versioned_artifacts.delete"}
   ]
 }

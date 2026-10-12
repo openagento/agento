@@ -4,6 +4,41 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-12 — Module ACL resources in acl.json, an acl on every panel route (D-ADMIN-ACL-2)
+
+Plan: `~/.claude/plans/module-acl-resources-fdefd3.md`. Owner, 2026-10-12: "naprawić wszystkie teraz,
+nie później. Szczególnie ten ACL. Jak to jest w magento? Powinniśmy chyba wprowadzić plik acl.json i w
+nim mieć te resource-y. Każdy route w panelu powinien być pokryty w ACL resource, inaczej powinien być
+błąd automatycznie." Supersedes the leaf list of D-ADMIN-ACL-1, the "checked in the handler" parts of
+D-MINIAPP-2 and the `acl_resources` key of D-E9-6.
+
+- **`acl.json` holds the resources, not Python** (the Magento `etc/acl.xml`). The framework file
+  `framework/access/acl.json` holds the core screens (`admin.*`) and `artifact.launch`; a module
+  ships its own. `screens` are global panel leaves, `operations` are scoped grants. `access/acl.py`
+  reads them into one registry (core first, then the enabled modules by name). An id is unique
+  across all files. `ADMIN_SCREENS`, `ADMIN_RESOURCES` and `FRAMEWORK_OPERATIONS` are removed.
+- **Every panel route names an `acl`** (the Magento controller `ADMIN_RESOURCE`). `Route.acl` has no
+  default; a `di.json` route without `acl` fails `module:validate`, and any route with a missing or
+  unknown `acl` stops `web` at start (`compose_routes`). Two values are not leaves (the Magento
+  webapi `self` and `anonymous`): `self` lets every signed-in user in, and the handler scopes the
+  rows (`can_reach`, `artifact.launch`, `conversation.*`); `anonymous` is only for an `auth: login`
+  route (`POST /api/session`). No module handler checks a panel leaf; an AST test guards it.
+- **A leaf of a disabled module leaves the registry** (role tree, `held_admin`, `grant:add`). Its
+  `role_grant` rows stay and work again when the module is enabled. The registry has the lifetime of
+  the route table: one per `web` start; a CLI command builds it on first use.
+- **O-A:** `acl.json` `operations` replaces `di.json` `acl_resources`. A leftover key is a
+  `module:validate` error.
+- **O-B:** a module's ids start with the module name. `admin.artifacts*` is renamed
+  `versioned_artifacts`, `versioned_artifacts.publish`, `versioned_artifacts.delete`, with no
+  migration: the old ids were never shipped (only in local commit `d7118def`).
+- **O-C:** a preview launch is its own route, `POST /api/miniapps/previews` (`acl:
+  miniapps.approve`). A `preview` key on `POST /api/miniapps/launches` is `400`. A preview without
+  the leaf is now `403` (it was `404`).
+- **O-D:** a module route may name only its own leaves, core leaves, or the leaves of a module in its
+  `sequence` (MOD-1).
+
+---
+
 ## 2026-10-11 — Miniapp approval per artifact and view pins a version (D-MINIAPP-2)
 
 Plan: `~/.claude/plans/artifacts-miniapps-panel-v2-a80bd2.md` (O-1, O-2, O-5, O-6, O-7). Owner reply,
@@ -28,7 +63,8 @@ owner can veto it before merge (then the checker reads role tool grants again).
 - **One actor spelling: `service:web:user:<id>`.** The same string is the `/admin` capability
   subject, `activated_by` and the `versioned_artifact_audit` actor (`miniapp.approve`,
   `miniapp.revoke`). There is no event: `web` is the one writer.
-- **Leaves, checked in the handler.** `miniapps` (catalogue) and `miniapps.approve` (approve, revoke,
+- **Leaves, checked in the handler.** *Superseded 2026-10-12 by D-ADMIN-ACL-2: each route names its
+  leaf in `di.json` `acl`, and preview is its own route.* `miniapps` (catalogue) and `miniapps.approve` (approve, revoke,
   preview). A module route in `di.json` cannot name a leaf, so `miniapps/src/routes.py` checks
   `accounts.may` (403). The scoped `artifact.launch` check answers 404.
 - **Preview** launches `current` with no action; it needs `miniapps.approve`.
@@ -42,7 +78,8 @@ owner can veto it before merge (then the checker reads role tool grants again).
   `/api/versioned_artifacts/artifacts` (list), `…/<code>/versions` (history, joined with the `ok`
   audit rows in one query), `…/<code>/publish` (make current, the toolbox CAS) and
   `DELETE …/<code>`, with the leaves `admin.artifacts`, `admin.artifacts.publish` and
-  `admin.artifacts.delete`, checked in the handler. Every store read or write goes through the
+  `admin.artifacts.delete`, checked in the handler (*superseded 2026-10-12 by D-ADMIN-ACL-2: renamed
+  `versioned_artifacts*`, named in the route `acl`*). Every store read or write goes through the
   toolbox `/admin` endpoint as `service:web:user:<id>`.
 - **One delete path, in this order** (plan §2.4), under the retention lock `va_ret:`: revoke the
   artifact's live launches (committed; a failure removes nothing), then the toolbox delete
@@ -75,7 +112,7 @@ hold; only admin assigns admin] 3. dont build any safety guards not to delete ad
 have cli and we can create users that way. 4. ok".
 
 - **One leaf per admin screen, one per CRUD action** (`accounts.ADMIN_SCREENS`, 17 leaves, Miniapps
-  included). A leaf is a `role_grant` row with `grant_kind = 'operation'` and **no scope**: admin
+  included; *superseded 2026-10-12 by D-ADMIN-ACL-2: the leaves are in `acl.json` files*). A leaf is a `role_grant` row with `grant_kind = 'operation'` and **no scope**: admin
   screens list every view, so a leaf cannot be narrower than global. No new kind and no schema
   change: the scoped readers (`_SCOPE_MATCH`, the toolbox `GRANTS_SQL`) already treat a row with no
   scope as no grant. `_check_grant` keeps the two apart: a leaf takes no scope, any other name needs
@@ -692,7 +729,8 @@ Plan: `~/.claude/plans/e9-chat-ux-03532f.md`.
   lock: rows take the thread's row lock in ascending id (D-E9-2) and AUTO_INCREMENT runs with
   `innodb_autoinc_lock_mode=2`. Proven at 250 parallel runs (`test_delta_scale.py`). Owner
   approval: D1, 2026-10-06 ("Make sure this is not trade off", RULES.md SCL-1).
-- **D-E9-6: an operation a role can be granted is a module-declared ACL resource.** A module
+- **D-E9-6: an operation a role can be granted is a module-declared ACL resource.** *Amended
+  2026-10-12 by D-ADMIN-ACL-2: the list moved to the module's `acl.json` `operations`.* A module
   lists `acl_resources: [{id, title}]` in `di.json` (the Magento `acl.xml` pattern); the
   grantable set is the built-in `artifact.launch` plus every declared id, read from the module
   directories like `declared_tools()`, so `web`, the CLI and validation agree with no runtime
@@ -1611,7 +1649,7 @@ agent_views. Under one uid, that boundary does not exist; Option B is what would
   view now comes from the session's capability row.) The fix is
   session-bound identity in the framework, not a module-local check — see ROADMAP.md.
 - **Cost, accepted:** *Amended 2026-10-11 by D-MINIAPP-2: delete moved to the panel (leaf
-  `admin.artifacts.delete`); it is still not a tool.* `artifact:delete` is the operator's alone — destroying an immutable history is
+  `admin.artifacts.delete`, renamed `versioned_artifacts.delete` by D-ADMIN-ACL-2); it is still not a tool.* `artifact:delete` is the operator's alone — destroying an immutable history is
   not something a self-asserted identity may do — so for an agent the cap is still a one-way ratchet
   and a human is what resets it.
 

@@ -169,8 +169,9 @@ backend route, so these gaps stay open, each needing a route first:
     gives it to the view's agent;
   - share auth in the panel (today only the cron `artifact:auth`);
   - artifact ownership that authorizes, not only scopes;
-  - a per-workspace artifact list (`admin.artifacts` is global);
-  - an acl on a `di.json` route, so a module handler does not check its own leaf;
+  - a per-workspace artifact list (`versioned_artifacts` is global);
+  - ~~an acl on a `di.json` route, so a module handler does not check its own leaf~~ **Done
+    2026-10-12** (D-ADMIN-ACL-2: every route names an `acl`, leaves in `acl.json`);
   - `service.init` keeps a `files` argument for test fixtures only; move the fixtures to a
     draft and remove it;
   - an index on `launch.artifact_code` (the delete revoke scans the table).
@@ -536,7 +537,7 @@ Two more gaps the same change makes reachable without an operator, neither of th
 - ~~**No `artifact:delete` exists**, so the creation cap is a one-way ratchet.~~ **Shipped
   2026-09-15** — `artifact:delete` removes both roots and the row under the init lock, CLI only.
   The cap is still a lockout of every other view until an operator runs it. *2026-10-11: the delete
-  moved to the panel (`admin.artifacts.delete`); the ratchet is the same.*
+  moved to the panel (`versioned_artifacts.delete`); the ratchet is the same.*
 
 Also unclosed on the serving side: `artifacts-server.js` answers `/` with an index of every
 artifact code, and agent-authored HTML now reaches that port with no operator step. Same-origin

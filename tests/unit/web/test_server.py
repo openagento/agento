@@ -374,7 +374,7 @@ def test_a_blank_query_parameter_reaches_the_route_as_present(base_url, monkeypa
         seen.append(dict(req.query))
         return api.Response(200, {})
 
-    route = api.Route("GET", re.compile("^/api/echo$"), echo, auth="login")
+    route = api.Route("GET", re.compile("^/api/echo$"), echo, auth="login", acl="anonymous")
     monkeypatch.setattr(api, "ROUTES", [*api.ROUTES, route])
     httpx.get(f"{base_url}/api/echo?after=&n=1&n=2")
     assert seen == [{"after": "", "n": "1"}]

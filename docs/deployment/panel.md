@@ -74,6 +74,22 @@ for that view on the panel page **Apps** (`/apps/<code>`). The approval pins one
 actions. A new version that the agent publishes waits for the next approval. See
 [../modules/miniapps.md](../modules/miniapps.md).
 
+## Giving a role admin screens
+
+A panel screen or action opens only for a role that holds its **leaf**. A leaf takes no scope:
+
+```bash
+bin/agento grant:add --role support --operation admin.jobs
+bin/agento grant:add --role support --operation versioned_artifacts      # the Artifacts screen
+bin/agento grant:add --role support --operation miniapps.approve        # approve, revoke, preview
+```
+
+`bin/agento grant:add --help` lists every leaf with its title, from the `acl.json` files of the
+framework and the enabled modules. The panel **Roles** screen shows the same tree. `admin` holds
+every leaf built in. A leaf of a disabled module is not shown and opens nothing; its grant stays
+and works again when the module is enabled. Each panel route names the leaf it needs
+([../architecture/panel.md](../architecture/panel.md#acl-resources-acljson)).
+
 ## Launch limits
 
 `web/launch/max_concurrent` (default `5`, hard ceiling `20`) is how many live launches one user

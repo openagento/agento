@@ -56,8 +56,9 @@ The file is at most 64 KiB. The toolbox reads it through `versioned_artifacts`' 
 | `POST /api/miniapps/apps/<code>/views/<view_id>/approval` `{expected_version_id, actions?}` | `miniapps.approve` | approve `current` for the view |
 | `DELETE /api/miniapps/apps/<code>/views/<view_id>/approval` | `miniapps.approve` | revoke the approval |
 
-All three also need `artifact.launch` in the view (else `404`). A module route cannot name a leaf in
-`di.json` yet, so the handler checks it (`403`).
+All four also need `artifact.launch` in the view (else `404`). Each route names its leaf in
+`di.json` `acl`, and `web` checks it before the handler (`403`). The leaves are declared in the
+module's `acl.json` (screen "Miniapps": `miniapps`, `miniapps.approve`).
 
 Approve, under the artifact's retention lock (the lock prune and launch take):
 
@@ -82,10 +83,12 @@ still be enabled in the view (`tool:enable`); that also gives the tool to the ag
 
 ## A launch
 
-1. The panel calls `POST /api/miniapps/launches` with `{agent_view_id, artifact_code, preview?}`.
-   The user needs `artifact.launch` in the view, else `404`.
-2. `preview: true` also needs the leaf `miniapps.approve` (else `404`). It launches `current` with
-   **no actions**, with or without an approval.
+1. The panel calls `POST /api/miniapps/launches` with `{agent_view_id, artifact_code}` (route
+   `acl: "self"`). The user needs `artifact.launch` in the view, else `404`. A `preview` key in the
+   body is `400`.
+2. A preview is its own route, `POST /api/miniapps/previews` with the same body. It needs the leaf
+   `miniapps.approve` (else `403`, checked first) and `artifact.launch` in the view (else `404`). It
+   launches `current` with **no actions**, with or without an approval.
 3. Else the view needs an approval (else `404`). Under the retention lock, `web` resolves the
    approved version (which serves its tree again if retention removed it). A missing version, or a
    `content_id` other than the approved one, is `409 approved version gone`, and the approval row is

@@ -36,7 +36,7 @@ def signed_in(monkeypatch):
 
 def _route(monkeypatch, handler, *, method="GET", path="/api/stream/test"):
     import re
-    route = api.Route(method, re.compile(f"^{path}$"), handler)
+    route = api.Route(method, re.compile(f"^{path}$"), handler, acl="self")
     monkeypatch.setattr(api, "ROUTES", [*api.ROUTES, route])
     return path
 

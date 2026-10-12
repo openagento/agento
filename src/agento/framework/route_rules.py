@@ -7,6 +7,9 @@ second place for the two to disagree, and the one that matters is whichever runs
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
+
+from .access.acl import ANONYMOUS, SELF
 
 METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")
 
@@ -41,8 +44,28 @@ def _is_capture(segment: str) -> bool:
     return bool(_CAPTURE.match(segment))
 
 
-def declaration_error(module_name: str, decl: object) -> str | None:
-    """The reason this declaration is refused, or None."""
+def acl_error(value: object, known: Collection[str], *, auth: str = "session") -> str | None:
+    """Why a route's ``acl`` is refused, or None. Every panel route has one (Magento
+    ``ADMIN_RESOURCE``): a leaf id, a non-empty list of leaf ids (any one of them), ``self``
+    (any signed-in user; the handler scopes to the user's own rows or grants), or
+    ``anonymous`` (only the sign-in route, ``auth='login'``). ``known`` is the leaf ids the
+    route may name; ``web`` checks every composed route, built-ins too, at start."""
+    if value == ANONYMOUS:
+        return None if auth == "login" else "acl 'anonymous' is only for a route with auth='login'"
+    if auth == "login":
+        return "a route with auth='login' has acl 'anonymous'"
+    if value == SELF:
+        return None
+    ids = [value] if isinstance(value, str) else value
+    if not isinstance(ids, (list, tuple)) or not ids or not all(isinstance(i, str) for i in ids):
+        return f"route acl must be a leaf id, a non-empty list of leaf ids, 'self' or 'anonymous', got {value!r}"
+    unknown = [i for i in ids if i not in known]
+    return f"route acl names an unknown leaf {unknown[0]!r}" if unknown else None
+
+
+def declaration_error(module_name: str, decl: object, acl_ids: Collection[str]) -> str | None:
+    """The reason this declaration is refused, or None. ``acl_ids`` is the leaves a route of
+    this module may name (``acl.route_ids``)."""
     if not isinstance(decl, dict):
         return f"a route must be an object, got {decl!r}"
     method, path, handler = decl.get("method"), decl.get("path"), decl.get("handler")
@@ -71,6 +94,11 @@ def declaration_error(module_name: str, decl: object) -> str | None:
     # module that could set it could publish an unauthenticated endpoint.
     if decl.get("auth", "session") != "session":
         return "a module route is always auth='session'"
+    if "acl" not in decl:
+        return "a module route needs an 'acl': a leaf id, a list of leaf ids, or 'self'"
+    if problem := acl_error(decl["acl"], acl_ids):
+        return (f"{problem}; a module route may name its own leaves, core leaves, or leaves of a "
+                f"module in its sequence")
     return None
 
 
