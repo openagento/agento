@@ -8,7 +8,7 @@ import { queryClient } from "./query";
 import { onEndSession } from "./session";
 import { createLaunchBridge, type ActionResult } from "@agento/miniapp-bridge";
 
-/** `preview` (admins): `current` with no actions, whether or not it is approved. */
+/** `preview` (leaf `miniapps.approve`): `current` with no actions, whether or not it is approved. */
 export interface LaunchRequest { agentViewId: number; artifactCode: string; preview?: boolean }
 
 export type LaunchOutcome =
@@ -82,9 +82,9 @@ function submitForm(url: string, target: string, fields: Record<string, string>,
 async function create(req: LaunchRequest, appWindow: Window, name: string, w: Window): Promise<LaunchOutcome> {
   let created: Created;
   try {
-    created = await apiFetch<Created>("/api/miniapps/launches", {
+    created = await apiFetch<Created>(req.preview ? "/api/miniapps/previews" : "/api/miniapps/launches", {
       method: "POST",
-      json: { agent_view_id: req.agentViewId, artifact_code: req.artifactCode, ...(req.preview && { preview: true }) },
+      json: { agent_view_id: req.agentViewId, artifact_code: req.artifactCode },
     });
   } catch (e) {
     appWindow.close();

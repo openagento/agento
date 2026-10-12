@@ -103,11 +103,11 @@ describe("the approval page", () => {
     vi.spyOn(window, "open").mockReturnValue({ close: vi.fn(), closed: false } as unknown as Window);
     const api = await stubApi({
       "/api/miniapps/agent-views": VIEWS, "/api/miniapps/apps/approver/views/3/approval": APPROVAL, "/api/admin/tools": TOOLS,
-      "POST /api/miniapps/launches": new Response(JSON.stringify({ error: "no" }), { status: 503 }),
+      "POST /api/miniapps/previews": new Response(JSON.stringify({ error: "no" }), { status: 503 }),
     });
     approvalAt();
     fireEvent.click(await screen.findByRole("button", { name: "Preview current" }));
-    await waitFor(() => expect(api.calls("POST", "/api/miniapps/launches")[0]?.body)
-      .toEqual({ agent_view_id: 3, artifact_code: "approver", preview: true }));
+    await waitFor(() => expect(api.calls("POST", "/api/miniapps/previews")[0]?.body)
+      .toEqual({ agent_view_id: 3, artifact_code: "approver" }));
   });
 });

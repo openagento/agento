@@ -14,10 +14,12 @@ The model is in
 Shortcuts: `gr:ad`, `gr:li`, `gr:re`.
 
 - `--tool` must name a tool that some module declares in `module.json` `tools[]` (enabled or
-  not). `--operation` accepts `artifact.launch` and every ACL resource a
-  module declares in `di.json` `acl_resources` (today `conversation.run_details`), and every admin
-  panel leaf (`admin.jobs`, `admin.users.edit`, `miniapps`, …); `--help` lists them with their
-  titles. `admin` holds every admin panel leaf and every module-declared resource built in.
+  not). `--operation` accepts every id in the `acl.json` files of the
+  framework and the enabled modules: an operation (`artifact.launch`, `conversation.run_details`,
+  …) and an admin panel leaf (`admin.jobs`, `admin.users.edit`, `miniapps`,
+  `versioned_artifacts.publish`, …); `--help` lists them with their titles. `admin` holds every
+  admin panel leaf and every module operation built in. See
+  [../modules/README.md](../modules/README.md#acljson).
 - An admin panel leaf takes no scope (`grant:list` prints `global`). Any other grant takes exactly
   one: a workspace grant reaches the workspace and every agent_view in it; an agent_view grant
   reaches only that view.

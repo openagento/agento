@@ -23,6 +23,7 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
+from agento.framework.access import acl
 from agento.framework.bootstrap import _load_observers
 from agento.framework.job_types import register_job_type
 from agento.framework.module_loader import import_class, parse_module_dir
@@ -42,8 +43,9 @@ def _check(condition: bool, message: str) -> None:
         raise RouteDeclarationError(message)
 
 
-def _route(module_name: str, module_dir: Path, decl: object, taken: dict[str, str]) -> Route:
-    problem = declaration_error(module_name, decl)
+def _route(module_name: str, module_dir: Path, decl: object, taken: dict[str, str],
+           acl_ids: frozenset[str]) -> Route:
+    problem = declaration_error(module_name, decl, acl_ids)
     _check(problem is None, f"module {module_name}: {problem}")
     assert isinstance(decl, dict)
     handler = decl["handler"]
@@ -58,8 +60,10 @@ def _route(module_name: str, module_dir: Path, decl: object, taken: dict[str, st
         raise RouteDeclarationError(f"module {module_name}: cannot load handler {handler!r}: {exc}") from None
     _check(callable(function), f"module {module_name}: handler {handler!r} is not callable")
 
+    route_acl = decl["acl"]
     return Route(decl["method"], re.compile(compiled_pattern(decl["path"])), function,
-                 json_body=bool(decl.get("json_body", False)))
+                 json_body=bool(decl.get("json_body", False)),
+                 acl=route_acl if isinstance(route_acl, str) else tuple(route_acl))
 
 
 def load_module_routes(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]) -> list[Route]:
@@ -78,8 +82,12 @@ def load_module_routes(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]) -
     # A built-in path is taken before any module is read: a module cannot shadow sign-in.
     taken = {f"{r.method} {r.pattern.pattern.strip('^$')}": "web" for r in ROUTES}
 
+    enabled = enabled_dirs(etc_dir, module_dirs)
+    # The leaves of the enabled modules only: a route that names a leaf of a disabled module
+    # in its sequence fails here, as bootstrap() fails for that sequence (MOD-1).
+    registry = acl.load(enabled)
     routes: list[Route] = []
-    for name, module_dir in _enabled(etc_dir, module_dirs):
+    for name, module_dir in enabled:
         di = module_dir / "di.json"
         if not di.is_file():
             continue
@@ -89,20 +97,29 @@ def load_module_routes(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]) -
             raise RouteDeclarationError(f"module {name}: unreadable di.json: {exc}") from None
         for value in manifest.get("job_types", []):
             register_job_type(value, module=name)
-        routes += [_route(name, module_dir, d, taken) for d in manifest.get("routes", [])]
+        ids = acl.route_ids(registry, name, _sequence(module_dir))
+        routes += [_route(name, module_dir, d, taken, ids) for d in manifest.get("routes", [])]
     return routes
 
 
 def load_module_observers(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]) -> None:
     """Register every enabled module's observers, so an event a route dispatches reaches them
     (``artifact_delete_after``). Called once at startup; it imports classes and reads no config."""
-    for _name, module_dir in _enabled(etc_dir, module_dirs):
+    for _name, module_dir in enabled_dirs(etc_dir, module_dirs):
         manifest = parse_module_dir(module_dir)
         if manifest is not None:
             _load_observers(manifest)
 
 
-def _enabled(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]):
+def _sequence(module_dir: Path) -> list[str]:
+    try:
+        sequence = json.loads((module_dir / "module.json").read_text()).get("sequence", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [s for s in sequence if isinstance(s, str)] if isinstance(sequence, list) else []
+
+
+def enabled_dirs(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]):
     status_path = Path(etc_dir) / "modules.json"
     status = read_module_status(status_path) if status_path.is_file() else {}
     return [(name, d) for name, d in module_dirs if is_enabled(name, status)]

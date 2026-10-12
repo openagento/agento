@@ -1,0 +1,31 @@
+{
+  "screens": [
+    {"title": "Dashboard", "leaves": [{"id": "admin.dashboard", "title": "View"}]},
+    {"title": "Jobs", "leaves": [{"id": "admin.jobs", "title": "View"}]},
+    {"title": "Agents", "leaves": [{"id": "admin.agents", "title": "View"}]},
+    {"title": "Credentials", "leaves": [
+      {"id": "admin.credentials", "title": "View"},
+      {"id": "admin.credentials.edit", "title": "Sign in, clear error, disable"}
+    ]},
+    {"title": "Tools", "leaves": [{"id": "admin.tools", "title": "View"}]},
+    {"title": "Skills", "leaves": [{"id": "admin.skills", "title": "View"}]},
+    {"title": "Config", "leaves": [
+      {"id": "admin.config", "title": "View"},
+      {"id": "admin.config.edit", "title": "Edit, test, and switch tools and skills"}
+    ]},
+    {"title": "Users", "leaves": [
+      {"id": "admin.users", "title": "View"},
+      {"id": "admin.users.create", "title": "Create"},
+      {"id": "admin.users.edit", "title": "Edit"}
+    ]},
+    {"title": "Roles", "leaves": [
+      {"id": "admin.roles", "title": "View"},
+      {"id": "admin.roles.create", "title": "Create"},
+      {"id": "admin.roles.edit", "title": "Edit and grant"},
+      {"id": "admin.roles.delete", "title": "Delete"}
+    ]}
+  ],
+  "operations": [
+    {"id": "artifact.launch", "title": "Launch a miniapp"}
+  ]
+}

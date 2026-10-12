@@ -13,10 +13,12 @@ from agento.framework.access import accounts, launches, sessions
 from agento.framework.database_config import DatabaseConfig
 from agento.framework.event_manager import EventManager, ObserverEntry
 from agento.modules.miniapps.src.observers import DropActivationsOnArtifactDelete
-from agento.modules.versioned_artifacts.src import routes
+from agento.modules.versioned_artifacts.src import routes as handlers
 from agento.web import api, security, toolbox_client
 
-from .conftest import _test_connection
+from .conftest import _test_connection, routed
+
+routes = routed("versioned_artifacts", handlers)
 
 CODE = "aa-site"
 V1, V2 = "v-20260101-000000-aaaa", "v-20260102-000000-bbbb"
@@ -167,10 +169,10 @@ def test_every_route_needs_its_leaf(conn, world, store, handler, params, body):
 
 
 @pytest.mark.parametrize(("leaf", "handler", "allowed"), [
-    ("admin.artifacts", "make_current", False),
-    ("admin.artifacts.publish", "make_current", True),
-    ("admin.artifacts.delete", "delete", True),
-    ("admin.artifacts", "delete", False),
+    ("versioned_artifacts", "make_current", False),
+    ("versioned_artifacts.publish", "make_current", True),
+    ("versioned_artifacts.delete", "delete", True),
+    ("versioned_artifacts", "delete", False),
 ])
 def test_a_role_with_one_leaf_reaches_only_that_route(conn, world, store, leaf, handler, allowed):
     accounts.add_grant(conn, "user", "operation", leaf)

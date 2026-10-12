@@ -57,10 +57,11 @@ credentialed CORS.
 
 ```
 panel page                      web                                  proxy / apps origin
-   | POST /api/miniapps/launches {agent_view_id, artifact_code, preview?}
+   | POST /api/miniapps/launches {agent_view_id, artifact_code}
    |------------------------------>| can_reach + artifact.launch? else 404
    |                               | approval for (artifact, view)? else 404
-   |                               |   (preview: leaf miniapps.approve, `current`, no action)
+   |                               |   (POST /api/miniapps/previews, leaf miniapps.approve:
+   |                               |    `current`, no action)
    |                               | retention lock (va_ret:<sha1(code)>, 5 s) taken
    |                               | toolbox /admin resolve of the approved version:
    |                               |   served tree restored, content_id equal? else 409
@@ -121,20 +122,19 @@ code against `role` inside its transaction, and the foreign key is the backstop.
 Access comes from `role_grant` rows:
 
 - `grant_kind = 'tool'`: the role may call that tool, if it is enabled there;
-- `grant_kind = 'operation'`: an ACL resource — the built-in `artifact.launch`, or one a module
-  declares in `di.json` (`"acl_resources": [{"id": "<module>.<name>", "title": "…"}]`, the Magento
-  `acl.xml` pattern). `admin` has every module-declared resource built in; `artifact.launch` is a
-  grant for every role, `admin` included. The conversation module declares
-  `conversation.run_details` (DECISIONS.md D-E9-6);
-- `grant_kind = 'operation'` with **no scope**: an admin panel leaf (`accounts.ADMIN_SCREENS`) — one
-  per admin screen (`admin.dashboard`, `admin.jobs`, `admin.agents`, `admin.credentials`,
-  `admin.tools`, `admin.skills`, `admin.config`, `admin.users`, `admin.roles`, `miniapps`) and one per
-  action (`admin.credentials.edit`, `miniapps.approve` (approve, revoke, preview; checked in the handler), `admin.config.edit` — also the Tools and Skills switches,
-  `admin.users.create|edit`, `admin.roles.create|edit|delete`). `admin` holds every leaf built in.
-  Each panel route names its leaf (`Route.acl`), and `server._run` checks `accounts.may` before the
-  handler; the session's `user.acl` lists the leaves the panel shows. A role that is not admin
-  grants only the leaves it holds, and only an `admin` creates, edits or assigns an admin account
-  (DECISIONS.md D-ADMIN-ACL-1).
+- `grant_kind = 'operation'`: a scoped operation from an `acl.json` `operations` list (see
+  [ACL resources](#acl-resources-acljson)) — the framework's `artifact.launch`, or a module's, such
+  as `conversation.run_details`. `admin` has every module operation built in; `artifact.launch` is a
+  grant for every role, `admin` included (DECISIONS.md D-E9-6);
+- `grant_kind = 'operation'` with **no scope**: an admin panel leaf, from an `acl.json` `screens`
+  list — one per admin screen (`admin.dashboard`, `admin.jobs`, `admin.agents`, `admin.credentials`,
+  `admin.tools`, `admin.skills`, `admin.config`, `admin.users`, `admin.roles`; the modules add
+  `miniapps` and `versioned_artifacts`) and one per action (`admin.credentials.edit`,
+  `admin.config.edit` — also the Tools and Skills switches, `admin.users.create|edit`,
+  `admin.roles.create|edit|delete`, `miniapps.approve`, `versioned_artifacts.publish|delete`).
+  `admin` holds every leaf built in. The session's `user.acl` lists the leaves the panel shows. A role
+  that is not admin grants only the leaves it holds, and only an `admin` creates, edits or assigns an
+  admin account (DECISIONS.md D-ADMIN-ACL-1).
 
 Any other row has exactly one scope. A workspace grant reaches the workspace and every view in it. A view
 grant reaches only that view. The same SQL rule is used in Python (`accounts._granted`) and in the
@@ -142,6 +142,35 @@ toolbox (`src/agento/toolbox/capability.js` `GRANTS_SQL`, handed to every auth s
 `grants`); the fixture
 `tests/fixtures/role_grant_v1.json` holds both to it. The toolbox reads the role code from `user`
 and needs no list of roles.
+
+### ACL resources (`acl.json`)
+
+The leaves and the scoped operations are declared in `acl.json` files (the Magento `etc/acl.xml`),
+never in Python: `src/agento/framework/access/acl.json` holds the core screens (`admin.*`) and
+`artifact.launch`; a module may ship its own `acl.json` next to `module.json`
+([acl.json](../modules/README.md#acljson)). `framework/access/acl.py` reads them into one
+registry, core first and then the enabled modules by name. A leaf of a disabled module leaves the
+role tree and `held_admin`; its `role_grant` rows stay and work again when the module is enabled.
+`web` builds the registry once at start, with its route table; a CLI command builds it on first use.
+
+**Every panel route names an `acl`** (DECISIONS.md D-ADMIN-ACL-2), like a Magento controller's
+`ADMIN_RESOURCE`. The value is one of:
+
+| `acl` | Who passes `server._run` |
+|---|---|
+| a leaf id, e.g. `"admin.jobs"` | a signed-in user whose role holds the leaf (`accounts.may`), else 403 |
+| a list of leaf ids | a signed-in user whose role holds any one of them |
+| `"self"` | any signed-in user; the handler scopes to the user's own rows or to the scope grants (`can_reach`, `artifact.launch`, `conversation.*`) |
+| `"anonymous"` | anybody; only for a route with `auth: "login"` (`POST /api/session`) |
+
+A built-in route (`web/api.py`, `web/admin_api.py`) cannot be written without `acl` (`Route.acl`
+has no default). A module route in `di.json` `routes[]` must have `acl`; it may name only its own
+leaves, core leaves, or the leaves of a module in its `sequence` (MOD-1), and never `anonymous`.
+`module:validate` checks this, and `web` checks it again when it composes the route table: a
+missing or unknown `acl`, on any route, stops `web` at start. No handler checks a panel leaf of its
+own (a test guards `src/` of every core module). Three paths are outside the route table and keep
+their own checks: `/health` (none), `/internal/authz/app` (the proxy secret) and
+`/internal/launch/redeem` (the exchange code).
 
 ### Panel: Users → Roles
 
@@ -256,13 +285,13 @@ never ships panel JavaScript. See [../development/frontend.md](../development/fr
 The admin TUI's screens, for an admin in the panel ([frontend.md](../development/frontend.md#admin-screens)).
 The handlers are in `src/agento/web/admin_api.py` and read through `framework/admin/data.py`, the
 TUI's read layer. Every route needs a session and its leaf (`Route.acl`); without it the answer is
-403. `GET /api/admin/scopes` opens with any admin screen leaf. Writes pass
+403. `GET /api/admin/scopes` opens with any core leaf (`admin.*`). Writes pass
 the CSRF controls above. A scope is `?scope=default|workspace|agent_view&scope_id=N` on a GET, and
 `{scope, scope_id}` in a body; a bad one is 400, and an id that does not exist is 404.
 
 | Method | Path | Leaf | Answer |
 |---|---|---|---|
-| GET | `/api/admin/scopes` | any admin leaf | workspaces and agent_views, for the scope picker |
+| GET | `/api/admin/scopes` | any core leaf (`admin.*`) | workspaces and agent_views, for the scope picker |
 | GET | `/api/admin/dashboard` | `admin.dashboard` | health, version, module count, recent jobs, credentials, agent views |
 | GET | `/api/admin/jobs[?status=]` | `admin.jobs` | the newest 50 jobs; status `TODO`, `RUNNING`, `SUCCESS`, `FAILED` or `DEAD` |
 | GET | `/api/admin/jobs/<id>` | `admin.jobs` | the job, with prompt, output, summary and error cut to 500 chars |
@@ -283,7 +312,7 @@ the CSRF controls above. A scope is `?scope=default|workspace|agent_view&scope_i
 | POST | `/api/admin/config/test` | `admin.config.edit` | `{status, code, message}`; an `error` has a fixed message per code |
 
 **Artifacts.** The artifact admin API is `/api/versioned_artifacts/...` (leaves
-`admin.artifacts`, `admin.artifacts.publish`, `admin.artifacts.delete`): list, history, make
+`versioned_artifacts`, `versioned_artifacts.publish`, `versioned_artifacts.delete`): list, history, make
 current, delete. The `versioned_artifacts` panel shows it at `/artifacts` (list) and
 `/artifacts/<code>` (versions with their audit rows, make current, delete after the code is typed). `web` reads and writes the store only through the toolbox `/admin` endpoint, as
 `service:web:user:<id>`. A delete revokes the artifact's live launches first. See

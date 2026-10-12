@@ -11,7 +11,7 @@ import pytest
 import respx
 
 from agento.framework import config_test, config_write
-from agento.framework.access import accounts, sessions
+from agento.framework.access import accounts, acl, sessions
 from agento.framework.admin import data
 from agento.web import admin_api, api, toolbox_client
 
@@ -49,13 +49,23 @@ def test_admin_routes_exist():
     assert {r.method for r in ADMIN_ROUTES} == {"GET", "POST", "PATCH", "DELETE", "PUT"}
 
 
-def test_every_admin_route_names_known_leaves():
-    """Class guard: an /api/admin route with no `acl` would be open to every session."""
+def test_every_admin_route_names_core_leaves():
+    """An /api/admin route names a core leaf, never "self": the admin screens are leaves only.
+    (Every route has a valid acl: test_routes_registry.test_every_composed_route_has_a_valid_acl.)"""
     for route in ADMIN_ROUTES:
         leaves = (route.acl,) if isinstance(route.acl, str) else route.acl
-        assert leaves and set(leaves) <= accounts.ADMIN_RESOURCES, route.pattern.pattern
-    # The check runs in the session branch of server._run only.
-    assert all(r.auth == "session" for r in api.ROUTES if r.acl is not None)
+        assert leaves and set(leaves) <= acl.core().resources, route.pattern.pattern
+    # The leaf check runs in the session branch of server._run only.
+    assert all(r.auth == "session" for r in api.ROUTES if r.acl != "anonymous")
+
+
+def test_a_self_route_needs_a_session_and_no_leaf(web, monkeypatch):
+    _as(monkeypatch, USER)
+    monkeypatch.setattr(accounts, "held_admin", lambda conn, role: [])
+    monkeypatch.setattr(accounts, "visible_agent_views", lambda conn, user: [])
+    assert _call(web, "GET", "/api/agent-views").status_code == 200
+    monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: None)
+    assert _call(web, "GET", "/api/agent-views").status_code == 401
 
 
 def test_a_role_reaches_exactly_the_routes_of_its_leaves(web, monkeypatch):
@@ -261,9 +271,9 @@ def test_role_resources_global_scope_is_the_admin_panel(web, monkeypatch):
     monkeypatch.setattr(accounts, "held_admin", lambda conn, role: ["admin.jobs"] if role == "support" else held(conn, role))
     tree = _call(web, "GET", "/api/admin/roles/support/resources?scope=global").json()
     assert list(tree) == ["admin"]
-    assert [s["screen"] for s in tree["admin"]] == list(accounts.ADMIN_SCREENS)
+    assert [s["screen"] for s in tree["admin"]] == [title for title, _ in acl.registry().screens]
     leaves = {leaf["id"]: leaf for s in tree["admin"] for leaf in s["leaves"]}
-    assert set(leaves) == accounts.ADMIN_RESOURCES
+    assert set(leaves) == acl.registry().resources
     assert [k for k, v in leaves.items() if v["granted"]] == ["admin.jobs"]
     assert not any(v["builtin"] for v in leaves.values())
     put = MagicMock(return_value={"added": 1, "removed": 0})

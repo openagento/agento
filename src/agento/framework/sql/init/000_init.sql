@@ -338,8 +338,8 @@ CREATE TABLE IF NOT EXISTS launch (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Role grants (E1.5, PRD E2 §5.1): a role may use a toolbox tool or a platform operation.
--- Exactly one of workspace_id / agent_view_id should be set, or neither for an admin panel
--- operation (accounts.ADMIN_RESOURCES). MySQL 8.0 refuses a CHECK on a column with an FK
+-- Exactly one of workspace_id / agent_view_id should be set, or neither for an admin
+-- panel leaf (acl.json screens). MySQL 8.0 refuses a CHECK on a column with an FK
 -- referential action (ER 3823), so the rule is the writers' (accounts._check_grant); the scoped
 -- readers treat a row with both or neither as no grant.
 CREATE TABLE IF NOT EXISTS role_grant (

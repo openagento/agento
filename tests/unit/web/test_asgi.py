@@ -44,7 +44,8 @@ def seen(web, monkeypatch):
 
 def _session_route(response):
     def send(web, monkeypatch, seen, tmp_path):
-        route = api.Route("GET", re.compile("^/api/order$"), lambda req: seen.append("handler") or response)
+        route = api.Route("GET", re.compile("^/api/order$"), lambda req: seen.append("handler") or response,
+                           acl="self")
         monkeypatch.setattr(api, "ROUTES", [*api.ROUTES, route])
         return httpx.get(f"{web}/api/order", cookies={security.SESSION_COOKIE: TOKEN})
     return send
@@ -101,7 +102,7 @@ def test_a_dropped_sse_client_releases_its_stream_slot(web, monkeypatch, seen):
     monkeypatch.setattr(service, "list_events", lambda conn, **kw: [])
     monkeypatch.setattr(service, "project_events", lambda *a: [])
     monkeypatch.setattr(retention, "cursor_expired", lambda conn, **kw: False)
-    route = api.Route("GET", re.compile(r"^/api/threads/(?P<id>[0-9]+)/stream$"), stream.open_stream)
+    route = api.Route("GET", re.compile(r"^/api/threads/(?P<id>[0-9]+)/stream$"), stream.open_stream, acl="self")
     monkeypatch.setattr(api, "ROUTES", [*api.ROUTES, route])
 
     sock = _get(web, "/api/threads/7/stream?after=0")
@@ -124,8 +125,8 @@ def test_sixty_open_streams_leave_the_listener_answering(web, monkeypatch, seen)
         stop.wait(10)
 
     streaming = api.Route("GET", re.compile("^/api/stream$"),
-                          lambda req: StreamingResponse(200, frames()))
-    plain = api.Route("GET", re.compile("^/api/plain$"), lambda req: api.Response(200, {"ok": True}))
+                          lambda req: StreamingResponse(200, frames()), acl="self")
+    plain = api.Route("GET", re.compile("^/api/plain$"), lambda req: api.Response(200, {"ok": True}), acl="self")
     monkeypatch.setattr(api, "ROUTES", [*api.ROUTES, streaming, plain])
     socks = []
     try:

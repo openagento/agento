@@ -45,7 +45,7 @@ Ranked. When two goals conflict, the higher goal wins.
   lifecycle** — init → draft → version → publish → next draft — with no operator step in it.
   Only an agent creates an artifact: there is no `artifact:init`. A panel user lists artifacts,
   reads the history and makes a version current (also a rollback) through the panel API
-  `/api/versioned_artifacts/` (leaves `admin.artifacts`, `admin.artifacts.publish`); `web` reaches the store only through
+  `/api/versioned_artifacts/` (leaves `versioned_artifacts`, `versioned_artifacts.publish`); `web` reaches the store only through
   the toolbox `/admin` endpoint.
   Creation is free, and ownership is **in the store**, not in the name: `init` writes the calling
   `agent_view_id` into an `owner` marker beside the artifact, and a caller may use what it owns plus
@@ -58,7 +58,7 @@ Ranked. When two goals conflict, the higher goal wins.
   Bounded by `limits/max_agent_artifacts` counted over the artifacts that caller may **use**, never
   over the store (a store-wide count is a cross-view cardinality oracle, and, with delete reachable
   only by an operator, a lockout of every other view until a human intervenes). Destruction is the
-  one lifecycle step the agent does NOT own: the panel delete (leaf `admin.artifacts.delete`), under
+  one lifecycle step the agent does NOT own: the panel delete (leaf `versioned_artifacts.delete`), under
   the retention lock, revokes the live launches first, then removes the store and the published
   tree (toolbox, audit row), then the row, then dispatches `artifact_delete_after` (the `miniapps`
   observer drops its approvals); there is no tool equivalent. Share auth is the cron

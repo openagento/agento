@@ -49,8 +49,10 @@ class Route:
     # "session": a live panel session (and, for a write, the CSRF token); "login": no session.
     auth: str = "session"
     json_body: bool = False
-    # An admin panel leaf the session's user must hold (a tuple: any one of them); server._run checks it.
-    acl: str | tuple[str, ...] | None = None
+    # Required on every route (D-ADMIN-ACL-2): an admin panel leaf the session's user must hold
+    # (a tuple: any one of them), "self" (any signed-in user; the handler scopes), or
+    # "anonymous" (auth="login" only). server._run checks it; compose_routes validates it.
+    acl: str | tuple[str, ...] = field(kw_only=True)
 
 
 def error(status: int, message: str) -> Response:
@@ -366,19 +368,21 @@ def authorize_app(req: Request) -> Response:
                      for i in presented if i not in live])
 
 
-def _r(method: str, pattern: str, handler, **kw) -> Route:
-    return Route(method, re.compile(f"^{pattern}$"), handler, **kw)
+def _r(method: str, pattern: str, handler, *, acl: str | tuple[str, ...], **kw) -> Route:
+    return Route(method, re.compile(f"^{pattern}$"), handler, acl=acl, **kw)
 
 
 ROUTES: list[Route] = [
-    _r("POST", "/api/session", login, auth="login", json_body=True),
-    _r("GET", "/api/session", get_session),
-    _r("DELETE", "/api/session", logout),
-    _r("GET", "/api/agent-views", agent_views),
-    _r("POST", r"/api/tools/(?P<name>[a-z0-9_]+):invoke", invoke, json_body=True),
-    _r("GET", "/api/launches", list_launches),
-    _r("DELETE", r"/api/launches/(?P<id>[0-9a-f]{32})", end_launch),
-    _r("POST", r"/api/launches/(?P<id>[0-9a-f]{32})/actions/(?P<tool>[a-z0-9_]{1,64})", launch_action, json_body=True),
+    _r("POST", "/api/session", login, auth="login", json_body=True, acl="anonymous"),
+    # "self": each handler scopes to the user's own rows or to the scope grants.
+    _r("GET", "/api/session", get_session, acl="self"),
+    _r("DELETE", "/api/session", logout, acl="self"),
+    _r("GET", "/api/agent-views", agent_views, acl="self"),
+    _r("POST", r"/api/tools/(?P<name>[a-z0-9_]+):invoke", invoke, json_body=True, acl="self"),
+    _r("GET", "/api/launches", list_launches, acl="self"),
+    _r("DELETE", r"/api/launches/(?P<id>[0-9a-f]{32})", end_launch, acl="self"),
+    _r("POST", r"/api/launches/(?P<id>[0-9a-f]{32})/actions/(?P<tool>[a-z0-9_]{1,64})", launch_action,
+       json_body=True, acl="self"),
     _r("GET", "/api/admin/users", admin_list_users, acl="admin.users"),
     _r("POST", "/api/admin/users", admin_create_user, json_body=True, acl="admin.users.create"),
     _r("PATCH", r"/api/admin/users/(?P<id>[0-9]{1,10})", admin_update_user, json_body=True, acl="admin.users.edit"),

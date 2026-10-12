@@ -19,8 +19,8 @@ export default function ArtifactPage() {
   const url = `${BASE}/${encodeURIComponent(code)}`;
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const canPublish = useCan("admin.artifacts.publish");
-  const canDelete = useCan("admin.artifacts.delete");
+  const canPublish = useCan("versioned_artifacts.publish");
+  const canDelete = useCan("versioned_artifacts.delete");
   const list = useArtifacts();
   const current = list.data?.find((a) => a.artifact_code === code)?.current_version ?? null;
   const versions = useQuery({

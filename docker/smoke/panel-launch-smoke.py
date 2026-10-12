@@ -78,8 +78,8 @@ seen.append(session)
 panel = {**xhr, "Cookie": f"__Host-agento-session={session}", "X-CSRF-Token": json.loads(body)["csrf_token"]}
 
 # The smoke user holds the miniapps.approve leaf: a preview launches `current` files-only.
-status, _h, body = call("POST", f"{PANEL}/api/miniapps/launches",
-                        body={"agent_view_id": int(view_id), "artifact_code": code, "preview": True}, headers=panel)
+status, _h, body = call("POST", f"{PANEL}/api/miniapps/previews",
+                        body={"agent_view_id": int(view_id), "artifact_code": code}, headers=panel)
 check("create a launch", status, 201)
 if status != 201:
     sys.exit(1)
@@ -117,9 +117,9 @@ def sql(query):
                           input=query, capture_output=True, text=True).stdout.strip()
 
 
-def launch_app(**extra):
-    status, _h, body = call("POST", f"{PANEL}/api/miniapps/launches",
-                            body={"agent_view_id": int(view_id), "artifact_code": app_code, **extra}, headers=panel)
+def launch_app(preview=False):
+    status, _h, body = call("POST", f"{PANEL}/api/miniapps/{'previews' if preview else 'launches'}",
+                            body={"agent_view_id": int(view_id), "artifact_code": app_code}, headers=panel)
     return status, (json.loads(body) if status == 201 else None)
 
 

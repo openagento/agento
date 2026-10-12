@@ -11,7 +11,7 @@ import re
 from dataclasses import asdict
 from datetime import datetime
 
-from agento.framework.access import accounts
+from agento.framework.access import accounts, acl
 from agento.framework.admin import data
 
 from . import api
@@ -409,8 +409,8 @@ def role_resources(req: Request) -> Response:
         held = set(accounts.held_admin(req.conn, code))
         return Response(200, {"admin": [
             {"screen": screen, "leaves": [{"id": leaf, "title": title, "granted": leaf in held,
-                                           "builtin": code == "admin"} for leaf, title in leaves.items()]}
-            for screen, leaves in accounts.ADMIN_SCREENS.items()]})
+                                           "builtin": code == "admin"} for leaf, title in leaves]}
+            for screen, leaves in acl.registry().screens]})
     view_id, workspace_id = (scope_id, None) if kind == "agent_view" else (None, scope_id)
     with req.conn.cursor() as cur:
         if view_id is not None:
@@ -459,7 +459,8 @@ _LOGIN = r"/api/admin/credential-logins/(?P<id>[0-9]{1,19})"
 _CRED_EDIT = "admin.credentials.edit"
 
 ROUTES: list[Route] = [
-    _r("GET", "/api/admin/scopes", scopes, acl=tuple(sorted(accounts.ADMIN_RESOURCES - {"miniapps"}))),
+    # Any core leaf: the core ScopePicker is its one reader.
+    _r("GET", "/api/admin/scopes", scopes, acl=tuple(sorted(acl.core().resources))),
     _r("GET", "/api/admin/dashboard", dashboard, acl="admin.dashboard"),
     _r("GET", "/api/admin/jobs", jobs, acl="admin.jobs"),
     _r("GET", r"/api/admin/jobs/(?P<id>[0-9]{1,19})", job_detail, acl="admin.jobs"),

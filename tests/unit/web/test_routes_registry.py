@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from agento.framework.access import acl
 from agento.web import api
 from agento.web.routes_registry import RouteDeclarationError, load_module_routes
 
@@ -31,10 +32,14 @@ def hello(req):
 '''
 
 
-def _module(code_dir: Path, name: str, routes: list[dict], *, handler: str = HANDLER) -> Path:
+def _module(code_dir: Path, name: str, routes: list[dict], *, handler: str = HANDLER,
+            sequence: list[str] | None = None, acl: dict | None = None) -> Path:
     mod = code_dir / name
     (mod / "src").mkdir(parents=True)
-    (mod / "module.json").write_text(json.dumps({"name": name, "version": "1.0.0", "description": name}))
+    (mod / "module.json").write_text(json.dumps({"name": name, "version": "1.0.0", "description": name,
+                                                 "sequence": sequence or []}))
+    if acl is not None:
+        (mod / "acl.json").write_text(json.dumps(acl))
     (mod / "di.json").write_text(json.dumps({"routes": routes}))
     (mod / "src" / "routes.py").write_text(handler)
     return mod
@@ -56,7 +61,7 @@ def _status(etc: Path, status: dict) -> None:
     (etc / "modules.json").write_text(json.dumps(status))
 
 
-ROUTE = {"method": "GET", "path": "/api/demo/hello", "handler": "src.routes.hello"}
+ROUTE = {"method": "GET", "path": "/api/demo/hello", "handler": "src.routes.hello", "acl": "self"}
 
 
 def test_an_enabled_modules_route_is_loaded(etc, code):
@@ -237,6 +242,7 @@ def test_the_shipped_miniapps_module_loads_its_own_routes(etc):
         f"POST ^{approval}$",
         f"DELETE ^{approval}$",
         "GET ^/api/miniapps/apps/(?P<code>[a-z0-9-]{1,64})/approvals$",
+        "POST ^/api/miniapps/previews$",
     }
 
 
@@ -374,6 +380,7 @@ def test_an_installed_extensions_routes_are_composed(etc, tmp_path, monkeypatch)
     monkeypatch.setattr(module_discovery, "module_dirs_by_name",
                         lambda c, u: seen.append((c, u)) or dirs)
     monkeypatch.setattr(api, "ROUTES", list(api.ROUTES))
+    monkeypatch.setattr(acl, "_REGISTRY", None)
     server.compose_routes()
     assert seen, "compose_routes() derives its own roots instead of using module discovery"
     assert any(r.pattern.match("/api/demo/hello") for r in api.ROUTES)
@@ -406,3 +413,91 @@ def test_web_registers_the_observers_of_enabled_modules_only(etc, code, monkeypa
     load_module_observers(etc, _dirs(code))
 
     assert event_manager.get_event_manager().observer_count("demo_thing_after") == count
+
+
+# --- the route acl (D-ADMIN-ACL-2) -------------------------------------------
+
+def _leaves(*ids: str) -> dict:
+    return {"screens": [{"title": "Demo", "leaves": [{"id": i, "title": i} for i in ids]}]}
+
+
+@pytest.mark.parametrize(("value", "why"), [
+    (None, "needs an 'acl'"),                        # no acl at all
+    ("demo.nothing", "unknown leaf 'demo.nothing'"),  # an id nobody declares
+    ("other.view", "unknown leaf 'other.view'"),      # another module's leaf, not in the sequence
+    ("anonymous", "'anonymous'"),                     # only the sign-in route is anonymous
+    ([], "non-empty list"),
+    (["demo.view", 7], "non-empty list"),
+])
+def test_a_module_route_with_no_or_an_unknown_acl_is_refused(etc, code, value, why):
+    _module(code, "other", [], acl=_leaves("other", "other.view"))
+    decl = {k: v for k, v in ROUTE.items() if k != "acl"} | ({} if value is None else {"acl": value})
+    _module(code, "demo", [decl], acl=_leaves("demo", "demo.view"))
+    _status(etc, {})
+
+    with pytest.raises(RouteDeclarationError) as exc:
+        load_module_routes(etc, _dirs(code))
+    assert why in str(exc.value)
+
+
+@pytest.mark.parametrize(("value", "expected"), [
+    ("self", "self"),
+    ("demo.view", "demo.view"),                       # its own leaf
+    ("admin.jobs", "admin.jobs"),                     # a core leaf
+    ("other.view", "other.view"),                     # a leaf of a module in its sequence
+    (["demo", "other"], ("demo", "other")),           # any one of them
+])
+def test_a_module_route_names_self_its_own_a_core_or_a_sequence_leaf(etc, code, value, expected):
+    _module(code, "other", [], acl=_leaves("other", "other.view"))
+    _module(code, "demo", [{**ROUTE, "acl": value}], sequence=["other"], acl=_leaves("demo", "demo.view"))
+    _status(etc, {})
+
+    assert [r.acl for r in load_module_routes(etc, _dirs(code))] == [expected]
+
+
+def test_a_leaf_of_a_disabled_sequence_module_is_refused(etc, code):
+    """The registry holds the enabled modules only, as bootstrap() refuses a disabled sequence."""
+    _module(code, "other", [], acl=_leaves("other"))
+    _module(code, "demo", [{**ROUTE, "acl": "other"}], sequence=["other"])
+    _status(etc, {"other": False})
+
+    with pytest.raises(RouteDeclarationError):
+        load_module_routes(etc, _dirs(code))
+
+
+def _compose(monkeypatch, tmp_path, dirs):
+    from agento.framework import event_manager, module_discovery
+    from agento.web import server
+
+    monkeypatch.setattr(event_manager, "_EVENT_MANAGER", None)
+    monkeypatch.setattr(module_discovery, "module_dirs_by_name", lambda c, u: dirs)
+    monkeypatch.setattr(api, "ROUTES", list(api.ROUTES))
+    monkeypatch.setattr(acl, "_REGISTRY", None)
+    monkeypatch.chdir(tmp_path)
+    server.compose_routes()
+
+
+def test_every_composed_route_has_a_valid_acl(monkeypatch, tmp_path):
+    """Class guard: the shipped table, built-ins and core modules, composes with an acl on each
+    route, and the registry it installs is the one the routes were checked against."""
+    from agento.framework.bootstrap import CORE_MODULES_DIR
+    from agento.framework.route_rules import acl_error
+
+    _compose(monkeypatch, tmp_path, _dirs(Path(CORE_MODULES_DIR)))
+
+    registry = acl.registry()
+    assert {"miniapps.approve", "versioned_artifacts.delete"} <= registry.resources
+    assert [f"{r.method} {r.pattern.pattern}" for r in api.ROUTES
+            if acl_error(r.acl, registry.resources, auth=r.auth)] == []
+    assert any(r.pattern.pattern == "^/api/miniapps/previews$" for r in api.ROUTES)
+
+
+def test_a_core_route_with_an_unknown_leaf_stops_the_start(monkeypatch, tmp_path):
+    """A typo in a built-in acl fails at start, not at the first request (SEC-9)."""
+    import re
+
+    typo = api.Route("GET", re.compile("^/api/typo$"), lambda req: None, acl="admin.jbos")
+    monkeypatch.setattr(api, "ROUTES", [*api.ROUTES, typo])
+    with pytest.raises(RouteDeclarationError) as exc:
+        _compose(monkeypatch, tmp_path, [])
+    assert "admin.jbos" in str(exc.value)

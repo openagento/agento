@@ -37,7 +37,7 @@ def _store(conn, user: accounts.User, method: str, path: str, body: dict | None 
 
 
 def list_artifacts(conn, user: accounts.User) -> list[dict]:
-    """Every artifact of the store (global: the leaf ``admin.artifacts`` is not scoped)."""
+    """Every artifact of the store (global: the leaf ``versioned_artifacts`` is not scoped)."""
     listed = _store(conn, user, "GET", "").get("artifacts")
     if not isinstance(listed, list):
         raise AdminError(503, "toolbox unavailable")

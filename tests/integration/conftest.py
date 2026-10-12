@@ -651,3 +651,27 @@ def world(conn):
     accounts.add_grant(conn, "user", "operation", "artifact.launch", agent_view_id=ids["view"])
     ids.update(owner=owner, stranger=stranger, admin=admin)
     return ids
+
+
+def routed(module_name: str, handlers):
+    """``handlers`` (a module's ``src/routes.py``) behind web's route check: each name calls the
+    handler only when ``server.acl_allows`` passes for its ``di.json`` ``acl``, else 403, as
+    ``server._run`` does (D-ADMIN-ACL-2). A handler checks no panel leaf of its own."""
+    from types import SimpleNamespace
+
+    from agento.framework.bootstrap import CORE_MODULES_DIR
+    from agento.web import api, server
+
+    decls = json.loads((Path(CORE_MODULES_DIR) / module_name / "di.json").read_text())["routes"]
+
+    def guard(handler, acl):
+        def call(req):
+            if not server.acl_allows(req.conn, req.session.user, acl):
+                return api.error(403, "forbidden")
+            return handler(req)
+        return call
+
+    return SimpleNamespace(**{
+        d["handler"].rsplit(".", 1)[1]: guard(getattr(handlers, d["handler"].rsplit(".", 1)[1]),
+                                              d["acl"] if isinstance(d["acl"], str) else tuple(d["acl"]))
+        for d in decls})

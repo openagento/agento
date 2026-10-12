@@ -1,0 +1,9 @@
+{
+  "screens": [
+    {"title": "Artifacts", "leaves": [
+      {"id": "versioned_artifacts", "title": "View"},
+      {"id": "versioned_artifacts.publish", "title": "Make current"},
+      {"id": "versioned_artifacts.delete", "title": "Delete"}
+    ]}
+  ]
+}
