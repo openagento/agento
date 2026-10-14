@@ -198,6 +198,9 @@ All apps share one origin, so `event.origin` cannot tell two apps apart (PRD E6 
   origin, and — past the handshake — carrying this `launch_id`. It replies to `appsOrigin`,
   never `'*'`. At most `MAX_IN_FLIGHT` (16) actions run at once; one more gets `{status: 429}`
   and calls nothing, because the app is untrusted.
+  A failed action always answers `{ok: false, error: {code, message}}`: when the toolbox or
+  `web` gives no reason a user can act on (a refused capability, an ended launch), the panel puts
+  one in `message`, so an app shows `message` on the failed row.
 * **App** — `createAgentoSdk({panelOrigin})` → `{ready, callAction(tool, args), close()}`.
   At most `MAX_IN_FLIGHT` (16) calls wait, for the handshake or for an answer; one more resolves `{status: 429}` at
   once and posts nothing.
