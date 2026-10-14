@@ -424,6 +424,58 @@ class ResumeCommand:
         print(f"it will resume via session_id={job.session_id}")
 
 
+class SetRuntimeCommand:
+    @property
+    def name(self) -> str:
+        return "job:set-runtime"
+
+    @property
+    def shortcut(self) -> str:
+        return "jo:sr"
+
+    @property
+    def help(self) -> str:
+        return "Pin or clear the harness/model of a queued (TODO) job"
+
+    def configure(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("job_id", type=int, help="Job ID to change")
+        parser.add_argument("--harness", help="Harness id to pin (see config:get agent_view/harness)")
+        parser.add_argument("--model", help="Model to pin")
+        parser.add_argument(
+            "--clear", action="store_true",
+            help="Clear both, so the next claim resolves them from config",
+        )
+
+    def execute(self, args: argparse.Namespace) -> None:
+        import sys
+
+        from ..job_store import set_job_runtime
+
+        if args.clear and (args.harness or args.model):
+            print("Error: --clear cannot be combined with --harness/--model", file=sys.stderr)
+            sys.exit(1)
+        if not args.clear and not args.harness and not args.model:
+            print("Error: give --harness and/or --model, or --clear", file=sys.stderr)
+            sys.exit(1)
+
+        db_config, _, _ = _load_framework_config()
+        conn = get_connection_or_exit(db_config)
+        try:
+            job = set_job_runtime(
+                conn, args.job_id,
+                harness=args.harness, model=args.model, clear=args.clear,
+            )
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            conn.close()
+
+        print(f"Job #{job.id} runtime updated.")
+        print(f"  harness: {job.agent_type or '(resolve from config)'}")
+        print(f"  model:   {job.model or '(resolve from config)'}")
+
+
 class JobListCommand:
     @property
     def name(self) -> str:

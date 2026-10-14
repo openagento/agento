@@ -41,7 +41,7 @@ class TestCronJobClaude:
 class TestCronJobCodex:
     """Codex provider: insert cron job → execute → verify DB state."""
 
-    def test_cron_codex_saves_model_and_output(self, int_db_config, int_consumer_config, mock_codex):
+    def test_cron_codex_saves_runtime_and_output(self, int_db_config, int_consumer_config, mock_codex):
         job_id = insert_queued_job(
             job_type="cron",
             reference_id="AI-1",
@@ -58,7 +58,9 @@ class TestCronJobCodex:
         row = fetch_job(job_id)
         assert row["status"] == "SUCCESS"
         assert row["agent_type"] == "codex"
-        assert row["model"] == "o3"
+        # `job.model` is the REQUESTED runtime (NULL here: nothing pinned, no
+        # agent_view/model), not what the vendor served — that stays in usage_log.
+        assert row["model"] is None
         assert row["prompt"] is not None
         assert len(row["prompt"]) > 0
         assert row["output"] is not None

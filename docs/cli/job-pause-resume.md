@@ -72,3 +72,9 @@ Session storage is not scoped per agent_view. All sessions share `/workspace/.cl
 ## Stale job recovery
 
 PAUSED jobs are not touched by the consumer's stale-job recovery pass. The recovery query only selects `status = 'RUNNING'` rows, so intentionally parked jobs are safe.
+
+## Per-job harness and model
+
+A queued job can pin its own harness/model — see [job-runtime.md](job-runtime.md).
+A harness change there drops the saved `session_id`, because a session belongs to the
+harness that created it.

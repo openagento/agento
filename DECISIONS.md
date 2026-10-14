@@ -1243,3 +1243,20 @@ A new core, disableable channel that watches an agent's open Bitbucket Cloud PRs
 - **Runner ABC shared by Claude and Codex**: common interface, replay support, e2e tests. Not two separate unrelated runners.
 - **20-minute subprocess timeout**: agents have variable duration, but unbounded is too risky. 20 min covers longest observed tasks.
 - **No timeout on ClaudeRunner for job execution**: agent tasks can legitimately run 30s–10min. Premature kill leaves Jira in inconsistent state. Timeout enforcement deferred.
+
+## Per-job harness/model: no new columns, resolved at claim (2026-10-14)
+
+`job.agent_type`/`provider`/`model` already existed as finalize-only output. Reusing them
+as input + resolved state needs no migration, and it makes the row describe the run from
+its first moment instead of only on SUCCESS.
+
+Resolution happens at the top of `_run_job`, not inside `_try_dequeue`: that function
+rolls back and returns `None` on any exception, so an unknown pinned harness there would
+leave the job TODO and re-claimed forever, with no `error_class` ever written.
+
+The snapshot marker is `job.provider`, not `attempt`. Provider is derived and no caller
+can set it, and the claim writes all three columns in one statement — so a non-NULL
+provider is, by construction, evidence of a complete committed runtime. `attempt` is not:
+a job can die between the claim and the write, and `job:set-runtime` can edit a retried
+TODO job.
+

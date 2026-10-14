@@ -14,6 +14,7 @@ NON_RETRYABLE_ERRORS = frozenset({
     "AuthenticationError",  # token expired — retrying won't help
     "UsageLimitError",  # session/usage limit — terminal unless a healthy token remains
     "TransientAuthError",  # stale/revoked credential — terminal unless a healthy token remains
+    "InvalidJobRuntime",  # pinned harness unknown / no harness — config fault, not transient
 })
 
 
