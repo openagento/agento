@@ -50,13 +50,33 @@ export function reconcileLaunches(liveIds: ReadonlySet<string>, requestedAt: num
   }
 }
 
+export const ACTION_DENIED =
+  "You may not run this action now. The approval, your rights or the tool settings changed. " +
+  "Open the app again, or ask an admin.";
+export const LAUNCH_ENDED = "This app session ended. Open the app again from the panel.";
+
+/** Every failed action answers `{ok: false, error: {code, message}}`, so an app can show `message`.
+ *  A refusal by the toolbox (`{error: "invalid capability"}`) or the web's bare "not found" (the
+ *  launch ended) has no reason a user can act on, so those get one. */
+function failed(status: number, body: unknown): ActionResult {
+  const err = (body as { error?: unknown } | null | undefined)?.error;
+  const own = (err as { message?: unknown } | null | undefined)?.message;
+  if (status === 404 && (own === "not found" || err === "not found")) {
+    return { status, body: { ok: false, error: { code: "not_found", message: LAUNCH_ENDED } } };
+  }
+  if (typeof own === "string") return { status, body };
+  const denied = status === 401 || status === 403;
+  const message = denied ? ACTION_DENIED : typeof err === "string" ? err : `the action failed (HTTP ${status})`;
+  return { status, body: { ok: false, error: { code: denied ? "forbidden" : "failed", message } } };
+}
+
 async function action(launchId: string, tool: string, args: Record<string, unknown>): Promise<ActionResult> {
   try {
     const body = await apiFetch(`/api/launches/${launchId}/actions/${encodeURIComponent(tool)}`,
       { method: "POST", json: { arguments: args } });
     return { status: 200, body };
   } catch (e) {
-    if (e instanceof ApiError) return { status: e.status, body: e.body ?? null };
+    if (e instanceof ApiError) return failed(e.status, e.body);
     throw e;
   }
 }
