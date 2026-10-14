@@ -465,6 +465,13 @@ docker compose restart
   `disableClaudeAiConnectors`; only `/etc/claude-code/managed-settings.json` in the image holds
   against an agent that can edit its own HOME settings.
 
+### ⚪ Kit `.ag-menu` twin (raised during the panel row-menu work)
+
+`RowMenu` (`frontend/packages/ui/src/components/RowMenu.tsx`) is panel-only, like the chat components:
+a miniapp shows no admin row actions, and the kit has no menu class, so UI-2 asks for no twin today.
+When a miniapp first needs a menu, the next kit version gets an `.ag-menu` twin with its `@catalogue`
+block and a parity pair (UI-2, UI-3). Cutting a kit version for it is the owner's call.
+
 ### Deprecation removals due in v0.17 or later
 
 | Shim | Where | Remove when |

@@ -2,9 +2,8 @@
 import type { ComponentType } from "react";
 import { Group, List, Paper, SimpleGrid, Text } from "@mantine/core";
 import { Activity, Boxes, Database, Tag } from "lucide-react";
-import { Link } from "react-router";
 import { apiFetch, useQuery } from "@agento/api";
-import { DataTable, ErrorState, LoadingState, PageHeader, SectionHeader } from "@agento/ui";
+import { AppLink, DataTable, ErrorState, LoadingState, PageHeader, SectionHeader } from "@agento/ui";
 import { credentialBadge, type Credential } from "./Credentials";
 import { jobColumns } from "./Jobs";
 import { message, type JobHead } from "./shared";
@@ -47,7 +46,7 @@ export function Dashboard() {
       </SimpleGrid>
       <SectionHeader>Recent jobs</SectionHeader>
       <DataTable caption="Recent jobs" columns={RECENT} rows={d.recent_jobs} rowKey={(j) => String(j.id)} emptyTitle="No jobs yet" />
-      <Text size="sm"><Link to="/admin/jobs">All jobs</Link></Text>
+      <Text size="sm"><AppLink to="/admin/jobs">All jobs</AppLink></Text>
       <SimpleGrid cols={{ base: 1, md: 2 }}>
         <div className="ag-stack">
           <SectionHeader>Credentials</SectionHeader>

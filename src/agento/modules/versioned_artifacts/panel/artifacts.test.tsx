@@ -28,11 +28,32 @@ describe("the artifacts list", () => {
     expect(within(row).getByText("on")).toBeInTheDocument();
     expect(within(row).getByText("1")).toBeInTheDocument();
   });
+
+  it("the row menu deletes an artifact after the code is typed", async () => {
+    const api = await stubApi({ [BASE]: LIST, [`DELETE ${BASE}/approver`]: null });
+    renderAt("/artifacts", <ArtifactsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    const confirm = await screen.findByRole("button", { name: "Delete artifact" });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Type the code to confirm"), { target: { value: "approver" } });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(api.calls("DELETE", `${BASE}/approver`)).toHaveLength(1));
+  });
+
+  it("the row menu offers no Delete without the leaf", async () => {
+    await stubApi({ [BASE]: LIST }, ["versioned_artifacts"]);
+    renderAt("/artifacts", <ArtifactsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Open" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "Delete" })).toBeNull();
+  });
 });
 
 const detailAt = () => renderAt("/artifacts/approver", <Routes>
   <Route path="/artifacts/:code" element={<ArtifactPage />} /><Route path="/artifacts" element={<p>list page</p>} />
 </Routes>);
+
 
 describe("the artifact page", () => {
   it("lists the versions with their history; only an older version can be made current", async () => {

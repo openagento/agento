@@ -1,13 +1,14 @@
 // One artifact (plan §2.5): its versions with the audit history, make current (a rollback too),
 // and delete, and the app approvals per view. The API checks each leaf; this page only hides what the user cannot do.
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { apiFetch, useCan, useMutation, useQuery, useQueryClient } from "@agento/api";
 import {
-  Button, ConfirmDialog, DataTable, DeleteAction, MakeCurrentAction, PageHeader, SectionHeader, StatusBadge, TextField, Timestamp,
+  AppLink, Button, DataTable, DeleteAction, MakeCurrentAction, PageHeader, SectionHeader, StatusBadge, Timestamp,
   type Column,
 } from "@agento/ui";
 import { BASE, message, useArtifacts } from "./api";
+import { useDeleteArtifact } from "./delete";
 
 interface Event { operation: string; job_id: number | null; agent_view_id: number | null; actor: string; description: string | null; created_at: string }
 interface Version { version_id: string; preview_path: string | null; events: Event[] }
@@ -28,8 +29,7 @@ export default function ArtifactPage() {
     queryFn: ({ signal }) => apiFetch<Version[]>(`${url}/versions`, { signal }),
   });
   const [failure, setFailure] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const [typed, setTyped] = useState("");
+  const del = useDeleteArtifact(() => navigate("/artifacts"));
   // The version whose publish moved `current` but not the served tree (`preview_stale`).
   const [stale, setStale] = useState<string | null>(null);
   const makeCurrent = useMutation({
@@ -38,11 +38,6 @@ export default function ArtifactPage() {
     onSuccess: (r) => { setFailure(null); setStale(r.preview_stale ? r.current_version : null); },
     onError: (e) => setFailure(message(e)),
     onSettled: () => qc.invalidateQueries({ queryKey: ["artifacts"] }),
-  });
-  const remove = useMutation({
-    mutationFn: () => apiFetch(url, { method: "DELETE" }),
-    onSuccess: async () => { await qc.invalidateQueries({ queryKey: ["artifacts"] }); navigate("/artifacts"); },
-    onError: (e) => { setDeleting(false); setFailure(message(e)); },
   });
 
   const columns: Column<Version>[] = [
@@ -65,8 +60,8 @@ export default function ArtifactPage() {
   return (
     <div className="ag-stack">
       <PageHeader title={code} description="Versions of this artifact, newest first."
-        actions={canDelete && <DeleteAction onClick={() => { setTyped(""); setDeleting(true); }} />} />
-      {failure && <p className="ag-field__error" role="alert">{failure}</p>}
+        actions={canDelete && <DeleteAction onClick={() => del.open(code)} />} />
+      {(failure ?? del.failure) && <p className="ag-field__error" role="alert">{failure ?? del.failure}</p>}
       {stale && (
         <div className="ag-row">
           <p className="ag-field__error" role="alert"><code>{stale}</code> is current, but the site still shows the previous version.</p>
@@ -78,11 +73,7 @@ export default function ArtifactPage() {
         loading={versions.isPending} error={versions.error ? message(versions.error) : null}
         onRetry={() => void versions.refetch()} emptyTitle="No versions" />
       <Approvals code={code} />
-      <ConfirmDialog opened={deleting} title="Delete artifact" confirmLabel="Delete artifact" danger
-        busy={typed !== code || remove.isPending} onConfirm={() => remove.mutate()} onCancel={() => setDeleting(false)}>
-        <p>This removes every version, the published files, the share and every approval. Open launches end. It cannot be undone.</p>
-        <TextField label="Type the code to confirm" value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
-      </ConfirmDialog>
+      {del.dialog}
     </div>
   );
 }
@@ -96,7 +87,7 @@ function Approvals({ code }: { code: string }) {
   });
   if (!approvals.data) return null;
   const columns: Column<Approval>[] = [
-    { id: "view", header: "View", cell: (a) => <Link to={`/apps/${code}?view=${a.agent_view_id}`}>view {a.agent_view_id}</Link> },
+    { id: "view", header: "View", cell: (a) => <AppLink to={`/apps/${code}?view=${a.agent_view_id}`}>view {a.agent_view_id}</AppLink> },
     { id: "version", header: "Approved version", cell: (a) => <code>{a.approved_version_id}</code> },
     { id: "actions", header: "Actions", cell: (a) => <code>{a.allowed_actions.join(", ")}</code> },
     { id: "by", header: "Approved", cell: (a) => <>{a.activated_by}, <Timestamp value={a.activated_at} /></> },

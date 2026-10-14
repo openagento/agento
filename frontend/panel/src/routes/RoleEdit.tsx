@@ -1,15 +1,15 @@
 // The role page (plan "Panel roles"): Role info and Role resources, Magento ACL style. The resources
 // are a checkbox tree per scope; the checked leaves are a Set held here (roleTree.ts), saved with one PUT.
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 import { LayoutDashboard, ShieldCheck, Wrench } from "lucide-react";
 import {
-  Anchor, Badge, Breadcrumbs, Divider, Group, Paper, Select, Stack, Tabs, Text,
+  Badge, Breadcrumbs, Divider, Group, Paper, Select, Stack, Tabs, Text,
   TextInput, ThemeIcon, Tooltip, type TreeNodeData,
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { apiFetch, useMutation, useQuery, useQueryClient } from "@agento/api";
-import { Button, ConfirmDialog, ErrorState, LoadingState, PageHeader } from "@agento/ui";
+import { AppLink, Button, ConfirmDialog, ErrorState, LoadingState, PageHeader } from "@agento/ui";
 import { ResourceTree, UnsavedBar } from "./ResourceTree";
 import { useScopes, type Scopes } from "./admin/ScopePicker";
 import { message } from "./admin/shared";
@@ -220,7 +220,7 @@ export function RoleEdit() {
   return (
     <Stack gap="md">
       <Breadcrumbs>
-        <Anchor component={Link} to="/users/roles" fz="sm">Roles</Anchor>
+        <AppLink to="/users/roles" fz="sm">Roles</AppLink>
         <Text fz="sm" c="dimmed">{role.data?.label ?? code}</Text>
       </Breadcrumbs>
       {role.isPending ? <LoadingState /> : role.error
