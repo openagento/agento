@@ -4,10 +4,10 @@ import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
 import { apiFetch, openLaunch, useCan, useMutation, useQuery, useQueryClient } from "@agento/api";
 import {
-  AppIcon, Button, ConfirmDialog, DataTable, DeleteAction, EditableTitle, ErrorState, IconPicker, LoadingState,
+  AppIcon, AppLink, Button, ConfirmDialog, DataTable, DeleteAction, EditableTitle, ErrorState, IconPicker, LoadingState,
   OpenAction, PageHeader, SectionHeader, SelectField, Timestamp, type Column,
 } from "@agento/ui";
-import { message, useViews, ViewPicker } from "./common";
+import { message, useArtifactsAvailable, useViews, ViewPicker } from "./common";
 
 interface Member { id: number; user_id: number | null; username: string | null; role: string | null; can_edit: boolean; can_remove: boolean }
 interface AppData {
@@ -30,6 +30,7 @@ export default function AppSettingsPage() {
   const a = app.data;
   const title = a ? a.title ?? a.default_title ?? code : code;
   const refresh = useRefresh();
+  const artifacts = useArtifactsAvailable();
   // Saved in the background; an empty title goes back to the agent's.
   const patch = useMutation({
     mutationFn: (changes: { title?: string; icon?: string | null }) => apiFetch(appUrl(code), { method: "PATCH", json: changes }),
@@ -42,7 +43,8 @@ export default function AppSettingsPage() {
           ? <span className="ag-row"><IconPicker value={a.icon} onChange={(icon) => patch.mutate({ icon })} />
             <EditableTitle value={title} maxLength={255} onSave={(t) => patch.mutate({ title: t })} /></span>
           : <span className="ag-row">{a && <AppIcon name={a.icon} size={24} />}{title}</span>}
-        description={<>App settings. <code>{code}</code></>} />
+        description={<>App settings. <code>{code}</code>
+          {artifacts && <> · <AppLink to={`/artifacts/${code}`}>Versions and history</AppLink></>}</>} />
       {patch.error && <p className="ag-field__error" role="alert">{message(patch.error)}</p>}
       {app.error ? <ErrorState message={message(app.error)} onRetry={() => void app.refetch()} />
         : !a ? <LoadingState />

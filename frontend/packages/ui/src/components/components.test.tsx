@@ -8,7 +8,10 @@ import { ChatComposer, ChatError, RunInfo, ToolCall } from "./Chat";
 import { ArchiveAction, DeleteAction, EndAction, MakeCurrentAction, OpenAction, RegenerateAction } from "./IconAction";
 import { CopyButton } from "./CopyButton";
 import { MenuButton, ThreadList } from "./ChatShell";
+import { MemoryRouter } from "react-router";
 import { AppTile, TileGrid, ViewToggle } from "./Tiles";
+import { AppLink } from "./Link";
+import { RowMenu } from "./RowMenu";
 
 interface Row { id: string; name: string }
 const rows: Row[] = [{ id: "a", name: "Alpha" }, { id: "b", name: "Beta" }, { id: "c", name: "Gamma" }];
@@ -238,5 +241,30 @@ describe("tiles", () => {
     fireEvent.click(screen.getByRole("button", { name: "Mail" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Ops" }));
     expect(onOpen).toHaveBeenCalledWith("4");
+  });
+});
+
+describe("AppLink", () => {
+  it("renders a Mantine anchor, so the link takes the theme's anchor color", () => {
+    render(<MemoryRouter><AppLink to="/artifacts/demo">demo</AppLink></MemoryRouter>, { wrapper: AgentoUiProvider });
+    const a = screen.getByRole("link", { name: "demo" });
+    expect(a).toHaveAttribute("href", "/artifacts/demo");
+    expect(a.className).toContain("mantine-Anchor-root");
+  });
+});
+
+describe("RowMenu", () => {
+  it("opens from a 3-dots button named Actions and runs the item", async () => {
+    const onClick = vi.fn();
+    render(<RowMenu actions={[{ label: "Open", onClick }, { label: "Delete", danger: true, onClick: () => {} }]} />,
+      { wrapper: AgentoUiProvider });
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Open" }));
+    expect(onClick).toHaveBeenCalledOnce();
+  });
+
+  it("renders nothing when the row has no action", () => {
+    render(<RowMenu actions={[]} />, { wrapper: AgentoUiProvider });
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });

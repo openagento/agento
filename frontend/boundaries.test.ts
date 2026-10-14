@@ -38,6 +38,20 @@ export function violations(file: string, imports: string[], rule: Rule): string[
   });
 }
 
+/** The one file that may import the router's `Link`: `AppLink` wraps it in a Mantine `Anchor`. */
+const LINK_DEFINITION = join(ROOT, "packages/ui/src/components/Link.tsx");
+
+/** Whether `source` imports the name `Link` from react-router — read from the AST, so a comment
+ *  inside the clause, an alias or a multi-line import cannot hide it. */
+export function importsRouterLink(file: string, source: string): boolean {
+  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  return sf.statements.some((s) =>
+    ts.isImportDeclaration(s)
+    && ts.isStringLiteral(s.moduleSpecifier) && s.moduleSpecifier.text === "react-router"
+    && !!s.importClause?.namedBindings && ts.isNamedImports(s.importClause.namedBindings)
+    && s.importClause.namedBindings.elements.some((e) => (e.propertyName ?? e.name).text === "Link"));
+}
+
 const MODULE_PANEL: Omit<Rule, "root"> = { allow: ["react", "react-router", "@agento/ui", "@agento/api"] };
 const UI: Rule = { root: join(ROOT, "packages/ui"), deny: ["@agento/api", "@agento/miniapp-bridge"] };
 const KIT: Rule = { root: join(ROOT, "packages/miniapp-kit"), deny: ["react", "react-dom", "@mantine/*", "@agento/ui", "@agento/api"] };
@@ -63,6 +77,13 @@ describe("import boundaries", () => {
     expect(check(walk(KIT.root).filter((f) => !f.includes(`${sep}scripts${sep}`)), () => KIT)).toEqual([]);
   });
 
+  it("no panel screen renders a bare router Link (RULES.md UI-1: AppLink carries the theme's anchor color)", () => {
+    const PANEL = join(ROOT, "panel/src");
+    const files = [...walk(PANEL), ...panels.flatMap(walk)].filter((f) => f !== LINK_DEFINITION);
+    expect(files.length).toBeGreaterThan(0);
+    expect(files.flatMap((f) => (importsRouterLink(f, readFileSync(f, "utf8")) ? [relative(ROOT, f)] : []))).toEqual([]);
+  });
+
   it("nothing imports the lookbook (RULES.md UI-5)", () => {
     const lookbook = join(ROOT, "lookbook");
     const files = [...walk(join(ROOT, "panel")), ...walk(join(ROOT, "packages")), ...panels.flatMap(walk)];
@@ -78,6 +99,18 @@ describe("import boundaries", () => {
       ["react-dom/client"], ["@mantine/core"], ["@agento/miniapp-bridge"], ["../src/service"],
       ["../../conversation-other/panel/x"], ["../../miniapps/sdk/agento-sdk.js"],
     ])("%s from a module panel", (spec) => expect(violations(f, [spec], rule)).toEqual([spec]));
+    it.each([
+      ['import { Link } from "react-router";'],
+      ['import { /* navigation */ Link } from "react-router";'],
+      ['import { Link as RouterLink } from "react-router";'],
+      ['import {\n  useNavigate,\n  Link,\n} from "react-router";'],
+    ])("the router Link import %s", (src) => expect(importsRouterLink("x.tsx", src)).toBe(true));
+    it.each([
+      ['import { NavLink } from "react-router";'],
+      ['import { useParams } from "react-router";'],
+      ['import { Link } from "@agento/ui";'],
+      ['// import { Link } from "react-router";'],
+    ])("but not %s", (src) => expect(importsRouterLink("x.tsx", src)).toBe(false));
     it("a sibling directory with the same prefix", () =>
       expect(violations(f, ["../panel-other/x"], rule)).toEqual(["../panel-other/x"]));
     it("@agento/api from @agento/ui", () =>

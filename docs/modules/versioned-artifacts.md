@@ -385,6 +385,11 @@ its leaf in `di.json` `acl`, and `web` checks it before the handler (`403`). The
 | `POST /api/versioned_artifacts/artifacts/<code>/publish` `{version_id, expected_current_version}` | `versioned_artifacts.publish` | Make a version current (also a rollback). `409` carries `current_version` |
 | `DELETE /api/versioned_artifacts/artifacts/<code>` | `versioned_artifacts.delete` | Delete the artifact. `204`, also for a code that is already gone |
 
+The list screen (`/artifacts`) shows one row per artifact, its code linking to the artifact page, and
+the row's actions behind a vertical 3-dots menu (`RowMenu`): **Open** (the artifact page) and, with the
+`versioned_artifacts.delete` leaf, **Delete** — the same typed-code confirm the artifact page uses, from
+one shared `useDeleteArtifact` hook.
+
 **Delete** runs in this order, under the retention lock `va_ret:<sha1(code)>` that launch and
 approve also take:
 

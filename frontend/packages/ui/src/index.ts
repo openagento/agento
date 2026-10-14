@@ -19,6 +19,8 @@ export {
   APP_ICON_NAMES, AppIcon, AppTile, IconPicker, TILE_DISABLED, TileGrid, ViewToggle, type TileMode,
 } from "./components/Tiles";
 export { DataTable, type Column } from "./components/DataTable";
+export { AppLink } from "./components/Link";
+export { RowMenu, type RowAction } from "./components/RowMenu";
 export { ConfirmDialog } from "./components/ConfirmDialog";
 export { FormSection, TextField, SelectField } from "./components/Form";
 export { ConnectionStatus, type ConnectionState } from "./components/ConnectionStatus";

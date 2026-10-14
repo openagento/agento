@@ -4,11 +4,11 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { apiFetch, endLaunch, openLaunch, reconcileLaunches, useMutation, useQuery, useQueryClient } from "@agento/api";
 import {
-  AppIcon, AppTile, ConfirmDialog, DataTable, DeleteAction, EmptyState, EndAction, ErrorState, LoadingState,
+  AppIcon, AppLink, AppTile, ConfirmDialog, DataTable, DeleteAction, EmptyState, EndAction, ErrorState, LoadingState,
   OpenMenuAction, PageHeader, SectionHeader, SettingsAction, StatusBadge, TileGrid, Timestamp, ViewToggle, type Column,
   type TileMode,
 } from "@agento/ui";
-import { message } from "./common";
+import { message, useArtifactsAvailable } from "./common";
 
 interface AppView { agent_view_id: number; label: string; version_id: string; execute: boolean; update_waiting?: boolean; approve_again?: boolean }
 export interface App {
@@ -38,6 +38,7 @@ export default function AppsPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [mode, setMode] = useState<TileMode>(readMode);
+  const artifacts = useArtifactsAvailable();
   const apps = useQuery({
     queryKey: ["miniapps", "apps"],
     queryFn: ({ signal }) => apiFetch<App[]>("/api/miniapps/apps", { signal }),
@@ -82,6 +83,8 @@ export default function AppsPage() {
     { id: "title", header: "App", sortValue: (a) => a.title,
       cell: (a) => <span className="ag-row"><AppIcon name={a.icon} />{a.title}<Badge app={a} /></span> },
     { id: "views", header: "Agent views", cell: (a) => a.views.map((v) => v.label).join(", ") },
+    ...(artifacts ? [{ id: "artifact", header: "Artifact", cell: (a: App) => (
+      <AppLink to={`/artifacts/${a.artifact_code}`}>Versions</AppLink>) }] : []),
     { id: "actions", header: "Actions", cell: (a) => (
       <span className="ag-row"><OpenMenuAction items={choicesOf(a)} onSelect={(v) => open(a, v)} />{actions(a)}</span>
     ) },

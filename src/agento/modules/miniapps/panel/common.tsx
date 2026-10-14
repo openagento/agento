@@ -11,6 +11,15 @@ export const useViews = () => useQuery({
   queryFn: ({ signal }) => apiFetch<AgentView[]>("/api/miniapps/agent-views", { signal }),
 });
 
+/** Whether the artifacts panel is reachable for this user: the same probe (and query key) the
+ *  Shell runs for every module, so a link to `/artifacts` never points at a page that answers 404. */
+export const useArtifactsAvailable = () => useQuery({
+  queryKey: ["availability", "versioned_artifacts"],
+  queryFn: ({ signal }) => apiFetch("/api/versioned_artifacts/artifacts", { signal }),
+  retry: false,
+  staleTime: 60_000,
+}).isSuccess;
+
 export function ViewPicker({ views, value, onChange }: { views: AgentView[] | undefined; value: number; onChange: (v: string) => void }) {
   if ((views?.length ?? 0) < 2) return null;
   return (

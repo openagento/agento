@@ -1,8 +1,8 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { apiFetch, ApiError, useMutation, useQuery, useQueryClient, useSession, type StreamEvent } from "@agento/api";
 import {
-  ArchiveAction, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
+  AppLink, ArchiveAction, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
   LoadingState, MenuButton, PageHeader, Reasoning, RegenerateAction, RunInfo, SelectField, SplitView, ThreadList, ToolCall, ToolGroup,
   type ThreadLink,
 } from "@agento/ui";
@@ -357,7 +357,7 @@ export function View({ threadId }: { threadId: number }) {
             ...(run.credential ? [{ label: "Credential", value: run.credential }] : []),
             ...(run.model ? [{ label: "Model", value: run.model }] : []),
             ...(run.input_tokens != null ? [{ label: "Tokens in / out", value: `${run.input_tokens} / ${run.output_tokens ?? 0}` }] : []),
-            ...(admin && run.job_id ? [{ label: "Job", value: <Link to={`/admin/jobs?job=${run.job_id}`}>{run.job_id}</Link> }] : []),
+            ...(admin && run.job_id ? [{ label: "Job", value: <AppLink to={`/admin/jobs?job=${run.job_id}`}>{run.job_id}</AppLink> }] : []),
           ]} />
         )}
         {detail && !channel && detail.status !== "archived" && (
