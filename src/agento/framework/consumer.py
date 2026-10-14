@@ -7,7 +7,7 @@ import signal
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from .agent_manager.credential_resolver import (
@@ -25,7 +25,13 @@ from .agent_manager.credential_store import (
     throttle_credential,
 )
 from .agent_manager.errors import AuthenticationError, TransientAuthError, UsageLimitError
-from .agent_view_runtime import resolve_agent_view_runtime
+from .agent_view_runtime import (
+    AgentViewRuntime,
+    InvalidJobRuntime,
+    resolve_agent_view_context,
+    resolve_agent_view_runtime,
+    resolve_job_runtime,
+)
 from .bootstrap import bootstrap, dispatch_reload, dispatch_shutdown, get_module_config
 from .channels.registry import get_channel
 from .consumer_config import ConsumerConfig
@@ -59,6 +65,7 @@ from .harness import (
     RunRequest,
     RunResult,
     create_runner,
+    find_harness,
     get_harness,
     get_harness_config,
     resolve_provider,
@@ -576,6 +583,54 @@ class Consumer:
         conn.commit()
         return mcp_token, rest_token
 
+    def _resolve_run_runtime(self, conn, job: Job) -> AgentViewRuntime:
+        """The effective harness/provider/model for THIS run, persisted on the row.
+
+        ``job.provider`` is the snapshot marker: it is derived, never settable by a
+        caller, and the write below sets all three columns in one statement — so a
+        non-NULL provider means a previous attempt committed a complete, consistent
+        runtime, which this attempt reuses verbatim (a NULL model there means the
+        harness default). ``attempt`` is deliberately NOT the marker: a job can die
+        between the claim and this write, and ``job:set-runtime`` can edit a retried
+        TODO job; both leave ``attempt > 1`` with no valid snapshot.
+        """
+        # The pin is validated before the view is read, so a job that pins a harness is
+        # neither blocked nor masked by the agent_view's own configuration.
+        if job.agent_type is not None and find_harness(job.agent_type) is None:
+            raise InvalidJobRuntime(f"Unknown harness {job.agent_type!r}")
+
+        if job.provider is not None:
+            # The view's runtime config is never READ here: the snapshot supplies all
+            # three values, so only the harness-independent profile is loaded.
+            return replace(
+                resolve_agent_view_context(conn, job.agent_view_id),
+                harness=job.agent_type, provider=job.provider, model=job.model,
+            )
+
+        runtime = resolve_job_runtime(
+            resolve_agent_view_runtime(
+                conn, job.agent_view_id,
+                tolerate_pair_error=job.agent_type is not None,
+            ),
+            pinned_harness=job.agent_type,
+            pinned_model=job.model,
+            model_override=self.model_override,
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE job SET agent_type = %s, provider = %s, model = %s,
+                               updated_at = NOW()
+                WHERE id = %s
+                """,
+                (runtime.harness, runtime.provider, runtime.model, job.id),
+            )
+        conn.commit()
+        job.agent_type, job.provider, job.model = (
+            runtime.harness, runtime.provider, runtime.model,
+        )
+        return runtime
+
     def _run_job(self, job: Job) -> _JobResult | None:
         """Dispatch to the appropriate workflow with agent_view routing."""
         channel = get_channel(job.source)
@@ -598,22 +653,11 @@ class Consumer:
             # Resolve agent_view runtime profile (provider, model, scoped config)
             conn = get_connection(self._db_config)
             try:
-                runtime = resolve_agent_view_runtime(conn, job.agent_view_id)
-
-                # agent_view/harness must resolve — the sticky primary-credential
-                # fallback is gone (credentials are an LRU pool per scope, not a single
-                # globally-preferred license).
-                if runtime.harness is None:
-                    raise RuntimeError(
-                        "No agent_view/harness configured. Set it via: "
-                        "bin/agento config:set agent_view/harness <harness> "
-                        "--scope=agent_view --scope-id=<id>"
-                    )
+                runtime = self._resolve_run_runtime(conn, job)
                 harness = runtime.harness
                 harness_entry = get_harness(harness)
                 provider_desc = resolve_provider(harness, runtime.provider)
-                # Explicit --model flag (e2e/replay) wins over config (ENV/DB) model.
-                model_override = self.model_override or runtime.model
+                model_override = runtime.model
 
                 # The CALLER claims the credential — exactly once per run. The runner
                 # consumes ctx.credential and never touches the pool, so the command and
@@ -1167,8 +1211,7 @@ class Consumer:
                             """
                             UPDATE job
                             SET status = 'SUCCESS', finished_at = NOW(),
-                                result_summary = %s, agent_type = %s, provider = %s,
-                                model = %s,
+                                result_summary = %s,
                                 input_tokens = %s, output_tokens = %s,
                                 prompt = %s, output = %s,
                                 updated_at = NOW()
@@ -1176,9 +1219,6 @@ class Consumer:
                             """,
                             (
                                 job_result.summary if job_result else None,
-                                job_result.agent_type if job_result else None,
-                                job_result.provider if job_result else None,
-                                job_result.model if job_result else None,
                                 job_result.input_tokens if job_result else None,
                                 job_result.output_tokens if job_result else None,
                                 job_result.prompt if job_result else None,

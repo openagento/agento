@@ -127,3 +127,54 @@ def resume_job(conn, job_id: int) -> Job:
     job.status = JobStatus.TODO
     job.pid = None
     return job
+
+
+def set_job_runtime(
+    conn, job_id: int, *, harness: str | None = None,
+    model: str | None = None, clear: bool = False,
+) -> Job:
+    """Pin (or clear) the harness/model of a job that has not been claimed yet.
+
+    ``provider`` is never set here — it is derived at claim time and therefore marks a
+    committed runtime snapshot, so EVERY edit nulls it to re-open resolution.
+
+    A session belongs to the harness that created it, and ``_should_resume`` does not
+    know which harness that was: it resumes with an EMPTY prompt, so handing a foreign
+    session id to another harness would record a job as successful having done nothing.
+    The pre-edit harness is only readable here, so this is where the session is dropped.
+
+    Returns the updated Job. Raises ValueError when the job is missing or not TODO.
+    """
+    job = fetch_job(conn, job_id, for_update=True)
+    if job is None:
+        raise ValueError(f"Job not found: id={job_id}")
+    if job.status != JobStatus.TODO:
+        raise ValueError(
+            f"Cannot set runtime on job {job_id}: status is {job.status.value}, not TODO"
+        )
+
+    new_harness = None if clear else (harness if harness is not None else job.agent_type)
+    new_model = None if clear else (model if model is not None else job.model)
+    # Drop the session when the harness it belongs to is replaced or removed. rowcount
+    # is NOT consulted: PyMySQL reports CHANGED rows, so a repeated identical edit
+    # legitimately changes nothing — the status check above is the error source.
+    drop_session = clear or new_harness != job.agent_type
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE job
+            SET agent_type = %s, model = %s, provider = NULL,
+                session_id = IF(%s, NULL, session_id), updated_at = NOW()
+            WHERE id = %s
+            """,
+            (new_harness, new_model, drop_session, job_id),
+        )
+    conn.commit()
+
+    job.agent_type = new_harness
+    job.model = new_model
+    job.provider = None
+    if drop_session:
+        job.session_id = None
+    return job

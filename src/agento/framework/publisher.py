@@ -23,6 +23,8 @@ def publish(
     priority: int = 50,
     skip_if_active: bool = False,
     requester: JobRequester | None = None,
+    harness: str | None = None,
+    model: str | None = None,
 ) -> bool:
     """Insert a job into the queue. Returns True if inserted, False if duplicate.
 
@@ -32,6 +34,10 @@ def publish(
     key rotates on every remote update (e.g. Jira `updated` timestamp), so a
     source-side search-index lag can't produce a duplicate enqueue while the
     original job is still TODO/RUNNING/PAUSED.
+
+    ``harness`` and ``model`` PIN this job's runtime: the consumer uses them instead of
+    the agent_view config when it claims the job. Either one left ``None`` is resolved
+    from config as before. Neither is part of the idempotency key.
     """
     conn = get_connection(config)
     try:
@@ -84,13 +90,15 @@ def publish(
                     INSERT INTO job
                         (type, source, agent_view_id, priority, reference_id,
                          idempotency_key, status, attempt, max_attempts,
-                         requester_key, requester_email, requester_trust, requester_meta)
+                         requester_key, requester_email, requester_trust, requester_meta,
+                         agent_type, model)
                     VALUES
-                        (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s)
+                        (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (agent_type.value, source, agent_view_id, priority,
                      reference_id, idempotency_key, max_attempts,
-                     requester_key, requester_email, requester_trust, requester_meta),
+                     requester_key, requester_email, requester_trust, requester_meta,
+                     harness, model),
                 )
             except pymysql.err.IntegrityError:
                 # Race: another publisher inserted the same idempotency_key between

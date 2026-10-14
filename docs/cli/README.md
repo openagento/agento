@@ -77,6 +77,7 @@
 | `job:list [--status S] [--source SRC] [--agent-view C] [--limit N]` | List recent jobs; surfaces failed/dead jobs with their error ([details](job-pause-resume.md)) |
 | `job:pause <job_id>` | Pause a running job (SIGTERM, keep session) ([details](job-pause-resume.md)) |
 | `job:resume <job_id>` | Resume a paused job (re-queue for consumer) ([details](job-pause-resume.md)) |
+| `job:set-runtime <job_id> [--harness H] [--model M] [--clear]` | Pin (or clear) a queued job's harness/model; TODO jobs only ([details](job-runtime.md)) |
 | **Operations** | |
 | `consumer` | Start job consumer loop |
 | `jira:periodic:sync` | Sync Jira recurring tasks to crontab |

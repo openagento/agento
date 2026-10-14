@@ -228,7 +228,7 @@ class TestRequester:
         for col in ("requester_key", "requester_email", "requester_trust", "requester_meta"):
             assert col in sql
         # last 4 params are the requester fields
-        assert params[-4:] == (None, None, "claimed", None)
+        assert params[-6:-2] == (None, None, "claimed", None)
 
     @patch("agento.framework.publisher.get_connection")
     def test_requester_values_persisted(self, mock_get_conn, sample_config):
@@ -246,7 +246,7 @@ class TestRequester:
         )
 
         _sql, params = _insert_call(mock_cursor)
-        r_key, r_email, r_trust, r_meta = params[-4:]
+        r_key, r_email, r_trust, r_meta = params[-6:-2]
         assert r_key == "jira:acct-1"
         assert r_email == "user@example.com"  # normalized
         assert r_trust == "account"
@@ -305,3 +305,47 @@ class TestRequester:
         name, event = em.dispatch.call_args[0]
         assert name == "job_publish_after"
         assert event.requester is requester
+
+
+@patch("agento.framework.publisher.get_connection")
+def test_publish_pins_harness_and_model(mock_get_conn, sample_config):
+    mock_conn, mock_cursor = _mock_connection(rowcount=1)
+    mock_cursor.fetchone.return_value = None
+    mock_get_conn.return_value = mock_conn
+
+    publish(
+        sample_config, AgentType.TODO, "jira", "key:pin",
+        harness="codex", model="gpt-x",
+    )
+
+    insert_sql, params = next(
+        c[0] for c in mock_cursor.execute.call_args_list if "INSERT" in c[0][0]
+    )
+    assert "agent_type" in insert_sql and "model" in insert_sql
+    assert params[-2:] == ("codex", "gpt-x")
+
+
+@patch("agento.framework.publisher.get_connection")
+def test_publish_without_pins_writes_nulls(mock_get_conn, sample_config):
+    mock_conn, mock_cursor = _mock_connection(rowcount=1)
+    mock_cursor.fetchone.return_value = None
+    mock_get_conn.return_value = mock_conn
+
+    publish(sample_config, AgentType.TODO, "jira", "key:nopin")
+
+    params = next(
+        c[0][1] for c in mock_cursor.execute.call_args_list if "INSERT" in c[0][0]
+    )
+    assert params[-2:] == (None, None)
+
+
+@patch("agento.framework.publisher.get_connection")
+def test_pins_are_not_part_of_the_idempotency_key(mock_get_conn, sample_config):
+    """A second publish of the same key is a duplicate whatever the pins are."""
+    mock_conn, mock_cursor = _mock_connection()
+    mock_cursor.fetchone.return_value = {"id": 7}
+    mock_get_conn.return_value = mock_conn
+
+    assert publish(
+        sample_config, AgentType.TODO, "jira", "key:same", harness="codex",
+    ) is False

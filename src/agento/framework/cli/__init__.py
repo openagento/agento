@@ -163,6 +163,7 @@ def _register_framework_commands() -> None:
         PauseCommand,
         ReplayCommand,
         ResumeCommand,
+        SetRuntimeCommand,
         SetupUpgradeCommand,
     )
     from .upgrade import UpgradeCommand
@@ -175,7 +176,7 @@ def _register_framework_commands() -> None:
         ConfigSetCommand, ConfigGetCommand, ConfigListCommand, ConfigRemoveCommand, ConfigSchemaCommand, ConfigResolveCommand,
         ConfigTestCommand,
         CronRunCommand,
-        ConsumerCommand, SetupUpgradeCommand, ReplayCommand, PauseCommand, ResumeCommand, JobListCommand, E2eCommand,
+        ConsumerCommand, SetupUpgradeCommand, ReplayCommand, PauseCommand, ResumeCommand, SetRuntimeCommand, JobListCommand, E2eCommand,
         RunCommand,
         CredentialRegisterCommand, CredentialRefreshCommand, CredentialListCommand,
         CredentialDeregisterCommand, CredentialMarkErrorCommand, CredentialResetCommand,

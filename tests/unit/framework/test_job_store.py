@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agento.framework.job_models import JobStatus
-from agento.framework.job_store import fetch_job, pause_job, resume_job
+from agento.framework.job_store import fetch_job, pause_job, resume_job, set_job_runtime
 
 
 def _make_row(**overrides) -> dict:
@@ -151,3 +151,70 @@ class TestResumeJob:
         conn, _cursor = _mock_conn(_make_row(status="PAUSED", session_id=None))
         with pytest.raises(ValueError, match="no session_id"):
             resume_job(conn, 42)
+
+
+class TestSetJobRuntime:
+    """`job:set-runtime` — pin/clear a queued job's harness and model."""
+
+    def _todo(self, **overrides):
+        return _make_row(status="TODO", **overrides)
+
+    def test_pins_harness_and_model_and_clears_provider(self):
+        conn, cursor = _mock_conn(self._todo(agent_type=None, model=None))
+        job = set_job_runtime(conn, 42, harness="codex", model="gpt-x")
+        sql, params = cursor.execute.call_args_list[-1][0]
+        assert "provider = NULL" in sql
+        assert params[:2] == ("codex", "gpt-x")
+        assert (job.agent_type, job.model, job.provider) == ("codex", "gpt-x", None)
+
+    def test_clear_nulls_both(self):
+        conn, cursor = _mock_conn(self._todo(agent_type="codex", model="gpt-x"))
+        job = set_job_runtime(conn, 42, clear=True)
+        params = cursor.execute.call_args_list[-1][0][1]
+        assert params[:2] == (None, None)
+        assert (job.agent_type, job.model) == (None, None)
+
+    def test_repeated_identical_update_succeeds_even_though_nothing_changes(self):
+        # PyMySQL reports CHANGED rows, so an identical edit affects 0 rows. The status
+        # check is the error source, not rowcount.
+        conn, _cursor = _mock_conn(self._todo(agent_type="codex", model="gpt-x"), rowcount=0)
+        job = set_job_runtime(conn, 42, harness="codex", model="gpt-x")
+        assert job.agent_type == "codex"
+
+    def test_repeated_clear_succeeds(self):
+        conn, _cursor = _mock_conn(self._todo(agent_type=None, model=None), rowcount=0)
+        assert set_job_runtime(conn, 42, clear=True).agent_type is None
+
+    def test_rejects_a_job_that_is_not_todo(self):
+        conn, _cursor = _mock_conn(_make_row(status="RUNNING"))
+        with pytest.raises(ValueError, match="not TODO"):
+            set_job_runtime(conn, 42, harness="codex")
+
+    def test_rejects_a_missing_job(self):
+        conn, _cursor = _mock_conn(None)
+        with pytest.raises(ValueError, match="not found"):
+            set_job_runtime(conn, 42, harness="codex")
+
+    def test_changing_the_harness_drops_the_session(self):
+        conn, cursor = _mock_conn(self._todo(agent_type="claude", session_id="sess-1"))
+        job = set_job_runtime(conn, 42, harness="codex")
+        assert cursor.execute.call_args_list[-1][0][1][2] is True
+        assert job.session_id is None
+
+    def test_clear_drops_the_session(self):
+        conn, cursor = _mock_conn(self._todo(agent_type="claude", session_id="sess-1"))
+        job = set_job_runtime(conn, 42, clear=True)
+        assert cursor.execute.call_args_list[-1][0][1][2] is True
+        assert job.session_id is None
+
+    def test_an_identical_harness_keeps_the_session(self):
+        conn, cursor = _mock_conn(self._todo(agent_type="claude", session_id="sess-1"))
+        job = set_job_runtime(conn, 42, harness="claude", model="m")
+        assert cursor.execute.call_args_list[-1][0][1][2] is False
+        assert job.session_id == "sess-1"
+
+    def test_a_model_only_edit_keeps_the_session(self):
+        conn, cursor = _mock_conn(self._todo(agent_type="claude", session_id="sess-1"))
+        job = set_job_runtime(conn, 42, model="m")
+        assert cursor.execute.call_args_list[-1][0][1][2] is False
+        assert job.session_id == "sess-1"

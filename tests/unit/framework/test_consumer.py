@@ -654,20 +654,18 @@ class TestFinalize:
 
         sql_arg = _last_job_update(mock_cursor)[0]
         assert "SUCCESS" in sql_arg
-        assert "agent_type" in sql_arg
-        assert "provider" in sql_arg
-        assert "model" in sql_arg
         assert "prompt" in sql_arg
         assert "output" in sql_arg
+        # agent_type/provider/model are written at CLAIM time now, so the row already
+        # carries them on every terminal status — the finalize must not re-write them.
+        assert "agent_type" not in sql_arg
+        assert "provider" not in sql_arg
         params = _last_job_update(mock_cursor)[1]
         assert params[0] == "done"               # result_summary
-        assert params[1] == "claude"             # agent_type (= harness id)
-        assert params[2] == "anthropic"          # provider (model vendor)
-        assert params[3] == "claude-sonnet-4"    # model
-        assert params[4] == 100                  # input_tokens
-        assert params[5] == 50                   # output_tokens
-        assert params[6] == "the prompt"         # prompt
-        assert params[7] == '{"result": "ok"}'   # output
+        assert params[1] == 100                  # input_tokens
+        assert params[2] == 50                   # output_tokens
+        assert params[3] == "the prompt"         # prompt
+        assert params[4] == '{"result": "ok"}'   # output
         mock_conn.commit.assert_called_once()
 
     @patch("agento.framework.consumer.get_connection")

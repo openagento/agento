@@ -18,6 +18,7 @@ from agento.framework.agent_manager.errors import (
     TransientAuthError,
     UsageLimitError,
 )
+from agento.framework.agent_view_runtime import AgentViewRuntime
 from agento.framework.consumer import Consumer
 from agento.framework.consumer_config import ConsumerConfig
 
@@ -33,6 +34,10 @@ def _stub_run_capabilities():
     ) as m:
         yield m
 
+
+# The consumer resolves each run's harness from the registry at claim time, so these
+# lifecycle doubles need the shipped harnesses registered.
+pytestmark = pytest.mark.usefixtures("builtin_harnesses")
 
 _PROVIDER = SimpleNamespace(
     id="anthropic", credential_scope="claude", credential_required=True
@@ -88,10 +93,13 @@ def _drive_run_job(
     adapter.capture_refreshed_credentials.return_value = capture
     workflow_cls = MagicMock()
     workflow_cls.return_value.execute_job.side_effect = exc
-    runtime = SimpleNamespace(harness="claude", provider="anthropic", model=None)
+    runtime = AgentViewRuntime(harness="claude", provider="anthropic", model=None)
     job = SimpleNamespace(
         id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
         priority=0, session_id=None, pid=None, reference_id="AI-1",
+        # The consumer now resolves the run's harness/provider/model from the row at
+        # claim time, so a job double must carry those columns like a real row does.
+        agent_type=None, provider=None, model=None,
     )
     with (
         patch("agento.framework.consumer.get_channel"),
@@ -407,7 +415,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
     def test_a_raise_in_the_post_selection_config_read_still_releases(self):
         consumer = _consumer()
         finish = MagicMock()
-        runtime = SimpleNamespace(harness="claude", provider="anthropic", model=None)
+        runtime = AgentViewRuntime(harness="claude", provider="anthropic", model=None)
         with (
             patch.object(consumer, "_finish_credential_lifecycle", finish),
             patch("agento.framework.consumer.get_channel"),
@@ -429,6 +437,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                 SimpleNamespace(
                     id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
                     priority=0, session_id=None, pid=None,
+                    agent_type=None, provider=None, model=None,
                 )
             )
 
@@ -438,7 +447,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
     def test_a_raise_in_materialize_run_workspace_still_releases(self):
         consumer = _consumer()
         finish = MagicMock()
-        runtime = SimpleNamespace(harness="claude", provider="anthropic", model=None)
+        runtime = AgentViewRuntime(harness="claude", provider="anthropic", model=None)
         with (
             patch.object(consumer, "_finish_credential_lifecycle", finish),
             patch("agento.framework.consumer.get_channel"),
@@ -461,6 +470,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                 SimpleNamespace(
                     id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
                     priority=0, session_id=None, pid=None,
+                    agent_type=None, provider=None, model=None,
                 )
             )
 
@@ -470,7 +480,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
         """A lease that exists in the DB but not in _held_leases is a lease nobody renews."""
         consumer = _consumer()
         seen: list[dict] = []
-        runtime = SimpleNamespace(harness="claude", provider="anthropic", model=None)
+        runtime = AgentViewRuntime(harness="claude", provider="anthropic", model=None)
 
         def _capture_state(*_a, **_kw):
             seen.append(dict(consumer._held_leases))
@@ -497,6 +507,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                 SimpleNamespace(
                     id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
                     priority=0, session_id=None, pid=None,
+                    agent_type=None, provider=None, model=None,
                 )
             )
 
@@ -520,10 +531,11 @@ class TestResumedSessionPath:
             raw_output="ok", input_tokens=10, output_tokens=5, cost_usd=0.0,
             num_turns=1, duration_ms=1, harness="claude", provider="anthropic",
         )
-        runtime = SimpleNamespace(harness="claude", provider="anthropic", model=None)
+        runtime = AgentViewRuntime(harness="claude", provider="anthropic", model=None)
         job = SimpleNamespace(
             id=42, attempt=2, agent_view_id=2, source="jira", type="todo",
             priority=0, session_id="sess-1", pid=None, reference_id="AI-1",
+            agent_type="claude", provider="anthropic", model=None,
         )
         with (
             patch("agento.framework.consumer.get_channel"),

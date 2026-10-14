@@ -26,6 +26,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from agento.framework.agent_view_runtime import AgentViewRuntime
 from agento.framework.harness import (
     HarnessRunContext,
     RunRequest,
@@ -608,14 +609,17 @@ class TestProductionWiring:
             def get_module(self, name):
                 return {}
 
-        runtime = SimpleNamespace(
+        runtime = AgentViewRuntime(
             harness="fake", provider="fake_local", model="m",
             workspace=SimpleNamespace(id=1, code="ws"),
             agent_view=SimpleNamespace(id=7, code="dev"),
         )
         monkeypatch.setattr(cons, "get_channel", lambda src: MagicMock())
         monkeypatch.setattr(cons, "get_connection", lambda cfg: MagicMock())
-        monkeypatch.setattr(cons, "resolve_agent_view_runtime", lambda c, av: runtime)
+        monkeypatch.setattr(
+            cons, "resolve_agent_view_runtime",
+            lambda c, av, **kwargs: runtime,
+        )
         monkeypatch.setattr(cons, "materialize_run_workspace", lambda *a, **k: (None, None))
         monkeypatch.setattr(cons, "create_runner", _create_runner)
         monkeypatch.setattr(cons, "get_module_config", lambda src: {})
@@ -650,6 +654,8 @@ class TestProductionWiring:
         job = SimpleNamespace(
             id=1, agent_view_id=7, source="blank", type="blank", attempt=attempt,
             session_id=session_id, pid=None, priority=0, reference_id=None,
+            # The claim resolves the run's harness/provider/model from these columns.
+            agent_type=None, provider=None, model=None,
         )
         c._run_job(job)
         return captured
