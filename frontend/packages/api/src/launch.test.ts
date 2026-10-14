@@ -7,7 +7,7 @@ vi.mock("@agento/miniapp-bridge", () => ({
 
 import { endSession, login } from "./session";
 import { queryClient } from "./query";
-import { openLaunch, reconcileLaunches, trackedLaunchIds } from "./launch";
+import { ACTION_DENIED, LAUNCH_ENDED, openLaunch, reconcileLaunches, trackedLaunchIds } from "./launch";
 
 const CODE = "exch-code-SECRET";
 const created = {
@@ -116,5 +116,30 @@ describe("reconcileLaunches", () => {
     expect(trackedLaunchIds()).toEqual([]);
     expect(popup.close).toHaveBeenCalled();
     expect(bridge.close).toHaveBeenCalled();
+  });
+});
+
+describe("a failed action", () => {
+  it("always answers {ok: false, error: {code, message}} with a message a user can act on", async () => {
+    const { w } = fakeWindow({ close: vi.fn(), focus: vi.fn(), closed: false });
+    fetchMock.mockResolvedValueOnce(json(200, created));
+    await openLaunch({ agentViewId: 1, artifactCode: "app" }, new Set(), w);
+    const onAction = bridge.create.mock.calls[0][0].onAction;
+    const call = async (status: number, body: unknown) => {
+      fetchMock.mockResolvedValueOnce(json(status, body));
+      return onAction("jira_add_comment", {});
+    };
+    // The toolbox refused the capability: its own text says nothing to a user.
+    expect(await call(403, { error: "invalid capability" })).toEqual(
+      { status: 403, body: { ok: false, error: { code: "forbidden", message: ACTION_DENIED } } });
+    // The web's bare "not found": the launch ended.
+    expect((await call(404, { ok: false, error: { code: "not_found", message: "not found" } })).body)
+      .toEqual({ ok: false, error: { code: "not_found", message: LAUNCH_ENDED } });
+    // A reason the toolbox or the web already gives is kept as it is.
+    const own = { ok: false, error: { code: "unauthorized", message: "tool x is outside the launch's tool ceiling" } };
+    expect(await call(403, own)).toEqual({ status: 403, body: own });
+    expect((await call(400, { error: "arguments must be an object" })).body)
+      .toEqual({ ok: false, error: { code: "failed", message: "arguments must be an object" } });
+    expect(await call(200, { ok: true, result: {} })).toEqual({ status: 200, body: { ok: true, result: {} } });
   });
 });

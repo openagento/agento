@@ -98,18 +98,26 @@ function payload(body) { // the toolbox answer: {ok, result: {content: [{text}],
   try { return JSON.parse(body.result.content[0].text); } catch { return body.result.content[0].text; }
 }
 
+function errorText(code, body) { // why an action failed, in words a user can read
+  if (code !== 200) return body?.error?.message ?? `the action failed (HTTP ${code})`;
+  if (body?.result?.isError) return body.result.content?.[0]?.text ?? "the tool answered with an error";
+  return null;
+}
+
 async function approve(row) { // a button click calls this
   await sdk.ready;
   const { status: code, body } = await sdk.callAction("jira_add_comment", { user: AGENT_EMAIL, issue_key: row.key, body: row.text });
-  if (code !== 200 || payload(body) === null) { /* mark the row failed; keep it editable */ }
+  const why = errorText(code, body);
+  if (why !== null) { /* mark the row failed; show `why` on the row with textContent; keep it editable */ }
 }
 ```
 
 - The arguments are the same as when you call that tool yourself. Give every required argument.
   Many tools (all Jira tools) require `user`: your own email from SOUL.md. Write it into the page
   as in the snippet. It is an identity for the log, not a secret.
-- `status` other than 200, or `isError`, is a failure. Show it on that row. Do not retry a write
-  by itself: let the user click again.
+- `status` other than 200, or `isError`, is a failure. Show the reason from `errorText` on that row,
+  not only "Error": a failed body is always `{ok: false, error: {code, message}}`, and an `isError`
+  result carries the tool's text. Do not retry a write by itself: let the user click again.
 - For a bulk action, call one row at a time (`for … of` with `await`) and mark each row done or
   failed. At most 16 calls can wait at the same time.
 - `createAgentoSdk` throws when the page was not opened by the panel. Catch it and say so.
