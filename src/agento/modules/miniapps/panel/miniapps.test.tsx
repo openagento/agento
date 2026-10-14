@@ -213,3 +213,25 @@ describe("the app settings page", () => {
       .toEqual({ agent_view_id: 3, artifact_code: "approver" }));
   });
 });
+
+describe("the link to the artifact", () => {
+  const ARTIFACTS = "/api/versioned_artifacts/artifacts";
+  it("the settings page and the list reach the artifact's versions when the artifacts panel answers", async () => {
+    await settingsApi({ [ARTIFACTS]: [] });
+    settingsAt();
+    expect(await screen.findByRole("link", { name: "Versions and history" })).toHaveAttribute("href", "/artifacts/approver");
+
+    teardown();
+    await appsApi({ [ARTIFACTS]: [] });
+    renderAt("/apps", <AppsPage />);
+    fireEvent.click(await screen.findByText("List"));
+    expect((await screen.findAllByRole("link", { name: "Versions" }))[0]).toHaveAttribute("href", "/artifacts/approver");
+  });
+
+  it("shows no such link when the artifacts panel refuses (module off, or no leaf)", async () => {
+    await settingsApi({ [ARTIFACTS]: new Response(JSON.stringify({ error: "forbidden" }), { status: 403 }) });
+    settingsAt();
+    await screen.findByRole("checkbox", { name: "jira_add_comment" });
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Versions and history" })).toBeNull());
+  });
+});

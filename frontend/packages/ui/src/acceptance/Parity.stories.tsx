@@ -3,6 +3,8 @@
 // light and dark, so a theme change or a Mantine upgrade that the kit does not follow fails here.
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, waitFor } from "storybook/test";
+import { MemoryRouter } from "react-router";
+import { AppLink } from "../components/Link";
 import { Button, type ButtonVariant } from "../components/Button";
 import { DataTable } from "../components/DataTable";
 import { SelectField, TextField } from "../components/Form";
@@ -71,6 +73,7 @@ function pairs(root: Element): Pair[] {
   BUTTONS.forEach((v, i) => out.push([`button ${v}`, pb[i], kb[i], [...BOX, "border-left-color"]]));
   const [pd, kd] = both("[data-pair=badge] > *");
   TONES.forEach((t, i) => out.push([`badge ${t}`, pd[i], kd[i], [...BOX, "text-transform", "letter-spacing"]]));
+  out.push(["link", panel.querySelector("[data-pair=link] a")!, kit.querySelector("[data-pair=link] a")!, TEXT]);
   out.push(["field label", panel.querySelector("[data-pair=field] label")!, kit.querySelector("[data-pair=field] label")!, TEXT]);
   out.push(["field input", panel.querySelector("[data-pair=field] input")!, kit.querySelector("[data-pair=field] input")!, BOX]);
   out.push(["field hint", panel.querySelector("[data-pair=field] [id$=description]")!, kit.querySelector("[data-pair=field] .ag-field__hint")!, TEXT]);
@@ -109,6 +112,7 @@ const KIT_HTML = `
   <div class="ag-row" data-pair="button">${BUTTONS.map((v) =>
     `<button type="button" class="ag-button${v === "default" ? "" : ` ag-button--${v}`}">Save</button>`).join("")}</div>
   <div class="ag-row" data-pair="badge">${TONES.map((t) => `<span class="ag-badge ag-badge--${t}">${t}</span>`).join("")}</div>
+  <div data-pair="link"><a href="#">Versions and history</a></div>
   <div class="ag-field" data-pair="field"><label class="ag-field__label" for="k-name">Name</label>
     <input class="ag-field__input" id="k-name" aria-describedby="k-name-hint"><span class="ag-field__hint" id="k-name-hint">As on the invoice.</span></div>
   <div class="ag-field" data-pair="select"><label class="ag-field__label" for="k-role">Role</label>
@@ -125,6 +129,7 @@ function SideBySide() {
       <section aria-label="Panel components" data-side="panel" className="ag-stack" style={{ width: 420 }}>
         <div className="ag-row" data-pair="button">{BUTTONS.map((v) => <Button key={v} variant={v}>Save</Button>)}</div>
         <div className="ag-row" data-pair="badge">{TONES.map((t) => <StatusBadge key={t} tone={t}>{t}</StatusBadge>)}</div>
+        <div data-pair="link"><MemoryRouter><AppLink to="/artifacts/demo">Versions and history</AppLink></MemoryRouter></div>
         <div data-pair="field"><TextField label="Name" hint="As on the invoice." /></div>
         <div data-pair="select"><SelectField label="Role" value="user" options={ROLES} /></div>
         <div data-pair="contained"><TextField label="City" contained /></div>

@@ -53,6 +53,11 @@ Each app has its own rights (D-MINIAPP-3). For user `u` with role `r`:
 * Rights rows hang off the `versioned_artifact` row (`ON DELETE CASCADE`): a delete removes them,
   and `init` never reuses a code whose row is still there.
 
+An app **is** a versioned artifact, so the app settings page (`/apps/<code>`) and the catalogue row both link
+to `/artifacts/<code>`, where its versions and their history are. The link shows only while the artifacts
+panel answers its probe for this user (the module is enabled and the user holds the `versioned_artifacts`
+leaf).
+
 ## The manifest
 
 `miniapp.json` at the root of the version's tree. It is strict: unknown keys, a wrong type or a

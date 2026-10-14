@@ -96,6 +96,17 @@ npm test            # build, lint, then every unit test and every story in headl
   passes `highlight`; the default `Markdown` stays what the parity story compares with `.ag-prose`.
   (The `@catalogue` text of `.ag-prose` is part of the released kit bytes, UI-3: it says so only
   when the next kit version is cut.)
+- **Every in-panel link is `AppLink`.** `AppLink` (`packages/ui/src/components/Link.tsx`) is Mantine's
+  `Anchor` rendered as a router `Link`, so a link takes the theme's anchor color
+  (`--mantine-color-anchor`: `#1971c2` light, `#4dabf7` dark — the same value the kit gives a miniapp as
+  `--ag-color-link`). A bare `Link` from `react-router` renders in the browser default (visited purple and
+  all), so `boundaries.test.ts` refuses that import in `panel/src` and in every module panel; the one
+  allowed definition site is `Link.tsx`. `Shell.tsx` keeps Mantine's `NavLink` for the navigation.
+- **A row's actions can live behind 3 dots.** `RowMenu` takes `{ label, onClick, danger?, disabled? }[]`
+  and shows them under a vertical 3-dots `IconAction` named "Actions" (UI-7); it renders nothing for an
+  empty list. Like the chat components it is **panel-only** with no `.ag-*` twin: a miniapp shows no admin
+  row actions, and the kit has no menu class (ROADMAP: the `.ag-menu` twin is due in the next kit version
+  if a miniapp ever needs a menu).
 - **The chat is panel-only.** `ChatLayout`, `ChatList`, `ChatMessage`, `ToolCall`, `ToolGroup`,
   `Reasoning`, `ChatStatus`, `ChatError`, `ChatComposer`, `RunInfo`, `SplitView`, `ThreadList` and
   `MenuButton` (`packages/ui/src/components/Chat*.tsx`) are Mantine components with no `.ag-*`
