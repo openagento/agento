@@ -19,7 +19,7 @@ const cfg = (over = {}) => ({ storage_root: root, published_root: pub, allowed_a
   'security/allow_symlinks': false, ...over });
 
 const build = (over = {}, opts = {}) => {
-  const pool = { execute: async (_sql, params) => { rows.push(params); } };
+  const pool = { query: async () => [[]], execute: async (_sql, params) => { rows.push(params); } };
   return createService({ config: cfg(over), db: { getCronPool: () => pool }, log: vi.fn(),
     jobId: 1, agentViewId: 2, actor: 'admin', ...opts });
 };
@@ -136,7 +136,7 @@ describe('a caller string never reaches an audit sink unbounded', () => {
   });
 
   it('caps every field to its own column width in both sinks', async () => {
-    const dead = build({}, { db: { getCronPool: () => ({ execute: async () => { throw new Error('db down'); } }) } });
+    const dead = build({}, { db: { getCronPool: () => ({ query: async () => [[]], execute: async () => { throw new Error('db down'); } }) } });
     await dead.createDraft('site', 'current', 'M'.repeat(400));
     const line = JSON.parse((await readFile(path.join(root, 'audit-fallback.log'), 'utf8')).trim().split('\n').pop());
     expect(line.description.length).toBe(255);     // VARCHAR(255)

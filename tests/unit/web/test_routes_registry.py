@@ -232,18 +232,26 @@ def test_the_shipped_miniapps_module_loads_its_own_routes(etc):
     from agento.framework.bootstrap import CORE_MODULES_DIR
 
     (etc / "modules.json").write_text(json.dumps({"miniapps": True}))
-    approval = "/api/miniapps/apps/(?P<code>[a-z0-9-]{1,64})/views/(?P<view>[0-9]{1,10})/approval"
-    assert {f"{r.method} {r.pattern.pattern}" for r in load_module_routes(etc, _dirs(Path(CORE_MODULES_DIR)))
-            if r.pattern.pattern.startswith("^/api/miniapps/")} == {
+    app = "/api/miniapps/apps/(?P<code>[a-z0-9-]{1,64})"
+    approval = f"{app}/views/(?P<view>[0-9]{{1,10}})/approval"
+    routes = [r for r in load_module_routes(etc, _dirs(Path(CORE_MODULES_DIR)))
+              if r.pattern.pattern.startswith("^/api/miniapps/")]
+    assert {f"{r.method} {r.pattern.pattern}" for r in routes} == {
+        "GET ^/api/miniapps/apps$",
         "POST ^/api/miniapps/launches$",
         "GET ^/api/miniapps/agent-views$",
-        "GET ^/api/miniapps/agent-views/(?P<id>[0-9]{1,10})/catalogue$",
+        f"GET ^{app}$",
+        f"PATCH ^{app}$",
+        f"DELETE ^{app}$",
+        f"PUT ^{app}/members$",
+        f"DELETE ^{app}/members/(?P<id>[0-9]{{1,10}})$",
         f"GET ^{approval}$",
         f"POST ^{approval}$",
         f"DELETE ^{approval}$",
-        "GET ^/api/miniapps/apps/(?P<code>[a-z0-9-]{1,64})/approvals$",
+        f"GET ^{app}/approvals$",
         "POST ^/api/miniapps/previews$",
     }
+    assert {r.acl for r in routes} == {"self"}  # per-app rights, checked by the handler (D-MINIAPP-3)
 
 
 def test_the_shipped_conversation_module_registers_its_job_type(etc):
@@ -486,7 +494,8 @@ def test_every_composed_route_has_a_valid_acl(monkeypatch, tmp_path):
     _compose(monkeypatch, tmp_path, _dirs(Path(CORE_MODULES_DIR)))
 
     registry = acl.registry()
-    assert {"miniapps.approve", "versioned_artifacts.delete"} <= registry.resources
+    assert "versioned_artifacts.delete" in registry.resources
+    assert not {"miniapps", "miniapps.approve"} & registry.resources  # per-app rights (D-MINIAPP-3)
     assert [f"{r.method} {r.pattern.pattern}" for r in api.ROUTES
             if acl_error(r.acl, registry.resources, auth=r.auth)] == []
     assert any(r.pattern.pattern == "^/api/miniapps/previews$" for r in api.ROUTES)

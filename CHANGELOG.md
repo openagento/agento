@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Codex forces the access-token JWT `exp` into the past in the throw-away HOME, because Codex
   0.157 refreshes at startup only on an expired JWT. A refused refresh token ("could not be
   refreshed", Claude 2.1.291 and Codex) is now a transient auth error, not an unclassified one.
+- **Apps as tiles, with rights per app** (D-MINIAPP-3). `/apps` shows every app the user may see as
+  tiles (default) or a list. Each app has `view`, `edit`, `remove` and `execute`: admin has all of
+  them; the panel user whose conversation made the app has `view`, `edit` and `remove`; members (a
+  user or a role, added on the new app settings page `/apps/<code>`) have `view` plus the flags they
+  get. `execute` is computed: an approval in the view, and `artifact.launch` plus a tool grant for
+  every action of the manifest (admin needs no grant). A view-only tile is disabled. An app has a
+  title and an icon (a name from a fixed set). Delete and revoke ask first. See
+  [docs/modules/miniapps.md](docs/modules/miniapps.md#rights).
 - **`acl.json`: panel leaves and operations per module** (D-ADMIN-ACL-2). The framework and each
   module declare their admin screens, leaves and scoped operations in `acl.json`, the Magento
   `acl.xml`. Every panel route names an `acl` (a leaf, a list of leaves, `self` or `anonymous`); a
@@ -26,10 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [docs/modules/README.md](docs/modules/README.md#acljson).
 - **Admin panel access per role.** The role page has a third scope, **Admin panel (everywhere)**,
   with one leaf per admin screen (Dashboard, Jobs, Agents, Credentials, Tools, Skills, Config, Users,
-  Roles, Miniapps) and one per action (view, create, edit, delete). A role sees and calls only the
+  Roles) and one per action (view, create, edit, delete). A role sees and calls only the
   screens and actions it holds; `admin` holds them all. A role grants only leaves it holds, and only
   `admin` touches an admin account. `grant:add --operation admin.users --role support` adds one with
-  no scope. Migration `053_admin_leaves` gives every existing role the Miniapps screen. See
+  no scope. See
   [docs/architecture/panel.md](docs/architecture/panel.md#roles-and-grants).
 - **The panel Test button runs `local` testers** (for example `agent_view/model` and the SSH
   identity tester). `web` runs them in its own process, as `config:test` does in `cron`, with the
@@ -126,6 +134,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CliInvoker.interactive_command()` gained a `yolo` keyword; each agent module decides its own flag.
 
 ### Changed
+- **Miniapps: the approval is no longer the grant.** The toolbox `launch` checker reads the role's
+  tool grants again: a non-admin runs an app only when the role holds a grant for every action of
+  the approved manifest. **Upgrade:** grant the manifest tools to each role that runs apps
+  (`grant:add --role <role> --tool <action> --agent-view <view>`), add members to each app, and
+  approve each app again (an approval made before this release stores no manifest, so it gives no
+  `execute` to a non-admin). A launch without `execute` is now `403` (was `404`). Migrations:
+  miniapps `003_miniapp_settings`, versioned_artifacts `006_artifact_created_job`.
+- **Miniapps: one catalogue route.** `GET /api/miniapps/agent-views/<id>/catalogue` is replaced by
+  `GET /api/miniapps/apps` (all views); a preview needs `edit` on the app.
 - **The backend is trusted (D-BACKEND-2).** `cron` and `web` may decrypt what they need; the trust
   boundary is the runner. The planned keyholder service is dropped. RULES.md and AGENTS.md goal 1
   and SEC-1 say so, and zero-trust.md marks the backend rows `Part of the model`. Tool secrets
@@ -206,6 +223,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them as regexes (`ingress:list` shows existing rows) — this is a note, not a migration.
 
 ### Removed
+- **The `miniapps` and `miniapps.approve` leaves** and `miniapps/acl.json`. The per-app rights
+  replace them; an existing `role_grant` row for them grants nothing.
 - **The idle `sandbox` compose service.** The sandbox image stays (the cron image builds on it).
   `agento run` and `agento doctor` exec into `runner-1`. **Upgrade:** a
   `docker-compose.override.yml` that names `sandbox:` makes a service with no image; remove that

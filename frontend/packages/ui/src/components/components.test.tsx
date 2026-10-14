@@ -8,6 +8,7 @@ import { ChatComposer, ChatError, RunInfo, ToolCall } from "./Chat";
 import { ArchiveAction, DeleteAction, EndAction, MakeCurrentAction, OpenAction, RegenerateAction } from "./IconAction";
 import { CopyButton } from "./CopyButton";
 import { MenuButton, ThreadList } from "./ChatShell";
+import { AppTile, TileGrid, ViewToggle } from "./Tiles";
 
 interface Row { id: string; name: string }
 const rows: Row[] = [{ id: "a", name: "Alpha" }, { id: "b", name: "Beta" }, { id: "c", name: "Gamma" }];
@@ -203,5 +204,39 @@ describe("ThreadList and MenuButton", () => {
     fireEvent.click(screen.getByRole("button", { name: "New conversation" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Sales" }));
     expect(onSelect).toHaveBeenLastCalledWith("2");
+  });
+});
+
+describe("tiles", () => {
+  it("ViewToggle names itself and reports the picked mode", () => {
+    const onChange = vi.fn();
+    render(<ViewToggle value="tiles" onChange={onChange} />, { wrapper: AgentoUiProvider });
+    expect(screen.getByRole("radiogroup", { name: "Show as" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("List"));
+    expect(onChange).toHaveBeenCalledWith("list");
+  });
+
+  it("an AppTile opens on click; a disabled one says why and does not open", () => {
+    const onOpen = vi.fn();
+    render(
+      <TileGrid label="Apps">
+        <AppTile icon="mail" title="Mail" onOpen={onOpen} />
+        <AppTile icon={null} title="Locked" disabled onOpen={onOpen} />
+      </TileGrid>, { wrapper: AgentoUiProvider });
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Locked" }));
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Locked" })).toHaveAttribute("title", "You may view this app but not run it");
+    fireEvent.click(screen.getByRole("button", { name: "Mail" }));
+    expect(onOpen).toHaveBeenCalledWith(undefined);
+  });
+
+  it("an AppTile with several choices is a menu", async () => {
+    const onOpen = vi.fn();
+    render(<AppTile icon="mail" title="Mail" onOpen={onOpen}
+      choices={[{ value: "3", label: "Support" }, { value: "4", label: "Ops" }]} />, { wrapper: AgentoUiProvider });
+    fireEvent.click(screen.getByRole("button", { name: "Mail" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Ops" }));
+    expect(onOpen).toHaveBeenCalledWith("4");
   });
 });

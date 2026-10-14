@@ -81,7 +81,16 @@ A panel screen or action opens only for a role that holds its **leaf**. A leaf t
 ```bash
 bin/agento grant:add --role support --operation admin.jobs
 bin/agento grant:add --role support --operation versioned_artifacts      # the Artifacts screen
-bin/agento grant:add --role support --operation miniapps.approve        # approve, revoke, preview
+```
+
+Miniapps have no leaf: each app has its own rights (DECISIONS.md D-MINIAPP-3). To give a user an
+app, add the user or the role as a member on the app settings page (`/apps/<code>`). A member sees
+the app; to run it in a view, the role also needs `artifact.launch` there and a tool grant for every
+action of the app's manifest:
+
+```bash
+bin/agento grant:add --role support --operation artifact.launch --agent-view <view>
+bin/agento grant:add --role support --tool <action> --agent-view <view>   # once per manifest action
 ```
 
 `bin/agento grant:add --help` lists every leaf with its title, from the `acl.json` files of the

@@ -31,7 +31,7 @@ describe("the Administration nav group", () => {
   });
 
   it("is hidden when no admin leaf is held", async () => {
-    await stubApi({}, ["miniapps"]);
+    await stubApi({}, []);
     renderAt("/", <AdminNav onNavigate={() => {}} />);
     expect(screen.queryByText("Administration")).toBeNull();
     expect(screen.queryByRole("link")).toBeNull();

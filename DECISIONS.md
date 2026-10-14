@@ -4,6 +4,56 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-12 — Per-app rights for miniapps; execute needs every manifest grant (D-MINIAPP-3)
+
+Plan: `~/.claude/plans/apps-tiles-permissions-1c26d9.md`. Owner, 2026-10-12 (S3–S9): "Aplikacja
+powinna mieć uprawnienia: execute, edit, remove, view … per aplikacja." "Admin ma zawsze te wszystkie
+uprawnienia i widzi wszystkie aplikacje." "Execute jest dynamicznie obliczane … jeżeli ma uprawnienia
+do wykonania wszystkich akcji z manifestu miniapp to wtedy ma uprawnienie execute. Jeżeli nie to tylko
+view." The owner vetoed O-2 of D-MINIAPP-2. This entry supersedes O-2, the `miniapps` /
+`miniapps.approve` leaves (D-MINIAPP-2, D-ADMIN-ACL-2 O-C) and the per-view catalogue route.
+
+- **One rule, in `miniapps/src/rights.py` and its JS twin `toolbox/launch-source.js`.** For user `u`
+  with role `r`: `view` = admin, creator or member (a `miniapp_member` row for `u` or for `r`);
+  `edit` / `remove` = admin, creator, or a member with `can_edit` / `can_remove`. `execute` in view `V`
+  = `view` and an approval in `V`, and admin, or `artifact.launch` in `V` **and a tool grant for
+  every action of the approved manifest** (S5). `test_execute_rule_agrees` runs the catalogue,
+  `POST /launches` and the real toolbox checker over the same cases.
+- **O-2 is replaced.** The checker reads the role's tool grants again. The manifest's full action set
+  is stored at approve (`miniapp_activation.manifest_actions`); `allowed_actions` stays the call
+  ceiling. Manifest `[A, B]`, approved `[A]`, grant `A` only → no execute. An approval made before
+  the column existed (`NULL`) gives no execute to a non-admin (fail closed); the panel shows
+  "Approve again". `RemoveMiniappTools` deleted the old `miniapp*` tool grants, so an operator must
+  grant the manifest tools again.
+- **Admin bypass (S4) is bounded.** Admin needs no grant and no membership, but a tool still runs only
+  where `is_enabled` is `1` for the view, only within `allowed_actions`, and only for an approved
+  version. `launches.create_launch` reads the role on the row it locks, so an admin demoted during
+  the call gets no launch.
+- **Creator = the panel user whose job ran `init`.** `versioned_artifact.created_job_id` (SQL 006)
+  joins `job`, and only `requester_trust = 'account'` with `requester_key = 'user:<id>'` matches.
+  Only the conversation service writes `account` trust, so a channel requester (email, Jira) never
+  matches. This narrows the "never used for auth" note of `026_job_requester.sql` for this one join.
+- **Rights rows hang off `versioned_artifact`** (`ON DELETE CASCADE`), so the one delete of
+  D-MINIAPP-2 removes them. `init` treats a code that still has a row as taken (a wish moves to
+  `-N`; an operator-named code gets `ARTIFACT_ALREADY_EXISTS`), so a left-over row of a half-done
+  delete never hands its rights to a new artifact. A retry of the delete (by the same `remove`
+  holder) finishes it.
+- **Every route is `acl: "self"`.** The handler checks the per-app right: no `view` is `404` (no
+  disclosure), `view` without the right is `403`. A launch without execute is now `403` (was `404`).
+  Approve and preview also need admin or `artifact.launch` in the view (`404`). `can_remove` changes
+  only for a caller who holds `remove`.
+- **Writes**: `settings.py` (`update_settings`, `put_member`, `delete_member`), each with a
+  `versioned_artifact_audit` row and no event (the data is miniapps-private). A member delete ends
+  the app's live launches (all of them: per-user revoke is ROADMAP). A flag change keeps `view`, so
+  it revokes nothing.
+- **Schema notes.** MySQL refuses a `CHECK` on a column that has an FK action (error 3823), so "a user
+  or a role, never both" is checked in `put_member`. `miniapps/acl.json` is deleted, and
+  so is the unreleased migration `053_admin_leaves.sql` (it granted the removed `miniapps` leaf) with
+  its `init` seed row. A development DB that ran it keeps a `miniapps` row that no registry holds; it
+  grants nothing.
+
+---
+
 ## 2026-10-12 — Module ACL resources in acl.json, an acl on every panel route (D-ADMIN-ACL-2)
 
 Plan: `~/.claude/plans/module-acl-resources-fdefd3.md`. Owner, 2026-10-12: "naprawić wszystkie teraz,
@@ -32,7 +82,7 @@ D-MINIAPP-2 and the `acl_resources` key of D-E9-6.
   `versioned_artifacts`, `versioned_artifacts.publish`, `versioned_artifacts.delete`, with no
   migration: the old ids were never shipped (only in local commit `d7118def`).
 - **O-C:** a preview launch is its own route, `POST /api/miniapps/previews` (`acl:
-  miniapps.approve`). A `preview` key on `POST /api/miniapps/launches` is `400`. A preview without
+  miniapps.approve`; *superseded by D-MINIAPP-3: `acl: self` and `edit` on the app*). A `preview` key on `POST /api/miniapps/launches` is `400`. A preview without
   the leaf is now `403` (it was `404`).
 - **O-D:** a module route may name only its own leaves, core leaves, or the leaves of a module in its
   `sequence` (MOD-1).
@@ -54,7 +104,8 @@ owner can veto it before merge (then the checker reads role tool grants again).
   compare-and-set on `expected_version_id`, under the retention lock (`va_ret:`), so prune cannot
   remove what is being pinned. SQL 002 drops the old per-version rows (O-7): each live app needs one
   approval after the upgrade.
-- **O-2: the approval is the grant.** The `launch` checker reads no role tool grant: its tools are
+- **O-2: the approval is the grant.** *Vetoed by the owner; replaced by D-MINIAPP-3 (every manifest
+  action needs a role tool grant).* The `launch` checker reads no role tool grant: its tools are
   the approval's `allowed_actions` (∩ the ceiling ∩ `is_enabled`). It still requires
   `artifact.launch` in the view and the approval row for the launch's view and version.
 - **`web` writes, the toolbox reads.** The approval is written by `web` (the trusted backend,
@@ -67,12 +118,14 @@ owner can veto it before merge (then the checker reads role tool grants again).
   leaf in `di.json` `acl`, and preview is its own route.* `miniapps` (catalogue) and `miniapps.approve` (approve, revoke,
   preview). A module route in `di.json` cannot name a leaf, so `miniapps/src/routes.py` checks
   `accounts.may` (403). The scoped `artifact.launch` check answers 404.
-- **Preview** launches `current` with no action; it needs `miniapps.approve`.
+- **Preview** launches `current` with no action; it needs `miniapps.approve` (*D-MINIAPP-3: `edit`
+  on the app*).
 - **Removed (CODE-5, waived):** the MCP tools `miniapp`, `miniapp_get_launch_spec`, `miniapp_list`
   (a data patch removes their switches and grants); the CLI `miniapp:activate/deactivate/list` and the
   miniapps Node CLI (O-5); `launch.manifest_fingerprint` is now always the no-manifest constant.
 - **URL moves (O-6):** `POST /api/launches` → `POST /api/miniapps/launches`;
-  `GET /api/agent-views/<id>/miniapps` → `GET /api/miniapps/agent-views/<id>/catalogue`. Launch
+  `GET /api/agent-views/<id>/miniapps` → `GET /api/miniapps/agent-views/<id>/catalogue` (*D-MINIAPP-3:
+  `GET /api/miniapps/apps`, one list over all views*). Launch
   actions, list, end and redeem stay framework routes.
 - **Artifact admin is the panel's, through `/admin` (P2, P4).** `web` serves
   `/api/versioned_artifacts/artifacts` (list), `…/<code>/versions` (history, joined with the `ok`
@@ -116,8 +169,8 @@ have cli and we can create users that way. 4. ok".
   screens list every view, so a leaf cannot be narrower than global. No new kind and no schema
   change: the scoped readers (`_SCOPE_MATCH`, the toolbox `GRANTS_SQL`) already treat a row with no
   scope as no grant. `_check_grant` keeps the two apart: a leaf takes no scope, any other name needs
-  exactly one. Migration `053_admin_leaves` grants `miniapps` to every role that is not admin, so no
-  one loses the screen.
+  exactly one. Migration `053_admin_leaves` granted `miniapps` to every role that is not admin, so no
+  one lost the screen (*removed unreleased 2026-10-12 with the leaf, D-MINIAPP-3*).
 - **One check, on the route.** Each panel route names its leaf (`Route.acl`); `server._run` checks
   `accounts.may` before the handler. This replaces the 22 per-handler `_forbidden_unless` guards and
   the five coarse operations (`users.manage`, `grants.manage`, `config.write`, `admin.read`,

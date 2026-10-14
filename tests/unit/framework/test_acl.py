@@ -120,7 +120,7 @@ def test_the_shipped_files_load():
 
     registry = acl.load(module_dirs_by_name(CORE_MODULES_DIR, "/nonexistent"))
 
-    assert {"miniapps", "miniapps.approve", "versioned_artifacts", "versioned_artifacts.publish",
+    assert {"versioned_artifacts", "versioned_artifacts.publish",
             "versioned_artifacts.delete"} <= registry.resources
     assert {"conversation.run_details", "conversation.channel_write", "artifact.launch"} <= set(registry.operations)
 
