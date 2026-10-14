@@ -109,10 +109,13 @@ def retention_lock(conn, artifact_code: str):
 
 def create_launch(conn, user: User, *, workspace_id: int, agent_view_id: int | None,
                   artifact_code: str, version_id: str,
-                  allowed_actions: list[str] | tuple[str, ...] = ()) -> tuple[Launch, str]:
+                  allowed_actions: list[str] | tuple[str, ...] = (),
+                  authorize=None) -> tuple[Launch, str]:
     """Return the launch and its raw exchange code; the code is never stored.
 
-    No actions is a files-only launch; miniapps passes the approved actions.
+    No actions is a files-only launch; miniapps passes the approved actions. ``authorize(user)``
+    is the caller's own check, run inside this transaction with the user as stored now (the
+    locked row's role, not the session's); it raises to refuse.
     """
     ttl = resolve_auth_ttls(conn, workspace_id)["launch_max_ttl"]
     cap = max_concurrent(conn, workspace_id)
@@ -124,9 +127,13 @@ def create_launch(conn, user: User, *, workspace_id: int, agent_view_id: int | N
         row = _lock_users(cur, "id = %s", (user.id,)).get(user.id)
         if not row or not row["is_active"]:
             raise AccessError("not allowed")
-        # The authorization that counts: inside the locked transaction, with the stored role.
-        if not has_operation(conn, row["role"], "artifact.launch", workspace_id, agent_view_id):
+        # The authorization that counts: inside the locked transaction, with the stored role
+        # (admin holds every launch, D-MINIAPP-3; a demotion since sign-in is seen here).
+        if not (row["role"] == "admin"
+                or has_operation(conn, row["role"], "artifact.launch", workspace_id, agent_view_id)):
             raise AccessError("not allowed")
+        if authorize is not None:
+            authorize(User(user.id, user.username, row["role"], bool(row["is_active"])))
         cur.execute(
             "INSERT INTO launch (id, token_hash, user_id, artifact_code, version_id, manifest_fingerprint,"
             " allowed_actions, workspace_id, agent_view_id, expires_at, exchange_code_hash, exchange_expires_at)"
@@ -216,11 +223,16 @@ def revoke_launch(conn, user: User, launch_id: str) -> bool:
     return done
 
 
+def revoke_artifact_launches(cur, artifact_code: str) -> None:
+    """End every live launch of the artifact, in the caller's transaction."""
+    cur.execute("UPDATE launch SET revoked_at = NOW() WHERE artifact_code = %s AND revoked_at IS NULL",
+                (artifact_code,))
+
+
 def revoke_for_artifact(conn, artifact_code: str) -> None:
     """End every live launch of the artifact, and commit (the panel delete does this first)."""
     with conn.cursor() as cur:
-        cur.execute("UPDATE launch SET revoked_at = NOW() WHERE artifact_code = %s AND revoked_at IS NULL",
-                    (artifact_code,))
+        revoke_artifact_launches(cur, artifact_code)
     conn.commit()
 
 

@@ -5,7 +5,7 @@ export interface AgentView { id: number; code: string; label: string; workspace_
 
 export const message = (e: unknown) => (e instanceof ApiError ? e.message : "The request failed.");
 
-/** The views where the user may launch an app (also the module's probe). */
+/** The views where the user may approve and preview an app. */
 export const useViews = () => useQuery({
   queryKey: ["miniapps", "views"],
   queryFn: ({ signal }) => apiFetch<AgentView[]>("/api/miniapps/agent-views", { signal }),

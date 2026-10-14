@@ -100,8 +100,10 @@ def _create_test_db():
 
     # Apply module SQL migrations (same as setup:upgrade does)
     from agento.framework.bootstrap import CORE_MODULES_DIR
+    from agento.framework.dependency_resolver import resolve_order
     from agento.framework.module_loader import scan_modules
-    all_modules = scan_modules(CORE_MODULES_DIR)
+    # Dependency order, as setup:upgrade: a module's FK may name a table of its `sequence`.
+    all_modules = resolve_order(scan_modules(CORE_MODULES_DIR))
     conn = _test_connection(autocommit=False)
     try:
         for m in all_modules:

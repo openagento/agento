@@ -394,17 +394,30 @@ export function createService({ config = {}, db = null, log = null, jobId = null
               try {
                 // eslint-disable-next-line no-await-in-loop
                 created = await withLock(lifecycleLock(candidate), async () => {
+                  // A code whose row is still there (a delete that removed the store but
+                  // not yet the row) is TAKEN: rights rows hang off that row (D-MINIAPP-3),
+                  // so a new artifact must never inherit them. A read only; a failed pool or
+                  // read fails the init (nothing is created yet): `pool()` degrades to null,
+                  // which would skip the check, so the guard asks the DB directly.
+                  const db2 = db?.getCronPool ? db.getCronPool() : null;
+                  if (db?.getCronPool && !db2) {
+                    throw new ArtifactError(ERROR_CODES.STORAGE_OPERATION_FAILED, 'artifact metadata unavailable');
+                  }
+                  if (db2) {
+                    const [left] = await db2.query('SELECT 1 FROM versioned_artifact WHERE artifact_code = ?', [candidate]);
+                    if (left.length) throw new ArtifactError(ERROR_CODES.ARTIFACT_ALREADY_EXISTS, 'artifact already exists');
+                  }
                   const made = await be.init(storageRoot, candidate, {
                     files, allowSymlinks, limits, owningView: ownView,
                   });
                   // The row only DECORATES the store, so a failed INSERT costs a title,
                   // never the artifact — the same degradation `recordAudit` has.
-                  const db2 = pool();
+                  // `created_job_id`: the job whose run made it (null for a session run).
                   if (db2) {
                     try {
                       await db2.execute(
-                        'INSERT INTO versioned_artifact (artifact_code, title) VALUES (?, ?)',
-                        [candidate, title]);
+                        'INSERT INTO versioned_artifact (artifact_code, title, created_job_id) VALUES (?, ?, ?)',
+                        [candidate, title, jobId ?? null]);
                     } catch (err) {
                       log?.('versioned_artifacts', 'ERROR',
                         `artifact metadata not recorded for '${candidate}': ${errorFacts(err) ?? 'unknown'}`);

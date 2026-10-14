@@ -1,6 +1,6 @@
 """Remove the switches and the role grants of the three tools miniapps no longer declares
 (``miniapp``, ``miniapp_get_launch_spec``, ``miniapp_list``; D-MINIAPP-2). The approval in
-``miniapp_activation`` replaced them."""
+``miniapp_activation`` replaced them; who may run an app is ``rights.py`` (D-MINIAPP-3)."""
 from __future__ import annotations
 
 import pymysql

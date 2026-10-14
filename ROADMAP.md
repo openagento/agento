@@ -250,6 +250,10 @@ share, the strict one-parse apps path, and retention that keeps what a live laun
 - an `artifact:share` command separate from `artifact:auth` (setting Basic auth makes the share);
 - a per-launch revoke when an approval changes (a live launch of an old version just loses its actions).
 
+Per-app rights (D-MINIAPP-3) left out: a user picker on the app settings page (a member is added by
+user name or role code); a per-user launch revoke (removing a member ends every live launch of the
+app); icon upload; app categories and search.
+
 ### ⚪ Per-artifact origins for miniapps
 
 The agreed E0 design puts every miniapp on **one shared apps origin**, separate from the panel

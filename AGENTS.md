@@ -82,12 +82,17 @@ Ranked. When two goals conflict, the higher goal wins.
   [docs/modules/versioned-artifacts.md](docs/modules/versioned-artifacts.md).
 - **Miniapps:** the `miniapps` module runs a versioned artifact version as a panel-launched app. A version is
   **saved**, **reachable** (served only under a live launch or a share) or **approved** (a `miniapp_activation` row
-  per (artifact, agent_view) that pins one version and its content id); an admin approves `current` in the panel
-  (`/api/miniapps/…`, leaf `miniapps.approve`, under the retention lock), with no tool and no CLI equivalent. A launch
+  per (artifact, agent_view) that pins one version and its content id); a user with `edit` on the app approves `current`
+  in the panel (`/api/miniapps/…`, under the retention lock), with no tool and no CLI equivalent. Rights are **per app**
+  (`miniapps/src/rights.py`, D-MINIAPP-3): `view`/`edit`/`remove` = admin, the creator (the `account`-trust requester of
+  the job that ran `init`) or a member (user or role, with flags); `execute` in a view = `view` + an approval there + admin,
+  or `artifact.launch` and a role tool grant for **every** manifest action. Every route is `acl: "self"`: no `view` is
+  404, `view` without the right is 403. A launch
   serves the approved version and pins its `allowed_actions`; a preview serves `current` with no action; a toolbox
   failure is 503, never a files-only guess. An action goes panel → `web` → one single-use `miniapp` capability whose
-  `tool_ceiling` is the launch's actions; the toolbox `launch` checker re-checks the launch, `artifact.launch` and the
-  approval per call, and the approval is the grant (no role tool grant is read). A miniapp never gets `internal_rest`, and no raw
+  `tool_ceiling` is the launch's actions; the toolbox `launch` checker re-checks the launch, `view`, the approval and
+  (non-admin) `artifact.launch` plus every manifest tool grant per call; admin bypasses the grants, never `is_enabled`
+  or `allowed_actions`. A miniapp never gets `internal_rest`, and no raw
   bearer reaches the page. The SDK bridge binds on `event.source` (all apps share one origin) and never posts to
   `'*'`. Basic-auth shares live on their own origin per share, `<token>.<AGENTO_SHARE_HOST>`, served by `artifacts`,
   never on the apps origin; the apps origin serves only `/a/<code>/v/<id>/…`, with no `current` route. Retention

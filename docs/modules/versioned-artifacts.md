@@ -83,6 +83,12 @@ not — so a refusal would be advice it has no way to act on. The suffix is appe
 spliced over a number the name already ends with, so a taken `plan-2024` becomes
 `plan-2024-2` and never `plan-2`.
 
+A code is also taken while its `versioned_artifact` row is still there, even with no store (a
+delete that stopped between steps 2 and 3 below). The miniapp rights rows hang off that row, so a
+new artifact never gets the rights of an old one (DECISIONS.md D-MINIAPP-3). `init` writes the row
+with `created_job_id`: the job whose run made the artifact (`NULL` without a job). The `miniapps`
+module reads it to find the app's creator.
+
 One caller is exempt and gets `ARTIFACT_ALREADY_EXISTS` instead: any `init` on a code the
 operator pre-granted. That names an address on purpose, and publishing at a different one
 would answer a request nobody made.
@@ -386,7 +392,8 @@ approve also take:
    fails, nothing is removed.
 2. Remove the store and the published tree through the toolbox. `ARTIFACT_NOT_FOUND` counts as
    done, so a retry after a partial delete finishes the work. Any other failure stops here.
-3. Delete the `versioned_artifact` row.
+3. Delete the `versioned_artifact` row. The miniapp rights rows (`miniapp`, `miniapp_member`) go
+   with it (`ON DELETE CASCADE`).
 4. Dispatch `artifact_delete_after` (`ArtifactDeleteAfterEvent`). The `miniapps` observer deletes
    the artifact's approval rows (`miniapp_activation`). An observer error does not fail the
    delete: an approval pins a `content_id`, so an old row cannot approve the bytes of a new
@@ -399,7 +406,7 @@ approval), with **Make current** and **Delete** (type the code to confirm). When
 answers `preview_stale`, the page shows a warning and **Repair** (publish again with both ids
 equal to the new current). An **Approvals** section lists the approvals per view from the
 `miniapps` route `GET /api/miniapps/apps/<code>/approvals`, each linking to `/apps/<code>?view=<id>`;
-on any error (miniapps off, no `miniapps.approve`) the section does not show. The page hides an
+on any error (miniapps off, no `edit` on the app) the section does not show. The page hides an
 action when the user does not hold its leaf; the API checks the leaf again.
 
 ## The serving container

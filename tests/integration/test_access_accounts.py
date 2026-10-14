@@ -249,11 +249,11 @@ def test_may_reads_the_global_admin_panel_rows(conn, scopes):
 def test_a_disabled_modules_leaves_are_held_by_nobody(conn, monkeypatch):
     """The registry holds the enabled modules only; the role_grant row stays for a re-enable."""
     accounts.create_role(conn, "support", "Support")
-    accounts.set_role_grants(conn, "support", tools=[], operations=["admin.jobs", "miniapps"])
-    monkeypatch.setattr(acl, "_REGISTRY", acl.load([]))  # miniapps disabled
+    accounts.set_role_grants(conn, "support", tools=[], operations=["admin.jobs", "versioned_artifacts"])
+    monkeypatch.setattr(acl, "_REGISTRY", acl.load([]))  # versioned_artifacts disabled
     assert accounts.held_admin(conn, "support") == ["admin.jobs"]
-    assert "miniapps" not in accounts.held_admin(conn, "admin")
-    assert any(g["name"] == "miniapps" for g in accounts.list_grants(conn, "support"))
+    assert "versioned_artifacts" not in accounts.held_admin(conn, "admin")
+    assert any(g["name"] == "versioned_artifacts" for g in accounts.list_grants(conn, "support"))
 
 
 @pytest.mark.parametrize("tools,operations,refusal", [
