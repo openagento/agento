@@ -2,7 +2,8 @@
 
 A launch pins ``(artifact_code, version_id)`` and a scope. The panel gets a one-time exchange
 code; redeeming it (one POST, 30 s) sets the per-launch cookie that ``authorize_files`` checks
-on every file request. E2 writes the no-manifest constants: E6 owns the manifest.
+on every file request. ``manifest_fingerprint`` always holds the no-manifest constant: the
+miniapps approval pins the version's content instead (D-MINIAPP-2).
 """
 from __future__ import annotations
 
@@ -51,12 +52,13 @@ def max_concurrent(conn, workspace_id: int) -> int:
     web never runs ``bootstrap()``, so the generic resolver has no manifests there; the
     module's ``config.json`` is read from disk instead.
     """
-    from .. import store_env
+    import os
+
     from ..config_resolver import path_to_env_key, read_config_defaults
     from ..core_config import _find_module_dir
     from ..scoped_config import Scope, load_scoped_db_overrides
 
-    raw = store_env.get(path_to_env_key(_MAX_CONCURRENT_PATH))
+    raw = os.environ.get(path_to_env_key(_MAX_CONCURRENT_PATH))
     if raw is None:
         for scope, scope_id in ((Scope.WORKSPACE, workspace_id), (Scope.DEFAULT, 0)):
             row = load_scoped_db_overrides(conn, scope, scope_id, strict=True).get(_MAX_CONCURRENT_PATH)
@@ -106,12 +108,14 @@ def retention_lock(conn, artifact_code: str):
 
 
 def create_launch(conn, user: User, *, workspace_id: int, agent_view_id: int | None,
-                  artifact_code: str, version_id: str, manifest_fingerprint: str = NO_MANIFEST_FINGERPRINT,
-                  allowed_actions: list[str] | tuple[str, ...] = ()) -> tuple[Launch, str]:
+                  artifact_code: str, version_id: str,
+                  allowed_actions: list[str] | tuple[str, ...] = (),
+                  authorize=None) -> tuple[Launch, str]:
     """Return the launch and its raw exchange code; the code is never stored.
 
-    The defaults are a files-only launch (no manifest, no actions). E6 passes the
-    activated manifest's fingerprint and actions.
+    No actions is a files-only launch; miniapps passes the approved actions. ``authorize(user)``
+    is the caller's own check, run inside this transaction with the user as stored now (the
+    locked row's role, not the session's); it raises to refuse.
     """
     ttl = resolve_auth_ttls(conn, workspace_id)["launch_max_ttl"]
     cap = max_concurrent(conn, workspace_id)
@@ -123,16 +127,20 @@ def create_launch(conn, user: User, *, workspace_id: int, agent_view_id: int | N
         row = _lock_users(cur, "id = %s", (user.id,)).get(user.id)
         if not row or not row["is_active"]:
             raise AccessError("not allowed")
-        # The authorization that counts: inside the locked transaction, with the stored role.
-        if not has_operation(conn, row["role"], "artifact.launch", workspace_id, agent_view_id):
+        # The authorization that counts: inside the locked transaction, with the stored role
+        # (admin holds every launch, D-MINIAPP-3; a demotion since sign-in is seen here).
+        if not (row["role"] == "admin"
+                or has_operation(conn, row["role"], "artifact.launch", workspace_id, agent_view_id)):
             raise AccessError("not allowed")
+        if authorize is not None:
+            authorize(User(user.id, user.username, row["role"], bool(row["is_active"])))
         cur.execute(
             "INSERT INTO launch (id, token_hash, user_id, artifact_code, version_id, manifest_fingerprint,"
             " allowed_actions, workspace_id, agent_view_id, expires_at, exchange_code_hash, exchange_expires_at)"
             " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() + INTERVAL %s SECOND, %s,"
             " NOW() + INTERVAL %s SECOND)",
             (launch_id, token_hash(secrets.token_urlsafe(32)), user.id, artifact_code, version_id,
-             manifest_fingerprint, json.dumps(list(allowed_actions)), workspace_id, agent_view_id, ttl,
+             NO_MANIFEST_FINGERPRINT, json.dumps(list(allowed_actions)), workspace_id, agent_view_id, ttl,
              token_hash(code),
              EXCHANGE_TTL_SECONDS),
         )
@@ -213,6 +221,19 @@ def revoke_launch(conn, user: User, launch_id: str) -> bool:
         done = cur.rowcount == 1
     conn.commit()
     return done
+
+
+def revoke_artifact_launches(cur, artifact_code: str) -> None:
+    """End every live launch of the artifact, in the caller's transaction."""
+    cur.execute("UPDATE launch SET revoked_at = NOW() WHERE artifact_code = %s AND revoked_at IS NULL",
+                (artifact_code,))
+
+
+def revoke_for_artifact(conn, artifact_code: str) -> None:
+    """End every live launch of the artifact, and commit (the panel delete does this first)."""
+    with conn.cursor() as cur:
+        revoke_artifact_launches(cur, artifact_code)
+    conn.commit()
 
 
 def list_launches(conn, user: User) -> list[Launch]:

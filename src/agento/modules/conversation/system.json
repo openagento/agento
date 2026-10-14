@@ -43,6 +43,12 @@
     "min": 1024,
     "max": 8388608
   },
+  "stream/max_fragment_bytes": {
+    "type": "integer",
+    "label": "Maximum bytes per streamed field (text, tool input, tool output)",
+    "min": 256,
+    "max": 65536
+  },
   "history/page_size": {
     "type": "integer",
     "label": "History page size",

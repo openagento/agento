@@ -1,36 +1,31 @@
 """Regression guard: every env var any `from_env()` classmethod under
 `src/agento/framework/` reads must survive the cron container's env whitelist.
 
-The cron entrypoint partitions docker's environment into `/opt/cron-agent/env`
-(the credential store, root-only, delivered on a file descriptor) and
-`/opt/cron-agent/env.public` (everything else, re-added by the launcher). Both
-sides come from ONE whitelist, in `docker/cron/split-env.py`. A var read by a
-`from_env()` that is on neither side silently falls back to its default —
-exactly the bug class this test prevents from regressing.
+The cron entrypoint writes the whitelisted part of docker's environment to
+`/opt/cron-agent/env` (root-only), and the launcher imports it. The whitelist is
+the `PERSIST` pattern in `docker/cron/entrypoint.sh`. A var read by a `from_env()`
+that is not on it silently falls back to its default — exactly the bug class this
+test prevents from regressing.
 """
 from __future__ import annotations
 
 import ast
-import importlib.util
-import sys
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SPLIT_ENV = REPO_ROOT / "src/agento/framework/docker/cron/split-env.py"
+ENTRYPOINT = REPO_ROOT / "src/agento/framework/docker/cron/entrypoint.sh"
 FRAMEWORK_DIR = REPO_ROOT / "src/agento/framework"
 
 
 def _is_persisted(name: str) -> bool:
-    spec = importlib.util.spec_from_file_location("split_env_whitelist", SPLIT_ENV)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["split_env_whitelist"] = module
-    spec.loader.exec_module(module)
-    return name.startswith(module.PERSISTED_PREFIXES) or name in module.PERSISTED_NAMES
+    pattern = re.search(r"^PERSIST='(.+)'$", ENTRYPOINT.read_text(), re.M).group(1)
+    return re.match(pattern, f"{name}=") is not None
 
 
 def _from_env_literals() -> dict[str, list[str]]:
     """{relative file path: [var names]} for every literal `NAME` passed to
-    `os.environ.get("NAME", ...)` or `store_env.get("NAME", ...)` inside a
+    `os.environ.get("NAME", ...)` inside a
     `from_env` classmethod under `src/agento/framework/`."""
     out: dict[str, list[str]] = {}
     for py_file in FRAMEWORK_DIR.rglob("*.py"):
@@ -45,10 +40,7 @@ def _from_env_literals() -> dict[str, list[str]]:
                 if not (isinstance(func, ast.Attribute) and func.attr == "get"):
                     continue
                 target = func.value
-                reads_env = (
-                    isinstance(target, ast.Attribute) and target.attr == "environ"
-                ) or (isinstance(target, ast.Name) and target.id == "store_env")
-                if not reads_env:
+                if not (isinstance(target, ast.Attribute) and target.attr == "environ"):
                     continue
                 if not call.args:
                     continue
@@ -69,7 +61,7 @@ def test_framework_from_env_vars_pass_entrypoint_whitelist():
                 violations.append(f"  {rel}: {name}")
     assert not violations, (
         "the following env vars are read by framework from_env() "
-        "classmethods but are not whitelisted in docker/cron/split-env.py — use "
+        "classmethods but are not whitelisted in docker/cron/entrypoint.sh — use "
         "the AGENTO_ prefix (or add it to that whitelist if it must "
         "follow an external convention):\n" + "\n".join(violations)
     )

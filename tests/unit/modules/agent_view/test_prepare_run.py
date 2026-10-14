@@ -1,6 +1,6 @@
 """Tests for ``agent_view:prepare-run`` — the cron-side command `agento run`
 calls to do the same credential claim + materialization the consumer does, then
-returns home/working_dir/env/command so the host can ``docker exec sandbox``.
+returns home/working_dir/env/command so the host can ``docker exec runner-1``.
 
 The critical security guarantee: any API-key value the command resolves
 appears in the JSON ``env`` field, never anywhere in ``command`` (so the

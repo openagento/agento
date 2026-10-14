@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
+# How long a job that waits for a credential sleeps before it asks the pool again. A new or
+# refreshed credential wakes it sooner (the core module's wake observer).
+AUTH_WAIT_RETRY = timedelta(minutes=15)
+
+
+def auth_wait_retry_at() -> datetime:
+    """The naive-UTC time an auth wait asks the pool again (one value for every entry path)."""
+    return datetime.now(UTC).replace(tzinfo=None) + AUTH_WAIT_RETRY
+
 
 class AuthenticationError(RuntimeError):
     """Raised when agent authentication fails.
@@ -81,6 +92,15 @@ class TransientAuthError(RuntimeError):
         self.retry_with_other_token = False
 
 
+class ModelConfigError(RuntimeError):
+    """Raised when the harness cannot honour the configured provider/model — an
+    unknown model id, or a run that the harness answered with a different model.
+
+    Deterministic: the same config gives the same failure on every attempt, so
+    ``retry_policy`` never retries it. The operator fixes ``agent_view/model``.
+    """
+
+
 class CredentialsBusyError(RuntimeError):
     """Raised by ``CredentialResolver.resolve`` when every credential in a scope is
     *healthy* but none is currently *selectable* — each one is locked by a concurrent
@@ -99,6 +119,24 @@ class CredentialsBusyError(RuntimeError):
     A plain ``RuntimeError`` subclass so ``retry_policy`` keeps treating it as retryable;
     the reschedule is driven by ``pool_retry_at`` in ``_finalize_job``, not by the error
     name.
+    """
+
+    def __init__(self, message: str, *, pool_retry_at=None) -> None:
+        super().__init__(message)
+        self.pool_retry_at = pool_retry_at
+        self.retry_with_other_token = False
+
+
+class CredentialsUnavailableError(RuntimeError):
+    """No credential in the scope can serve a run: none is enabled, or every one is
+    errored, expired or throttled. Only an operator (``credential:register`` /
+    ``credential:refresh``) or time heals it.
+
+    The job waits instead of failing: ``_finalize_job`` reschedules it for ``pool_retry_at``
+    (``auth_wait_retry_at()``) with the attempt refunded, like ``CredentialsBusyError``, and
+    a new or refreshed credential wakes it sooner. ``job.error_class`` stores this class
+    name, which is the marker the wake observer and ``idx_job_auth_wait`` select on. A
+    wait longer than the consumer's cap goes ``DEAD``.
     """
 
     def __init__(self, message: str, *, pool_retry_at=None) -> None:

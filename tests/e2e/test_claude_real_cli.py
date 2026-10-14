@@ -23,17 +23,15 @@ import time
 
 import pytest
 
-from agento.framework.cli._project import compose_file_flags
+from agento.framework.cli._project import EXEC_SERVICE, compose_file_flags
 from agento.framework.cli.run import _fetch_runtime
 from agento.framework.harness import HarnessRunContext, RunRequest
 from agento.framework.ssh_prelude import wrap_with_ssh_prelude
-from agento.modules.claude.src import transcript_reader as cl_tr
 from agento.modules.claude.src.command_builder import ClaudeCommandBuilder
 from agento.modules.claude.src.output_parser import parse_claude_output
 from tests.e2e import test_agento_run_real_cli as base
 
 _VIEW = base._AGENT_VIEW
-_HOST_BUILD_DIR = base._PROJECT_ROOT / "workspace" / "build"
 _TOOLBOX_PROBE = (
     "Call the mcp__toolbox__jira_search tool exactly once with search_term "
     "'agento-e2e-probe' (user = your email from SOUL.md). Then reply with the word done."
@@ -79,13 +77,6 @@ def claude_view():
 @pytest.fixture
 def view(claude_view) -> str:
     return claude_view[0]
-
-
-@pytest.fixture
-def host_reader(monkeypatch):
-    """The transcript reader, rooted at the host side of the BUILD_DIR mount."""
-    monkeypatch.setattr(cl_tr, "BUILD_DIR", str(_HOST_BUILD_DIR))
-    return cl_tr.ClaudeTranscriptReader()
 
 
 def _run(view: str, prompt: str) -> str:
@@ -134,7 +125,7 @@ def _resume(view: str, session_id: str) -> subprocess.CompletedProcess:
     env_args = [a for k in secret_env for a in ("-e", k)]
     return subprocess.run(
         ["docker", "compose", *flags, "exec", "-T", "-u", "agent", "-e", f"HOME={home}",
-         *env_args, "-w", ctx.working_dir, "sandbox", *wrap_with_ssh_prelude(cmd)],
+         *env_args, "-w", ctx.working_dir, EXEC_SERVICE, *wrap_with_ssh_prelude(cmd)],
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300,
         env={**os.environ, **secret_env}, cwd=str(base._PROJECT_ROOT / "docker"),
     )
@@ -156,32 +147,6 @@ def test_init_and_result_contract(view):
     assert r.mcp_init is not None and r.mcp_init.servers[0].status == "connected"
 
 
-def test_toolbox_call_is_in_the_transcript(view, host_reader):
-    raw = _run(view, _TOOLBOX_PROBE)
-    if "mcp__toolbox__jira_search" not in _init(raw)["tools"]:
-        pytest.skip(f"jira_search is not enabled for agent_view {view}")
-    sid = parse_claude_output(raw).session_id
-    names = [u.name for u in host_reader.parse(sid).tool_uses]
-    assert "mcp__toolbox__jira_search" in names
-
-
-def test_subagent_toolbox_call_is_counted(view, host_reader):
-    raw = _run(
-        view,
-        "Use the Agent tool exactly once, in the foreground. Tell the subagent: "
-        f"\"{_TOOLBOX_PROBE}\" Do not call any toolbox tool yourself. Then reply done.",
-    )
-    if "mcp__toolbox__jira_search" not in _init(raw)["tools"]:
-        pytest.skip(f"jira_search is not enabled for agent_view {view}")
-    sid = parse_claude_output(raw).session_id
-    main = cl_tr._find_transcript(sid, _HOST_BUILD_DIR)
-    sub_files = sorted((main.parent / sid / "subagents").glob("*.jsonl"))
-    assert sub_files, "CLI wrote no subagent transcript — layout changed?"
-    assert any(u.name == "mcp__toolbox__jira_search"
-               for f in sub_files for u in cl_tr._scan(f)[2]), "the subagent made no toolbox call"
-    assert "mcp__toolbox__jira_search" in [u.name for u in host_reader.parse(sid).tool_uses]
-
-
 def test_background_subagent_results_are_summed(view):
     raw = _run(
         view,
@@ -193,15 +158,13 @@ def test_background_subagent_results_are_summed(view):
     assert parse_claude_output(raw).num_turns == sum(e["num_turns"] for e in results)
 
 
-def test_resume_continues_the_same_session(view, host_reader):
+def test_resume_continues_the_same_session(view):
     first = parse_claude_output(_run(view, "Reply with exactly the word: pong"))
-    before = host_reader.parse(first.session_id).total_json_lines
 
     res = _resume(view, first.session_id)
     assert res.returncode == 0, res.stderr[:800]
     resumed = parse_claude_output(res.stdout)
     assert resumed.session_id == first.session_id
-    assert host_reader.parse(first.session_id).total_json_lines > before
 
 
 def test_resume_of_an_unknown_session_raises_with_the_cli_text(view):
@@ -213,7 +176,7 @@ def test_resume_of_an_unknown_session_raises_with_the_cli_text(view):
 def _interactive_screen(view: str, *extra: str, wait: float = 60) -> str:
     """Start ``agento run <view>`` on a pty and return the screen text it shows.
 
-    Teardown sends ``/exit`` so the CLI in the sandbox ends too; a kill is the fallback.
+    Teardown sends ``/exit`` so the CLI in the runner ends too; a kill is the fallback.
     """
     try:
         pid, fd = pty.fork()

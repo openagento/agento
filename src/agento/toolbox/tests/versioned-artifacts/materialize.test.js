@@ -82,6 +82,19 @@ describe.skipIf(!linux)('materialize', () => {
     expect(await names(dest)).toEqual(['index.html']);
   });
 
+  it('gives the run group write access: dirs 0770, files 0660 under the toolbox umask 002', async () => {
+    // The desk is in a run dir owned by the run uid; the toolbox writes as a member of the
+    // run group (docs/architecture/runner.md#per-run-uid), and the agent edits as the owner.
+    await be.init(root, 'site', { files: [{ path: 'sub/a.txt', content: 'a' }] });
+    const d = await be.createDraft(root, 'site', 'current', 'x');
+    const old = process.umask(0o002);
+    try { await be.materialize(root, 'site', { draftId: d.draft_id }, destFd); }
+    finally { process.umask(old); }
+
+    expect(fs.statSync(path.join(dest, 'sub')).mode & 0o777).toBe(0o770);
+    expect(fs.statSync(path.join(dest, 'sub', 'a.txt')).mode & 0o777).toBe(0o660);
+  });
+
   it('copies what the draft RECORDS, not a half-written worktree', async () => {
     // The worktree is a staging area: `save_version` mirrors the desk into it and
     // commits under one lock, so the worktree is never legitimately ahead of the draft

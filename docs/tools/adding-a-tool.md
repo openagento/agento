@@ -137,7 +137,7 @@ acme
     tools/mysql_acme_staging/pass = ****
 ```
 
-Also visible in `agento admin` → Config screen.
+Also visible in the admin panel Config screen.
 
 ```bash
 agento tool:list

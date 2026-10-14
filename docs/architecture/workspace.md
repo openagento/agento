@@ -1,6 +1,6 @@
 # Workspace
 
-The workspace is where the agent **reads** from, **writes** to, and **runs**. It's the filesystem surface shared between cron (builder), sandbox (agent), and toolbox (MCP server).
+The workspace is where the agent **reads** from, **writes** to, and **runs**. It's the filesystem surface shared between cron (builder), the runners (agent), and toolbox (MCP server).
 
 Everything under `workspace/` on the host maps to `/workspace` inside the containers.
 
@@ -86,7 +86,7 @@ workspace/
 
 ### What's shared with the agent's home directory
 
-Inside the containers, these symlinks are created by the cron/sandbox entrypoint:
+Inside the containers, these symlinks are created by the cron image entrypoint (the runners use the same image):
 
 ```
 /home/agent/.claude.json  →  /workspace/.claude.json
@@ -518,7 +518,7 @@ exception is the per-run git SSH identity, delivered as a signing socket rather 
 
 Today `~/.claude/` and `~/.codex/` point to a single workspace-wide dir. All agent_views share the same session transcript pool. Session IDs are UUIDs so there are no collisions, but if you want hard isolation between `dev_01` and `qa_01` conversations, you'd need per-agent_view mounts.
 
-Acceptable today because typical deployments run one agent_view at a time per cron container. This will need revisiting when cron and sandbox separate.
+Acceptable today because typical deployments run one agent_view at a time per cron container. This will need revisiting now that the agents run in the runners, not in cron.
 
 ---
 

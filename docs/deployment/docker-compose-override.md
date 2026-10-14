@@ -33,6 +33,22 @@ services:
       - MY_CUSTOM_VAR=value
 ```
 
+## Opening the MySQL port
+
+The managed file publishes MySQL on host loopback only (`127.0.0.1:${MYSQL_PORT}`). To reach it
+from another host, add a port in the override. Do this only on a trusted network: the port
+then accepts logins from every address that can reach it.
+
+```yaml
+# docker/docker-compose.override.yml
+services:
+  mysql:
+    ports:
+      - "0.0.0.0:3307:3306"
+```
+
+Compose adds this port to the managed one. Use a host port that is not `MYSQL_PORT`.
+
 ## Adding a new service
 
 ```yaml
@@ -41,15 +57,21 @@ services:
   redis:
     image: redis:7-alpine
     networks:
-      - agento-net
+      - db-net
     restart: unless-stopped
 ```
 
-Make sure to attach custom services to `agento-net` if they need to communicate with Agento containers.
+Attach a custom service to the network of the containers that must reach it
+([networks](../architecture/containers.md#network)): `exec-net` for a service the agents use
+(the runners), `db-net` for one that `cron`, `web` or `toolbox` use. Each
+network you add widens what can reach that service.
+
+**Upgrade note (0.17):** `agento-net` is gone. An override that names it fails at
+`docker compose up` with an undefined-network error. Change it to `exec-net` or `db-net`.
 
 ## Extending a managed image (custom Dockerfile)
 
-To layer extra dependencies on top of a managed image (toolbox, sandbox, or cron), point your override at a custom Dockerfile that uses the managed tag as its base:
+To layer extra dependencies on top of a managed image (toolbox or cron), point your override at a custom Dockerfile that uses the managed tag as its base:
 
 ```yaml
 # docker/docker-compose.override.yml
@@ -99,7 +121,7 @@ The sandbox image installs agent CLIs from npm, one per enabled module's `sandbo
 }
 ```
 
-At install/upgrade time, the framework enumerates every enabled module's `sandbox_packages` and writes one line per declaration to `docker/.env`:
+At install/upgrade time, the framework enumerates every enabled module's `agent_harnesses[].sandbox_package` and writes one line per declaration to `docker/.env`:
 
 ```bash
 # docker/.env (seeded by agento install — one line per declared agent)
@@ -113,19 +135,18 @@ To test a new upstream release without waiting for an agento release:
 
 ```bash
 # Edit docker/.env to set the new range
-# Then rebuild the sandbox image and restart:
-agento upgrade --no-restart
-cd docker && docker compose build sandbox && docker compose up -d sandbox
+# Then rebuild the sandbox and cron images and restart (keep your installed version):
+agento upgrade --version <installed version>
 ```
 
-`agento doctor` (run from inside the project) compares the live `<binary> --version` from the running sandbox against the pin for every enabled agent module and warns if they drift — usually meaning someone edited the pin but didn't rebuild.
+`agento doctor` (run from inside the project) compares the live `<binary> --version` from the running `runner-1` against the pin for every enabled agent module and warns if they drift — usually meaning someone edited the pin but didn't rebuild.
 
 ### Adding a new agent
 
 To register a new agent (e.g. OpenCode, Hermes), drop a module under `app/code/<name>/` with a `module.json` and a `di.json` declaring one `agent_harnesses` entry that carries a `sandbox_package` (see [harness-contract.md](../architecture/harness-contract.md)). On the next `agento upgrade`:
 
 - `docker/.env` gains a `<KEY>=<default_range>` line for the new agent
-- `docker-compose.yml` gains a `<KEY>: ${<KEY>:-<default>}` build arg under the sandbox service
+- the sandbox image build gets a `--build-arg <KEY>=<value>` (no compose service builds that image)
 - `agento doctor` adds a `<binary> pin` row
 - The framework needs zero edits
 
@@ -151,7 +172,7 @@ services:
     ports:
       - "8080:8080"
     networks:
-      - agento-net
+      - exec-net
     restart: unless-stopped
 ```
 

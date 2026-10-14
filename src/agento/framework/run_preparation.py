@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .agent_manager.models import CredentialRecord
     from .agent_view_runtime import AgentViewRuntime
 
@@ -61,6 +63,14 @@ def _ensure_private_ssh_dir(artifacts_dir: Path | str) -> None:
     ssh_dir.chmod(0o700)
 
 
+def check_workspace_build(em, agent_view_id: int) -> None:
+    """Dispatch ``workspace_build_check_before`` and re-raise ``event.error``."""
+    check_event = WorkspaceBuildCheckEvent(agent_view_id=agent_view_id)
+    em.dispatch("workspace_build_check_before", check_event)
+    if check_event.error is not None:
+        raise check_event.error
+
+
 def materialize_run_workspace(
     runtime: AgentViewRuntime,
     *,
@@ -73,6 +83,7 @@ def materialize_run_workspace(
     effective_model: str | None = None,
     capability_token: str | None = None,
     ssh_identity: ResolvedSshIdentity | None = None,
+    check_build: Callable[[object, int], None] | None = None,
 ) -> tuple[Path | None, Path | None]:
     """Prepare ``(home_dir, working_dir)`` for one run.
 
@@ -87,6 +98,9 @@ def materialize_run_workspace(
     ``ssh_identity`` is the run's already-resolved SSH identity (the spawn path resolves
     it once and also needs it for the env). Only the NON-SECRET parts are written; the
     private key is never a file. ``None`` resolves it here from ``agent_config_svc``.
+
+    ``check_build(em, agent_view_id)`` replaces the plain check; the consumer passes one
+    that remembers a passed check for one poll interval.
 
     ``run_id`` is the job id (``int``) for the consumer or a unique string for
     ``agento run``. An ``int`` id scopes the run to a job via
@@ -103,12 +117,7 @@ def materialize_run_workspace(
     if runtime.agent_view is None or runtime.workspace is None:
         return None, None
 
-    event_manager = em or get_event_manager()
-
-    check_event = WorkspaceBuildCheckEvent(agent_view_id=runtime.agent_view.id)
-    event_manager.dispatch("workspace_build_check_before", check_event)
-    if check_event.error is not None:
-        raise check_event.error
+    (check_build or check_workspace_build)(em or get_event_manager(), runtime.agent_view.id)
 
     artifacts_dir = build_artifacts_dir(
         runtime.workspace.code, runtime.agent_view.code, run_id,

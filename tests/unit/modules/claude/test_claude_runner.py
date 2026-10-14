@@ -481,3 +481,20 @@ def test_errors_only_auth_text_is_classified():
 ])
 def test_result_error_message(event, expected):
     assert result_error_message(event) == expected
+
+
+# ---- Final answer (E9 §3.1) ----
+
+def test_parse_stream_json_returns_the_result_text_as_the_answer():
+    """``stream_tool_use.jsonl`` is synthesized from the documented stream-json shape."""
+    raw = (Path(__file__).resolve().parents[3] / "fixtures" / "claude"
+           / "stream_tool_use.jsonl").read_text()
+    result = parse_claude_output(raw)
+
+    assert result.raw_output == "The ticket asks to fix the login page.\nNo local files exist yet."
+    assert result.session_id == "00000000-0000-4000-8000-000000000001"
+
+
+def test_parse_stream_json_keeps_raw_when_result_text_is_empty():
+    raw = '{"type": "result", "is_error": false, "result": "", "session_id": "s"}\n'
+    assert parse_claude_output(raw).raw_output == raw

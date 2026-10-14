@@ -3,12 +3,16 @@ from __future__ import annotations
 import re
 import subprocess
 import time
+from pathlib import Path
 
+from agento.framework.agent_manager.errors import ModelConfigError
 from agento.framework.harness import (
+    SESSION_ID,
     McpInitReport,
     McpServerStatus,
     RunResult,
     SubprocessRunner,
+    move_session_into,
 )
 
 from .output_parser import classify_error, parse_session_id, parse_stream
@@ -34,6 +38,22 @@ class PiSubprocessRunner(SubprocessRunner):
     def _try_parse_session_id(self, line: str) -> str | None:
         return parse_session_id(line)
 
+    def prepare_resume(self, session_id: str) -> bool:
+        """Pi files a session as ``<ts>_<id>.jsonl`` under
+        ``~/.pi/agent/sessions/--<cwd without its leading />--`` (``/`` and ``:`` as ``-``).
+        ``--session-id`` looks only there and silently CREATES an empty session when absent,
+        so a turn in a new run dir would lose the thread without an error."""
+        if not SESSION_ID.fullmatch(session_id):
+            return False
+        if self.context.home_dir is None:
+            return True
+        cwd = re.sub(r"[/\\:]", "-", self.context.working_dir.lstrip("/\\"))
+        return move_session_into(
+            Path(self.context.home_dir) / ".pi" / "agent" / "sessions",
+            f"--{cwd}--",
+            f"*_{session_id}.jsonl",
+        )
+
     def _extract_raw(self, proc: subprocess.CompletedProcess) -> str:
         """stdout ONLY.
 
@@ -49,7 +69,7 @@ class PiSubprocessRunner(SubprocessRunner):
 
     def execute(self, request):
         # Start the clock here, but READ it in `_parse_output` — which runs inside
-        # `super().execute()`, BEFORE `_record_usage`. Assigning the elapsed time in a
+        # `super().execute()`, BEFORE the usage callback. Assigning the elapsed time in a
         # `finally` (as an earlier version did) happens after the result is already built
         # and usage already recorded, so `duration_ms` was None on the first run and stale
         # on a reused runner.
@@ -204,27 +224,27 @@ class PiSubprocessRunner(SubprocessRunner):
 
         for provider, model in parsed.identities:
             if wanted_model and not self._same_model(model, wanted_model):
-                raise RuntimeError(
+                raise ModelConfigError(
                     f"Pi ran model {model!r} but {wanted_model!r} was requested. Pi "
                     f"resolves an unmatched model by silent substring matching, so "
                     f"agent_view/model must be an exact catalogue id."
                 )
             if wanted_provider and provider != wanted_provider:
-                raise RuntimeError(
+                raise ModelConfigError(
                     f"Pi ran provider {provider!r} but {wanted_provider!r} was requested."
                 )
 
         # The bridge performs the same comparison in-process on every spawn path and
         # records it; that entry survives even when this comparison sees no identity.
         if parsed.model_mismatch:
-            raise RuntimeError(
+            raise ModelConfigError(
                 f"Pi reported a model mismatch: {parsed.model_mismatch}. "
                 f"agent_view/model must be an exact catalogue id."
             )
 
         stderr = getattr(self, "_stderr", "") or ""
         if _MODEL_NOT_FOUND_RE.search(stderr):
-            raise RuntimeError(
+            raise ModelConfigError(
                 "Pi could not resolve the requested model and fell back to a synthesised "
                 "one (its context window, token limits and pricing belong to a different "
                 "model). Set agent_view/model to an exact catalogue id."

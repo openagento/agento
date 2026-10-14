@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 from agento.framework.agent_manager.models import UsageSummary
 from agento.framework.agent_manager.usage_store import (
+    get_usage_by_credential,
     get_usage_summaries,
     get_usage_summary,
     record_usage,
@@ -99,3 +100,23 @@ class TestGetUsageSummaries:
         summaries = get_usage_summaries(conn, scope="codex")
 
         assert summaries == []
+
+
+class TestGetUsageByCredential:
+    def test_one_grouped_query_keyed_by_credential(self):
+        rows = [{"credential_id": 3, "total_tokens": 700, "call_count": 2}]
+        conn, cursor = _mock_conn(fetchall_return=rows)
+
+        usage = get_usage_by_credential(conn, [3, 4], window_hours=12)
+
+        assert usage == {3: UsageSummary(credential_id=3, total_tokens=700, call_count=2)}
+        assert cursor.execute.call_count == 1
+        sql, params = cursor.execute.call_args[0]
+        assert "GROUP BY credential_id" in sql and "IN (%s,%s)" in sql
+        assert params == (3, 4, 12)
+
+    def test_no_ids_runs_no_query(self):
+        conn, cursor = _mock_conn()
+
+        assert get_usage_by_credential(conn, []) == {}
+        cursor.execute.assert_not_called()

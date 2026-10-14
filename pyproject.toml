@@ -17,12 +17,24 @@ include = [
     "src/agento/toolbox/package-lock.json",
     # Local-build distribution context (Dockerfiles + service scripts).
     "src/agento/framework/docker/**/*",
+    # The built panel and miniapp kit (frontend/), served by proxy.
+    "src/agento/framework/web/**/*",
     # Root-level files needed for thin Docker image builds (force-included into wheel below).
     "uv.lock",
 ]
 
+# The built panel and miniapp kit are gitignored (frontend/ builds them), so they are
+# listed as artifacts; hatch_build.py refuses a wheel built without them.
+artifacts = [
+    "src/agento/framework/web/panel/**",
+    "src/agento/framework/web/miniapp-ui/**",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/agento"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
 
 # Force-include root-level files needed for thin Docker image builds.
 # - cron build context needs pyproject.toml + uv.lock for `uv sync` (deps only).
@@ -46,6 +58,8 @@ dependencies = [
     "cryptography>=43.0",
     "textual>=1.0,<2.0",
     "regex>=2024.0",
+    "fastapi>=0.143.0",
+    "uvicorn>=0.54.0",
 ]
 authors = [{name = "Marcin Klauza"}]
 license = {text = "MIT"}

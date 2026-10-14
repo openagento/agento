@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agento.framework.agent_manager.errors import TransientAuthError
 from agento.framework.consumer import Consumer
 
@@ -39,9 +41,7 @@ def _call(healthy: int, exc: TransientAuthError, *, rotatable: bool = True):
             "agento.framework.consumer.count_credentials_for_scope",
             return_value=(3, healthy),
         ),
-        # dispatch_credential_event resolves the manager itself, so patch it at the
-        # source rather than through the consumer's own import.
-        patch("agento.framework.event_manager.get_event_manager") as em,
+        patch("agento.framework.consumer.get_event_manager") as em,
     ):
         _consumer()._handle_transient_auth(
             _job(), _token(rotatable=rotatable), "claude", exc
@@ -74,10 +74,44 @@ def test_transient_auth_sets_failover_flag_when_a_healthy_token_remains():
     assert exc.retry_with_other_token is True
 
 
-def test_transient_auth_leaves_failover_flag_false_when_pool_exhausted():
+def test_transient_auth_with_no_healthy_token_left_becomes_an_auth_wait():
+    """WI-6: the token is throttled first, then the job waits for a credential."""
+    from agento.framework.agent_manager.errors import CredentialsUnavailableError
+
     exc = TransientAuthError("401 OAuth access token has been revoked")
-    _call(healthy=0, exc=exc)
+    exc.agent_output = "agent said this"
+    marker = datetime(2030, 1, 1)
+    with (
+        patch("agento.framework.consumer.auth_wait_retry_at", return_value=marker),
+        pytest.raises(CredentialsUnavailableError) as exc_info,
+    ):
+        _call(healthy=0, exc=exc)
     assert exc.retry_with_other_token is False
+    assert exc_info.value.__cause__ is exc
+    assert exc_info.value.pool_retry_at is marker  # one retry time for every entry path
+    assert exc_info.value.agent_output == "agent said this"
+
+
+def test_a_poisoned_credential_with_no_healthy_token_left_becomes_an_auth_wait():
+    from agento.framework.agent_manager.errors import CredentialsUnavailableError
+
+    exc = TransientAuthError("401 Invalid authentication credentials")
+    with pytest.raises(CredentialsUnavailableError) as exc_info:
+        _call(healthy=0, exc=exc, rotatable=False)
+    assert exc_info.value.__cause__ is exc
+
+
+def test_a_failed_pool_count_is_not_an_auth_wait():
+    """Only a counted ``healthy == 0`` converts; an unknown count re-raises the auth error."""
+    exc = TransientAuthError("401 OAuth access token has been revoked")
+    with (
+        patch("agento.framework.consumer.get_connection"),
+        patch("agento.framework.consumer.throttle_credential"),
+        patch("agento.framework.consumer.count_credentials_for_scope",
+              side_effect=RuntimeError("db down")),
+        patch("agento.framework.consumer.get_event_manager"),
+    ):
+        _consumer()._handle_transient_auth(_job(), _token(), "claude", exc)
 
 
 def test_transient_auth_attributes_failure_to_resolved_token_when_token_id_absent():
@@ -92,12 +126,11 @@ def test_transient_auth_dispatches_credential_auth_throttled_after():
         healthy=1, exc=TransientAuthError("401 OAuth access token has been revoked")
     )
     names = [c.args[0] for c in dispatch.call_args_list]
-    # Dual dispatch: new name + deprecated alias.
     assert "credential_auth_throttled_after" in names
-    assert "token_auth_throttled_after" in names
     # Must NOT masquerade as a poison — workspace_build binds an observer to that one.
     assert "credential_auth_failed_after" not in names
-    assert "token_auth_failed_after" not in names
+    # The legacy token_* names were removed in v0.17: one dispatch per event.
+    assert not [n for n in names if n.startswith("token_")]
 
 
 def test_the_incident_401_now_lands_here_instead_of_poisoning_the_subscription():
@@ -112,8 +145,8 @@ def test_the_incident_401_now_lands_here_instead_of_poisoning_the_subscription()
     assert throttle.called
     assert not poison.called
     names = [c.args[0] for c in dispatch.call_args_list]
-    assert "token_auth_throttled_after" in names
-    assert "token_auth_failed_after" not in names
+    assert "credential_auth_throttled_after" in names
+    assert "credential_auth_failed_after" not in names
 
 
 def test_a_non_rotatable_credential_is_poisoned_not_throttled_forever():
@@ -126,5 +159,5 @@ def test_a_non_rotatable_credential_is_poisoned_not_throttled_forever():
     assert poison.called
     assert poison.call_args.kwargs["source"] == "auto"
     names = [c.args[0] for c in dispatch.call_args_list]
-    assert "token_auth_failed_after" in names
-    assert "token_auth_throttled_after" not in names
+    assert "credential_auth_failed_after" in names
+    assert "credential_auth_throttled_after" not in names

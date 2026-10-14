@@ -1,0 +1,11 @@
+/* The page title edited in place, and the app icon that opens its picker. */
+.editable { display: inline-flex; align-items: center; gap: 6px; }
+.pencil { opacity: 0; }
+.editable:hover .pencil, .pencil:focus-visible { opacity: 1; }
+.input {
+  font: inherit; color: inherit; background: transparent; border: 0; outline: none; padding: 0; margin: 0;
+  field-sizing: content; min-width: 10ch;
+}
+.iconButton { display: inline-flex; padding: 3px; border: 1px solid transparent; border-radius: var(--mantine-radius-sm); }
+.iconButton:hover, .iconButton:focus-visible { border-color: var(--mantine-color-default-border); }
+.iconGrid { display: grid; grid-template-columns: repeat(7, auto); gap: 4px; }

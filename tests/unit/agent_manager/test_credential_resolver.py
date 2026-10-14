@@ -278,3 +278,33 @@ class TestCredentialResolver:
             resolver.resolve(MagicMock(), "codex")
 
         assert mock_select.call_args[0][1] == "codex"
+
+
+@pytest.mark.parametrize("counts", [(0, 0), (3, 0)])
+def test_an_empty_or_unhealthy_pool_is_an_auth_wait(counts):
+    """WI-6: no usable credential is a wait for the operator, not a failure. Both
+    sites raise the one marker class with the one retry time."""
+    from datetime import UTC, datetime
+
+    from agento.framework.agent_manager.errors import (
+        AUTH_WAIT_RETRY,
+        CredentialsUnavailableError,
+    )
+
+    with (
+        patch(
+            "agento.framework.agent_manager.credential_resolver.select_credential",
+            return_value=None,
+        ),
+        patch(
+            "agento.framework.agent_manager.credential_resolver.count_credentials_for_scope",
+            return_value=counts,
+        ),
+    ):
+        before = datetime.now(UTC).replace(tzinfo=None)
+        with pytest.raises(CredentialsUnavailableError) as exc_info:
+            CredentialResolver().resolve(MagicMock(), "claude")
+
+    retry_at = exc_info.value.pool_retry_at
+    assert retry_at.tzinfo is None
+    assert before + AUTH_WAIT_RETRY <= retry_at <= datetime.now(UTC).replace(tzinfo=None) + AUTH_WAIT_RETRY

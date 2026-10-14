@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ._env import parse_env_file
 from ._output import log_error
-from ._project import compose_file_flags, find_project_root
+from ._project import EXEC_SERVICE, compose_file_flags, find_project_root
 from ._provisioning import enumerate_sandbox_packages, parse_semver_floor
 
 
@@ -59,11 +59,11 @@ def _check_sandbox_cli_pin(
     binary: str,
     pin_key: str,
 ) -> tuple[bool, str]:
-    """Compare the live ``<binary> --version`` in the sandbox to the docker/.env pin.
+    """Compare the live ``<binary> --version`` in the runner to the docker/.env pin.
 
     Returns ``(ok, info)`` where ``ok`` reflects whether we could verify
     alignment. ``ok=True`` covers both "in range" and "no live data to check"
-    (sandbox not running / project not initialised). ``ok=False`` is reserved
+    (runner not running / project not initialised). ``ok=False`` is reserved
     for actual drift between the pin and what's installed inside the image,
     which usually means someone edited docker/.env without rebuilding.
     """
@@ -75,18 +75,18 @@ def _check_sandbox_cli_pin(
 
     flags = compose_file_flags(project_root)
     if not flags:
-        return True, f"pinned {pinned} (sandbox not built yet)"
+        return True, f"pinned {pinned} (images not built yet)"
 
     try:
         result = subprocess.run(
-            ["docker", "compose", *flags, "exec", "-T", "sandbox", binary, "--version"],
+            ["docker", "compose", *flags, "exec", "-T", EXEC_SERVICE, binary, "--version"],
             capture_output=True, text=True, timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return True, f"pinned {pinned} (sandbox not running)"
+        return True, f"pinned {pinned} (runner not running)"
 
     if result.returncode != 0:
-        return True, f"pinned {pinned} (sandbox not running)"
+        return True, f"pinned {pinned} (runner not running)"
 
     live = (result.stdout or result.stderr).strip().splitlines()[0] if (result.stdout or result.stderr) else ""
     live_floor = parse_semver_floor(live)
@@ -97,7 +97,7 @@ def _check_sandbox_cli_pin(
     # Defaults are exact pins, so live should equal pin in practice; the window
     # is kept for back-compat with tilde-style customer pins. Anything outside
     # the window means someone edited the pin (or the Dockerfile ARG default
-    # drifted) without rebuilding the sandbox.
+    # drifted) without rebuilding the images.
     in_range = (
         live_floor >= pin_floor
         and live_floor[0] == pin_floor[0]
@@ -106,8 +106,8 @@ def _check_sandbox_cli_pin(
     if in_range:
         return True, f"pinned {pinned}, live {live}"
     return False, (
-        f"pinned {pinned}, live {live} — rebuild sandbox "
-        "(docker compose build sandbox)"
+        f"pinned {pinned}, live {live} — rebuild the images "
+        "(agento upgrade --version <installed version>)"
     )
 
 
@@ -156,7 +156,7 @@ class DoctorCommand:
         ok, info = _check_binary("npm")
         checks.append(("npm", ok, info))
 
-        # Agent CLI pins inside the sandbox (skipped silently outside a
+        # Agent CLI pins inside the runner (skipped silently outside a
         # project). The list of agents to check comes from each agent module's
         # sandbox_packages declaration — no hardcoded provider names here.
         project_root = find_project_root()

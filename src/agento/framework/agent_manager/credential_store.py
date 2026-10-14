@@ -119,6 +119,47 @@ def register_credential(
     return CredentialRecord.from_row(row)
 
 
+def register_credential_and_dispatch(
+    conn: pymysql.Connection,
+    scope: str,
+    label: str,
+    credentials: dict,
+    token_limit: int = 0,
+    type: str = "oauth",
+    logger: logging.Logger | None = None,
+) -> CredentialRecord:
+    """``register_credential``, commit, then dispatch ``credential_register_after``.
+
+    The one path for every caller that registers a credential (EVT-2): ``credential:register``
+    and the panel re-login worker. A write the caller made on ``conn`` before this call
+    commits with the credential. On ``CredentialLeasedError`` it rolls back (that write too)
+    and raises.
+    """
+    from ..event_manager import get_event_manager
+    from ..events import CredentialRegisteredEvent
+
+    try:
+        credential = register_credential(
+            conn, scope=scope, label=label, credentials=credentials,
+            token_limit=token_limit, type=type, logger=logger,
+        )
+    except CredentialLeasedError:
+        conn.rollback()
+        raise
+    conn.commit()
+    get_event_manager().dispatch(
+        "credential_register_after",
+        CredentialRegisteredEvent(
+            scope=scope,
+            credential_id=credential.id,
+            label=credential.label,
+            credentials=credentials,
+            type=credential.type,
+        ),
+    )
+    return credential
+
+
 def update_refreshed_credentials(
     conn: pymysql.Connection,
     credential_id: int,
@@ -193,13 +234,27 @@ def deregister_credential(
     return found
 
 
+_NO_PAYLOAD_COLUMNS = (
+    "id, agent_type, scope, type, label, token_limit, enabled, status, priority, error_msg, "
+    "error_source, expires_at, throttled_until, lease_owner, leased_until, used_at, created_at, updated_at, "
+    "limits, limits_at"
+)
+
+
 def list_credentials(
     conn: pymysql.Connection,
     scope: str | None = None,
     enabled_only: bool = True,
+    *,
+    include_credentials: bool = True,
 ) -> list[CredentialRecord]:
-    """List credentials, optionally filtered by scope and enabled status."""
-    sql = "SELECT * FROM credential WHERE 1=1"
+    """List credentials, optionally filtered by scope and enabled status.
+
+    ``include_credentials=False`` never reads the encrypted payload, so nothing is
+    decrypted and ``credentials`` is ``None``: the form for a reader that shows a row's
+    status only (the admin screens: no secret goes to the browser, D-PANEL-ADMIN-1).
+    """
+    sql = f"SELECT {'*' if include_credentials else _NO_PAYLOAD_COLUMNS} FROM credential WHERE 1=1"
     params: list = []
     if scope is not None:
         sql += " AND scope = %s"

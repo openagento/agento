@@ -107,8 +107,8 @@ echo "========================================"
 RESPONSE=$(agent_exec "cd /workspace && claude -p 'Respond with exactly: OK' --output-format json --max-turns 1" 2>&1) || true
 if echo "$RESPONSE" | grep -qE '"is_error"[[:space:]]*:[[:space:]]*true'; then
   if echo "$RESPONSE" | grep -qiE "authentication_error|OAuth token has expired|Not logged in"; then
-    echo -e "  ${RED}✗${NC} claude prompt: OAuth token expired — re-authenticate inside agento-sandbox"
-    echo -e "      ${DIM}Run: docker exec -it -u agent agento-sandbox claude${NC}"
+    echo -e "  ${RED}✗${NC} claude prompt: OAuth token expired — register the credential again"
+    echo -e "      ${DIM}Run: agento credential:register claude <label>${NC}"
   else
     echo -e "  ${RED}✗${NC} claude prompt: CLI error — ${RESPONSE:0:200}"
   fi

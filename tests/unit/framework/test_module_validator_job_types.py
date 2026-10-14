@@ -86,7 +86,7 @@ def test_a_module_route_may_not_be_unauthenticated(tmp_path: Path):
 def test_a_module_cannot_declare_one_route_twice(tmp_path: Path):
     from agento.framework.module_validator import validate_module
 
-    route = {"method": "GET", "path": "/api/twice/x", "handler": "src.routes.hello"}
+    route = {"method": "GET", "path": "/api/twice/x", "handler": "src.routes.hello", "acl": "self"}
     mod = _module(tmp_path, "twice", {"routes": [route, route]})
     assert any("twice" in e and "declared twice" in e for e in validate_module(mod)), validate_module(mod)
 
@@ -104,9 +104,9 @@ def test_a_valid_route_declaration_passes(tmp_path: Path):
     from agento.framework.module_validator import route_declarations, validate_route_grammar
 
     mod = _module(tmp_path, "demo3", {"routes": [
-        {"method": "POST", "path": "/api/demo3/messages", "handler": "src.routes.send"},
+        {"method": "POST", "path": "/api/demo3/messages", "handler": "src.routes.send", "acl": "self"},
     ]})
-    assert validate_route_grammar("demo3", route_declarations(mod, {})) == []
+    assert validate_route_grammar("demo3", route_declarations(mod, {}), frozenset()) == []
 
 
 @pytest.mark.parametrize(("di", "expected"), [
@@ -117,6 +117,8 @@ def test_a_valid_route_declaration_passes(tmp_path: Path):
     ({"routes": "/api/x"}, "'routes' must be a list"),
     ({"execution_hooks": []}, "'execution_hooks' must be an object"),
     ({"execution_hooks": {"sink": 5}}, "must map a string seam"),
+    # Moved to acl.json "operations" (D-ADMIN-ACL-2): a leftover key is an error, never ignored.
+    ({"acl_resources": [{"id": "shapes.run", "title": "x"}]}, "'acl_resources' is not read"),
 ])
 def test_a_malformed_declaration_is_refused_not_ignored(tmp_path: Path, di, expected):
     """PLN-3. The three readers mirror the LOADER, which is lenient so a bad manifest cannot

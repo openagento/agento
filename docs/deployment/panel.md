@@ -32,13 +32,13 @@ and serves three origins on it:
 
 | Variable | Default | Origin |
 |---|---|---|
-| `AGENTO_PANEL_HOST` | `panel.localhost` | the panel API, `/api/*` |
-| `AGENTO_APPS_HOST` | `apps.localhost` | launched artifact files, `/a/<code>/v/<id>/…` |
+| `AGENTO_PANEL_HOST` | `panel.localhost` | the panel: the built app, and the API at `/api/*`. `toolbox` reads it too: `versioned_artifact_create_draft` returns the panel origin as `panel_origin`, for the miniapp bridge |
+| `AGENTO_APPS_HOST` | `apps.localhost` | launched artifact files, `/a/<code>/v/<id>/…`, and the miniapp kit, `/_ui/<version>/` |
 | `AGENTO_SHARE_HOST` | `share.localhost` | Basic-auth shares, one origin per share: `<token>.<host>`. Set it to empty to turn shares off; an invalid value stops `proxy` from starting. `toolbox` reads it too, to print share URLs |
 | `AGENTO_PROXY_PORT` | `8443` | the host port; `443` gives origins with no port |
 
 Set the variables in `docker/.env`. The generated `docker-compose.yml` gives the same values
-to `proxy` and to `web` (and `AGENTO_SHARE_HOST` / `AGENTO_PROXY_PORT` to `toolbox`). `web` needs them because it compares the `Origin` header of every
+to `proxy` and to `web` (and `AGENTO_SHARE_HOST` / `AGENTO_PANEL_HOST` / `AGENTO_PROXY_PORT` to `toolbox`). `web` needs them because it compares the `Origin` header of every
 write with the exact panel origin, and it builds the launch redeem URL on the apps origin. If you
 override one of them in `docker-compose.override.yml`, override it for both services.
 
@@ -66,16 +66,38 @@ A `user` sees nothing until you grant its role access in a scope. A scope is one
 one agent_view:
 
 ```bash
-bin/agento grant:add --role user --tool versioned_artifact_get_current --agent-view dev_01
 bin/agento grant:add --role user --operation artifact.launch --agent-view dev_01
-bin/agento tool:enable versioned_artifact --agent-view dev_01
-bin/agento tool:enable versioned_artifact_get_current --agent-view dev_01
 ```
 
-A grant never enables a tool. A tool that `is_enabled` turns off at that scope is refused for
-every role, `admin` included. To launch an artifact, a role needs both grants above in the
-artifact's scope, and the view must be allowed to use the artifact (its own, or listed in
-`versioned_artifacts/allowed_artifacts`).
+To open a miniapp, a role needs `artifact.launch` in the view, and an admin must approve the app
+for that view on the panel page **Apps** (`/apps/<code>`). The approval pins one version and its
+actions. A new version that the agent publishes waits for the next approval. See
+[../modules/miniapps.md](../modules/miniapps.md).
+
+## Giving a role admin screens
+
+A panel screen or action opens only for a role that holds its **leaf**. A leaf takes no scope:
+
+```bash
+bin/agento grant:add --role support --operation admin.jobs
+bin/agento grant:add --role support --operation versioned_artifacts      # the Artifacts screen
+```
+
+Miniapps have no leaf: each app has its own rights (DECISIONS.md D-MINIAPP-3). To give a user an
+app, add the user or the role as a member on the app settings page (`/apps/<code>`). A member sees
+the app; to run it in a view, the role also needs `artifact.launch` there and a tool grant for every
+action of the app's manifest:
+
+```bash
+bin/agento grant:add --role support --operation artifact.launch --agent-view <view>
+bin/agento grant:add --role support --tool <action> --agent-view <view>   # once per manifest action
+```
+
+`bin/agento grant:add --help` lists every leaf with its title, from the `acl.json` files of the
+framework and the enabled modules. The panel **Roles** screen shows the same tree. `admin` holds
+every leaf built in. A leaf of a disabled module is not shown and opens nothing; its grant stays
+and works again when the module is enabled. Each panel route names the leaf it needs
+([../architecture/panel.md](../architecture/panel.md#acl-resources-acljson)).
 
 ## Launch limits
 
@@ -91,11 +113,21 @@ The launch lifetime is `core/auth/launch_max_ttl`, and the session lifetime is
 
 ## What `web` holds
 
-`web` has no `env_file`, no `AGENTO_ENCRYPTION_KEY`, and it never runs `bootstrap()`. It
+`web` and `cron` are one trusted backend (DECISIONS.md D-BACKEND-1, D-BACKEND-2): the same
+`env_file` (`secrets.env`, with `AGENTO_ENCRYPTION_KEY`) and one DB user. `web` never runs
+`bootstrap()`. It reaches the artifact store only through the toolbox `/admin` endpoint, with a
+viewless `internal_rest` capability that it mints per call (subject `service:web:user:<id>`). It
 stores only SHA-256 hashes of session tokens, launch tokens and exchange codes. It mounts
 `app/code` and `app/etc` read-only, so it sees the same module list as `cron` when it checks a
 grant or a config write. The admin config form refuses every field that it cannot prove is not a
 secret: set those with `bin/agento config:set`.
+
+## The panel files
+
+The panel and the miniapp kit are static files inside the installed `agento-core` package
+(`agento/framework/web/panel` and `agento/framework/web/miniapp-ui`). `proxy` mounts both
+read-only, so `agento upgrade` brings the new panel with no extra step. A wheel built without
+them is refused at build time. In the dev stack, `cd frontend && npm run build` updates them live.
 
 ## Checking a deployment
 

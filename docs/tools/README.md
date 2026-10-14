@@ -5,7 +5,7 @@ Tools are exposed to the AI agent via MCP (Model Context Protocol). The Toolbox 
 ## Architecture
 
 ```
-Agent (cron/sandbox)                    Toolbox
+Agent (runner-<i>)                      Toolbox
 ┌─────────────┐    MCP/HTTP   ┌─────────────────────────┐
 │ Claude CLI   │◄────────────►│ MCP Server (:3001)      │
 │ reads .mcp.json             │                         │
@@ -58,12 +58,6 @@ Discovered by convention from `<module>/toolbox/*.js` files. Each file exports a
 | Tool | Description |
 |------|-------------|
 | `versioned_artifact_init`, `versioned_artifact_list`, `versioned_artifact_get_current`, `versioned_artifact_list_versions`, `versioned_artifact_create_draft`, `versioned_artifact_materialize`, `versioned_artifact_save_version`, `versioned_artifact_diff`, `versioned_artifact_publish`, `versioned_artifact_discard_draft` | Versioned file trees — the whole lifecycle (opt-in; each scope owns what it creates and additionally uses whatever `allowed_artifacts` grants it). See [versioned-artifacts.md](../modules/versioned-artifacts.md). |
-
-**Miniapps module** (`src/agento/modules/miniapps/toolbox/`):
-
-| Tool | Description |
-|------|-------------|
-| `miniapp_get_launch_spec`, `miniapp_list` (both opt-in, under the `miniapp` switch) | Whether a version is an activated miniapp and which actions its launches may call; the activated miniapps a scope may launch. Called by `web` with the user's own capability. See [miniapps.md](../modules/miniapps.md). |
 
 **User modules** (`app/code/<name>/toolbox/`):
 

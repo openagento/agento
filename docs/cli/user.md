@@ -6,14 +6,17 @@ no actor check.
 
 | Command | Effect |
 |---|---|
-| `user:create <username> [--role admin\|user]` | Create a user. Without `--role`, choose it with the arrow keys. |
+| `user:create <username> [--role CODE]` | Create a user. Without `--role`, choose a role from the `role` table with the arrow keys. |
 | `user:list` | List users with role and state. |
-| `user:set-role <username> <admin\|user>` | Change the role. Ends every session and launch of that user. |
+| `user:set-role <username> <role>` | Change the role. Ends every session and launch of that user. |
 | `user:deactivate <username>` | Stop the user from signing in. Ends every session and launch of that user. |
 | `user:activate <username>` | Let the user sign in again. |
 | `user:password <username>` | Set a new password. Ends every session of that user. |
 
-A username matches `^[a-z0-9][a-z0-9._-]{0,63}$`. A password has 12 to 1024 characters.
+Shortcuts: `us:cr`, `us:li`, `us:sr`, `us:de`, `us:ac`, `us:pa`.
+
+A username matches `^[a-z0-9][a-z0-9._-]{0,63}$`. A password has 12 to 1024 characters. A role is
+any code in the `role` table (`role:list`, [role.md](role.md)); an unknown code is refused.
 
 ## Passwords never come from argv
 
@@ -28,4 +31,4 @@ bin/agento user:password admin < /run/secrets/admin-password   # a mode-0600 fil
 Passwords are stored as scrypt hashes (`N=16384, r=8, p=1`). A user created by the admin API
 with no password cannot sign in until `user:password` sets one.
 
-See also [grant.md](grant.md) and [../deployment/panel.md](../deployment/panel.md).
+See also [role.md](role.md), [grant.md](grant.md) and [../deployment/panel.md](../deployment/panel.md).

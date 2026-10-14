@@ -1,0 +1,5 @@
+{
+    "patches": [
+        {"name": "RemoveMiniappTools", "class": "src.patches.RemoveMiniappTools.RemoveMiniappTools"}
+    ]
+}

@@ -14,7 +14,7 @@ agento tool:list
 agento tool:list --agent-view developer
 ```
 
-Shortcut: `to:li`
+Shortcut: `tl:li`
 
 ### Options
 
@@ -49,7 +49,7 @@ agento tool:enable mysql_reporting --agent-view developer
 agento tool:enable mysql_reporting --scope workspace --scope-id 1
 ```
 
-Shortcut: `to:en`
+Shortcut: `tl:en`
 
 > **Gate key vs. tool name.** For adapter tools (mysql/mssql/opensearch) the gate key *is* the tool name. Some JS-implemented modules gate their tools under one module key — e.g. most tools in the `jira` module are gated by `tools/jira/is_enabled`, so you enable that group with `agento tool:enable jira`. Exception: `jira_get_attachment` is individually opt-in gated as `tools/jira_get_attachment/is_enabled` (enable with `agento tool:enable jira_get_attachment`).
 
@@ -77,7 +77,7 @@ agento tool:disable jira_search
 agento tool:disable jira_search --agent-view developer
 ```
 
-Shortcut: `to:di`
+Shortcut: `tl:di`
 
 ### Options
 
@@ -107,7 +107,7 @@ Tools are **opt-in**: the resolved value must be `1` for a tool to be available.
 - `1` → enabled
 - `0` → disabled (explicit; an `agent_view`/`workspace` `0` overrides an inherited `1`)
 
-This least-privilege default means a newly added module's tools — including DB tools that carry credentials — are unavailable until an operator enables them. Enable broadly at `default`, then narrow per `workspace`/`agent_view`, or enable only where needed. The admin TUI **Tools** screen (`agento admin`) offers a checkbox view of all tools grouped into sections by toolset (each with a "toggle all") for a chosen scope. A tool's toolset is its required `toolset` field in `module.json` (checked by `agento module:validate`; the screen falls back to the module name only if a value is absent).
+This least-privilege default means a newly added module's tools — including DB tools that carry credentials — are unavailable until an operator enables them. Enable broadly at `default`, then narrow per `workspace`/`agent_view`, or enable only where needed. The admin panel **Tools** screen (and the deprecated admin TUI, `agento admin`) offers a checkbox view of all tools grouped into sections by toolset (each with a "toggle all") for a chosen scope. A tool's toolset is its required `toolset` field in `module.json` (checked by `agento module:validate`; the screen falls back to the module name only if a value is absent).
 
 **First-class (built-in) tools default-on.** Because the gate consults `config.json`, a module may ship a tool enabled by default. The framework's built-in tools do this — `core/config.json` sets `tools/email_send/is_enabled`, `tools/browser/is_enabled`, `tools/schedule_followup/is_enabled` to `1`, and `jira/config.json` sets `tools/jira/is_enabled` to `1` (covering most jira tools) — so the agent's baseline toolkit works out of the box. Exception: `jira_get_attachment` is individually opt-in and defaults to disabled. Credentialed/customer adapter tools ship no such default and stay opt-in. A DB `0` at any scope still disables a built-in (e.g. to lock `browser` out of a restricted agent_view).
 

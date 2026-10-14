@@ -99,14 +99,15 @@ def _token_throttle(credential_id: int):
         conn.close()
 
 
-def test_auth_failure_retries_onto_next_healthy_token_then_dead_when_exhausted(
+def test_auth_failure_retries_onto_next_healthy_token_then_waits_when_exhausted(
     int_db_config, int_consumer_config,
 ):
     """Two invalid tokens, A (priority 0) then B (priority 1). Each attempt the
     consumer resolves the lowest-priority healthy token; the runner rejects the
     credential with a 401; the consumer poisons that token and — because a
     healthy alternative still exists — requeues the job. Once both are poisoned
-    the pool is exhausted and the job dead-letters."""
+    the pool is exhausted and the job waits for a credential (AUTH_WAIT_RETRY), with
+    the attempt refunded."""
     logger = logging.getLogger("test")
     _bind_harness("claude")
     token_a = _seed_token("a", priority=0)
@@ -138,7 +139,7 @@ def test_auth_failure_retries_onto_next_healthy_token_then_dead_when_exhausted(
     # Unblock the retry backoff.
     update_job(job_id, scheduled_after="2000-01-01 00:00:00")
 
-    # Attempt 2: token B selected (A poisoned) -> poisoned -> pool exhausted -> DEAD.
+    # Attempt 2: token B selected (A poisoned) -> poisoned -> pool exhausted -> auth wait.
     with patch.object(ClaudeSubprocessRunner, "execute", new=_reject):
         consumer2 = Consumer(int_db_config, int_consumer_config, logger)
         job2 = consumer2._try_dequeue()
@@ -147,8 +148,9 @@ def test_auth_failure_retries_onto_next_healthy_token_then_dead_when_exhausted(
         consumer2._execute_job(job2)
 
     row = fetch_job(job_id)
-    assert row["status"] == "DEAD"
-    assert row["attempt"] == 2
+    assert row["status"] == "TODO"
+    assert row["attempt"] == 1  # refunded: a wait for a credential spends no attempt
+    assert row["error_class"] == "CredentialsUnavailableError"
     assert _token_status(token_a) == "error"
     assert _token_status(token_b) == "error"
 
@@ -339,13 +341,12 @@ def test_revoked_token_throttles_and_fails_over_instead_of_dead_lettering(
     assert _token_status(token_healthy) == "ok"
 
 
-def test_revoked_token_dead_letters_only_once_the_pool_is_exhausted(
+def test_revoked_token_waits_once_the_pool_is_exhausted(
     int_db_config, int_consumer_config,
 ):
     """Failover is not infinite: with a single token in the pool a revoked 401 leaves
-    no healthy alternative, so ``retry_with_other_token`` stays False and the job
-    dead-letters immediately (the ``NON_RETRYABLE_ERRORS`` path) rather than burning
-    all three attempts on the same credential."""
+    no healthy alternative, so the job waits for a credential (AUTH_WAIT_RETRY, attempt
+    refunded) rather than burning all three attempts on the same credential."""
     logger = logging.getLogger("test")
     _bind_harness("claude")
     only_token = _seed_token("only-revoked", priority=0)
@@ -360,9 +361,9 @@ def test_revoked_token_dead_letters_only_once_the_pool_is_exhausted(
         consumer._execute_job(job)
 
     row = fetch_job(job_id)
-    assert row["status"] == "DEAD"
-    assert row["attempt"] == 1
-    assert row["error_class"] == "TransientAuthError"
+    assert row["status"] == "TODO"
+    assert row["attempt"] == 0  # refunded
+    assert row["error_class"] == "CredentialsUnavailableError"
     # Still a cooldown, not a poison — an operator does not need `token:reset`.
     assert _token_status(only_token) == "ok"
     assert _token_throttle(only_token) is not None

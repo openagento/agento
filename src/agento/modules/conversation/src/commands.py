@@ -12,6 +12,7 @@ Two halves, in order:
 from __future__ import annotations
 
 import argparse
+import time
 
 from agento.framework.cli.runtime import _load_framework_config
 from agento.framework.db import get_connection_or_exit
@@ -47,11 +48,45 @@ class ConversationSweepCommand:
             conn.close()
 
 
+RELAY_PASS_S = 1
+RELAY_BUDGET_S = 55   # under the 60 s cron period, so invocations seldom overlap
+RELAY_LOCK = "conversation_relay"
+
+
+def run_relay(conn, *, clock=time.monotonic, sleep=time.sleep):
+    """One cron invocation: relay passes every `RELAY_PASS_S` until `RELAY_BUDGET_S` ends.
+
+    Returns `(relayed, projected, pruned)`, or `None` when another invocation holds the
+    lock. The named lock keeps the one-relay contract when two invocations overlap: the
+    second exits at once and never waits.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT GET_LOCK(%s, 0) AS got", (RELAY_LOCK,))
+        if cur.fetchone()["got"] != 1:
+            return None
+    try:
+        deadline = clock() + RELAY_BUDGET_S
+        relayed = projected = 0
+        while True:
+            relayed += relay.relay_outbox(conn)
+            projected += relay.project_tool_calls(conn)
+            if clock() + RELAY_PASS_S >= deadline:
+                break
+            sleep(RELAY_PASS_S)
+        pruned = relay.prune_relayed(
+            conn, retention_days=service.config(conn, "retention/outbox_days"))
+        return relayed, projected, pruned
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("DO RELEASE_LOCK(%s)", (RELAY_LOCK,))
+
+
 class ConversationRelayCommand:
     """`conversation:relay` — §6.4.1's single relay process, plus its own cleanup.
 
     One process, by contract: two would interleave and invert the order that
-    `conversation_event.id` is supposed to give a thread.
+    `conversation_event.id` is supposed to give a thread. `run_relay` holds a named lock
+    for the whole invocation to keep it so.
     """
 
     @property
@@ -73,10 +108,11 @@ class ConversationRelayCommand:
         db_config, _, _ = _load_framework_config()
         conn = get_connection_or_exit(db_config)
         try:
-            relayed = relay.relay_outbox(conn)
-            projected = relay.project_tool_calls(conn)
-            pruned = relay.prune_relayed(
-                conn, retention_days=service.config(conn, "retention/outbox_days"))
+            totals = run_relay(conn)
+            if totals is None:
+                print("Another conversation:relay is running; exiting.")
+                return
+            relayed, projected, pruned = totals
             print(f"Relayed {relayed} outbox row(s), projected {projected} tool call(s), "
                   f"pruned {pruned}.")
         finally:
@@ -107,7 +143,7 @@ class ConversationRetentionCommand:
         pass
 
     def execute(self, args: argparse.Namespace) -> None:
-        from .retention import auto_archive, delete_archived, prune_events, prune_orphan_executions
+        from .retention import auto_archive, delete_archived, prune_events, prune_old_executions
         from .service import config
 
         db_config, _, _ = _load_framework_config()
@@ -117,9 +153,9 @@ class ConversationRetentionCommand:
             archived = auto_archive(conn, idle_days=config(conn, "retention/idle_days"))
             deleted = delete_archived(
                 conn, archived_days=config(conn, "retention/archived_days"))
-            orphans = prune_orphan_executions(
+            runs = prune_old_executions(
                 conn, event_days=config(conn, "retention/event_days"))
             print(f"Pruned {pruned} event(s), archived {archived}, deleted {deleted}, "
-                  f"removed {orphans} orphan execution(s).")
+                  f"removed {runs} old execution(s).")
         finally:
             conn.close()

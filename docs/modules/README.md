@@ -12,6 +12,7 @@ modules/
     di.json           # Capability bindings: channels, job_types, workflows, commands
     system.json       # Config field schemas with types and labels
     events.json       # Event observer declarations
+    acl.json          # Admin panel leaves and scoped operations (optional)
     data_patch.json   # Data patch declarations
     cron.json         # Cron job declarations
     sql/              # Schema migrations
@@ -33,6 +34,7 @@ modules/
 | `di.json` | Channel, workflow, runtime, onboarding class bindings | Bootstrap (populates registries) |
 | `system.json` | Config field schemas with types and labels | Config resolver (3-level fallback) |
 | `events.json` | Event observer declarations | Bootstrap (wires observers) |
+| `acl.json` | Admin panel leaves and scoped operations (see below) | `web` (route `acl`), role grants, `module:validate` |
 | `config.json` | Non-secret default values (hosts, ports, DB names) | Toolbox (config fallback) |
 | `data_patch.json` | Data patch declarations (seeding, transforms) | Setup (`setup:upgrade`) |
 | `cron.json` | Cron job declarations (scheduled CLI commands) | Setup (`setup:upgrade`) |
@@ -40,6 +42,34 @@ modules/
 | `knowledge/` | System documentation for the AI agent | Agent (reads during tasks) |
 | `prompts/` | Step-by-step diagnostic methodologies | Agent (follows during diagnosis) |
 | `skills/` | Reusable task templates | Agent (executes on request) |
+
+### `acl.json`
+
+The Magento `etc/acl.xml`. Optional. It declares the panel leaves (`screens`) and the scoped
+operations (`operations`) of the module. Every id starts with the module name (here a module `reports`):
+
+```json
+{
+  "screens": [{"title": "Reports", "leaves": [
+    {"id": "reports", "title": "View"},
+    {"id": "reports.export", "title": "Export"}
+  ]}],
+  "operations": [{"id": "reports.run", "title": "Run a report in the view"}]
+}
+```
+
+- An id is the module name, or the module name and `.<name>` parts (`[a-z_]`). An id is unique
+  across the framework file (`src/agento/framework/access/acl.json`) and every module.
+- A **leaf** is a global grant. A role tree in the panel shows each screen with its leaves.
+  A route in `di.json` `routes[]` names the leaf it needs in `acl` (see
+  [panel](../architecture/panel.md#acl-resources-acljson)). A route may name its own leaves, core
+  leaves, or the leaves of a module in its `sequence`; or `"self"` for a route that every signed-in
+  user may call (the handler scopes the rows).
+- An **operation** is a grant in one workspace or agent_view, which a handler checks
+  with `accounts.has_operation(conn, role, operation, workspace_id, agent_view_id)`.
+- When the module is disabled, its leaves and operations leave the registry. Role grants of them
+  stay in the DB.
+- `module:validate` checks the shape, the id prefix, unique ids and each route `acl`.
 
 ## Module Loading
 
@@ -72,7 +102,14 @@ bin/agento config:set my_system/tools/mysql_my_prod/pass
 - [Outlook / Microsoft 365 email channel](outlook.md) — DMARC-gated, allow-listed inbound email channel
 - [Bitbucket Cloud PR-review channel](bitbucket.md) — watches an agent's open PRs and queues review work
 - [GitHub PR-review channel](github.md) — watches an agent's open GitHub PRs and queues review work
-- [Miniapps](miniapps.md) — activate a versioned artifact version as a panel-launched app with a fixed action set
+- [Miniapps](miniapps.md) — run an approved versioned artifact version as a panel-launched app with a fixed action set
 - [Versioned artifacts](versioned-artifacts.md) — drafts, immutable versions, and an atomic current pointer for file trees
 - [Web](web.md) — panel launch limit and the toolbox `session` auth source
+- [Admin](admin.md) — panel display settings: date format and time zone
 - [Conversation](conversation.md) — chat threads, message history, executions and the event log
+
+### Bundled harness modules
+
+- [Claude](claude.md) — Claude Code harness: final answer and live timeline fragments
+- [Codex](codex.md) — OpenAI Codex harness: final answer and live timeline fragments
+- [Pi](pi.md) — Pi harness with OpenRouter and Ollama providers

@@ -1,23 +1,20 @@
 """The streaming response contract (PRD E3-E5 §7.1).
 
 A handler returns `StreamingResponse` instead of `Response` and the listener writes each
-frame as the generator yields it. Four properties, and they are the whole contract:
+frame as the generator yields it. The whole contract:
 
-* **No `Content-Length`.** The length is not known when the headers go out, and a stream
-  that had one would not be a stream. The connection is closed at the end instead, so
-  the client sees the body end where the generator ends.
-* **A disconnect is a broken write.** There is no out-of-band notification that a reader
-  left; the write to a dead socket raises, and that raise is what ends the generator.
-* **The generator's `finally` runs exactly once.** `close()` is what releases the §7.3
-  stream slot, and the listener calls it on every exit - the clean end, the broken write,
-  and a handler that raised mid-stream. A slot leaked here is a slot leaked for ever.
-* **A streaming route is an ordinary route.** Auth, CSRF and the rate limiter run before
-  the handler is called, exactly as for a materialized response; nothing about the return
-  type changes the gate in front of it.
+* **No `Content-Length`.** uvicorn sends HTTP/1.1 chunks (to HTTP/1.0: up to the close), so
+  the body ends where the generator ends.
+* **A disconnect ends the loop** after the `next()` in progress: the listener watches ASGI
+  `http.disconnect`, because uvicorn drops a write to a closed socket silently.
+* **The generator's `finally` runs exactly once.** `close()` releases the §7.3 stream slot on
+  every exit - clean end, disconnect, a handler that raised. A leaked slot is leaked for ever.
+* **The generator runs on the stream thread budget** (`server.MAX_STREAMS`), never the
+  request pool, so open streams cannot stop other requests.
+* **A streaming route is an ordinary route.** Auth, CSRF and the rate limiter run first.
 
-Heartbeats are ordinary frames from the same generator. A second writer would need its own
-lock, its own disconnect handling and its own share of the `finally`; one generator has
-none of those problems.
+Heartbeats are ordinary frames from the same generator: a second writer would need its own
+lock, disconnect handling and share of the `finally`.
 """
 from __future__ import annotations
 

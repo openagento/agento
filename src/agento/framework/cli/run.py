@@ -6,7 +6,7 @@ Host-side LOCAL command. Two-step docker exec:
    dir (same path the consumer uses for jobs), and returns the unified CLI
    command + a possibly-non-empty ``env`` dict for credentials that must be
    delivered at runtime.
-2. Exec into sandbox with HOME=per-run artifacts, cwd=per-run artifacts, running
+2. Exec into the runner (``EXEC_SERVICE``) with HOME=per-run artifacts, cwd=per-run artifacts, running
    the command cron told us to run. Runtime env values are injected via
    **name-only** ``-e KEY`` so the secret never appears in argv/``ps``;
    docker reads the value from the parent's environment.
@@ -30,7 +30,7 @@ from pathlib import Path
 
 from ..harness.stream_style import sanitize
 from ..ssh_prelude import wrap_with_ssh_prelude
-from ._project import compose_file_flags, find_project_root
+from ._project import EXEC_SERVICE, compose_file_flags, find_project_root
 
 
 class RunCommand:
@@ -45,7 +45,7 @@ class RunCommand:
     @property
     def help(self) -> str:
         return (
-            "Run the configured agent CLI in the sandbox container. "
+            "Run the configured agent CLI in the runner container. "
             "With a prompt: headless (one-shot); without: interactive."
         )
 
@@ -151,7 +151,7 @@ class RunCommand:
                 "-e", f"HOME={home_in_container}",
                 *env_args,
                 "-w", working_dir,
-                "sandbox",
+                EXEC_SERVICE,
                 *wrapped,
             ]
             # Pass the secret via the child env so docker reads it from there
@@ -193,7 +193,7 @@ class RunCommand:
             "-e", "COLORTERM=truecolor",
             *env_args,
             "-w", working_dir,
-            "sandbox",
+            EXEC_SERVICE,
             *wrapped,
         ]
         # execvp inherits the current process's environment; set secrets there

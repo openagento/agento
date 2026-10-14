@@ -1,7 +1,7 @@
 """CLI command: agent_view:runtime — dump resolved runtime profile as JSON.
 
 Used internally by `agento run <code>` to discover harness + HOME path before
-spawning the sandbox, and available to users for introspection/debugging.
+spawning the agent CLI, and available to users for introspection/debugging.
 
 When ``--prompt`` is supplied, the payload also includes a ``headless_command``
 built by the harness's registered :class:`CommandBuilder`. When no prompt is given,

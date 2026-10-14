@@ -84,7 +84,8 @@ The four built-ins are `cron`, `todo`, `followup` and `blank`. A module may add 
 ```
 TODO → RUNNING → SUCCESS
                 → TODO (retry)
-                → DEAD (max retries)
+                → TODO (wait for a credential, attempt refunded)
+                → DEAD (max retries, or a credential wait older than 24 h)
 ```
 
 | State | Description |
@@ -100,11 +101,18 @@ TODO → RUNNING → SUCCESS
 - **Max attempts:** 3
 - **Backoff:** exponential (1 min → 5 min → 30 min)
 - **Non-retryable errors** → immediately DEAD (e.g., invalid issue key)
+- **Process crash** → a run that stops with a plain crash after it filed its session is resumed once in the same attempt (see [runner.md](runner.md#crash-handling)). Only a second crash spends an attempt.
+- **Pool wait** → when the whole credential pool is throttled or busy, the job goes back to `TODO` for the time the pool recovers. The attempt is refunded and the capabilities are kept.
+- **Credential wait** → when no credential can serve the run (none enabled, or every one errored, expired or throttled, also after an auth failure removed the last healthy one), the job goes back to `TODO` with `error_class = 'CredentialsUnavailableError'`. It asks the pool again after 15 minutes (`AUTH_WAIT_RETRY`), with the attempt refunded. A `credential:register` or `credential:refresh` (and a panel re-login) wakes up to 200 waiting jobs at once, lowest id first (the `core` module observer). The wake does not filter by credential scope: a woken job of another pool asks the pool once and waits again. A job whose `created_at` is more than 24 hours ago goes `DEAD` (`job_dead_after`) instead of waiting again.
 - **Blocked verdict** → immediately `FAILED` (no retry), with an admin alert instead of a dead-letter. A verification observer sets `Verdict(blocked=True)` when the veto cause is a deterministic config/infra fault (a missing tool credential, a broken MCP config): retrying re-runs the full LLM against an unchanged world for the same result, so it stops after the first attempt and the failure is framed as a deployment fault, not an agent fault. It lands in `FAILED` (not `DEAD`) so ops can tell a config fault apart from genuine agent exhaustion.
 
 ## Concurrency & Per-Run Isolation (Phase 9.5)
 
 The consumer runs a bounded thread pool (`AGENTO_CONSUMER_MAX_WORKERS`). Each job gets an isolated run directory with freshly generated config files (`.claude.json`, `.mcp.json`, `AGENTS.md`, `SOUL.md`), eliminating the shared-file corruption that previously forced `concurrency=1`.
+
+**Database connections.** The consumer borrows connections from a pool (`db.pooled`). The pool keeps at most `AGENTO_CONSUMER_MAX_WORKERS` idle connections. When none is idle, it opens a new one; it never waits. The pool checks each connection at checkout and rolls it back at return. Code that runs `GET_LOCK` or `SET SESSION` must not use the pool, because both outlive the checkout (a test enforces this). The consumer renews refresh leases once per poll interval, and it runs the build freshness check at most once per poll interval for each agent_view. So a config change reaches new runs within one poll interval.
+
+**Sizing.** `AGENTO_CONSUMER_MAX_WORKERS` stays 10 by default. To run 200 jobs at the same time, set it to 200. MySQL `max_connections` must be larger than the peak: about one connection per running job, plus the toolbox, `web` and the CLI. The compose template sets `--max-connections=600`, which is enough for 200 workers. The benchmark `tests/integration/test_orchestration_scale.py` measures connections per job and `Max_used_connections`.
 
 Jobs are dequeued by priority: `ORDER BY priority DESC, created_at ASC`. Priority is stamped at publish time from scoped config path `agent_view/scheduling/priority` (0-100, default 50).
 

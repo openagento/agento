@@ -27,9 +27,9 @@ function moduleToolboxSources() {
 // It asserts the SHAPE (a blanket /api guard installed before module registration),
 // not the presence of any word, so a new module needs no change here.
 describe('REST auth coverage', () => {
-  it('installs the /api capability guard before module REST APIs are registered', () => {
+  it.each(['/api', '/admin'])('installs the %s capability guard before module REST APIs are registered', (prefix) => {
     const src = fs.readFileSync(path.join(here, '..', 'server.js'), 'utf8');
-    const guardAt = src.indexOf("app.use('/api'");
+    const guardAt = src.indexOf(`app.use('${prefix}'`);
     const registerAt = src.indexOf('registerModuleRestApis(');
     expect(guardAt).toBeGreaterThan(-1);
     expect(registerAt).toBeGreaterThan(guardAt);
@@ -47,11 +47,16 @@ describe('REST auth coverage', () => {
     expect(endpoints.filter(e => !e.includes('cap='))).toEqual([]);
   });
 
-  it('no module registers a route outside the /api namespace', () => {
+  it('parses JSON bodies at the /admin mount, after the guard', () => {
+    const src = fs.readFileSync(path.join(here, '..', 'server.js'), 'utf8');
+    expect(src).toMatch(/app\.use\('\/admin', requireCapability\(\{ endpoint: 'admin' \}, logToolboxRest\), express\.json\(\)\)/);
+  });
+
+  it('no module registers a route outside the /api and /admin namespaces', () => {
     const offenders = [];
     for (const { mod, name, src } of moduleToolboxSources()) {
       for (const m of src.matchAll(/app\.(get|post|put|patch|delete|all)\(\s*['"]([^'"]+)['"]/g)) {
-        if (!m[2].startsWith('/api/')) offenders.push(`${mod}/${name}: ${m[1].toUpperCase()} ${m[2]}`);
+        if (!m[2].startsWith('/api/') && !m[2].startsWith('/admin/')) offenders.push(`${mod}/${name}: ${m[1].toUpperCase()} ${m[2]}`);
       }
     }
     expect(offenders).toEqual([]);

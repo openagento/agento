@@ -88,6 +88,23 @@ def test_deleting_an_agent_view_takes_its_launches_and_grants(scope):
         assert cur.fetchone()["n"] == 0
 
 
+def test_a_role_with_users_cannot_be_deleted_and_its_grants_go_with_it(scope):
+    conn, refs = scope
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO role (code, label) VALUES ('e15_role', 'E15 role')")
+        cur.execute("INSERT INTO `user` (username, role) VALUES ('e15-member', 'e15_role')")
+        _insert(cur, "role_grant", {"role": "e15_role", "grant_kind": "tool", "name": "t",
+                                    "agent_view_id": "@agent_view"}, refs)
+        with pytest.raises(pymysql.IntegrityError):
+            cur.execute("DELETE FROM role WHERE code = 'e15_role'")
+        cur.execute("DELETE FROM `user` WHERE username = 'e15-member'")
+        cur.execute("DELETE FROM role WHERE code = 'e15_role'")
+        cur.execute("SELECT COUNT(*) AS n FROM role_grant WHERE role = 'e15_role'")
+        assert cur.fetchone()["n"] == 0
+        cur.execute("SELECT code FROM role ORDER BY code")
+        assert [r["code"] for r in cur.fetchall()] == ["admin", "user"]
+
+
 def test_capability_and_audit_take_a_string_version_id():
     version = ROWS["launch"][0]["row"]["version_id"]
     conn = _test_connection(autocommit=True)
@@ -114,7 +131,7 @@ def _columns(database):
             cur.execute(
                 "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT "
                 "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = %s "
-                "AND TABLE_NAME IN ('user', 'session', 'launch', 'role_grant', "
+                "AND TABLE_NAME IN ('role', 'user', 'session', 'launch', 'role_grant', "
                 "'toolbox_capability', 'tool_invocation') ORDER BY TABLE_NAME, ORDINAL_POSITION",
                 (database,))
             columns = cur.fetchall()
@@ -122,7 +139,7 @@ def _columns(database):
                 "SELECT TABLE_NAME, CONSTRAINT_NAME, CONSTRAINT_TYPE FROM "
                 "information_schema.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = %s "
                 "ORDER BY TABLE_NAME, CONSTRAINT_NAME", (database,))
-            constraints = [c for c in cur.fetchall() if c[0] in TABLES]
+            constraints = [c for c in cur.fetchall() if c[0] in ("role", *TABLES)]
         return columns, constraints
     finally:
         conn.close()

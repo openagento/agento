@@ -1,3 +1,0 @@
-{"type":"user","message":{"role":"user","content":[{"type":"text","text":"do something"}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"nie wiem"}]}}
-{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"koniec"}]}}

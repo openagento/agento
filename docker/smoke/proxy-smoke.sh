@@ -10,17 +10,19 @@ set -uo pipefail
 #
 # It proves, against the real containers:
 #   1. the Caddyfile the proxy runs validates.
-#   2. from sandbox, web's authorization endpoint answers 401 — with no header, with a
+#   2. from cron (web's db-net peer), web's authorization endpoint answers 401 — with no header, with a
 #      forged proxy secret plus identity headers, and with a forged X-Forwarded-Uri and a
 #      made-up launch cookie; the launch redeem answers 403 to a made-up code.
-#   3. /internal/* through the panel origin is 404.
+#   3. /internal/* through the panel origin is 404; the panel shell is served with no-store on a
+#      client route, a missing asset is 404, and the kit under /_ui/<v>/ on the apps origin is
+#      immutable while a missing kit file is an uncached 404 (E8).
 #   4. the apps origin reaches web's authorization endpoint (403 with no launch cookie), and
 #      serves only /a/<code>/v/<id>/…: traversal, encoded traversal and a `current` path
 #      are 404. A share host that is not a token is 404; with AGENTO_SHARE_HOST=bad_host
 #      the proxy entrypoint refuses to start.
 #   5. neither a `cap` value nor a launch exchange `code` reaches the proxy or web logs — with
 #      web up, and with web stopped (the error-log path).
-#   6. `artifacts` publishes no host port and does not resolve from sandbox.
+#   6. `artifacts` publishes no host port and does not resolve from runner-1.
 #   7. the panel + launch flow (docker/smoke/panel-launch-smoke.py): log in, launch, redeem by
 #      POST through the apps origin, file with / without the cookie, a spoofed
 #      X-Forwarded-Uri, replay, a miniapp action (allowed, refused, and its audit row with
@@ -35,8 +37,9 @@ set -uo pipefail
 # SMOKE_AGENT_VIEW (default: dev_01): the user `e2-smoke-user` (a fresh random password
 # each run, via stdin), two role grants, two tool gates, the artifact `e2-smoke`, and
 # `e2-smoke` appended to that view's versioned_artifacts/allowed_artifacts; E6 adds the
-# miniapp artifact `e6-smoke` (with a miniapp.json), its activation, the miniapp tool gates
-# and grants, and a Basic credential (fresh random password each run) on `e2-smoke`.
+# miniapp artifact `e6-smoke` (with a miniapp.json; the smoke approves it through the API),
+# `e2-smoke-user` as a member with edit on both artifacts (D-MINIAPP-3), and a Basic credential
+# (fresh random password each run) on `e2-smoke`.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
@@ -66,9 +69,10 @@ resolve_container() {
 }
 PROXY="$(resolve_container proxy)" || exit 1
 WEB="$(resolve_container web)" || exit 1
-SANDBOX="$(resolve_container sandbox)" || exit 1
+RUNNER="$(resolve_container runner-1)" || exit 1
 ARTIFACTS="$(resolve_container artifacts)" || exit 1
 CRON="$(resolve_container cron)" || exit 1
+TOOLBOX="$(resolve_container toolbox)" || exit 1
 MYSQL="$(resolve_container mysql)" || exit 1
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
@@ -77,7 +81,8 @@ ok()  { echo -e "  ${GREEN}✓${NC} $1"; pass=$((pass+1)); }
 bad() { echo -e "  ${RED}✗${NC} $1"; fail=$((fail+1)); }
 expect() { [ "$2" = "$3" ] && ok "$1 ($3)" || bad "$1 (expected $2, got $3)"; }
 
-from_sandbox() { docker exec "$SANDBOX" curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
+# WS7: no agent container reaches web (runner-net-smoke.sh), so a db-net peer asks.
+from_peer() { docker exec "$CRON" curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
 # --path-as-is: curl would otherwise resolve `..` itself, and the proxy would never see it.
 via_proxy() {
   local host="$1" path="$2"; shift 2
@@ -138,22 +143,32 @@ else
   bad "adapted config runs the authz subrequest out of order"
 fi
 
-echo "2. web from sandbox"
-expect "/internal/authz/app, no header" 401 "$(from_sandbox http://web:8000/internal/authz/app)"
-expect "/internal/authz/app, forged secret + identity headers" 401 "$(from_sandbox \
+echo "2. web from a db-net peer"
+expect "/internal/authz/app, no header" 401 "$(from_peer http://web:8000/internal/authz/app)"
+expect "/internal/authz/app, forged secret + identity headers" 401 "$(from_peer \
   -H 'X-Agento-Proxy-Auth: forged' -H 'X-Agento-User: admin' -H 'X-Forwarded-User: admin' \
   http://web:8000/internal/authz/app)"
 LAUNCH_ID="cccccccccccccccccccccccccccccccc"
-expect "/internal/authz/app, forged secret + X-Forwarded-Uri + made-up launch cookie" 401 "$(from_sandbox \
+expect "/internal/authz/app, forged secret + X-Forwarded-Uri + made-up launch cookie" 401 "$(from_peer \
   -H 'X-Agento-Proxy-Auth: forged' -H 'X-Forwarded-Uri: /a/demo/v/v-20260925-120000-ab12/index.html' \
   -H "Cookie: __Host-agento-launch-$LAUNCH_ID=made-up" http://web:8000/internal/authz/app)"
-expect "/internal/launch/redeem, made-up code" 403 "$(from_sandbox -X POST \
+expect "/internal/launch/redeem, made-up code" 403 "$(from_peer -X POST \
   -H "Origin: https://panel.localhost:$PORT" -H 'Content-Type: application/x-www-form-urlencoded' \
   --data "launch_id=$LAUNCH_ID&code=made-up" http://web:8000/internal/launch/redeem)"
-expect "/health" 200 "$(from_sandbox http://web:8000/health)"
+expect "/health" 200 "$(from_peer http://web:8000/health)"
 
 echo "3. panel origin"
 expect "/internal/authz/app through panel" 404 "$(via_proxy panel.localhost /internal/authz/app)"
+# E8: the built panel and the miniapp kit are static files on proxy.
+cache_of() { curl -sk -o /dev/null -w '%header{cache-control}' --max-time 5 --resolve "$1:$PORT:127.0.0.1" "https://$1:$PORT$2"; }
+expect "panel shell on a client route" 200 "$(via_proxy panel.localhost /conversations)"
+[ "$(cache_of panel.localhost /conversations)" = "no-store" ] && ok "panel shell is no-store" || bad "panel shell is cached"
+expect "panel missing asset" 404 "$(via_proxy panel.localhost /assets/nope.js)"
+expect "kit stylesheet on apps" 200 "$(via_proxy apps.localhost /_ui/1.0.0/agento-ui.css)"
+[ "$(cache_of apps.localhost /_ui/1.0.0/agento-ui.css)" = "public, max-age=31536000, immutable" ] \
+  && ok "kit is immutable" || bad "kit is not immutable"
+expect "kit unknown version" 404 "$(via_proxy apps.localhost /_ui/9.9.9/agento-ui.css)"
+[ -z "$(cache_of apps.localhost /_ui/9.9.9/agento-ui.css)" ] && ok "a kit 404 is not cached" || bad "a kit 404 is cached"
 
 echo "4. apps and share origins"
 VERSION_PATH="/a/demo/v/v-20260925-120000-ab12/index.html"
@@ -192,7 +207,7 @@ printf '%s' "$logs" | grep -q 'REDACTED' && ok "query values logged as REDACTED"
 
 echo "6. artifacts"
 [ -z "$(docker port "$ARTIFACTS")" ] && ok "no published host port" || bad "artifacts publishes a host port"
-docker exec "$SANDBOX" getent hosts artifacts >/dev/null 2>&1 && bad "artifacts resolves from sandbox" || ok "artifacts does not resolve from sandbox"
+docker exec "$RUNNER" getent hosts artifacts >/dev/null 2>&1 && bad "artifacts resolves from runner-1" || ok "artifacts does not resolve from runner-1"
 
 echo "7. panel and launch flow"
 VIEW="${SMOKE_AGENT_VIEW:-dev_01}"
@@ -213,28 +228,44 @@ else
   for tool in versioned_artifact versioned_artifact_get_current; do
     docker exec "$CRON" $RUN tool:enable "$tool" --agent-view "$VIEW" >/dev/null
   done
+  # Agents create artifacts (O-3) and the store is toolbox-only, so the smoke makes its
+  # artifacts in the toolbox, through the service, as the view, under an operator-named code
+  # (a second run gets ARTIFACT_ALREADY_EXISTS, never a renamed copy).
+  seed_artifact() {
+    python3 -c 'import base64, json, os, sys; d = sys.argv[1]; print(json.dumps([{"path": f, "encoding": "base64",
+"content": base64.b64encode(open(os.path.join(d, f), "rb").read()).decode()} for f in sorted(os.listdir(d))]))' "$2" \
+    | docker exec -i -e CODE="$1" -e VIEW_ID="$VIEW_ID" "$TOOLBOX" node --input-type=module -e '
+import { loadModuleConfigs } from "/opt/agento-toolbox-src/config-loader.js";
+import * as db from "/opt/agento-toolbox-src/db.js";
+import { createService } from "/app/modules/core/versioned_artifacts/toolbox/service.js";
+const chunks = []; for await (const c of process.stdin) chunks.push(c);
+const config = { ...(await loadModuleConfigs()).versioned_artifacts, allowed_artifacts: process.env.CODE };
+await createService({ config, db, agentViewId: Number(process.env.VIEW_ID), actor: "proxy-smoke" })
+  .init(process.env.CODE, { files: JSON.parse(Buffer.concat(chunks).toString()) });
+process.exit(0);'
+  }
   mkdir "$SEED/src" && echo '<h1>e2 smoke</h1>' > "$SEED/src/index.html"
-  (cd "$PROJECT_DIR" && uv run bin/agento artifact:init e2-smoke --source "$SEED/src" --actor proxy-smoke) >/dev/null 2>&1 || true
+  seed_artifact e2-smoke "$SEED/src" >/dev/null 2>&1 || true
   allowed="$(sql "SELECT value FROM core_config_data WHERE scope = 'agent_view' AND scope_id = $VIEW_ID AND path = 'versioned_artifacts/allowed_artifacts'")"
   case ",${allowed// /}," in
     *,e2-smoke,*) ;;
     *) docker exec "$CRON" $RUN config:set versioned_artifacts/allowed_artifacts "${allowed:+$allowed,}e2-smoke" --agent-view "$VIEW" >/dev/null ;;
   esac
-  # E6: a miniapp artifact whose first version carries a manifest; the smoke activates it.
+  # E6: a miniapp artifact whose first version carries a manifest; the smoke approves it.
   mkdir "$SEED/app" && echo '<h1>e6 smoke</h1>' > "$SEED/app/index.html"
   echo '{"schema": 1, "title": "E6 smoke", "actions": ["versioned_artifact_get_current"]}' > "$SEED/app/miniapp.json"
-  (cd "$PROJECT_DIR" && uv run bin/agento artifact:init e6-smoke --source "$SEED/app" --actor proxy-smoke) >/dev/null 2>&1 || true
-  for tool in miniapp miniapp_get_launch_spec; do
-    docker exec "$CRON" $RUN tool:enable "$tool" --agent-view "$VIEW" >/dev/null
-  done
-  docker exec "$CRON" $RUN grant:add --role user --tool miniapp_get_launch_spec --agent-view "$VIEW" >/dev/null
+  seed_artifact e6-smoke "$SEED/app" >/dev/null 2>&1 || true
   allowed="$(sql "SELECT value FROM core_config_data WHERE scope = 'agent_view' AND scope_id = $VIEW_ID AND path = 'versioned_artifacts/allowed_artifacts'")"
   case ",${allowed// /}," in
     *,e6-smoke,*) ;;
     *) docker exec "$CRON" $RUN config:set versioned_artifacts/allowed_artifacts "${allowed:+$allowed,}e6-smoke" --agent-view "$VIEW" >/dev/null ;;
   esac
+  # Preview and Approve need `edit` on the app (D-MINIAPP-3): the smoke user is a member with edit.
+  for code in e2-smoke e6-smoke; do
+    sql "INSERT IGNORE INTO miniapp_member (artifact_code, user_id, can_edit) SELECT '$code', id, 1 FROM \`user\` WHERE username = 'e2-smoke-user'" >/dev/null
+  done
   if python3 "$SCRIPT_DIR/panel-launch-smoke.py" "$PORT" "$SEED/pw" "$VIEW_ID" e2-smoke "$CRON" "$PROXY" "$WEB" \
-      e6-smoke "$MYSQL" "$PROJECT_DIR"; then
+      e6-smoke "$MYSQL"; then
     ok "panel and launch flow"
   else
     bad "panel and launch flow"

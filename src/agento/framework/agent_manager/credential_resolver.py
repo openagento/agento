@@ -12,7 +12,7 @@ from .credential_store import (
     earliest_lease_expiry_for_scope,
     select_credential,
 )
-from .errors import CredentialsBusyError
+from .errors import CredentialsBusyError, CredentialsUnavailableError, auth_wait_retry_at
 from .models import CredentialRecord
 
 # Contention retry budget, expressed as a wall-clock deadline rather than a
@@ -115,7 +115,8 @@ class CredentialResolver:
         recording, workspace builds) need no lease. Rows held by someone else's live lease
         are excluded for every caller regardless.
 
-        Raises ``RuntimeError`` with an actionable message when no healthy
+        Raises ``CredentialsUnavailableError`` (with ``pool_retry_at``, so the job waits
+        for a credential) and an actionable message when no healthy
         credential is available (distinguishes "none registered" vs
         "all errored/expired" so the operator knows whether to ``credential:register``,
         ``credential:refresh``, or ``credential:reset``). When credentials ARE healthy but
@@ -165,9 +166,10 @@ class CredentialResolver:
             sleep_for = min(sleep_for * 2, _POOL_CONTENTION_MAX_SLEEP_SECONDS)
 
         if total == 0:
-            raise RuntimeError(
+            raise CredentialsUnavailableError(
                 f"No enabled credentials for scope={scope}. "
-                f"Register one: bin/agento credential:register {scope} <label>"
+                f"Register one: bin/agento credential:register {scope} <label>",
+                pool_retry_at=auth_wait_retry_at(),
             )
         if healthy > 0:
             # Healthy tokens exist but all are transiently busy — a concurrent worker's
@@ -182,9 +184,10 @@ class CredentialResolver:
                 "(a run is rotating a near-expiry credential); retry shortly.",
                 pool_retry_at=earliest_lease_expiry_for_scope(conn, scope),
             )
-        raise RuntimeError(
+        raise CredentialsUnavailableError(
             f"All {total} enabled credentials for scope={scope} are "
             f"unhealthy (errored or expired); {healthy} healthy. "
             f"Run 'bin/agento credential:list --all' to inspect, then "
-            f"'bin/agento credential:refresh <id>' or 'bin/agento credential:reset <id>'."
+            f"'bin/agento credential:refresh <id>' or 'bin/agento credential:reset <id>'.",
+            pool_retry_at=auth_wait_retry_at(),
         )

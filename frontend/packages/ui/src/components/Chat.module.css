@@ -1,0 +1,44 @@
+/* The chat screen (panel only: a miniapp shows no chat, so these have no .ag-* twin, UI-2).
+   Every value is a Mantine theme variable (UI-1). */
+
+/* The page fills the shell's main area: the shell header and padding are Mantine's own vars. */
+.page {
+  height: calc(100dvh - var(--app-shell-header-height, 0px) - 2 * var(--app-shell-padding, 0px));
+  min-height: 0;
+}
+.split { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: var(--mantine-spacing-md); }
+.narrow { display: flex; flex-direction: column; gap: var(--mantine-spacing-xs); }
+.nav { min-height: 0; overflow-y: auto; padding-right: var(--mantine-spacing-xs); border-right: 1px solid var(--mantine-color-default-border); }
+.main { min-height: 0; min-width: 0; flex: 1; }
+
+.layout { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; min-height: 0; }
+.body { position: relative; min-height: 0; }
+.scroll { height: 100%; }
+/* One readable column, as the chat apps do. */
+.column { max-width: 48rem; margin-inline: auto; padding-inline: var(--mantine-spacing-xs); }
+.overlay { position: absolute; bottom: var(--mantine-spacing-sm); left: 50%; transform: translateX(-50%); z-index: 1; }
+.footer { padding-top: var(--mantine-spacing-xs); }
+.list { list-style: none; margin: 0; padding: var(--mantine-spacing-sm) 0; display: flex; flex-direction: column; gap: var(--mantine-spacing-md); }
+
+.message { display: flex; flex-direction: column; gap: calc(var(--mantine-spacing-xs) / 4); min-width: 0; }
+.user { align-items: flex-end; }
+.bubble {
+  max-width: min(85%, 40rem);
+  background-color: var(--mantine-color-default-hover);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.incoming { border-left: 3px solid var(--mantine-color-default-border); }
+/* The time and copy row shows on hover or keyboard focus; on a touch screen always. */
+.actions { opacity: 0; transition: opacity 120ms; }
+.message:hover .actions, .message:focus-within .actions { opacity: 1; }
+@media (hover: none) { .actions { opacity: 1; } }
+
+.row { width: 100%; border-radius: var(--mantine-radius-sm); padding: calc(var(--mantine-spacing-xs) / 4) var(--mantine-spacing-xs); }
+.row:hover:not(:disabled) { background-color: var(--mantine-color-default-hover); }
+.grow { flex: 1; min-width: 0; }
+.chevron { transition: transform 120ms; flex: none; }
+.open { transform: rotate(90deg); }
+.detail { padding: var(--mantine-spacing-xs) 0 var(--mantine-spacing-xs) var(--mantine-spacing-lg); }
+.group { padding-left: var(--mantine-spacing-md); display: flex; flex-direction: column; gap: calc(var(--mantine-spacing-xs) / 4); }
+.pre { white-space: pre-wrap; overflow-wrap: anywhere; }

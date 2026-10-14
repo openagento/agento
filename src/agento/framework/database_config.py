@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-
-from . import store_env
 
 
 @dataclass(frozen=True)
@@ -22,9 +21,9 @@ class DatabaseConfig:
     def from_env(cls) -> DatabaseConfig:
         """Build from env vars only (MYSQL_HOST, MYSQL_PORT, etc.)."""
         return cls(
-            mysql_host=store_env.get("MYSQL_HOST", "mysql"),
-            mysql_port=int(store_env.get("MYSQL_PORT", "3306")),
-            mysql_database=store_env.get("MYSQL_DATABASE", "cron_agent"),
-            mysql_user=store_env.get("MYSQL_USER", "cron_agent"),
-            mysql_password=store_env.get("MYSQL_PASSWORD", ""),
+            mysql_host=os.environ.get("MYSQL_HOST", "mysql"),
+            mysql_port=int(os.environ.get("MYSQL_PORT", "3306")),
+            mysql_database=os.environ.get("MYSQL_DATABASE", "cron_agent"),
+            mysql_user=os.environ.get("MYSQL_USER", "cron_agent"),
+            mysql_password=os.environ.get("MYSQL_PASSWORD", ""),
         )

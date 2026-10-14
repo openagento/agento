@@ -41,19 +41,54 @@ def test_user_create_without_role_uses_select(mock_connect, monkeypatch):
     piped = io.StringIO("correct horse battery")
     monkeypatch.setattr(piped, "isatty", lambda: False)
     monkeypatch.setattr("sys.stdin", piped)
-    monkeypatch.setattr("agento.framework.cli.terminal.select", lambda prompt, options: options.index("admin"))
-    create = MagicMock(return_value=accounts.User(1, "root", "admin", True))
+    monkeypatch.setattr(accounts, "list_roles", lambda conn: [{"code": "admin"}, {"code": "support"}, {"code": "user"}])
+    monkeypatch.setattr("agento.framework.cli.terminal.select", lambda prompt, options: options.index("support"))
+    create = MagicMock(return_value=accounts.User(1, "root", "support", True))
     monkeypatch.setattr(accounts, "create_user", create)
     cmd = access.UserCreateCommand()
     cmd.execute(_parse(cmd, ["root"]))
-    assert create.call_args.args[2] == "admin"
+    assert create.call_args.args[1:] == ("root", "support", "correct horse battery")
+
+
+def test_role_is_any_code_the_db_knows():
+    """No hardcoded choices: accounts checks the code against the role table."""
+    assert _parse(access.UserCreateCommand(), ["bob", "--role", "support"]).role == "support"
+    assert _parse(access.UserSetRoleCommand(), ["bob", "support"]).role == "support"
+    assert _parse(access.GrantListCommand(), ["--role", "support"]).role == "support"
+
+
+@patch.object(access, "_connect")
+def test_role_create_list_delete(mock_connect, monkeypatch, capsys):
+    create = MagicMock(return_value={"code": "support", "label": "Support desk"})
+    delete = MagicMock()
+    monkeypatch.setattr(accounts, "create_role", create)
+    monkeypatch.setattr(accounts, "delete_role", delete)
+    monkeypatch.setattr(accounts, "list_roles", lambda conn: [
+        {"code": "support", "label": "Support desk", "builtin": False, "users": 2, "scopes": 1}])
+    for cls, argv in ((access.RoleCreateCommand, ["support", "--label", "Support desk"]),
+                      (access.RoleListCommand, []), (access.RoleDeleteCommand, ["support"])):
+        cmd = cls()
+        cmd.execute(_parse(cmd, argv))
+    assert create.call_args.args[1:] == ("support", "Support desk")
+    assert delete.call_args.args[1:] == ("support",)
+    assert "users=2" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        _parse(access.RoleCreateCommand(), ["support"])  # --label is required
+
+
+@patch.object(access, "_connect")
+def test_role_delete_refusal_exits_nonzero(mock_connect, monkeypatch, capsys):
+    monkeypatch.setattr(accounts, "delete_role", MagicMock(side_effect=accounts.AccessError("3 users have this role")))
+    cmd = access.RoleDeleteCommand()
+    with pytest.raises(SystemExit) as exc:
+        cmd.execute(_parse(cmd, ["support"]))
+    assert exc.value.code == 1 and "3 users" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("argv", [
     ["--role", "user", "--tool", "t", "--operation", "artifact.launch", "--agent-view", "v"],
     ["--role", "user", "--agent-view", "v"],
     ["--role", "user", "--tool", "t", "--workspace", "w", "--agent-view", "v"],
-    ["--role", "user", "--tool", "t"],
     ["--role", "user", "--operation", "users.manage", "--agent-view", "v"],
 ])
 def test_grant_add_usage_errors(argv):
@@ -71,6 +106,33 @@ def test_grant_add_operation_at_an_agent_view(mock_connect, monkeypatch):
     cmd.execute(_parse(cmd, ["--role", "user", "--operation", "artifact.launch", "--agent-view", "dev"]))
     assert add.call_args.args[1:] == ("user", "operation", "artifact.launch")
     assert add.call_args.kwargs == {"workspace_id": None, "agent_view_id": 42}
+
+
+@patch.object(access, "_connect")
+def test_grant_add_admin_panel_operation_has_no_scope(mock_connect, monkeypatch, capsys):
+    add = MagicMock(return_value=8)
+    monkeypatch.setattr(accounts, "add_grant", add)
+    cmd = access.GrantAddCommand()
+    cmd.execute(_parse(cmd, ["--role", "support", "--operation", "admin.users"]))
+    assert add.call_args.args[1:] == ("support", "operation", "admin.users")
+    assert add.call_args.kwargs == {"workspace_id": None, "agent_view_id": None}
+    monkeypatch.setattr(accounts, "list_grants", lambda conn, role: [
+        {"id": 8, "role": "support", "grant_kind": "operation", "name": "admin.users",
+         "workspace_id": None, "agent_view_id": None}])
+    cmd = access.GrantListCommand()
+    cmd.execute(_parse(cmd, []))
+    assert capsys.readouterr().out.rstrip().endswith("global")
+
+
+@pytest.mark.parametrize("kind,name,workspace_id,agent_view_id", [
+    ("operation", "artifact.launch", None, None),  # a scoped operation needs its scope
+    ("tool", "jira_add_comment", None, None),
+    ("operation", "admin.users", 1, None),  # an admin panel operation takes none
+    ("tool", "admin.users", None, None),
+])
+def test_check_grant_refuses_the_wrong_scope(kind, name, workspace_id, agent_view_id):
+    with pytest.raises(accounts.AccessError):
+        accounts._check_grant(kind, name, workspace_id, agent_view_id)
 
 
 @patch.object(access, "_connect")

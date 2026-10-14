@@ -37,8 +37,9 @@ def run(conn, world):
         client_message_id=str(uuid.uuid4())[:16], content="pytanie")
     execution_id = str(uuid.uuid4())
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO execution (execution_id, job_id, attempt, status) "
-                    "VALUES (%s, %s, 1, 'running')", (execution_id, job_id))
+        cur.execute("INSERT INTO execution (execution_id, job_id, attempt, status, "
+                    "conversation_id) VALUES (%s, %s, 1, 'running', %s)",
+                    (execution_id, job_id, conversation_id))
     conn.commit()
     yield {"conversation_id": conversation_id, "message_id": message_id,
            "job_id": job_id, "execution_id": execution_id}
@@ -50,10 +51,10 @@ def run(conn, world):
     conn.commit()
 
 
-def _delta(run, seq: int, text: str = "fragment", *, kind: str = "delta",
-           tool_name: str | None = None) -> DeltaRecord:
+def _delta(run, seq: int, text: str = "fragment", *, kind: str = "assistant.text",
+           tool_name: str | None = None, data: dict | None = None) -> DeltaRecord:
     return DeltaRecord(execution_id=run["execution_id"], seq=seq, kind=kind,
-                       text=text, tool_name=tool_name)
+                       text=text, tool_name=tool_name, data=data)
 
 
 def _rows(conn, sql, args=()) -> list[dict]:
@@ -71,12 +72,20 @@ def _ledger(conn, run) -> list[dict]:
 
 def _events(conn, run) -> list[dict]:
     return _rows(conn, "SELECT * FROM conversation_event WHERE conversation_id = %s "
-                       "AND kind = 'assistant.delta' ORDER BY id", (run["conversation_id"],))
+                       "AND source_kind = 'delta' AND kind NOT IN ('gap', 'truncated') "
+                       "ORDER BY id", (run["conversation_id"],))
 
 
-def _cap(monkeypatch, *, count=2000, size=1_048_576, page=100):
+def _all_events(conn, run) -> list[dict]:
+    """The fragments and the markers."""
+    return _rows(conn, "SELECT * FROM conversation_event WHERE conversation_id = %s "
+                       "AND source_kind = 'delta' ORDER BY id", (run["conversation_id"],))
+
+
+def _cap(monkeypatch, *, count=2000, size=1_048_576, page=100, field=8192):
     values = {"stream/max_deltas_per_execution": count,
               "stream/max_delta_bytes_per_execution": size,
+              "stream/max_fragment_bytes": field,
               "history/page_size": page}
     monkeypatch.setattr(service, "config", lambda conn, path: values[path])
 
@@ -89,7 +98,7 @@ def test_one_fragment_writes_a_ledger_row_and_an_event(conn, sink, run, monkeypa
     sink.write([_delta(run, 1, "cześć")])
 
     ledger = _ledger(conn, run)
-    assert [(r["seq"], r["kind"]) for r in ledger] == [(1, "delta")]
+    assert [(r["seq"], r["kind"]) for r in ledger] == [(1, "assistant.text")]
     events = _events(conn, run)
     assert len(events) == 1
     assert json.loads(events[0]["payload"])["text"] == "cześć"
@@ -101,7 +110,8 @@ def test_the_event_carries_the_sequence_and_the_tool_name(conn, sink, run, monke
     sink.write([_delta(run, 7, "ok", tool_name="bash")])
 
     payload = json.loads(_events(conn, run)[0]["payload"])
-    assert (payload["seq"], payload["tool_name"], payload["fragment"]) == (7, "bash", "delta")
+    assert (payload["seq"], payload["tool_name"]) == (7, "bash")
+    assert _events(conn, run)[0]["kind"] == "assistant.text"
 
 
 def test_a_batch_writes_every_fragment_in_order(conn, sink, run, monkeypatch):
@@ -141,9 +151,8 @@ def test_a_gap_marker_is_its_own_row(conn, sink, run, monkeypatch):
 
     sink.write([_delta(run, 1), _delta(run, 2, kind="gap", text=None)])
 
-    assert [r["kind"] for r in _ledger(conn, run)] == ["delta", "gap"]
-    assert [json.loads(e["payload"])["fragment"] for e in _events(conn, run)] == \
-        ["delta", "gap"]
+    assert [r["kind"] for r in _ledger(conn, run)] == ["assistant.text", "gap"]
+    assert [e["kind"] for e in _all_events(conn, run)] == ["assistant.text", "gap"]
 
 
 def test_a_fragment_of_a_run_that_is_not_a_conversation_writes_no_event(conn, sink,
@@ -173,7 +182,7 @@ def test_exceeding_the_count_cap_stops_deltas_and_records_one_marker(conn, sink,
     sink.write([_delta(run, i) for i in range(1, 11)])
 
     kinds = [r["kind"] for r in _ledger(conn, run)]
-    assert kinds.count("delta") == 3
+    assert kinds.count("assistant.text") == 3
     assert kinds.count("truncated") == 1
 
 
@@ -184,7 +193,7 @@ def test_exceeding_the_byte_cap_stops_deltas_and_records_one_marker(conn, sink, 
     sink.write([_delta(run, i, "x" * 20) for i in range(1, 6)])
 
     kinds = [r["kind"] for r in _ledger(conn, run)]
-    assert kinds.count("delta") == 1        # 20 bytes fits, 40 does not
+    assert kinds.count("assistant.text") == 1        # 20 bytes fits, 40 does not
     assert kinds.count("truncated") == 1
 
 
@@ -214,8 +223,8 @@ def test_a_gap_and_a_truncation_on_one_execution_are_two_distinct_events(conn, s
     sink.write([_delta(run, 1), _delta(run, 2, kind="gap", text=None),
                 _delta(run, 3), _delta(run, 4), _delta(run, 5)])
 
-    fragments = [json.loads(e["payload"])["fragment"] for e in _events(conn, run)]
-    assert "gap" in fragments and "truncated" in fragments
+    kinds = [e["kind"] for e in _all_events(conn, run)]
+    assert "gap" in kinds and "truncated" in kinds
 
 
 def test_the_cap_is_resumed_from_the_database_by_a_fresh_sink(conn, run, monkeypatch):
@@ -232,7 +241,7 @@ def test_the_cap_is_resumed_from_the_database_by_a_fresh_sink(conn, run, monkeyp
         second._conn.close()
 
     kinds = [r["kind"] for r in _ledger(conn, run)]
-    assert kinds.count("delta") == 3 and kinds.count("truncated") == 1
+    assert kinds.count("assistant.text") == 3 and kinds.count("truncated") == 1
 
 
 # --- the connection --------------------------------------------------------
@@ -277,7 +286,7 @@ def test_the_byte_cap_measures_the_same_bytes_before_and_after_a_restart(conn, r
     kinds = [r["kind"] for r in _ledger(conn, run)]
     # 3 x 10 bytes fits under 30, the fourth does not - the same answer one sink would
     # have given without the restart in the middle.
-    assert kinds.count("delta") == 3 and kinds.count("truncated") == 1
+    assert kinds.count("assistant.text") == 3 and kinds.count("truncated") == 1
 
 
 def test_the_in_memory_budget_map_is_bounded(conn, sink, run, monkeypatch):
@@ -295,34 +304,77 @@ def test_the_in_memory_budget_map_is_bounded(conn, sink, run, monkeypatch):
     assert len(sink._budgets) <= 4
 
 
-def test_a_delta_that_arrives_before_the_mapping_is_created_on_redelivery(conn, run, sink,
-                                                                         monkeypatch):
-    """§4.1 writes `message.job_id` in a SECOND commit, so a delta can beat the mapping.
-
-    The ledger row is written first and is immutable, so a re-delivery used to return at the
-    ledger and the event could never be created. The retry has to be able to finish the work
-    the first delivery could not.
-    """
+def test_the_thread_comes_from_the_execution_not_the_message(conn, run, sink, monkeypatch):
+    """§4.1 writes `message.job_id` in a SECOND commit, so a delta could beat that mapping.
+    The thread is read from `execution.conversation_id`, set at claim (E9 §3.5): the first
+    delivery already reaches the thread, whatever the message row says."""
     _cap(monkeypatch)
     with conn.cursor() as cur:
         cur.execute("UPDATE message SET job_id = NULL WHERE id = %s", (run["message_id"],))
     conn.commit()
 
     sink.write([_delta(run, 1, "early")])
-    assert _events(conn, run) == []
-    assert len(_ledger(conn, run)) == 1          # the ledger row stands
-
-    with conn.cursor() as cur:
-        cur.execute("UPDATE message SET job_id = %s WHERE id = %s",
-                    (run["job_id"], run["message_id"]))
-    conn.commit()
-
-    sink.write([_delta(run, 1, "early")])        # the same fragment, re-delivered
 
     events = _events(conn, run)
-    assert len(events) == 1
-    assert json.loads(events[0]["payload"])["text"] == "early"
-    assert len(_ledger(conn, run)) == 1          # and still exactly one ledger row
+    assert [json.loads(e["payload"])["text"] for e in events] == ["early"]
+
+
+def test_every_canonical_kind_is_stored_with_its_tool_fields(conn, sink, run, monkeypatch):
+    _cap(monkeypatch)
+
+    sink.write([
+        _delta(run, 1, None, kind="tool.started", tool_name="Read",
+               data={"call_id": "c1", "input": "{}"}),
+        _delta(run, 2, None, kind="tool.completed", tool_name="Read",
+               data={"call_id": "c1", "output": "ok", "is_error": False}),
+        _delta(run, 3, "boom", kind="error"),
+    ])
+
+    events = _events(conn, run)
+    assert [e["kind"] for e in events] == ["tool.started", "tool.completed", "error"]
+    assert json.loads(events[1]["payload"])["data"] == {
+        "call_id": "c1", "output": "ok", "is_error": False}
+
+
+def test_every_string_field_is_cut_to_the_fragment_bound(conn, sink, run, monkeypatch):
+    """One huge tool output spends a bounded share of the byte cap (E9 §3.5)."""
+    _cap(monkeypatch, field=300)
+
+    sink.write([_delta(run, 1, "t" * 1000, kind="tool.completed",
+                       data={"call_id": "c1", "output": "o" * 1000, "is_error": True})])
+
+    payload = json.loads(_events(conn, run)[0]["payload"])
+    assert len(payload["text"].encode()) <= 300
+    assert len(payload["data"]["output"].encode()) <= 300
+    assert payload["data"]["is_error"] is True
+
+
+def test_a_lock_error_after_a_budget_mutation_is_retried_with_the_same_result(
+        conn, sink, run, monkeypatch):
+    """The writer thread drops a batch whose `write` raises, so a deadlock is retried; the
+    budget spent before the rollback must not count twice (E9 §3.4)."""
+    import pymysql
+
+    from agento.modules.conversation.src import deltas as deltas_module
+
+    _cap(monkeypatch, size=50)
+    real = deltas_module.ConversationDeltaSink._event
+    failed: list = []
+
+    def flaky(self, cur, budget, record, kind, payload, *, ledger_id):
+        real(self, cur, budget, record, kind, payload, ledger_id=ledger_id)
+        if not failed and record.seq == 2:
+            failed.append(1)
+            raise pymysql.err.OperationalError(1213, "Deadlock found")
+
+    monkeypatch.setattr(deltas_module.ConversationDeltaSink, "_event", flaky)
+    sink.write([_delta(run, i, "x" * 20) for i in range(1, 4)])
+
+    assert failed == [1]
+    kinds = [r["kind"] for r in _ledger(conn, run)]
+    assert kinds == ["assistant.text", "assistant.text", "truncated"]   # 40 of 50 bytes
+    budget = sink._budgets[run["execution_id"]]
+    assert (budget.count, budget.bytes, budget.truncated) == (2, 40, True)
 
 
 def test_a_write_blocked_on_a_row_lock_gives_up_inside_the_timeout(conn, sink, run,
@@ -360,3 +412,111 @@ def test_a_write_blocked_on_a_row_lock_gives_up_inside_the_timeout(conn, sink, r
 
     assert caught.value.args[0] == 1205                # lock wait timeout exceeded
     assert elapsed < 20                                # not the 50-second server default
+
+
+def test_live_text_spends_half_the_budget_and_never_truncates(conn, sink, run, monkeypatch):
+    """Past half of the count cap, partials are dropped silently; the complete fragments
+    keep the other half, and only they end in a `truncated` marker (E9 chat UX, B4)."""
+    _cap(monkeypatch, count=10)
+
+    sink.write([_delta(run, i, kind="assistant.partial") for i in range(1, 9)]
+               + [_delta(run, 9 + i, kind="tool.started", tool_name="Bash") for i in range(8)])
+
+    kinds = [r["kind"] for r in _ledger(conn, run)]
+    assert kinds.count("assistant.partial") == 5
+    assert kinds.count("tool.started") == 5
+    assert kinds.count("truncated") == 1
+    assert kinds.index("truncated") > kinds.index("tool.started")
+
+
+def test_live_text_is_capped_by_half_the_bytes_too(conn, sink, run, monkeypatch):
+    _cap(monkeypatch, size=100)
+
+    sink.write([_delta(run, i, "x" * 20, kind="reasoning.partial") for i in range(1, 6)]
+               + [_delta(run, 6, "y" * 40, kind="assistant.text")])
+
+    kinds = [r["kind"] for r in _ledger(conn, run)]
+    assert kinds == ["reasoning.partial", "reasoning.partial", "assistant.text"]
+
+
+# --- a batch that lands after the attempt was finalized (review impl-1 F1) -------
+
+def _finalize(conn, run, outcome="succeeded") -> None:
+    from agento.modules.conversation.src.finalizer import ConversationFinalizer
+
+    ConversationFinalizer().finalize(conn=conn, job_id=run["job_id"], attempt=1,
+                                     execution_id=run["execution_id"], outcome=outcome,
+                                     job_terminal=True)
+    conn.commit()
+
+
+def test_a_partial_queued_before_finalization_is_dropped_after_it(conn, sink, run,
+                                                                  monkeypatch):
+    """`execution_deltas.close()` only QUEUES the tail, so a partial can reach the sink
+    after the finalizer forgot the attempt's fragments. It must not come back."""
+    _cap(monkeypatch)
+    sink.write([_delta(run, 1, "live", kind="assistant.partial")])
+    _finalize(conn, run)
+
+    sink.write([_delta(run, 2, "late", kind="assistant.partial")])
+
+    assert _all_events(conn, run) == []        # the live one deleted, the late one refused
+
+
+def test_a_complete_fragment_after_finalization_still_lands(conn, sink, run, monkeypatch):
+    """Only live text is dropped: a tool result that arrives late is real history."""
+    _cap(monkeypatch)
+    _finalize(conn, run, outcome="failed")
+
+    sink.write([_delta(run, 3, "", kind="tool.completed", tool_name="jira_get_issue",
+                       data={"call_id": "c1", "output": "ok"})])
+
+    assert [e["kind"] for e in _all_events(conn, run)] == ["tool.completed"]
+
+
+def test_a_partial_of_a_running_execution_is_unaffected_by_another_finalized_one(
+        conn, sink, run, monkeypatch):
+    _cap(monkeypatch)
+    other = str(uuid.uuid4())
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO execution (execution_id, job_id, attempt, status, "
+                    "conversation_id) VALUES (%s, %s, 2, 'succeeded', %s)",
+                    (other, run["job_id"], run["conversation_id"]))
+    conn.commit()
+
+    sink.write([_delta(run, 1, "live", kind="assistant.partial"),
+                DeltaRecord(execution_id=other, seq=1, kind="assistant.partial",
+                            text="dead", tool_name=None, data=None)])
+
+    assert [(e["execution_id"], e["kind"]) for e in _all_events(conn, run)] == [
+        (run["execution_id"], "assistant.partial")]
+
+
+def test_a_finalization_between_the_batchs_first_read_and_its_lock_is_seen(
+        conn, sink, run, monkeypatch):
+    """The isolation level, asserted (review impl-2 F1).
+
+    Under the server default (REPEATABLE READ) every plain SELECT of a transaction answers
+    from the snapshot its FIRST read took, and taking a row lock does not refresh it: the
+    status read would still say `running` and the late partial would land. The sink's
+    connection is READ COMMITTED, so it sees the finalization that committed in between.
+    """
+    from .conftest import _test_connection
+
+    _cap(monkeypatch)
+    real_lock = service.lock_conversations
+    other = _test_connection()
+
+    def lock_after_a_finalization(cur, ids):
+        monkeypatch.setattr(service, "lock_conversations", real_lock)
+        _finalize(other, run)                 # commits while the sink's batch is open
+        return real_lock(cur, ids)
+
+    try:
+        monkeypatch.setattr(service, "lock_conversations", lock_after_a_finalization)
+        sink.write([_delta(run, 1, "late", kind="assistant.partial")])
+    finally:
+        monkeypatch.setattr(service, "lock_conversations", real_lock)
+        other.close()
+
+    assert _all_events(conn, run) == []

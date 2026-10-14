@@ -34,10 +34,10 @@ HEARTBEAT = b": ping\n\n"
 
 # --- the per-user stream cap (§7.3) ----------------------------------------
 #
-# The budget this bounds is THREADS. `web` is a `ThreadingHTTPServer`, and one open streaming
-# response costs exactly one thread: measured at 25 concurrent long-lived responses, threads
-# went 2 -> 27 and back to 2 on close (delta 25, ratio 1.00). So a user's live streams are a
-# user's share of the process, one for one.
+# The budget this bounds is THREADS. `web` runs each open stream on a thread of its own (the
+# stream budget in web/server.py), so one stream costs one thread: measured at 25 concurrent
+# long-lived responses, threads went 2 -> 27 and back to 2 on close (delta 25, ratio 1.00).
+# So a user's live streams are a user's share of the process, one for one.
 #
 # Exceeding the cap closes the OLDEST stream for that user and never refuses the new one. A
 # refusal would make a reconnect storm self-inflicted denial of service: the client whose
@@ -113,16 +113,9 @@ def newest_event_id(conn, conversation_id: int) -> int:
         return int(cur.fetchone()["newest"])
 
 
-def event_frame(row: dict) -> bytes:
-    payload = row["payload"]
-    return frame(
-        data=json.dumps({
-            "id": row["id"], "kind": row["kind"], "execution_id": row["execution_id"],
-            "payload": json.loads(payload) if isinstance(payload, str) else payload,
-        }),
-        event=row["kind"],
-        event_id=row["id"],
-    )
+def event_frame(event: dict) -> bytes:
+    """One projected event (`service.project_events`) - the timeline's shape, exactly."""
+    return frame(data=json.dumps(event), event=event["kind"], event_id=event["id"])
 
 
 def frames(conn, *, conversation_id: int, session_token: str, cursor: int | None,
@@ -167,14 +160,15 @@ def _tick(conn, *, conversation_id, session_token, cursor, slot, poll, heartbeat
         session = sessions.lookup_session(conn, session_token)
         if session is None:
             return
-        if service.load_visible(conn, conversation_id=conversation_id,
-                                user=session.user) is None:
+        conversation = service.load_visible(conn, conversation_id=conversation_id,
+                                            user=session.user)
+        if conversation is None:
             return
         rows = service.list_events(conn, conversation_id=conversation_id,
                                    after_id=cursor, limit=page)
-        for row in rows:
-            cursor = row["id"]
-            yield event_frame(row)
+        for event in service.project_events(conn, rows, session.user, conversation):
+            cursor = event["id"]
+            yield event_frame(event)
         if rows:
             last_sent = now()
         elif now() - last_sent >= heartbeat:

@@ -120,7 +120,7 @@ def _mock_token_resolver():
 @patch("agento.framework.run_preparation.get_current_build_dir", return_value=None)
 @patch("agento.framework.consumer.get_workflow_class")
 @patch("agento.framework.consumer.get_channel")
-@patch("agento.framework.consumer.create_runner")
+@patch("agento.framework.consumer.RemoteRunner")
 @patch("agento.framework.consumer.get_connection")
 @patch("agento.framework.harness.persistent_home_paths_for", return_value=[])
 @patch("agento.framework.harness.workspace_adapter_for")
@@ -159,10 +159,15 @@ def test_dispatches_check_with_agent_view_id(
     assert isinstance(event, WorkspaceBuildCheckEvent)
     assert event.agent_view_id == 2
 
+    # A second job of the same view within one poll interval skips the check (SCL-1).
+    consumer._run_job(_make_job(agent_view_id=2))
+    assert [c.args[0] for c in mock_em.dispatch.call_args_list].count(
+        "workspace_build_check_before") == 1
+
 
 @patch("agento.framework.consumer.get_workflow_class")
 @patch("agento.framework.consumer.get_channel")
-@patch("agento.framework.consumer.create_runner")
+@patch("agento.framework.consumer.RemoteRunner")
 @patch("agento.framework.consumer.get_connection")
 @patch("agento.framework.consumer.resolve_agent_view_runtime")
 @patch("agento.framework.consumer.get_event_manager")
@@ -196,7 +201,7 @@ def test_skips_dispatch_when_no_agent_view(
 
 @patch("agento.framework.consumer.get_workflow_class")
 @patch("agento.framework.consumer.get_channel")
-@patch("agento.framework.consumer.create_runner")
+@patch("agento.framework.consumer.RemoteRunner")
 @patch("agento.framework.consumer.get_connection")
 @patch("agento.framework.consumer.resolve_agent_view_runtime")
 @patch("agento.framework.consumer.get_event_manager")
@@ -221,8 +226,9 @@ def test_propagates_observer_failure_via_event_error(
     mock_get_ch.return_value = MagicMock(name="jira")
 
     consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
-    with pytest.raises(RuntimeError, match="rebuild blew up"):
-        consumer._run_job(_make_job(agent_view_id=2))
+    for _ in range(2):  # a failed check is not remembered: the next job checks again
+        with pytest.raises(RuntimeError, match="rebuild blew up"):
+            consumer._run_job(_make_job(agent_view_id=2))
 
     MockRunner.assert_not_called()
 

@@ -8,6 +8,7 @@ import pytest
 from agento.framework.execution_hooks import (
     SEAMS,
     DeltaRecord,
+    RunProfile,
     clear,
     finalize_execution,
     mint_execution_id,
@@ -85,6 +86,24 @@ def test_a_registered_provider_mints():
     assert mint_execution_id(conn=None, job_id=7, attempt=2) == "x-7-2"
 
 
+def test_a_profile_reaches_only_a_provider_that_takes_it():
+    """`profile` came after the seam shipped: an older provider still mints (CODE-3)."""
+    seen = []
+
+    class Profiled:
+        def mint(self, *, conn, job_id, attempt, profile=None):
+            seen.append(profile)
+            return "p"
+
+    profile = RunProfile(harness="h", provider="p", model=None, credential_id=None)
+    register_execution_id_provider(Provider(), module="conversation")
+    assert mint_execution_id(conn=None, job_id=7, attempt=2, profile=profile) == "x-7-2"
+    clear()
+    register_execution_id_provider(Profiled(), module="conversation")
+    assert mint_execution_id(conn=None, job_id=7, attempt=2, profile=profile) == "p"
+    assert seen == [profile]
+
+
 def test_a_registered_finalizer_is_called_with_the_transition():
     finalizer = Finalizer()
     register_execution_finalizer(finalizer, module="conversation")
@@ -148,4 +167,4 @@ def test_a_delta_record_is_frozen_and_vendor_free():
     with pytest.raises(dataclasses.FrozenInstanceError):
         record.seq = 2  # type: ignore[misc]
     assert set(record.__dataclass_fields__) == {
-        "execution_id", "seq", "kind", "text", "tool_name"}
+        "execution_id", "seq", "kind", "text", "tool_name", "data"}

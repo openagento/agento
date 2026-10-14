@@ -36,6 +36,7 @@ def insert_job(
     max_attempts: int,
     requester: JobRequester | None,
     prompt: str | None = None,
+    context: str | None = None,
 ) -> int:
     """The single INSERT both entry points use. Returns the new job id.
 
@@ -52,13 +53,13 @@ def insert_job(
         """
         INSERT INTO job
             (type, source, agent_view_id, priority, reference_id,
-             idempotency_key, status, attempt, max_attempts, prompt,
+             idempotency_key, status, attempt, max_attempts, prompt, context,
              requester_key, requester_email, requester_trust, requester_meta)
         VALUES
-            (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s, %s)
         """,
         (agent_type.value, source, agent_view_id, priority, reference_id,
-         idempotency_key, max_attempts, prompt,
+         idempotency_key, max_attempts, prompt, context,
          requester.key if requester else None,
          requester.email if requester else None,
          requester.trust.value if requester else "claimed",

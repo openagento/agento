@@ -25,8 +25,11 @@ chown -R agent /app/logs 2>/dev/null || true
 # Idempotent and metadata-only — fast even on large dirs. The `|| true` guards
 # against partially-inaccessible mounts; if chown can't fix it here, the
 # diagnostic in prepare_artifacts_dir will surface a clear error.
-if [ -d /workspace/artifacts ]; then
-    chown -R agent:agent /workspace/artifacts 2>/dev/null || true
+# Never an entry of a run uid (20000 and up, framework/runner/uids.py): that run may be live
+# in a runner, and its runner gives the dir back itself (or at its next start). Not in a
+# runner: cron does it, and a runner start must not wait for a walk of every artifact.
+if [ "${1:-}" != runner ] && [ -d /workspace/artifacts ]; then
+    find /workspace/artifacts -uid -20000 ! -user agent -exec chown -h agent:agent {} + 2>/dev/null || true
 fi
 
 # No SSH identity may survive in a passwd home. `ssh` resolves ~/.ssh through getpwuid(),
@@ -48,7 +51,7 @@ done
 # value would be inherited by every agent_view's runs, including views that were granted
 # no key at all, which is exactly the cross-view use of one identity this release removes.
 # `CONFIG__AGENT_VIEW__IDENTITY__SSH_PRIVATE_KEY` is refused for a second reason too: a
-# CONFIG__* value entering the container environment is written to the store file below,
+# CONFIG__* value entering the container environment is written to the env file below,
 # which would put the key on disk. Set it in the DB
 # (`bin/agento config:set agent_view/identity/ssh_private_key ... --scope agent_view`).
 for _v in AGENTO_SSH_PRIVATE_KEY AGENTO_SSH_TTL SSH_AUTH_SOCK SSH_AGENT_PID \
@@ -60,13 +63,19 @@ for _v in AGENTO_SSH_PRIVATE_KEY AGENTO_SSH_TTL SSH_AUTH_SOCK SSH_AGENT_PID \
     fi
 done
 
-# Split the container environment in two. `setpriv` (the launcher) PRESERVES the
-# environment, so the store is deliberately NOT in it: it lands in a root-only file that
-# reaches a framework process on a file descriptor, and nowhere else. Both files are
-# NUL-delimited — an environment value may legitimately contain a newline, and this is
-# the file that carries credentials.
-env -0 | PYTHONPATH=/opt/agento-src /opt/cron-agent/.venv/bin/python \
-    /opt/cron-agent/split-env.py
+# A `runner-<i>` service runs this image as `runner`: after the SSH guard above (its runs
+# are the agents), it only listens. No env file, no crontab, no consumer: it has no
+# secret (docs/architecture/runner.md).
+if [ "${1:-}" = "runner" ]; then
+    exec /opt/cron-agent/.venv/bin/python /opt/agento-src/agento/framework/runner/listen.py
+fi
+
+# The persisted whitelist (docs/architecture/cron-env-contract.md), NUL-delimited because a
+# value may contain a newline. Root-only: `launch.sh` reads it as root, then drops to `agent`.
+# It holds MYSQL_* and the key; no agent runs in this container (the runner runs them).
+PERSIST='^(AGENTO_|MYSQL_|CONFIG__|(TZ|PYTHONPATH|PROVIDER|DISABLE_LLM|DISABLE_AUTOUPDATER)=)'
+(umask 077; env -0 | grep -zE "$PERSIST" > /opt/cron-agent/env || true)
+chmod 0600 /opt/cron-agent/env
 
 # Root's crontab carries exactly one line: the renderer. It rebuilds the rest every minute
 # from the installed module catalog and the `schedule` table — neither of which uid `agent`
@@ -86,7 +95,7 @@ echo "Cron container started."
 SETUP_DONE=/tmp/.setup-done
 rm -f "$SETUP_DONE"
 echo "Running setup:upgrade..."
-/opt/cron-agent/launch.sh --store -- /opt/cron-agent/run.sh setup:upgrade --skip-onboarding || {
+/opt/cron-agent/launch.sh -- /opt/cron-agent/run.sh setup:upgrade --skip-onboarding || {
     echo "setup:upgrade failed, exiting."
     exit 1
 }
@@ -103,7 +112,7 @@ crontab -l
 
 # Start consumer as background process (runs as agent user)
 echo "Starting consumer process..."
-/opt/cron-agent/launch.sh --store -- /opt/cron-agent/run.sh consumer &
+/opt/cron-agent/launch.sh -- /opt/cron-agent/run.sh consumer &
 CONSUMER_PID=$!
 
 # Propagate signals to consumer

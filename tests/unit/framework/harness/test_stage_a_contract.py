@@ -17,6 +17,7 @@ so they would hide that bug.
 from __future__ import annotations
 
 import ast
+import io
 import json
 import subprocess
 import threading
@@ -108,12 +109,12 @@ def _register_fake(*, fields=None, schema=None):
 
 def _register_pi():
     """Register the shipped `pi` harness through the production loader."""
-    from agento.framework.bootstrap import _load_agent_harnesses
+    from agento.framework.harness.loader import load_harnesses
     from agento.framework.module_loader import scan_modules
 
     root = Path(__file__).resolve().parents[3].parent / "src" / "agento" / "modules"
     clear()
-    _load_agent_harnesses({m.name: m for m in scan_modules(str(root))}["pi"])
+    load_harnesses([{m.name: m for m in scan_modules(str(root))}["pi"]])
 
 
 class _Svc:
@@ -149,9 +150,10 @@ class TestStdinPayload:
         seen = {}
 
         class _Proc:
+            pid = 1 << 30  # no such process: the runner kills the group at the end
             stdin = None
-            stdout = iter(())
-            stderr = iter(())
+            stdout = io.StringIO()
+            stderr = io.StringIO()
             returncode = 0
 
             def wait(self, timeout=None):
@@ -160,8 +162,8 @@ class TestStdinPayload:
         def _popen(cmd, **kw):
             seen["stdin"] = kw["stdin"]
             p = _Proc()
-            p.stdout = iter(())
-            p.stderr = iter(())
+            p.stdout = io.StringIO()
+            p.stderr = io.StringIO()
             p.stdin = MagicMock()
             return p
 
@@ -184,11 +186,12 @@ class TestStdinPayload:
                 pass
 
         class _Proc:
+            pid = 1 << 30  # no such process: the runner kills the group at the end
             returncode = 1
 
             def __init__(self):
-                self.stdout = iter(())
-                self.stderr = iter(())
+                self.stdout = io.StringIO()
+                self.stderr = io.StringIO()
                 self.stdin = _Stdin()
 
             def wait(self, timeout=None):
@@ -348,17 +351,17 @@ class TestRealBootstrapPath:
         assert cfg["api_secret"]["type"] == "obscure"
 
     def test_the_real_loader_passes_module_and_allowlist(self):
-        """Goes through `_load_agent_harnesses`, the function bootstrap() calls.
+        """Goes through `load_harnesses`, the function bootstrap() calls.
 
         Calling `register_harness` by hand here would pass even if the loader forgot
         an argument — which is precisely the bug this is meant to catch.
         """
-        from agento.framework.bootstrap import _load_agent_harnesses
+        from agento.framework.harness.loader import load_harnesses
         from agento.framework.module_loader import scan_modules
 
         clear()
         manifest = {m.name: m for m in scan_modules(str(FIXTURES))}["fake_harness"]
-        _load_agent_harnesses(manifest)
+        load_harnesses([manifest])
 
         entry = get_harness("fake")
         assert entry.module == "fake_harness"
@@ -372,7 +375,7 @@ class TestRealBootstrapPath:
         """An obscure field must fail through the loader, not only via a direct call."""
         import shutil
 
-        from agento.framework.bootstrap import _load_agent_harnesses
+        from agento.framework.harness.loader import load_harnesses
         from agento.framework.module_loader import scan_modules
 
         mod = tmp_path / "fake_harness"
@@ -384,7 +387,7 @@ class TestRealBootstrapPath:
         clear()
         manifest = {m.name: m for m in scan_modules(str(tmp_path))}["fake_harness"]
         with pytest.raises(ObscureRuntimeConfigError, match="obscure"):
-            _load_agent_harnesses(manifest)
+            load_harnesses([manifest])
 
     def test_duplicates_are_refused_at_registration_too(self):
         """Both layers, per the plan — a direct caller bypasses the manifest parser."""
@@ -548,11 +551,12 @@ class TestProductionWiring:
                 return {}
 
         class _Proc:
+            pid = 1 << 30  # no such process: the runner kills the group at the end
             returncode = 0
 
             def __init__(self):
-                self.stdout = iter(())
-                self.stderr = iter(())
+                self.stdout = io.StringIO()
+                self.stderr = io.StringIO()
                 self.stdin = MagicMock()
 
             def wait(self, timeout=None):
@@ -570,14 +574,13 @@ class TestProductionWiring:
             credential_required=False,   # fake_local declares credential_required: false
         )
         runner = _R(context=ctx, command_builder=_Builder(), logger=MagicMock())
-        monkeypatch.setattr(runner, "_record_usage", MagicMock(), raising=False)
         runner.execute(RunRequest(prompt="hello"))
 
         assert seen["stdin_mode"] is subprocess.PIPE
         seen["pipe"].write.assert_called_once_with("PROMPT:hello")
 
     def _consumer_run_job(self, monkeypatch, *, attempt, session_id, resume_capable):
-        """Drive the real `Consumer._run_job`, capturing the ctx handed to create_runner."""
+        """Drive the real `Consumer._run_job`, capturing the ctx handed to RemoteRunner."""
         from agento.framework import consumer as cons
 
         _register_fake()
@@ -617,7 +620,7 @@ class TestProductionWiring:
         monkeypatch.setattr(cons, "get_connection", lambda cfg: MagicMock())
         monkeypatch.setattr(cons, "resolve_agent_view_runtime", lambda c, av: runtime)
         monkeypatch.setattr(cons, "materialize_run_workspace", lambda *a, **k: (None, None))
-        monkeypatch.setattr(cons, "create_runner", _create_runner)
+        monkeypatch.setattr(cons, "RemoteRunner", _create_runner)
         monkeypatch.setattr(cons, "get_module_config", lambda src: {})
         monkeypatch.setattr(
             "agento.framework.config_resolver.ScopedConfigService",
@@ -631,6 +634,10 @@ class TestProductionWiring:
             mcp_init=None, stats_line="", raw="",
         )
         monkeypatch.setattr(cons, "get_workflow_class", lambda t: workflow)
+        # A module's execution hooks (registered by an earlier suite's bootstrap) write rows
+        # through the claim connection; this test is about the harness ctx, not about them.
+        monkeypatch.setattr(cons, "mint_execution_id", lambda **kw: None)
+        monkeypatch.setattr(cons, "finalize_execution", lambda **kw: None)
 
         c = cons.Consumer.__new__(cons.Consumer)
         c.logger = MagicMock()
@@ -643,7 +650,6 @@ class TestProductionWiring:
         c._held_leases = {}
         c._save_pid = lambda *a: None
         c._save_session_id = lambda *a: None
-        c._is_pid_alive = lambda pid: False
         # Capability minting needs a real job row; this test is about the harness ctx.
         c._issue_run_capabilities = lambda conn, job: (None, None)
 
@@ -686,12 +692,12 @@ class TestShippedHarnessesLoadThroughBootstrap:
     """
 
     def _load(self, module: str):
-        from agento.framework.bootstrap import _load_agent_harnesses
+        from agento.framework.harness.loader import load_harnesses
         from agento.framework.module_loader import scan_modules
 
         root = Path(__file__).resolve().parents[3].parent / "src" / "agento" / "modules"
         manifest = {m.name: m for m in scan_modules(str(root))}[module]
-        _load_agent_harnesses(manifest)
+        load_harnesses([manifest])
         return manifest
 
     @pytest.mark.parametrize("module", ["claude", "codex", "pi"])
@@ -709,7 +715,7 @@ class TestShippedHarnessesLoadThroughBootstrap:
 
         entries = list(list_harnesses())
         assert entries, (
-            f"module {module!r} registered no harness through _load_agent_harnesses"
+            f"module {module!r} registered no harness through load_harnesses"
         )
         entry = entries[0]
         assert entry.module == module

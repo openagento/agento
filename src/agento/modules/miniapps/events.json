@@ -1,0 +1,5 @@
+{
+  "artifact_delete_after": [
+    {"name": "miniapps_drop_activations", "class": "src.observers.DropActivationsOnArtifactDelete"}
+  ]
+}

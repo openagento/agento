@@ -49,6 +49,10 @@ class Route:
     # "session": a live panel session (and, for a write, the CSRF token); "login": no session.
     auth: str = "session"
     json_body: bool = False
+    # Required on every route (D-ADMIN-ACL-2): an admin panel leaf the session's user must hold
+    # (a tuple: any one of them), "self" (any signed-in user; the handler scopes), or
+    # "anonymous" (auth="login" only). server._run checks it; compose_routes validates it.
+    acl: str | tuple[str, ...] = field(kw_only=True)
 
 
 def error(status: int, message: str) -> Response:
@@ -124,20 +128,46 @@ def login(req: Request) -> Response:
         return error(401, _INVALID)
     THROTTLE.reset(username)
     session, token = signed_in
-    user = session.user
     return Response(
         200,
-        {"user": user_json(user), "csrf_token": sessions.csrf_token(token), "expires_at": _iso(session.expires_at)},
+        _session_json(req.conn, session, token),
         [("Set-Cookie", security.session_cookie(token, _seconds_until(session.expires_at)))],
     )
 
 
+_DISPLAY_FIELDS = {"date_format": "locale/date_format", "timezone": "locale/timezone"}
+
+
+def display_settings(conn) -> dict[str, str] | None:
+    """The ``admin`` module's panel display settings at the default scope, or None when the
+    module is disabled. The Config screen's resolver (ENV -> DB -> config.json); a value
+    that is not one of the field's options gets the config.json default."""
+    from agento.framework import module_status
+    from agento.framework.admin import data
+    from agento.framework.config_resolver import read_config_defaults
+
+    # Per request, as _miniapps_enabled: get_module_schemas() is cached for the process.
+    if not module_status.is_enabled("admin", module_status.read_module_status()):
+        return None
+    schema = next((m for m in data.get_module_schemas() if m.name == "admin"), None)
+    if schema is None or schema.module_path is None:
+        return None
+    defaults = read_config_defaults(schema.module_path)
+    fields = {f.field_name: f for f in data.get_resolved_fields(conn, "admin")}
+    out = {}
+    for key, name in _DISPLAY_FIELDS.items():
+        f = fields[name]
+        out[key] = f.value if f.value in {o["value"] for o in f.options or []} else defaults[name]
+    return out
+
+
+def _session_json(conn, session: sessions.Session, token: str) -> dict:
+    return {"user": {**user_json(session.user), "acl": accounts.held_admin(conn, session.user.role)}, "csrf_token": sessions.csrf_token(token),
+            "expires_at": _iso(session.expires_at), "display": display_settings(conn)}
+
+
 def get_session(req: Request) -> Response:
-    return Response(200, {
-        "user": user_json(req.session.user),
-        "csrf_token": sessions.csrf_token(req.session_token),
-        "expires_at": _iso(req.session.expires_at),
-    })
+    return Response(200, _session_json(req.conn, req.session, req.session_token))
 
 
 def logout(req: Request) -> Response:
@@ -160,9 +190,9 @@ def _access_error(exc: accounts.AccessError) -> Response:
     return error(404 if msg.endswith("not found") else 400, msg)
 
 
-def _forbidden_unless(req: Request, operation: str) -> Response | None:
-    # The role comes from this request's session lookup (the DB), never from the cookie.
-    return None if accounts.may(req.session.user, operation) else error(403, "forbidden")
+def _actor(req: Request) -> accounts.Actor:
+    """The ``(id, role)`` the route check authorized; the writer re-checks it on the locked row."""
+    return req.session.user.id, req.session.user.role
 
 
 def agent_views(req: Request) -> Response:
@@ -210,29 +240,24 @@ def invoke(req: Request) -> Response:
 
 
 def admin_list_users(req: Request) -> Response:
-    return _forbidden_unless(req, "users.manage") or Response(
-        200, [user_json(u) for u in accounts.list_users(req.conn)])
+    return Response(200, [user_json(u) for u in accounts.list_users(req.conn)])
 
 
 def admin_create_user(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "users.manage"):
-        return denied
     body = _body(req)
     password = body.get("password")
     if password is not None and not isinstance(password, str):
         return error(400, "password must be a string")
     try:
         user = accounts.create_user(req.conn, body.get("username"), body.get("role"), password,
-                                    actor_id=req.session.user.id)
+                                    actor=_actor(req))
     except accounts.AccessError as exc:
         return _access_error(exc)
     return Response(201, user_json(user))
 
 
 def admin_update_user(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "users.manage"):
-        return denied
-    body, user_id, actor = _body(req), int(req.params["id"]), req.session.user.id
+    body, user_id = _body(req), int(req.params["id"])
     if not {"role", "is_active", "password"} & body.keys():
         return error(400, "nothing to change")
     if "is_active" in body and not isinstance(body["is_active"], bool):
@@ -243,78 +268,10 @@ def admin_update_user(req: Request) -> Response:
         return error(400, "role must be a string")
     try:
         accounts.update_user(req.conn, user_id, role=body.get("role"), active=body.get("is_active"),
-                             password=body.get("password"), actor_id=actor)
+                             password=body.get("password"), actor=_actor(req))
     except accounts.AccessError as exc:
         return _access_error(exc)
     return Response(200, user_json(accounts.get_user(req.conn, user_id)))
-
-
-def _grant_json(g: dict) -> dict:
-    return {**g, "created_at": _iso(g["created_at"]) if g.get("created_at") else None}
-
-
-def admin_list_grants(req: Request) -> Response:
-    return _forbidden_unless(req, "grants.manage") or Response(
-        200, [_grant_json(g) for g in accounts.list_grants(req.conn)])
-
-
-def admin_add_grant(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
-    body = _body(req)
-    for key in ("workspace_id", "agent_view_id"):
-        if body.get(key) is not None and not _positive_int(body[key]):
-            return error(400, f"{key} must be a positive integer")
-    try:
-        grant_id = accounts.add_grant(
-            req.conn, body.get("role"), body.get("kind"), body.get("name"),
-            workspace_id=body.get("workspace_id"), agent_view_id=body.get("agent_view_id"),
-            actor_id=req.session.user.id,
-        )
-    except accounts.AccessError as exc:
-        return _access_error(exc)
-    return Response(201, {"id": grant_id})
-
-
-def admin_remove_grant(req: Request) -> Response:
-    if denied := _forbidden_unless(req, "grants.manage"):
-        return denied
-    try:
-        accounts.remove_grant(req.conn, int(req.params["id"]), actor_id=req.session.user.id)
-    except accounts.AccessError as exc:
-        return _access_error(exc)
-    return Response(204)
-
-
-_SCOPES = ("default", "workspace", "agent_view")
-
-
-def admin_set_config(req: Request) -> Response:
-    from agento.framework.config_write import ConfigWriteError, save_config
-
-    if denied := _forbidden_unless(req, "config.write"):
-        return denied
-    body = _body(req)
-    scope, scope_id = body.get("scope", "default"), body.get("scope_id", 0)
-    if scope not in _SCOPES:
-        return error(400, f"scope must be one of {', '.join(_SCOPES)}")
-    if scope == "default":
-        scope_id = 0
-    elif not _positive_int(scope_id):
-        return error(400, "scope_id must be a positive integer")
-    try:
-        # web holds no encryption key: allow_secret=False writes only a provably plain field.
-        _encrypted, reset = save_config(
-            req.conn, body.get("path"), body.get("value"), scope=scope, scope_id=scope_id,
-            allow_secret=False, actor_id=req.session.user.id,
-        )
-    except ConfigWriteError as exc:
-        return error(403, "forbidden") if str(exc) == "not allowed" else error(400, str(exc))
-    # No admin route returns a config value; a repaired dependent is named, not shown.
-    return Response(200, {"path": body.get("path"), "reset": [p for p, _v in reset]})
-
-
-_TOOLBOX_DOWN = error(503, "toolbox unavailable")
 
 
 def _launch_json(launch: launches.Launch) -> dict:
@@ -323,119 +280,14 @@ def _launch_json(launch: launches.Launch) -> dict:
             "expires_at": _iso(launch.expires_at)}
 
 
-def _tool_payload(result) -> dict | None:
-    """The JSON object a toolbox tool answered with, or None."""
-    import json
-
-    try:
-        payload = json.loads(result.body["result"]["content"][0]["text"])
-    except (KeyError, IndexError, TypeError, ValueError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def _current_version(req: Request, code: str, workspace_id: int, view_id: int) -> str | Response:
-    """`current` resolves at launch time through the toolbox; the apps origin has no `current` route."""
-    from .toolbox_client import invoke_tool
-
-    result = invoke_tool(req.conn, req.session, "versioned_artifact_get_current", {"artifact_code": code},
-                         workspace_id=workspace_id, agent_view_id=view_id)
-    if result.status >= 500:
-        return _TOOLBOX_DOWN
-    if not result.body.get("ok"):
-        # Tool not granted or not enabled in this scope: the user cannot launch here.
-        return error(404, "not found")
-    payload = _tool_payload(result)
-    if payload is None:
-        return _TOOLBOX_DOWN
-    version = payload.get("current_version")
-    if not isinstance(version, str) or not app_path.VERSION_ID_RE.fullmatch(version):
-        return error(409, "artifact has no published version")
-    return version
-
-
-_FINGERPRINT = re.compile(r"[0-9a-f]{64}")
-_ACTION = re.compile(r"[a-z0-9_]{1,64}")
-_MAX_ACTIONS = 64  # the manifest's own limit (docs/modules/miniapps.md)
-
-
 def _miniapps_enabled() -> bool:
     """MOD-1: web is the only minter of a ``miniapp`` capability, so ``module:disable
-    miniapps`` stops launches pinning actions, actions and the catalogue here at once. The
-    toolbox reads the same file too, but its tools go at the next MCP session and its
-    ``launch`` checker at the next toolbox start (toolbox/config-loader.js)."""
+    miniapps`` stops actions here at once (the module's own routes go when web restarts). The
+    toolbox reads the same file too: its ``launch`` checker goes at the next toolbox start
+    (toolbox/config-loader.js)."""
     from agento.framework import module_status
 
     return module_status.is_enabled("miniapps", module_status.read_module_status())
-
-
-def _launch_spec(req: Request, code: str, version: str, workspace_id: int,
-                 view_id: int) -> tuple[str, list[str]] | None | Response:
-    """(fingerprint, actions) of an activated miniapp version; None for a files-only launch.
-
-    Tool not granted or not enabled (403/404), or the version not activated: files-only (least
-    privilege). A toolbox failure or a tool error is 503, never a files-only guess.
-    """
-    from .toolbox_client import invoke_tool
-
-    if not _miniapps_enabled():
-        return None
-    result = invoke_tool(req.conn, req.session, "miniapp_get_launch_spec",
-                         {"artifact_code": code, "version_id": version},
-                         workspace_id=workspace_id, agent_view_id=view_id)
-    if not result.body.get("ok"):
-        return None if result.status in (403, 404) else _TOOLBOX_DOWN
-    payload = _tool_payload(result)
-    # Exactly one of the two shapes the tool answers; anything else is malformed (503).
-    if isinstance(payload, dict) and set(payload) == {"activated"} and payload["activated"] is False:
-        return None
-    if payload is None or set(payload) != {"activated", "manifest_fingerprint", "allowed_actions"} \
-            or payload["activated"] is not True:
-        return _TOOLBOX_DOWN
-    fp, actions = payload["manifest_fingerprint"], payload["allowed_actions"]
-    if (not isinstance(fp, str) or not _FINGERPRINT.fullmatch(fp) or not isinstance(actions, list)
-            or len(actions) > _MAX_ACTIONS or len(set(map(str, actions))) != len(actions)
-            or not all(isinstance(a, str) and _ACTION.fullmatch(a) for a in actions)):
-        return _TOOLBOX_DOWN
-    return fp, actions
-
-
-def create_launch(req: Request) -> Response:
-    body = _body(req)
-    if body.get("agent_view_id") is None or body.get("workspace_id") is not None:
-        return error(400, "agent_view_id is required")
-    code = body.get("artifact_code")
-    if not isinstance(code, str) or not app_path.ARTIFACT_CODE_RE.fullmatch(code):
-        return error(400, "artifact_code must match ^[a-z0-9][a-z0-9-]{0,63}$")
-    scope = _resolve_scope(req, body)
-    if isinstance(scope, Response):
-        return scope
-    workspace_id, view_id = scope
-    user = req.session.user
-    if not accounts.has_operation(req.conn, user.role, "artifact.launch", workspace_id, view_id):
-        return error(404, "not found")
-    try:
-        with launches.retention_lock(req.conn, code):
-            version = _current_version(req, code, workspace_id, view_id)
-            if isinstance(version, Response):
-                return version
-            spec = _launch_spec(req, code, version, workspace_id, view_id)
-            if isinstance(spec, Response):
-                return spec
-            pinned = {} if spec is None else {"manifest_fingerprint": spec[0], "allowed_actions": spec[1]}
-            launch, exchange_code = launches.create_launch(
-                req.conn, user, workspace_id=workspace_id, agent_view_id=view_id,
-                artifact_code=code, version_id=version, **pinned)
-    except launches.RetentionBusy:
-        return error(503, "artifact busy, try again")
-    except launches.AccessConfigError:
-        return error(503, "launches are not configured")
-    except accounts.AccessError:
-        return error(404, "not found")
-    # The panel POSTs `fields` as a form to `url`: no URL ever carries the exchange code.
-    return Response(201, {**_launch_json(launch),
-                          "redeem": {"url": f"{req.origins.apps}/launch",
-                                     "fields": {"launch_id": launch.id, "code": exchange_code}}})
 
 
 def launch_action(req: Request) -> Response:
@@ -449,36 +301,6 @@ def launch_action(req: Request) -> Response:
         return error(400, "arguments must be an object")
     result = invoke_launch_action(req.conn, req.session, req.params["id"], req.params["tool"], arguments)
     return Response(result.status, result.body)
-
-
-def agent_view_miniapps(req: Request) -> Response:
-    """GET /api/agent-views/<id>/miniapps: what this user may launch in the view now."""
-    from .toolbox_client import invoke_tool
-
-    scope = _resolve_scope(req, {"agent_view_id": int(req.params["id"])})
-    if isinstance(scope, Response):
-        return scope
-    workspace_id, view_id = scope
-    if not accounts.has_operation(req.conn, req.session.user.role, "artifact.launch", workspace_id, view_id):
-        return error(404, "not found")
-    if not _miniapps_enabled():
-        return Response(200, [])
-    result = invoke_tool(req.conn, req.session, "miniapp_list", {}, workspace_id=workspace_id, agent_view_id=view_id)
-    if not result.body.get("ok"):
-        # Not granted or not enabled: nothing to launch. Anything else is a failure.
-        return Response(200, []) if result.status in (403, 404) else _TOOLBOX_DOWN
-    payload = _tool_payload(result)
-    rows = payload.get("miniapps") if payload else None
-    if not isinstance(rows, list) or not all(_is_catalogue_row(r) for r in rows):
-        return _TOOLBOX_DOWN
-    return Response(200, [{k: r[k] for k in ("artifact_code", "version_id", "title")} for r in rows])
-
-
-def _is_catalogue_row(r: object) -> bool:
-    return (isinstance(r, dict)
-            and isinstance(r.get("artifact_code"), str) and bool(app_path.ARTIFACT_CODE_RE.fullmatch(r["artifact_code"]))
-            and isinstance(r.get("version_id"), str) and bool(app_path.VERSION_ID_RE.fullmatch(r["version_id"]))
-            and isinstance(r.get("title"), str) and 1 <= len(r["title"]) <= 200)
 
 
 def list_launches(req: Request) -> Response:
@@ -498,12 +320,14 @@ def redeem_launch(req: Request) -> Response:
     """POST /launch on the apps origin (proxied to /internal/launch/redeem).
 
     The exchange code is the credential, so the proxy secret is not required here: a stolen
-    code is equally usable from anywhere. The form must come from the panel page.
+    code is equally usable from anywhere. The form must come from the panel page: the exact
+    panel Origin, which a page cannot forge. Sec-Fetch-Site is not checked, because panel and
+    apps may be two sites (``panel.localhost`` and ``apps.localhost`` are) and it adds nothing
+    to an exact Origin.
     """
     from urllib.parse import parse_qs
 
-    site = req.headers.get("Sec-Fetch-Site")
-    if req.headers.get("Origin") != req.origins.panel or site not in (None, "same-site", "same-origin"):
+    if req.headers.get("Origin") != req.origins.panel:
         return error(403, "forbidden")
     ctype = (req.headers.get("Content-Type") or "").split(";")[0].strip().lower()
     if ctype != "application/x-www-form-urlencoded":
@@ -544,26 +368,26 @@ def authorize_app(req: Request) -> Response:
                      for i in presented if i not in live])
 
 
-def _r(method: str, pattern: str, handler, **kw) -> Route:
-    return Route(method, re.compile(f"^{pattern}$"), handler, **kw)
+def _r(method: str, pattern: str, handler, *, acl: str | tuple[str, ...], **kw) -> Route:
+    return Route(method, re.compile(f"^{pattern}$"), handler, acl=acl, **kw)
 
 
 ROUTES: list[Route] = [
-    _r("POST", "/api/session", login, auth="login", json_body=True),
-    _r("GET", "/api/session", get_session),
-    _r("DELETE", "/api/session", logout),
-    _r("GET", "/api/agent-views", agent_views),
-    _r("POST", r"/api/tools/(?P<name>[a-z0-9_]+):invoke", invoke, json_body=True),
-    _r("POST", "/api/launches", create_launch, json_body=True),
-    _r("GET", "/api/launches", list_launches),
-    _r("DELETE", r"/api/launches/(?P<id>[0-9a-f]{32})", end_launch),
-    _r("POST", r"/api/launches/(?P<id>[0-9a-f]{32})/actions/(?P<tool>[a-z0-9_]{1,64})", launch_action, json_body=True),
-    _r("GET", r"/api/agent-views/(?P<id>[1-9][0-9]{0,9})/miniapps", agent_view_miniapps),
-    _r("GET", "/api/admin/users", admin_list_users),
-    _r("POST", "/api/admin/users", admin_create_user, json_body=True),
-    _r("PATCH", r"/api/admin/users/(?P<id>[0-9]{1,10})", admin_update_user, json_body=True),
-    _r("GET", "/api/admin/grants", admin_list_grants),
-    _r("POST", "/api/admin/grants", admin_add_grant, json_body=True),
-    _r("DELETE", r"/api/admin/grants/(?P<id>[0-9]{1,19})", admin_remove_grant),
-    _r("PUT", "/api/admin/config", admin_set_config, json_body=True),
+    _r("POST", "/api/session", login, auth="login", json_body=True, acl="anonymous"),
+    # "self": each handler scopes to the user's own rows or to the scope grants.
+    _r("GET", "/api/session", get_session, acl="self"),
+    _r("DELETE", "/api/session", logout, acl="self"),
+    _r("GET", "/api/agent-views", agent_views, acl="self"),
+    _r("POST", r"/api/tools/(?P<name>[a-z0-9_]+):invoke", invoke, json_body=True, acl="self"),
+    _r("GET", "/api/launches", list_launches, acl="self"),
+    _r("DELETE", r"/api/launches/(?P<id>[0-9a-f]{32})", end_launch, acl="self"),
+    _r("POST", r"/api/launches/(?P<id>[0-9a-f]{32})/actions/(?P<tool>[a-z0-9_]{1,64})", launch_action,
+       json_body=True, acl="self"),
+    _r("GET", "/api/admin/users", admin_list_users, acl="admin.users"),
+    _r("POST", "/api/admin/users", admin_create_user, json_body=True, acl="admin.users.create"),
+    _r("PATCH", r"/api/admin/users/(?P<id>[0-9]{1,10})", admin_update_user, json_body=True, acl="admin.users.edit"),
 ]
+
+# Last: admin_api imports the request types above and adds its routes to ROUTES. Its own module
+# body does the add, so the routes are there whichever of the two modules is imported first.
+from . import admin_api  # noqa: E402, F401

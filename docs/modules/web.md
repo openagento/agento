@@ -19,7 +19,7 @@ container. Design: [../architecture/panel.md](../architecture/panel.md). Operato
 
 `web` never runs `bootstrap()`, so it resolves this value itself: ENV
 `CONFIG__WEB__LAUNCH__MAX_CONCURRENT` → DB (workspace, then default) → this module's
-`config.json`. A value that is not a positive integer makes `POST /api/launches` answer 503.
+`config.json`. A value that is not a positive integer makes `POST /api/miniapps/launches` answer 503.
 
 ## The `session` checker
 

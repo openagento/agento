@@ -11,6 +11,11 @@ from pathlib import Path
 from ..project import find_project_root as find_project_root
 from ._output import log_error
 
+# The service `agento run` and `doctor` exec into: the runner image has every agent CLI,
+# /workspace at the cron path, and no secret. Its server refuses an exec'd process: that
+# process is in the runner's own PID namespace, so its peer pid is not 0 (runner/server.py).
+EXEC_SERVICE = "runner-1"
+
 
 def find_compose_file(project_root: Path) -> Path | None:
     """Find docker-compose file relative to project root.

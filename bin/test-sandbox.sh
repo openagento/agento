@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# test-sandbox.sh — Health check for sandbox container (Claude Code)
+# test-sandbox.sh — Health check for the sandbox image (Claude Code), in runner-1
 # Usage: bin/test-sandbox.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,17 +18,18 @@ NC='\033[0m'
 pass=0
 fail=0
 
+# The sandbox image has no service: runner-1 runs the cron image, which is FROM it.
 run_in_sandbox() {
-  docker compose -f "$COMPOSE_DIR/docker-compose.yml" run --rm --no-deps -T sandbox "$@" 2>/dev/null
+  docker compose -f "$COMPOSE_DIR/docker-compose.yml" exec -T -u agent runner-1 "$@" 2>/dev/null
 }
 
 echo -e "${CYAN}=== Sandbox Health Check ===${NC}"
 echo ""
 
-# Check image exists
-if ! docker images agento-sandbox:latest --format '{{.ID}}' 2>/dev/null | grep -q .; then
-  echo -e "${RED}✗${NC} agento-sandbox:latest image not found"
-  echo -e "  Build: ${DIM}cd docker && HOST_UID=\$(id -u) HOST_GID=\$(id -g) docker compose build sandbox${NC}"
+# Check runner-1 is running
+if [ -z "$(docker compose -f "$COMPOSE_DIR/docker-compose.yml" ps -q runner-1 2>/dev/null)" ]; then
+  echo -e "${RED}✗${NC} runner-1 is not running"
+  echo -e "  Start: ${DIM}cd docker && docker compose up -d${NC}"
   exit 1
 fi
 

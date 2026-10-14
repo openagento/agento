@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from pathlib import Path
 
+from .access import acl
 from .config_validation import MAX_LENGTH_TYPES
 
 # The job-type grammar is the registry's, not a second copy of it (PRD E3-E5 §4.2).
@@ -251,6 +252,8 @@ def declaration_shape_errors(module_dir: Path, manifest: dict) -> list[str]:
                        for v in declared if not (isinstance(v, str) and v)]
     if "routes" in provides and not isinstance(provides["routes"], list):
         errors.append("di.json: 'routes' must be a list of route declarations")
+    if "acl_resources" in provides:
+        errors.append("di.json: 'acl_resources' is not read; declare operations in acl.json 'operations'")
     if "execution_hooks" in provides:
         declared = provides["execution_hooks"]
         if not isinstance(declared, dict):
@@ -263,7 +266,8 @@ def declaration_shape_errors(module_dir: Path, manifest: dict) -> list[str]:
     return errors
 
 
-def validate_route_grammar(module_name: str, routes: Iterable[object]) -> list[str]:
+def validate_route_grammar(module_name: str, routes: Iterable[object],
+                           acl_ids: Collection[str]) -> list[str]:
     """Per-module: the declaration grammar, the module's own `/api/<name>/` prefix, and
     no duplicate inside one manifest.
 
@@ -274,7 +278,7 @@ def validate_route_grammar(module_name: str, routes: Iterable[object]) -> list[s
     errors: list[str] = []
     seen: set[str] = set()
     for route in routes:
-        problem = declaration_error(module_name, route)
+        problem = declaration_error(module_name, route, acl_ids)
         if problem is not None:
             errors.append(f"di.json: {problem}")
             continue
@@ -598,7 +602,31 @@ def validate_module(module_dir: Path) -> list[str]:
     return errors
 
 
-def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
+def _acl_checks(module_dir: Path, manifest: dict,
+                dirs: dict[str, Path] | None) -> tuple[list[str], frozenset[str]]:
+    """The module's ``acl.json`` errors, and the leaves its routes may name: its own, core,
+    and those of each module in its ``sequence`` (``dirs``: name -> dir; default: discovery).
+
+    A file that is not valid gives no leaves; its errors are the finding."""
+    name = module_dir.name
+    data = acl.read(module_dir)
+    errors = ["acl.json: invalid JSON"] if data is None else acl.errors(name, data)
+    sequence = manifest.get("sequence", [])
+    sequence = [s for s in sequence if isinstance(s, str)] if isinstance(sequence, list) else []
+    if dirs is None:
+        from .bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
+        from .module_discovery import module_dirs_by_name
+
+        dirs = dict(module_dirs_by_name(CORE_MODULES_DIR, USER_MODULES_DIR))
+    found = [(name, module_dir), *((s, dirs[s]) for s in sequence if s in dirs and s != name)]
+    try:
+        registry = acl.load(found)
+    except acl.AclError:
+        registry = acl.core()
+    return errors, acl.route_ids(registry, name, sequence)
+
+
+def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> tuple[list[str], dict | None]:
     """Validate a module and return (errors, parsed_manifest).
 
     The manifest is returned for cross-validation in validate_all(),
@@ -799,8 +827,10 @@ def _validate_module(module_dir: Path) -> tuple[list[str], dict | None]:
     # loader, so a malformed declaration reads as an absent one and would else pass the gate.
     errors.extend(declaration_shape_errors(module_dir, manifest))
     errors.extend(validate_job_type_grammar(job_type_declarations(module_dir, manifest)))
+    acl_errors, acl_ids = _acl_checks(module_dir, manifest, dirs)
+    errors.extend(acl_errors)
     errors.extend(
-        validate_route_grammar(module_dir.name, route_declarations(module_dir, manifest))
+        validate_route_grammar(module_dir.name, route_declarations(module_dir, manifest), acl_ids)
     )
 
     # events.json
@@ -1062,7 +1092,7 @@ def validate_all(core_dir: Path, user_dir: Path) -> dict[str, list[str]]:
 
     candidates = module_dirs_by_name(core_dir, user_dir)
     for name, entry in candidates:
-        errors, manifest = _validate_module(entry)
+        errors, manifest = _validate_module(entry, dict(candidates))
         if errors:
             results[name] = errors
         if manifest is not None:
@@ -1106,6 +1136,10 @@ def validate_all(core_dir: Path, user_dir: Path) -> dict[str, list[str]]:
     # credential scope or Docker ARG key claimed by a DIFFERENT module, and a duplicate
     # scope would silently make one harness serve another's credential pool.
     for module_name, error in _collision_errors(candidates):
+        results.setdefault(module_name, []).append(error)
+
+    # An ACL id is unique across the framework file and every module.
+    for module_name, error in acl.duplicates(candidates):
         results.setdefault(module_name, []).append(error)
 
     return results

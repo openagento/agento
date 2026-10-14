@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 
-from agento.framework.harness import RunResult, SubprocessRunner
+from agento.framework.harness import SESSION_ID, RunResult, SubprocessRunner, move_session_into
 from agento.modules.claude.src.output_parser import parse_claude_output
 
 
@@ -26,3 +28,16 @@ class ClaudeSubprocessRunner(SubprocessRunner):
         except (json.JSONDecodeError, TypeError):
             pass
         return None
+
+    def prepare_resume(self, session_id: str) -> bool:
+        """Claude files a session under ``~/.claude/projects/<cwd, non-alphanumerics as ->/``
+        and ``--resume`` looks only in the current cwd's folder."""
+        if not SESSION_ID.fullmatch(session_id):
+            return False
+        if self.context.home_dir is None:
+            return True  # the operator's own HOME: nothing of ours to move
+        return move_session_into(
+            Path(self.context.home_dir) / ".claude" / "projects",
+            re.sub(r"[^A-Za-z0-9]", "-", self.context.working_dir),
+            f"{session_id}.jsonl",
+        )

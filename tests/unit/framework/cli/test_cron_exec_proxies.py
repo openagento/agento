@@ -2,7 +2,7 @@
 
 The cron service holds the credential store in its environment, so an ``exec -u agent
 cron …`` hands it to the command directly — no ``env -i``, no fd. The guard asserts over
-the argv the CLI actually builds, not over source text, and pins the two ``sandbox``
+the argv the CLI actually builds, not over source text, and pins the two runner
 execs that must keep ``-u agent`` so a later sweep cannot silently take them.
 """
 from __future__ import annotations
@@ -12,8 +12,6 @@ import json
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 from agento.framework.cli._cron_exec import cron_exec
 
@@ -69,7 +67,6 @@ def test_the_universal_cli_proxy_enters_as_root_through_the_launcher():
     assert _service_of(argv) == "cron"
     assert "agent" not in argv[:argv.index("cron")]
     assert argv[argv.index("cron") + 1] == "/opt/cron-agent/launch.sh"
-    assert "--store" in argv
     assert argv[argv.index("--") + 1] == "/opt/cron-agent/run.sh"
 
 
@@ -102,11 +99,12 @@ def test_no_cron_exec_in_the_cli_source_still_names_the_agent_user():
     assert offenders == []
 
 
-def test_the_sandbox_execs_still_run_as_agent():
-    """The sandbox has no launcher and no store — routing it would break every run."""
+def test_the_runner_execs_still_run_as_agent():
+    """`agento run` execs into the runner (EXEC_SERVICE), which has no launcher and no store —
+    routing it through the cron launcher would break every run."""
     source = (CLI_DIR / "run.py").read_text()
     tree = ast.parse(source)
-    sandbox_execs = 0
+    runner_execs = 0
     for node in ast.walk(tree):
         if not isinstance(node, ast.List):
             continue
@@ -114,23 +112,21 @@ def test_the_sandbox_execs_still_run_as_agent():
             e.value for e in node.elts
             if isinstance(e, ast.Constant) and isinstance(e.value, str)
         ]
-        if "exec" in literals and "sandbox" in literals:
-            sandbox_execs += 1
-            assert "agent" in literals, "a sandbox exec lost -u agent"
-    assert sandbox_execs == 2
+        names = [e.id for e in node.elts if isinstance(e, ast.Name)]
+        if "exec" in literals and "EXEC_SERVICE" in names:
+            runner_execs += 1
+            assert "agent" in literals, "a runner exec lost -u agent"
+    assert runner_execs == 2
 
 
 # --- the canary ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("store", [True, False])
-def test_a_cron_exec_names_no_store_variable(store):
-    """The store reaches the command through the launcher's fd, never through ``-e``."""
-    argv = cron_exec(["/opt/cron-agent/run.sh", "config:list"], store=store)
-    joined = " ".join(argv)
+def test_a_cron_exec_names_no_store_variable():
+    """The launcher reads the store from its root-only file, never from ``-e``."""
+    joined = " ".join(cron_exec(["/opt/cron-agent/run.sh", "config:list"]))
     for name, value in STORE_CANARIES.items():
         assert name not in joined
         assert value not in joined
-    assert ("--store" in argv) is store
 
 
 def test_the_interactive_setup_upgrade_keeps_its_tty():

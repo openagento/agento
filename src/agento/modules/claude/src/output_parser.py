@@ -232,8 +232,11 @@ def parse_claude_output(raw: str, logger: logging.Logger | None = None) -> RunRe
 
         costs = [c for c in (ev.get("total_cost_usd") for ev in result_events)
                  if isinstance(c, (int, float))]
+        # The answer is claude's `result` of the last result event: the last assistant
+        # message's text (E9 §3.1). The full stream lives in the timeline and the transcript.
+        answer = result_events[-1].get("result")
         return RunResult(
-            raw_output=raw,
+            raw_output=answer if isinstance(answer, str) and answer else raw,
             input_tokens=_sum(result_events, lambda e: (e.get("usage") or {}).get("input_tokens")),
             output_tokens=_sum(result_events, lambda e: (e.get("usage") or {}).get("output_tokens")),
             cost_usd=max(costs) if costs else None,

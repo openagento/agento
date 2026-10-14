@@ -2,7 +2,7 @@
 
 Composes the same pre-spawn pipeline the consumer uses (``CredentialResolver`` +
 ``materialize_run_workspace``) and returns the result as JSON so the host
-can ``docker exec`` into the sandbox with HOME/cwd/env already resolved.
+can ``docker exec`` into ``runner-1`` with HOME/cwd/env already resolved.
 
 The ``env`` field carries credentials only for providers whose WorkspaceAdapter
 chooses runtime env delivery. The host must inject these via name-only
@@ -69,7 +69,7 @@ class AgentViewPrepareRunCommand:
     def help(self) -> str:
         return (
             "Prepare a run environment for an agent_view (credential + artifacts + env) "
-            "and dump JSON; used by `agento run` to exec into the sandbox."
+            "and dump JSON; used by `agento run` to exec into the runner."
         )
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
@@ -307,8 +307,5 @@ class AgentViewPrepareRunCommand:
                 "stdin": stdin_payload,
                 "env": env,
                 "credential_id": credential.id if credential is not None else None,
-                # Deprecated duplicate of credential_id, kept for one release so an older
-                # host-side `agento run` reading token_id keeps working.
-                "token_id": credential.id if credential is not None else None,
             }
             print(json.dumps(payload))

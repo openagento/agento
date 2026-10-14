@@ -108,11 +108,11 @@ V1 = "v-20260101-000000-aaaa"
 
 @pytest.fixture
 def launch(conn, scope, session, monkeypatch):
-    """A redeemed launch of an activated version that allows `notes_add`."""
+    """A redeemed launch of an approved version that allows `notes_add`."""
     ws, view = scope
     monkeypatch.setattr(launches, "has_operation", lambda *a: True)
     row, code = launches.create_launch(conn, session.user, workspace_id=ws, agent_view_id=view, artifact_code="app",
-                                       version_id=V1, manifest_fingerprint="f" * 64, allowed_actions=["notes_add"])
+                                       version_id=V1, allowed_actions=["notes_add"])
     assert launches.redeem(conn, row.id, code)
     return row
 

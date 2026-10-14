@@ -100,8 +100,10 @@ def _create_test_db():
 
     # Apply module SQL migrations (same as setup:upgrade does)
     from agento.framework.bootstrap import CORE_MODULES_DIR
+    from agento.framework.dependency_resolver import resolve_order
     from agento.framework.module_loader import scan_modules
-    all_modules = scan_modules(CORE_MODULES_DIR)
+    # Dependency order, as setup:upgrade: a module's FK may name a table of its `sequence`.
+    all_modules = resolve_order(scan_modules(CORE_MODULES_DIR))
     conn = _test_connection(autocommit=False)
     try:
         for m in all_modules:
@@ -228,6 +230,13 @@ def _bootstrap_registries():
 
 
 @pytest.fixture(autouse=True)
+def _runner(start_runner):
+    """Every agent CLI starts in a runner (WS5): an in-process one per test, so a consumer
+    run here goes through the socket, as in a deployment."""
+    start_runner()
+
+
+@pytest.fixture(autouse=True)
 def _keep_bootstrapped_registries():
     """`bootstrap_for_tests()` runs ONCE per session, so a test that clears a registry to
     get a clean slate leaves every later test with an empty one. The observed bite: an empty
@@ -346,15 +355,13 @@ def int_agent_view(tmp_path, int_db_config, monkeypatch):
     """
     # A view-scoped job also runs the workspace-build freshness observer, which builds under
     # BUILD_DIR and opens its OWN connection from env. Same redirection the other build-touching
-    # integration tests use (test_concurrent_materialization, test_app_monitor_e2e).
+    # integration tests use (test_orchestration_scale, test_app_monitor_e2e).
     build_root = str(tmp_path / "build")
     artifacts_root = str(tmp_path / "artifacts")
     patches = [
         patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", artifacts_root),
         patch("agento.framework.artifacts_dir.BUILD_DIR", build_root),
         patch("agento.modules.workspace_build.src.builder.BUILD_DIR", build_root),
-        patch("agento.modules.claude.src.transcript_reader.BUILD_DIR", build_root),
-        patch("agento.modules.codex.src.transcript_reader.BUILD_DIR", build_root),
         # ONE patch, on the class itself. Both observers import the SAME DatabaseConfig, so
         # patching two module paths would patch one attribute twice — and stopping them in start
         # order then restores the first mock instead of the real classmethod, leaking a localhost
@@ -621,3 +628,27 @@ def world(conn):
     accounts.add_grant(conn, "user", "operation", "artifact.launch", agent_view_id=ids["view"])
     ids.update(owner=owner, stranger=stranger, admin=admin)
     return ids
+
+
+def routed(module_name: str, handlers):
+    """``handlers`` (a module's ``src/routes.py``) behind web's route check: each name calls the
+    handler only when ``server.acl_allows`` passes for its ``di.json`` ``acl``, else 403, as
+    ``server._run`` does (D-ADMIN-ACL-2). A handler checks no panel leaf of its own."""
+    from types import SimpleNamespace
+
+    from agento.framework.bootstrap import CORE_MODULES_DIR
+    from agento.web import api, server
+
+    decls = json.loads((Path(CORE_MODULES_DIR) / module_name / "di.json").read_text())["routes"]
+
+    def guard(handler, acl):
+        def call(req):
+            if not server.acl_allows(req.conn, req.session.user, acl):
+                return api.error(403, "forbidden")
+            return handler(req)
+        return call
+
+    return SimpleNamespace(**{
+        d["handler"].rsplit(".", 1)[1]: guard(getattr(handlers, d["handler"].rsplit(".", 1)[1]),
+                                              d["acl"] if isinstance(d["acl"], str) else tuple(d["acl"]))
+        for d in decls})

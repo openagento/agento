@@ -28,6 +28,7 @@ from ._provisioning import (
 )
 from ._templates import TemplateNotFoundError, extract_sql_files, get_package_version, get_template
 from .terminal import select
+from .upgrade import grant_migrate_user
 
 
 def _sanitize_compose_name(name: str) -> str:
@@ -297,7 +298,7 @@ def _reinstall(project_dir: Path, host_uid: int, host_gid: int) -> None:
     log_info(f"Reinstalled framework files (version {version}).")
 
 
-def _run_post_install(project_dir: Path) -> None:
+def _run_post_install(project_dir: Path, *, existing_db: bool = False) -> None:
     """Build images, run agento up + setup:upgrade after scaffolding."""
     flags = compose_file_flags(project_dir)
     if not flags:
@@ -311,13 +312,14 @@ def _run_post_install(project_dir: Path) -> None:
     # (FROM agento-toolbox:${AGENTO_VERSION}) has a base to layer on.
     log_info("Building Docker images (first run can take a few minutes)...")
     build_base_images(project_dir, get_package_version())
-    result = subprocess.run([*compose_cmd, "build", "sandbox"])
-    if result.returncode != 0:
-        log_error("Failed to build sandbox image. Run 'docker compose build' manually.")
-        return
     result = subprocess.run([*compose_cmd, "build", "toolbox", "cron"])
     if result.returncode != 0:
         log_error("Failed to build toolbox/cron images. Run 'docker compose build' manually.")
+        return
+
+    # A kept storage/mysql predates the migration-user grant that initdb gives a fresh one.
+    if existing_db and not grant_migrate_user(compose_cmd):
+        log_error("MySQL root grant for the migration user failed. Run 'agento upgrade'.")
         return
 
     log_info("Starting containers...")
@@ -333,7 +335,7 @@ def _run_post_install(project_dir: Path) -> None:
     log_info("Waiting for initial setup...")
     for _ in range(60):
         check = subprocess.run(
-            [*compose_cmd, *cron_exec(["test", "-f", "/tmp/.setup-done"], store=False)],
+            [*compose_cmd, *cron_exec(["test", "-f", "/tmp/.setup-done"])],
             capture_output=True,
         )
         if check.returncode == 0:
@@ -503,7 +505,7 @@ class InstallCommand:
             if choice == 1:  # No
                 return
             _reinstall(project_dir, host_uid, host_gid)
-            _run_post_install(project_dir)
+            _run_post_install(project_dir, existing_db=True)
             return
 
         # Validate directory

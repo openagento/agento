@@ -1,11 +1,11 @@
 """Job store — DB helpers for job lifecycle transitions."""
 from __future__ import annotations
 
-import os
 import signal
 import time
 
 from .job_models import Job, JobStatus
+from .runner import client as runner_client
 from .toolbox_capability import revoke_job_capabilities
 
 
@@ -73,21 +73,15 @@ def pause_job(conn, job_id: int) -> Job:
             "before pause could be applied."
         )
 
-    # Step 2: now that DB reflects PAUSED, signal the subprocess. If the
-    # subprocess exits cleanly, consumer's _finalize_job sees PAUSED and
-    # skips the SUCCESS/DEAD write.
-    if job.pid is not None:
-        try:
-            os.kill(job.pid, 0)
-            os.kill(job.pid, signal.SIGTERM)
-            for _ in range(6):
-                time.sleep(0.5)
-                try:
-                    os.kill(job.pid, 0)
-                except OSError:
-                    break
-        except OSError:
-            pass  # PID already dead — status is already PAUSED
+    # Step 2: now that DB reflects PAUSED, signal the run through the runner that owns
+    # it. If it exits cleanly, consumer's _finalize_job sees PAUSED and skips the
+    # SUCCESS/DEAD write. Not sent (gone, or the owner does not answer): already PAUSED.
+    tag = f"job:{job.id}"
+    if job.runner_ref and runner_client.signal(job.runner_ref, tag, signal.SIGTERM):
+        for _ in range(6):
+            time.sleep(0.5)
+            if runner_client.alive(job.runner_ref, tag) != "alive":
+                break
 
     job.status = JobStatus.PAUSED
     return job
@@ -112,12 +106,17 @@ def resume_job(conn, job_id: int) -> Job:
             f"Cannot resume job {job_id}: no session_id. "
             "The agent session was not captured before pause."
         )
+    # The owner is cleared below, so ask it first: `alive` or `unknown` keeps the job PAUSED.
+    state = runner_client.alive(job.runner_ref, f"job:{job.id}")
+    if state != "dead":
+        raise ValueError(f"Cannot resume job {job_id}: its last run is {state}; retry later.")
 
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE job
-            SET status = 'TODO', pid = NULL, scheduled_after = NOW(), updated_at = NOW()
+            SET status = 'TODO', pid = NULL, runner_ref = NULL, scheduled_after = NOW(),
+                updated_at = NOW()
             WHERE id = %s AND status = 'PAUSED'
             """,
             (job_id,),
@@ -125,5 +124,5 @@ def resume_job(conn, job_id: int) -> Job:
     conn.commit()
 
     job.status = JobStatus.TODO
-    job.pid = None
+    job.pid = job.runner_ref = None
     return job

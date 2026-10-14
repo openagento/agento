@@ -26,6 +26,7 @@ export const ENDPOINT_TRANSPORT = Object.freeze({
   invoke: 'http',
   api: 'http',
   config_test: 'http',
+  admin: 'http',
   health: 'http',
 });
 
@@ -94,7 +95,9 @@ export function deriveAuthContext({ row, agentViewWorkspaceId = null, source = n
   if (!row.allowed_transports.includes(ENDPOINT_TRANSPORT[endpoint])) return null;
 
   const viewless = isNull(row.agent_view_id);
-  const endpoints = row.kind === 'internal_rest' && viewless ? ['config_test'] : profile.endpoints;
+  // `admin` is in no profile: only a viewless internal_rest reaches it, and only the backend
+  // (web, cron) can mint one — a runner has no DB.
+  const endpoints = row.kind === 'internal_rest' && viewless ? ['config_test', 'admin'] : profile.endpoints;
   if (!endpoints.includes(endpoint)) return null;
 
   if (row.actor !== profile.actor) return null;
