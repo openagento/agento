@@ -3,12 +3,13 @@ import { authSources, checkLaunch } from '../../../modules/miniapps/toolbox/laun
 import { GRANTS_SQL, grantsFor } from '../../capability.js';
 
 const LAUNCH = { id: 'L1', user_id: 7, role: 'user', artifact_code: 'site', version_id: 'v-20260101-120000-aaaa',
-  workspace_id: 1, agent_view_id: 11, created_at: 1000, expires_at: 2000, allowed_actions: '["jira_search"]' };
+  workspace_id: 1, agent_view_id: 11, created_at: 1000, expires_at: 2000, allowed_actions: '["jira_search"]',
+  manifest_actions: '["jira_search","jira_add_comment"]' };
 
-// The checker's SQL over in-memory state. The launch query carries every liveness and
-// approval condition, so "no row" stands for each of them (revoked, expired, not
-// redeemed, inactive user, revoked approval, another approved version).
-function fakeQuery({ launch = LAUNCH, ops = ['artifact.launch'] } = {}) {
+// The checker's SQL over in-memory state. The launch query carries every liveness, approval
+// and `view` condition, so "no row" stands for each of them (revoked, expired, not redeemed,
+// inactive user, revoked approval, another approved version, no member row and not creator).
+function fakeQuery({ launch = LAUNCH, ops = ['artifact.launch'], tools = ['jira_search', 'jira_add_comment'] } = {}) {
   return async (sql, params) => {
     if (sql.includes('FROM agent_view')) return [params[0] === 11 ? [{ workspace_id: 1 }] : []];
     if (sql.includes('FROM launch l')) {
@@ -17,13 +18,11 @@ function fakeQuery({ launch = LAUNCH, ops = ['artifact.launch'] } = {}) {
       expect(sql).toMatch(/expires_at > NOW\(\)/);
       expect(sql).toMatch(/is_active = 1/);
       expect(sql).toMatch(/a\.agent_view_id = l\.agent_view_id AND a\.approved_version_id = l\.version_id/);
+      expect(sql).toMatch(/u\.role = 'admin' OR EXISTS \(SELECT 1 FROM miniapp_member m/);
+      expect(sql).toMatch(/j\.requester_trust = 'account'/);
       return [launch && params[0] === launch.id ? [launch] : []];
     }
-    if (sql === GRANTS_SQL) {
-      // O-2: the approval is the grant; the role's tool grants are never read.
-      expect(params[1]).toBe('operation');
-      return [ops.map(name => ({ name }))];
-    }
+    if (sql === GRANTS_SQL) return [(params[1] === 'operation' ? ops : tools).map(name => ({ name }))];
     throw new Error(`unexpected SQL: ${sql}`);
   };
 }
@@ -61,6 +60,29 @@ describe('launch auth source', () => {
     expect(await checkLaunch('L1', opts({ query: fakeQuery({ ops: [] }) }))).toBeNull();
     expect(await checkLaunch('L1', opts({ query: fakeQuery({ launch: { ...LAUNCH, allowed_actions: '[]' } }) })))
       .toBeNull();
+  });
+
+  it('refuses when one manifest action has no tool grant, even if the approved subset is held (S5)', async () => {
+    expect(await checkLaunch('L1', opts({ query: fakeQuery({ tools: ['jira_search'] }) }))).toBeNull();
+  });
+
+  it('refuses an approval made before the manifest was stored (NULL): fail closed', async () => {
+    expect(await checkLaunch('L1', opts({ query: fakeQuery({ launch: { ...LAUNCH, manifest_actions: null } }) })))
+      .toBeNull();
+  });
+
+  it('refuses when the member row is gone (the query finds no row)', async () => {
+    expect(await checkLaunch('L1', opts({ query: fakeQuery({ launch: null }) }))).toBeNull();
+  });
+
+  it('allows the creator or a member with the grants (the query found the row)', async () => {
+    const parsed = fakeQuery({ launch: { ...LAUNCH, manifest_actions: ['jira_search', 'jira_add_comment'] } });
+    expect((await checkLaunch('L1', opts({ query: parsed }))).permitted_tools).toEqual(['jira_search']);
+  });
+
+  it('allows admin with no grant at all (S4); the ceiling stays the approved actions', async () => {
+    const admin = fakeQuery({ launch: { ...LAUNCH, role: 'admin', manifest_actions: null }, ops: [], tools: [] });
+    expect((await checkLaunch('L1', opts({ query: admin }))).permitted_tools).toEqual(['jira_search']);
   });
 
   it('refuses a launch with no agent view (an approval is per view)', async () => {

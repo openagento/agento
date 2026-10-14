@@ -27,12 +27,15 @@ export function TextField({ label, hint, error, contained: inside, ...input }: F
 }
 
 // A Mantine combobox, so the open list has the theme's look (a native list is drawn by the OS).
-export function SelectField({ label, hint, error, contained: inside, options, value, onChange, name, disabled }: FieldProps & {
-  options: { value: string; label: string }[]; value?: string; onChange?: (value: string) => void;
-  name?: string; disabled?: boolean;
+// `searchable` filters the list as the user types; `options` may be grouped.
+type Option = { value: string; label: string };
+export function SelectField({ label, hint, error, contained: inside, options, value, onChange, name, disabled, searchable, placeholder }: FieldProps & {
+  options: (Option | { group: string; items: Option[] })[]; value?: string; onChange?: (value: string) => void;
+  name?: string; disabled?: boolean; searchable?: boolean; placeholder?: string;
 }) {
   return (
     <Select label={label} description={hint} error={error} data={options} inputWrapperOrder={ORDER} name={name} classNames={inside ? contained : undefined}
-      disabled={disabled} value={value} onChange={(v) => v !== null && onChange?.(v)} allowDeselect={false} />
+      disabled={disabled} value={value || null} onChange={(v) => v !== null && onChange?.(v)} allowDeselect={false}
+      searchable={searchable} placeholder={placeholder} nothingFoundMessage={searchable ? "Nothing found" : undefined} />
   );
 }

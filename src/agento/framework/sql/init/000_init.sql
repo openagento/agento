@@ -360,9 +360,6 @@ CREATE TABLE IF NOT EXISTS role_grant (
         REFERENCES agent_view (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 053: every role keeps the Miniapps screen, now an admin panel operation.
-INSERT INTO role_grant (role, grant_kind, name) VALUES ('user', 'operation', 'miniapps');
-
 -- PRD E3-E5 §7.5 — the request limiter's counters. DB-backed, because an in-process
 -- counter limits one replica each and the panel may run several.
 -- No FK: a bucket key is a hash, and a bucket must outlive whatever it was derived from.
@@ -498,5 +495,4 @@ INSERT INTO schema_migration (version) VALUES
     ('049_tool_invocation_run_execution_index'),
     ('050_role'),
     ('051_job_runner_ref'),
-    ('052_job_auth_wait_index'),
-    ('053_admin_leaves');
+    ('052_job_auth_wait_index');

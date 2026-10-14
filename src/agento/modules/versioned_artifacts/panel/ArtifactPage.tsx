@@ -87,7 +87,7 @@ export default function ArtifactPage() {
   );
 }
 
-/** The app approvals per view, from the miniapps module. Any error (miniapps off, no leaf) shows nothing. */
+/** The app approvals per view, from the miniapps module. Any error (miniapps off, no `edit` on the app) shows nothing. */
 function Approvals({ code }: { code: string }) {
   const approvals = useQuery({
     queryKey: ["artifacts", code, "approvals"],

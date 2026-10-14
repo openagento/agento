@@ -46,13 +46,13 @@ def _launch_as(user, scopes):
 
 
 def _live_launches_without_access(conn):
-    """Live launches whose user's current role lacks artifact.launch for the launch's scope."""
+    """Live launches whose user's current role lacks artifact.launch for the launch's scope (admin holds it)."""
     with conn.cursor() as cur:
         cur.execute("SELECT l.id, l.workspace_id, l.agent_view_id, u.role FROM launch l"
                     " JOIN `user` u ON u.id = l.user_id WHERE l.revoked_at IS NULL AND l.expires_at > NOW()")
         rows = cur.fetchall()
-    return [r["id"] for r in rows
-            if not accounts.has_operation(conn, r["role"], "artifact.launch", r["workspace_id"], r["agent_view_id"])]
+    return [r["id"] for r in rows if r["role"] != "admin"
+            and not accounts.has_operation(conn, r["role"], "artifact.launch", r["workspace_id"], r["agent_view_id"])]
 
 
 def _reset(conn):
@@ -76,11 +76,13 @@ def test_create_racing_an_access_change_leaves_no_unauthorized_launch(conn, scop
     monkeypatch.setenv("CONFIG__WEB__LAUNCH__MAX_CONCURRENT", "5")
     for _ in range(20):
         _reset(conn)
-        alice = accounts.create_user(conn, "alice", "user", PASSWORD)
-        gid = accounts.add_grant(conn, "user", "operation", "artifact.launch", workspace_id=scopes["ws1"])
-        if change == "set_role":
-            revoke = partial(accounts.set_role, user_id=alice.id, role="admin")
+        if change == "set_role":  # an admin (no grant: S4) demoted to a role with no grant
+            alice = accounts.create_user(conn, "alice", "admin", PASSWORD)
+            accounts.create_user(conn, "root", "admin", PASSWORD)  # demoting the last admin is refused
+            revoke = partial(accounts.set_role, user_id=alice.id, role="user")
         else:
+            alice = accounts.create_user(conn, "alice", "user", PASSWORD)
+            gid = accounts.add_grant(conn, "user", "operation", "artifact.launch", workspace_id=scopes["ws1"])
             revoke = partial(accounts.remove_grant, grant_id=gid)
         _results, errors = _race(_launch_as(alice, scopes), revoke)
         assert errors == []

@@ -77,7 +77,7 @@ session, _ = cookie(h, "__Host-agento-session")
 seen.append(session)
 panel = {**xhr, "Cookie": f"__Host-agento-session={session}", "X-CSRF-Token": json.loads(body)["csrf_token"]}
 
-# The smoke user holds the miniapps.approve leaf: a preview launches `current` files-only.
+# The smoke user is a member with edit on the app: a preview launches `current` files-only.
 status, _h, body = call("POST", f"{PANEL}/api/miniapps/previews",
                         body={"agent_view_id": int(view_id), "artifact_code": code}, headers=panel)
 check("create a launch", status, 201)
@@ -123,11 +123,11 @@ def launch_app(preview=False):
     return status, (json.loads(body) if status == 201 else None)
 
 
-# E6: no approval in the view, no launch; a preview is files-only; after Approve the launch pins
+# E6: no approval in the view, no launch (403: the user may view the app); a preview is files-only; after Approve the launch pins
 # the approved actions. A rerun finds the approval of the last run: revoke it first.
 approval = f"{PANEL}/api/miniapps/apps/{app_code}/views/{view_id}/approval"
 call("DELETE", approval, headers=panel)
-check("launch the miniapp artifact before approval", launch_app()[0], 404)
+check("launch the miniapp artifact before approval", launch_app()[0], 403)
 status, first = launch_app(preview=True)
 check("preview the miniapp artifact", status, 201)
 if first:

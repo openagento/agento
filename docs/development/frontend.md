@@ -101,6 +101,17 @@ npm test            # build, lint, then every unit test and every story in headl
   `MenuButton` (`packages/ui/src/components/Chat*.tsx`) are Mantine components with no `.ag-*`
   twin: a miniapp shows no chat (UI-2). The timeline fills the shell's main area; below `sm` the
   thread list is a `Drawer`. Each rendered timeline item is exactly one `li` of `ChatList`.
+- **The app tiles are panel-only.** `ViewToggle` (Mantine `SegmentedControl`, "Tiles" / "List"),
+  `TileGrid` (`SimpleGrid`, a `list`) and `AppTile` (`listitem`; icon name, title, `disabled`, badge,
+  actions; two or more `choices` make it a menu) in `packages/ui/src/components/Tiles.tsx` have no
+  `.ag-*` twin: a miniapp does not show them (UI-2). A disabled tile is `aria-disabled` with the
+  title "You may view this app but not run it". The app icon is a **name**, never a URL:
+  `APP_ICON_NAMES` maps a fixed set of lucide icons (a module panel may not import lucide-react),
+  and the miniapps panel test keeps it equal to `miniapps/panel/icons.json`, which `web` checks.
+  `IconPicker` (the icon as a button; a `Popover` with the set), `EditableTitle` (`Headers.tsx`; a
+  pencil on hover, the title becomes an unstyled input, Enter or blur saves, Escape cancels) and
+  `OpenMenuAction` (`IconAction.tsx`; the open icon, a `Menu` when there are two or more choices)
+  are panel-only too. `SelectField` takes `searchable` and grouped `options`.
 - **A conversation shows turns, not runs.** `buildItems` keeps the partial segments of a run
   (`assistant.partial` / `reasoning.partial` grow one live item; the next complete
   `assistant.text` / `assistant.reasoning` replaces it in place, B1). `turns()` merges the runs

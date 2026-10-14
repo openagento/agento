@@ -228,11 +228,6 @@ class TestApplyMigration:
         assert "KEY idx_job_auth_wait (status, error_class, id)" in sql
         assert "('052_job_auth_wait_index')" in sql
 
-    def test_fresh_init_seeds_miniapps_leaf_for_user(self):
-        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
-        assert "INSERT INTO role_grant (role, grant_kind, name) VALUES ('user', 'operation', 'miniapps');" in sql
-        assert "('053_admin_leaves')" in sql
-
     def test_every_framework_migration_is_marked_applied_in_fresh_init(self):
         """The class guard: 000_init.sql is the schema a NEW project starts from, so a
         migration whose marker is missing runs against a schema that already has its effect

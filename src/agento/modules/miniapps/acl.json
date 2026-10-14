@@ -1,8 +1,0 @@
-{
-  "screens": [
-    {"title": "Miniapps", "leaves": [
-      {"id": "miniapps", "title": "Use"},
-      {"id": "miniapps.approve", "title": "Approve, revoke and preview"}
-    ]}
-  ]
-}

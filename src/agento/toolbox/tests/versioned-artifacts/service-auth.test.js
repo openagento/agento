@@ -12,7 +12,7 @@ function fakeDb() {
   const upsert = (code, patch) => table.set(code, { ...(table.get(code) || { artifact_code: code }), ...patch });
   const pool = {
     execute: async (sql, params) => {
-      if (/INSERT INTO versioned_artifact \(artifact_code, title\)/.test(sql)) {
+      if (/INSERT INTO versioned_artifact \(artifact_code, title,/.test(sql)) {
         upsert(params[0], { title: params[1] });
       } else if (/auth_enabled = 1/.test(sql)) {
         upsert(params[0], { auth_enabled: 1, auth_user: params[1], share_token: params[2], params });

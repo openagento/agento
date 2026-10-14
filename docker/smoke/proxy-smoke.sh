@@ -38,7 +38,8 @@ set -uo pipefail
 # each run, via stdin), two role grants, two tool gates, the artifact `e2-smoke`, and
 # `e2-smoke` appended to that view's versioned_artifacts/allowed_artifacts; E6 adds the
 # miniapp artifact `e6-smoke` (with a miniapp.json; the smoke approves it through the API),
-# the `miniapps.approve` leaf, and a Basic credential (fresh random password each run) on `e2-smoke`.
+# `e2-smoke-user` as a member with edit on both artifacts (D-MINIAPP-3), and a Basic credential
+# (fresh random password each run) on `e2-smoke`.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
@@ -224,8 +225,6 @@ else
   docker exec "$CRON" $RUN user:set-role e2-smoke-user user >/dev/null
   docker exec "$CRON" $RUN grant:add --role user --tool versioned_artifact_get_current --agent-view "$VIEW" >/dev/null
   docker exec "$CRON" $RUN grant:add --role user --operation artifact.launch --agent-view "$VIEW" >/dev/null
-  # Preview and Approve (an admin panel leaf: global, no scope).
-  docker exec "$CRON" $RUN grant:add --role user --operation miniapps.approve >/dev/null
   for tool in versioned_artifact versioned_artifact_get_current; do
     docker exec "$CRON" $RUN tool:enable "$tool" --agent-view "$VIEW" >/dev/null
   done
@@ -261,6 +260,10 @@ process.exit(0);'
     *,e6-smoke,*) ;;
     *) docker exec "$CRON" $RUN config:set versioned_artifacts/allowed_artifacts "${allowed:+$allowed,}e6-smoke" --agent-view "$VIEW" >/dev/null ;;
   esac
+  # Preview and Approve need `edit` on the app (D-MINIAPP-3): the smoke user is a member with edit.
+  for code in e2-smoke e6-smoke; do
+    sql "INSERT IGNORE INTO miniapp_member (artifact_code, user_id, can_edit) SELECT '$code', id, 1 FROM \`user\` WHERE username = 'e2-smoke-user'" >/dev/null
+  done
   if python3 "$SCRIPT_DIR/panel-launch-smoke.py" "$PORT" "$SEED/pw" "$VIEW_ID" e2-smoke "$CRON" "$PROXY" "$WEB" \
       e6-smoke "$MYSQL"; then
     ok "panel and launch flow"

@@ -1,4 +1,5 @@
-"""Miniapp approval per (artifact, agent_view), against the real schema (plan D-MINIAPP-2).
+"""Miniapp approval per (artifact, agent_view) and the catalogue, against the real schema
+(D-MINIAPP-2, D-MINIAPP-3). The per-app rights matrix is in test_miniapp_rights.py.
 
 Only the toolbox is a stub: `admin_request` answers from an in-memory store, so the real
 statements, the real retention lock and the real `launch` rows run.
@@ -38,6 +39,7 @@ def _clean(c):
     with c.cursor() as cur:
         cur.execute("DELETE FROM miniapp_activation WHERE artifact_code LIKE 'ma-%'")
         cur.execute("DELETE FROM versioned_artifact_audit WHERE artifact_code LIKE 'ma-%'")
+        cur.execute("DELETE FROM versioned_artifact WHERE artifact_code LIKE 'ma-%'")  # and its rights rows
         for table in ("launch", "session", "role_grant", "`user`"):
             cur.execute(f"DELETE FROM {table}")
 
@@ -56,10 +58,20 @@ def world(conn):
             ids[key] = cur.fetchone()["id"]
     ids["admin"] = accounts.create_user(conn, "ma-admin", "admin", "correct horse battery")
     ids["user"] = accounts.create_user(conn, "ma-user", "user", "correct horse battery")
+    ids["none"] = accounts.create_user(conn, "ma-none", "user", "correct horse battery")  # no rights row
     for role in ("admin", "user"):
         accounts.add_grant(conn, role, "operation", "artifact.launch", agent_view_id=ids["view"])
-    accounts.add_grant(conn, "user", "operation", "miniapps")
+    for tool in MANIFEST["actions"]:
+        accounts.add_grant(conn, "user", "tool", tool, agent_view_id=ids["view"])
+    with conn.cursor() as cur:  # ma-user: a member who may view and execute, not edit
+        cur.execute("INSERT INTO versioned_artifact (artifact_code, title) VALUES (%s, 'Notes app')", (CODE,))
+        cur.execute("INSERT INTO miniapp_member (artifact_code, user_id) VALUES (%s, %s)", (CODE, ids["user"].id))
     return ids
+
+
+def _set_edit(conn, user):
+    with conn.cursor() as cur:
+        cur.execute("UPDATE miniapp_member SET can_edit = 1 WHERE user_id = %s", (user.id,))
 
 
 class Store:
@@ -88,7 +100,8 @@ class Store:
         if self.status != 200:
             return toolbox_client.InvokeResult(self.status, {"error_code": "X"})
         if method == "DELETE":
-            self.artifacts.pop(path.split("/")[1])
+            if self.artifacts.pop(path.split("/")[1], None) is None:
+                return toolbox_client.InvokeResult(404, {"error_code": "ARTIFACT_NOT_FOUND"})
             if self.crash_after_delete:
                 raise RuntimeError("web died after the toolbox delete")
             return toolbox_client.InvokeResult(200, {})
@@ -156,6 +169,7 @@ def test_approve_pins_current_with_its_content_and_audits_it(conn, world, store)
     row = _activation(conn, world["view"])
     assert (row["approved_version_id"], row["approved_content_id"]) == (V1, C1)
     assert json.loads(row["allowed_actions"]) == MANIFEST["actions"]  # default: every manifest action
+    assert json.loads(row["manifest_actions"]) == MANIFEST["actions"]  # what execute checks the grants against
     actor = f"service:web:user:{world['admin'].id}"
     assert row["activated_by"] == actor
     assert store.calls == [("POST", f"miniapps/{CODE}/resolve", actor, {"version": "current"})]
@@ -175,7 +189,9 @@ def test_approve_is_a_compare_and_set_on_current(conn, world, store):
 def test_approve_takes_a_subset_of_the_manifest_actions_only(conn, world, store):
     assert _approve(conn, world, actions=["jira_bash"]).status == 400
     assert _approve(conn, world, actions=["jira_search", "jira_search"]).status == 200
-    assert json.loads(_activation(conn, world["view"])["allowed_actions"]) == ["jira_search"]
+    row = _activation(conn, world["view"])
+    assert json.loads(row["allowed_actions"]) == ["jira_search"]
+    assert json.loads(row["manifest_actions"]) == MANIFEST["actions"]  # the whole manifest, not the subset
 
 
 def test_approve_refuses_a_version_without_a_valid_manifest(conn, world, store):
@@ -184,10 +200,13 @@ def test_approve_refuses_a_version_without_a_valid_manifest(conn, world, store):
     assert _activation(conn, world["view"]) is None
 
 
-def test_approve_needs_the_leaf_and_the_launch_right_in_the_view(conn, world, store):
-    assert _approve(conn, world, user=world["user"]).status == 403
-    assert _approve(conn, world, view=world["view2"]).status == 404  # admin has no artifact.launch there
+def test_approve_needs_edit_and_the_launch_right_in_the_view(conn, world, store):
+    assert _approve(conn, world, user=world["user"]).status == 403  # view, not edit
+    assert _approve(conn, world, user=world["none"]).status == 404  # no view: no disclosure
+    _set_edit(conn, world["user"])
+    assert _approve(conn, world, user=world["user"], view=world["view2"]).status == 404  # no artifact.launch there
     assert store.calls == []
+    assert _approve(conn, world, view=world["view2"]).status == 200  # admin needs no grant (S4)
 
 
 def test_approve_maps_toolbox_answers(conn, world, store):
@@ -211,7 +230,8 @@ def test_revoke_deletes_the_row_and_audits_it(conn, world, store):
 # --- launch --------------------------------------------------------------------------
 
 def test_a_launch_needs_an_approval_in_the_view(conn, world, store):
-    assert _launch(conn, world).status == 404
+    assert _launch(conn, world).status == 403  # the user may view the app: no execute is 403
+    assert _launch(conn, world, user=world["none"]).status == 404
     assert store.calls == []
 
 
@@ -226,9 +246,12 @@ def test_a_launch_serves_the_approved_version_after_a_new_one_is_published(conn,
     assert _pinned(conn, r.body["launch_id"]) == (V1, ["jira_search"])
     assert store.calls[-1][3] == {"version": V1}  # resolve restores the approved version's tree
     assert store.locked_during_call[-1] is True
-    rows = routes.catalogue(_req(conn, world["user"], params={"id": world["view"]})).body
-    assert rows == [{"artifact_code": CODE, "version_id": V1, "title": "Notes app", "current_version": V2,
-                     "update_waiting": True}]
+    rows = routes.catalogue(_req(conn, world["user"])).body
+    assert rows == [{"artifact_code": CODE, "title": "Notes app", "icon": None,
+                     "can": {"view": True, "edit": False, "remove": False, "execute": True},
+                     "views": [{"agent_view_id": world["view"], "label": "v", "version_id": V1, "execute": True}]}]
+    view = routes.catalogue(_req(conn, world["admin"])).body[0]["views"][0]
+    assert (view["update_waiting"], view["approve_again"]) == (True, False)  # shown with edit only
 
 
 @pytest.mark.parametrize("gone", ["other_content", "missing_version"])
@@ -269,10 +292,11 @@ def test_preview_launches_current_with_no_actions_even_over_an_older_approval(co
     assert store.calls[-1][3] == {"version": "current"}
 
 
-def test_preview_needs_the_approve_leaf(conn, world, store):
+def test_preview_needs_edit(conn, world, store):
     assert _launch(conn, world, as_preview=True).status == 403
+    assert _launch(conn, world, user=world["none"], as_preview=True).status == 404
     assert store.calls == []
-    accounts.add_grant(conn, "user", "operation", "miniapps.approve")
+    _set_edit(conn, world["user"])
     assert _launch(conn, world, as_preview=True).status == 201
 
 
@@ -295,74 +319,81 @@ def test_launch_input_errors(conn, world, store, body, status):
     assert _launch(conn, world, **body).status == status
 
 
-def test_launch_without_the_launch_right_is_404(conn, world, store):
+@pytest.mark.parametrize("grant", ["artifact.launch", "jira_add_comment"])
+def test_launch_without_the_launch_right_or_a_manifest_tool_grant_is_403(conn, world, store, grant):
+    """Every action of the manifest needs a grant, even one the approval left out."""
+    _approve(conn, world, actions=["jira_search"])
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM role_grant WHERE role = 'user' AND name = %s", (grant,))
+    assert _launch(conn, world).status == 403
+    assert routes.catalogue(_req(conn, world["user"])).body[0]["can"]["execute"] is False
+
+
+def test_an_approval_with_no_stored_manifest_runs_for_admin_only(conn, world, store):
+    """An approval made before ``manifest_actions`` existed: fail closed, and ask edit to approve again."""
     _approve(conn, world)
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM role_grant WHERE role = 'user'")
-    assert _launch(conn, world).status == 404
+        cur.execute("UPDATE miniapp_activation SET manifest_actions = NULL WHERE artifact_code = %s", (CODE,))
+    assert _launch(conn, world).status == 403
+    assert routes.catalogue(_req(conn, world["user"])).body[0]["views"][0]["execute"] is False
+    view = routes.catalogue(_req(conn, world["admin"])).body[0]["views"][0]
+    assert (view["execute"], view["approve_again"]) == (True, True)
+    assert _launch(conn, world, user=world["admin"]).status == 201
 
 
 # --- catalogue -----------------------------------------------------------------------
 
-def test_the_catalogue_lists_this_views_approvals_known_to_the_store(conn, world, store):
+def test_the_catalogue_lists_the_apps_known_to_the_store(conn, world, store):
     _approve(conn, world)
-    with conn.cursor() as cur:  # an approval whose artifact left the store
+    with conn.cursor() as cur:  # rights and an approval on an artifact that left the store
+        cur.execute("INSERT INTO versioned_artifact (artifact_code, title) VALUES ('ma-gone', 'g')")
+        cur.execute("INSERT INTO miniapp_member (artifact_code, user_id) VALUES ('ma-gone', %s)", (world["user"].id,))
         cur.execute("INSERT INTO miniapp_activation (artifact_code, agent_view_id, approved_version_id,"
                     " approved_content_id, allowed_actions, activated_by) VALUES ('ma-gone', %s, %s, %s, '[]', 'x')",
                     (world["view"], V1, C1))
-    rows = routes.catalogue(_req(conn, world["user"], params={"id": world["view"]})).body
-    assert rows == [{"artifact_code": CODE, "version_id": V1, "title": "Notes app", "current_version": V1,
-                     "update_waiting": False}]
-    assert routes.catalogue(_req(conn, world["admin"], params={"id": world["view2"]})).body == []
+    store.artifacts["ma-other"] = {"current": V1, "versions": {V1: C1}, "manifest": MANIFEST, "title": None}
+    assert [r["artifact_code"] for r in routes.catalogue(_req(conn, world["user"])).body] == [CODE]
+    admin = routes.catalogue(_req(conn, world["admin"])).body  # admin: every artifact of the store
+    assert [(r["artifact_code"], r["title"], len(r["views"])) for r in admin] == [
+        (CODE, "Notes app", 1), ("ma-other", "ma-other", 0)]
 
 
-def test_the_catalogue_asks_the_toolbox_nothing_when_nothing_is_approved(conn, world, store):
-    assert routes.catalogue(_req(conn, world["user"], params={"id": world["view"]})).body == []
+def test_the_catalogue_title_and_icon_come_from_the_settings(conn, world, store):
+    routes.update_app(_req(conn, world["admin"], params={"code": CODE}, body={"title": "Notes", "icon": "book-open"}))
+    row = routes.catalogue(_req(conn, world["user"])).body[0]
+    assert (row["title"], row["icon"]) == ("Notes", "book-open")
+
+
+def test_the_catalogue_asks_the_toolbox_nothing_without_a_rights_row(conn, world, store):
+    assert routes.catalogue(_req(conn, world["none"])).body == []
     assert store.calls == []
 
 
-def test_the_catalogue_needs_the_leaf_a_reachable_view_and_lists_nothing_without_the_launch_right(
-        conn, world, store):
-    _approve(conn, world, view=None)
-    view2 = _req(conn, world["user"], params={"id": world["view2"]})
-    assert routes.catalogue(view2).status == 404  # not reachable: no disclosure
-    with conn.cursor() as cur:  # reachable through another grant, but no artifact.launch there
-        cur.execute("INSERT INTO role_grant (role, grant_kind, name, agent_view_id) VALUES ('user', 'tool', 'x', %s)",
-                    (world["view2"],))
-    assert (routes.catalogue(view2).status, routes.catalogue(view2).body) == (200, [])
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM role_grant WHERE role = 'user' AND name = 'miniapps'")
-    assert routes.catalogue(_req(conn, world["user"], params={"id": world["view"]})).status == 403
+def test_the_catalogue_lists_only_reachable_views(conn, world, store):
+    _approve(conn, world)
+    with conn.cursor() as cur:  # approved in view2, which the user cannot reach
+        cur.execute("INSERT INTO miniapp_activation (artifact_code, agent_view_id, approved_version_id,"
+                    " approved_content_id, allowed_actions, manifest_actions, activated_by)"
+                    " VALUES (%s, %s, %s, %s, '[]', '[]', 'x')", (CODE, world["view2"], V1, C1))
+    views = routes.catalogue(_req(conn, world["user"])).body[0]["views"]
+    assert [v["agent_view_id"] for v in views] == [world["view"]]
 
 
 def test_a_toolbox_failure_in_the_catalogue_is_503(conn, world, store):
-    _approve(conn, world)
     store.status = 503
-    assert routes.catalogue(_req(conn, world["user"], params={"id": world["view"]})).status == 503
+    assert routes.catalogue(_req(conn, world["user"])).status == 503
 
 
 # --- panel reads: the views to pick from, the approval page ---------------------------
 
-def test_the_launch_views_list_only_views_with_the_launch_right_and_need_the_leaf(conn, world, store):
+def test_the_launch_views_list_only_views_with_the_launch_right(conn, world, store):
     with conn.cursor() as cur:  # view2 reachable through another grant, but no artifact.launch there
         cur.execute("INSERT INTO role_grant (role, grant_kind, name, agent_view_id) VALUES ('user', 'tool', 'x', %s)",
                     (world["view2"],))
     r = routes.launch_views(_req(conn, world["user"]))
     assert (r.status, [v["id"] for v in r.body]) == (200, [world["view"]])
     assert set(r.body[0]) == {"id", "code", "label", "workspace_id"}
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM role_grant WHERE role = 'user' AND name = 'miniapps'")
-    assert routes.launch_views(_req(conn, world["user"])).status == 403  # the panel probe: module hidden
     assert store.calls == []
-
-
-def test_the_launch_views_open_to_an_approver_without_the_catalogue_leaf(conn, world, store):
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM role_grant WHERE role = 'user' AND name = 'miniapps'")
-    accounts.add_grant(conn, "user", "operation", "miniapps.approve")
-    r = routes.launch_views(_req(conn, world["user"]))
-    assert (r.status, [v["id"] for v in r.body]) == (200, [world["view"]])
-    assert routes.catalogue(_req(conn, world["user"], params={"id": world["view"]})).status == 403
 
 
 def test_the_launch_views_take_one_query_for_any_number_of_views(conn, world, store, monkeypatch):
@@ -403,25 +434,29 @@ def test_the_approval_page_shows_an_invalid_manifest_as_no_actions(conn, world, 
 
 def test_the_approval_page_has_the_approve_guards(conn, world, store):
     assert routes.approval(_req(conn, world["user"], params={"code": CODE, "view": world["view"]})).status == 403
-    assert routes.approval(_req(conn, world["admin"], params={"code": CODE, "view": world["view2"]})).status == 404
+    assert routes.approval(_req(conn, world["none"], params={"code": CODE, "view": world["view"]})).status == 404
+    _set_edit(conn, world["user"])
+    assert routes.approval(_req(conn, world["user"], params={"code": CODE, "view": world["view2"]})).status == 404
     store.artifacts.clear()
     assert routes.approval(_req(conn, world["admin"], params={"code": CODE, "view": world["view"]})).status == 404
 
 
-def test_the_approvals_list_every_view_the_user_may_launch_in(conn, world, store):
+def test_the_approvals_list_every_view_the_user_may_approve_in(conn, world, store):
     _approve(conn, world, actions=["jira_search"])
-    with conn.cursor() as cur:  # view2: no artifact.launch there, so not listed
+    with conn.cursor() as cur:  # view2: the user has no artifact.launch there, so not listed
         cur.execute("INSERT INTO miniapp_activation (artifact_code, agent_view_id, approved_version_id,"
                     " approved_content_id, allowed_actions, activated_by) VALUES (%s, %s, %s, %s, '[]', 'x')",
                     (CODE, world["view2"], V1, C1))
-    r = routes.approvals(_req(conn, world["admin"], params={"code": CODE}))
+    assert routes.approvals(_req(conn, world["user"], params={"code": CODE})).status == 403  # view, not edit
+    _set_edit(conn, world["user"])
+    r = routes.approvals(_req(conn, world["user"], params={"code": CODE}))
     assert r.status == 200
     rows = json.loads(json.dumps(r.body))  # the server json.dumps the body
     assert [(a["agent_view_id"], a["approved_version_id"], a["allowed_actions"]) for a in rows] == [
         (world["view"], V1, ["jira_search"])]
     assert rows[0]["activated_by"] == f"service:web:user:{world['admin'].id}"
     assert rows[0]["activated_at"].endswith("Z")
-    assert routes.approvals(_req(conn, world["user"], params={"code": CODE})).status == 403
+    assert len(routes.approvals(_req(conn, world["admin"], params={"code": CODE})).body) == 2  # admin: every view
     assert routes.approvals(_req(conn, world["admin"], params={"code": "-bad"})).status == 404
 
 
@@ -450,7 +485,11 @@ def test_an_approval_left_by_a_delete_with_miniapps_disabled_is_refused_at_launc
     _approve(conn, world)
     va_admin.delete_artifact(conn, world["admin"], CODE)
     assert _activation(conn, world["view"]) is not None  # the observer did not run
-    _recreate_with_other_bytes(store)  # miniapps enabled again
+    assert _launch(conn, world).status == 404  # the rights rows went with the metadata row
+    _recreate_with_other_bytes(store)  # miniapps enabled again; the same code made again, the user a member again
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO versioned_artifact (artifact_code, title) VALUES (%s, 'Notes app')", (CODE,))
+        cur.execute("INSERT INTO miniapp_member (artifact_code, user_id) VALUES (%s, %s)", (CODE, world["user"].id))
     r = _launch(conn, world)
     assert (r.status, r.body) == (409, {"error": "approved version gone"})
     assert _activation(conn, world["view"]) is None

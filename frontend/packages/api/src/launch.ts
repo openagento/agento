@@ -8,7 +8,7 @@ import { queryClient } from "./query";
 import { onEndSession } from "./session";
 import { createLaunchBridge, type ActionResult } from "@agento/miniapp-bridge";
 
-/** `preview` (leaf `miniapps.approve`): `current` with no actions, whether or not it is approved. */
+/** `preview` (`edit` on the app): `current` with no actions, whether or not it is approved. */
 export interface LaunchRequest { agentViewId: number; artifactCode: string; preview?: boolean }
 
 export type LaunchOutcome =

@@ -58,9 +58,10 @@ credentialed CORS.
 ```
 panel page                      web                                  proxy / apps origin
    | POST /api/miniapps/launches {agent_view_id, artifact_code}
-   |------------------------------>| can_reach + artifact.launch? else 404
-   |                               | approval for (artifact, view)? else 404
-   |                               |   (POST /api/miniapps/previews, leaf miniapps.approve:
+   |------------------------------>| can_reach + view of the app? else 404
+   |                               | execute (approval, artifact.launch, every
+   |                               |   manifest tool grant; admin: approval)? else 403
+   |                               |   (POST /api/miniapps/previews, edit on the app:
    |                               |    `current`, no action)
    |                               | retention lock (va_ret:<sha1(code)>, 5 s) taken
    |                               | toolbox /admin resolve of the approved version:
@@ -103,12 +104,14 @@ panel page                      web                                  proxy / app
 - A launch serves the version approved for the view and pins its `allowed_actions`; a preview
   serves `current` and authorizes no action. See [../modules/miniapps.md](../modules/miniapps.md).
   A toolbox failure is `503`, never a files-only guess.
-- `GET /api/miniapps/agent-views` (leaf `miniapps` or `miniapps.approve`) lists the views where the user may launch. It is the
-  `miniapps` panel probe: without the leaf it answers 403 and the Apps entry is hidden.
-- `GET /api/miniapps/apps/<code>/views/<id>/approval` (leaf `miniapps.approve` and `artifact.launch`
-  in the view) answers the approval (or `null`) and `current` with its manifest actions, for the
-  approval page `/apps/<code>`.
-- `GET /api/miniapps/agent-views/<id>/catalogue` lists the apps approved for the view. A reachable view without `artifact.launch` answers an empty list, not 404: the view is already in the user's list.
+- The miniapps routes are `acl: "self"` with **instance rights**: each app has `view`, `edit`,
+  `remove` and `execute` per user (members, the creator, admin), checked in the handler; no `view`
+  is 404, `view` without the right is 403 (DECISIONS.md D-MINIAPP-3).
+- `GET /api/miniapps/apps` lists every app the user may view, with its rights and its approved
+  views. It is the `miniapps` panel probe (every signed-in user gets 2xx).
+- `GET /api/miniapps/apps/<code>/views/<id>/approval` (`edit` on the app, and admin or
+  `artifact.launch` in the view) answers the approval (or `null`) and `current` with its manifest
+  actions, for the app settings page `/apps/<code>`.
 
 ## Roles and grants
 
@@ -129,9 +132,10 @@ Access comes from `role_grant` rows:
 - `grant_kind = 'operation'` with **no scope**: an admin panel leaf, from an `acl.json` `screens`
   list — one per admin screen (`admin.dashboard`, `admin.jobs`, `admin.agents`, `admin.credentials`,
   `admin.tools`, `admin.skills`, `admin.config`, `admin.users`, `admin.roles`; the modules add
-  `miniapps` and `versioned_artifacts`) and one per action (`admin.credentials.edit`,
+  `versioned_artifacts`) and one per action (`admin.credentials.edit`,
   `admin.config.edit` — also the Tools and Skills switches, `admin.users.create|edit`,
-  `admin.roles.create|edit|delete`, `miniapps.approve`, `versioned_artifacts.publish|delete`).
+  `admin.roles.create|edit|delete`, `versioned_artifacts.publish|delete`). Miniapps have no leaf:
+  their rights are per app (D-MINIAPP-3).
   `admin` holds every leaf built in. The session's `user.acl` lists the leaves the panel shows. A role
   that is not admin grants only the leaves it holds, and only an `admin` creates, edits or assigns an
   admin account (DECISIONS.md D-ADMIN-ACL-1).
