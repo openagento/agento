@@ -5,7 +5,7 @@ the running dev stack and moves its stored expiry INTO the refresh horizon (10 m
 now): Claude's ``claudeAiOauth.expiresAt``; for Codex the ``exp`` claim of the access-token
 JWT. It then takes the short claim lease and runs the consumer's own refresh step
 (``Consumer._refresh_claimed_credential``) in the cron container, where the real
-credential lives. It asserts what AG-65 promises: the CLI refreshed, the rotation was
+credential lives; the CLI itself starts in a runner. It asserts what AG-65 promises: the CLI refreshed, the rotation was
 persisted to the same row, the row is no longer refresh-imminent, and the lease is free.
 
 The selection by ``resolve()`` is not exercised here — the pool may prefer an API key —

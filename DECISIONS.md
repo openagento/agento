@@ -236,6 +236,11 @@ have cli and we can create users that way. 4. ok".
 - **Live e2e:** `tests/e2e/test_refresh_real_cli.py` moves a real credential's expiry into the
   horizon and asserts the rotation is persisted and the lease freed. It rotates a real
   single-use refresh token.
+- **On the runner split (rebase, 2026-10-15).** `cron` starts no CLI, so `refresh_credentials`
+  runs its CLI through `runner.client.run`, with the throw-away HOME under `/workspace/.tmp`
+  (`client.shared_tmp()`). The runner gives the HOME back to `agent` before its terminal frame,
+  so the rotation is read and persisted in `cron`, as before. The env scrub is gone: the runner
+  holds no store. The client adds 30s of transport slack, so 60 + 30 < 120 still holds.
 ## 2026-10-10 — The consumer's transitions run at READ COMMITTED
 
 `Consumer._db()` borrows with `isolation="READ COMMITTED"`, and `db.pooled` holds that level as a
