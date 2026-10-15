@@ -249,6 +249,21 @@ class WorkspaceAdapter(Protocol):
         """
         ...
 
+    def refresh_credentials(self, credential: object, conn) -> bool:
+        """Refresh ``credential`` out of band — no job, no TTY — and persist the rotation.
+
+        The consumer calls it right after it claims a refresh-imminent credential under
+        a lease, so the lease lasts for the refresh only, not for the whole run.
+        ``True`` = a rotation was persisted through ``update_refreshed_credentials`` (the
+        caller commits). ``False`` = this harness cannot refresh this credential out of
+        band; the caller keeps the job-held lease for the run, as before. Raises the
+        harness's classified ``AuthenticationError`` / ``UsageLimitError`` /
+        ``TransientAuthError`` on a definite failure. Declared, not probed: the caller
+        wraps the call in a fail-safe branch, so an adapter predating it degrades to the
+        job-held lease.
+        """
+        ...
+
     def credential_ttl_seconds(self, credential: object) -> float | None:
         """Seconds until this credential's ACCESS token expires, or ``None`` if unknown.
 

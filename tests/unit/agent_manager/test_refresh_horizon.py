@@ -58,38 +58,38 @@ class TestRefreshImminent:
         # An anthropic_api_key row cannot burn a single-use secret, so it must keep the
         # full 10-way fan-out even though it has no expiry at all.
         with _with_ttl(0):
-            assert _resolver()._refresh_imminent(_token({"subscription_key": "sk"})) is False
+            assert _resolver().refresh_imminent(_token({"subscription_key": "sk"})) is False
 
     def test_a_past_expiry_alone_does_not_make_an_api_key_exclusive(self):
         with _with_ttl(-99999):
-            assert _resolver()._refresh_imminent(
+            assert _resolver().refresh_imminent(
                 _token({"subscription_key": "sk"}, type="anthropic_api_key")
             ) is False
 
     def test_a_credential_just_inside_the_horizon_is_exclusive(self):
         with _with_ttl(_HORIZON - 1):
-            assert _resolver()._refresh_imminent(
+            assert _resolver().refresh_imminent(
                 _token({"refresh_token": "R0"})
             ) is True
 
     def test_a_credential_exactly_at_the_horizon_is_exclusive(self):
         with _with_ttl(_HORIZON):
-            assert _resolver()._refresh_imminent(_token({"refresh_token": "R0"})) is True
+            assert _resolver().refresh_imminent(_token({"refresh_token": "R0"})) is True
 
     def test_a_credential_beyond_the_horizon_stays_shared(self):
         with _with_ttl(_HORIZON + 1):
-            assert _resolver()._refresh_imminent(_token({"refresh_token": "R0"})) is False
+            assert _resolver().refresh_imminent(_token({"refresh_token": "R0"})) is False
 
     def test_unknown_lifetime_is_conservative(self):
         with _with_ttl(None):
-            assert _resolver()._refresh_imminent(_token({"refresh_token": "R0"})) is True
+            assert _resolver().refresh_imminent(_token({"refresh_token": "R0"})) is True
 
     def test_an_unregistered_scope_is_conservative(self):
         # No owning harness (module disabled / never registered) -> unknown lifetime.
         with patch(
             "agento.framework.harness.registry.get_harness_for_scope", return_value=None
         ):
-            assert _resolver()._refresh_imminent(_token({"refresh_token": "R0"})) is True
+            assert _resolver().refresh_imminent(_token({"refresh_token": "R0"})) is True
 
     def test_an_adapter_without_the_method_is_conservative(self):
         # The method is declared on the WorkspaceAdapter protocol, but a third-party
@@ -100,7 +100,7 @@ class TestRefreshImminent:
                 adapter=MagicMock(workspace_adapter=MagicMock(spec=["write_credentials"]))
             ),
         ):
-            assert _resolver()._refresh_imminent(_token({"refresh_token": "R0"})) is True
+            assert _resolver().refresh_imminent(_token({"refresh_token": "R0"})) is True
 
     def test_a_raising_hook_is_conservative(self):
         adapter = MagicMock()
@@ -109,14 +109,14 @@ class TestRefreshImminent:
             "agento.framework.harness.registry.get_harness_for_scope",
             return_value=MagicMock(adapter=MagicMock(workspace_adapter=adapter)),
         ):
-            assert _resolver()._refresh_imminent(_token({"refresh_token": "R0"})) is True
+            assert _resolver().refresh_imminent(_token({"refresh_token": "R0"})) is True
 
     def test_a_raising_registry_lookup_is_conservative(self):
         with patch(
             "agento.framework.harness.registry.get_harness_for_scope",
             side_effect=KeyError("claude"),
         ):
-            assert _resolver()._refresh_imminent(_token({"refresh_token": "R0"})) is True
+            assert _resolver().refresh_imminent(_token({"refresh_token": "R0"})) is True
 
 
 class TestResolveLeaseWiring:
@@ -138,7 +138,7 @@ class TestResolveLeaseWiring:
         lease = select.call_args.args[2]
         assert lease.owner == "job-1-attempt-1"
         assert lease.ttl_seconds == 300
-        assert lease.should_lease == resolver._refresh_imminent
+        assert lease.should_lease == resolver.refresh_imminent
 
     def test_an_all_leased_pool_names_the_lease_in_its_error(self):
         with (

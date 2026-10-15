@@ -90,24 +90,32 @@ class CodexSubprocessRunner(SubprocessRunner):
         poisoning the token.
         """
         events = _parse_ndjson(raw)
-
-        if (msg := _detect_auth_error(events)) is not None:
-            raise AuthenticationError(f"Codex CLI auth error: {msg[:500]}")
-
-        if (msg := _detect_transient_auth_error(events)) is not None:
-            raise TransientAuthError(f"Codex CLI transient auth error: {msg[:500]}")
-
-        if (err := _detect_limit_error(events)) is not None:
-            msg = str(err.get("message") or err.get("type") or err.get("code") or "usage limit")
-            raise UsageLimitError(
-                f"Codex CLI error: {msg[:500]}", reset_at=_reset_at_from_error(err)
-            )
+        raise_classified_error(events)
 
         result = RunResult(raw_output=_extract_agent_text(events))
         _populate_session(events, result)
         _populate_usage(events, result)
         _populate_mcp_init(events, result)
         return result
+
+
+def raise_classified_error(events: list[dict]) -> None:
+    """Raise the credential-aware error a structured ``turn.failed`` event carries.
+
+    Shared by the run (``_parse_output``) and the out-of-band refresh
+    (``CodexWorkspaceAdapter.refresh_credentials``), so both classify alike.
+    """
+    if (msg := _detect_auth_error(events)) is not None:
+        raise AuthenticationError(f"Codex CLI auth error: {msg[:500]}")
+
+    if (msg := _detect_transient_auth_error(events)) is not None:
+        raise TransientAuthError(f"Codex CLI transient auth error: {msg[:500]}")
+
+    if (err := _detect_limit_error(events)) is not None:
+        msg = str(err.get("message") or err.get("type") or err.get("code") or "usage limit")
+        raise UsageLimitError(
+            f"Codex CLI error: {msg[:500]}", reset_at=_reset_at_from_error(err)
+        )
 
 
 def _parse_ndjson(raw: str) -> list[dict]:

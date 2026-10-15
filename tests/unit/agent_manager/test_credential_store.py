@@ -434,14 +434,28 @@ class TestRefreshLease:
         conn, cursor = _mock_conn(rowcount=1)
 
         assert release_credential_lease(conn, 7, "job-7-attempt-2") is True
-        sql, params = cursor.execute.call_args[0]
+        sql, params = cursor.execute.call_args_list[0][0]
         assert "lease_owner = NULL" in sql and "WHERE id = %s AND lease_owner = %s" in sql
         assert params == (7, "job-7-attempt-2")
 
+    def test_release_wakes_only_pool_busy_deferred_jobs(self):
+        conn, cursor = _mock_conn(rowcount=1)
+
+        release_credential_lease(conn, 7, "job-7-attempt-2")
+
+        assert cursor.execute.call_count == 2
+        wake_sql = cursor.execute.call_args_list[1][0][0]
+        assert wake_sql.startswith("UPDATE job SET scheduled_after = NOW()")
+        assert "status = 'TODO'" in wake_sql
+        assert "error_class = 'CredentialsBusyError'" in wake_sql
+        assert "scheduled_after > NOW()" in wake_sql
+
     def test_release_by_a_stale_owner_touches_nothing(self):
-        conn, _cursor = _mock_conn(rowcount=0)
+        conn, cursor = _mock_conn(rowcount=0)
 
         assert release_credential_lease(conn, 7, "job-7-attempt-1") is False
+        # Nothing was freed, so nothing is woken.
+        assert cursor.execute.call_count == 1
 
     def test_renew_binds_every_owner(self):
         conn, cursor = _mock_conn(rowcount=2)

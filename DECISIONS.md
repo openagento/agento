@@ -4,6 +4,55 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-08 — AG-65 refresh outside the job
+
+- **Problem.** The refresh lease belonged to the job, so one long or stuck job made a
+  single-credential pool exclusive for its whole run (production: 9 of 10 workers idle for
+  50 minutes). Waiting jobs slept out the renewed 300s TTL plus jitter even after release.
+- **The consumer orchestrates the refresh, not the resolver.** `resolve()` still takes the
+  lease in the selecting UPDATE, under the job's own owner. After the claim commits, the
+  consumer calls the new `WorkspaceAdapter.refresh_credentials(credential, conn)`. The
+  adapter runs its CLI once, headless, in a throwaway HOME with the stored expiry forced into
+  the past, and persists a rotation. The lease owner stays the job's, so the existing renewal,
+  owner-checked release and ABA guard need no second owner type.
+- **Release only when the refresh made the credential fresh.** The consumer commits, re-reads
+  the row, and drops the job if the row became ineligible (deleted, disabled, quarantined).
+  It releases the lease only when `refresh_credentials` returned True and the re-read row is
+  no longer `refresh_imminent`. Otherwise (False, an unexpected error, still near expiry) the
+  job keeps the lease, as before AG-65. A refresh failure that the harness classifies reuses
+  the existing handlers: auth → poison, transient auth / usage limit → throttle.
+- **Timing contract: 60 < 120 < 300.** The refresh subprocess times out at 60s, the claim
+  lease TTL is 120s, and the renewed lease TTL stays 300s. A guard test pins the order, so a
+  hung refresh can never outlive its lease.
+- **Wake on release.** A release that freed a row sets `scheduled_after = NOW()` on TODO jobs
+  whose `error_class = 'CredentialsBusyError'`. It is cross-scope on purpose: the job row has
+  no scope column, and a woken job of another scope only re-runs `resolve()` and defers
+  again. Residual race: a waiter whose deferral commits after the wake waits at most 120s +
+  jitter.
+- **A separate persist gate.** The refresh path persists when the access or refresh token
+  changed, or the expiry differs from the marker. The post-run capture keeps its "refresh
+  token changed" gate, so the `rotated WITHOUT holding a refresh lease` ERROR now means "a job
+  outlived a token lifetime".
+- **Startup refresh, probed on Claude Code 2.1.291 and Codex 0.157.0 (fake tokens).** Claude
+  refreshes at startup when `expiresAt` is past. Codex refreshes at startup only when the
+  access-token JWT `exp` is past; an old `last_refresh` alone makes it refresh only after a 401.
+  So for a JWT the Codex adapter puts `exp` into the past in the throw-away `auth.json` (header
+  and signature kept; the CLI does not check the signature) and never persists that edited
+  token. An opaque token still uses the `last_refresh` marker. If a CLI does not refresh,
+  `refresh_credentials` returns False and the job keeps the lease: the old behaviour.
+- **A refused refresh token is transient, not poison.** Claude 2.1.291 says "OAuth session
+  expired and could not be refreshed" and empties its `.credentials.json` (the empty-token gate
+  stops that from being persisted). Codex says "access token could not be refreshed" /
+  "Failed to refresh token status=401" on stderr. Both classify as `TransientAuthError`, so
+  `_handle_transient_auth` applies (2026-08-04: a replayed spent token is transient).
+- **Capabilities are minted after the refresh.** The refresh can take up to 60s, and the REST
+  capability lives only 120s (AG-16).
+- **Live e2e:** `tests/e2e/test_refresh_real_cli.py` moves a real credential's expiry into the
+  horizon and asserts the rotation is persisted and the lease freed. It rotates a real
+  single-use refresh token.
+
+---
+
 ## 2026-10-06 — Claude Code 2.1.291 upgrade: what Agento reads and writes
 
 Owner: the repo owner approved the scope in the AG-27 session on 2026-10-06 ("zaimplementuj
@@ -123,6 +172,9 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
   operator uses to reproduce a run — and `pi/builtin_tools` was already being lost there. An AST
   guard test with an empty allow-list closes the class instead of the three instances. `replay` now
   **refuses** a job with no `agent_view_id` rather than emit a command that may differ from the run.
+
+---
+
 ## 2026-09-25 — One tracked RULES.md with permanent rule IDs
 
 - **Problem: three roles read three rule sets.** The implementer read AGENTS.md, the reviewer read an
@@ -726,6 +778,9 @@ changes, no schema migrations. Details: [docs/modules/github.md](docs/modules/gi
   capture, or withholding the refresh token from non-holders; both are follow-ups. A proactive
   warm-up refresh (which would make the exclusive window nearly invisible) is gated behind a
   live-CLI experiment and is not part of this change.
+- **Changed 2026-10-08 (AG-65):** the lease no longer lasts for the whole run. The consumer
+  refreshes the leased credential out of band and releases it before the job starts. See
+  "AG-65 refresh outside the job" above.
 
 ---
 

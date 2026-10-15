@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Refresh outside the job (AG-65).** A near-expiry OAuth credential (Claude, Codex) is now
+  refreshed out of band by the new `WorkspaceAdapter.refresh_credentials` before the job runs,
+  and its lease is released at once, so the pool is exclusive for seconds instead of a job's
+  lifetime. Releasing a lease wakes the jobs deferred with `CredentialsBusyError`. The refresh
+  persists an access-token or expiry change too, not only a new refresh token.
+  Codex forces the access-token JWT `exp` into the past in the throw-away HOME, because Codex
+  0.157 refreshes at startup only on an expired JWT. A refused refresh token ("could not be
+  refreshed", Claude 2.1.291 and Codex) is now a transient auth error, not an unclassified one.
 - **Harness native-config passthrough per agent_view (AG-27).** Three new config fields hand each
   harness a blob of its own native config, deep-merged over the block Agento generates (operator
   wins), so no new Agento code is needed per CLI setting: `claude/settings` (JSON →

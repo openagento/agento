@@ -327,6 +327,17 @@ def test_parse_claude_output_mcp_init_survives_missing_result_event():
 _REVOKED_MSG = "Failed to authenticate. API Error: 401 OAuth access token has been revoked."
 
 
+def test_session_expired_and_not_refreshed_is_transient():
+    """CLI 2.1.291 wording for a refused refresh token (no 401 in the text). Probed live on
+    2026-10-08 with an expired fake credential."""
+    from agento.modules.claude.src.output_parser import _classify_error
+
+    err = _classify_error(
+        "Failed to authenticate: OAuth session expired and could not be refreshed"
+    )
+    assert isinstance(err, TransientAuthError)
+
+
 def test_revoked_oauth_token_raises_transient_auth_error_stream_json():
     raw = json.dumps({"type": "result", "is_error": True, "result": _REVOKED_MSG})
     with pytest.raises(TransientAuthError, match="has been revoked"):
