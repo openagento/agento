@@ -426,7 +426,14 @@ def release_credential_lease(
 
     The ``lease_owner = %s`` predicate is the ABA guard — a late cleanup belonging to
     attempt 1 must not free the lease attempt 2 legitimately holds.
+
+    A real release also wakes the jobs deferred because the pool was busy
+    (``CredentialsBusyError``), so they do not sit out ``leased_until`` plus jitter on a
+    pool that is free now. Not filtered by scope (``job`` stores none): a woken job of a
+    still-busy scope costs one more short bounce and is deferred again. Jobs deferred for
+    any other reason (a usage limit) keep their time.
     """
+    woken = 0
     with conn.cursor() as cur:
         cur.execute(
             "UPDATE credential SET lease_owner = NULL, leased_until = NULL, updated_at = NOW() "
@@ -434,10 +441,17 @@ def release_credential_lease(
             (credential_id, lease_owner),
         )
         released = cur.rowcount > 0
+        if released:
+            cur.execute(
+                "UPDATE job SET scheduled_after = NOW(), updated_at = NOW() "
+                "WHERE status = 'TODO' AND error_class = 'CredentialsBusyError' "
+                "AND scheduled_after > NOW()"
+            )
+            woken = cur.rowcount
     if logger:
         logger.debug(
             f"Release refresh lease: id={credential_id} owner={lease_owner!r} "
-            f"released={released}"
+            f"released={released} woken_jobs={woken}"
         )
     return released
 

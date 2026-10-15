@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Test double for the Codex CLI's startup token refresh (``refresh_credentials``).
+
+Behaves like the real CLI (0.157) where the tests depend on it: it reads
+``$HOME/.codex/auth.json`` and refreshes at startup only when the access token's JWT ``exp`` is
+past (a non-JWT token: when ``last_refresh`` is old). Failures are an NDJSON ``turn.failed``
+event; a rejected refresh token is reported on stderr only, as the real CLI does. ``FAKE_CODEX_MODE`` picks the outcome; ``FAKE_CLI_ENV_DUMP``
+(optional) gets the names of the variables the CLI was started with.
+"""
+import base64
+import json
+import os
+import sys
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+mode = os.environ.get("FAKE_CODEX_MODE", "rotate")
+if dump := os.environ.get("FAKE_CLI_ENV_DUMP"):
+    Path(dump).write_text("\n".join(sorted(os.environ)))
+
+path = Path(os.environ["HOME"]) / ".codex" / "auth.json"
+data = json.loads(path.read_text())
+tokens = data["tokens"]
+
+
+def _exp(token):
+    try:
+        part = token.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))["exp"]
+    except Exception:
+        return None
+
+
+exp = _exp(tokens["access_token"]) if isinstance(tokens, dict) else None
+if exp is not None:
+    stale = exp < time.time()
+else:
+    stale = datetime.fromisoformat(data["last_refresh"]) < datetime.now(UTC) - timedelta(days=8)
+now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+if stale and mode in ("rotate", "rotate_then_fail", "rotate_then_hang"):
+    tokens.update(access_token="acc-NEW", refresh_token="rt-NEW")
+    data["last_refresh"] = now
+elif stale and mode == "access_only":
+    tokens["access_token"] = "acc-NEW"
+elif stale and mode == "last_refresh_only":
+    data["last_refresh"] = now
+if mode == "wipe_then_fail":
+    data = {}
+elif mode in ("null_tokens_auth_error", "list_tokens_auth_error"):
+    data["tokens"] = None if mode.startswith("null") else ["x"]
+path.write_text(json.dumps(data))
+
+print(json.dumps({"type": "thread.started", "thread_id": "t-1"}))
+if mode in ("hang", "rotate_then_hang"):
+    time.sleep(30)
+if mode in ("auth_error", "null_tokens_auth_error", "list_tokens_auth_error"):
+    print(json.dumps({"type": "turn.failed", "error": {"message": "401 Unauthorized"}}))
+    sys.exit(1)
+if mode == "dead_refresh":
+    print("ERROR codex_login::auth::manager: Failed to refresh token: Your access token could "
+          "not be refreshed. Please log out and sign in again.", file=sys.stderr)
+    print(json.dumps({"type": "turn.failed",
+                      "error": {"message": "workspace routing discovery unauthorized (401)"}}))
+    sys.exit(1)
+if mode == "wipe_then_fail":
+    print(json.dumps({"type": "turn.failed", "error": {"message": "boom"}}))
+    sys.exit(1)
+if mode == "rotate_then_fail":
+    print(json.dumps({"type": "turn.failed", "error": {"message": "stream disconnected"}}))
+    sys.exit(1)
+print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 1}}))

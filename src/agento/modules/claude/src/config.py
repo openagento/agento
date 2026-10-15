@@ -4,14 +4,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
+import tempfile
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
+from agento.framework.credential_store_env import without_credential_store_env
 from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
 from agento.framework.harness.run_scope import scope_toolbox_url
+from agento.framework.ssh_identity import without_run_owned_ssh_env
+
+from .output_parser import parse_claude_output
 
 if TYPE_CHECKING:
     import pymysql
@@ -19,6 +26,16 @@ if TYPE_CHECKING:
     from agento.framework.agent_manager.models import CredentialRecord
 
 logger = logging.getLogger(__name__)
+
+# Out-of-band refresh (``refresh_credentials``): the cheapest headless call that makes the
+# CLI load — and, when expired, refresh — its OAuth token. A fixed list: nothing
+# user-supplied reaches it. No MCP flags: the throw-away HOME has no ``.mcp.json``.
+_REFRESH_ARGV = [
+    "claude", "-p", "ok", "--max-turns", "1", "--model", "haiku", "--output-format", "json",
+]
+# Must stay below the consumer's claim-lease TTL (a guard test pins it), so the lease
+# taken at claim cannot lapse while the refresh runs unrenewed.
+_REFRESH_TIMEOUT_SECONDS = 60
 
 
 # Claude writes expiresAt as epoch MILLISECONDS; older/hand-made payloads use seconds.
@@ -407,68 +424,123 @@ class ClaudeWorkspaceAdapter:
         Returns ``True`` when something was persisted, per the ``WorkspaceAdapter``
         protocol — every early exit below is a "nothing to capture" case. The framework
         also uses it to detect a rotation that happened WITHOUT a refresh lease, which is
-        how the freshness horizon's heuristic gets measured instead of assumed.
+        how the freshness horizon's heuristic gets measured instead of assumed. That is
+        why this gate stays "the refresh token changed" (a refresh token was spent);
+        ``refresh_credentials`` has its own, wider gate.
         """
         # Only OAuth subscription tokens carry a refresh_token the CLI rotates.
         # anthropic_api_key rows never produce a credentials diff worth persisting.
         if credential.type != "oauth":
             return False
+        built = self._refreshed_creds(home_dir, credential)
+        if built is None:
+            return False
+        new_oauth, new_creds = built
+        if new_oauth["refreshToken"] == _stored_refresh_token(credential):
+            return False
+        # Capture-specific persistence: updates credentials by id and preserves
+        # operator/health state — NOT register_credential (which would re-enable a
+        # credential an operator disabled mid-run). See DECISIONS.md.
+        update_refreshed_credentials(conn, credential.id, new_creds, logger=logger)
+        return True
 
+    def refresh_credentials(self, credential: CredentialRecord, conn: pymysql.Connection) -> bool:
+        """Refresh ``credential`` out of band, with no job and no TTY; persist the rotation.
+
+        Part of the ``WorkspaceAdapter`` protocol. The credential is written to a
+        throw-away HOME with ``expiresAt`` forced into the past, so the CLI refreshes at
+        startup instead of judging a 35-minute-old token still good (DECISIONS.md
+        2026-10-08 AG-65). The rotation is persisted BEFORE the HOME is removed and
+        before the exit status is looked at: the CLI may rotate and then fail or hang on
+        the prompt, and a spent single-use refresh token must never be dropped.
+
+        Returns ``True`` when a rotation was persisted (the caller commits), ``False``
+        when this CLI did not rotate (the caller keeps today's job-held lease). Raises
+        the classified ``AuthenticationError`` / ``UsageLimitError`` /
+        ``TransientAuthError`` on a definite failure, else ``RuntimeError``.
+        """
+        if credential.type != "oauth":
+            return False
+        with tempfile.TemporaryDirectory(prefix="agento-refresh-") as tmp:
+            home = Path(tmp)
+            self.write_credentials(home, credential)
+            creds_path = home / ".claude" / ".credentials.json"
+            try:
+                on_disk = json.loads(creds_path.read_text())
+                on_disk["claudeAiOauth"]["expiresAt"] = marker = int(time.time() * 1000) - 60_000
+            except (OSError, ValueError, KeyError, TypeError):
+                return False  # nothing refreshable was materialized
+            creds_path.write_text(json.dumps(on_disk))
+
+            failure: Exception | None = None
+            proc = None
+            try:
+                proc = subprocess.run(
+                    _REFRESH_ARGV,
+                    cwd=tmp,
+                    env={
+                        **without_credential_store_env(without_run_owned_ssh_env(dict(os.environ))),
+                        "HOME": tmp,
+                    },
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=_REFRESH_TIMEOUT_SECONDS,
+                )
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                failure = exc
+
+            built = self._refreshed_creds(home, credential)
+            if built is not None and _out_of_band_rotation(built[0], credential, marker):
+                update_refreshed_credentials(conn, credential.id, built[1], logger=logger)
+                return True
+
+        if failure is not None or proc is None:
+            raise RuntimeError(f"claude refresh failed: {type(failure).__name__}")
+        if proc.returncode != 0:
+            parse_claude_output(proc.stdout or "")  # raises the classified error
+            raise RuntimeError(f"claude refresh exited rc={proc.returncode}")
+        return False
+
+    @staticmethod
+    def _refreshed_creds(
+        home_dir: Path, credential: CredentialRecord
+    ) -> tuple[dict, dict] | None:
+        """``(new_oauth, new_creds)`` built from the CLI's ``.credentials.json`` in
+        ``home_dir``, or ``None`` when the file is missing, unreadable, or carries no
+        ``refreshToken``. Shared by ``capture_refreshed_credentials`` and
+        ``refresh_credentials``; each applies its own "did it rotate" gate."""
         creds_path = home_dir / ".claude" / ".credentials.json"
         if not creds_path.is_file():
-            return False
+            return None
         try:
             refreshed = json.loads(creds_path.read_text())
         except Exception:
             logger.warning(
                 "Failed to read refreshed .credentials.json at %s", creds_path, exc_info=True
             )
-            return False
+            return None
 
         new_oauth = refreshed.get("claudeAiOauth") if isinstance(refreshed, dict) else None
-        if not isinstance(new_oauth, dict):
-            return False
-        new_refresh = new_oauth.get("refreshToken")
-        if not new_refresh:
-            return False
+        if not isinstance(new_oauth, dict) or not new_oauth.get("refreshToken"):
+            return None
 
-        # Old refresh credential: prefer the captured raw_auth shape; fall back to the
-        # legacy top-level field for tokens registered before raw_auth capture,
-        # so an un-rotated legacy credential does not trigger a spurious write.
         credentials = credential.credentials or {}
         old_raw_auth = credentials.get("raw_auth")
-        old_raw_auth = old_raw_auth if isinstance(old_raw_auth, dict) else {}
-        old_creds = old_raw_auth.get("credentials")
-        old_refresh = None
-        if isinstance(old_creds, dict):
-            old_oauth = old_creds.get("claudeAiOauth")
-            if isinstance(old_oauth, dict):
-                old_refresh = old_oauth.get("refreshToken")
-        if old_refresh is None:
-            old_refresh = credentials.get("refresh_token")
-
-        if new_refresh == old_refresh:
-            return False
-
         new_creds = dict(credentials)
-        raw_auth = dict(old_raw_auth)
+        raw_auth = dict(old_raw_auth) if isinstance(old_raw_auth, dict) else {}
         raw_auth["credentials"] = refreshed  # full file verbatim; preserves claude_json
         new_creds["raw_auth"] = raw_auth
-        new_creds["refresh_token"] = new_refresh
+        new_creds["refresh_token"] = new_oauth["refreshToken"]
         if new_oauth.get("accessToken"):
             new_creds["subscription_key"] = new_oauth["accessToken"]
         # Force the DB row's expires_at NULL: select_credential treats it as a hard
-        # "unusable after" filter and nothing refreshes outside a job run, so a
-        # stored expiry would retire a still-refreshable credential after an idle gap
-        # and re-break this self-heal. Explicit (not relying on ms→None coercion);
-        # the CLI still reads the real expiresAt from the file in raw_auth.
+        # "unusable after" filter, so a stored expiry would retire a still-refreshable
+        # credential after an idle gap and re-break this self-heal. Explicit (not
+        # relying on ms→None coercion); the CLI still reads the real expiresAt from the
+        # file in raw_auth.
         new_creds["expires_at"] = None
-
-        # Capture-specific persistence: updates credentials by id and preserves
-        # operator/health state — NOT register_credential (which would re-enable a
-        # credential an operator disabled mid-run). See DECISIONS.md.
-        update_refreshed_credentials(conn, credential.id, new_creds, logger=logger)
-        return True
+        return new_oauth, new_creds
 
     @staticmethod
     def _write_claude_json(working_dir: Path, agent_config: dict[str, str]) -> None:
@@ -583,3 +655,41 @@ class ClaudeWorkspaceAdapter:
             entry["headers"] = dict(spec.headers)
         servers[spec.name] = entry
         mcp_path.write_text(json.dumps(data, indent=2))
+
+
+def _stored_oauth(credential: CredentialRecord) -> dict:
+    """The stored ``claudeAiOauth`` dict from ``raw_auth``, or ``{}``."""
+    raw_auth = (credential.credentials or {}).get("raw_auth")
+    creds = raw_auth.get("credentials") if isinstance(raw_auth, dict) else None
+    oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
+    return oauth if isinstance(oauth, dict) else {}
+
+
+def _stored_refresh_token(credential: CredentialRecord) -> str | None:
+    """Prefer the captured raw_auth shape; fall back to the legacy top-level field for
+    tokens registered before raw_auth capture, so an un-rotated legacy credential does
+    not trigger a spurious write."""
+    stored = _stored_oauth(credential).get("refreshToken")
+    return stored if stored is not None else (credential.credentials or {}).get("refresh_token")
+
+
+def _is_token(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _out_of_band_rotation(new_oauth: dict, credential: CredentialRecord, marker: int) -> bool:
+    """The refresh path's gate: a new access token, a new refresh token, or an
+    ``expiresAt`` other than the past marker this adapter wrote. Compared with the
+    marker, not the stored value, so a CLI that did nothing does not persist it. A file
+    without both tokens is never a rotation: persisting it would break the next run."""
+    if not (_is_token(new_oauth.get("accessToken")) and _is_token(new_oauth.get("refreshToken"))):
+        return False
+    credentials = credential.credentials or {}
+    stored_access = _stored_oauth(credential).get("accessToken") or credentials.get(
+        "subscription_key"
+    )
+    return (
+        new_oauth.get("accessToken") != stored_access
+        or new_oauth.get("refreshToken") != _stored_refresh_token(credential)
+        or new_oauth.get("expiresAt") != marker
+    )

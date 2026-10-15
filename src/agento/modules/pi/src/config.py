@@ -311,3 +311,8 @@ class PiWorkspaceAdapter:
         every successful Pi job.
         """
         return False
+
+    def refresh_credentials(self, credential: CredentialRecord, conn) -> bool:
+        """An OpenRouter API key does not rotate: there is nothing to refresh out of
+        band, so the consumer keeps its ordinary path (``WorkspaceAdapter`` protocol)."""
+        return False

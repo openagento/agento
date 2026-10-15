@@ -97,6 +97,14 @@ Per-workspace and per-agent_view control of the language agents reply in — `pr
 
 Group multiple tokens from the same provider into pools with capacity-based rotation and per-agent_view pool assignment, replacing direct per-provider token selection. `TokenResolver` stays the single extension point, so pool-aware selection needs no consumer changes.
 
+AG-65 follow-ups:
+- **Live e2e (owner):** startup refresh is probed with fake tokens (DECISIONS 2026-10-08). Run
+  `AGENTO_E2E=1 uv run pytest tests/e2e/test_refresh_real_cli.py -v` with fresh credentials to
+  confirm a real rotation is persisted for Claude and Codex.
+- **Proactive refresh:** a scheduled tick that refreshes any enabled OAuth credential below the
+  horizon, so jobs almost never meet a near-expiry credential.
+- **`agento run`:** use `refresh_credentials` before an interactive run too.
+
 ### ⚪ Distribution & installation model
 
 `agento install && agento up` should start a working system from pre-built, versioned images with no local Docker build. This decouples the lean cron image from the full agent sandbox, makes builds reproducible via lockfiles and digest-pinned base images, and separates the dev compose (bind-mounts, local builds) from the customer compose (GHCR images, data-only mounts). Independent of the other milestones — it can land in parallel with any of them.

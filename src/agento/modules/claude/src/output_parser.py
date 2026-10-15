@@ -57,6 +57,10 @@ _CREDENTIAL_WORD_RE = re.compile(
 )
 _401_CODE_RE = re.compile(r"\b401\b")
 _REVOKED_RE = re.compile(r"revok", re.IGNORECASE)  # revoked / revoke / revocation
+# CLI 2.1.291 on a refresh token the server refused: "Failed to authenticate: OAuth session
+# expired and could not be refreshed" (no 401 in the text). A spent single-use refresh token
+# replayed in a race reads the same, so it is transient like a 401 (DECISIONS 2026-08-04).
+_NOT_REFRESHED_RE = re.compile(r"could not be refreshed", re.IGNORECASE)
 
 # "resets 1pm (Europe/Warsaw)" / "resets 1:30am (America/New_York)" — capture clock + tz.
 _RESET_RE = re.compile(
@@ -116,7 +120,9 @@ def _parse_reset_at(msg: str, now: datetime | None = None) -> datetime | None:
 def _is_transient_credential_rejection(msg: str) -> bool:
     if not _CREDENTIAL_WORD_RE.search(msg):
         return False
-    return bool(_401_CODE_RE.search(msg) or _REVOKED_RE.search(msg))
+    return bool(
+        _401_CODE_RE.search(msg) or _REVOKED_RE.search(msg) or _NOT_REFRESHED_RE.search(msg)
+    )
 
 
 def _classify_error(msg: str):
@@ -127,7 +133,7 @@ def _classify_error(msg: str):
     2. Limit phrases -> UsageLimitError (throttle to reset_at + fail over); checked
        before the transient rule so a limit message carrying a 401 keeps its parsed
        ``reset_at``.
-    3. Credential word + (401 | revoked) -> TransientAuthError (short throttle + fail
+    3. Credential word + (401 | revoked | could not be refreshed) -> TransientAuthError (short throttle + fail
        over, no poison). Covers the reported revoked-token message AND future 401
        wording.
     4. Anything else -> RuntimeError (generic retry).

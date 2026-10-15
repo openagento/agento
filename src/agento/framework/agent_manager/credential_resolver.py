@@ -74,7 +74,7 @@ class CredentialResolver:
         self._refresh_horizon_seconds = int(refresh_horizon_seconds)
         self._lease_ttl_seconds = int(lease_ttl_seconds)
 
-    def _refresh_imminent(self, credential: CredentialRecord) -> bool:
+    def refresh_imminent(self, credential: CredentialRecord) -> bool:
         """True when handing this row to a run could make that run rotate its single-use
         refresh token — in which case the row must be exclusive for that run.
 
@@ -127,7 +127,7 @@ class CredentialResolver:
             RefreshLease(
                 owner=lease_owner,
                 ttl_seconds=self._lease_ttl_seconds,
-                should_lease=self._refresh_imminent,
+                should_lease=self.refresh_imminent,
             )
             if lease_owner
             else None

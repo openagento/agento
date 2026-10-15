@@ -41,7 +41,7 @@ Health state lives on each row:
 | `error_source` | Who quarantined the row: `auto` (the framework) or `operator` (an explicit human decision). `auto` is lifted automatically by the next **successful** run; `operator` never is. `NULL` means unknown provenance — every row quarantined before this column existed — and is treated as `operator`. |
 | `expires_at` | Credential expiry (from the stored payload). A row is skipped once `expires_at` is in the **past** (a *future* value means still-valid). **Claude OAuth leaves this NULL on purpose** — see the note below. |
 | `throttled_until` | Temporary **cooldown**. Set either to a usage/session limit's reset time (default 1h when unparseable), or to `now + 15 min` on a **transient auth failure** (revoked/stale access token — usually a concurrent-refresh race, not a dead credential). The pool skips the token while `throttled_until` is in the **future** and auto-includes it once it passes. Distinct from `expires_at` (credential expiry) and from `status='error'` (poison): `status` stays `'ok'` and the token self-recovers. |
-| `lease_owner` / `leased_until` | **Refresh lease.** While `leased_until` is in the future, exactly one run (`job-<id>-attempt-<n>`) may use this row, because its credential is close enough to expiry that the run will probably rotate it — and a rotating refresh token is single-use, so a second worker replaying it would 401. `leased_until` is a *liveness* deadline the owning consumer keeps pushing forward for as long as that job runs, not a guess at the job's duration; if the consumer dies, the lease expires on its own (no reaper). Only near-expiry rotating credentials are leased — a fresh one is still shared by every worker. |
+| `lease_owner` / `leased_until` | **Refresh lease.** While `leased_until` is in the future, no other worker may use this row, because its credential is close to expiry and a rotating refresh token is single-use — a second worker replaying it would 401. The job that claims the row (`job-<id>-attempt-<n>`) refreshes it **out of band** first (a short headless CLI call, at most 60s, lease TTL 120s) and releases the lease at once when the refresh made the credential fresh; then every worker shares it again. Only if the harness cannot refresh out of band does the job keep the lease for its run, as a *liveness* deadline the owning consumer keeps pushing forward. If the consumer dies, the lease expires on its own (no reaper). Releasing a lease wakes the jobs that were deferred because the pool was busy. |
 | `used_at`    | Last time a worker claimed the row — drives LRU ordering within a priority tier. |
 | `priority`   | Pool selection weight. Lower value wins; 0 = default.                   |
 
@@ -49,10 +49,10 @@ Health state lives on each row:
 - **Throttled** (`throttled_until` in the future, `status='ok'`): hit a session/usage/rate limit. Temporary — the token auto-recovers at the reset time and the job **fails over** to another healthy token meanwhile. No operator action needed.
 - **Transient-auth throttled** (`throttled_until` in the future, `status='ok'`): the CLI rejected the stored credential with a revoked/stale-token 401. Temporary — the same token label is often still serving other jobs, so it is **not** poisoned; the job fails over to another healthy token and this one returns to the pool after 15 minutes. No operator action needed.
 - **Expired** (`expires_at` in the past): credential lapsed. Cleared by `credential:refresh`.
-- **Leased** (`leased_until` in the future, `status='ok'`): a live run holds it exclusively while
-  rotating a near-expiry credential. Temporary and automatic — other jobs use another credential (or
-  requeue) and it returns to the pool seconds after that run ends. **Do not intervene**: see the
-  warning below.
+- **Leased** (`leased_until` in the future, `status='ok'`): a job holds it exclusively while it
+  refreshes a near-expiry credential — normally for seconds, before the job starts. Temporary and
+  automatic — other jobs use another credential (or requeue, and are woken when the lease is
+  released). **Do not intervene**: see the warning below.
 - **Errored** (`status='error'`): auth failure poisoned it. An `error_source='auto'` quarantine
   clears itself on the next successful run; an `operator` one (and any pre-existing quarantine,
   whose provenance is unknown) needs `credential:reset` or `credential:refresh`.
@@ -83,7 +83,8 @@ deliberately does **not** free a refresh lease.
 
 ```
 register → [use via LRU+priority] → (near-expiry rotating credential → exclusive refresh lease
-                                     for one run, released at run end)
+                                     while the consumer refreshes it out of band; released
+                                     before the job runs, or at run end as a fallback)
                                   → (transient 401 → 15-min throttle, self-recovers)
                                   → (permanent auth failure → auto-flagged status='error',
                                      error_source='auto' → cleared by the next successful run)

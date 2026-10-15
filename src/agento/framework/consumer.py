@@ -18,6 +18,7 @@ from .agent_manager.credential_store import (
     clear_auto_credential_error,
     count_credentials_for_scope,
     earliest_throttle_reset_for_scope,
+    get_credential,
     lease_owner_for_job,
     mark_credential_error,
     release_credential_lease,
@@ -25,6 +26,7 @@ from .agent_manager.credential_store import (
     throttle_credential,
 )
 from .agent_manager.errors import AuthenticationError, TransientAuthError, UsageLimitError
+from .agent_manager.models import CredentialRecord, CredentialStatus
 from .agent_view_runtime import (
     AgentViewRuntime,
     InvalidJobRuntime,
@@ -106,6 +108,13 @@ _DEFAULT_TRANSIENT_AUTH_THROTTLE = timedelta(minutes=15)
 # selectable again, and (b) spreads a thundering herd of waiting jobs so they don't all
 # wake and re-hit the same wall in the same instant.
 _POOL_RETRY_JITTER_SECONDS = (60, 300)
+
+# Initial TTL of the lease taken when a refresh-imminent credential is claimed. It covers
+# only the out-of-band refresh that follows (``_refresh_claimed_credential``), which is not
+# renewed, so waiters' ``pool_retry_at`` stays near. Timing contract (a guard test pins it):
+# each adapter's refresh timeout (60 s) < this < _DEFAULT_LEASE_TTL_SECONDS (300 s, the
+# renewed fallback lease for a harness that cannot refresh out of band).
+_CLAIM_LEASE_TTL_SECONDS = 120
 
 
 def _should_resume(
@@ -199,10 +208,10 @@ class Consumer:
         # The freshness horizon is derived from job_timeout_seconds rather than a new env
         # var: the entrypoint whitelist only forwards AGENTO_*-prefixed knobs and an AST
         # test guards every from_env() literal against it, so a knob we can derive is pure
-        # maintenance cost. The slack is why it is a heuristic — see _refresh_imminent.
+        # maintenance cost. The slack is why it is a heuristic — see refresh_imminent.
         self._credential_resolver = CredentialResolver(
             refresh_horizon_seconds=consumer_config.job_timeout_seconds + 900,
-            lease_ttl_seconds=_DEFAULT_LEASE_TTL_SECONDS,
+            lease_ttl_seconds=_CLAIM_LEASE_TTL_SECONDS,
         )
         self._active_jobs = 0
         # Monotonic clock, so a wall-clock jump cannot delay or spam the purge.
@@ -667,19 +676,15 @@ class Consumer:
                 # cleanup belonging to attempt 1 can never free the lease attempt 2 holds.
                 # resolve() takes an exclusive lease only when the credential is close
                 # enough to expiry that this run would likely rotate its single-use
-                # refresh token.
+                # refresh token. That lease is short and NOT registered for renewal yet:
+                # it covers the out-of-band refresh below, and it expires on its own if
+                # this worker dies first.
                 scope = provider_desc.credential_scope
                 lease_owner = lease_owner_for_job(job.id, job.attempt)
                 credential = (
                     self._credential_resolver.resolve(conn, scope, lease_owner=lease_owner)
                     if provider_desc.credential_required else None
                 )
-                if credential is not None and credential.lease_owner == lease_owner:
-                    leased = True
-                    # Register BEFORE anything that can block or raise: a lease that exists
-                    # in the DB but not here is a lease nobody renews.
-                    with self._active_jobs_lock:
-                        self._held_leases[lease_owner] = credential.id
 
                 # Resolve shared toolbox base URL (needed below for writer injection).
                 from .config_resolver import ScopedConfigService
@@ -694,15 +699,25 @@ class Consumer:
                     ScopedConfigService(conn, Scope.AGENT_VIEW, job.agent_view_id)
                     if job.agent_view_id is not None else None
                 )
-
-                # Mint the run's capabilities inside the SAME open connection — a
-                # closed connection cannot issue.
-                mint = self._issue_run_capabilities(conn, job)
-                if mint is None:
-                    return None
-                capability_token, rest_capability_token = mint
             finally:
                 conn.close()
+
+            if credential is not None and credential.lease_owner == lease_owner:
+                credential, leased = self._refresh_claimed_credential(
+                    job, harness, scope, credential, lease_owner
+                )
+
+            # Mint the run's capabilities AFTER the out-of-band refresh: the refresh may
+            # take up to _REFRESH_TIMEOUT_SECONDS, and the REST capability lives only
+            # REST_CAPABILITY_TTL_SECONDS.
+            conn = get_connection(self._db_config)
+            try:
+                mint = self._issue_run_capabilities(conn, job)
+            finally:
+                conn.close()
+            if mint is None:
+                return None
+            capability_token, rest_capability_token = mint
 
             # The four SSH identity values are read ONCE per run: the public files and
             # the private key must come from the same config snapshot (a rotation between
@@ -898,6 +913,74 @@ class Consumer:
                 job, harness, credential, home_dir,
                 success=success, lease_owner=lease_owner, leased=leased,
             )
+
+    def _refresh_claimed_credential(
+        self,
+        job: Job,
+        harness: str,
+        scope: str,
+        credential: CredentialRecord,
+        lease_owner: str,
+    ) -> tuple[CredentialRecord, bool]:
+        """Refresh a credential claimed under a lease, so the lease lasts for the refresh
+        only, not for the job. Returns ``(credential_to_use, still_leased)``.
+
+        The harness refreshes in a throw-away HOME and persists the rotation
+        (``WorkspaceAdapter.refresh_credentials``). The row is then re-read: the run gets
+        the NEW payload, and a credential an operator disabled or quarantined while the
+        refresh ran never reaches a run's HOME (SEC-7). The lease is released — which
+        wakes the jobs deferred for a busy pool — only when the re-read row is no longer
+        refresh-imminent: a persisted change that leaves the token near expiry is not safe
+        to share. Otherwise the job keeps the lease for the run and it is registered for
+        renewal, exactly as before AG-65; that is also the path of a harness that cannot
+        refresh out of band, so a broken or missing refresh costs the speed-up, never
+        correctness.
+
+        A classified failure goes through the same handlers as a failed run (poison,
+        throttle, fail over) and is re-raised; the lifecycle ``finally`` releases the lease.
+        """
+        conn = get_connection(self._db_config)
+        try:
+            refreshed = False
+            try:
+                refreshed = workspace_adapter_for(harness).refresh_credentials(credential, conn)
+            except TransientAuthError as exc:
+                self._handle_transient_auth(job, credential, scope, exc)
+                raise
+            except UsageLimitError as exc:
+                self._handle_usage_limit(job, credential, scope, exc)
+                raise
+            except AuthenticationError as exc:
+                self._handle_auth_failure(job, credential, scope, exc)
+                raise
+            except Exception as exc:
+                # Includes an out-of-tree adapter without the member (CODE-3). Class
+                # only: the message can quote CLI output (SEC-6).
+                self.logger.warning(
+                    "out-of-band refresh unavailable for credential id=%s (%s); "
+                    "keeping the job lease",
+                    credential.id, type(exc).__name__,
+                )
+            conn.commit()
+
+            current = get_credential(conn, credential.id)
+            if (
+                current is None
+                or not current.enabled
+                or current.status != CredentialStatus.OK
+            ):
+                raise RuntimeError(
+                    f"credential id={credential.id} became ineligible during refresh"
+                )
+            if refreshed is True and not self._credential_resolver.refresh_imminent(current):
+                release_credential_lease(conn, current.id, lease_owner, logger=self.logger)
+                conn.commit()
+                return current, False
+            with self._active_jobs_lock:
+                self._held_leases[lease_owner] = current.id
+            return current, True
+        finally:
+            conn.close()
 
     def _renew_leases(self) -> None:
         """Push the deadline forward on every refresh lease this process still holds.

@@ -229,6 +229,21 @@ def _bootstrap_registries():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_cli_refresh():
+    """The out-of-band refresh (AG-65) spawns the real agent CLI. Integration tests run
+    the consumer against seeded fake credentials, so stub it to "cannot refresh": the job
+    keeps its lease, which is the pre-AG-65 path these tests were written for."""
+    with patch(
+        "agento.modules.claude.src.config.ClaudeWorkspaceAdapter.refresh_credentials",
+        return_value=False,
+    ), patch(
+        "agento.modules.codex.src.config.CodexWorkspaceAdapter.refresh_credentials",
+        return_value=False,
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _truncate_tables():
     """Truncate all tables before each test for isolation."""
     conn = _test_connection(autocommit=True)
