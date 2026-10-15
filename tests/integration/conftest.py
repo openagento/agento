@@ -33,6 +33,11 @@ TEST_DB = "cron_agent_test" + (
 # saturation); it does not share this knob on purpose.
 CONCURRENT_WORKERS_STRESS_TEST = 100
 
+# Stress tests hold 100-200 MySQL connections each. Under pytest-xdist they share ONE group,
+# so they run one after another on a single worker and never stack past max_connections
+# (`--dist loadgroup` in pyproject.toml). Mark such a module `pytestmark = DB_STRESS`.
+DB_STRESS = pytest.mark.xdist_group("db_stress")
+
 # Default to this checkout's own MySQL (docker/.env MYSQL_PORT), never a sibling's on 3306.
 # Set in os.environ so spawned node helpers (verify_capability.mjs) inherit it.
 _env_file = Path(__file__).resolve().parents[2] / "docker" / ".env"

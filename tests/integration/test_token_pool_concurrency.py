@@ -17,7 +17,9 @@ from agento.framework.agent_manager.credential_resolver import CredentialResolve
 from agento.framework.agent_manager.models import encrypt_credentials
 from agento.framework.db import get_connection
 
-from .conftest import CONCURRENT_WORKERS_STRESS_TEST, _test_connection
+from .conftest import CONCURRENT_WORKERS_STRESS_TEST, DB_STRESS, _test_connection
+
+pytestmark = DB_STRESS
 
 N = CONCURRENT_WORKERS_STRESS_TEST
 BURSTS = 25
