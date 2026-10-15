@@ -400,6 +400,12 @@ Use a scoped text search with an allow-list only where no structural check is po
 **TST-3 Honest doubles (P1).** A test double for an external API or process fails where the real one
 fails (DECISIONS.md D2h).
 
+**TST-4 One behaviour, one test (P2).** Cases that differ only in input data use
+`@pytest.mark.parametrize` / `it.each`. A test that duplicates the body of another test, or a fixture
+copied across modules, is a finding. A unit test does not wait on a real clock: inject the timeout,
+patch `sleep`, or use fake timers. A test is hermetic: it does not read the host's `/app/code`,
+`AGENTO_*` env or other machine state.
+
 ## DOC — Documentation
 
 **DOC-1 Docs travel with the change (P2).** A doc that tells an operator or an implementer something
