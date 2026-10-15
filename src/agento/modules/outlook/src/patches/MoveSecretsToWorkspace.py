@@ -45,13 +45,16 @@ class MoveSecretsToWorkspace:
 
         if len(workspaces) != 1:
             codes = ", ".join(_col(w, "code", 1) for w in workspaces) or "(none)"
+            commands = "".join(
+                f"  agento config:set {path} --scope workspace --scope-id <id>"
+                "   # value read from stdin, never argv\n"
+                f"  agento config:remove {path} --scope default\n"
+                for path in stale
+            )
             raise RuntimeError(
                 "Outlook Graph secrets are stored at DEFAULT scope and cannot be migrated "
                 f"automatically: {len(workspaces)} workspaces exist ({codes}). Re-set each "
-                "secret at workspace scope, then delete the DEFAULT row:\n"
-                "  agento config:set outlook/outlook_client_secret "
-                "--scope workspace --scope-id <id>   # value read from stdin, never argv\n"
-                "  agento config:remove outlook/outlook_client_secret --scope default"
+                "secret at workspace scope, then delete the DEFAULT row:\n" + commands.rstrip()
             )
 
         ws_id = _col(workspaces[0], "id", 0)
