@@ -59,18 +59,28 @@ def _root_connection() -> pymysql.Connection:
     )
 
 
-def _test_connection(autocommit: bool = False) -> pymysql.Connection:
-    """Connect to the test database."""
+def _db_connection(database: str, autocommit: bool = False) -> pymysql.Connection:
+    """Connect to ``database`` on the SAME server as every other test connection.
+
+    Every connector in the integration suite goes through this (or `_root_connection`):
+    a hardcoded host/port reaches a SIBLING checkout's MySQL, where this run's databases
+    do not exist.
+    """
     return pymysql.connect(
         host=os.environ.get("TEST_MYSQL_HOST", "localhost"),
         port=int(os.environ.get("TEST_MYSQL_PORT", "3306")),
         user=os.environ.get("TEST_MYSQL_USER", "root"),
         password=os.environ.get("TEST_MYSQL_PASSWORD", "cronagent_root"),
-        database=TEST_DB,
+        database=database,
         charset="utf8mb4",
         cursorclass=DictCursor,
         autocommit=autocommit,
     )
+
+
+def _test_connection(autocommit: bool = False) -> pymysql.Connection:
+    """Connect to the test database."""
+    return _db_connection(TEST_DB, autocommit=autocommit)
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ import pytest
 
 from agento.framework.migrate import migrate
 
-from .conftest import TEST_DB, _root_connection, _test_connection
+from .conftest import TEST_DB, _db_connection, _root_connection
 
 UPGRADE_DB = f"{TEST_DB}_upgrade"
 SQL_DIR = None  # resolved lazily from the framework package
@@ -33,14 +33,7 @@ def _sql_dir():
 
 
 def _connect(db: str, autocommit: bool = True) -> pymysql.Connection:
-    base = _test_connection(autocommit=autocommit)
-    cfg = base
-    cfg.close()
-    conn = pymysql.connect(
-        host="localhost", port=3306, user="root", password="cronagent_root",
-        database=db, autocommit=autocommit, cursorclass=pymysql.cursors.DictCursor,
-    )
-    return conn
+    return _db_connection(db, autocommit=autocommit)
 
 
 @pytest.fixture
