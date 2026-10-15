@@ -243,6 +243,9 @@ A follow-up turn resumes the previous turn's session and is sent the new turn al
 that, the workflow asks the runner's optional `prepare_resume`, which moves the session into
 the new run dir; when the session is gone, the turn runs fresh with the whole thread instead
 of failing every later turn (see [harness contract](../architecture/harness-contract.md)).
+A session belongs to the harness that made it: when the previous turn ran on another harness
+(the view's harness changed, or the job was pinned with `job:set-runtime`), nothing is resumed
+and the turn runs fresh with the whole thread from the database.
 
 The provider mints a **UUID**, not `{job_id}-{attempt}`: the pool-wait path refunds an
 attempt, so two real attempts of one job can carry one number and an id built from the pair

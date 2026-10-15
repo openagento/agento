@@ -99,14 +99,18 @@ class ConversationResumeSessions:
     turn, and the interrupted turn's work would be lost.
 
     The session comes from the previous turn's JOB row: `job.session_id` is the one place a
-    harness session id is kept.
+    harness session id is kept. A session belongs to the harness that made it: when the
+    previous turn ran on another harness (the view's harness changed, or a job was pinned
+    with `job:set-runtime`), nothing is resolved, and the workflow starts a fresh session
+    with the whole thread from the database.
     """
 
     def resolve(self, *, conn, job_id: int, attempt: int) -> str | None:
         if attempt > 1:
             return None
         with conn.cursor() as cur:
-            cur.execute("SELECT type, reference_id FROM job WHERE id = %s", (job_id,))
+            cur.execute("SELECT type, reference_id, agent_type FROM job WHERE id = %s",
+                        (job_id,))
             job = cur.fetchone()
         if job is None or job["type"] != JOB_TYPE:
             return None
@@ -117,10 +121,13 @@ class ConversationResumeSessions:
 
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT j.session_id FROM message m JOIN job j ON j.id = m.job_id "
+                "SELECT j.session_id, j.agent_type FROM message m JOIN job j ON j.id = m.job_id "
                 "WHERE m.conversation_id = %s AND m.id < %s AND j.session_id IS NOT NULL "
                 "ORDER BY m.id DESC LIMIT 1",
                 (conversation_id, message_id),
             )
             row = cur.fetchone()
-        return None if row is None else row["session_id"]
+        # `job.agent_type` is the harness, written at claim (AG-64), before this runs.
+        if row is None or row["agent_type"] != job["agent_type"]:
+            return None
+        return row["session_id"]
