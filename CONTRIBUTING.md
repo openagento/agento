@@ -71,6 +71,11 @@ uv run pytest -q
 cd src/agento/toolbox && npm test
 ```
 
+Both suites run in parallel. pytest uses `pytest-xdist` with one worker per CPU (`-n auto` in
+`pyproject.toml`); each worker gets its own MySQL database (`cron_agent_test_gw0`, …), so
+integration tests do not share rows. To debug one test in-process, pass `-n 0`. Vitest runs up to
+10 forks (`src/agento/toolbox/vitest.config.js`).
+
 ## Code Style
 
 - **Python:** Formatted and linted with [ruff](https://docs.astral.sh/ruff/) (line-length 120). Type checked with basedpyright.

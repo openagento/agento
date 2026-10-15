@@ -920,8 +920,9 @@ class TestFinalize:
         error_msg = params[0]
         assert len(error_msg) <= 2000
 
+    @patch("agento.framework.consumer.time.sleep")
     @patch("agento.framework.consumer.get_connection")
-    def test_finalize_db_error_does_not_crash(self, mock_get_conn, sample_config, sample_db_config, sample_consumer_config):
+    def test_finalize_db_error_does_not_crash(self, mock_get_conn, _mock_sleep, sample_config, sample_db_config, sample_consumer_config):
         mock_conn, mock_cursor = _mock_connection()
         mock_cursor.execute.side_effect = RuntimeError("DB down")
         mock_get_conn.return_value = mock_conn

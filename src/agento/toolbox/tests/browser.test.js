@@ -398,22 +398,29 @@ describe('browser tools', () => {
       expect(results[0].ms).toBeTypeOf('number');
     });
 
-    it('returns fail when client.listTools times out (real timer, 3.1s)', async () => {
+    it('returns fail when client.listTools times out', async () => {
       // listTools returns a Promise that never resolves — exercises the
-      // 3000ms timeout race inside healthcheck() with real timers, since
-      // mixing fake timers with Promises here is flaky.
+      // 3000ms timeout race inside healthcheck(). advanceTimersByTimeAsync
+      // flushes the pending promises between timer ticks.
       const hangingClient = { listTools: vi.fn(() => new Promise(() => {})) };
       setupMocks();
       const { healthcheck } = await import('../../modules/core/toolbox/browser.js');
 
-      const results = await healthcheck({
-        playwright: { getClient: () => hangingClient },
-        sanitizeHealthError,
-      });
+      vi.useFakeTimers();
+      try {
+        const pending = healthcheck({
+          playwright: { getClient: () => hangingClient },
+          sanitizeHealthError,
+        });
+        await vi.advanceTimersByTimeAsync(3000);
+        const results = await pending;
 
-      expect(results[0]).toMatchObject({ tool: 'browser', status: 'fail' });
-      expect(results[0].error).toMatch(/timeout/i);
-    }, 6000);
+        expect(results[0]).toMatchObject({ tool: 'browser', status: 'fail' });
+        expect(results[0].error).toMatch(/timeout/i);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
 
     it('returns state-aware fail when getClient is null and state=failed', async () => {
       setupMocks();
