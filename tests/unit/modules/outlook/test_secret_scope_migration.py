@@ -171,6 +171,18 @@ class TestMigration:
         # FAIL-CLOSED: nothing moved, so a re-run after remediation is still correct.
         assert _rows(conn)[0]["scope"] == "default"
 
+    def test_the_abort_message_names_the_paths_actually_stored_at_default(self, conn):
+        _add_workspace(conn, "dev")
+        _add_workspace(conn, "prod")
+        _add_config(conn, "default", 0, "outlook/outlook_cert_pem", "CT")
+
+        with pytest.raises(RuntimeError) as ei:
+            MoveSecretsToWorkspace().apply(conn)
+
+        message = str(ei.value)
+        assert "config:remove outlook/outlook_cert_pem --scope default" in message
+        assert "outlook_client_secret" not in message
+
     def test_it_aborts_when_there_is_no_workspace_at_all(self, conn):
         _add_config(conn, "default", 0, _SECRET_PATH, "CT")
         with pytest.raises(RuntimeError) as ei:
