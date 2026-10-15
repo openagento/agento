@@ -11,7 +11,9 @@ from agento.framework.agent_manager.credential_resolver import CredentialResolve
 from agento.framework.agent_manager.credential_store import register_credential
 from agento.framework.db import get_connection
 
-from .conftest import CONCURRENT_WORKERS_STRESS_TEST
+from .conftest import CONCURRENT_WORKERS_STRESS_TEST, DB_STRESS
+
+pytestmark = DB_STRESS
 
 
 def _seed_tokens(int_db_config, scope: str, token_specs: list[tuple[str, str, dict]]) -> None:
