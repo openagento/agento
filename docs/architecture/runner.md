@@ -43,7 +43,7 @@ Other ops:
 | Op | Use | Reply |
 |----|-----|-------|
 | `execute` | one agent run | events, then `result` or `error` |
-| `run` | `subprocess.run` of one argv: codex login, the codex and pi model checks | `done` (rc, stdout, stderr) or `error` |
+| `run` | `subprocess.run` of one argv: codex login, the codex and pi model checks, the out-of-band credential refresh (AG-65) | `done` (rc, stdout, stderr) or `error` |
 | `pty` | a CLI in a pseudo-terminal: the panel re-login | raw bytes both ways, then `\0<exit code>` |
 | `alive` | is the run with this tag alive | `alive` or `dead`, with the boot id |
 | `signal` | SIGTERM or SIGKILL to every process of the run's uid | `sent`, with the boot id |

@@ -106,7 +106,6 @@ def _drive(*, refresh, reread=_REFRESHED, still_imminent=False):
         throttle = stack.enter_context(patch("agento.framework.consumer.throttle_credential"))
         poison = stack.enter_context(patch("agento.framework.consumer.mark_credential_error"))
         stack.enter_context(patch("agento.framework.consumer.count_credentials_for_scope", return_value=(2, 1)))
-        stack.enter_context(patch("agento.framework.consumer.dispatch_credential_event"))
         release = stack.enter_context(patch("agento.framework.consumer.release_credential_lease"))
         try:
             consumer._run_job(job)
