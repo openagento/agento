@@ -60,9 +60,21 @@ gains the three things it lacks today: **pin**, **rename** and **search**.
    `load_visible` gate as every other handler (404, never 403). `title` reuses `check_title`;
    `pinned` writes `pinned_at = NOW()` or `NULL`. Response: the thread JSON.
    `_conversation_json` gains `"pinned": bool`. Declared in `di.json`.
-6. **Order**: the owner list becomes `ORDER BY (c.pinned_at IS NULL), c.pinned_at DESC,
-   c.updated_at DESC, c.id DESC`. The channel list is unchanged (a channel thread has no owner
-   to pin it).
+6. **Order, and why pins cannot starve the list**: the owner list becomes
+   `ORDER BY (c.pinned_at IS NULL), c.pinned_at DESC, c.updated_at DESC, c.id DESC`. The owner
+   list has **no pagination** (`before` is channels-only, `routes.py:93-96`) and one `LIMIT`
+   (`service.py:151`), so pinned-first alone would hide every new thread once the pin count
+   reached `history/page_size`. Two bounds make that unreachable:
+   - `MAX_PINNED = 50` per user. `PATCH {"pinned": true}` beyond it is `409` with
+     `"at most 50 pinned conversations"`. The cap is counted and written **under one per-user
+     lock**, in one transaction: `SELECT id FROM user WHERE id = %s FOR UPDATE` first, then the
+     count, then the `UPDATE`. The thread's own row lock cannot hold this bound — two pins of
+     *different* threads lock different rows, so both can read 49 and both commit. **Lock order**
+     (SCL-1): user row, then conversation row; no other path takes the user row lock, so no cycle
+     with the posting path, which takes the conversation row only.
+   - the owner query asks for `LIMIT history/page_size + MAX_PINNED`, so **at least
+     `history/page_size` unpinned rows are always returned**, whatever the pin count.
+   The channel list is unchanged (a channel thread has no owner to pin it).
 7. **Retention**: a pinned thread is exempt from the idle auto-archive — `_IDLE` gains
    `c.pinned_at IS NULL`. Pinning a thread that then silently archives is a surprise.
 8. **Row menu**: Rename · Pin/Unpin · Archive, through `RowMenu`. Rename is a prompt-free inline
@@ -76,17 +88,55 @@ gains the three things it lacks today: **pin**, **rename** and **search**.
 - **Merging the two sidebars.** The AppShell navbar and the 56px header stay on every screen.
 - Attachment, voice and model-picker controls in the composer: nothing behind them.
 
+## Placement (PLC-1)
+
+| Unit of logic | Where it runs | Who owns it | The question that decided it |
+|---|---|---|---|
+| `pinned_at` column, the `PATCH` handler, `check_title` reuse, the pin cap | Python | the `conversation` core module | PLC-1 q1: no tool, no tool credential → Python. q7: it has its own tables and routes → its own core module, which already owns them |
+| The pinned-first ordering in `list_visible` | Python | `conversation` | same row; it is one `ORDER BY` in the query that already lives there |
+| The `pinned_at IS NULL` term in `_IDLE` | Python | `conversation` | same row; `retention.py` is this module's own cron path |
+| The rail, the row menu, the search filter, the pin control | the browser | the panel (`conversation/panel/`) | a module's own screen lives in its `panel/` directory; it may not import Mantine (`boundaries.test.ts`) |
+| `ThreadList`, `SplitView`, `ChatMessage`, `ChatComposer`, `RowMenu` changes | the browser | `@agento/ui` | they are shared components the panel composes; the chat ones are panel-only and have no `.ag-*` twin (`Chat.module.css:1`) |
+| The gray scale and `defaultRadius` | build time (`tokens.ts`) and the browser | `packages/ui/src/theme.ts` | UI-1: a color or radius value has exactly one source, and the kit is generated from it |
+
+No new framework code, no new module, no Node and no toolbox work: nothing here touches a tool
+credential (SEC-1 q1 is "no" for every row).
+
+## Extension points (EVT-1)
+
+- **Pin / unpin** (`pinned_at` set or cleared) — `no event: ` it is one user's own view preference on
+  their own thread. No in-tree module and no `app/code` use case can act on "this user pinned a
+  thread" that it could not get from the row, and an event per toggle is noise on a control a user
+  clicks repeatedly.
+- **Rename** (`title` set by the user) — `no event: ` the title is already written by the system on
+  the first message (`service.py:668-671`) with no event, and EVT-2 requires every path of a
+  transition to agree: adding an event to the manual path only would make the family inconsistent,
+  and adding it to both would fire on every first message in the system.
+- **A pinned thread is exempt from the idle auto-archive** — `no event: ` this is not a new hold that
+  silently stops work. `archive_after` (the existing event on `service.archive`) still fires for
+  every thread that *is* archived; a pinned thread simply never reaches it, and the reason is on
+  screen — the user set the pin and sees the pin icon on the row. Nothing waits on an archive that
+  does not come.
+
 ## Tests (TST-1)
 
 - `tests/.../conversation`: PATCH renames, pins, unpins; a non-visible thread is 404; a bad title is 400;
-  the owner list puts a pinned thread first; `auto_archive` skips a pinned thread.
+  the 51st pin is 409; **concurrency: from 49 pins, two pins of different threads race — exactly one
+  commits, the other is 409, and the final count is 50**; the owner list puts a pinned thread first; **with `MAX_PINNED` pinned threads
+  the list still returns `history/page_size` unpinned rows, the newest among them** (the starvation
+  case); `auto_archive` skips a pinned thread.
 - `conversation.test.tsx`: the row menu pins and renames; search filters the list; the Pinned group shows.
 - `kit.test.ts`: contrast pairs under the new scale.
 
 ## Docs (DOC)
 
-`docs/modules/conversation.md` (pin, rename, search, the PATCH route, retention exemption),
-`docs/development/frontend.md` if the kit version is named there, and the kit version bump.
+- `docs/modules/conversation.md` — pin, rename, search, the `PATCH` route, `MAX_PINNED`, the
+  retention exemption.
+- `docs/development/frontend.md` — **required, not conditional**: it names kit `1.1.0` at line 92 and
+  promises classes "in the next kit version" at lines 98 and 108, all of which this bump makes stale.
+- The `@catalogue` block of every `.ag-*` class whose look the theme change alters (it regenerates
+  the `miniapp-ui` skill, DOC-1).
+- `DECISIONS.md` — the pin cap and why the owner list is bounded rather than paginated (DOC-2).
 
 ## Settled (PLN-4)
 
