@@ -7,15 +7,18 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agento.framework.agent_manager.credential_store import update_refreshed_credentials
-from agento.framework.agent_manager.errors import AuthenticationError
+from agento.framework.agent_manager.errors import AuthenticationError, TransientAuthError
+from agento.framework.credential_store_env import without_credential_store_env
 from agento.framework.harness import ToolboxConnectionSpec, is_toolbox_endpoint, toolbox_origin
 from agento.framework.harness.run_scope import scope_toolbox_url
+from agento.framework.ssh_identity import without_run_owned_ssh_env
 
 if TYPE_CHECKING:
     import pymysql
@@ -24,10 +27,47 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Out-of-band refresh (``refresh_credentials``): the cheapest headless call that makes the
+# CLI load — and, when stale, refresh — its OAuth token. A fixed list: nothing
+# user-supplied reaches it.
+_REFRESH_ARGV = ["codex", "exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "ok"]
+# Must stay below the consumer's claim-lease TTL (a guard test pins it), so the lease
+# taken at claim cannot lapse while the refresh runs unrenewed.
+_REFRESH_TIMEOUT_SECONDS = 60
+# Written as ``last_refresh`` into the throw-away auth.json so the CLI treats the token
+# as due for a refresh (A2 in DECISIONS.md 2026-10-08 AG-65).
+_STALE_LAST_REFRESH = "2000-01-01T00:00:00Z"
+# stderr lines with which codex 0.157 reports that its refresh token was refused.
+_REFUSED_REFRESH_MARKERS = (
+    "access token could not be refreshed",
+    "Failed to refresh token status=401",
+)
+
 
 # A credential claiming to expire before 2024 predates the OAuth flow entirely — garbage,
 # not "expired long ago" (the two are otherwise indistinguishable).
 _MIN_PLAUSIBLE_EPOCH_SECONDS = 1_704_067_200  # 2024-01-01T00:00:00Z
+
+
+def _with_past_exp(access_token: object) -> str | None:
+    """``access_token`` with its JWT ``exp`` claim moved into the past, or ``None`` when it
+    is not a JWT. Only for the throw-away refresh HOME: codex 0.157 refreshes at startup on
+    a past ``exp``, not on an old ``last_refresh``. The signature is not re-made, so the
+    token is unusable — it is never sent (the CLI refreshes first) and never persisted."""
+    if not isinstance(access_token, str):
+        return None
+    parts = access_token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except Exception:
+        return None
+    if not isinstance(claims, dict):
+        return None
+    claims["exp"] = int(datetime.now(UTC).timestamp()) - 60
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"{parts[0]}.{payload}.{parts[2]}"
 
 
 def _ttl_from_jwt_exp(access_token: object) -> int | None:
@@ -534,42 +574,124 @@ class CodexWorkspaceAdapter:
 
         Returns ``True`` when something was persisted, per the ``WorkspaceAdapter``
         protocol — every early exit below is a "nothing to capture" case. The framework
-        also uses it to detect a rotation that happened WITHOUT a refresh lease.
+        also uses it to detect a rotation that happened WITHOUT a refresh lease, which is
+        why this gate stays "the refresh token changed"; ``refresh_credentials`` has its
+        own, wider gate.
         """
         # Only OAuth tokens have a refresh_token Codex CLI might rotate.
         # API-key and access-credential rows never produce a meaningful auth.json
         # diff we should persist back.
         if credential.type != "oauth":
             return False
-        auth_path = home_dir / ".codex" / "auth.json"
-        if not auth_path.is_file():
+        built = self._refreshed_creds(home_dir, credential)
+        if built is None:
             return False
-
-        try:
-            refreshed = json.loads(auth_path.read_text())
-        except Exception:
-            logger.warning("Failed to read refreshed auth.json at %s", auth_path, exc_info=True)
-            return False
-
-        old_refresh = (credential.credentials or {}).get("raw_auth", {}).get("tokens", {}).get("refresh_token")
+        refreshed, new_creds = built
         new_refresh = refreshed.get("tokens", {}).get("refresh_token")
-
-        if not new_refresh or new_refresh == old_refresh:
+        if not new_refresh or new_refresh == _stored_tokens(credential).get("refresh_token"):
             return False
-
-        new_creds = dict(credential.credentials or {})
-        new_creds["raw_auth"] = refreshed
-        tokens = refreshed.get("tokens", {})
-        if "refresh_token" in tokens:
-            new_creds["refresh_token"] = tokens["refresh_token"]
-        if "access_token" in tokens:
-            new_creds["subscription_key"] = tokens["access_token"]
 
         # Capture-specific persistence: preserves operator/health state (does NOT
         # re-enable a credential an operator disabled mid-run). Now that the consumer
         # hook commits the capture, register_credential would silently resurrect it.
         update_refreshed_credentials(conn, credential.id, new_creds, logger=logger)
         return True
+
+    def refresh_credentials(self, credential: CredentialRecord, conn: pymysql.Connection) -> bool:
+        """Refresh ``credential`` out of band, with no job and no TTY; persist the rotation.
+
+        Part of the ``WorkspaceAdapter`` protocol; mirrors
+        ``ClaudeWorkspaceAdapter.refresh_credentials``. The credential is written to a
+        throw-away HOME with the access token's JWT ``exp`` (and ``last_refresh``) forced
+        into the past, so the CLI refreshes at startup. The rotation is persisted BEFORE the HOME is removed and before the
+        exit status is looked at: a spent single-use refresh token is never dropped.
+
+        Returns ``True`` when a rotation was persisted (the caller commits), ``False``
+        when the CLI did not rotate (the caller keeps today's job-held lease). Raises the
+        classified error of a structured ``turn.failed`` event, else ``RuntimeError``.
+        """
+        if credential.type != "oauth":
+            return False
+        with tempfile.TemporaryDirectory(prefix="agento-refresh-") as tmp:
+            home = Path(tmp)
+            self.write_credentials(home, credential)
+            auth_path = home / ".codex" / "auth.json"
+            try:
+                on_disk = json.loads(auth_path.read_text())
+                on_disk["last_refresh"] = _STALE_LAST_REFRESH
+                forged = _with_past_exp(on_disk["tokens"]["access_token"])
+                if forged is not None:
+                    on_disk["tokens"]["access_token"] = forged
+            except (OSError, ValueError, TypeError, KeyError):
+                return False  # nothing refreshable was materialized
+            auth_path.write_text(json.dumps(on_disk, indent=2))
+
+            failure: Exception | None = None
+            proc = None
+            try:
+                proc = subprocess.run(
+                    _REFRESH_ARGV,
+                    cwd=tmp,
+                    env={
+                        **without_credential_store_env(without_run_owned_ssh_env(dict(os.environ))),
+                        "HOME": tmp,
+                    },
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=_REFRESH_TIMEOUT_SECONDS,
+                )
+            except (subprocess.TimeoutExpired, OSError) as exc:
+                failure = exc
+
+            built = self._refreshed_creds(home, credential)
+            if built is not None and _out_of_band_rotation(built[0], credential, forged):
+                update_refreshed_credentials(conn, credential.id, built[1], logger=logger)
+                return True
+
+        if failure is not None or proc is None:
+            raise RuntimeError(f"codex refresh failed: {type(failure).__name__}")
+        if proc.returncode != 0:
+            from .runner import _parse_ndjson, raise_classified_error
+
+            # codex 0.157 logs a refused refresh token only on stderr; its turn.failed event
+            # is a generic "unauthorized (401)". Transient, like Claude's: a spent token
+            # replayed in a race reads the same (DECISIONS 2026-08-04); the consumer still
+            # poisons a credential with nothing to rotate. stderr is never echoed (SEC-6).
+            if any(m in (proc.stderr or "") for m in _REFUSED_REFRESH_MARKERS):
+                raise TransientAuthError("codex refresh failed: the refresh token was refused")
+            raise_classified_error(_parse_ndjson(proc.stdout or ""))
+            raise RuntimeError(f"codex refresh exited rc={proc.returncode}")
+        return False
+
+    @staticmethod
+    def _refreshed_creds(
+        home_dir: Path, credential: CredentialRecord
+    ) -> tuple[dict, dict] | None:
+        """``(refreshed_auth_json, new_creds)`` from the CLI's ``.codex/auth.json`` in
+        ``home_dir``, or ``None`` when it is missing or unreadable. Shared by
+        ``capture_refreshed_credentials`` and ``refresh_credentials``; each applies its
+        own "did it rotate" gate. A file whose ``tokens`` is not an object is ``None`` too,
+        so the caller still classifies the CLI's exit status."""
+        auth_path = home_dir / ".codex" / "auth.json"
+        if not auth_path.is_file():
+            return None
+        try:
+            refreshed = json.loads(auth_path.read_text())
+        except Exception:
+            logger.warning("Failed to read refreshed auth.json at %s", auth_path, exc_info=True)
+            return None
+        tokens = refreshed.get("tokens", {}) if isinstance(refreshed, dict) else None
+        if not isinstance(tokens, dict):
+            return None
+
+        new_creds = dict(credential.credentials or {})
+        new_creds["raw_auth"] = refreshed
+        if "refresh_token" in tokens:
+            new_creds["refresh_token"] = tokens["refresh_token"]
+        if "access_token" in tokens:
+            new_creds["subscription_key"] = tokens["access_token"]
+        return refreshed, new_creds
 
     def serialize_toolbox_connection(
         self, spec: ToolboxConnectionSpec, target_dir: Path
@@ -608,3 +730,36 @@ class CodexWorkspaceAdapter:
         parts = [kept.rstrip("\n")] if kept.strip() else []
         parts.append("\n".join(body))
         config_path.write_text("\n\n".join(parts).lstrip("\n") + "\n")
+
+
+def _stored_tokens(credential: CredentialRecord) -> dict:
+    """The stored ``raw_auth.tokens`` dict, or ``{}``."""
+    raw_auth = (credential.credentials or {}).get("raw_auth")
+    tokens = raw_auth.get("tokens") if isinstance(raw_auth, dict) else None
+    return tokens if isinstance(tokens, dict) else {}
+
+
+def _is_token(value: object) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _out_of_band_rotation(
+    refreshed: dict, credential: CredentialRecord, forged: str | None
+) -> bool:
+    """The refresh path's gate: a new access token, a new refresh token, or a
+    ``last_refresh`` other than the stale marker this adapter wrote. A file without both
+    tokens is never a rotation: persisting it would break the next run. A file that still
+    holds ``forged`` (the access token with a past ``exp``) is not one either: the CLI did
+    not refresh, and that token must never be stored."""
+    tokens = refreshed.get("tokens")
+    tokens = tokens if isinstance(tokens, dict) else {}
+    if not (_is_token(tokens.get("access_token")) and _is_token(tokens.get("refresh_token"))):
+        return False
+    if forged is not None and tokens.get("access_token") == forged:
+        return False
+    stored = _stored_tokens(credential)
+    return (
+        tokens.get("access_token") != stored.get("access_token")
+        or tokens.get("refresh_token") != stored.get("refresh_token")
+        or refreshed.get("last_refresh") != _STALE_LAST_REFRESH
+    )

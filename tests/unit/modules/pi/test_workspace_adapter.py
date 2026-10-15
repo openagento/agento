@@ -274,6 +274,10 @@ class TestCredentials:
         cred = credential("openrouter_api_key", {"api_key": "k"})
         assert adapter.capture_refreshed_credentials(tmp_path, cred, object()) is False
 
+    def test_refresh_is_a_no_op_for_a_key_that_does_not_rotate(self, adapter):
+        cred = credential("openrouter_api_key", {"api_key": "k"})
+        assert adapter.refresh_credentials(cred, object()) is False
+
     def test_the_capture_signature_matches_the_protocol(self, adapter):
         import inspect
 

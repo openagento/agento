@@ -66,6 +66,18 @@ _CHEAP_MODEL_BY_HARNESS = {
     "pi": "nvidia/nemotron-3.5-lightning:free",
 }
 
+# A ChatGPT-account login (Codex `oauth`) refuses the API-only mini models
+# ("not supported when using Codex with a ChatGPT account"), so it needs its own model.
+_MODEL_BY_CREDENTIAL_TYPE = {
+    ("codex", "oauth"): "gpt-5.6-luna",
+}
+
+# Credential types not run here. A codex_access_token gets 403 from the ChatGPT
+# backend (owner decision 2026-10-15: do not cover it in the happy path).
+_SKIPPED_TYPES = {
+    ("codex", "codex_access_token"): "codex access-token happy path is not covered",
+}
+
 # Far below any real priority so the chosen credential deterministically wins
 # selection (ORDER BY priority ASC) regardless of the others.
 _FORCE_PRIORITY = -1_000_000
@@ -243,7 +255,11 @@ def _restore_override(path: str, prior: str | None) -> None:
 def test_agento_run_happy_path_per_credential_type(
     harness: str, provider: str, credential_scope: str, credential_type: str,
 ):
-    model = _CHEAP_MODEL_BY_HARNESS.get(harness)
+    if (harness, credential_type) in _SKIPPED_TYPES:
+        pytest.skip(_SKIPPED_TYPES[(harness, credential_type)])
+    model = _MODEL_BY_CREDENTIAL_TYPE.get(
+        (harness, credential_type), _CHEAP_MODEL_BY_HARNESS.get(harness)
+    )
     if model is None:
         pytest.skip(f"no cheap model registered for harness {harness!r} — add one to run this")
     candidates = [
@@ -272,6 +288,9 @@ def test_agento_run_happy_path_per_credential_type(
             ["run", _AGENT_VIEW, "Reply with exactly the word: pong"],
             timeout=300,
         )
+        if run.returncode != 0 and "reached your specified API usage limits" in run.stdout:
+            # The account's spend cap, not a defect: nothing can be checked until it resets.
+            pytest.skip(f"{harness}/{credential_type}: provider usage limit reached")
         assert run.returncode == 0, (
             f"`agento run` failed for {harness}/{provider}/{credential_type} "
             f"(model={model}): rc={run.returncode}\n"

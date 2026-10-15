@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Test double for the Claude CLI's startup token refresh (``refresh_credentials``).
+
+Behaves like the real CLI where the tests depend on it: it reads
+``$HOME/.claude/.credentials.json`` and refreshes only when ``expiresAt`` is in the
+past. ``FAKE_CLAUDE_MODE`` picks the outcome; ``FAKE_CLI_ENV_DUMP`` (optional) gets the
+names of the variables the CLI was started with.
+"""
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+mode = os.environ.get("FAKE_CLAUDE_MODE", "rotate")
+if dump := os.environ.get("FAKE_CLI_ENV_DUMP"):
+    Path(dump).write_text("\n".join(sorted(os.environ)))
+
+path = Path(os.environ["HOME"]) / ".claude" / ".credentials.json"
+data = json.loads(path.read_text())
+oauth = data["claudeAiOauth"]
+now_ms = int(time.time() * 1000)
+expired = oauth["expiresAt"] < now_ms
+
+if expired and mode in ("rotate", "rotate_then_fail", "rotate_then_hang"):
+    oauth.update(accessToken="acc-NEW", refreshToken="rt-NEW", expiresAt=now_ms + 8 * 3600_000)
+elif expired and mode == "access_only":
+    oauth["accessToken"] = "acc-NEW"
+elif expired and mode == "expiry_only":
+    oauth["expiresAt"] = now_ms + 8 * 3600_000
+elif expired and mode == "wipe_then_fail":
+    oauth.pop("accessToken")
+    oauth["expiresAt"] = now_ms + 8 * 3600_000
+elif expired and mode == "near":
+    oauth.update(accessToken="acc-NEW", refreshToken="rt-NEW", expiresAt=now_ms + 10 * 60_000)
+path.write_text(json.dumps(data))
+
+if mode in ("hang", "rotate_then_hang"):
+    time.sleep(30)
+if mode == "auth_error":
+    print(json.dumps({"type": "result", "is_error": True, "result": "OAuth token has expired"}))
+    sys.exit(1)
+if mode == "wipe_then_fail":
+    print(json.dumps({"type": "result", "is_error": True, "result": "boom"}))
+    sys.exit(1)
+if mode == "rotate_then_fail":
+    print(json.dumps({"type": "result", "is_error": True, "result": "API Error: 500"}))
+    sys.exit(1)
+print(json.dumps({"type": "result", "is_error": False, "result": "ok"}))

@@ -18,6 +18,7 @@ from agento.framework.agent_manager.errors import (
     TransientAuthError,
     UsageLimitError,
 )
+from agento.framework.agent_manager.models import CredentialStatus
 from agento.framework.agent_view_runtime import AgentViewRuntime
 from agento.framework.consumer import Consumer
 from agento.framework.consumer_config import ConsumerConfig
@@ -70,6 +71,8 @@ def _token(credential_id: int = 7, *, lease_owner: str | None = None):
         credentials={"refresh_token": "R0"},
         lease_owner=lease_owner,
         leased_until=None,
+        enabled=True,
+        status=CredentialStatus.OK,
     )
 
 
@@ -91,6 +94,8 @@ def _drive_run_job(
     exc = raise_exc or RuntimeError("stop after the agent seam")
     adapter = MagicMock()
     adapter.capture_refreshed_credentials.return_value = capture
+    # The harness cannot refresh out of band: the job keeps the lease for the run.
+    adapter.refresh_credentials.return_value = False
     workflow_cls = MagicMock()
     workflow_cls.return_value.execute_job.side_effect = exc
     runtime = AgentViewRuntime(harness="claude", provider="anthropic", model=None)
@@ -107,6 +112,7 @@ def _drive_run_job(
         patch("agento.framework.consumer.resolve_agent_view_runtime", return_value=runtime),
         patch("agento.framework.consumer.resolve_provider", return_value=_PROVIDER),
         patch.object(consumer._credential_resolver, "resolve", return_value=token),
+        patch("agento.framework.consumer.get_credential", return_value=token),
         patch("agento.framework.config_resolver.ScopedConfigService"),
         patch(
             "agento.framework.consumer.materialize_run_workspace",
@@ -460,6 +466,10 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                 consumer._credential_resolver, "resolve",
                 return_value=_token(lease_owner="job-42-attempt-1"),
             ),
+            patch(
+                "agento.framework.consumer.get_credential",
+                return_value=_token(lease_owner="job-42-attempt-1"),
+            ),
             patch("agento.framework.config_resolver.ScopedConfigService"),
             patch(
                 "agento.framework.consumer.materialize_run_workspace",
@@ -476,11 +486,18 @@ class TestLeaseIsNotLeakedOnSetupFailures:
 
         assert finish.call_args.kwargs["lease_owner"] == "job-42-attempt-1"
 
-    def test_the_lease_is_registered_for_renewal_before_any_blocking_setup(self):
-        """A lease that exists in the DB but not in _held_leases is a lease nobody renews."""
+    def test_a_kept_lease_is_registered_for_renewal_before_the_workspace_is_built(self):
+        """A lease that exists in the DB but not in _held_leases is a lease nobody renews.
+
+        The claim lease is short and covers only the out-of-band refresh; when the job
+        keeps it for the run (the harness cannot refresh), it must be registered before
+        the first blocking setup step that runs under it.
+        """
         consumer = _consumer()
         seen: list[dict] = []
         runtime = AgentViewRuntime(harness="claude", provider="anthropic", model=None)
+        adapter = MagicMock()
+        adapter.refresh_credentials.return_value = False
 
         def _capture_state(*_a, **_kw):
             seen.append(dict(consumer._held_leases))
@@ -499,7 +516,13 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                 return_value=_token(lease_owner="job-42-attempt-1"),
             ),
             patch(
-                "agento.framework.config_resolver.ScopedConfigService",
+                "agento.framework.consumer.get_credential",
+                return_value=_token(lease_owner="job-42-attempt-1"),
+            ),
+            patch("agento.framework.consumer.workspace_adapter_for", return_value=adapter),
+            patch("agento.framework.config_resolver.ScopedConfigService"),
+            patch(
+                "agento.framework.consumer.materialize_run_workspace",
                 side_effect=_capture_state,
             ),pytest.raises(RuntimeError)
         ):
@@ -526,6 +549,7 @@ class TestResumedSessionPath:
         consumer = _consumer()
         adapter = MagicMock()
         adapter.capture_refreshed_credentials.return_value = True
+        adapter.refresh_credentials.return_value = False
         runner = MagicMock()
         runner.execute.return_value = RunResult(
             raw_output="ok", input_tokens=10, output_tokens=5, cost_usd=0.0,
@@ -546,6 +570,10 @@ class TestResumedSessionPath:
             patch("agento.framework.consumer.resolve_provider", return_value=_PROVIDER),
             patch.object(
                 consumer._credential_resolver, "resolve",
+                return_value=_token(lease_owner="job-42-attempt-2"),
+            ),
+            patch(
+                "agento.framework.consumer.get_credential",
                 return_value=_token(lease_owner="job-42-attempt-2"),
             ),
             patch("agento.framework.config_resolver.ScopedConfigService"),

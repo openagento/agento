@@ -119,6 +119,12 @@ def _clean_tokens():
     finally:
         conn.close()
     yield
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM job WHERE idempotency_key LIKE 'ag65:%'")
+    finally:
+        conn.close()
 
 
 def test_2026_07_15_two_job_timeline_does_not_replay_a_spent_refresh_token():
@@ -422,3 +428,131 @@ def test_ten_concurrent_auth_failures_do_not_escalate_beyond_one_outcome(
     assert row["error_source"] is None
     assert row["throttled_until"] is not None
     assert row["throttled_until"] > datetime.now(UTC).replace(tzinfo=None)
+
+
+def _deferred_job(key: str, error_class: str | None) -> int:
+    """A TODO job deferred 10 min into the future, as ``_finalize_job`` leaves it."""
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM job WHERE idempotency_key = %s", (key,))
+            cur.execute(
+                """
+                INSERT INTO job (type, source, reference_id, idempotency_key, status,
+                                 attempt, max_attempts, error_class, scheduled_after)
+                VALUES ('cron', 'jira', 'AI-1', %s, 'TODO', 0, 3, %s,
+                        NOW() + INTERVAL 10 MINUTE)
+                """,
+                (key, error_class),
+            )
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def _is_due(job_id: int) -> bool:
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT scheduled_after <= NOW() AS due FROM job WHERE id = %s", (job_id,)
+            )
+            return bool(cur.fetchone()["due"])
+    finally:
+        conn.close()
+
+
+def test_releasing_a_lease_wakes_only_the_jobs_deferred_for_a_busy_pool():
+    oauth_id = _seed("prod-1", priority=0, refresh_token="R0")
+    _set_leased_until(oauth_id, 120, "job-1-attempt-1")
+    busy = _deferred_job("ag65:busy", "CredentialsBusyError")
+    limited = _deferred_job("ag65:limited", "UsageLimitError")
+    plain = _deferred_job("ag65:plain", None)
+
+    conn = _test_connection()
+    try:
+        # A stale owner frees nothing and so wakes nothing.
+        assert release_credential_lease(conn, oauth_id, "job-1-attempt-0") is False
+        conn.commit()
+        assert not _is_due(busy)
+        assert release_credential_lease(conn, oauth_id, "job-1-attempt-1") is True
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert _is_due(busy)
+    assert not _is_due(limited)  # a usage-limited pool is not freed by a lease
+    assert not _is_due(plain)
+
+
+def test_2026_10_08_the_pool_is_exclusive_for_the_refresh_only(monkeypatch):
+    """AG-65, end to end on real MySQL. One OAuth credential 10 min from expiry: worker A
+    claims it under the short claim lease; worker B is turned away with a near
+    ``pool_retry_at`` and deferred; A persists the refresh and releases; B is woken and
+    its next claim shares the refreshed credential with no lease."""
+    import json as _json
+    import time as _time
+
+    from agento.framework.agent_manager.credential_resolver import CredentialResolver
+    from agento.framework.agent_manager.errors import CredentialsBusyError
+    from agento.framework.consumer import _CLAIM_LEASE_TTL_SECONDS
+    from agento.framework.harness import registry
+    from agento.modules.claude.src.config import ClaudeWorkspaceAdapter
+
+    monkeypatch.setattr(
+        registry, "get_harness_for_scope",
+        lambda _scope: SimpleNamespace(
+            adapter=SimpleNamespace(workspace_adapter=ClaudeWorkspaceAdapter())
+        ),
+    )
+
+    def _payload(expires_ms: int, refresh: str) -> dict:
+        return {
+            "subscription_key": f"acc-{refresh}", "refresh_token": refresh,
+            "raw_auth": {"credentials": {"claudeAiOauth": {
+                "accessToken": f"acc-{refresh}", "refreshToken": refresh,
+                "expiresAt": expires_ms,
+            }}},
+        }
+
+    now_ms = int(_time.time() * 1000)
+    oauth_id = _seed("prod-1", priority=0, refresh_token="R0")
+    conn = _test_connection(autocommit=True)
+    try:
+        update_refreshed_credentials(conn, oauth_id, _payload(now_ms + 10 * 60_000, "R0"))
+    finally:
+        conn.close()
+    resolver = CredentialResolver(lease_ttl_seconds=_CLAIM_LEASE_TTL_SECONDS)
+
+    def _resolve(owner: str) -> CredentialRecord:
+        c = _test_connection()
+        try:
+            return resolver.resolve(c, "claude", lease_owner=owner)
+        finally:
+            c.close()
+
+    a = _resolve("job-1-attempt-1")
+    assert a.lease_owner == "job-1-attempt-1"
+
+    with pytest.raises(CredentialsBusyError) as busy:
+        _resolve("job-2-attempt-1")
+    retry_in = busy.value.pool_retry_at - datetime.now(UTC).replace(tzinfo=None)
+    assert retry_in <= timedelta(seconds=_CLAIM_LEASE_TTL_SECONDS + 5)
+    b_job = _deferred_job("ag65:b", "CredentialsBusyError")
+
+    conn = _test_connection()
+    try:
+        update_refreshed_credentials(
+            conn, oauth_id, _payload(now_ms + 8 * 3600_000, "R1") | {"expires_at": None}
+        )
+        assert release_credential_lease(conn, oauth_id, "job-1-attempt-1") is True
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert _is_due(b_job)
+    b = _resolve("job-2-attempt-1")
+    assert b.id == oauth_id
+    assert b.lease_owner is None  # shared again: the refreshed TTL is outside the horizon
+    assert b.credentials["refresh_token"] == "R1"
+    assert _json.dumps(b.credentials).count("R0") == 0
