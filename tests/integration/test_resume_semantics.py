@@ -171,6 +171,28 @@ def test_a_turn_whose_predecessor_never_got_a_session_resolves_nothing(
     assert resolve_resume_session(conn=conn, job_id=second_job, attempt=1) is None
 
 
+def test_a_session_of_another_harness_is_not_resumed(conn, world, resolver):
+    """A session belongs to its harness: after a harness change the turn starts fresh,
+    with the whole thread from the database (case 3)."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    _, first_job = _turn(conn, cid, world, "c1", "pytanie jeden")
+    _answer(conn, cid, first_job, session_id="session-one")
+    _, second_job = _turn(conn, cid, world, "c2", "pytanie dwa")
+    with conn.cursor() as cur:
+        cur.execute("UPDATE job SET agent_type = 'harness-a' WHERE id = %s", (first_job,))
+        cur.execute("UPDATE job SET agent_type = 'harness-b' WHERE id = %s", (second_job,))
+    conn.commit()
+
+    assert resolve_resume_session(conn=conn, job_id=second_job, attempt=1) is None
+
+    with conn.cursor() as cur:
+        cur.execute("UPDATE job SET agent_type = 'harness-a' WHERE id = %s", (second_job,))
+    conn.commit()
+    assert resolve_resume_session(
+        conn=conn, job_id=second_job, attempt=1) == "session-one"
+
+
 # --- case 3: a fresh session gets the assembled history --------------------
 
 def test_a_fresh_follow_up_is_sent_the_assembled_history(conn, world):
