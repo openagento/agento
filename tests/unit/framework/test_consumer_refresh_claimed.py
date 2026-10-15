@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import importlib
 import logging
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -80,32 +81,33 @@ def _drive(*, refresh, reread=_REFRESHED, still_imminent=False):
         return ("cap-mcp", None)
 
     consumer._issue_run_capabilities = _mint  # a plain instance attribute: no patch needed
-    with (
-        patch("agento.framework.consumer.get_harness", return_value=MagicMock()),
-        patch("agento.framework.consumer.get_harness_config", return_value={}),
-        patch("agento.framework.consumer.get_channel"),
-        patch("agento.framework.consumer.get_connection", return_value=MagicMock()),
-        patch("agento.framework.consumer.resolve_agent_view_runtime", return_value=runtime),
-        patch("agento.framework.consumer.resolve_provider", return_value=_PROVIDER),
-        patch.object(consumer._credential_resolver, "resolve", return_value=_token()),
-        patch.object(
+    # An ExitStack: a parenthesized `with` of this many managers exceeds CPython's
+    # static block-nesting limit on some 3.12 builds (SyntaxError in CI).
+    with ExitStack() as stack:
+        stack.enter_context(patch("agento.framework.consumer.get_harness", return_value=MagicMock()))
+        stack.enter_context(patch("agento.framework.consumer.get_harness_config", return_value={}))
+        stack.enter_context(patch("agento.framework.consumer.get_channel"))
+        stack.enter_context(patch("agento.framework.consumer.get_connection", return_value=MagicMock()))
+        stack.enter_context(patch("agento.framework.consumer.resolve_agent_view_runtime", return_value=runtime))
+        stack.enter_context(patch("agento.framework.consumer.resolve_provider", return_value=_PROVIDER))
+        stack.enter_context(patch.object(consumer._credential_resolver, "resolve", return_value=_token()))
+        stack.enter_context(patch.object(
             consumer._credential_resolver, "refresh_imminent", return_value=still_imminent
-        ),
-        patch(
+        ))
+        stack.enter_context(patch(
             "agento.framework.consumer.get_credential",
             return_value=_token(payload="R1") if reread is _REFRESHED else reread,
-        ),
-        patch("agento.framework.config_resolver.ScopedConfigService"),
-        patch("agento.framework.consumer.materialize_run_workspace", side_effect=_materialize),
-        patch("agento.framework.consumer.get_event_manager"),
-        patch("agento.framework.consumer.workspace_adapter_for", return_value=adapter),
-        patch("agento.framework.consumer.clear_auto_credential_error"),
-        patch("agento.framework.consumer.throttle_credential") as throttle,
-        patch("agento.framework.consumer.mark_credential_error") as poison,
-        patch("agento.framework.consumer.count_credentials_for_scope", return_value=(2, 1)),
-        patch("agento.framework.consumer.dispatch_credential_event"),
-        patch("agento.framework.consumer.release_credential_lease") as release,
-    ):
+        ))
+        stack.enter_context(patch("agento.framework.config_resolver.ScopedConfigService"))
+        stack.enter_context(patch("agento.framework.consumer.materialize_run_workspace", side_effect=_materialize))
+        stack.enter_context(patch("agento.framework.consumer.get_event_manager"))
+        stack.enter_context(patch("agento.framework.consumer.workspace_adapter_for", return_value=adapter))
+        stack.enter_context(patch("agento.framework.consumer.clear_auto_credential_error"))
+        throttle = stack.enter_context(patch("agento.framework.consumer.throttle_credential"))
+        poison = stack.enter_context(patch("agento.framework.consumer.mark_credential_error"))
+        stack.enter_context(patch("agento.framework.consumer.count_credentials_for_scope", return_value=(2, 1)))
+        stack.enter_context(patch("agento.framework.consumer.dispatch_credential_event"))
+        release = stack.enter_context(patch("agento.framework.consumer.release_credential_lease"))
         try:
             consumer._run_job(job)
         except BaseException as exc:  # the test inspects it
