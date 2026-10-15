@@ -79,7 +79,9 @@ def _error(event: dict, session_id: str | None) -> Exception:
         reset_at = event.get("reset_at")
         exc = errors.UsageLimitError(message, reset_at=reset_at and datetime.fromisoformat(reset_at))
     elif kind in NON_RETRYABLE_ERRORS:  # the retry policy reads the class name
-        exc = (getattr(errors, kind, None) or getattr(builtins, kind))(message)
+        # A name defined elsewhere (``InvalidJobRuntime``) keeps its name as a RuntimeError.
+        cls = getattr(errors, kind, None) or getattr(builtins, kind, None)
+        exc = (cls or type(kind, (RuntimeError,), {}))(message)
     else:
         exc = RuntimeError(message)
     exc.session_id = event.get("session_id") or session_id  # type: ignore[attr-defined]

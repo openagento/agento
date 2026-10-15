@@ -184,7 +184,7 @@ def test_every_error_the_retry_policy_names_keeps_its_name(start_runner, tmp_pat
 
     from agento.framework.agent_manager import errors
 
-    cls = getattr(errors, name, None) or getattr(builtins, name)
+    cls = getattr(errors, name, None) or getattr(builtins, name, None) or type(name, (Exception,), {})
     start_runner(make_runner=_child(["true"], error=cls("x")))
 
     with pytest.raises(Exception) as raised:
