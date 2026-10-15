@@ -223,7 +223,7 @@ class TestRunPath:
             patch("agento.framework.config_resolver.ScopedConfigService"),
             patch("agento.framework.consumer.materialize_run_workspace", _materialize),
             patch("agento.framework.consumer.get_event_manager"),
-            patch("agento.framework.consumer.create_runner", _create_runner),
+            patch("agento.framework.consumer.RemoteRunner", _create_runner),
             patch(
                 "agento.framework.consumer.get_workflow_class", return_value=workflow_cls
             ),
@@ -264,7 +264,8 @@ class TestRunPath:
 
     def test_the_snapshot_is_committed_before_the_run_starts(self):
         cap = self._drive(_job())
-        sql = cap["cursor"].execute.call_args_list[0][0][0]
+        sql = next(c[0][0] for c in cap["cursor"].execute.call_args_list
+                   if "UPDATE job" in c[0][0])
         assert "UPDATE job" in sql and "agent_type" in sql
         # COMMITTED — and committed before anything the run does with it. A crash
         # between the claim and the first run step must not leave the row unpinned.
@@ -297,7 +298,8 @@ class TestRunPath:
                                           model="changed-after-attempt-1"))
         assert cap["resolve_provider"] == (str(other.id), "snapshot-provider")
         assert cap["workspace_runtime"].model == "snapshot-model"
-        assert cap["cursor"].execute.call_args_list == []  # snapshot is not rewritten
+        # snapshot is not rewritten (the pool's isolation SET is not a write)
+        assert not [c for c in cap["cursor"].execute.call_args_list if "UPDATE job" in c[0][0]]
 
     def test_a_pinned_job_runs_over_a_broken_agent_view_pair(self):
         """The view's bad harness/provider pair is tolerated, the pin is used."""
