@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Limits right after a re-login.** The `core` observer `core_refresh_credential_limits` reads a
+  credential's limits on `credential_register_after` and `credential_refresh_after`, so the panel
+  shows them at once, not on the next `credential:limits` tick. The re-login dialog shows an
+  animated success mark and reads the credential list again when it closes.
 - **Refresh outside the job (AG-65).** A near-expiry OAuth credential (Claude, Codex) is now
   refreshed out of band by the new `WorkspaceAdapter.refresh_credentials` before the job runs,
   and its lease is released at once, so the pool is exclusive for seconds instead of a job's
@@ -134,6 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CliInvoker.interactive_command()` gained a `yolo` keyword; each agent module decides its own flag.
 
 ### Changed
+- **`credential:limits` renews an expired OAuth token.** An idle Claude or Codex credential no
+  longer shows frozen limits: the cron takes the refresh lease a job takes, refreshes the token
+  through the harness's `refresh_credentials` (AG-65), releases the lease, then reads the limits.
+  A held lease or a failed refresh keeps the last result, as before.
 - **Miniapps: the approval is no longer the grant.** The toolbox `launch` checker reads the role's
   tool grants again: a non-admin runs an app only when the role holds a grant for every action of
   the approved manifest. **Upgrade:** grant the manifest tools to each role that runs apps

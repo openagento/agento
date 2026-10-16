@@ -63,3 +63,24 @@ class WakeAuthWaitingJobsObserver:
             return
         if woken:
             logger.info("core: woke %d job(s) waiting for a credential", woken)
+
+
+class RefreshCredentialLimitsObserver:
+    """On a new or refreshed credential, read its limits now: the panel shows them right
+    after a re-login, not on the next ``credential:limits`` tick.
+
+    It re-reads the row by ``credential_id``; the payload's credentials are never used or
+    logged (EVT-3, SEC-6). Telemetry, not a state change, so no event (EVT-1).
+    """
+
+    def execute(self, event) -> None:
+        from agento.framework.cli.credential import refresh_credential_limits
+
+        try:
+            with pooled(DatabaseConfig.from_env(), get_connection) as conn:
+                refresh_credential_limits(conn, logger, credential_id=event.credential_id)
+        except Exception as exc:
+            logger.warning(
+                "core: limits read for credential id=%s failed (%s)",
+                event.credential_id, type(exc).__name__,
+            )

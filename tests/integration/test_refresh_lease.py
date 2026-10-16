@@ -494,8 +494,8 @@ def test_2026_10_08_the_pool_is_exclusive_for_the_refresh_only(monkeypatch):
     import time as _time
 
     from agento.framework.agent_manager.credential_resolver import CredentialResolver
+    from agento.framework.agent_manager.credential_store import CLAIM_LEASE_TTL_SECONDS
     from agento.framework.agent_manager.errors import CredentialsBusyError
-    from agento.framework.consumer import _CLAIM_LEASE_TTL_SECONDS
     from agento.framework.harness import registry
     from agento.modules.claude.src.config import ClaudeWorkspaceAdapter
 
@@ -522,7 +522,7 @@ def test_2026_10_08_the_pool_is_exclusive_for_the_refresh_only(monkeypatch):
         update_refreshed_credentials(conn, oauth_id, _payload(now_ms + 10 * 60_000, "R0"))
     finally:
         conn.close()
-    resolver = CredentialResolver(lease_ttl_seconds=_CLAIM_LEASE_TTL_SECONDS)
+    resolver = CredentialResolver(lease_ttl_seconds=CLAIM_LEASE_TTL_SECONDS)
 
     def _resolve(owner: str) -> CredentialRecord:
         c = _test_connection()
@@ -537,7 +537,7 @@ def test_2026_10_08_the_pool_is_exclusive_for_the_refresh_only(monkeypatch):
     with pytest.raises(CredentialsBusyError) as busy:
         _resolve("job-2-attempt-1")
     retry_in = busy.value.pool_retry_at - datetime.now(UTC).replace(tzinfo=None)
-    assert retry_in <= timedelta(seconds=_CLAIM_LEASE_TTL_SECONDS + 5)
+    assert retry_in <= timedelta(seconds=CLAIM_LEASE_TTL_SECONDS + 5)
     b_job = _deferred_job("ag65:b", "CredentialsBusyError")
 
     conn = _test_connection()
@@ -556,3 +556,50 @@ def test_2026_10_08_the_pool_is_exclusive_for_the_refresh_only(monkeypatch):
     assert b.lease_owner is None  # shared again: the refreshed TTL is outside the horizon
     assert b.credentials["refresh_token"] == "R1"
     assert _json.dumps(b.credentials).count("R0") == 0
+
+
+def _claim_by_id(token_id: int, owner: str) -> bool:
+    from agento.framework.agent_manager.credential_store import claim_credential_lease
+
+    conn = _test_connection()
+    try:
+        held = claim_credential_lease(conn, token_id, owner, _LEASE_TTL)
+        conn.commit()
+        return held
+    finally:
+        conn.close()
+
+
+def test_a_lease_by_id_takes_a_free_row_without_touching_used_at():
+    token_id = _seed("by-id", priority=0, refresh_token="R0")
+    used_at = _row(token_id)["used_at"]
+    assert _claim_by_id(token_id, "limits-a")
+    row = _row(token_id)
+    assert row["lease_owner"] == "limits-a" and row["leased_until"] is not None
+    assert row["used_at"] == used_at
+    # A second claimant, a job included, is refused while it is live.
+    assert not _claim_by_id(token_id, "limits-b")
+    assert _claim("job-1-attempt-1") is None
+
+
+def test_a_lease_by_id_refuses_a_live_lease_and_takes_an_expired_one():
+    token_id = _seed("by-id-held", priority=0, refresh_token="R0")
+    _set_leased_until(token_id, 60, "job-1-attempt-1")
+    assert not _claim_by_id(token_id, "limits-a")
+    assert _row(token_id)["lease_owner"] == "job-1-attempt-1"
+    _set_leased_until(token_id, -1, "job-1-attempt-1")
+    assert _claim_by_id(token_id, "limits-a")
+    assert _row(token_id)["lease_owner"] == "limits-a"
+
+
+@pytest.mark.parametrize("column, value", [("enabled", False), ("status", "error")])
+def test_a_lease_by_id_refuses_an_ineligible_row(column, value):
+    token_id = _seed("by-id-off", priority=0, refresh_token="R0")
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE credential SET {column} = %s WHERE id = %s", (value, token_id))
+    finally:
+        conn.close()
+    assert not _claim_by_id(token_id, "limits-a")
+    assert _row(token_id)["lease_owner"] is None

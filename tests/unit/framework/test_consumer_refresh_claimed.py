@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agento.framework.agent_manager.credential_resolver import _DEFAULT_LEASE_TTL_SECONDS
+from agento.framework.agent_manager.credential_store import CLAIM_LEASE_TTL_SECONDS
 from agento.framework.agent_manager.errors import (
     AuthenticationError,
     TransientAuthError,
@@ -22,7 +23,7 @@ from agento.framework.agent_manager.errors import (
 )
 from agento.framework.agent_manager.models import CredentialStatus
 from agento.framework.agent_view_runtime import AgentViewRuntime
-from agento.framework.consumer import _CLAIM_LEASE_TTL_SECONDS, Consumer
+from agento.framework.consumer import Consumer
 from agento.framework.consumer_config import ConsumerConfig
 
 # The consumer resolves each run's harness from the registry at claim time.
@@ -199,15 +200,16 @@ def test_a_credential_made_ineligible_during_the_refresh_never_reaches_a_run(ref
 
 def test_the_claim_lease_is_short_and_not_renewed():
     consumer = Consumer(MagicMock(), ConsumerConfig(poll_interval=0.01), logging.getLogger("t"))
-    assert consumer._credential_resolver._lease_ttl_seconds == _CLAIM_LEASE_TTL_SECONDS == 120
+    assert consumer._credential_resolver._lease_ttl_seconds == CLAIM_LEASE_TTL_SECONDS == 120
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex"])
 def test_refresh_timeout_fits_inside_the_claim_lease(harness):
     """The claim lease is not renewed while the refresh runs, so the refresh must end
-    first; the renewed fallback lease is the longest of the three."""
+    first, with the runner client's 30 s transport slack (``runner/client.py`` ``run``);
+    the renewed fallback lease is the longest of the three."""
     module = importlib.import_module(f"agento.modules.{harness}.src.config")
-    assert module._REFRESH_TIMEOUT_SECONDS < _CLAIM_LEASE_TTL_SECONDS < _DEFAULT_LEASE_TTL_SECONDS
+    assert module._REFRESH_TIMEOUT_SECONDS + 30 < CLAIM_LEASE_TTL_SECONDS < _DEFAULT_LEASE_TTL_SECONDS
 
 
 def test_every_in_tree_adapter_implements_the_protocol_signature():

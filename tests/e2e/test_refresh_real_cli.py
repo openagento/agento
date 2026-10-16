@@ -62,10 +62,10 @@ from types import SimpleNamespace
 
 from agento.framework.agent_manager.credential_resolver import CredentialResolver
 from agento.framework.agent_manager.credential_store import (
-    get_credential, release_credential_lease, update_refreshed_credentials,
+    CLAIM_LEASE_TTL_SECONDS, get_credential, release_credential_lease, update_refreshed_credentials,
 )
 from agento.framework.bootstrap import bootstrap
-from agento.framework.consumer import _CLAIM_LEASE_TTL_SECONDS, Consumer
+from agento.framework.consumer import Consumer
 from agento.framework.consumer_config import ConsumerConfig
 from agento.framework.database_config import DatabaseConfig
 from agento.framework.db import get_connection
@@ -126,7 +126,7 @@ old_access, old_refresh = tokens_of(original)
 
 update_refreshed_credentials(conn, cred_id, near_expiry(original))
 conn.commit()
-resolver = CredentialResolver(lease_ttl_seconds=_CLAIM_LEASE_TTL_SECONDS)
+resolver = CredentialResolver(lease_ttl_seconds=CLAIM_LEASE_TTL_SECONDS)
 out["imminent_before"] = resolver.refresh_imminent(get_credential(conn, cred_id))
 
 # The claim lease, exactly as select_credential takes it in its selecting UPDATE.
@@ -134,7 +134,7 @@ with conn.cursor() as cur:
     cur.execute(
         "UPDATE credential SET used_at = UTC_TIMESTAMP(6), lease_owner = %s, "
         "leased_until = UTC_TIMESTAMP() + INTERVAL %s SECOND WHERE id = %s",
-        (OWNER, _CLAIM_LEASE_TTL_SECONDS, cred_id),
+        (OWNER, CLAIM_LEASE_TTL_SECONDS, cred_id),
     )
 conn.commit()
 claimed = get_credential(conn, cred_id)

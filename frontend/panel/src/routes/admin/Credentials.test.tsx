@@ -142,7 +142,7 @@ describe("Credentials", () => {
     expect(d.queryByLabelText("Paste the code from the login page")).toBeNull();
   });
 
-  it("done says signed in and refreshes the list", async () => {
+  it("done shows the success mark, refreshes the list, and reads it again on close", async () => {
     const api = await stubApi({
       "/api/admin/credentials": [cred(1)],
       "POST /api/admin/credentials/1/login": { id: 9 },
@@ -151,9 +151,12 @@ describe("Credentials", () => {
     renderAt("/admin/credentials", <Credentials />);
     fireEvent.click(await screen.findByRole("button", { name: "Re-login" }));
     expect(await screen.findByText("Signed in. The credential is saved.")).toBeInTheDocument();
+    expect(within(screen.getByRole("dialog")).getByRole("status")).toContainElement(
+      screen.getByText("Signed in. The credential is saved."));
     await vi.waitFor(() => expect(api.calls("GET", "/api/admin/credentials")).toHaveLength(2));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
     expect(api.calls("POST", "/api/admin/credential-logins/9/cancel")).toEqual([]);
+    await vi.waitFor(() => expect(api.calls("GET", "/api/admin/credentials")).toHaveLength(3));
   });
 
   it("a failed login shows a fixed sentence and Try again starts a new one", async () => {

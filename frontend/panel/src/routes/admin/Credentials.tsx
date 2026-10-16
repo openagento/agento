@@ -6,6 +6,7 @@ import { apiFetch, useMutation, useQuery, useQueryClient } from "@agento/api";
 import {
   Button, ConfirmDialog, CopyButton, DataTable, IconAction, PageHeader, StatusBadge, TextField, Timestamp, type Column,
 } from "@agento/ui";
+import css from "./Credentials.module.css";
 import { CREDENTIAL_ERROR_HINT, message, whole } from "./shared";
 
 interface LimitWindow { label: string; used_pct: number; resets_at: string | null }
@@ -121,6 +122,8 @@ function LoginModal({ c, loginId, startError, onRetry, onClose }: {
       apiFetch(`/api/admin/credential-logins/${loginId}/cancel`, { method: "POST" })
         .catch((e) => notifications.show({ color: "red", message: message(e) }));
     }
+    // The limits are read just after the login commits (core observer), so read the list again.
+    if (l?.status === "done") void qc.invalidateQueries({ queryKey: ["admin-credentials"] });
     onClose();
   };
   const retry = <Group><Button variant="primary" onClick={onRetry}>Try again</Button></Group>;
@@ -139,7 +142,15 @@ function LoginModal({ c, loginId, startError, onRetry, onClose }: {
     </>
   );
   else if (l.status === "verifying") body = <Text>Checking…</Text>;
-  else if (l.status === "done") body = <Text>Signed in. The credential is saved.</Text>;
+  else if (l.status === "done") body = (
+    <div className={css.done} role="status">
+      <svg className={css.mark} viewBox="0 0 52 52" aria-hidden="true">
+        <circle cx="26" cy="26" r="23" pathLength={1} />
+        <path d="M15 27l7 7 15-15" pathLength={1} />
+      </svg>
+      <Text>Signed in. The credential is saved.</Text>
+    </div>
+  );
   else body = <><Text>{loginFailure(l)}</Text>{retry}</>;
   return (
     <Modal opened={c !== null} onClose={close} title={c ? `Re-login ${c.label}` : ""} centered

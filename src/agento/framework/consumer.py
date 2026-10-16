@@ -19,6 +19,7 @@ from .agent_manager.credential_resolver import (
     CredentialResolver,
 )
 from .agent_manager.credential_store import (
+    CLAIM_LEASE_TTL_SECONDS,
     clear_auto_credential_error,
     count_credentials_for_scope,
     earliest_throttle_reset_for_scope,
@@ -130,13 +131,6 @@ _DEFAULT_TRANSIENT_AUTH_THROTTLE = timedelta(minutes=15)
 # selectable again, and (b) spreads a thundering herd of waiting jobs so they don't all
 # wake and re-hit the same wall in the same instant.
 _POOL_RETRY_JITTER_SECONDS = (60, 300)
-
-# Initial TTL of the lease taken when a refresh-imminent credential is claimed. It covers
-# only the out-of-band refresh that follows (``_refresh_claimed_credential``), which is not
-# renewed, so waiters' ``pool_retry_at`` stays near. Timing contract (a guard test pins it):
-# each adapter's refresh timeout (60 s) < this < _DEFAULT_LEASE_TTL_SECONDS (300 s, the
-# renewed fallback lease for a harness that cannot refresh out of band).
-_CLAIM_LEASE_TTL_SECONDS = 120
 
 # A job that waits for a credential (``CredentialsUnavailableError``) stops waiting and goes
 # DEAD once it is this old (``job.created_at``), so an abandoned pool cannot hold jobs forever.
@@ -348,7 +342,7 @@ class Consumer:
         # maintenance cost. The slack is why it is a heuristic — see refresh_imminent.
         self._credential_resolver = CredentialResolver(
             refresh_horizon_seconds=consumer_config.job_timeout_seconds + 900,
-            lease_ttl_seconds=_CLAIM_LEASE_TTL_SECONDS,
+            lease_ttl_seconds=CLAIM_LEASE_TTL_SECONDS,
         )
         self._active_jobs = 0
         # Monotonic clock, so a wall-clock jump cannot delay or spam the purge.
