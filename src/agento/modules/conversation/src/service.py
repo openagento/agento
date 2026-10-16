@@ -41,6 +41,10 @@ SOURCE = "conversation"
 PANEL_CHANNEL = "panel"   # conversation.channel of a panel thread; any other value is a channel thread
 MAX_CLIENT_MESSAGE_ID = 128
 MAX_TITLE = 255          # the `conversation.title` column
+# The owner list has no pagination and one LIMIT, so pinned-first ordering could hide every
+# new thread. The cap, with the `+ MAX_PINNED` the list asks for, keeps a full page of
+# unpinned rows reachable whatever the pin count.
+MAX_PINNED = 50
 
 
 class SubmissionError(ValueError):
@@ -146,7 +150,11 @@ def list_visible(conn, *, user: User, limit: int, channels: bool = False,
         order = "ORDER BY COALESCE(c.last_activity_at, c.created_at) DESC, c.id DESC "
     else:
         where, params = "WHERE c.user_id = %s AND c.status = 'active' ", [user.id]
-        order = "ORDER BY c.updated_at DESC, c.id DESC "
+        # Pinned first, newest pin first; the rest by activity. `limit` is raised by the pin
+        # cap below, so the page still holds `limit` unpinned rows when every pin is used.
+        order = ("ORDER BY (c.pinned_at IS NULL), c.pinned_at DESC, "
+                 "c.updated_at DESC, c.id DESC ")
+        limit += MAX_PINNED
     with conn.cursor() as cur:
         cur.execute(select + where + order + "LIMIT %s", (*params, limit))
         rows = list(cur.fetchall())
@@ -358,6 +366,53 @@ def create_conversation(conn, *, user_id: int, agent_view_id: int | None, title:
     _dispatch("conversation_create_after", ConversationCreatedEvent(
         conversation_id=conversation_id, agent_view_id=agent_view_id, user_id=user_id))
     return conversation_id
+
+
+def set_pinned(conn, conversation_id: int, *, user_id: int, pinned: bool) -> None:
+    update_thread(conn, conversation_id, user_id=user_id, pinned=pinned)
+
+
+KEEP = object()
+
+
+def update_thread(conn, conversation_id: int, *, user_id: int,
+                  title: str | None | object = KEEP, pinned: bool | None = None) -> None:
+    """The ONE write behind `PATCH`: the title and the pin land in ONE transaction.
+
+    Two writes meant a refused pin (409) could leave a renamed thread behind: the rename had
+    already committed. One transaction, after every field is validated, is what makes the
+    response and the row agree.
+
+    The cap is an aggregate over the user's rows, so the thread's own row lock cannot hold it:
+    two pins of DIFFERENT threads lock different rows and both commit from 49. The `user` row
+    is the one row every pin of this user contends on. Lock order (SCL-1): the user row, then
+    the conversation rows. No other path takes the user row lock, so there is no cycle with
+    the posting path, which takes the conversation row alone.
+
+    The count must be a LOCKING read. The caller's transaction already read the thread (the
+    reach gate), so under REPEATABLE READ a plain `SELECT COUNT(*)` answers from that older
+    snapshot and two requests both count 49 even though the lock serializes them.
+    """
+    with conn.cursor() as cur:
+        if pinned:
+            cur.execute("SELECT id FROM `user` WHERE id = %s FOR UPDATE", (user_id,))
+            cur.execute("SELECT id FROM conversation "
+                        "WHERE user_id = %s AND status = 'active' AND pinned_at IS NOT NULL "
+                        "AND id <> %s FOR UPDATE", (user_id, conversation_id))
+            if len(cur.fetchall()) >= MAX_PINNED:
+                conn.rollback()
+                raise SubmissionError(409, f"at most {MAX_PINNED} pinned conversations")
+        sets, params = [], []
+        if title is not KEEP:
+            sets.append("title = %s")
+            params.append(title)
+        if pinned is not None:
+            # An already-pinned thread keeps its place: a repeat pin is not a bump.
+            sets.append("pinned_at = COALESCE(pinned_at, NOW())" if pinned else "pinned_at = NULL")
+        if sets:
+            cur.execute(f"UPDATE conversation SET {', '.join(sets)} WHERE id = %s",
+                        (*params, conversation_id))
+    conn.commit()
 
 
 def archive(conn, conversation_id: int, *, actor_id: int | None = None,

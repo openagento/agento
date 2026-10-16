@@ -1,7 +1,7 @@
 // The chat building blocks (U1-U8): Mantine components, themed by theme.ts only. The panel's
 // conversation screen composes them; it may not import Mantine itself (boundaries.test.ts).
 import {
-  ActionIcon, Alert, Button, Code, Collapse, Group, Loader, Paper, Popover, ScrollArea, Spoiler, Stack,
+  ActionIcon, Alert, Button, Code, Collapse, Group, Loader, Paper, ScrollArea, Spoiler, Stack,
   Text, Textarea, Title, Tooltip, UnstyledButton,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
@@ -9,7 +9,6 @@ import { Brain, ChevronRight, CircleAlert, Info, Layers, RotateCcw, SendHorizont
 import type { FormEvent, KeyboardEvent, ReactNode, Ref, UIEvent } from "react";
 import classes from "./Chat.module.css";
 import { CopyButton } from "./CopyButton";
-import { IconAction } from "./IconAction";
 import { Markdown } from "./Markdown";
 import { Timestamp } from "./Timestamp";
 
@@ -48,13 +47,16 @@ export function ChatList({ children }: { children: ReactNode }) {
 /** One message. `user`: a bubble on the right, plain text. `assistant`: full width Markdown.
  *  `incoming`: what a channel sent (a trigger), plain text on the left under its `label`. The
  *  time and a copy button show on hover. */
-export function ChatMessage({ author, text, time, label }: {
+export function ChatMessage({ author, text, time, label, actions: extra }: {
   author: "user" | "assistant" | "incoming"; text: string; time?: string | null; label?: ReactNode;
+  /** More actions for this message's hover row (Regenerate on the newest answer). */
+  actions?: ReactNode;
 }) {
   const actions = (
     <Group gap={TIGHT} className={classes.actions}>
       {time && <Text size="xs" c="dimmed"><Timestamp value={time} /></Text>}
       <CopyButton value={text} label="Copy message" />
+      {extra}
     </Group>
   );
   if (author === "assistant") {
@@ -172,8 +174,9 @@ export function ChatError({ title, children, details, onRetry }: {
 
 /** The composer: typing is always allowed; only sending waits (`canSend`). Enter sends,
  *  Shift+Enter adds a line, and a key that composes text (IME) never sends. */
-export function ChatComposer({ value, onChange, onSend, canSend, hint, error }: {
-  value: string; onChange: (v: string) => void; onSend: () => void; canSend: boolean; hint?: ReactNode; error?: ReactNode;
+export function ChatComposer({ value, onChange, onSend, canSend, hint, error, placeholder = "Ask the agent…" }: {
+  value: string; onChange: (v: string) => void; onSend: () => void; canSend: boolean; hint?: ReactNode;
+  error?: ReactNode; placeholder?: string;
 }) {
   const ready = canSend && value.trim() !== "";
   const submit = (e?: FormEvent) => { e?.preventDefault(); if (ready) onSend(); };
@@ -183,40 +186,23 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error }: 
   return (
     <form onSubmit={submit}>
       <Stack gap={TIGHT}>
-        <Group align="flex-end" gap="xs" wrap="nowrap">
-          <Textarea className={classes.grow} aria-label="Message" placeholder="Message the agent…" autosize minRows={1}
-            maxRows={8} value={value} onChange={(e) => onChange(e.currentTarget.value)} onKeyDown={onKey}
+        {/* One rounded field holds the text and the send button, as the chat apps do: the
+            textarea is `unstyled` so the pill's own border is the only box (U9). */}
+        <div className={classes.pill}>
+          <Textarea className={classes.pillInput} variant="unstyled" aria-label="Message"
+            placeholder={placeholder} autosize minRows={1} maxRows={8} value={value}
+            onChange={(e) => onChange(e.currentTarget.value)} onKeyDown={onKey}
             aria-describedby={hint ? "composer-hint" : undefined} />
           <Tooltip label="Send" withArrow>
-            <ActionIcon type="submit" size="input-sm" variant="filled" aria-label="Send" disabled={!ready}>
+            <ActionIcon type="submit" size="lg" radius="xl" variant="filled" aria-label="Send" disabled={!ready}>
               <SendHorizontal size={16} />
             </ActionIcon>
           </Tooltip>
-        </Group>
-        {hint && <Text id="composer-hint" size="xs" c="dimmed">{hint}</Text>}
+        </div>
+        {hint && <Text id="composer-hint" size="xs" c="dimmed" className={classes.disclaimer}>{hint}</Text>}
         {error && <Text size="xs" c="red" role="alert">{error}</Text>}
       </Stack>
     </form>
   );
 }
 
-/** Run details behind an info button: model, tokens, attempt, job. */
-export function RunInfo({ rows }: { rows: { label: string; value: ReactNode }[] }) {
-  return (
-    <Popover width={300} position="bottom-end" withArrow shadow="md">
-      <Popover.Target>
-        <IconAction label="Run details" icon={<Info size={16} />} />
-      </Popover.Target>
-      <Popover.Dropdown>
-        <Stack gap={TIGHT}>
-          {rows.map((r) => (
-            <Group key={r.label} justify="space-between" gap="md" wrap="nowrap">
-              <Text size="sm" c="dimmed">{r.label}</Text>
-              <Text size="sm">{r.value}</Text>
-            </Group>
-          ))}
-        </Stack>
-      </Popover.Dropdown>
-    </Popover>
-  );
-}

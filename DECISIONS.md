@@ -23,6 +23,27 @@ lock the credentail, refresh the token and then break the lease."
 
 ---
 
+## 2026-10-15 — A pinned conversation is capped, and the owner list stays bounded (D-CONV-PIN-1)
+
+Plan: `docs/plans/2026-10-15-chatgpt-like-conversations.md`. The rail pins a thread to the top, the
+way a chat app does. Two consequences we chose deliberately:
+
+- **The owner list stays unpaginated, and is bounded instead.** Pinned-first over one `LIMIT` lets
+  pins push every new thread off the page. Pagination would fix it and costs a cursor, a route
+  contract and a rail that loads more; a cap costs one constant. `MAX_PINNED = 50` per user, and the
+  query asks for `page_size + MAX_PINNED`, so a full set of pins still leaves a whole page of
+  unpinned rows. The alternative is in ROADMAP if a user ever wants more than 50.
+- **The cap is held by a per-user row lock, not by the thread's row.** The cap is an aggregate over
+  the user's threads, so two pins of *different* threads lock different rows and both commit from 49.
+  A conditional `UPDATE … WHERE (SELECT COUNT(*) …) < 50` does not close it either: MySQL forces the
+  self-reference into a derived table, which materializes as a non-locking REPEATABLE READ snapshot.
+  So `set_pinned` takes `SELECT id FROM user WHERE id = %s FOR UPDATE` first, then counts, then
+  writes. Lock order (SCL-1): user row, then conversation row; no other path takes the user row, so
+  there is no cycle with the posting path.
+- **A pinned thread is exempt from the idle auto-archive pass.** A pin is the user saying to keep it.
+
+---
+
 ## 2026-10-12 — Per-app rights for miniapps; execute needs every manifest grant (D-MINIAPP-3)
 
 Plan: `~/.claude/plans/apps-tiles-permissions-1c26d9.md`. Owner, 2026-10-12 (S3–S9): "Aplikacja

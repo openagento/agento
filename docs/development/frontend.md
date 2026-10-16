@@ -50,6 +50,10 @@ npm test            # build, lint, then every unit test and every story in headl
   excepted): a per-component override is a value the kit cannot follow. Change a value in
   `theme.ts`, and mirror a component change in `components.css` — the parity story fails until
   both agree. Every `MantineProvider` is `AgentoUiProvider`, so the AA overrides always apply.
+  `theme.ts` sets its own near-neutral `gray` and `dark` scales and `defaultRadius: "lg"` (kit
+  1.2.0). A default radius is a theme value, so the kit emits it as `--ag-radius-default`, and the
+  `.ag-button` / `.ag-field__input` twins use that token — not a hardcoded step — or the parity
+  story fails the next time the default moves.
   `SelectField` is a Mantine `Select` (combobox), so its open list has the theme's look. A miniapp
   writes `<select class="ag-field__input">`: the closed box and chevron are the same (the parity
   story checks them), and the browser draws its open list. `contained` on `TextField` and
@@ -94,29 +98,37 @@ npm test            # build, lint, then every unit test and every story in headl
   into `STREAM_KINDS` in `hub.ts`, or the browser drops it.
 - **Agent text is Markdown.** `Markdown` (`react-markdown` + `remark-gfm`, loaded lazily so the
   entry chunk stays in budget) renders it in Mantine's `Typography`; raw HTML is shown as text, and
-  links open with `rel="noopener noreferrer"`. Its kit twin is `.ag-prose` (kit 1.1.0): the kit does
+  links open with `rel="noopener noreferrer"`. Its kit twin is `.ag-prose` (kit 1.2.0): the kit does
   not parse Markdown, the miniapp writes the HTML. `<Markdown highlight>` is opt-in: a fenced block
   renders with `@mantine/code-highlight` and the `highlight.js` common languages (language label,
   copy button), both in their own lazy chunk. The kit has no syntax highlighting, so only the chat
   passes `highlight`; the default `Markdown` stays what the parity story compares with `.ag-prose`.
   (The `@catalogue` text of `.ag-prose` is part of the released kit bytes, UI-3: it says so only
-  when the next kit version is cut.)
+  when a kit version is cut — it is in 1.2.0.)
 - **Every in-panel link is `AppLink`.** `AppLink` (`packages/ui/src/components/Link.tsx`) is Mantine's
   `Anchor` rendered as a router `Link`, so a link takes the theme's anchor color
   (`--mantine-color-anchor`: `#1971c2` light, `#4dabf7` dark — the same value the kit gives a miniapp as
   `--ag-color-link`). A bare `Link` from `react-router` renders in the browser default (visited purple and
   all), so `boundaries.test.ts` refuses that import in `panel/src` and in every module panel; the one
   allowed definition site is `Link.tsx`. `Shell.tsx` keeps Mantine's `NavLink` for the navigation.
-- **A row's actions can live behind 3 dots.** `RowMenu` takes `{ label, onClick, danger?, disabled? }[]`
-  and shows them under a vertical 3-dots `IconAction` named "Actions" (UI-7); it renders nothing for an
-  empty list. Like the chat components it is **panel-only** with no `.ag-*` twin: a miniapp shows no admin
-  row actions, and the kit has no menu class (ROADMAP: the `.ag-menu` twin is due in the next kit version
+- **A row's actions can live behind 3 dots.** `RowMenu` takes `{ label, onClick, danger?, disabled?, icon? }[]`
+  and shows them under a vertical 3-dots `IconAction` named "Actions" (UI-7); it renders nothing when it
+  has neither an action nor a detail. `details` adds read-only `{label, value}` rows above the actions,
+  so a header that would otherwise grow a row of icons (run details, archive) keeps ONE menu. A
+  detail row is read-only: no pointer, no hover highlight — only an action looks clickable. `icon` is a
+  NAME (`rename` | `pin` | `unpin` | `archive` | `reconnect`), not a node, because a module panel may not
+  import lucide-react; `RowMenu` holds the mapping. Like the chat components it is **panel-only** with no `.ag-*` twin: a miniapp shows no admin
+  row actions, and the kit has no menu class (ROADMAP: the `.ag-menu` twin is due in a later kit version
   if a miniapp ever needs a menu).
 - **The chat is panel-only.** `ChatLayout`, `ChatList`, `ChatMessage`, `ToolCall`, `ToolGroup`,
-  `Reasoning`, `ChatStatus`, `ChatError`, `ChatComposer`, `RunInfo`, `SplitView`, `ThreadList` and
+  `Reasoning`, `ChatStatus`, `ChatError`, `ChatComposer`, `SplitView`, `Rail`, `SearchToggle`, `ThreadList` and
   `MenuButton` (`packages/ui/src/components/Chat*.tsx`) are Mantine components with no `.ag-*`
   twin: a miniapp shows no chat (UI-2). The timeline fills the shell's main area; below `sm` the
   thread list is a `Drawer`. Each rendered timeline item is exactly one `li` of `ChatList`.
+  `Rail` is the thread column: a fixed top block (new conversation, the `SearchToggle`, and — when
+  search is open or the reader is an admin — the search box beside the scope picker) over a
+  scrolling `ThreadList`. A `ThreadLink` with `onPin` / `onRename` / `actions` shows a `RowMenu` on
+  hover (always on touch); `ThreadList` groups the pinned threads above the day groups.
 - **The app tiles are panel-only.** `ViewToggle` (Mantine `SegmentedControl`, "Tiles" / "List"),
   `TileGrid` (`SimpleGrid`, a `list`) and `AppTile` (`listitem`; icon name, title, `disabled`, badge,
   actions; two or more `choices` make it a menu) in `packages/ui/src/components/Tiles.tsx` have no
@@ -138,8 +150,10 @@ npm test            # build, lint, then every unit test and every story in headl
   status line under the newest turn says Queued / Starting / Thinking / Running `<tool>`. A tool
   call is one line from `tools.ts` (`toolSummary`): the verb and its argument, or the verb alone
   for a reader without `conversation.run_details` (the server strips the input). Run details
-  (`RunInfo`: status, attempt, harness · provider, credential, model, tokens, job) show only when
-  the thread's `run_details` is true; the job link only for an admin. A
+  (status, attempt, harness · provider, credential, model, tokens, job) are the `details` rows of
+  the header's one `RowMenu`, and show only when the thread's `run_details` is true. Every header
+  ACTION is in that same menu — Reconnect (a refused stream) and Archive; the connection badge
+  beside it is status only, and shows only when the stream is not live. the job link only for an admin. A
   channel run starts with an incoming message "From `<source>` · `<reference>`"; its trigger text
   only when the server sent `prompt`. The composer always takes typing; only Send waits.
 - **One teardown.** Logout, the first 401 and a new login call `endSession()`: it clears the query

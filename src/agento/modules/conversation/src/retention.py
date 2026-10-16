@@ -123,13 +123,17 @@ def _prune_one(conn, conversation_id: int, days: int, *, budget: int) -> int:
 # requiring it to be old too means one rename keeps a dead thread out of retention for
 # ever. A thread with no messages at all has no message clock, and falls back to its own
 # `created_at`, which is the only activity it has ever had. A non-terminal user turn is
-# never idle whatever either clock says: it is waiting for an answer.
+# never idle whatever either clock says: it is waiting for an answer. Nor is a PINNED
+# thread, whatever its clock: the pin is the user saying they still want it.
 #
 # A CHANNEL thread (`user_id IS NULL`, E9 §3.5) has no user turns: its clock is the newest
 # event (`last_activity_at`), so a later run's events keep it alive past an old answer, and
 # it is never idle while one of its runs is still running.
 _IDLE = (
     "c.status = 'active' "
+    # A pinned thread is never idle: the user asked for it to stay, and archiving it
+    # anyway would retire a thread they still point at (E9 pin, plan 2026-10-15).
+    "AND c.pinned_at IS NULL "
     "AND ((c.user_id IS NOT NULL "
     "  AND COALESCE("
     "        (SELECT MAX(m.created_at) FROM message m WHERE m.conversation_id = c.id), "

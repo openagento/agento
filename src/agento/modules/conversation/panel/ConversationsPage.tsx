@@ -2,9 +2,9 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router";
 import { apiFetch, LIVE_REFETCH_MS, ApiError, useMutation, useQuery, useQueryClient, useSession, type StreamEvent } from "@agento/api";
 import {
-  AppLink, ArchiveAction, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
-  LoadingState, MenuButton, PageHeader, Reasoning, RegenerateAction, RunInfo, SelectField, SplitView, ThreadList, ToolCall, ToolGroup,
-  type ThreadLink,
+  AppLink, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
+  LoadingState, MenuButton, Rail as RailFrame, Reasoning, RegenerateAction, RowMenu, SearchToggle, SelectField, SplitView, TextField,
+  ThreadList, ToolCall, ToolGroup, type ThreadLink,
 } from "@agento/ui";
 import { DAY_GROUPS, dayGroup, inFlight, turnState, type Message, type Thread, type ThreadDetail } from "./model";
 import { buildItems, turns, type Item, type Shown, type Tool, type Turn } from "./timeline";
@@ -22,12 +22,14 @@ const threadsUrl = (scope: string) => (scope === "mine" ? "/api/conversation/thr
 
 const useViews = () => useQuery({ queryKey: ["agent-views"], queryFn: ({ signal }) => apiFetch<AgentView[]>("/api/agent-views", { signal }) });
 
-function Rail({ current, close }: { current: number | null; close: () => void }) {
+export function Rail({ current, close }: { current: number | null; close: () => void }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const admin = useSession()?.role === "admin";
   // "mine", "channels" (every channel thread) or "channel:<source>".
   const [scope, setScope] = useState("mine");
+  const [query, setQuery] = useState("");
+  const [searching, setSearching] = useState(false);
   const threads = useQuery({
     queryKey: ["threads", scope], refetchInterval: LIVE_REFETCH_MS,
     queryFn: ({ signal }) => apiFetch<Thread[]>(threadsUrl(scope), { signal }),
@@ -44,34 +46,72 @@ function Rail({ current, close }: { current: number | null; close: () => void })
     mutationFn: (viewId: number) => apiFetch<{ id: number }>("/api/conversation/threads", { method: "POST", json: { agent_view_id: viewId } }),
     onSuccess: (t) => { void qc.invalidateQueries({ queryKey: ["threads"] }); close(); navigate(`/conversations/${t.id}`); },
   });
+  const patch = useMutation({
+    mutationFn: ({ id, ...body }: { id: number; title?: string; pinned?: boolean }) =>
+      apiFetch(`/api/conversation/threads/${id}`, { method: "PATCH", json: body }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["threads"] }); },
+  });
+  const archive = useMutation({
+    mutationFn: (id: number) => apiFetch(`/api/conversation/threads/${id}`, { method: "DELETE" }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["threads"] }); },
+  });
 
   const link = (t: Thread): ThreadLink => ({
     id: t.id,
     title: t.title || `Conversation ${t.id}`,
+    // One line per row (U9): what used to be a second line is the row's hover title.
     description: [t.channel !== "panel" ? t.channel : null, t.agent_view_id ? viewName.get(t.agent_view_id) : null,
       t.status === "archived" ? "archived" : null].filter(Boolean).join(" · ") || undefined,
-    live: t.live, active: t.id === current,
+    live: t.live, active: t.id === current, pinned: t.pinned,
     onSelect: () => { close(); navigate(`/conversations/${t.id}`); },
+    // A channel thread has no owner, so it has neither pin nor rename (the route answers 404).
+    ...(t.channel === "panel" ? {
+      onPin: (pinned: boolean) => patch.mutate({ id: t.id, pinned }),
+      onRename: (title: string) => patch.mutate({ id: t.id, title: title || null as unknown as string }),
+      actions: t.status === "archived" ? [] : [{ label: "Archive", icon: "archive" as const, onClick: () => archive.mutate(t.id) }],
+    } : {}),
   });
-  const list = threads.data ?? [];
+  // ponytail: the search filters the loaded page only (`history/page_size` rows). Add a
+  // server-side `?q=` LIKE on the title when a user keeps more threads than one page.
+  const needle = query.trim().toLowerCase();
+  const list = (threads.data ?? []).filter((t) => needle === ""
+    || (t.title || `Conversation ${t.id}`).toLowerCase().includes(needle));
+  const groups = [
+    { label: "Pinned", threads: list.filter((t) => t.pinned).map(link) },
+    ...DAY_GROUPS.map((label) => ({
+      label,
+      threads: list.filter((t) => !t.pinned && dayGroup(t.last_activity_at ?? t.created_at) === label).map(link),
+    })),
+  ];
   return (
-    <div className="ag-stack">
-      <PageHeader title="Conversations" />
-      <MenuButton label="New conversation" disabled={create.isPending}
-        items={(views.data ?? []).map((v) => ({ value: String(v.id), label: v.label || v.code }))}
-        onSelect={(v) => create.mutate(Number(v))} />
-      {create.error && <p className="ag-field__error" role="alert">{message(create.error)}</p>}
+    <RailFrame top={<>
+      <div className="ag-row">
+        <MenuButton label="New conversation" variant="subtle" icon="new" disabled={create.isPending}
+          items={(views.data ?? []).map((v) => ({ value: String(v.id), label: v.label || v.code }))}
+          onSelect={(v) => create.mutate(Number(v))} />
+        <SearchToggle open={searching} onToggle={() => { setSearching(!searching); setQuery(""); }} />
+      </div>
+      {/* Each field is its own row of the rail's column, so the search and the scope have ONE
+          width and line up; a shared `ag-row` wrapped them at the rail's narrow width. */}
+      {searching && (
+        <TextField label="Search conversations" hideLabel name="thread-search" value={query}
+          onChange={(e) => setQuery(e.currentTarget.value)} placeholder="Search conversations" />
+      )}
       {admin && (
-        <SelectField label="Show" name="thread-scope" value={scope} onChange={setScope}
+        <SelectField label="Show" hideLabel name="thread-scope" value={scope} onChange={setScope}
           options={[{ value: "mine", label: "Mine" }, { value: "channels", label: "All channels" },
             ...seen.map((c) => ({ value: `channel:${c}`, label: c }))]} />
       )}
-      {threads.isPending ? <LoadingState /> : threads.error ? <ErrorState message={message(threads.error)} /> : (
-        <ThreadList groups={DAY_GROUPS.map((label) => ({
-          label, threads: list.filter((t) => dayGroup(t.last_activity_at ?? t.created_at) === label).map(link),
-        }))} />
+      {create.error && <p className="ag-field__error" role="alert">{message(create.error)}</p>}
+      {(patch.error || archive.error) && (
+        <p className="ag-field__error" role="alert">{message(patch.error ?? archive.error)}</p>
       )}
-    </div>
+    </>}>
+      {threads.isPending ? <LoadingState /> : threads.error ? <ErrorState message={message(threads.error)} /> : (
+        <ThreadList groups={groups}
+          empty={needle === "" ? "No conversations yet." : "No conversation matches that."} />
+      )}
+    </RailFrame>
   );
 }
 
@@ -107,7 +147,8 @@ export function Composer({ threadId, busy }: { threadId: number; busy: boolean }
   });
   return (
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
-      hint={busy ? "The agent is answering…" : "Enter sends. Shift+Enter adds a new line."}
+      placeholder="Ask the agent…"
+      hint={busy ? "The agent is answering…" : "Enter sends. Shift+Enter adds a new line. The agent can make mistakes."}
       error={send.error ? message(send.error) : undefined} />
   );
 }
@@ -126,6 +167,7 @@ export function ChannelComposer({ threadId, busy }: { threadId: number; busy: bo
   });
   return (
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
+      placeholder="Reply in the channel…"
       hint={busy ? "The agent is answering…" : "Your reply continues this task in the channel it came from."}
       error={send.error ? message(send.error) : undefined} />
   );
@@ -159,14 +201,15 @@ function toolView(t: Tool) {
   );
 }
 
-function shownView(item: Shown) {
+/** `actions` reaches the one message that offers them: Regenerate on the newest answer. */
+function shownView(item: Shown, actions?: ReactNode) {
   switch (item.type) {
     case "user":
       return <li key={item.key}><ChatMessage author="user" text={item.content} time={item.createdAt} /></li>;
     case "text":
-      return <li key={item.key}><ChatMessage author="assistant" text={item.text} /></li>;
+      return <li key={item.key}><ChatMessage author="assistant" text={item.text} actions={actions} /></li>;
     case "answer":
-      return <li key={item.key}><ChatMessage author="assistant" text={item.content} /></li>;
+      return <li key={item.key}><ChatMessage author="assistant" text={item.content} actions={actions} /></li>;
     case "reasoning":
       return <li key={item.key}><Reasoning text={item.text} live={item.live} /></li>;
     case "tool":
@@ -329,16 +372,24 @@ export function View({ threadId }: { threadId: number }) {
   // A terminal turn with no answer and no loaded failure still gets its error and Retry.
   const unanswered = !channel && lastUser !== -1 && turnState(rows, lastUser, false) === "failed" && !newest?.failure?.failed;
 
+  // Regenerate hangs off the newest answer's own hover row, as the chat apps do (U9), not
+  // under the whole timeline. It is offered on the same condition as before.
+  const answers = top.flatMap((i) => (i.type === "turn" ? i.items : [i]))
+    .filter((i) => i.type === "text" || i.type === "answer");
+  const newestAnswer = !channel && lastUser !== -1 && !busy && !unanswered ? answers.at(-1) : undefined;
+  const regenAction = <RegenerateAction onClick={() => regenerate.mutate(rows[lastUser].id)}
+    disabled={regenerate.isPending} />;
+
   const list: ReactNode[] = [];
   let asked = "";
   for (const item of top) {
     if (item.type !== "turn") {
       if (item.type === "user") asked = item.content;
-      list.push(shownView(item)!);
+      list.push(shownView(item, item === newestAnswer ? regenAction : undefined)!);
       continue;
     }
     if (channel) list.push(triggerView(item, detail!));
-    for (const i of item.items) list.push(shownView(i)!);
+    for (const i of item.items) list.push(shownView(i, i === newestAnswer ? regenAction : undefined)!);
     if (item.failure && !item.failure.retrying) {
       const text = asked;
       const retryable = !channel && item === newest && item.failure.failed && !busy && text !== "";
@@ -351,20 +402,26 @@ export function View({ threadId }: { threadId: number }) {
     <ChatLayout
       title={detail?.title || `Conversation ${threadId}`}
       actions={<>
-        {stream !== "live" && <ConnectionStatus state={stream} onReconnect={reconnect} />}
-        {details && run && (
-          <RunInfo rows={[
-            { label: "Status", value: run.status },
-            { label: "Attempt", value: newest?.maxAttempts ? `${run.attempt} of ${newest.maxAttempts}` : String(run.attempt) },
-            ...(run.harness ? [{ label: "Harness", value: run.provider ? `${run.harness} · ${run.provider}` : run.harness }] : []),
-            ...(run.credential ? [{ label: "Credential", value: run.credential }] : []),
-            ...(run.model ? [{ label: "Model", value: run.model }] : []),
-            ...(run.input_tokens != null ? [{ label: "Tokens in / out", value: `${run.input_tokens} / ${run.output_tokens ?? 0}` }] : []),
-            ...(admin && run.job_id ? [{ label: "Job", value: <AppLink to={`/admin/jobs?job=${run.job_id}`}>{run.job_id}</AppLink> }] : []),
-          ]} />
-        )}
-        {detail && !channel && detail.status !== "archived" && (
-          <ArchiveAction onClick={() => archive.mutate()} disabled={archive.isPending} />
+        {/* The connection is a status, not an action: it stays visible, and only when it is
+            not live. Every action of this header is in the one menu beside it. */}
+        {stream !== "live" && <ConnectionStatus state={stream} />}
+        {detail && (
+          <RowMenu label="Conversation actions"
+            details={details && run ? [
+              { label: "Status", value: run.status },
+              { label: "Attempt", value: newest?.maxAttempts ? `${run.attempt} of ${newest.maxAttempts}` : String(run.attempt) },
+              ...(run.harness ? [{ label: "Harness", value: run.provider ? `${run.harness} · ${run.provider}` : run.harness }] : []),
+              ...(run.credential ? [{ label: "Credential", value: run.credential }] : []),
+              ...(run.model ? [{ label: "Model", value: run.model }] : []),
+              ...(run.input_tokens != null ? [{ label: "Tokens in / out", value: `${run.input_tokens} / ${run.output_tokens ?? 0}` }] : []),
+              ...(admin && run.job_id ? [{ label: "Job", value: <AppLink to={`/admin/jobs?job=${run.job_id}`}>{run.job_id}</AppLink> }] : []),
+            ] : []}
+            actions={[
+              // Every ACTION of this header is in this menu; the badge beside it is status only.
+              ...(stream === "refused" ? [{ label: "Reconnect", icon: "reconnect" as const, onClick: reconnect }] : []),
+              ...(!channel && detail.status !== "archived"
+                ? [{ label: "Archive", icon: "archive" as const, onClick: () => archive.mutate(), disabled: archive.isPending }] : []),
+            ]} />
         )}
       </>}
       viewportRef={box} onScroll={onScroll}
@@ -391,13 +448,11 @@ export function View({ threadId }: { threadId: number }) {
         <ChatError title="The agent could not answer."
           onRetry={busy ? undefined : () => resend.mutate(rows[lastUser].content)} />
       )}
-      {!channel && lastUser !== -1 && !busy && !unanswered && (
-        <div className="ag-row">
-          <RegenerateAction onClick={() => regenerate.mutate(rows[lastUser].id)}
-            disabled={regenerate.isPending} />
-          {regenerate.error && <span className="ag-field__error" role="alert">{message(regenerate.error)}</span>}
-        </div>
+      {/* With no answer to hang it off (a first turn that only failed), Regenerate still shows. */}
+      {!channel && lastUser !== -1 && !busy && !unanswered && newestAnswer === undefined && (
+        <div className="ag-row">{regenAction}</div>
       )}
+      {regenerate.error && <p className="ag-field__error" role="alert">{message(regenerate.error)}</p>}
       {status && (
         <ChatStatus busy={!status.startsWith("This turn")}>{status}</ChatStatus>
       )}

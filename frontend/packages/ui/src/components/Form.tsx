@@ -17,24 +17,27 @@ export function FormSection({ title, children, onSubmit, error }: {
 }
 
 /** `contained` puts the label inside the box (`.ag-field--contained` in a miniapp). */
-type FieldProps = { label: string; hint?: string; error?: string | null; contained?: boolean };
+/** `hideLabel` keeps the label as the accessible name only — for a field whose place says what
+ *  it is (the rail's search box and scope picker), where a visible label would be noise. */
+type FieldProps = { label: string; hint?: string; error?: string | null; contained?: boolean; hideLabel?: boolean };
 
 // The hint goes under the input, as `.ag-field__hint` does in a miniapp.
 const ORDER = ["label", "input", "description", "error"] as ("label" | "input" | "description" | "error")[];
 
-export function TextField({ label, hint, error, contained: inside, ...input }: FieldProps & Omit<InputHTMLAttributes<HTMLInputElement>, "size">) {
-  return <TextInput label={label} description={hint} error={error} inputWrapperOrder={ORDER} classNames={inside ? contained : undefined} {...input} />;
+export function TextField({ label, hint, error, contained: inside, hideLabel, ...input }: FieldProps & Omit<InputHTMLAttributes<HTMLInputElement>, "size">) {
+  return <TextInput label={hideLabel ? undefined : label} aria-label={hideLabel ? label : undefined} description={hint} error={error}
+    inputWrapperOrder={ORDER} classNames={inside ? contained : undefined} {...input} />;
 }
 
 // A Mantine combobox, so the open list has the theme's look (a native list is drawn by the OS).
 // `searchable` filters the list as the user types; `options` may be grouped.
 type Option = { value: string; label: string };
-export function SelectField({ label, hint, error, contained: inside, options, value, onChange, name, disabled, searchable, placeholder }: FieldProps & {
+export function SelectField({ label, hint, error, contained: inside, hideLabel, options, value, onChange, name, disabled, searchable, placeholder }: FieldProps & {
   options: (Option | { group: string; items: Option[] })[]; value?: string; onChange?: (value: string) => void;
   name?: string; disabled?: boolean; searchable?: boolean; placeholder?: string;
 }) {
   return (
-    <Select label={label} description={hint} error={error} data={options} inputWrapperOrder={ORDER} name={name} classNames={inside ? contained : undefined}
+    <Select label={hideLabel ? undefined : label} aria-label={hideLabel ? label : undefined} description={hint} error={error} data={options} inputWrapperOrder={ORDER} name={name} classNames={inside ? contained : undefined}
       disabled={disabled} value={value || null} onChange={(v) => v !== null && onChange?.(v)} allowDeselect={false}
       searchable={searchable} placeholder={placeholder} nothingFoundMessage={searchable ? "Nothing found" : undefined} />
   );

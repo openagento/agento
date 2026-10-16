@@ -25,7 +25,8 @@ def _conversation_json(row: dict) -> dict:
             "status": row["status"], "created_at": _iso(row["created_at"]),
             "updated_at": _iso(row["updated_at"]), "channel": row["channel"],
             "external_ref": row["external_ref"],
-            "last_activity_at": _iso(row["last_activity_at"]), "live": bool(row.get("live"))}
+            "last_activity_at": _iso(row["last_activity_at"]), "live": bool(row.get("live")),
+            "pinned": row["pinned_at"] is not None}
 
 
 def _run_json(row: dict, details: bool) -> dict:
@@ -122,6 +123,32 @@ def show(req: Request) -> Response:
     body["runs"] = [_run_json(r, details)
                     for r in service.list_runs(req.conn, conversation_id=row["id"])]
     return Response(200, body)
+
+
+def update(req: Request) -> Response:
+    """Rename (`title`) and pin (`pinned`) - the two things a user may change on a thread.
+
+    Both are the owner's own view of the thread, so neither is offered on a channel thread,
+    which has no owner (`user_id IS NULL`, E9 3.5).
+    """
+    row = _visible(req)
+    if row is None or row["user_id"] is None:
+        return error(404, "not found")
+    body = req.json if isinstance(req.json, dict) else {}
+    if "title" not in body and "pinned" not in body:
+        return error(400, "title or pinned is required")
+    if "pinned" in body and not isinstance(body["pinned"], bool):
+        return error(400, "pinned must be a boolean")
+    # Everything is validated BEFORE the write, and the write is one transaction: a refused
+    # field must not leave the other one saved.
+    try:
+        title = service.check_title(body["title"]) if "title" in body else service.KEEP
+        service.update_thread(req.conn, row["id"], user_id=row["user_id"], title=title,
+                              pinned=body.get("pinned"))
+    except service.SubmissionError as exc:
+        return error(exc.status, str(exc))
+    return Response(200, _conversation_json(
+        dict(_visible(req) or row, live=service.is_live(req.conn, conversation_id=row["id"]))))
 
 
 def destroy(req: Request) -> Response:

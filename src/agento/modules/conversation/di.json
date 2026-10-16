@@ -49,6 +49,13 @@
       "acl": "self"
     },
     {
+      "method": "PATCH",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})",
+      "handler": "src.routes.update",
+      "json_body": true,
+      "acl": "self"
+    },
+    {
       "method": "DELETE",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})",
       "handler": "src.routes.destroy",

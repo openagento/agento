@@ -17,7 +17,7 @@ the four identifiers and the event contract. This page is the module's operation
 
 | Table | Holds |
 | --- | --- |
-| `conversation` | One thread: its owner, its agent_view, `active` or `archived`. |
+| `conversation` | One thread: its owner, its agent_view, `active` or `archived`, and `pinned_at` (NULL = not pinned). |
 | `message` | One turn. A `user` row carries the job bookkeeping (`job_id`, `execution_id`, `job_state`); a CHECK keeps that off an `assistant` row. |
 | `execution` | One attempt at answering a turn. `execution_id` is unique; `(job_id, attempt)` is **not** — the pool-wait path refunds an attempt, so two real attempts can carry one number. The mint writes the attempt's harness, provider, model and `credential_id` (an id; the label is read through a join). |
 | `conversation_event` | The append-only log a stream replays. Its `id` is the cursor, and it is global, not per-thread. `UNIQUE (source_kind, source_id)` makes the relay idempotent. |
@@ -64,10 +64,21 @@ tool's input or output) before the per-run byte cap counts it.
 | GET | `/api/conversation/threads` | the caller's active threads; `?scope=channels[&channel=<source>][&before=<cursor>]` lists the channel threads instead (admins only, a non-admin gets `[]`), newest activity first, each row with a `cursor` for the next page |
 | GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (harness, provider, credential label, model, tokens and job id only with `run_details`) |
 | GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&limit=<n>`: one page of events, oldest first, `{events, has_older, newest_id}`; a `before` at or below the prune watermark is `409 cursor_expired` |
+| PATCH | `/api/conversation/threads/{id}` | `{title?, pinned?}`: renames the thread, pins or unpins it — the refreshed thread; `400` on an empty body, a title past 255 characters or a non-boolean `pinned`, `404` on a thread this caller cannot see or that has no owner, `409` past `MAX_PINNED` (50) pinned threads |
 | DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path) |
 | GET | `/api/conversation/threads/{id}/messages` | its messages |
 | POST | `/api/conversation/threads/{id}/messages` | `201` on the first submission, `200` on a repeat; in a **channel** thread it posts an operator reply — `403` without `conversation.channel_write`, `409 read_only` when the thread has no `external_ref` |
 | POST | `/api/conversation/threads/{id}/regenerate` | `{message_id, client_message_id}`: asks that user message again as a new turn — `201`, `200` on a repeat of the same `client_message_id`, `404` when the id is not a user message of this thread |
+
+### The owner list, pins and search
+
+The owner list is one page (`history/page_size`) with no pagination, ordered pinned-first
+(`pinned_at IS NULL`, then `pinned_at DESC`, then activity). Pinned-first over one LIMIT could
+hide every new thread, so two bounds hold it open: a user may pin at most `MAX_PINNED` (50)
+threads, and the query asks for `page_size + MAX_PINNED` rows — a full set of pins still leaves a
+whole page of unpinned ones. The cap is an aggregate, so `set_pinned` counts and writes under one
+per-user lock (`SELECT id FROM user … FOR UPDATE`); lock order is the user row, then the
+conversation row (SCL-1). Search is in the browser over the loaded page — not a route.
 
 The PRD writes these under `/api/conversations`. A module owns `/api/<its own module name>/`
 and nothing else ([panel.md](../architecture/panel.md#module-routes)), so a module named
@@ -411,7 +422,7 @@ is not also deleted in the same run.
 | Pass | Config | What it does |
 |---|---|---|
 | Prune | `conversation/retention/event_days` (90) | Removes `conversation_event` rows past the window, per conversation, and raises that conversation's prune watermark. Floor: 1 day. |
-| Auto-archive | `conversation/retention/idle_days` (90) | Archives a panel thread whose newest message is older than the window (a thread with no messages falls back to its own `created_at`; `conversation.updated_at` does not vote), through `service.archive(..., reason="idle")`. Skips one whose newest **user** turn is not `terminal`. Re-checked per thread under the conversation row lock the posting path takes, so a post that lands mid-pass keeps the thread. A **channel** thread uses `COALESCE(last_activity_at, created_at)` instead (every timeline write moves it) and is skipped while one of its runs is `running`. |
+| Auto-archive | `conversation/retention/idle_days` (90) | Skips a **pinned** thread: a pin is the user saying to keep it. Archives a panel thread whose newest message is older than the window (a thread with no messages falls back to its own `created_at`; `conversation.updated_at` does not vote), through `service.archive(..., reason="idle")`. Skips one whose newest **user** turn is not `terminal`. Re-checked per thread under the conversation row lock the posting path takes, so a post that lands mid-pass keeps the thread. A **channel** thread uses `COALESCE(last_activity_at, created_at)` instead (every timeline write moves it) and is skipped while one of its runs is `running`. |
 | Delete | `conversation/retention/archived_days` (365) | Deletes an archived thread and everything under it, one transaction each. |
 | Old runs | `conversation/retention/event_days` (90) | Deletes every `execution` row that is not `running` and **finished** past the window, with its `execution_delta` rows — oldest first, in batches. One age bound for every run, because an active channel thread lives as long as its issue keeps running (CODE-8). The clock is `finished_at`: a run's events age by `created_at`, so a run that started long ago and finished today keeps its row as long as its events. A run with a finished toolbox call that the relay has not projected yet is kept, because the relay finds the thread through the run's row. |
 
