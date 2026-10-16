@@ -152,7 +152,7 @@ Button. Modifiers: --primary, --subtle, --danger. Use a real <button>.
   color: var(--ag-color-surface-text);
   background: var(--ag-color-surface);
   border: 1px solid var(--ag-color-border);
-  border-radius: var(--ag-radius-md);
+  border-radius: var(--ag-radius-default);
   cursor: pointer;
   user-select: none;
 }
@@ -189,7 +189,7 @@ Modifier --contained puts the label inside the box, in small text above the valu
   color: var(--ag-color-text);
   background: var(--ag-color-surface);
   border: 1px solid var(--ag-color-border);
-  border-radius: var(--ag-radius-md);
+  border-radius: var(--ag-radius-default);
   transition: border-color 100ms ease;
 }
 textarea.ag-field__input { height: auto; padding-top: 8px; padding-bottom: 8px; line-height: var(--ag-line-height); }

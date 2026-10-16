@@ -20,11 +20,11 @@ export {
 } from "./components/Tiles";
 export { DataTable, type Column } from "./components/DataTable";
 export { AppLink } from "./components/Link";
-export { RowMenu, type RowAction } from "./components/RowMenu";
+export { RowMenu, type RowAction, type RowDetail } from "./components/RowMenu";
 export { ConfirmDialog } from "./components/ConfirmDialog";
 export { FormSection, TextField, SelectField } from "./components/Form";
 export { ConnectionStatus, type ConnectionState } from "./components/ConnectionStatus";
 export {
-  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, RunInfo, ToolCall, ToolGroup,
+  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, ToolCall, ToolGroup,
 } from "./components/Chat";
-export { MenuButton, SplitView, ThreadList, type ThreadLink } from "./components/ChatShell";
+export { MenuButton, Rail, SearchToggle, SplitView, ThreadList, type ThreadLink } from "./components/ChatShell";

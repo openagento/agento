@@ -1,10 +1,13 @@
 // The chat screen frame: threads on the left, the open thread on the right. Below the `sm`
 // breakpoint the thread list moves into a Drawer behind a Burger (U9).
-import { Box, Burger, Button, Drawer, Menu, NavLink, Stack, Text } from "@mantine/core";
+import { Box, Burger, Button, Drawer, Menu, Text, Tooltip, UnstyledButton } from "@mantine/core";
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
-import { ChevronDown } from "lucide-react";
-import type { ReactNode } from "react";
+import { ChevronDown, PinOff, Search, SquarePen, X } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import classes from "./Chat.module.css";
+import { EditableTitle } from "./Headers";
+import { IconAction } from "./IconAction";
+import { RowMenu, type RowAction } from "./RowMenu";
 
 /** `nav` gets `close` so a pick in the narrow Drawer also shuts it. It is called, never
  *  rendered as a component (UI-6). */
@@ -30,48 +33,115 @@ export function SplitView({ navLabel, nav, children }: {
   );
 }
 
+/** The rail's fixed head (new conversation, search, scope) above its scrolling thread list. */
+export function Rail({ top, children }: { top: ReactNode; children: ReactNode }) {
+  return (
+    <>
+      <div className={classes.railTop}>{top}</div>
+      <div className={classes.railList}>{children}</div>
+    </>
+  );
+}
+
+/** The rail's search toggle. The icon lives here, not in the module panel (UI-4 in spirit). */
+export function SearchToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <IconAction label={open ? "Close search" : "Search conversations"}
+      icon={open ? <X size={16} /> : <Search size={16} />} onClick={onToggle} />
+  );
+}
+
 export interface ThreadLink {
   id: number | string;
   title: string;
-  description?: ReactNode;
+  /** The row's hover title: the channel and the agent view. Not a second line (U9). */
+  description?: string;
   live?: boolean;
   active?: boolean;
+  pinned?: boolean;
   onSelect: () => void;
+  /** Given: the row offers Pin/Unpin, in its menu and as a hover icon when pinned. */
+  onPin?: (pinned: boolean) => void;
+  /** Given: the row offers Rename, which opens the title as a field in place. */
+  onRename?: (title: string) => void;
+  /** Anything else the row may do (Archive). */
+  actions?: RowAction[];
 }
 
-/** Threads in day groups ("Today", "Yesterday", …). The open one is `aria-current`. */
+/** One row: the title opens the thread, the rest shows on hover (UI-7). */
+function ThreadRow({ thread }: { thread: ThreadLink }) {
+  const [renaming, setRenaming] = useState(false);
+  const actions: RowAction[] = [
+    ...(thread.onRename ? [{ label: "Rename", icon: "rename" as const, onClick: () => setRenaming(true) }] : []),
+    ...(thread.onPin ? [{ label: thread.pinned ? "Unpin" : "Pin", icon: thread.pinned ? ("unpin" as const) : ("pin" as const),
+         onClick: () => thread.onPin!(!thread.pinned) }] : []),
+    ...(thread.actions ?? []),
+  ];
+  return (
+    <div className={`${classes.threadRow} ${thread.active ? classes.threadActive : ""}`}>
+      {renaming && thread.onRename ? (
+        <div className={classes.threadTitle}>
+          <EditableTitle value={thread.title} label="Conversation title" maxLength={255} startEditing
+            onDone={() => setRenaming(false)} onSave={thread.onRename} />
+        </div>
+      ) : (
+        <Tooltip label={thread.description} disabled={!thread.description} withArrow openDelay={400}>
+          <UnstyledButton className={classes.threadTitle} onClick={thread.onSelect}
+            aria-current={thread.active ? "page" : undefined}>
+            <Text size="sm" truncate>{thread.title}</Text>
+          </UnstyledButton>
+        </Tooltip>
+      )}
+      {/* While the menu is open its target keeps focus, so `:focus-within` holds the row open. */}
+      <div className={classes.threadActions}>
+        {thread.live && <Text size="xs" c="green" aria-label="running">●</Text>}
+        {thread.pinned && thread.onPin && (
+          <IconAction label="Unpin" icon={<PinOff size={14} />} onClick={() => thread.onPin!(false)} />
+        )}
+        <RowMenu actions={actions} label="Conversation actions" />
+      </div>
+    </div>
+  );
+}
+
+/** Threads in groups ("Pinned", "Today", …). The open one is `aria-current`. */
 export function ThreadList({ groups, empty = "No conversations yet." }: {
   groups: { label: string; threads: ThreadLink[] }[]; empty?: ReactNode;
 }) {
   const shown = groups.filter((g) => g.threads.length > 0);
   if (shown.length === 0) return <Text size="sm" c="dimmed">{empty}</Text>;
   return (
-    <Stack gap="sm">
+    <>
       {shown.map((g) => (
-        <Box key={g.label}>
-          <Text size="xs" c="dimmed" fw={600} px="xs" pb="calc(var(--mantine-spacing-xs) / 4)">{g.label}</Text>
-          {g.threads.map((t) => (
-            <NavLink key={t.id} component="button" color="gray" active={t.active} label={t.title}
-              description={t.description} aria-current={t.active ? "page" : undefined} onClick={t.onSelect}
-              rightSection={t.live ? <Text size="xs" c="green" aria-label="running">●</Text> : undefined} />
-          ))}
+        <Box key={g.label} className={classes.threadGroup}>
+          <Text size="xs" c="dimmed" fw={600} className={classes.groupLabel}>{g.label}</Text>
+          {g.threads.map((t) => <ThreadRow key={t.id} thread={t} />)}
         </Box>
       ))}
-    </Stack>
+    </>
   );
 }
 
-/** One button when there is one choice; a Menu when there are more ("New conversation" in a view). */
-export function MenuButton({ label, items, onSelect, disabled }: {
-  label: string; items: { value: string; label: string }[]; onSelect: (value: string) => void; disabled?: boolean;
+/** One button when there is one choice; a Menu when there are more ("New conversation" in a view).
+ *  `icon` is a name, not a node: a module panel resolves no icon package of its own (UI-4 in spirit). */
+export function MenuButton({ label, items, onSelect, disabled, icon, variant }: {
+  label: string; items: { value: string; label: string }[]; onSelect: (value: string) => void;
+  disabled?: boolean; icon?: "new"; variant?: "filled" | "subtle";
 }) {
+  const node = icon === "new" ? <SquarePen size={16} /> : undefined;
   if (items.length <= 1) {
-    return <Button fullWidth disabled={disabled || items.length === 0} onClick={() => items[0] && onSelect(items[0].value)}>{label}</Button>;
+    return (
+      <Button fullWidth justify={node ? "flex-start" : undefined} variant={variant} color={variant === "subtle" ? "gray" : undefined}
+        leftSection={node} disabled={disabled || items.length === 0}
+        onClick={() => items[0] && onSelect(items[0].value)}>{label}</Button>
+    );
   }
   return (
     <Menu position="bottom-start" width="target">
       <Menu.Target>
-        <Button fullWidth disabled={disabled} rightSection={<ChevronDown size={14} />}>{label}</Button>
+        <Button fullWidth justify={node ? "space-between" : undefined} variant={variant}
+          color={variant === "subtle" ? "gray" : undefined} leftSection={node} disabled={disabled}
+          rightSection={<ChevronDown size={14} />}>{label}</Button>
       </Menu.Target>
       <Menu.Dropdown>
         {items.map((i) => <Menu.Item key={i.value} onClick={() => onSelect(i.value)}>{i.label}</Menu.Item>)}
@@ -79,5 +149,3 @@ export function MenuButton({ label, items, onSelect, disabled }: {
     </Menu>
   );
 }
-
-

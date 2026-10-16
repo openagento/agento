@@ -215,6 +215,7 @@ def test_the_shipped_conversation_module_loads_its_own_routes(etc, tmp_path):
         "POST ^/api/conversation/threads$",
         "GET ^/api/conversation/threads$",
         "GET ^/api/conversation/threads/(?P<id>[0-9]{1,19})$",
+        "PATCH ^/api/conversation/threads/(?P<id>[0-9]{1,19})$",
         "DELETE ^/api/conversation/threads/(?P<id>[0-9]{1,19})$",
         "GET ^/api/conversation/threads/(?P<id>[0-9]{1,19})/messages$",
         "GET ^/api/conversation/threads/(?P<id>[0-9]{1,19})/events$",

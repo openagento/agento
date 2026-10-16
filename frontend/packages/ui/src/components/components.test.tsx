@@ -4,7 +4,7 @@ import { AgentoUiProvider } from "../Provider";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 import { Markdown } from "./Markdown";
-import { ChatComposer, ChatError, RunInfo, ToolCall } from "./Chat";
+import { ChatComposer, ChatError, ToolCall } from "./Chat";
 import { ArchiveAction, DeleteAction, EndAction, MakeCurrentAction, OpenAction, RegenerateAction } from "./IconAction";
 import { CopyButton } from "./CopyButton";
 import { MenuButton, ThreadList } from "./ChatShell";
@@ -174,10 +174,12 @@ describe("icon actions (RULES.md UI-7)", () => {
     expect(color("Delete")).not.toBe(color("Open"));
   });
 
-  it("the run details icon opens its rows", async () => {
-    render(<RunInfo rows={[{ label: "Harness", value: "codex · openai" }, { label: "Credential", value: "team-1" }]} />,
+  it("one menu holds the run details and the actions", async () => {
+    render(<RowMenu label="Conversation actions" actions={[{ label: "Archive", onClick: () => {} }]}
+      details={[{ label: "Harness", value: "codex · openai" }, { label: "Credential", value: "team-1" }]} />,
       { wrapper: AgentoUiProvider });
-    fireEvent.click(screen.getByRole("button", { name: "Run details" }));
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Archive" })).toBeInTheDocument();
     expect(await screen.findByText("codex · openai")).toBeInTheDocument();
     expect(screen.getByText("team-1")).toBeInTheDocument();
   });

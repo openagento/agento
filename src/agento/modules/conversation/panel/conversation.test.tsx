@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { endSession, hub, login, queryClient as qc, QueryClientProvider, type StreamEvent, type StreamHandlers } from "@agento/api";
 import { AgentoUiProvider } from "@agento/ui";
-import { Composer, View } from "./ConversationsPage";
+import { Composer, Rail, View } from "./ConversationsPage";
 import { IDLE_POLL_MS, RUN_POLL_MS, type Message } from "./model";
 import { MAX_EVENTS } from "./timeline";
 import { REFETCH_DEBOUNCE_MS, useConversation } from "./useConversation";
@@ -19,7 +19,7 @@ const thread = (channel = "panel") => ({
 
 /** A fetch double that answers by path (+ query); an unknown path is a 404, as the API would. */
 function api(routes: Record<string, () => unknown>) {
-  return vi.fn(async (url: URL | string) => {
+  return vi.fn(async (url: URL | string, _init?: RequestInit) => {
     const u = new URL(String(url), "http://panel");
     const route = routes[u.pathname + u.search];
     return route ? new Response(JSON.stringify(route()), { status: 200 }) : new Response("{}", { status: 404 });
@@ -314,7 +314,7 @@ describe("the thread view", () => {
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
   });
 
-  it("with run details the info icon names harness, provider, credential and model; Archive is an icon", async () => {
+  it("with run details the info icon names harness, provider, credential and model; Archive is in the row menu", async () => {
     captureHub();
     vi.stubGlobal("fetch", api({
       "/api/conversation/threads/5/timeline": () => page([]),
@@ -324,12 +324,32 @@ describe("the thread view", () => {
         credential: "team-1", model: "gpt-x" }] }),
     }));
     render(<View threadId={5} />, { wrapper });
-    expect(await screen.findByRole("button", { name: "Archive" })).toHaveTextContent("");
-    fireEvent.click(screen.getByRole("button", { name: "Run details" }));
+    // The header keeps one overflow menu (U9), not a row of icons.
+    fireEvent.click(await screen.findByRole("button", { name: "Conversation actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Archive" })).toBeInTheDocument();
     expect(await screen.findByText("codex · openai")).toBeInTheDocument();
     expect(screen.getByText("team-1")).toBeInTheDocument();
     expect(screen.getByText("gpt-x")).toBeInTheDocument();
   });
+
+  it("a refused stream offers Reconnect in the SAME menu, and the badge stays visible", async () => {
+    const opened = captureHub();
+    const reconnect = vi.spyOn(hub, "reconnect").mockImplementation(() => {});
+    vi.stubGlobal("fetch", api({
+      "/api/conversation/threads/5/timeline": () => page([]),
+      "/api/conversation/threads/5/messages": () => [],
+      "/api/conversation/threads/5": () => thread(),
+    }));
+    render(<View threadId={5} />, { wrapper });
+    await vi.waitFor(() => expect(opened).toHaveLength(1));
+    act(() => { opened[0].handlers.onState("refused"); });
+
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Reconnect" }));
+    expect(reconnect).toHaveBeenCalled();
+  });
+
 });
 
 describe("the cap while reading history", () => {
@@ -741,5 +761,83 @@ describe("Regenerate and the channel composer", () => {
     await vi.waitFor(() => expect(posts(fetchMock, "/api/conversation/threads/5/messages")).toHaveLength(1));
     expect(JSON.parse(String((posts(fetchMock, "/api/conversation/threads/5/messages")[0][1] as RequestInit).body)))
       .toMatchObject({ content: "odpowiedź operatora" });
+  });
+});
+
+
+describe("the rail", () => {
+  const row = (id: number, title: string, extra: Record<string, unknown> = {}) => ({
+    id, agent_view_id: 1, title, status: "active", created_at: "2026-10-15T10:00:00Z",
+    updated_at: "2026-10-15T10:00:00Z", channel: "panel", external_ref: null,
+    last_activity_at: new Date().toISOString(), live: false, pinned: false, ...extra,
+  });
+  const session = (role = "user") => ({
+    "/api/session": () => ({ user: { id: 1, username: "u", role, is_active: true, acl: [] }, csrf_token: "t", expires_at: "x" }),
+    "/api/agent-views": () => [{ id: 1, code: "ops", label: "Ops" }],
+  });
+  const rail = (rows: unknown[]) => api({ ...session(), "/api/conversation/threads": () => rows });
+
+  afterEach(() => endSession());
+
+  it("groups a pinned thread above the day groups", async () => {
+    vi.stubGlobal("fetch", rail([row(1, "Plain"), row(2, "Kept", { pinned: true })]));
+    await login("a", "b");
+    render(<Rail current={null} close={() => {}} />, { wrapper });
+    expect(await screen.findByText("Pinned")).toBeInTheDocument();
+    const labels = screen.getAllByText(/^(Pinned|Today|Kept|Plain)$/).map((e) => e.textContent);
+    expect(labels.indexOf("Kept")).toBeLessThan(labels.indexOf("Plain"));
+  });
+
+  it("the search box filters the loaded list by title", async () => {
+    vi.stubGlobal("fetch", rail([row(1, "Invoice mail"), row(2, "Deploy notes")]));
+    await login("a", "b");
+    render(<Rail current={null} close={() => {}} />, { wrapper });
+    expect(await screen.findByText("Deploy notes")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Search conversations" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Search conversations" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Search conversations" }), { target: { value: "invo" } });
+    expect(screen.getByText("Invoice mail")).toBeInTheDocument();
+    expect(screen.queryByText("Deploy notes")).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "Search conversations" }), { target: { value: "zzz" } });
+    expect(await screen.findByText("No conversation matches that.")).toBeInTheDocument();
+  });
+
+  it("the row menu pins the conversation", async () => {
+    const fetchMock = rail([row(1, "Invoice mail")]);
+    vi.stubGlobal("fetch", fetchMock);
+    await login("a", "b");
+    render(<Rail current={null} close={() => {}} />, { wrapper });
+    fireEvent.click(await screen.findByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Pin" }));
+    const patch = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH");
+    await vi.waitFor(() => expect(patch()).toHaveLength(1));
+    expect(JSON.parse(String(patch()[0][1]!.body))).toEqual({ pinned: true });
+  });
+
+  it("renaming a row PATCHes the title", async () => {
+    const fetchMock = rail([row(1, "Invoice mail")]);
+    vi.stubGlobal("fetch", fetchMock);
+    await login("a", "b");
+    render(<Rail current={null} close={() => {}} />, { wrapper });
+    fireEvent.click(await screen.findByRole("button", { name: "Conversation actions" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename" }));
+    const field = await screen.findByRole("textbox", { name: "Conversation title" });
+    fireEvent.change(field, { target: { value: "PZU mail" } });
+    fireEvent.keyDown(field, { key: "Enter" });
+    const patch = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH");
+    await vi.waitFor(() => expect(patch()).toHaveLength(1));
+    expect(JSON.parse(String(patch()[0][1]!.body))).toEqual({ title: "PZU mail" });
+  });
+
+  it("a channel thread offers neither pin nor rename (it has no owner)", async () => {
+    vi.stubGlobal("fetch", api({
+      ...session("admin"),
+      "/api/conversation/threads?scope=channels": () => [row(3, "PROJ-1", { channel: "jira" })],
+      "/api/conversation/threads": () => [row(3, "PROJ-1", { channel: "jira" })],
+    }));
+    await login("a", "b");
+    render(<Rail current={null} close={() => {}} />, { wrapper });
+    expect(await screen.findByText("PROJ-1")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Conversation actions" })).toBeNull();
   });
 });

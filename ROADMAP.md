@@ -139,6 +139,9 @@ backend route, so these gaps stay open, each needing a route first:
 
 - **conversation messages are not paged**: the messages route answers the oldest 100 rows and takes
   no `after`, so a long thread shows only its start;
+- **the owner conversation list is bounded, not paged**: one page plus the pin cap
+  (`MAX_PINNED = 50`, D-CONV-PIN-1). A user who wants more pins, or a rail that loads more, needs a
+  keyset cursor on the owner list like the channel list already has;
 - **no module list for the panel**: there is no `GET /api/admin/modules`, so the navigation knows a
   module only through its own probe route (fail closed: a module with no GET route has no screen);
 - ~~**no config screen**~~ — done 2026-10-02: the admin TUI screens are in the panel

@@ -75,6 +75,9 @@ const unscaled = (v: string) => v.replace(/^calc\(([\d.]+rem) \* var\(--mantine-
 const pick = (o: Record<string, string>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, unscaled(v)]));
 
 export const radius = pick(theme.radius);
+/** The theme's `defaultRadius`, which every Mantine control takes unless it is told another.
+ *  The twin of such a control uses THIS, not a named step, or the two drift (UI-1, UI-2). */
+export const defaultRadius = radius[theme.defaultRadius as keyof typeof radius];
 export const fontSize = pick(theme.fontSizes);
 /** Mantine's spacing scale, which prose margins use (`space` below is the kit's own). */
 export const spacing = pick(theme.spacing);
@@ -98,6 +101,7 @@ function colorBlock(map: Record<string, string>): string {
 export function variablesCss(): string {
   const rest = [
     ...Object.entries(radius).map(([k, v]) => `  --ag-radius-${k}: ${v};`),
+    `  --ag-radius-default: ${defaultRadius};`,
     ...Object.entries(space).map(([k, v]) => `  --ag-space-${k}: ${v};`),
     `  --ag-font-family: ${theme.fontFamily};`,
     `  --ag-font-mono: ${theme.fontFamilyMonospace};`,

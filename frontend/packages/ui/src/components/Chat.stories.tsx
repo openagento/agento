@@ -2,9 +2,10 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import { useState } from "react";
 import {
-  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, RunInfo, ToolCall, ToolGroup,
+  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, ToolCall, ToolGroup,
 } from "./Chat";
 import { SplitView, ThreadList } from "./ChatShell";
+import { RowMenu } from "./RowMenu";
 
 const meta: Meta = { title: "Components/Chat" };
 export default meta;
@@ -54,7 +55,6 @@ export const Status: StoryObj = {
     <>
       <ChatStatus>Thinking…</ChatStatus>
       <Reasoning text="" live />
-      <RunInfo rows={[{ label: "Model", value: "claude-sonnet" }, { label: "Tokens in / out", value: "1200 / 300" }]} />
     </>
   ),
 };
@@ -65,7 +65,7 @@ function Screen() {
     <SplitView navLabel="Conversations" nav={() => (
       <ThreadList groups={[{ label: "Today", threads: [{ id: 1, title: "List the files", description: "Support", live: true, active: true, onSelect: () => undefined }] }]} />
     )}>
-      <ChatLayout title="List the files" actions={<RunInfo rows={[{ label: "Attempt", value: "1 of 3" }]} />}
+      <ChatLayout title="List the files" actions={<RowMenu label="Conversation actions" details={[{ label: "Attempt", value: "1 of 3" }]} actions={[]} />}
         footer={<ChatComposer value={text} onChange={setText} onSend={() => setText("")} canSend hint="Enter sends." />}>
         <Turn />
       </ChatLayout>

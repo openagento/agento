@@ -5,6 +5,8 @@ import type { JobState } from "@agento/ui";
 export interface Thread {
   id: number; agent_view_id: number | null; title: string | null; status: string; created_at: string | null;
   updated_at: string | null; channel: string; external_ref: string | null; last_activity_at: string | null; live: boolean;
+  /** The owner pinned it to the top of their rail. A channel thread has no owner, so never. */
+  pinned?: boolean;
 }
 
 /** Without `run_details` a row carries only the first five fields (B8). */
