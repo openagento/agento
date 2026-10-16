@@ -1,5 +1,6 @@
 """Tests for bootstrap config resolution — get_module_config()."""
 import json
+import os
 from pathlib import Path
 
 from agento.framework.bootstrap import bootstrap, get_module_config
@@ -81,6 +82,10 @@ class TestGetModuleConfig:
             config={"host": {"type": "string"}},
             config_defaults={"host": "v2"},
         )
+        # config.json is cached by mtime; both writes can land in the same clock tick.
+        config_json = tmp_path / "mymod" / "config.json"
+        st = config_json.stat()
+        os.utime(config_json, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000_000))
         bootstrap(core_dir=str(tmp_path), user_dir="/nonexistent")
         assert get_module_config("mymod")["host"] == "v2"
 

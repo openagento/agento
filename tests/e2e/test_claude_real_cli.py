@@ -50,6 +50,7 @@ def _claude_credential() -> dict | None:
 
 pytestmark = [
     pytest.mark.e2e,
+    base.E2E_STACK,
     pytest.mark.skipif(not base._E2E_ENABLED, reason="set AGENTO_E2E=1 to run"),
     pytest.mark.skipif(base._E2E_ENABLED and not _VIEW, reason="no agent_view built"),
 ]

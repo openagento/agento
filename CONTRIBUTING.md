@@ -71,6 +71,14 @@ uv run pytest -q
 cd src/agento/toolbox && npm test
 ```
 
+Both suites run in parallel. pytest uses `pytest-xdist` with one worker per CPU (`-n auto` in
+`pyproject.toml`); each worker gets its own MySQL database (`cron_agent_test_gw0`, …), so
+integration tests do not share rows. To debug one test in-process, pass `-n 0`. Tests that must
+not overlap share an `xdist_group` (`--dist loadgroup`): the DB stress tests (`db_stress`), the
+e2e tests that steer the stack's agent_view and credentials (`e2e_stack`), and the Pi e2e tests,
+which use one mock MCP port (`e2e_pi`). Vitest runs one fork per CPU, up to 10
+(`src/agento/toolbox/vitest.config.js`).
+
 ## Code Style
 
 - **Python:** Formatted and linted with [ruff](https://docs.astral.sh/ruff/) (line-length 120). Type checked with basedpyright.

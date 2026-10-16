@@ -3,54 +3,27 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from agento.framework.cli._env import parse_env_file
 
 
 class TestParseEnvFile:
-    def test_simple_key_value(self, tmp_path: Path):
+    @pytest.mark.parametrize(("text", "expected"), [
+        pytest.param("KEY=value\n", {"KEY": "value"}, id="simple_key_value"),
+        pytest.param("# comment\nKEY=value\n", {"KEY": "value"}, id="skips_comments"),
+        pytest.param("\nKEY=value\n\n", {"KEY": "value"}, id="skips_empty_lines"),
+        pytest.param('KEY="quoted value"\n', {"KEY": "quoted value"}, id="strips_double_quotes"),
+        pytest.param("KEY='quoted value'\n", {"KEY": "quoted value"}, id="strips_single_quotes"),
+        pytest.param("KEY=\n", {"KEY": ""}, id="empty_value"),
+        pytest.param("KEY=a=b=c\n", {"KEY": "a=b=c"}, id="value_with_equals"),
+        pytest.param("A=1\nB=2\nC=3\n", {"A": "1", "B": "2", "C": "3"}, id="multiple_entries"),
+        pytest.param("INVALID\nKEY=value\n", {"KEY": "value"}, id="skips_lines_without_equals"),
+    ])
+    def test_parses(self, tmp_path: Path, text, expected):
         env_file = tmp_path / ".env"
-        env_file.write_text("KEY=value\n")
-        assert parse_env_file(env_file) == {"KEY": "value"}
-
-    def test_skips_comments(self, tmp_path: Path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("# comment\nKEY=value\n")
-        assert parse_env_file(env_file) == {"KEY": "value"}
-
-    def test_skips_empty_lines(self, tmp_path: Path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("\nKEY=value\n\n")
-        assert parse_env_file(env_file) == {"KEY": "value"}
-
-    def test_strips_double_quotes(self, tmp_path: Path):
-        env_file = tmp_path / ".env"
-        env_file.write_text('KEY="quoted value"\n')
-        assert parse_env_file(env_file) == {"KEY": "quoted value"}
-
-    def test_strips_single_quotes(self, tmp_path: Path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("KEY='quoted value'\n")
-        assert parse_env_file(env_file) == {"KEY": "quoted value"}
-
-    def test_empty_value(self, tmp_path: Path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("KEY=\n")
-        assert parse_env_file(env_file) == {"KEY": ""}
-
-    def test_value_with_equals(self, tmp_path: Path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("KEY=a=b=c\n")
-        assert parse_env_file(env_file) == {"KEY": "a=b=c"}
-
-    def test_multiple_entries(self, tmp_path: Path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("A=1\nB=2\nC=3\n")
-        assert parse_env_file(env_file) == {"A": "1", "B": "2", "C": "3"}
+        env_file.write_text(text)
+        assert parse_env_file(env_file) == expected
 
     def test_nonexistent_file(self, tmp_path: Path):
         assert parse_env_file(tmp_path / "missing") == {}
-
-    def test_skips_lines_without_equals(self, tmp_path: Path):
-        env_file = tmp_path / ".env"
-        env_file.write_text("INVALID\nKEY=value\n")
-        assert parse_env_file(env_file) == {"KEY": "value"}

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from agento.framework.module_validator import (
     validate_all,
     validate_module,
@@ -36,130 +38,92 @@ def _drift(errors):
     return [e for e in errors if "not declared in module.json tools[]" in e]
 
 
+# A literal `server.tool('<name>', …)` registration the scanner must report as drift.
+_DETECTED = [
+    pytest.param("export function register(server) { server.tool('demo_ping', 'x', {}, async () => {}); }",
+                 "demo_ping", id="undeclared_literal"),
+    pytest.param('server.tool("demo_pong", "x", {}, async () => {});', "demo_pong", id="double_quoted_name"),
+    pytest.param("server.tool(\n  'demo_multi',\n  'desc',\n  {},\n);", "demo_multi", id="multiline"),
+    # `this.server.tool(` / `ctx.server.tool(` ARE registrations.
+    pytest.param("this.server.tool('demo_ping', 'x', {}, h);", "demo_ping", id="member_receiver"),
+    pytest.param("server.tool ('demo_ping', 'x', {}, h);", "demo_ping", id="whitespace_before_paren"),
+    pytest.param("server.tool\n  ('demo_ping', 'x', {}, h);", "demo_ping", id="newline_before_paren"),
+    # The literal may be followed by ')' rather than ','.
+    pytest.param("server.tool('demo_ping');", "demo_ping", id="single_argument"),
+    # Only the line with a bare `/` is abandoned — the scan resumes at the next one.
+    pytest.param("const ratio = a / b / c;\nserver.tool('demo_real', 'x', {}, h);", "demo_real",
+                 id="slash_never_hides_a_later_line"),
+    pytest.param("#!/usr/bin/env node\nserver.tool('demo_real', 'x', {}, h);", "demo_real",
+                 id="hashbang_does_not_hide_a_later_line"),
+    pytest.param("const r = (a + b) / c;\nconst z = a[0] / d;\nserver.tool('demo_real', 'x', {}, h);",
+                 "demo_real", id="division_after_paren_or_bracket"),
+]
+
+# Text that looks like a registration but is not one — reporting it would invent a tool and
+# abort somebody's `setup:upgrade`.
+_IGNORED = [
+    pytest.param("for (const [name, def] of x) { server.tool(name, def.description, def.schema, h); }\n"
+                 "server.tool(tool.name, tool.description || '', shape, h);", id="dynamic_registration"),
+    pytest.param("server.tool(`demo_${suffix}`, 'x', {}, h);", id="template_literal_name"),
+    pytest.param("// e.g. server.tool('demo_docs', 'x', {}, h);\nconst a = 1;", id="line_comment"),
+    pytest.param("/*\n * server.tool('demo_docs', 'x', {}, h);\n */\nconst a = 1;", id="block_comment"),
+    pytest.param("""const example = 'server.tool("demo_docs", "x", {}, h)';""", id="single_quoted_string"),
+    pytest.param("""const example = "server.tool('demo_docs', 'x', {}, h)";""", id="double_quoted_string"),
+    pytest.param("const example = `server.tool('demo_docs', 'x', {}, h)`;", id="template_string"),
+    pytest.param("""const s = 'it\\'s server.tool("demo_docs", 1)';""", id="escaped_quote_inside_string"),
+    # `server.tool('demo_' + suffix, …)` must not be reported as tool 'demo_'.
+    pytest.param("server.tool('demo_' + suffix, 'x', {}, h);", id="concatenated_name"),
+    pytest.param("server.tool('demo_ping'.toUpperCase(), 'x', {}, h);", id="method_call_on_name"),
+    # `mockserver.tool(` shares the substring but is not `server.tool(`.
+    pytest.param("mockserver.tool('demo_ping', 'x', {}, h);", id="different_receiver"),
+    pytest.param("server.tools('demo_ping', 'x');\nserver.toolFoo('demo_pong', 'x');", id="similar_method_name"),
+    # Regex cases use UNESCAPED parentheses: with `\\(` the text is not a `server.tool(`
+    # match at all, so the case would pass even with no regex handling — asserting nothing.
+    pytest.param("const re = /server.tool('demo_docs')/;", id="regex_literal"),
+    pytest.param("function f() { return /server.tool('demo_docs')/; }", id="regex_after_return"),
+    pytest.param("function f() { throw /server.tool('demo_docs')/; }", id="regex_after_throw"),
+    pytest.param("x.match(/server.tool('demo_docs')/);", id="regex_as_argument"),
+    pytest.param("if (x) /server.tool('demo_docs')/.test(y);", id="regex_after_if"),
+    pytest.param("const ok = a || /server.tool('demo_docs')/.test(b);", id="regex_after_logical_operator"),
+    # `break` then a regex on the next line: any attempt to classify the `/` invented a tool.
+    pytest.param("function f(x, y) {\n  while (x) {\n    break\n"
+                 "    /server.tool('regex_only')/.test(y);\n  }\n}", id="asi_newline_before_regex"),
+    # `default` is not a keyword any punctuation/keyword heuristic reliably covers.
+    pytest.param("export default /server.tool('demo_docs')/;", id="export_default_regex"),
+    pytest.param("class Demo extends /server.tool('demo_docs')/ {}", id="class_extends_regex"),
+    # `#!node …` is a valid ES-module hashbang comment, not code.
+    pytest.param("#!node server.tool('hashbang_only')\nconst a = 1;", id="hashbang_line"),
+    # `this.#server.tool(...)` is a private field, not the injected MCP server.
+    pytest.param("this.#server.tool('private_receiver_only', 'x', {}, h);", id="private_field_receiver"),
+]
+
+
 class TestLiteralDrift:
-    def test_undeclared_literal_tool_is_an_error(self, tmp_path):
-        d = _mk(tmp_path, js="export function register(server) { server.tool('demo_ping', 'x', {}, async () => {}); }")
-        assert any("demo_ping" in e for e in _drift(validate_module(d)))
+    @pytest.mark.parametrize(("js", "tool"), _DETECTED)
+    def test_literal_registration_is_detected(self, tmp_path, js, tool):
+        d = _mk(tmp_path, js=js)
+        assert any(tool in e for e in _drift(validate_module(d)))
+
+    @pytest.mark.parametrize("js", _IGNORED)
+    def test_non_registration_is_ignored(self, tmp_path, js):
+        d = _mk(tmp_path, js=js)
+        assert validate_module(d) == []
 
     def test_declared_literal_tool_is_clean(self, tmp_path):
         d = _mk(tmp_path, tools=[_t("demo_ping")],
                 js="export function register(server) { server.tool('demo_ping', 'x', {}, async () => {}); }")
         assert validate_module(d) == []
 
-    def test_double_quoted_name_is_detected(self, tmp_path):
-        d = _mk(tmp_path, js='server.tool("demo_pong", "x", {}, async () => {});')
-        assert any("demo_pong" in e for e in _drift(validate_module(d)))
-
-    def test_multiline_registration_is_detected(self, tmp_path):
-        d = _mk(tmp_path, js="server.tool(\n  'demo_multi',\n  'desc',\n  {},\n);")
-        assert any("demo_multi" in e for e in _drift(validate_module(d)))
-
-    def test_dynamic_registration_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="for (const [name, def] of x) { server.tool(name, def.description, def.schema, h); }\nserver.tool(tool.name, tool.description || '', shape, h);")
-        assert validate_module(d) == []
-
-    def test_template_literal_name_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="server.tool(`demo_${suffix}`, 'x', {}, h);")
-        assert validate_module(d) == []
-
-    def test_line_comment_example_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="// e.g. server.tool('demo_docs', 'x', {}, h);\nconst a = 1;")
-        assert validate_module(d) == []
-
-    def test_block_comment_example_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="/*\n * server.tool('demo_docs', 'x', {}, h);\n */\nconst a = 1;")
-        assert validate_module(d) == []
-
-    def test_single_quoted_string_containing_the_call_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="""const example = 'server.tool("demo_docs", "x", {}, h)';""")
-        assert validate_module(d) == []
-
-    def test_double_quoted_string_containing_the_call_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="""const example = "server.tool('demo_docs', 'x', {}, h)";""")
-        assert validate_module(d) == []
-
-    def test_template_string_containing_the_call_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="const example = `server.tool('demo_docs', 'x', {}, h)`;")
-        assert validate_module(d) == []
-
-    def test_escaped_quote_inside_a_string_does_not_end_it(self, tmp_path):
-        d = _mk(tmp_path, js="""const s = 'it\\'s server.tool("demo_docs", 1)';""")
-        assert validate_module(d) == []
-
-    def test_real_registration_after_a_decoy_string_is_still_found(self, tmp_path):
-        d = _mk(tmp_path, js="""const s = "server.tool('demo_docs', 1)";\nserver.tool('demo_real', 'x', {}, h);""")
+    @pytest.mark.parametrize("decoy", [
+        """const s = "server.tool('demo_docs', 1)";""",
+        "// server.tool('demo_docs', 1)",
+        "const re = /server.tool('demo_docs')/;",
+    ], ids=["string", "comment", "regex"])
+    def test_real_registration_after_a_decoy_is_still_found(self, tmp_path, decoy):
+        d = _mk(tmp_path, js=f"{decoy}\nserver.tool('demo_real', 'x', {{}}, h);")
         errors = _drift(validate_module(d))
         assert any("demo_real" in e for e in errors)
         assert not any("demo_docs" in e for e in errors)
-
-    def test_real_registration_after_a_comment_decoy_is_still_found(self, tmp_path):
-        d = _mk(tmp_path, js="// server.tool('demo_docs', 1)\nserver.tool('demo_real', 'x', {}, h);")
-        errors = _drift(validate_module(d))
-        assert any("demo_real" in e for e in errors)
-        assert not any("demo_docs" in e for e in errors)
-
-    def test_concatenated_name_is_dynamic_not_a_partial_literal(self, tmp_path):
-        """`server.tool('demo_' + suffix, …)` must not be reported as tool 'demo_'."""
-        d = _mk(tmp_path, js="server.tool('demo_' + suffix, 'x', {}, h);")
-        assert validate_module(d) == []
-
-    def test_method_call_on_the_name_is_dynamic(self, tmp_path):
-        d = _mk(tmp_path, js="server.tool('demo_ping'.toUpperCase(), 'x', {}, h);")
-        assert validate_module(d) == []
-
-    def test_a_different_receiver_does_not_match(self, tmp_path):
-        """`mockserver.tool(` shares the substring but is not `server.tool(`."""
-        d = _mk(tmp_path, js="mockserver.tool('demo_ping', 'x', {}, h);")
-        assert validate_module(d) == []
-
-    def test_a_member_receiver_still_matches(self, tmp_path):
-        """`this.server.tool(` / `ctx.server.tool(` ARE registrations."""
-        d = _mk(tmp_path, js="this.server.tool('demo_ping', 'x', {}, h);")
-        assert any("demo_ping" in e for e in _drift(validate_module(d)))
-
-    def test_whitespace_before_the_paren_still_matches(self, tmp_path):
-        d = _mk(tmp_path, js="server.tool ('demo_ping', 'x', {}, h);")
-        assert any("demo_ping" in e for e in _drift(validate_module(d)))
-
-    def test_newline_before_the_paren_still_matches(self, tmp_path):
-        d = _mk(tmp_path, js="server.tool\n  ('demo_ping', 'x', {}, h);")
-        assert any("demo_ping" in e for e in _drift(validate_module(d)))
-
-    def test_single_argument_call_matches(self, tmp_path):
-        """The literal may be followed by ')' rather than ','."""
-        d = _mk(tmp_path, js="server.tool('demo_ping');")
-        assert any("demo_ping" in e for e in _drift(validate_module(d)))
-
-    def test_a_similar_method_name_does_not_match(self, tmp_path):
-        d = _mk(tmp_path, js="server.tools('demo_ping', 'x');\nserver.toolFoo('demo_pong', 'x');")
-        assert validate_module(d) == []
-
-    # These must use UNESCAPED parentheses: with `\\(` the text is not a `server.tool(`
-    # match at all, so the test would pass even with no regex handling — asserting nothing.
-
-    def test_regex_literal_containing_the_call_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="const re = /server.tool('demo_docs')/;")
-        assert validate_module(d) == []
-
-    def test_regex_literal_after_a_return_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="function f() { return /server.tool('demo_docs')/; }")
-        assert validate_module(d) == []
-
-    def test_regex_literal_after_a_throw_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="function f() { throw /server.tool('demo_docs')/; }")
-        assert validate_module(d) == []
-
-    def test_regex_literal_as_an_argument_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="x.match(/server.tool('demo_docs')/);")
-        assert validate_module(d) == []
-
-    def test_regex_literal_in_statement_position_after_if_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="if (x) /server.tool('demo_docs')/.test(y);")
-        assert validate_module(d) == []
-
-    def test_regex_literal_after_a_logical_operator_is_ignored(self, tmp_path):
-        d = _mk(tmp_path, js="const ok = a || /server.tool('demo_docs')/.test(b);")
-        assert validate_module(d) == []
 
     def test_known_limitation_a_slash_on_the_line_hides_a_registration(self, tmp_path):
         """ACCEPTED GAP, pinned so it is a decision rather than a surprise.
@@ -181,59 +145,12 @@ class TestLiteralDrift:
             d = _mk(tmp_path, js=js, name=f"demo{i}")
             assert validate_module(d) == [], js
 
-    def test_a_slash_never_hides_a_registration_on_a_later_line(self, tmp_path):
-        """Only the offending line is abandoned — the scan resumes at the next one."""
-        d = _mk(tmp_path, js="const ratio = a / b / c;\nserver.tool('demo_real', 'x', {}, h);")
-        assert any("demo_real" in e for e in _drift(validate_module(d)))
-
-    def test_asi_newline_before_a_regex_is_not_a_false_positive(self, tmp_path):
-        """`break` then a regex on the next line. Any attempt to classify the `/` got this wrong
-        and invented a tool; abandoning the line cannot."""
-        d = _mk(tmp_path, js=(
-            "function f(x, y) {\n  while (x) {\n    break\n"
-            "    /server.tool('regex_only')/.test(y);\n  }\n}"))
-        assert validate_module(d) == []
-
     def test_a_registration_inside_a_control_paren_is_still_found(self, tmp_path):
         """The registration is on the same line as a regex, so the line is abandoned AFTER the
         call is matched — the real tool is reported and the regex contents are not."""
         d = _mk(tmp_path, tools=[_t("real_tool")],
                 js="if (server.tool('real_tool')) /server.tool('regex_only')/.test(y);")
         assert validate_module(d) == []
-
-    def test_a_hashbang_line_is_not_scanned(self, tmp_path):
-        """`#!node …` is a valid ES-module hashbang comment, not code."""
-        d = _mk(tmp_path, js="#!node server.tool('hashbang_only')\nconst a = 1;")
-        assert validate_module(d) == []
-
-    def test_a_private_field_receiver_is_not_the_framework_server(self, tmp_path):
-        """`this.#server.tool(...)` is a private field, not the injected MCP server."""
-        d = _mk(tmp_path, js="this.#server.tool('private_receiver_only', 'x', {}, h);")
-        assert validate_module(d) == []
-
-    def test_a_hashbang_does_not_hide_a_later_registration(self, tmp_path):
-        d = _mk(tmp_path, js="#!/usr/bin/env node\nserver.tool('demo_real', 'x', {}, h);")
-        assert any("demo_real" in e for e in _drift(validate_module(d)))
-
-    def test_export_default_regex_is_not_a_false_positive(self, tmp_path):
-        """`default` is not a keyword any punctuation/keyword heuristic reliably covers, and a
-        false error here would abort setup:upgrade."""
-        d = _mk(tmp_path, js="export default /server.tool('demo_docs')/;")
-        assert validate_module(d) == []
-
-    def test_class_extends_regex_is_not_a_false_positive(self, tmp_path):
-        d = _mk(tmp_path, js="class Demo extends /server.tool('demo_docs')/ {}")
-        assert validate_module(d) == []
-
-    def test_division_after_a_paren_or_bracket_is_not_a_false_positive(self, tmp_path):
-        d = _mk(tmp_path, js="const r = (a + b) / c;\nconst z = a[0] / d;\nserver.tool('demo_real', 'x', {}, h);")
-        assert any("demo_real" in e for e in _drift(validate_module(d)))
-
-    def test_real_registration_after_a_regex_decoy_is_still_found(self, tmp_path):
-        d = _mk(tmp_path, js="const re = /server.tool('demo_docs')/;\nserver.tool('demo_real', 'x', {}, h);")
-        errors = _drift(validate_module(d))
-        assert any("demo_real" in e for e in errors)
-        assert not any("demo_docs" in e for e in errors)
 
     def test_all_toolbox_files_are_scanned(self, tmp_path):
         d = _mk(tmp_path, js="server.tool('demo_a', 'x', {}, h);", js_name="a.js")

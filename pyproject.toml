@@ -76,6 +76,9 @@ Changelog = "https://github.com/agento-cc/agento/blob/main/CHANGELOG.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "app/code"]
+# pytest-xdist: one worker per CPU. Pass `-n 0` to debug a single test in-process.
+# loadgroup keeps the DB_STRESS tests (tests/integration/conftest.py) on one worker.
+addopts = "-n auto --dist loadgroup"
 markers = [
     "e2e: end-to-end tests that invoke real external binaries / paid APIs / take >5s; skipped by `bin/test --fast`",
 ]
@@ -102,4 +105,5 @@ dev = [
     "respx>=0.22",
     "ruff>=0.11",
     "basedpyright>=1.29",
+    "pytest-xdist>=3.6",
 ]

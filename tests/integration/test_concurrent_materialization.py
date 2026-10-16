@@ -20,7 +20,9 @@ from agento.framework.consumer import Consumer
 from agento.framework.consumer_config import ConsumerConfig
 from agento.modules.claude.src.output_parser import ClaudeResult
 
-from .conftest import CONCURRENT_WORKERS_STRESS_TEST, _test_connection, fetch_job
+from .conftest import CONCURRENT_WORKERS_STRESS_TEST, DB_STRESS, _test_connection, fetch_job
+
+pytestmark = DB_STRESS
 
 WS_CODE = "acme"
 AV_CODE = "developer"

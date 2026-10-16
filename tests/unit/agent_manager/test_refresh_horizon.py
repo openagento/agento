@@ -150,6 +150,10 @@ class TestResolveLeaseWiring:
                 "agento.framework.agent_manager.credential_resolver.count_credentials_for_scope",
                 return_value=(1, 1),
             ),
+            patch(
+                "agento.framework.agent_manager.credential_resolver._LEASE_CONTENTION_BUDGET_SECONDS",
+                0,
+            ),
             pytest.raises(RuntimeError, match="currently locked"),
         ):
             _resolver().resolve(MagicMock(), "claude", lease_owner="job-1-attempt-1")

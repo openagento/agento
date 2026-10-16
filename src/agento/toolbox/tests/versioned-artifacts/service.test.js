@@ -481,15 +481,16 @@ describe('delete is excluded by an active mutation on the same artifact', () => 
   // until the mutation releases the lock.
   const runsAfter = async (method, drive) => {
     let open; const gate = new Promise((r) => { open = r; });
+    let entered; const inside = new Promise((r) => { entered = r; });
     const real = createBackend();
     const order = [];
     const watched = { ...real, [method]: async (...a) => {
-      order.push('mut'); await gate; return real[method](...a);
+      order.push('mut'); entered(); await gate; return real[method](...a);
     } };
     const actor = createService({ config: cfg(), db: null, log: vi.fn(), agentViewId: 7, backend: watched });
     const admin = createService({ config: cfg(), db: null, log: vi.fn(), actor: 'admin', admin: true, backend: real });
     const mutating = drive(actor);
-    await new Promise((r) => setTimeout(r, 40));           // the mutation enters and holds the lock
+    await inside;                                          // the mutation entered and holds the lock
     const removing = admin.remove('site').then(() => order.push('remove'));
     await new Promise((r) => setTimeout(r, 40));           // remove must be BLOCKED on the lock
     expect(order).toEqual(['mut']);

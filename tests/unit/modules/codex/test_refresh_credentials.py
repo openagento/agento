@@ -92,6 +92,7 @@ def test_rotation_is_persisted(run):
 @pytest.mark.parametrize(
     ("mode", "access"),
     [("access_only", _ACC_OLD), ("last_refresh_only", "acc-OLD")],  # the marker is the opaque path's
+    ids=["access_only", "last_refresh_only"],  # _ACC_OLD holds time.time(): xdist workers need equal ids
 )
 def test_a_partial_rotation_is_persisted(run, mode, access):
     refreshed, persist = run(mode, _credential(access=access))
@@ -107,7 +108,7 @@ def test_cli_that_did_not_rotate_returns_false_and_persists_nothing(run):
 
 @pytest.mark.parametrize("mode", ["rotate_then_fail", "rotate_then_hang"])
 def test_rotation_is_persisted_even_when_the_call_then_fails(run, monkeypatch, mode):
-    monkeypatch.setattr(codex_config, "_REFRESH_TIMEOUT_SECONDS", 2)
+    monkeypatch.setattr(codex_config, "_REFRESH_TIMEOUT_SECONDS", 1)  # room for the fake CLI to rotate
     refreshed, persist = run(mode)
     assert refreshed is True
     assert _persisted_tokens(persist)["refresh_token"] == "rt-NEW"
@@ -163,7 +164,7 @@ def test_permanent_auth_error_is_classified(run):
 
 
 def test_hang_without_rotation_raises_runtime_error(run, monkeypatch):
-    monkeypatch.setattr(codex_config, "_REFRESH_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(codex_config, "_REFRESH_TIMEOUT_SECONDS", 0.1)
     with pytest.raises(RuntimeError, match="TimeoutExpired"):
         run("hang")
 
