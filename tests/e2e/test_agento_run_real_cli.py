@@ -208,8 +208,14 @@ def _discover_agent_view() -> str | None:
 _AGENT_VIEW = _discover_agent_view() if _E2E_ENABLED else None
 _CASES = _discover_cases()
 
+# The stack e2e tests (this file, test_claude_real_cli, test_refresh_real_cli) steer the SAME
+# agent_view config and credential rows, so under pytest-xdist they share one group and run
+# one after another on a single worker (`--dist loadgroup`).
+E2E_STACK = pytest.mark.xdist_group("e2e_stack")
+
 pytestmark = [
     pytest.mark.e2e,
+    E2E_STACK,
     pytest.mark.skipif(
         not _E2E_ENABLED,
         reason="set AGENTO_E2E=1 to run (spends real provider credentials, mutates the pool)",

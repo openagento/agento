@@ -166,6 +166,8 @@ _KEY = _openrouter_key() if _E2E_ENABLED and _stack_up() else None
 
 pytestmark = [
     pytest.mark.e2e,
+    # One mock MCP server on a fixed port (3998) and fixed /tmp files: one worker at a time.
+    pytest.mark.xdist_group("e2e_pi"),
     pytest.mark.skipif(
         not _E2E_ENABLED,
         reason="set AGENTO_E2E=1 to run (needs the Docker stack, a credential and network)",
