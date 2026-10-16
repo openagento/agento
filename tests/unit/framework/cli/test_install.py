@@ -8,6 +8,8 @@ import socket
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from agento.framework.cli.install import (
     InstallCommand,
     _detect_timezone,
@@ -20,36 +22,20 @@ from agento.framework.cli.install import (
 )
 
 
-class TestSanitizeComposeName:
-    def test_lowercase(self):
-        assert _sanitize_compose_name("MyProject") == "myproject"
-
-    def test_replaces_spaces(self):
-        assert _sanitize_compose_name("My Project") == "my-project"
-
-    def test_replaces_dots(self):
-        assert _sanitize_compose_name("project.v2") == "project-v2"
-
-    def test_replaces_underscores(self):
-        assert _sanitize_compose_name("my_project") == "my-project"
-
-    def test_strips_invalid_chars(self):
-        assert _sanitize_compose_name("proj@#$ect") == "project"
-
-    def test_collapses_hyphens(self):
-        assert _sanitize_compose_name("a--b---c") == "a-b-c"
-
-    def test_trims_leading_trailing_hyphens(self):
-        assert _sanitize_compose_name("-project-") == "project"
-
-    def test_fallback_to_agento(self):
-        assert _sanitize_compose_name("___") == "agento"
-
-    def test_empty_string(self):
-        assert _sanitize_compose_name("") == "agento"
-
-    def test_complex_example(self):
-        assert _sanitize_compose_name("My Project.v2") == "my-project-v2"
+@pytest.mark.parametrize(("name", "expected"), [
+    ("MyProject", "myproject"),
+    ("My Project", "my-project"),
+    ("project.v2", "project-v2"),
+    ("my_project", "my-project"),
+    ("proj@#$ect", "project"),
+    ("a--b---c", "a-b-c"),
+    ("-project-", "project"),
+    ("___", "agento"),
+    ("", "agento"),
+    ("My Project.v2", "my-project-v2"),
+])
+def test_sanitize_compose_name(name, expected):
+    assert _sanitize_compose_name(name) == expected
 
 
 class TestGeneratePassword:
