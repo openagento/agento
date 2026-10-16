@@ -342,10 +342,13 @@ limits. Still open:
   `credential:register --with-api-key`. A panel form needs the same per-login sealing as the code.
 - **`codex_access_token` limits.** `fetch_limits` covers Codex `oauth` only; an access-token
   credential stores "no data".
-- **Limits for an idle OAuth credential.** Only a run renews an OAuth access token, so
-  `credential:limits` skips a credential whose token has expired and keeps its last result. To show
-  fresh limits with no runs, the job must renew the token itself under the same exclusive refresh
-  lease a run takes (refresh tokens are single-use), as CodexBar does.
+- **Post-run capture shares the release's commit.** `Consumer._finish_credential_lifecycle`
+  persists a rotation, clears an auto quarantine and releases the lease in one commit, so a
+  failed release loses a rotation whose old refresh token is spent. Commit the capture first,
+  as `credential:limits` does (2026-10-15).
+- **Stale limits in the panel.** When `credential:limits` cannot renew a credential, the panel
+  still shows its last limits as if current. Mark them stale (a `resets_at` in the past, or an
+  old `limits_at`).
 - **Live check of re-login.** The usage endpoints were checked live on 2026-10-05 (Claude and
   Codex OAuth, OpenRouter). A finished re-login is not: check that Claude writes its credentials
   into the temp `HOME` after a pasted code.

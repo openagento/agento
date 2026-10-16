@@ -755,21 +755,87 @@ def _token_expired(c) -> bool:
     return c.expires_at is not None and c.expires_at <= datetime.now(UTC).replace(tzinfo=None)
 
 
-def refresh_credential_limits(conn, logger) -> None:
-    """Store each enabled, healthy credential's provider limits (``credential.limits``).
+def _eligible(c) -> bool:
+    """The consumer's eligibility predicate for a re-read row (``_refresh_claimed_credential``)."""
+    from ..agent_manager.models import CredentialStatus
 
-    Skips an OAuth credential whose access token has expired (the harness's
-    ``credential_ttl_seconds``, else ``expires_at``): renewing it is the refresh lease's job,
-    so the last result and its ``limits_at`` stay. A credential with nothing to show (no
+    return c is not None and c.enabled and c.status == CredentialStatus.OK
+
+
+def _renew_expired(conn, c, logger):
+    """Renew an expired OAuth access token as a job would, and return the fresh row; ``None``
+    means skip it this tick and keep the last result.
+
+    The same exclusive lease a job takes (refresh tokens are single-use, so a job and this
+    tick must never present the same one), the owning harness's out-of-band
+    ``refresh_credentials`` (AG-65; its CLI runs in a runner), then the owner-checked release,
+    which also wakes the jobs deferred for a busy pool. The row is re-read under the lease,
+    because a job may have rotated it since ``list_credentials``, and again after the refresh,
+    because an operator may disable or quarantine it meanwhile (SEC-7). A failed refresh is
+    logged with its class only (SEC-6) and is not classified here: the next job that claims
+    the credential does that through the consumer's handlers."""
+    from uuid import uuid4
+
+    from ..agent_manager.credential_store import (
+        CLAIM_LEASE_TTL_SECONDS,
+        claim_credential_lease,
+        get_credential,
+        release_credential_lease,
+    )
+    from ..harness.registry import get_harness_for_scope
+
+    owner = get_harness_for_scope(c.scope)
+    if owner is None:
+        return None
+    lease_owner = f"limits-{c.id}-{uuid4().hex}"
+    claimed = claim_credential_lease(conn, c.id, lease_owner, CLAIM_LEASE_TTL_SECONDS)
+    conn.commit()
+    if not claimed:
+        return None
+    try:
+        current = get_credential(conn, c.id)
+        if not _eligible(current):
+            return None
+        if _token_expired(current):
+            try:
+                owner.adapter.workspace_adapter.refresh_credentials(current, conn)
+            except Exception as exc:
+                logger.warning(
+                    "credential:limits: refresh of credential id=%s failed (%s)",
+                    c.id, type(exc).__name__,
+                )
+            # Its own commit: the old single-use refresh token is spent, so the rotation
+            # must not depend on the release below (which also updates jobs) succeeding.
+            conn.commit()
+    finally:
+        release_credential_lease(conn, c.id, lease_owner, logger=logger)
+        conn.commit()
+    current = get_credential(conn, c.id)
+    return current if _eligible(current) and not _token_expired(current) else None
+
+
+def refresh_credential_limits(conn, logger, credential_id: int | None = None) -> None:
+    """Store each enabled, healthy credential's provider limits (``credential.limits``), or
+    only the one ``credential_id`` names (the core observer, right after a login).
+
+    An OAuth credential whose access token has expired (the harness's
+    ``credential_ttl_seconds``, else ``expires_at``) is renewed first, under the refresh lease
+    (``_renew_expired``); when that cannot happen, the last result and its ``limits_at``
+    stay. A credential with nothing to show (no
     ``fetch_limits``, or it answers ``None``) stores ``NULL`` with no ``limits_at``. A failed
     check stores ``NULL`` with ``limits_at`` set (the panel says the check failed) and logs the
     credential id, the exception class and the HTTP status only (SEC-6)."""
-    from ..agent_manager import list_credentials
+    from ..agent_manager import get_credential, list_credentials
     from ..harness import get_authenticator
 
-    for c in list_credentials(conn, enabled_only=True):
-        if c.status.value != "ok" or _token_expired(c):
+    rows = list_credentials(conn, enabled_only=True) if credential_id is None else [get_credential(conn, credential_id)]
+    for c in rows:
+        if not _eligible(c):
             continue
+        if _token_expired(c):
+            c = _renew_expired(conn, c, logger)
+            if c is None:
+                continue
         # `fetch_limits` is an optional member of CredentialAuthenticator (protocols.py).
         fetch = getattr(get_authenticator(c.scope), "fetch_limits", None)
         limits = None

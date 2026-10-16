@@ -4,6 +4,25 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-15 — `credential:limits` renews an expired OAuth token
+
+Owner, 2026-10-15: "implement 1st solution. We should be able to run service that would lease,
+lock the credentail, refresh the token and then break the lease."
+
+- **The second caller of the AG-65 refresh.** `credential:limits` takes the job's lease by id
+  (`claim_credential_lease`), calls `refresh_credentials`, releases with the owner-checked
+  release, and only then reads the limits. One TTL, `CLAIM_LEASE_TTL_SECONDS` (120 s), now in
+  `credential_store.py` for both callers.
+- **Expired only, not refresh-imminent.** A valid token already gives limits; refreshing earlier
+  would spend single-use refresh tokens for nothing.
+- **No `used_at` stamp.** The cron is not a run; the pool's LRU order must not move.
+- **No poison or throttle from cron.** The consumer's handlers are job-bound (failover count,
+  retry flags). A failed refresh is logged by class and left for the next job to classify.
+- **No event.** The consumer's identical rotation dispatches none; `credential_refresh_after`
+  is the interactive re-login's, with a secret-bearing payload (EVT-3 debt).
+
+---
+
 ## 2026-10-12 — Per-app rights for miniapps; execute needs every manifest grant (D-MINIAPP-3)
 
 Plan: `~/.claude/plans/apps-tiles-permissions-1c26d9.md`. Owner, 2026-10-12 (S3–S9): "Aplikacja

@@ -1,8 +1,10 @@
 {
   "credential_register_after": [
-    {"name": "core_wake_auth_waiting_jobs", "class": "src.observers.WakeAuthWaitingJobsObserver", "order": 100}
+    {"name": "core_wake_auth_waiting_jobs", "class": "src.observers.WakeAuthWaitingJobsObserver", "order": 100},
+    {"name": "core_refresh_credential_limits", "class": "src.observers.RefreshCredentialLimitsObserver", "order": 200}
   ],
   "credential_refresh_after": [
-    {"name": "core_wake_auth_waiting_jobs", "class": "src.observers.WakeAuthWaitingJobsObserver", "order": 100}
+    {"name": "core_wake_auth_waiting_jobs", "class": "src.observers.WakeAuthWaitingJobsObserver", "order": 100},
+    {"name": "core_refresh_credential_limits", "class": "src.observers.RefreshCredentialLimitsObserver", "order": 200}
   ]
 }

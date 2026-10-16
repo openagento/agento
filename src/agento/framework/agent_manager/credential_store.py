@@ -10,6 +10,15 @@ import pymysql
 from .errors import CredentialLeasedError
 from .models import CredentialRecord, encrypt_credentials
 
+# Initial TTL of the lease taken when a refresh-imminent credential is claimed: by a job
+# (``Consumer._refresh_claimed_credential``) or by ``credential:limits`` for an expired one.
+# It covers only the out-of-band refresh that follows, which is not renewed, so waiters'
+# ``pool_retry_at`` stays near. Timing contract (a guard test pins it): each adapter's
+# refresh timeout (60 s) plus the runner client's 30 s slack < this < the consumer's
+# _DEFAULT_LEASE_TTL_SECONDS (300 s, the renewed fallback lease for a harness that cannot
+# refresh out of band).
+CLAIM_LEASE_TTL_SECONDS = 120
+
 
 @dataclass(frozen=True)
 class RefreshLease:
@@ -515,6 +524,30 @@ def release_credential_lease(
             f"released={released} woken_jobs={woken}"
         )
     return released
+
+
+def claim_credential_lease(
+    conn: pymysql.Connection,
+    credential_id: int,
+    lease_owner: str,
+    ttl_seconds: int,
+) -> bool:
+    """Take the refresh lease on one credential by id, outside a job. Returns True when held.
+
+    Refuses a row with an unexpired lease of any owner (a job may be refreshing it), and a
+    disabled or ``error`` row. Unlike ``select_credential`` it does not stamp ``used_at``:
+    this is not a run, so the pool's LRU order must not move. The caller commits, then
+    releases with ``release_credential_lease`` under the same owner.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE credential SET lease_owner = %s, "
+            "leased_until = UTC_TIMESTAMP() + INTERVAL %s SECOND "
+            "WHERE id = %s AND enabled = TRUE AND status = 'ok' "
+            "AND (leased_until IS NULL OR leased_until <= UTC_TIMESTAMP())",
+            (lease_owner, int(ttl_seconds), credential_id),
+        )
+        return cur.rowcount > 0
 
 
 def renew_credential_leases(

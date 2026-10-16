@@ -6,7 +6,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agento.modules.core.src import observers
-from agento.modules.core.src.observers import WakeAuthWaitingJobsObserver, wake_auth_waiting_jobs
+from agento.modules.core.src.observers import (
+    RefreshCredentialLimitsObserver,
+    WakeAuthWaitingJobsObserver,
+    wake_auth_waiting_jobs,
+)
 
 
 def _conn(ids):
@@ -54,4 +58,21 @@ def test_core_declares_the_observer_on_both_credential_events():
     events = json.loads(
         (Path(observers.__file__).parents[1] / "events.json").read_text())
     for name in ("credential_register_after", "credential_refresh_after"):
-        assert [o["class"] for o in events[name]] == ["src.observers.WakeAuthWaitingJobsObserver"]
+        assert [o["class"] for o in events[name]] == [
+            "src.observers.WakeAuthWaitingJobsObserver", "src.observers.RefreshCredentialLimitsObserver"]
+
+
+def test_limits_observer_reads_only_the_event_credential_and_never_crashes_the_caller(caplog):
+    conn = MagicMock()
+    pool = MagicMock()
+    pool.return_value.__enter__.return_value = conn
+    event = MagicMock(credential_id=7, credentials={"subscription_key": "sk-secret"})
+    with patch.object(observers, "pooled", pool), patch.object(observers, "DatabaseConfig"), \
+            patch("agento.framework.cli.credential.refresh_credential_limits") as refresh:
+        RefreshCredentialLimitsObserver().execute(event)
+        refresh.assert_called_once_with(conn, observers.logger, credential_id=7)
+
+        refresh.side_effect = RuntimeError("sk-secret")
+        RefreshCredentialLimitsObserver().execute(event)  # no raise
+    assert "id=7" in caplog.text and "RuntimeError" in caplog.text
+    assert "sk-secret" not in caplog.text

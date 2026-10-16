@@ -223,9 +223,16 @@ agento credential:limits    # shortcut: cr:lim
 
 Asks each vendor how much of its usage limits every credential has used, and stores the answer
 in `credential.limits` (JSON) and `credential.limits_at`. Cron runs it every 10 minutes
-(`core/cron.json`). It skips a credential that is disabled, in `status='error'`, or an OAuth
+(`core/cron.json`). The `core` observer `core_refresh_credential_limits` also reads one
+credential's limits right after `credential_register_after` (`credential:register`, a panel
+re-login) and `credential_refresh_after`, so the panel shows them at once. It skips a credential that is disabled or in `status='error'`. An OAuth
 credential whose access token has expired (the harness's `credential_ttl_seconds`, else
-`expires_at`); a skipped credential keeps its last result and `limits_at`. A harness that has no
+`expires_at`) is renewed first, as a job would: it takes the same refresh lease (owner
+`limits-<id>-…`, 120 s), calls the harness's `refresh_credentials` (its CLI runs in a runner),
+then releases the lease. It skips the credential when a job holds the lease, when the
+credential became disabled, `error` or deleted meanwhile, or when the refresh did not renew the
+token (a failure logs the credential id and the exception class only; the next job classifies
+it). A skipped credential keeps its last result and `limits_at`. A harness that has no
 `fetch_limits` member, or a credential type the vendor has no endpoint for, stores `NULL` with
 no `limits_at`: the panel shows "—". A failed call stores `NULL` with `limits_at` set: the panel
 shows "Check failed". A failure logs the credential id, the exception class and the HTTP status
