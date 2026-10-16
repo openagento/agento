@@ -1,6 +1,6 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Credentials, freeColor } from "./Credentials";
+import { Credentials, freeColor, isStale } from "./Credentials";
 import { renderAt, stubApi, teardown } from "./testing";
 
 const cred = (id: number, over: object = {}) => ({
@@ -24,7 +24,37 @@ describe("freeColor", () => {
   });
 });
 
+describe("isStale", () => {
+  it("is true only when the limits were last read more than 5 minutes ago", () => {
+    const now = Date.parse("2026-10-04T12:05:00Z");
+    expect(isStale("2026-10-04T12:00:00Z", now)).toBe(false);
+    expect(isStale("2026-10-04T11:59:59Z", now)).toBe(true);
+    expect(isStale(null, now)).toBe(false);
+  });
+});
+
 describe("Credentials", () => {
+  it("marks old limits stale and reads the list again every minute without a reload", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const api = await stubApi({ "/api/admin/credentials": [
+        cred(1, { limits: two, limits_at: "2026-10-04T12:00:00Z" }),
+        cred(2, { limits: two, limits_at: new Date().toISOString() }),
+        cred(3, { limits: { windows: [], balance_usd: 5 }, limits_at: "2026-10-04T12:00:00Z" })] });
+      renderAt("/admin/credentials", <Credentials />);
+      await screen.findByRole("progressbar", { name: "c2 5h free" });
+      expect(within(screen.getAllByRole("row")[1]).getByText("Stale")).toBeInTheDocument();
+      expect(within(screen.getAllByRole("row")[2]).queryByText("Stale")).toBeNull();
+      expect(within(screen.getAllByRole("row")[3]).getByText("Stale")).toBeInTheDocument();
+      expect(api.calls("GET", "/api/admin/credentials")).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => expect(api.calls("GET", "/api/admin/credentials")).toHaveLength(2));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+
   it("Clear error shows only on an error row and POSTs after the confirm", async () => {
     const api = await stubApi({
       "/api/admin/credentials": [cred(1), cred(2, { status: "error", error_source: "auto" })],

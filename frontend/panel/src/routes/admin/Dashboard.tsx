@@ -2,7 +2,7 @@
 import type { ComponentType } from "react";
 import { Group, List, Paper, SimpleGrid, Text } from "@mantine/core";
 import { Activity, Boxes, Database, Tag } from "lucide-react";
-import { apiFetch, useQuery } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, useQuery } from "@agento/api";
 import { AppLink, DataTable, ErrorState, LoadingState, PageHeader, SectionHeader } from "@agento/ui";
 import { credentialBadge, type Credential } from "./Credentials";
 import { jobColumns } from "./Jobs";
@@ -31,7 +31,8 @@ function Stat({ title, value, hint, Icon }: { title: string; value: string; hint
 const RECENT = jobColumns();
 
 export function Dashboard() {
-  const dash = useQuery({ queryKey: ["admin-dashboard"], queryFn: ({ signal }) => apiFetch<DashboardData>("/api/admin/dashboard", { signal }) });
+  const dash = useQuery({ queryKey: ["admin-dashboard"], queryFn: ({ signal }) => apiFetch<DashboardData>("/api/admin/dashboard", { signal }),
+    refetchInterval: LIVE_REFETCH_MS });
   if (dash.isPending) return <LoadingState />;
   if (dash.error) return <ErrorState message={message(dash.error)} onRetry={() => void dash.refetch()} />;
   const d = dash.data;

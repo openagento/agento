@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Eye } from "lucide-react";
 import { Drawer, Group, SegmentedControl, Stack, Table, Text, TextInput } from "@mantine/core";
 import { useSearchParams } from "react-router";
-import { apiFetch, useQuery } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, useQuery } from "@agento/api";
 import {
   CodeBlock, IconAction, DataTable, ErrorState, LoadingState, PageHeader, SectionHeader, StatusBadge, Timestamp, type Column,
 } from "@agento/ui";
@@ -34,6 +34,7 @@ function JobDrawer({ id, onClose }: { id: number | null; onClose: () => void }) 
   const job = useQuery({
     queryKey: ["admin-job", id], enabled: id !== null,
     queryFn: ({ signal }) => apiFetch<JobDetail>(`/api/admin/jobs/${id}`, { signal }),
+    refetchInterval: LIVE_REFETCH_MS,
   });
   const j = job.data;
   const facts: [string, ReactNode][] = j ? [
@@ -75,6 +76,7 @@ export function Jobs() {
   const jobs = useQuery({
     queryKey: ["admin-jobs", status],
     queryFn: ({ signal }) => apiFetch<JobRow[]>(`/api/admin/jobs${status === "All" ? "" : `?status=${status}`}`, { signal }),
+    refetchInterval: LIVE_REFETCH_MS,
   });
   const needle = search.trim().toLowerCase();
   const rows = jobs.data?.filter((j) => !needle || SEARCHED.map((k) => String(j[k] ?? "")).join(" ").toLowerCase().includes(needle));

@@ -2,7 +2,7 @@ import { Group } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useNavigate } from "react-router";
 import { Copy, Settings } from "lucide-react";
-import { apiFetch, useQuery } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, useQuery } from "@agento/api";
 import { DataTable, IconAction, PageHeader, StatusBadge, type BadgeTone, type Column } from "@agento/ui";
 import { message, whole } from "./shared";
 
@@ -36,7 +36,8 @@ const columns = (open: (a: Agent) => void): Column<Agent>[] => [
 
 export function Agents() {
   const navigate = useNavigate();
-  const agents = useQuery({ queryKey: ["admin-agents"], queryFn: ({ signal }) => apiFetch<Agent[]>("/api/admin/agents", { signal }) });
+  const agents = useQuery({ queryKey: ["admin-agents"], queryFn: ({ signal }) => apiFetch<Agent[]>("/api/admin/agents", { signal }),
+    refetchInterval: LIVE_REFETCH_MS });
   const open = (a: Agent) => void navigate(`/admin/config?scope=agent_view&scope_id=${a.id}`);
   return (
     <div className="ag-stack">

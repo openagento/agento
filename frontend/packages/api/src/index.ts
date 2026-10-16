@@ -4,7 +4,7 @@ export {
   boot, login, logout, endSession, refreshDisplay, onEndSession, onExpired, getDisplay, getUser, subscribeUser,
   type Display, type User,
 } from "./session";
-export { queryClient } from "./query";
+export { LIVE_REFETCH_MS, queryClient } from "./query";
 export {
   hub, EventSourceHub, backoff,
   type StreamEvent, type StreamHandlers, type StreamState,

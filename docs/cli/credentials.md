@@ -222,7 +222,7 @@ agento credential:limits    # shortcut: cr:lim
 ```
 
 Asks each vendor how much of its usage limits every credential has used, and stores the answer
-in `credential.limits` (JSON) and `credential.limits_at`. Cron runs it every 10 minutes
+in `credential.limits` (JSON) and `credential.limits_at`. Cron runs it every minute
 (`core/cron.json`). The `core` observer `core_refresh_credential_limits` also reads one
 credential's limits right after `credential_register_after` (`credential:register`, a panel
 re-login) and `credential_refresh_after`, so the panel shows them at once. It skips a credential that is disabled or in `status='error'`. An OAuth
@@ -235,7 +235,8 @@ token (a failure logs the credential id and the exception class only; the next j
 it). A skipped credential keeps its last result and `limits_at`. A harness that has no
 `fetch_limits` member, or a credential type the vendor has no endpoint for, stores `NULL` with
 no `limits_at`: the panel shows "—". A failed call stores `NULL` with `limits_at` set: the panel
-shows "Check failed". A failure logs the credential id, the exception class and the HTTP status
+shows "Check failed". The Credentials page reads the list again every minute, with no reload,
+and marks limits not read for 5 minutes "Stale". A failure logs the credential id, the exception class and the HTTP status
 only, never the payload or the vendor's answer. The update does not change `updated_at`.
 
 The usage endpoints check the client: `claude` sends `User-Agent: claude-code/<version>` and

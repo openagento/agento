@@ -65,6 +65,11 @@ npm test            # build, lint, then every unit test and every story in headl
   name as the title and the `aria-label` (tests find it by name, as before), `danger` for a
   destructive one. A form submit, a dialog footer, a state's Retry and a page's create action stay
   text `Button`s.
+- **React refreshes the data, not the user (UI-8).** Data that a backend process changes is read
+  again by its query: a `refetchInterval` that matches the writer (the Credentials page reads every
+  minute, as `credential:limits` runs), or an `invalidateQueries` after the action. No page reload. Data that only the user on the page
+  changes (settings, config, users, roles, tool grants, app settings) has no poll: it refreshes after
+  its own save.
 - **A `DataTable` cell is a plain function, called on each render.** Do not render it as a component:
   a new component type per render remounts the cell, and an open select in it closes.
 - **No credential in the UI.** The CSRF token lives in a module closure in `session.ts`: never in

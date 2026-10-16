@@ -1,4 +1,4 @@
-import { apiFetch, ApiError, useQuery } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, ApiError, useQuery } from "@agento/api";
 
 export interface Artifact {
   artifact_code: string; title: string | null; current_version: string | null; auth_enabled: boolean; open_drafts: unknown[];
@@ -9,6 +9,6 @@ export const message = (e: unknown) => (e instanceof ApiError ? e.message : "The
 
 /** Every artifact of the store (global: the leaf `versioned_artifacts` has no scope). */
 export const useArtifacts = () => useQuery({
-  queryKey: ["artifacts"],
+  queryKey: ["artifacts"], refetchInterval: LIVE_REFETCH_MS,
   queryFn: ({ signal }) => apiFetch<Artifact[]>(BASE, { signal }),
 });

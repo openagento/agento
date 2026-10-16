@@ -346,9 +346,6 @@ limits. Still open:
   persists a rotation, clears an auto quarantine and releases the lease in one commit, so a
   failed release loses a rotation whose old refresh token is spent. Commit the capture first,
   as `credential:limits` does (2026-10-15).
-- **Stale limits in the panel.** When `credential:limits` cannot renew a credential, the panel
-  still shows its last limits as if current. Mark them stale (a `resets_at` in the past, or an
-  old `limits_at`).
 - **Live check of re-login.** The usage endpoints were checked live on 2026-10-05 (Claude and
   Codex OAuth, OpenRouter). A finished re-login is not: check that Claude writes its credentials
   into the temp `HOME` after a pasted code.
