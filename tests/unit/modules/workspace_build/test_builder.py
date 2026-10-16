@@ -1458,27 +1458,8 @@ class TestValidateCode:
         for code in ("default", "agent01", "my_company_dev", "my_workspace", "a"):
             validate_code(code)  # should not raise
 
-    def test_rejects_underscore_prefix(self):
+    @pytest.mark.parametrize("code", ["_hidden", ".dotted", "MyWorkspace", "", "1abc"])
+    def test_rejects(self, code):
         from agento.framework.workspace import validate_code
         with pytest.raises(ValueError, match="must match"):
-            validate_code("_hidden")
-
-    def test_rejects_dot_prefix(self):
-        from agento.framework.workspace import validate_code
-        with pytest.raises(ValueError, match="must match"):
-            validate_code(".dotted")
-
-    def test_rejects_uppercase(self):
-        from agento.framework.workspace import validate_code
-        with pytest.raises(ValueError, match="must match"):
-            validate_code("MyWorkspace")
-
-    def test_rejects_empty(self):
-        from agento.framework.workspace import validate_code
-        with pytest.raises(ValueError, match="must match"):
-            validate_code("")
-
-    def test_rejects_starts_with_digit(self):
-        from agento.framework.workspace import validate_code
-        with pytest.raises(ValueError, match="must match"):
-            validate_code("1abc")
+            validate_code(code)
