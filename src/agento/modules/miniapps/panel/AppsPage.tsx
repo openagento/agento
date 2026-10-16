@@ -2,7 +2,7 @@
 // launches. The API decides the rights (`can`); this page only shows them.
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
-import { apiFetch, endLaunch, openLaunch, reconcileLaunches, useMutation, useQuery, useQueryClient } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, endLaunch, openLaunch, reconcileLaunches, useMutation, useQuery, useQueryClient } from "@agento/api";
 import {
   AppIcon, AppLink, AppTile, ConfirmDialog, DataTable, DeleteAction, EmptyState, EndAction, ErrorState, LoadingState,
   OpenMenuAction, PageHeader, SectionHeader, SettingsAction, StatusBadge, TileGrid, Timestamp, ViewToggle, type Column,
@@ -40,7 +40,7 @@ export default function AppsPage() {
   const [mode, setMode] = useState<TileMode>(readMode);
   const artifacts = useArtifactsAvailable();
   const apps = useQuery({
-    queryKey: ["miniapps", "apps"],
+    queryKey: ["miniapps", "apps"], refetchInterval: LIVE_REFETCH_MS,
     queryFn: ({ signal }) => apiFetch<App[]>("/api/miniapps/apps", { signal }),
   });
   const launches = useQuery({

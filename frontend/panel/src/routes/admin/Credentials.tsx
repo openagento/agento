@@ -34,10 +34,21 @@ const minFree = (c: Credential) => {
   return w.length ? Math.min(...w.map(freeOf)) : -1;
 };
 
+const LIMITS_TICK_MS = 60_000;
+/** Limits not read for 5 cron ticks: the cron could not renew or read this credential. */
+export const isStale = (limitsAt: string | null, now = Date.now()) =>
+  limitsAt !== null && now - Date.parse(limitsAt) > 5 * LIMITS_TICK_MS;
+
 function FreeCell({ c }: { c: Credential }) {
   const windows = c.limits?.windows ?? [];
+  const stale = c.limits != null && c.limits_at !== null && isStale(c.limits_at) && (
+    <Tooltip label={<>Last read <Timestamp value={c.limits_at} />. Not refreshed since.</>}>
+      <Text size="xs" c="dimmed">Stale</Text>
+    </Tooltip>
+  );
   if (windows.length) return (
     <Stack gap={2}>
+      {stale}
       {windows.map((w) => (
         <Tooltip key={w.label} label={w.resets_at ? <>Resets <Timestamp value={w.resets_at} /></> : "Reset time unknown"}>
           <Group gap="xs" wrap="nowrap">
@@ -49,7 +60,9 @@ function FreeCell({ c }: { c: Credential }) {
       ))}
     </Stack>
   );
-  if (c.limits?.balance_usd != null) return `$${c.limits.balance_usd.toFixed(2)}`;
+  if (c.limits?.balance_usd != null) return (
+    <Group gap="xs" wrap="nowrap"><Text size="sm">${c.limits.balance_usd.toFixed(2)}</Text>{stale}</Group>
+  );
   // `limits_at` with no limits: the check ran and failed (the cron log names the HTTP status).
   if (c.limits == null && c.limits_at) return (
     <Tooltip label={<>Checked <Timestamp value={c.limits_at} />. The vendor refused; see the cron log.</>}>
@@ -202,6 +215,7 @@ export function Credentials() {
   const creds = useQuery({
     queryKey: ["admin-credentials"],
     queryFn: ({ signal }) => apiFetch<Credential[]>("/api/admin/credentials", { signal }),
+    refetchInterval: LIMITS_TICK_MS, // credential:limits stores new limits every minute
   });
   const [action, setAction] = useState<Action | null>(null);
   const [detail, setDetail] = useState<Credential | null>(null);

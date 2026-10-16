@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router";
-import { apiFetch, ApiError, useMutation, useQuery, useQueryClient, useSession, type StreamEvent } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, ApiError, useMutation, useQuery, useQueryClient, useSession, type StreamEvent } from "@agento/api";
 import {
   AppLink, ArchiveAction, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
   LoadingState, MenuButton, PageHeader, Reasoning, RegenerateAction, RunInfo, SelectField, SplitView, ThreadList, ToolCall, ToolGroup,
@@ -28,7 +28,10 @@ function Rail({ current, close }: { current: number | null; close: () => void })
   const admin = useSession()?.role === "admin";
   // "mine", "channels" (every channel thread) or "channel:<source>".
   const [scope, setScope] = useState("mine");
-  const threads = useQuery({ queryKey: ["threads", scope], queryFn: ({ signal }) => apiFetch<Thread[]>(threadsUrl(scope), { signal }) });
+  const threads = useQuery({
+    queryKey: ["threads", scope], refetchInterval: LIVE_REFETCH_MS,
+    queryFn: ({ signal }) => apiFetch<Thread[]>(threadsUrl(scope), { signal }),
+  });
   // The channels an admin can filter by: the ones seen in the unfiltered channel list.
   const all = useQuery({
     queryKey: ["threads", "channels"], enabled: admin,

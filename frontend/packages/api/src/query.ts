@@ -2,6 +2,9 @@ import { QueryClient } from "@tanstack/react-query";
 import { ApiError, SessionChangedError } from "./errors";
 import { onEndSession } from "./session";
 
+/** How often a screen reads data that a backend process changes (UI-8). */
+export const LIVE_REFETCH_MS = 10_000;
+
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

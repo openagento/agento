@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential's limits on `credential_register_after` and `credential_refresh_after`, so the panel
   shows them at once, not on the next `credential:limits` tick. The re-login dialog shows an
   animated success mark and reads the credential list again when it closes.
+- **Live limits.** `credential:limits` runs every minute (was every 10 minutes). The Credentials
+  page reads the list again every minute, with no reload, and marks limits not read for 5
+  minutes "Stale". New rule UI-8: the panel refreshes data itself, never by a reload.
 - **Refresh outside the job (AG-65).** A near-expiry OAuth credential (Claude, Codex) is now
   refreshed out of band by the new `WorkspaceAdapter.refresh_credentials` before the job runs,
   and its lease is released at once, so the pool is exclusive for seconds instead of a job's

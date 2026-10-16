@@ -381,7 +381,7 @@ registration mode. A scope that declares the mode but whose authenticator has no
 
 | Member | Called by | Returns |
 |---|---|---|
-| `fetch_limits(credentials, credential_type)` | `credential:limits` (cron, every 10 min) | `CredentialLimits(windows, balance_usd)` of `LimitWindow(label, used_pct, resets_at)`, or `None` when this type has no endpoint. Raise on a failed call; the framework stores `NULL` and logs the exception class only. It also stores `NULL` when a `used_pct` is outside 0–100 or a number is not finite. Use `httpx` with a 10 s timeout. |
+| `fetch_limits(credentials, credential_type)` | `credential:limits` (cron, every minute) | `CredentialLimits(windows, balance_usd)` of `LimitWindow(label, used_pct, resets_at)`, or `None` when this type has no endpoint. Raise on a failed call; the framework stores `NULL` and logs the exception class only. It also stores `NULL` when a `used_pct` is outside 0–100 or a number is not finite. Use `httpx` with a 10 s timeout. |
 | `start_web_login(tmp_home, logger)` | `credential:web-login` (cron, every minute) | an `InteractiveLogin`: `prompt: LoginPrompt(url, user_code, needs_code)`, `submit_code(code)`, `poll() -> AuthResult \| None`, `close()` |
 
 `start_web_login` starts the vendor CLI with `HOME=tmp_home`, a fresh temp dir. The framework's

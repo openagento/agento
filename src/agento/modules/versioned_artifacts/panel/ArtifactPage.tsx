@@ -2,7 +2,7 @@
 // and delete, and the app approvals per view. The API checks each leaf; this page only hides what the user cannot do.
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { apiFetch, useCan, useMutation, useQuery, useQueryClient } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, useCan, useMutation, useQuery, useQueryClient } from "@agento/api";
 import {
   AppLink, Button, DataTable, DeleteAction, MakeCurrentAction, PageHeader, SectionHeader, StatusBadge, Timestamp,
   type Column,
@@ -25,7 +25,7 @@ export default function ArtifactPage() {
   const list = useArtifacts();
   const current = list.data?.find((a) => a.artifact_code === code)?.current_version ?? null;
   const versions = useQuery({
-    queryKey: ["artifacts", code, "versions"],
+    queryKey: ["artifacts", code, "versions"], refetchInterval: LIVE_REFETCH_MS,
     queryFn: ({ signal }) => apiFetch<Version[]>(`${url}/versions`, { signal }),
   });
   const [failure, setFailure] = useState<string | null>(null);

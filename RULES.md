@@ -470,6 +470,18 @@ action's name as the hover title and the accessible name, and `danger` for a des
 A text `Button` stays for a form submit, a dialog footer, the call to action of an empty or error
 state (Retry), and a page's create action. Owner: 2026-10-06.
 
+**UI-8 React refreshes the data, not the user (P1).** A screen that shows data a backend process
+changes (a cron, a job, a worker, another user) reads it again by itself: a `refetchInterval` on its
+`useQuery` that matches how often the backend writes the data, or an `invalidateQueries` after the
+action that changes it. The new value shows with no page reload. Do not use `location.reload()`, a
+"reload to see changes" text, or a manual refresh as the only way to see new data. Data that a
+schedule writes shows a stale mark when the writer misses its ticks (the Credentials limits).
+The rule does not apply to data that only the user on the page changes: settings, config, users,
+roles, tool grants, app settings. That screen refreshes with `invalidateQueries` after its own
+save, and has no `refetchInterval`: a poll there costs requests and can overwrite a form while the
+user edits it. Ask "can a cron, a job, an agent or a worker change this data?" Yes: poll. No: do not.
+Owner: 2026-10-16.
+
 ## TST — Tests
 
 **TST-1 Red first (P1).** Each behaviour change has a test that fails without it: pytest + respx for
