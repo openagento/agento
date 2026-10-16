@@ -92,6 +92,7 @@ def test_rotation_is_persisted(run):
 @pytest.mark.parametrize(
     ("mode", "access"),
     [("access_only", _ACC_OLD), ("last_refresh_only", "acc-OLD")],  # the marker is the opaque path's
+    ids=["access_only", "last_refresh_only"],  # _ACC_OLD holds time.time(): xdist workers need equal ids
 )
 def test_a_partial_rotation_is_persisted(run, mode, access):
     refreshed, persist = run(mode, _credential(access=access))
