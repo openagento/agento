@@ -17,6 +17,7 @@ from agento.framework.migrate import migrate
 from agento.modules.claude.src.output_parser import ClaudeResult
 from agento.modules.jira.src.config import JiraConfig
 from agento.modules.jira_periodic_tasks.src.config import PeriodicTasksConfig
+from tests.registry_isolation import is_bootstrapped, mark_bootstrapped
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
@@ -192,9 +193,13 @@ def int_periodic_config() -> PeriodicTasksConfig:
     )
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _bootstrap_registries():
-    """Populate registries from core modules (once per session).
+@pytest.fixture(autouse=True)
+def _framework_registries():
+    """Populate registries from core modules.
+
+    Overrides the fixture of the same name in tests/conftest.py, which clears them again
+    for unit tests. Bootstraps only when needed: once per worker, and again after a unit
+    test ran on this worker (pytest-xdist mixes both in one process).
 
     Stubs ``read_module_status`` so bootstrap ignores the developer's
     ``app/etc/modules.json``. Without this, locally-disabled modules
@@ -203,6 +208,8 @@ def _bootstrap_registries():
     The file is gitignored, so behavior would diverge between developer
     machines and CI.
     """
+    if is_bootstrapped():
+        return
     with patch(
         "agento.framework.module_status.read_module_status", return_value={},
     ):
@@ -235,6 +242,7 @@ def _bootstrap_registries():
             "1x w tygodniu (Pon, 7:00)": "0 7 * * 1",
         },
     ))
+    mark_bootstrapped()
 
 
 @pytest.fixture(autouse=True)
@@ -266,6 +274,7 @@ def _truncate_tables():
             cur.execute("TRUNCATE TABLE credential")
             cur.execute("TRUNCATE TABLE skill_registry")
             cur.execute("TRUNCATE TABLE workspace_build")
+            cur.execute("TRUNCATE TABLE core_config_data")
             cur.execute("SET FOREIGN_KEY_CHECKS = 1")
     finally:
         conn.close()

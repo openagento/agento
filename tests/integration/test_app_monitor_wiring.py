@@ -1,6 +1,6 @@
 """End-to-end wiring test for the ``app_monitor`` module.
 
-Relies on the session-level ``_bootstrap_registries`` fixture in
+Relies on the ``_framework_registries`` fixture in
 ``tests/integration/conftest.py`` having loaded the module manifests, observer
 registrations, and the TranscriptReader registry via the real ``import_class``
 machinery. Dispatching a real event here exercises:

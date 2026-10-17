@@ -5,6 +5,7 @@ builders (tested separately) and focus on the service's resolution logic.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -70,7 +71,9 @@ class TestGet:
         svc = ScopedConfigService(MagicMock())
         assert svc.get("unknown/field") is None
 
-    def test_encrypted_db_value_decrypted(self, monkeypatch, patched_overrides):
+    @patch("agento.framework.bootstrap.get_manifests",
+           return_value=[SimpleNamespace(name="mymod", config={"token": {"type": "obscure"}})])
+    def test_encrypted_db_value_decrypted(self, _m, monkeypatch, patched_overrides):
         monkeypatch.setenv("AGENTO_ENCRYPTION_KEY", "test-secret-key")
         from agento.framework.crypto import encrypt
         merged, _ = patched_overrides
