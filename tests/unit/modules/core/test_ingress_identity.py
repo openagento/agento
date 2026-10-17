@@ -1,6 +1,6 @@
 """Tests for IngressIdentity model and DB functions."""
 from datetime import datetime
-from time import monotonic
+from time import process_time
 from unittest.mock import MagicMock
 
 import pytest
@@ -313,16 +313,18 @@ class TestMatchRedosBound:
     # `regex` engine (unlike (a+)+$, which it optimizes) — the CLI lint cannot catch it, so the
     # runtime timeout is the real bound. Safe to exercise here ONLY because regex.fullmatch has a
     # timeout; stdlib re would hang.
+    # Elapsed time is process CPU time, not wall time: a busy host (pytest-xdist, CI) delays the
+    # timeout check but cannot add CPU work, while a runaway match still burns CPU.
     PATHOLOGICAL = r"(?:a|aa)+$"
     ADVERSARIAL = "a" * 60 + "!"
 
     def test_pathological_pattern_skipped_within_budget(self, regex_type, clean_warn, monkeypatch, caplog):
         _patch_active(monkeypatch, [_ident(7, self.PATHOLOGICAL)])
         import logging
-        t0 = monotonic()
+        t0 = process_time()
         with caplog.at_level(logging.WARNING, logger="agento.framework.ingress_identity"):
             result = match_ingress_identities(MagicMock(), REGEX_TYPE, self.ADVERSARIAL)
-        elapsed = monotonic() - t0
+        elapsed = process_time() - t0
         assert result == []                    # timed out -> skipped -> deterministic no-match
         assert elapsed < 0.4                   # bounded by the per-pattern budget (~0.1s) + slack
         msgs = [r.getMessage() for r in caplog.records]
@@ -334,9 +336,9 @@ class TestMatchRedosBound:
         # NOT B x per-pattern (20 x 0.1 = 2.0s). Remaining rows fail closed after the budget.
         rows = [_ident(100 + i, self.PATHOLOGICAL) for i in range(20)]
         _patch_active(monkeypatch, rows)
-        t0 = monotonic()
+        t0 = process_time()
         result = match_ingress_identities(MagicMock(), REGEX_TYPE, self.ADVERSARIAL)
-        elapsed = monotonic() - t0
+        elapsed = process_time() - t0
         assert result == []
         assert elapsed < 1.5                   # << 20 x 0.1s == 2.0s -> total-deadline bounded
 

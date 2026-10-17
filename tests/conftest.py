@@ -9,6 +9,7 @@ from agento.framework.consumer_config import ConsumerConfig
 from agento.framework.database_config import DatabaseConfig
 from agento.modules.jira.src.config import JiraConfig
 from agento.modules.jira_periodic_tasks.src.config import PeriodicTasksConfig
+from tests.registry_isolation import clear_registries, is_bootstrapped
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -73,6 +74,16 @@ def jira_empty() -> dict:
 @pytest.fixture
 def claude_success() -> dict:
     return load_fixture("claude_output_success.json")
+
+
+@pytest.fixture(autouse=True)
+def _framework_registries():
+    """Clear the registries an integration test on this worker left bootstrapped.
+
+    tests/integration/conftest.py overrides this fixture to bootstrap instead.
+    """
+    if is_bootstrapped():
+        clear_registries()
 
 
 @pytest.fixture

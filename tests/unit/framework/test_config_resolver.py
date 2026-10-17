@@ -308,7 +308,10 @@ def test_a_decrypt_failure_is_not_reported_as_unset():
     svc._conn = None
     svc._scope, svc._scope_id = "default", 0
 
-    with patch("agento.framework.config_resolver.get_encryptor") as enc:
+    manifest = _SecretManifest(name="m", config={"secret": {"type": "obscure"}})
+    with patch("agento.framework.config_resolver.get_encryptor") as enc, patch(
+        "agento.framework.bootstrap.get_manifests", return_value=[manifest]
+    ):
         enc.return_value.decrypt.side_effect = ValueError("bad token")
         assert svc.get("m/secret") is None            # today's behaviour, kept
         with pytest.raises(DecryptError) as excinfo:
