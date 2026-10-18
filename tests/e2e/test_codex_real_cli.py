@@ -17,17 +17,16 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
 from agento.framework.agent_manager.errors import AuthenticationError
 from agento.framework.cli._env import parse_env_file
 from agento.framework.harness import RunRequest
+from tests.e2e._stack import PROJECT_ROOT as _PROJECT_ROOT
 from tests.harness_fixtures import make_runner
 
 _CODEX_PRESENT = shutil.which("codex") is not None
-_PROJECT_ROOT = Path(__file__).parents[2]
 _SECRETS = parse_env_file(_PROJECT_ROOT / "secrets.env")
 
 pytestmark = [

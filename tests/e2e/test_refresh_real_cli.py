@@ -17,20 +17,21 @@ the new token lands in the row the credential came from; every OTHER copy of tha
 registered only in this stack. A rotation is never undone. Only a run in which the CLI
 did NOT rotate restores the original payload (the stored expiry was the only change).
 
-Gated like the other stack e2e tests: ``AGENTO_E2E=1 bin/test``. Needs the dev stack up
-(``docker compose -f docker/docker-compose.dev.yml up -d``) with a running ``cron``.
+Gated like the other stack e2e tests: ``AGENTO_E2E=1 bin/test``. Needs the stack under test
+(``AGENTO_E2E_PROJECT_ROOT``, default this checkout's dev stack) up with a running ``cron``.
 """
 from __future__ import annotations
 
 import json
 import os
 import subprocess
-from pathlib import Path
 
 import pytest
 
-_PROJECT_ROOT = Path(__file__).parents[2]
-_COMPOSE = ["docker", "compose", "-f", str(_PROJECT_ROOT / "docker" / "docker-compose.dev.yml")]
+from agento.framework.cli._project import compose_file_flags
+from tests.e2e._stack import PROJECT_ROOT as _PROJECT_ROOT
+
+_COMPOSE = ["docker", "compose", *compose_file_flags(_PROJECT_ROOT)]
 _E2E_ENABLED = os.environ.get("AGENTO_E2E") == "1"
 
 
