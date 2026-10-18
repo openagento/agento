@@ -42,14 +42,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
-_PROJECT_ROOT = Path(__file__).parents[2]
-_AGENTO = shutil.which("agento") or str(_PROJECT_ROOT / "bin" / "agento")
+from tests.e2e._stack import AGENTO as _AGENTO
+from tests.e2e._stack import MODULES_DIR as _MODULES_DIR
+from tests.e2e._stack import PROJECT_ROOT as _PROJECT_ROOT
+
 _E2E_ENABLED = os.environ.get("AGENTO_E2E") == "1"
 
 # Cheap model per harness — keeps the real run inexpensive. The harness ids
@@ -120,7 +120,7 @@ def _harness_declarations() -> list[dict]:
     """
     disabled = {name for name, on in _enabled_modules().items() if on is False}
     roots = [
-        _PROJECT_ROOT / "src" / "agento" / "modules",
+        _MODULES_DIR,
         _PROJECT_ROOT / "app" / "code",
     ]
     harnesses: list[dict] = []

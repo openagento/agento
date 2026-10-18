@@ -77,18 +77,22 @@ jobs:
           name: dist
           path: dist/
 
-  # Real LLM calls with real credentials, on the self-hosted VPS runner. The
-  # credentials live only in that runner's persistent stack DB, never in GitHub
-  # secrets: OAuth refresh tokens are single-use and rotate on every refresh, so
-  # only a stack that keeps its DB between runs can hold them. See
-  # docs/deployment/release-e2e.md.
+  # Real LLM calls with real credentials, on the self-hosted runner next to the
+  # owner's long-lived test deployment (agento-mklauza on cyber1, a PyPI layout).
+  # The credentials live only in that stack's DB, never in GitHub secrets: OAuth
+  # refresh tokens are single-use and rotate on every refresh, so only a stack that
+  # keeps its DB between runs can hold them. The job installs the exact wheel that
+  # `publish` would upload, so e2e proves the artifact, not a source tree.
+  # A failed run leaves the stack on the candidate, on purpose: the owner inspects it
+  # there. See docs/deployment/release-e2e.md.
   e2e:
     needs: build
     runs-on: [self-hosted, agento-e2e]
     environment: e2e
-    # The job reaches GitHub only through `git fetch` of a public repo.
-    permissions: {}
-    # Plain `run:` is `bash -e` without pipefail: `pytest | tee` would exit with tee's 0.
+    permissions:
+      contents: read
+    # An explicit `shell: bash` runs `bash -eo pipefail`, so `pytest | tee` keeps
+    # pytest's exit code. The default shell is `bash -e` and would keep tee's 0.
     defaults:
       run:
         shell: bash
@@ -97,32 +101,32 @@ jobs:
       group: e2e-oauth
       cancel-in-progress: false
     env:
-      STACK: ${{ vars.E2E_STACK_DIR || '/srv/agento-e2e' }}
-      REF: ${{ inputs.ref || github.ref_name }}
-      COMPOSE_BAKE: "true"
+      STACK: ${{ vars.E2E_STACK_DIR || '/home/mklauza/agento-mklauza' }}
+      # Unpinned, uv picks the newest managed CPython, and `regex` has no wheel for
+      # it yet, so `uv sync` would try to compile it.
+      UV_PYTHON: "3.12"
     steps:
-      # No actions/checkout: the stack's storage/, app/etc/ and workspace/ sit
-      # inside the clone and must survive between runs.
-      - name: Check out the release in the persistent stack
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      # Installs the wheel, rebuilds the images and recreates the containers
+      # (migrations run on container start). Exits non-zero on any failure.
+      - name: Install the candidate wheel into the stack
         run: |
-          cd "$STACK"
-          git fetch --force --tags origin "$REF"
-          git checkout --force --detach FETCH_HEAD
-      - name: Rebuild and start the stack
-        run: |
-          cd "$STACK/docker"
-          docker compose -f docker-compose.dev.yml up -d --build --wait
-      - name: Apply migrations
-        run: |
-          cd "$STACK"
-          uv sync --group dev
-          uv run bin/agento setup:upgrade --skip-onboarding
+          "$STACK/bin/upgrade.sh" "$PWD/$(ls dist/*.whl)"
       # The e2e tests SKIP when the stack or a credential is missing. A skip here
       # means an untested release, so it fails the job.
       - name: Run e2e tests
+        env:
+          AGENTO_E2E: "1"
+          AGENTO_E2E_PROJECT_ROOT: ${{ vars.E2E_STACK_DIR || '/home/mklauza/agento-mklauza' }}
         run: |
-          cd "$STACK"
-          AGENTO_E2E=1 uv run pytest -q -m e2e -rs | tee "$RUNNER_TEMP/e2e.log"
+          uv sync --group dev
+          uv run pytest -q -m e2e -rs | tee "$RUNNER_TEMP/e2e.log"
           if grep -q '^SKIPPED' "$RUNNER_TEMP/e2e.log"; then
             echo "::error::e2e tests were skipped - the release is not proven"; exit 1
           fi

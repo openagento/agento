@@ -118,7 +118,7 @@ def _expected_cli_version() -> str:
         for line in env.read_text().splitlines():
             if line.startswith("CLAUDE_CODE_VERSION="):
                 return line.split("=", 1)[1].strip()
-    di = json.loads((base._PROJECT_ROOT / "src/agento/modules/claude/di.json").read_text())
+    di = json.loads((base._MODULES_DIR / "claude" / "di.json").read_text())
     return di["agent_harnesses"][0]["sandbox_package"]["default_range"]
 
 

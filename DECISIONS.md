@@ -1332,12 +1332,18 @@ change by the agent's own account and falls back to the reporter
 
 ## Release e2e on a self-hosted runner, credentials only in its stack (2026-10-18)
 
-The release e2e job runs on a self-hosted VPS runner, not on a GitHub-hosted one. OAuth
+The release e2e job runs on a self-hosted runner, not on a GitHub-hosted one. OAuth
 subscription refresh tokens are single-use: every refresh rotates them. A GitHub secret
 cannot follow that rotation unless the workflow holds a PAT that can write secrets, and
-that PAT in a public repo is a worse risk than the runner. So the credentials live in the
-runner's persistent stack DB, and GitHub holds no LLM secret (zero trust). The job checks
-out the release inside that persistent clone instead of using `actions/checkout`, because
-`storage/`, `app/etc/` and `workspace/` must survive between runs. A skipped e2e test fails
-the job: the tests skip themselves when a credential is missing, and a green run with every
-test skipped would publish an untested release. See docs/deployment/release-e2e.md.
+that PAT in a public repo is a worse risk than the runner. So the credentials live in a
+persistent stack's DB, and GitHub holds no LLM secret (zero trust).
+
+The stack is the owner's long-lived test deployment (agento-mklauza on cyber1), not a
+dedicated clone: it already holds logged-in credentials and built agent_views. It is a PyPI
+layout, so the job installs the built wheel into it (`bin/upgrade.sh`) and points the e2e
+tests at it with `AGENTO_E2E_PROJECT_ROOT`. That proves the exact artifact `publish`
+uploads. A failed run leaves the stack on the candidate so the owner can inspect it.
+
+A skipped e2e test fails the job: the tests skip themselves when a credential is missing,
+and a green run with every test skipped would publish an untested release. See
+docs/deployment/release-e2e.md.

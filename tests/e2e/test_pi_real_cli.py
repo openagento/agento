@@ -24,14 +24,13 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
-_PROJECT_ROOT = Path(__file__).parents[2]
-_AGENTO = shutil.which("agento") or str(_PROJECT_ROOT / "bin" / "agento")
+from tests.e2e._stack import MODULES_DIR as _MODULES_DIR
+from tests.e2e._stack import PROJECT_ROOT as _PROJECT_ROOT
+
 _E2E_ENABLED = os.environ.get("AGENTO_E2E") == "1"
 
 # Free, and a CONCRETE id rather than a router: `openrouter/free` dispatches to another
@@ -189,7 +188,7 @@ pytestmark = [
 
 def _bridge_source() -> str:
     return (
-        _PROJECT_ROOT / "src" / "agento" / "modules" / "pi" / "bridge" / "agento-toolbox.js"
+        _MODULES_DIR / "pi" / "bridge" / "agento-toolbox.js"
     ).read_text()
 
 
