@@ -1,8 +1,16 @@
 name: Release
 
+# `published` fires for a pre-release AND a full release. A DRAFT release sends no
+# event at all, so a draft is tested by hand: Actions -> Release -> Run workflow with
+# its tag (or a branch). A manual run tests and builds only; it never publishes.
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag or branch to test (drafts send no release event)
+        required: true
 
 permissions:
   contents: write
@@ -25,6 +33,8 @@ jobs:
           --health-retries=5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v4
       - run: uv sync --group dev
       - run: uv run ruff check src/ tests/
@@ -58,6 +68,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v4
       - run: uv build --no-sources
       - uses: actions/upload-artifact@v4
@@ -65,8 +77,59 @@ jobs:
           name: dist
           path: dist/
 
-  publish:
+  # Real LLM calls with real credentials, on the self-hosted VPS runner. The
+  # credentials live only in that runner's persistent stack DB, never in GitHub
+  # secrets: OAuth refresh tokens are single-use and rotate on every refresh, so
+  # only a stack that keeps its DB between runs can hold them. See
+  # docs/deployment/release-e2e.md.
+  e2e:
     needs: build
+    runs-on: [self-hosted, agento-e2e]
+    environment: e2e
+    # The job reaches GitHub only through `git fetch` of a public repo.
+    permissions: {}
+    # Plain `run:` is `bash -e` without pipefail: `pytest | tee` would exit with tee's 0.
+    defaults:
+      run:
+        shell: bash
+    # One OAuth refresh token per credential: two runs at once would rotate it twice.
+    concurrency:
+      group: e2e-oauth
+      cancel-in-progress: false
+    env:
+      STACK: ${{ vars.E2E_STACK_DIR || '/srv/agento-e2e' }}
+      REF: ${{ inputs.ref || github.ref_name }}
+      COMPOSE_BAKE: "true"
+    steps:
+      # No actions/checkout: the stack's storage/, app/etc/ and workspace/ sit
+      # inside the clone and must survive between runs.
+      - name: Check out the release in the persistent stack
+        run: |
+          cd "$STACK"
+          git fetch --force --tags origin "$REF"
+          git checkout --force --detach FETCH_HEAD
+      - name: Rebuild and start the stack
+        run: |
+          cd "$STACK/docker"
+          docker compose -f docker-compose.dev.yml up -d --build --wait
+      - name: Apply migrations
+        run: |
+          cd "$STACK"
+          uv sync --group dev
+          uv run bin/agento setup:upgrade --skip-onboarding
+      # The e2e tests SKIP when the stack or a credential is missing. A skip here
+      # means an untested release, so it fails the job.
+      - name: Run e2e tests
+        run: |
+          cd "$STACK"
+          AGENTO_E2E=1 uv run pytest -q -m e2e -rs | tee "$RUNNER_TEMP/e2e.log"
+          if grep -q '^SKIPPED' "$RUNNER_TEMP/e2e.log"; then
+            echo "::error::e2e tests were skipped - the release is not proven"; exit 1
+          fi
+
+  publish:
+    needs: [build, e2e]
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     environment: release
     permissions:
