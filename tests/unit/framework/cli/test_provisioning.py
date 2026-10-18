@@ -295,6 +295,34 @@ class TestLocalizeLockfileForContainer:
         # PyPI registry entries are untouched.
         assert 'source = { registry = "https://pypi.org/simple" }' in lock_text
 
+    def test_absolute_registry_wheel_paths_point_into_local_dist(self, tmp_path: Path):
+        # uv 0.11 with an absolute --find-links writes each wheel's FULL host path; a
+        # rewritten registry alone leaves the build looking for that path in the image.
+        project = tmp_path / "proj"
+        project.mkdir()
+        candidates = tmp_path / "agento-candidates" / "0.8.0"
+        candidates.mkdir(parents=True)
+        (candidates / "agento_core-0.8.0-py3-none-any.whl").write_bytes(b"WHEEL_BYTES")
+        lock = (
+            '[[package]]\n'
+            'name = "agento-core"\n'
+            f'source = {{ registry = "{candidates}" }}\n'
+            'wheels = [\n'
+            f'    {{ path = "{candidates}/agento_core-0.8.0-py3-none-any.whl" }},\n'
+            ']\n'
+        )
+        (project / "uv.lock").write_text(lock)
+        cron_ctx = tmp_path / "cron"
+        cron_ctx.mkdir()
+        (cron_ctx / "uv.lock").write_text(lock)
+
+        localize_lockfile_for_container(project, cron_ctx)
+
+        lock_text = (cron_ctx / "uv.lock").read_text()
+        assert 'source = { registry = "_local_dist" }' in lock_text
+        assert '{ path = "agento_core-0.8.0-py3-none-any.whl" }' in lock_text
+        assert str(candidates) not in lock_text
+
     def test_pypi_only_lockfile_is_unchanged(self, tmp_path: Path):
         project = tmp_path / "proj"
         project.mkdir()
