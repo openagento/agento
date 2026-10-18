@@ -349,6 +349,9 @@ def localize_lockfile_for_container(
                 shutil.copy2(entry, local_dist / entry.name)
 
         text = text.replace(match.group(0), 'source = { registry = "_local_dist" }')
+        # An absolute registry makes uv write each wheel/sdist path in full; relative to
+        # the registry it is just the file name, which now resolves inside _local_dist.
+        text = text.replace(f'path = "{registry}/', 'path = "')
         rewrote = True
 
     if rewrote:
