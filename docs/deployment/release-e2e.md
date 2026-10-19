@@ -58,12 +58,12 @@ A skipped test fails the job, so every harness needs a credential:
 
 | Harness | Needs |
 |---|---|
-| Claude | an OAuth credential in the stack (present today) |
-| Codex | a Codex credential in the stack, and the `codex` CLI on the **runner's** `PATH` (`~/actions-runner/.path`, by default `/usr/local/bin:/usr/bin:/bin`); `test_codex_real_cli` skips without it |
-| Codex (API) | `OPENAI_API_KEY` in the stack's `secrets.env` |
-| Pi | an OpenRouter key |
+| Claude | a Claude credential in the stack (OAuth preferred) |
+| Codex | a Codex credential in the stack (OAuth preferred) |
+| Pi | an OpenRouter key in the stack |
 
-Today only Claude OAuth exists on agento-mklauza, so the job is red until the rest are added.
+Every agent CLI runs in the **sandbox**, at the version the release pins. Nothing is
+installed on the host, and no key goes into `secrets.env` for the tests.
 
 Register each credential **in the stack** with `credential:register`. Do **not copy a
 credential file** (for example `~/.claude/.credentials.json` from your laptop). A refresh token
