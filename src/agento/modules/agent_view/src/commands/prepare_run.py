@@ -79,8 +79,19 @@ class AgentViewPrepareRunCommand:
             help="Optional prompt for headless mode — if set, payload carries headless command.",
         )
         parser.add_argument(
+            "--harness", default=None,
+            help="Run this harness instead of agent_view/harness. Its provider is the "
+                 "harness default; no config is changed (as a pinned job, "
+                 "docs/cli/job-runtime.md).",
+        )
+        parser.add_argument(
             "--model", default=None,
             help="Optional model override (falls back to agent_view/model).",
+        )
+        parser.add_argument(
+            "--credential", type=int, default=None,
+            help="Use this credential id instead of the pool's pick. It must be usable "
+                 "and in the run's credential scope.",
         )
         parser.add_argument(
             "--yolo", action="store_true",
@@ -90,7 +101,11 @@ class AgentViewPrepareRunCommand:
 
     def execute(self, args: argparse.Namespace) -> None:
         from agento.framework.agent_manager.credential_resolver import CredentialResolver
-        from agento.framework.agent_view_runtime import resolve_agent_view_runtime
+        from agento.framework.agent_view_runtime import (
+            InvalidJobRuntime,
+            resolve_agent_view_runtime,
+            resolve_job_runtime,
+        )
         from agento.framework.cli.runtime import _load_framework_config
         from agento.framework.config_resolver import ScopedConfigService
         from agento.framework.db import get_connection_or_exit
@@ -120,14 +135,19 @@ class AgentViewPrepareRunCommand:
                 print(f"Error: agent_view '{args.agent_view_code}' not found", file=sys.stderr)
                 sys.exit(1)
 
-            runtime = resolve_agent_view_runtime(conn, av.id)
+            harness_pin = getattr(args, "harness", None)
+            # A pinned harness makes the view's own harness/provider pair irrelevant, so
+            # a broken pair there must not block the run.
+            runtime = resolve_agent_view_runtime(
+                conn, av.id, tolerate_pair_error=harness_pin is not None,
+            )
             if runtime.workspace is None:
                 print(
                     f"Error: workspace for agent_view '{args.agent_view_code}' not found",
                     file=sys.stderr,
                 )
                 sys.exit(1)
-            if runtime.harness is None:
+            if runtime.harness is None and harness_pin is None:
                 print(
                     "Error: agent_view/harness not configured. Set it via "
                     "`agento config:set agent_view/harness <harness> "
@@ -135,8 +155,17 @@ class AgentViewPrepareRunCommand:
                     file=sys.stderr,
                 )
                 sys.exit(1)
+            if harness_pin is not None or args.model:
+                try:
+                    runtime = resolve_job_runtime(
+                        runtime, pinned_harness=harness_pin, pinned_model=args.model,
+                    )
+                except InvalidJobRuntime as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    sys.exit(1)
 
             provider_desc = resolve_provider(runtime.harness, runtime.provider)
+            credential_pin = getattr(args, "credential", None)
 
             # The CALLER claims the credential — once — and stamps used_at.
             # ``credential is None`` is legal in TWO cases: the provider requires none,
@@ -152,10 +181,10 @@ class AgentViewPrepareRunCommand:
             if provider_desc.credential_required:
                 try:
                     credential = CredentialResolver().resolve(
-                        conn, provider_desc.credential_scope
+                        conn, provider_desc.credential_scope, credential_id=credential_pin,
                     )
                 except Exception as exc:
-                    if args.prompt:
+                    if args.prompt or credential_pin is not None:
                         print(f"Error: {exc}", file=sys.stderr)
                         sys.exit(1)
                     purge_credentials = True
@@ -195,7 +224,7 @@ class AgentViewPrepareRunCommand:
             # Computed BEFORE materializing, not after: the workspace bakes the model
             # expectation the bridge enforces, so an `--model` override decided later cannot
             # reach it and the run is failed for doing exactly what was asked.
-            effective_model = args.model or runtime.model
+            effective_model = runtime.model
 
             # Read the four SSH identity values ONCE: the public files and the private key
             # must come from one config snapshot (see framework/ssh_identity.py).

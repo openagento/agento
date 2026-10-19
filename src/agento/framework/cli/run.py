@@ -1,4 +1,5 @@
-"""`agento run <agent_view_code> [--yolo] [--pretty] [prompt]` — spawn the configured agent CLI.
+"""`agento run <agent_view_code> [--yolo] [--pretty] [--harness H] [--model M] [--credential ID] [prompt]`
+— spawn the configured agent CLI.
 
 Host-side LOCAL command. Two-step docker exec:
 1. Query cron for a full run profile via ``agent_view:prepare-run`` —
@@ -66,6 +67,16 @@ class RunCommand:
                  "JSONL. Headless runs only (interactive is already readable).",
         )
         parser.add_argument(
+            "--harness",
+            help="Run this harness instead of agent_view/harness, with its default "
+                 "provider. No config is changed.",
+        )
+        parser.add_argument("--model", help="Run this model instead of agent_view/model.")
+        parser.add_argument(
+            "--credential", type=int,
+            help="Use this credential id instead of the pool's pick.",
+        )
+        parser.add_argument(
             "prompt",
             nargs=argparse.REMAINDER,
             help="Optional one-shot prompt — when present, runs headless instead of interactive",
@@ -94,9 +105,11 @@ class RunCommand:
         yolo = bool(getattr(args, "yolo", False)) or "--yolo" in prompt_tokens
         pretty = bool(getattr(args, "pretty", False)) or "--pretty" in prompt_tokens
         prompt_tokens = [t for t in prompt_tokens if t not in ("--yolo", "--pretty")]
+        pins = {k: getattr(args, k, None) for k in _VALUE_OPTIONS}
+        prompt_tokens = _take_leading_options(prompt_tokens, pins)
         prompt = " ".join(prompt_tokens).strip()
         runtime = _fetch_runtime(
-            compose_flags, args.agent_view_code, prompt=prompt, yolo=yolo,
+            compose_flags, args.agent_view_code, prompt=prompt, yolo=yolo, pins=pins,
         )
         harness = runtime.get("harness")
         if harness is None:
@@ -202,6 +215,27 @@ class RunCommand:
         os.execvp("docker", exec_args)
 
 
+_VALUE_OPTIONS = ("harness", "model", "credential")
+
+
+def _take_leading_options(tokens: list[str], pins: dict) -> list[str]:
+    """Move ``--harness/--model/--credential`` typed after the agent_view code out of the
+    prompt into ``pins``; return the rest. Only LEADING tokens: a prompt may contain the
+    same words."""
+    while tokens:
+        name, eq, value = tokens[0].partition("=")
+        key = name[2:] if name.startswith("--") else None
+        if key not in _VALUE_OPTIONS:
+            break
+        if not eq:
+            if len(tokens) < 2:
+                break
+            value, tokens = tokens[1], tokens[1:]
+        pins[key] = value
+        tokens = tokens[1:]
+    return tokens
+
+
 def _load_stream_renderer(runtime: dict):
     """Import the harness's own stream renderer from the path cron reported.
 
@@ -297,7 +331,7 @@ def _run_pretty(
 
 def _fetch_runtime(
     compose_flags: list[str], agent_view_code: str, *, prompt: str = "",
-    yolo: bool = False,
+    yolo: bool = False, pins: dict | None = None,
 ) -> dict:
     """Ask cron to prepare a run environment; return parsed JSON.
 
@@ -318,6 +352,9 @@ def _fetch_runtime(
         cmd.extend(["--prompt", prompt])
     if yolo:
         cmd.append("--yolo")
+    for key, value in (pins or {}).items():
+        if value is not None:
+            cmd.extend([f"--{key}", str(value)])
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)

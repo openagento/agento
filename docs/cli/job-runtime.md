@@ -22,7 +22,8 @@ resolved state**, not just output.
 `default_provider`).
 
 The model's precedence is `job.model` > the consumer's `--model` (replay) > config.
-`agento e2e --harness/--model` pins the job row, so it is the first rule.
+`agento e2e --harness/--model` pins the job row, so it is the first rule. `agento run
+--harness/--model` resolves the same way for one interactive or headless run.
 
 ## A harness other than the view's
 

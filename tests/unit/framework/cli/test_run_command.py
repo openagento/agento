@@ -787,3 +787,30 @@ class TestLoadStreamRenderer:
 
     def test_unimportable_path_degrades_to_none(self):
         assert _load_stream_renderer({"stream_renderer": "agento.nope:Missing"}) is None
+
+
+def test_pins_typed_after_the_code_leave_the_prompt():
+    """`agento run dev --harness pi --model m --credential=6 hi --model x` — only the
+    leading options are pins; the same words later belong to the prompt."""
+    from agento.framework.cli.run import _take_leading_options
+
+    pins = {"harness": None, "model": None, "credential": None}
+    rest = _take_leading_options(
+        ["--harness", "pi", "--model", "m", "--credential=6", "hi", "--model", "x"], pins,
+    )
+    assert pins == {"harness": "pi", "model": "m", "credential": "6"}
+    assert rest == ["hi", "--model", "x"]
+
+
+def test_pins_reach_prepare_run(monkeypatch):
+    from agento.framework.cli import run
+
+    seen = {}
+    monkeypatch.setattr(
+        run.subprocess, "run",
+        lambda cmd, **_: seen.setdefault("cmd", cmd) and argparse.Namespace(
+            returncode=0, stdout="{}", stderr="",
+        ),
+    )
+    run._fetch_runtime(["-f", "x"], "dev", pins={"harness": "pi", "model": None, "credential": 6})
+    assert seen["cmd"][-4:] == ["--harness", "pi", "--credential", "6"]

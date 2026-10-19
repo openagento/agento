@@ -13,7 +13,7 @@
 | `up` | Start Docker Compose runtime |
 | `down` | Stop Docker Compose runtime |
 | `logs [service]` | Show container logs |
-| `run <agent_view_code> [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one ([details](run.md)) |
+| `run <agent_view_code> [--harness H] [--model M] [--credential ID] [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one. The options pin this run only; no config is changed ([details](run.md)) |
 | **Setup** | |
 | `setup:upgrade [--dry-run] [--skip-onboarding]` | Apply migrations, data patches, run onboarding ([onboarding details](onboarding.md)) |
 | **Modules** | |
@@ -91,7 +91,7 @@
 | `replay <job_id>` | Replay a completed job. **Refuses** a job whose `agent_view_id` is NULL (pre-0.15 rows and stubs): the harness's own config — and therefore the exact command — cannot be resolved for it, and a replay that silently differs from the run it claims to reproduce is worse than none |
 | `exec:todo [key] [--agent-view C]` | Execute next TODO task. `--agent-view` names the acting view; it is **required** when more than one active view exists, and there is no global fallback ([details](../architecture/zero-trust.md)) |
 | `replay <job_id>` | Replay a completed job |
-| `e2e [--credential ID] [--harness H] [--model M] [--agent-view C] [--keep]` | Push one real test job through the consumer (real LLM call). `--harness`/`--model` pin the job's runtime ([job-runtime.md](job-runtime.md)); no config is changed. The command claims only the job it inserted, and the job is parked so a running consumer never takes it. With `--agent-view C` the job runs as that agent_view — its harness, workspace build and toolbox — and two more checks run: `toolbox_mcp_connected = 1` and `toolbox_mcp_calls` set. Those columns are written by the `app_monitor` module, so it must be enabled; without the option the job is a `blank` job with no toolbox and the extra checks do not run. The credential comes from the pool of the job's effective harness/provider, as the consumer selects it; a `--credential` from another scope is rejected |
+| `e2e [--credential ID] [--harness H] [--model M] [--agent-view C] [--keep]` | Push one real test job through the consumer (real LLM call). `--harness`/`--model` pin the job's runtime ([job-runtime.md](job-runtime.md)); no config is changed. The command claims only the job it inserted, and the job is parked so a running consumer never takes it. The run claims only the credential under test; the rest of the pool is not touched. With `--agent-view C` the job runs as that agent_view — its harness, workspace build and toolbox — and two more checks run: `toolbox_mcp_connected = 1` and `toolbox_mcp_calls` set. Those columns are written by the `app_monitor` module, so it must be enabled; without the option the job is a `blank` job with no toolbox and the extra checks do not run. The credential comes from the pool of the job's effective harness/provider, as the consumer selects it; a `--credential` from another scope is rejected |
 
 ## How It Works
 

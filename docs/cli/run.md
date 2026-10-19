@@ -26,6 +26,25 @@ both default to "No, exit" in Claude Code 2.1.x ([details](../modules/claude.md#
 
 The agent runs inside the isolated `sandbox` container with no upstream service credentials of its own except one documented exception — the SSH private key used for git, see [DECISIONS.md](../../DECISIONS.md) D-SSH-1 —, and its toolbox capability is scoped to that one agent_view and expires. The toolbox is designed to be the only container that holds tool credentials. Concurrent runs share the `agent` UID and the workspace mount, so this is not a boundary between mutually hostile views — see the co-tenant limit and the other known gaps in [zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt). `--yolo` only affects **interactive** mode — headless (one-shot) runs are always in bypass mode, so the flag is a no-op there.
 
+### `--harness`, `--model`, `--credential` — pin one run
+
+Run another harness, model or credential than the agent_view's config, for this run
+only. No config and no pool row is changed, so pinned runs can go in parallel.
+
+```bash
+agento run --harness codex --model gpt-5.4-mini dev_01 "…"
+agento run dev_01 --credential 6 "…"      # options may also follow the code
+```
+
+- `--harness` takes that harness's default provider; the view's provider and model
+  describe the view's harness, so they are not used (as for a pinned job, see
+  [job-runtime.md](job-runtime.md)). The run gets that harness's own files, never the
+  view harness's.
+- `--credential` must be in the run's credential scope and usable (enabled, healthy,
+  not throttled or leased); otherwise the run stops at once.
+- Typed after the code, only the options at the start of the prompt are taken; the same
+  words later belong to the prompt.
+
 ### `--pretty` — human-readable event stream
 
 A headless run streams the agent CLI's own machine format — Claude Code `stream-json` JSONL, Codex `--json` NDJSON. That is right for parsing and unreadable for a person watching the run. `--pretty` renders each event as one line instead:
