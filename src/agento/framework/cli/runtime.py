@@ -249,8 +249,11 @@ class ReplayCommand:
         parser.add_argument("--credential", "--credential-id", "--oauth_token",
                           type=int, dest="credential_id", default=None,
                           help="Override credential id (default: least-recently-used healthy credential)")
+        parser.add_argument("--harness", type=str, default=None,
+                          help="Pin the test job's harness (e.g. codex) instead of the "
+                               "agent_view's — no config is changed")
         parser.add_argument("--model", type=str, default=None,
-                          help="Override the model (e.g. claude-opus-4-20250514)")
+                          help="Pin the test job's model (e.g. haiku)")
         parser.add_argument("--exec", action="store_true",
                           help="Actually execute the command (not just display)")
         parser.add_argument("--json", action="store_true",
@@ -571,8 +574,11 @@ class E2eCommand:
                           help="Override credential id (default: least-recently-used healthy credential)")
         parser.add_argument("--keep", action="store_true",
                           help="Keep test jobs in DB (don't clean up)")
+        parser.add_argument("--harness", type=str, default=None,
+                          help="Pin the test job's harness (e.g. codex) instead of the "
+                               "agent_view's — no config is changed")
         parser.add_argument("--model", type=str, default=None,
-                          help="Override the model (e.g. claude-opus-4-20250514)")
+                          help="Pin the test job's model (e.g. haiku)")
         parser.add_argument("--agent-view", dest="agent_view", default=None,
                           help="Run the test job as this agent_view (its harness, build and "
                                "toolbox) and also check the toolbox telemetry columns")

@@ -182,6 +182,13 @@ DEQUEUE_SQL = """
     FOR UPDATE SKIP LOCKED
 """
 
+# `agento e2e` claims the job it inserted, never whatever else is queued on a live stack.
+DEQUEUE_ONE_SQL = """
+    SELECT * FROM job
+    WHERE id = %s AND status = 'TODO'
+    FOR UPDATE SKIP LOCKED
+"""
+
 CLAIM_SQL = """
     UPDATE job
     SET status = 'RUNNING', started_at = NOW(), attempt = attempt + 1, updated_at = NOW()
@@ -471,12 +478,16 @@ class Consumer:
         except Exception:
             self.logger.exception("Failed to recover stale jobs (non-fatal, continuing)")
 
-    def _try_dequeue(self) -> Job | None:
-        """Claim one job from the queue. Returns None if empty."""
+    def _try_dequeue(self, job_id: int | None = None) -> Job | None:
+        """Claim one job from the queue — or exactly ``job_id`` while it is still TODO.
+        Returns None if there is nothing to claim."""
         conn = get_connection(self._db_config)
         try:
             with conn.cursor() as cur:
-                cur.execute(DEQUEUE_SQL)
+                if job_id is None:
+                    cur.execute(DEQUEUE_SQL)
+                else:
+                    cur.execute(DEQUEUE_ONE_SQL, (job_id,))
                 row = cur.fetchone()
                 if not row:
                     conn.rollback()

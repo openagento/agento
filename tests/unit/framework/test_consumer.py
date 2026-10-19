@@ -281,6 +281,20 @@ class TestDequeue:
         mock_conn.commit.assert_called_once()
 
     @patch("agento.framework.consumer.get_connection")
+    def test_dequeue_by_id_selects_only_that_job(
+        self, mock_get_conn, sample_config, sample_db_config, sample_consumer_config,
+    ):
+        mock_conn, mock_cursor = _mock_connection(row=_make_row())
+        mock_get_conn.return_value = mock_conn
+
+        consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
+        assert consumer._try_dequeue(job_id=7) is not None
+
+        sql, params = mock_cursor.execute.call_args_list[0].args
+        assert "WHERE id = %s AND status = 'TODO'" in sql
+        assert params == (7,)
+
+    @patch("agento.framework.consumer.get_connection")
     def test_dequeue_increments_attempt(self, mock_get_conn, sample_config, sample_db_config, sample_consumer_config):
         row = _make_row(attempt=2)
         mock_conn, _mock_cursor = _mock_connection(row=row)
