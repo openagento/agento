@@ -228,9 +228,14 @@ def select_credential(
     conn: pymysql.Connection,
     scope: str,
     lease: RefreshLease | None = None,
+    *,
+    credential_id: int | None = None,
 ) -> CredentialRecord | None:
     """Claim the least-recently-used healthy credential for ``scope`` and stamp
     ``used_at=UTC_TIMESTAMP(6)`` atomically.
+
+    ``credential_id`` pins the claim to that one row (a test run that must use a given
+    credential); every health and lease filter still applies to it.
 
     Filters: ``enabled=TRUE``, ``status='ok'``, ``expires_at`` either NULL or in
     the future (credential still valid), and ``throttled_until`` either NULL or in
@@ -269,12 +274,13 @@ def select_credential(
                AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
                AND (throttled_until IS NULL OR throttled_until <= UTC_TIMESTAMP())
                AND (leased_until IS NULL OR leased_until <= UTC_TIMESTAMP())
+               AND (%s IS NULL OR id = %s)
              ORDER BY priority ASC,
                       used_at IS NULL DESC, used_at ASC, id ASC
              LIMIT 1
              FOR UPDATE
             """,
-            (scope,),
+            (scope, credential_id, credential_id),
         )
         row = cur.fetchone()
         if row is None:

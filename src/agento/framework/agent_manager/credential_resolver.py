@@ -105,6 +105,7 @@ class CredentialResolver:
         scope: str,
         *,
         lease_owner: str | None = None,
+        credential_id: int | None = None,
     ) -> CredentialRecord:
         """Return the least-recently-used healthy credential for ``scope``.
 
@@ -122,6 +123,10 @@ class CredentialResolver:
         every one is transiently busy (locked by a concurrent worker or held by a refresh
         lease), raises ``CredentialsBusyError`` carrying ``pool_retry_at`` so the consumer
         waits for the pool to free up instead of dead-lettering the job.
+
+        ``credential_id`` pins the claim to that one credential (``agento e2e``, ``agento
+        run --credential``). It fails at once when that row is not usable: waiting on the
+        pool would only time out on a row nobody else is going to free.
         """
         lease = (
             RefreshLease(
@@ -142,9 +147,15 @@ class CredentialResolver:
         deadline = time.monotonic() + budget
         sleep_for = _POOL_CONTENTION_INITIAL_SLEEP_SECONDS
         while True:
-            credential = select_credential(conn, scope, lease)
+            credential = select_credential(conn, scope, lease, credential_id=credential_id)
             if credential is not None:
                 return credential
+            if credential_id is not None:
+                raise RuntimeError(
+                    f"Credential id={credential_id} is not usable in scope={scope} "
+                    "(not in that scope, disabled, errored, expired, throttled or leased). "
+                    "Inspect it with 'bin/agento credential:list --all'."
+                )
 
             total, healthy = count_credentials_for_scope(conn, scope)
             if total == 0 or healthy == 0:

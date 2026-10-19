@@ -208,3 +208,22 @@ class TestPickCredential:
         self._patch(monkeypatch, required=False)
         with pytest.raises(ValueError, match="needs no credential"):
             _pick_credential(None, None, None)
+
+
+def test_the_scenario_claims_only_the_credential_under_test(monkeypatch):
+    """Pinned on the consumer, not by disabling the scope's other credentials — a run
+    in parallel, or the stack's own consumer, keeps the whole pool."""
+    from unittest.mock import MagicMock
+
+    from agento.framework import e2e
+    from agento.framework.agent_manager.models import CredentialRecord
+
+    consumer_cls = MagicMock()
+    consumer_cls.return_value._try_dequeue.return_value = None
+    monkeypatch.setattr(e2e, "Consumer", consumer_cls)
+    monkeypatch.setattr(e2e, "_insert_test_job", lambda *a, **k: 1)
+    monkeypatch.setattr(e2e, "get_connection", MagicMock(side_effect=AssertionError("no DB write")))
+
+    cred = CredentialRecord(id=9, scope="claude", type="oauth", label="l")
+    assert e2e.run_scenario(cred, MagicMock(), MagicMock(), MagicMock()) is False
+    assert consumer_cls.call_args.kwargs["credential_id"] == 9

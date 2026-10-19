@@ -1,9 +1,8 @@
 """End-to-end tests using real LLM calls and the prod database.
 
 Exercises the full consumer pipeline: dequeue → channel → workflow → runner → finalize.
-The selected credential drives the run; for deterministic targeting the scenario
-temporarily disables every other credential in the same scope so the LRU pool
-has only one candidate, then restores their enabled state at teardown.
+The selected credential drives the run: the scenario's consumer claims only that
+credential, so the pool and the other credentials are left as they are.
 Requires healthy tokens and DISABLE_LLM=0.
 """
 from __future__ import annotations
@@ -12,7 +11,7 @@ import logging
 import sys
 import time
 
-from .agent_manager.credential_store import get_credential, list_credentials, select_credential
+from .agent_manager.credential_store import get_credential, select_credential
 from .agent_manager.models import CredentialRecord
 from .channels.registry import register_channel
 from .channels.test import TestChannel
@@ -79,46 +78,6 @@ def _delete_job(db_config: DatabaseConfig, job_id: int) -> None:
         conn.close()
 
 
-def _disable_other_credentials(
-    db_config: DatabaseConfig, credential: CredentialRecord
-) -> list[int]:
-    """Disable every other enabled credential in the same scope; return their ids."""
-    conn = get_connection(db_config)
-    try:
-        peers = [
-            c.id for c in list_credentials(conn, scope=credential.scope)
-            if c.id != credential.id
-        ]
-        if peers:
-            placeholders = ",".join(["%s"] * len(peers))
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"UPDATE credential SET enabled = FALSE WHERE id IN ({placeholders})",
-                    peers,
-                )
-            conn.commit()
-        return peers
-    finally:
-        conn.close()
-
-
-def _restore_credentials(db_config: DatabaseConfig, credential_ids: list[int]) -> None:
-    """Re-enable credentials previously disabled by ``_disable_other_credentials``."""
-    if not credential_ids:
-        return
-    conn = get_connection(db_config)
-    try:
-        placeholders = ",".join(["%s"] * len(credential_ids))
-        with conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE credential SET enabled = TRUE WHERE id IN ({placeholders})",
-                credential_ids,
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def _run_checks(
     row: dict, *, agent_view: bool = False, mcp_init_report: bool = True,
 ) -> list[tuple[str, bool, str]]:
@@ -166,53 +125,49 @@ def run_scenario(
     print(f"{'='*60}")
 
     register_channel(TestChannel())
-    disabled_peers = _disable_other_credentials(db_config, credential)
 
-    try:
-        job_id = _insert_test_job(db_config, ref_id, agent_view_id, harness=harness, model=model)
-        print(f"  Inserted job id={job_id}, reference_id={ref_id}")
+    job_id = _insert_test_job(db_config, ref_id, agent_view_id, harness=harness, model=model)
+    print(f"  Inserted job id={job_id}, reference_id={ref_id}")
 
-        consumer = Consumer(db_config, consumer_config, logger)
-        job = consumer._try_dequeue(job_id)
-        if job is None:
-            # A live consumer polling at that instant can claim the job first;
-            # it is then left to that consumer (not deleted) and the run reports FAIL.
-            print(f"  FAIL: job {job_id} was claimed by another consumer — run again")
-            return False
-        print(f"  Dequeued job {job.id}, executing...")
+    consumer = Consumer(db_config, consumer_config, logger, credential_id=credential.id)
+    job = consumer._try_dequeue(job_id)
+    if job is None:
+        # The job is parked, so no consumer polls it; only something that claims by
+        # id can have taken it. It is left to that claimant (not deleted).
+        print(f"  FAIL: job {job_id} was claimed by someone else — run again")
+        return False
+    print(f"  Dequeued job {job.id}, executing...")
 
-        consumer._execute_job(job)
+    consumer._execute_job(job)
 
-        row = _fetch_job(db_config, job_id)
-        if row is None:
-            print("  FAIL: job row not found after execution")
-            return False
+    row = _fetch_job(db_config, job_id)
+    if row is None:
+        print("  FAIL: job row not found after execution")
+        return False
 
-        registered = find_harness(row["agent_type"]) if row["agent_type"] else None
-        checks = _run_checks(
-            row, agent_view=agent_view_id is not None,
-            mcp_init_report=bool(registered and registered.descriptor.capabilities.mcp_init_report),
-        )
-        all_ok = all(ok for _, ok, _ in checks)
+    registered = find_harness(row["agent_type"]) if row["agent_type"] else None
+    checks = _run_checks(
+        row, agent_view=agent_view_id is not None,
+        mcp_init_report=bool(registered and registered.descriptor.capabilities.mcp_init_report),
+    )
+    all_ok = all(ok for _, ok, _ in checks)
 
-        for label, ok, detail in checks:
-            status = "PASS" if ok else "FAIL"
-            print(f"  [{status}] {label}: {detail}")
+    for label, ok, detail in checks:
+        status = "PASS" if ok else "FAIL"
+        print(f"  [{status}] {label}: {detail}")
 
-        print(f"\n  Model:  {row['model']}")
-        print(f"  Tokens: in={row['input_tokens']} out={row['output_tokens']}")
-        output_preview = (row["output"] or "")[:120]
-        print(f"  Output: {output_preview}")
+    print(f"\n  Model:  {row['model']}")
+    print(f"  Tokens: in={row['input_tokens']} out={row['output_tokens']}")
+    output_preview = (row["output"] or "")[:120]
+    print(f"  Output: {output_preview}")
 
-        if keep:
-            print(f"  Keeping job {job_id} (--keep)")
-        else:
-            _delete_job(db_config, job_id)
-            print(f"  Cleaned up job {job_id}")
+    if keep:
+        print(f"  Keeping job {job_id} (--keep)")
+    else:
+        _delete_job(db_config, job_id)
+        print(f"  Cleaned up job {job_id}")
 
-        return all_ok
-    finally:
-        _restore_credentials(db_config, disabled_peers)
+    return all_ok
 
 
 def _pick_credential(

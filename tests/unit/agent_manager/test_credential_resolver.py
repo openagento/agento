@@ -24,6 +24,23 @@ class TestCredentialResolver:
         mock_select.assert_called_once()
         assert mock_select.call_args[0][1] == "claude"
 
+    def test_a_pinned_credential_that_is_not_usable_fails_at_once(self):
+        """Healthy peers exist, but waiting on the pool cannot free the pinned row."""
+        with (
+            patch(
+                "agento.framework.agent_manager.credential_resolver.select_credential",
+                return_value=None,
+            ) as mock_select,
+            patch(
+                "agento.framework.agent_manager.credential_resolver.count_credentials_for_scope",
+                return_value=(3, 3),
+            ),pytest.raises(RuntimeError, match="id=7 is not usable")
+        ):
+            CredentialResolver().resolve(MagicMock(), "claude", credential_id=7)
+
+        mock_select.assert_called_once()
+        assert mock_select.call_args.kwargs["credential_id"] == 7
+
     def test_resolve_raises_when_no_tokens_registered(self):
         with (
             patch(

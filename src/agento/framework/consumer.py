@@ -206,9 +206,13 @@ class Consumer:
         logger: logging.Logger,
         *,
         model_override: str | None = None,
+        credential_id: int | None = None,
     ):
         self.logger = logger
         self.model_override = model_override
+        # Pins every claim to one credential. Only `agento e2e` sets it: its in-process
+        # consumer runs one job that must use the credential under test.
+        self.credential_id = credential_id
         self._shutdown = threading.Event()
         self._db_config = db_config
         self._consumer_config = consumer_config
@@ -693,7 +697,9 @@ class Consumer:
                 scope = provider_desc.credential_scope
                 lease_owner = lease_owner_for_job(job.id, job.attempt)
                 credential = (
-                    self._credential_resolver.resolve(conn, scope, lease_owner=lease_owner)
+                    self._credential_resolver.resolve(
+                        conn, scope, lease_owner=lease_owner, credential_id=self.credential_id,
+                    )
                     if provider_desc.credential_required else None
                 )
 
