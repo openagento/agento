@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from agento.framework.channels.base import Channel, DiscoverableChannel
 from agento.framework.job_models import AgentType
 from agento.modules.jira.src.channel import JiraChannel
+from agento.modules.jira.src.config import JiraConfig
 
 
 class TestJiraChannelProtocol:
@@ -48,6 +49,31 @@ class TestPromptFragments:
 
     def test_extra_is_none(self):
         assert self.f.extra is None
+
+
+class TestHandbackStatus:
+    """The issue goes back to a To Do status on hand-back, so discovery finds it after reassignment."""
+
+    def test_default_to_do(self):
+        f = JiraChannel().get_prompt_fragments("AI-1")
+        assert 'status_name "To Do"' in f.ask_and_handback
+
+    def test_first_configured_status_from_jira_config(self):
+        config = JiraConfig(todo_statuses=["Backlog", "To Do"])
+        f = JiraChannel().get_prompt_fragments("AI-1", config=config)
+        assert 'status_name "Backlog"' in f.ask_and_handback
+
+    def test_first_configured_status_from_dict(self):
+        f = JiraChannel().get_prompt_fragments("AI-1", config={"todo_statuses": ["Open"]})
+        assert 'status_name "Open"' in f.ask_and_handback
+
+    def test_empty_statuses_fall_back_to_to_do(self):
+        f = JiraChannel().get_prompt_fragments("AI-1", config=JiraConfig(todo_statuses=[]))
+        assert 'status_name "To Do"' in f.ask_and_handback
+
+    def test_status_reset_before_assign_to_reporter(self):
+        text = JiraChannel().get_prompt_fragments("AI-1").ask_and_handback
+        assert text.index("jira_transition_issue") < text.index("jira_assign_issue") < text.index("ZAKOŃCZ")
 
 
 class TestFollowupFragments:

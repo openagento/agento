@@ -23,6 +23,14 @@ _COMMENT_FORMAT = (
 )
 
 
+def _handback_status(config: object | None) -> str:
+    """First configured To Do status — discovery only finds issues in a To Do status."""
+    statuses = config.get("todo_statuses") if isinstance(config, dict) else getattr(config, "todo_statuses", None)
+    if isinstance(statuses, list) and statuses and isinstance(statuses[0], str):
+        return statuses[0]
+    return "To Do"
+
+
 class JiraPromptChannel:
     """Channel concern: prompt fragments for agent instructions."""
 
@@ -31,6 +39,7 @@ class JiraPromptChannel:
         return "jira"
 
     def get_prompt_fragments(self, reference_id: str, config: object | None = None) -> PromptFragments:
+        handback_status = _handback_status(config)
         return PromptFragments(
             read_context=(
                 f"Użyj jira_get_issue aby pobrać szczegóły i komentarze {reference_id}.\n"
@@ -48,8 +57,11 @@ class JiraPromptChannel:
                 "Jeśli masz pytania lub wątpliwości:\n"
                 "  a) Napisz komentarz z pytaniami (jira_add_comment).\n"
                 f"     {_COMMENT_FORMAT}\n"
-                '  b) Przypisz zadanie na reportera (jira_assign_issue z assignee "reporter").\n'
-                "  c) ZAKOŃCZ — nie wykonuj dalszych kroków.\n"
+                f'  b) Przywróć status "{handback_status}" (jira_transition_issue z status_name '
+                f'"{handback_status}"), aby po odpowiedzi i ponownym przypisaniu zadanie wróciło do kolejki. '
+                "Jeśli to przejście jest niedostępne, przejdź dalej.\n"
+                '  c) Przypisz zadanie na reportera (jira_assign_issue z assignee "reporter").\n'
+                "  d) ZAKOŃCZ — nie wykonuj dalszych kroków.\n"
                 "Jeśli wcześniej zadałeś pytania i nie ma odpowiedzi w komentarzach: ZAKOŃCZ."
             ),
         )

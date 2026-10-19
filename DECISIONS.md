@@ -1315,3 +1315,17 @@ provider is, by construction, evidence of a complete committed runtime. `attempt
 a job can die between the claim and the write, and `job:set-runtime` can edit a retried
 TODO job.
 
+
+## Jira hand-back returns the issue to To Do (2026-10-19)
+
+When the agent asks a question, the Jira prompt now tells it to move the issue back to the
+first `jira/todo_statuses` value before it assigns the issue to the reporter. After the
+reporter answers and assigns the issue back, TODO discovery finds it again (issue #66).
+
+We did not add "In Progress" to the discovery JQL. That would also pick up issues the agent
+is working on now, and issues a human left In Progress; every agent comment changes
+`updated`, which is the TODO idempotency key, so it would publish extra jobs.
+
+The agent now makes that To Do transition itself, so `_todo_requester` ignores a status
+change by the agent's own account and falls back to the reporter
+(`fallback_reason: status_change_by_agent`).
