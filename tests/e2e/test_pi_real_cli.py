@@ -33,10 +33,12 @@ from tests.e2e._stack import PROJECT_ROOT as _PROJECT_ROOT
 
 _E2E_ENABLED = os.environ.get("AGENTO_E2E") == "1"
 
-# Free, and a CONCRETE id rather than a router: `openrouter/free` dispatches to another
-# model by design, which the identity guard correctly flags. A concrete id exercises the
-# strict path, which is the default configuration.
-FREE_MODEL = "nvidia/nemotron-3.5-lightning:free"
+# A CONCRETE id rather than a router: `openrouter/free` dispatches to another model by
+# design, which the identity guard correctly flags. A concrete id exercises the strict
+# path, which is the default configuration. Paid, at a fraction of a cent per run: the
+# `:free` ids answer 429 from a shared upstream pool, and a release gate cannot depend on
+# that. It must be in Pi's own catalogue, or the guard fails the run.
+CHEAP_MODEL = "openai/gpt-oss-20b"
 
 
 def _compose_container(service: str) -> str | None:
@@ -196,7 +198,7 @@ def _run_pi(
     *,
     workdir: str,
     prompt: str,
-    model: str = FREE_MODEL,
+    model: str = CHEAP_MODEL,
     with_bridge: bool = False,
     bridge_url: str = "http://127.0.0.1:3998/mcp",
     extra_flags: str = "",
@@ -305,7 +307,7 @@ class TestS2EnvAuthentication:
         _, events, _, _ = _run_pi(workdir="/tmp/e2e_s2b", prompt="Reply with exactly: OK")
         models = {m.get("model") for m in _assistant_messages(events) if m.get("model")}
         assert models, "no model reported on any assistant message"
-        assert models == {FREE_MODEL}, f"expected only {FREE_MODEL}, saw {models}"
+        assert models == {CHEAP_MODEL}, f"expected only {CHEAP_MODEL}, saw {models}"
 
 
 class TestS1BridgeRegistersAndCallsTools:

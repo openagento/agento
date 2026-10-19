@@ -60,7 +60,7 @@ A skipped test fails the job, so every harness needs a credential:
 |---|---|
 | Claude | a Claude credential in the stack (OAuth preferred) |
 | Codex | a Codex credential in the stack (OAuth preferred) |
-| Pi | an OpenRouter key in the stack |
+| Pi | an OpenRouter key in the stack, with credit (the test model is paid; `:free` ids are rate-limited) |
 
 Every agent CLI runs in the **sandbox**, at the version the release pins. Nothing is
 installed on the host, and no key goes into `secrets.env` for the tests.
@@ -70,12 +70,16 @@ credential file** (for example `~/.claude/.credentials.json` from your laptop). 
 is single-use: the stack's first refresh rotates it, and every other copy of that file stops
 working. A separate login gives a separate token, so the stack and your laptop never collide.
 
-## Known side effect: the first agent_view is steered
+## The first agent_view
 
-The suite drives the **first agent_view in `workspace:build-status`**. It sets that view's
-harness, provider and model, and makes the credential under test win the pool. Teardown
-restores all of it. If teardown fails, a view that runs real cron jobs stays on the cheap model.
-Follow-up: a dedicated `e2e` agent_view. The discovery has no override today, on purpose.
+The suite runs as the **first agent_view in `workspace:build-status`**. The happy-path
+matrix does not touch its config: each case is one `agento e2e --harness H --model M
+--credential ID` job, pinned on the row ([job-runtime.md](../cli/job-runtime.md)), claimed by
+id and parked so the stack's own consumer never takes it.
+
+The Claude and Codex contract suites still steer the view: they set its harness, provider and
+model, and make the credential under test win the pool. Teardown restores all of it. If
+teardown fails, a view that runs real cron jobs stays on the cheap model.
 
 ## Keep the tokens alive
 
