@@ -458,6 +458,7 @@ class TestPostRunCredentialCapture:
         mock_conn.return_value = MagicMock()
 
         mock_writer = MagicMock(spec=["capture_refreshed_credentials", "prepare_workspace", "owned_paths", "persistent_home_paths", "write_credentials", "inject_runtime_params", "migrate_legacy_workspace_config"])
+        mock_writer.owned_paths.return_value = (set(), set())
 
         with stub_workspace_adapters(codex=mock_writer):
             mock_result = _make_claude_result()
@@ -525,6 +526,7 @@ class TestPostRunCredentialCapture:
             spec=["prepare_workspace", "owned_paths", "persistent_home_paths",
                   "write_credentials"],
         )
+        mock_writer.owned_paths.return_value = (set(), set())
 
         with stub_workspace_adapters(claude=mock_writer):
             mock_result = _make_claude_result()
@@ -567,6 +569,7 @@ class TestPostRunCredentialCapture:
             spec=["prepare_workspace", "owned_paths", "persistent_home_paths",
                   "write_credentials", "capture_refreshed_credentials"],
         )
+        mock_writer.owned_paths.return_value = (set(), set())
 
         with stub_workspace_adapters(claude=mock_writer):
             mock_result = _make_claude_result()

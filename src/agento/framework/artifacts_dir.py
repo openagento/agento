@@ -103,15 +103,24 @@ def copy_build_to_artifacts_dir(
     """
     # No harness (a blank job / a view with none configured) owns no build files, so
     # everything but the universal copies is symlinked.
+    foreign: set[str] = set()
     if harness is None:
         owned_files, owned_dirs = set(), set()
     else:
-        from .harness import owned_paths_for
+        from .harness import list_harnesses, owned_paths_for
         owned_files, owned_dirs = owned_paths_for(harness)
+        # A job pinned to another harness than the view's copies the view's build. That
+        # harness's files — its credential among them — must not reach this run.
+        for other in list_harnesses():
+            if other.descriptor.id != harness:
+                foreign.update(*other.adapter.workspace_adapter.owned_paths())
+        foreign -= owned_files | owned_dirs
     copy_files = owned_files | _UNIVERSAL_COPY_FILES
 
     for item in build_dir.iterdir():
         dest = artifacts_dir / item.name
+        if item.name in foreign:
+            continue
         if item.name in copy_files and item.is_file():
             shutil.copy2(item, dest)
         elif item.name in owned_dirs and item.is_dir():

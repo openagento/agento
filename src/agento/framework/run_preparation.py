@@ -61,6 +61,14 @@ def _ensure_private_ssh_dir(artifacts_dir: Path | str) -> None:
     ssh_dir.chmod(0o700)
 
 
+def _build_serves(build_dir: Path, harness: str) -> bool:
+    """Whether ``build_dir`` was made for ``harness``: it holds the harness's own files."""
+    from .harness import owned_paths_for
+    files, dirs = owned_paths_for(harness)
+    owned = files | dirs
+    return not owned or any((Path(build_dir) / p).exists() for p in owned)
+
+
 def materialize_run_workspace(
     runtime: AgentViewRuntime,
     *,
@@ -123,8 +131,49 @@ def materialize_run_workspace(
     # `current_build` branch the no-build fallback never saw an override at all.
     effective_model = effective_model or getattr(runtime, "model", None)
 
+    def prepare_fresh() -> None:
+        """Materialize the harness's own files with no build to copy them from."""
+        from .harness import (
+            get_agent_config,
+            get_harness,
+            get_harness_config,
+            supply_harness_config,
+            workspace_adapter_for,
+        )
+        agent_config = get_agent_config(agent_config_svc) if agent_config_svc else {}
+        # The adapter materializes FROM this config, so the run's effective runtime has to
+        # be in it: a `--model` override, or a job pinned to another harness than the
+        # view's (whose configured provider/model describe the view's harness, not this
+        # one) would otherwise bake the wrong expectation and fail the run's own guard.
+        agent_config = {
+            **agent_config,
+            **{k: v for k, v in (
+                ("harness", runtime.harness),
+                ("provider", getattr(runtime, "provider", None)),
+                ("model", effective_model),
+            ) if v},
+        }
+        writer = workspace_adapter_for(runtime.harness)
+        # The harness's own allow-listed config too, or settings that depend on it are
+        # silently ignored on this path only.
+        harness_config = (
+            get_harness_config(agent_config_svc, get_harness(runtime.harness))
+            if agent_config_svc is not None else {}
+        )
+        kwargs = supply_harness_config(
+            writer,
+            {"agent_view_id": runtime.agent_view.id, "toolbox_url": toolbox_url},
+            harness_config,
+        )
+        writer.prepare_workspace(artifacts_dir, agent_config, **kwargs)
+
     state_build_root: Path | None = None
     if current_build is not None:
+        if runtime.harness and not _build_serves(current_build, runtime.harness):
+            # The build is made for the view's harness. A job pinned to another one gets
+            # its own files fresh; the copy below then injects into them and leaves the
+            # view harness's files (its credential among them) out of this run.
+            prepare_fresh()
         # int job ids scope the run to a job; a str run id (`agento run`) has no job
         # scope, so it scopes by its own run id instead — the same unique segment this
         # run's artifacts dir already ends with — and still needs the override applied.
@@ -146,38 +195,13 @@ def materialize_run_workspace(
             runtime.agent_view.code,
         )
     elif runtime.harness:
-        from .harness import (
-            get_agent_config,
-            get_harness,
-            get_harness_config,
-            supply_harness_config,
-            workspace_adapter_for,
-        )
-        agent_config = get_agent_config(agent_config_svc) if agent_config_svc else {}
-        # There is no build to inject into on this path, so the override has to reach the
-        # adapter through the config it materializes FROM — otherwise a `--model` run
-        # bakes the configured model as its expectation and the guard fails a legitimate
-        # override on the one path that has no second chance to correct it.
-        if effective_model:
-            agent_config = {**agent_config, "model": effective_model}
-        writer = workspace_adapter_for(runtime.harness)
-        # The no-build fallback must supply the harness's own allow-listed config too, or
-        # settings that depend on it are silently ignored on this path only.
-        harness_config = (
-            get_harness_config(agent_config_svc, get_harness(runtime.harness))
-            if agent_config_svc is not None else {}
-        )
-        kwargs = supply_harness_config(
-            writer,
-            {"agent_view_id": runtime.agent_view.id, "toolbox_url": toolbox_url},
-            harness_config,
-        )
-        writer.prepare_workspace(artifacts_dir, agent_config, **kwargs)
+        from .harness import workspace_adapter_for
+        prepare_fresh()
         if capability_token is not None:
             # The build-copy path injects via copy_build_to_artifacts_dir; a
             # freshly-prepared workspace must get the same treatment or the run
             # would reach the toolbox with no capability at all.
-            writer.inject_runtime_params(
+            workspace_adapter_for(runtime.harness).inject_runtime_params(
                 artifacts_dir,
                 job_id=run_id if isinstance(run_id, int) else None,
                 run_id=run_id if isinstance(run_id, str) else None,

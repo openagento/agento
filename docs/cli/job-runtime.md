@@ -21,8 +21,15 @@ resolved state**, not just output.
 (`agent_view/provider` for the view's own harness, otherwise that harness's
 `default_provider`).
 
-The model's precedence is `job.model` > the consumer's `--model` (replay / e2e) >
-config.
+The model's precedence is `job.model` > the consumer's `--model` (replay) > config.
+`agento e2e --harness/--model` pins the job row, so it is the first rule.
+
+## A harness other than the view's
+
+The workspace build is made for the view's own harness. A job pinned to another harness
+gets that harness's files (its config, its toolbox bridge) prepared fresh in its run
+dir, on top of the build's shared content. The view harness's own files — its login
+among them — are left out of the run.
 
 ## Resolve at claim, not at finish
 

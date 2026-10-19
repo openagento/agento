@@ -539,3 +539,31 @@ class TestRunSshIdentity:
         )
         assert svc.calls == []
         assert (home / ".ssh" / "id_rsa.pub").read_text() == "from-caller"
+
+
+@pytest.mark.usefixtures("builtin_harnesses")
+def test_a_job_pinned_to_another_harness_gets_its_own_files_and_not_the_views(tmp_path):
+    """The build is made for the view's harness (claude). A job pinned to pi needs pi's
+    own files, and must not see claude's — the claude login lives there."""
+    from agento.framework.run_preparation import materialize_run_workspace
+
+    build_root = tmp_path / "build"
+    build = build_root / "acme" / "dev" / "builds" / "1"
+    (build / ".claude").mkdir(parents=True)
+    (build / ".claude" / ".credentials.json").write_text("claude-oauth")
+    (build / ".claude.json").write_text("{}")
+    (build / "AGENTS.md").write_text("hello")
+    (build_root / "acme" / "dev" / "current").symlink_to(build)
+
+    with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "artifacts")), \
+         patch("agento.framework.artifacts_dir.BUILD_DIR", str(build_root)):
+        _, run_dir = materialize_run_workspace(
+            _Runtime(agent_view=_AV(code="dev", id=7), workspace=_WS(code="acme", id=3),
+                     harness="pi"),
+            run_id=1, em=MagicMock(),
+        )
+
+    assert (run_dir / ".pi" / "agento-toolbox.js").is_file()
+    assert (run_dir / "AGENTS.md").exists()
+    assert not (run_dir / ".claude").exists()
+    assert not (run_dir / ".claude.json").exists()
