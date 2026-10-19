@@ -45,7 +45,9 @@ def _cron_running() -> bool:
 
 pytestmark = [
     pytest.mark.e2e,
-    pytest.mark.xdist_group("e2e_stack"),  # see E2E_STACK in test_agento_run_real_cli
+    # A rotation must not race a run that uses the same token: run alone, after the rest
+    # (`pytest -m rotates_credentials -n 0`).
+    pytest.mark.rotates_credentials,
     pytest.mark.skipif(
         not _E2E_ENABLED,
         reason="set AGENTO_E2E=1 to run (rotates a real OAuth refresh token)",

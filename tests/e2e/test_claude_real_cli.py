@@ -5,9 +5,9 @@ READS from the run: the stream-json init and result events, the session transcri
 its subagent files, resume, and the interactive TUI start. A Claude Code bump that
 changes one of these fails here, not silently in production telemetry.
 
-One module-scoped steering of the discovered agent_view (harness claude, provider
-anthropic, model haiku, a healthy claude credential forced to win the pool), restored in
-teardown — the same discovery and restore helpers as the happy-path suite.
+Every run is pinned (harness claude, model haiku, a healthy claude credential) on the
+discovered agent_view; its config and the pool are never changed, so these tests run in
+parallel with the rest of the suite.
 """
 from __future__ import annotations
 
@@ -50,10 +50,12 @@ def _claude_credential() -> dict | None:
 
 pytestmark = [
     pytest.mark.e2e,
-    base.E2E_STACK,
     pytest.mark.skipif(not base._E2E_ENABLED, reason="set AGENTO_E2E=1 to run"),
     pytest.mark.skipif(base._E2E_ENABLED and not _VIEW, reason="no agent_view built"),
 ]
+
+
+_MODEL = "haiku"
 
 
 @pytest.fixture(scope="module")
@@ -61,25 +63,16 @@ def claude_view():
     credential = _claude_credential()
     if credential is None:
         pytest.skip("no healthy claude credential registered")
-    prior = {p: base._agent_view_override(p)
-             for p in ("agent_view/harness", "agent_view/provider", "agent_view/model")}
-    try:
-        base._agento_ok(["config:set", "agent_view/harness", "claude", "--agent-view", _VIEW])
-        base._agento_ok(["config:set", "agent_view/provider", "anthropic", "--agent-view", _VIEW])
-        base._agento_ok(["config:set", "agent_view/model", "haiku", "--agent-view", _VIEW])
-        base._agento_ok(["credential:set-priority", str(credential["id"]),
-                         str(base._FORCE_PRIORITY)])
-        yield _VIEW, credential
-    finally:
-        base._agento(["credential:set-priority", str(credential["id"]),
-                      str(credential["priority"])])
-        for path, value in prior.items():
-            base._restore_override(path, value)
+    return _VIEW, credential
+
+
+def _pins(credential: dict) -> dict:
+    return {"harness": "claude", "model": _MODEL, "credential": credential["id"]}
 
 
 @pytest.fixture
-def view(claude_view) -> str:
-    return claude_view[0]
+def view(claude_view) -> tuple[str, dict]:
+    return claude_view
 
 
 @pytest.fixture
@@ -89,8 +82,9 @@ def host_reader(monkeypatch):
     return cl_tr.ClaudeTranscriptReader()
 
 
-def _run(view: str, prompt: str) -> str:
-    res = base._agento(["run", view, prompt], timeout=300)
+def _run(view: tuple[str, dict], prompt: str) -> str:
+    code, credential = view
+    res = base._agento(base.run_args(code, "claude", _MODEL, credential, prompt), timeout=300)
     assert res.returncode == 0, f"rc={res.returncode}\n{res.stdout[-800:]}{res.stderr[:800]}"
     return res.stdout
 
@@ -122,13 +116,14 @@ def _expected_cli_version() -> str:
     return di["agent_harnesses"][0]["sandbox_package"]["default_range"]
 
 
-def _resume(view: str, session_id: str) -> subprocess.CompletedProcess:
+def _resume(view: tuple[str, dict], session_id: str) -> subprocess.CompletedProcess:
     """Resume ``session_id`` in a fresh run dir, exactly as the consumer builds the argv."""
+    code, credential = view
     flags = compose_file_flags(base._PROJECT_ROOT)
     # A prompt makes prepare-run return a headless runtime; its own command is unused.
-    rt = _fetch_runtime(flags, view, prompt="placeholder")
+    rt = _fetch_runtime(flags, code, prompt="placeholder", pins=_pins(credential))
     home = rt["home"]
-    ctx = HarnessRunContext(harness="claude", provider="anthropic", model="haiku",
+    ctx = HarnessRunContext(harness="claude", provider="anthropic", model=_MODEL,
                             working_dir=rt.get("working_dir") or home, home_dir=home)
     cmd = ClaudeCommandBuilder().headless(ctx, RunRequest(prompt="", session_id=session_id))
     secret_env: dict[str, str] = rt.get("env") or {}
@@ -230,7 +225,7 @@ def test_resume_of_an_unknown_session_raises_with_the_cli_text(view):
         parse_claude_output(res.stdout)
 
 
-def _interactive_screen(view: str, *extra: str, wait: float = 60) -> str:
+def _interactive_screen(view: tuple[str, dict], *extra: str, wait: float = 60) -> str:
     """Start ``agento run <view>`` on a pty and return the screen text it shows.
 
     Teardown sends ``/exit`` so the CLI in the sandbox ends too; a kill is the fallback.
@@ -241,7 +236,8 @@ def _interactive_screen(view: str, *extra: str, wait: float = 60) -> str:
         pytest.skip(f"no pty available: {exc}")
     if pid == 0:  # child
         os.chdir(base._PROJECT_ROOT)
-        os.execvpe(base._AGENTO, [base._AGENTO, "run", view, *extra],
+        code, credential = view
+        os.execvpe(base._AGENTO, [base._AGENTO, *base.run_args(code, "claude", _MODEL, credential, *extra)],
                    {**os.environ, "TERM": "xterm-256color"})
     buf, end = b"", time.time() + wait
     try:
@@ -292,7 +288,8 @@ def test_consumer_job_as_agent_view_records_toolbox_telemetry(claude_view):
     init report and the transcript reach ``job.toolbox_mcp_*`` via app_monitor."""
     view, credential = claude_view
     res = base._agento(
-        ["e2e", "--credential", str(credential["id"]), "--agent-view", view, "--model", "haiku"],
+        ["e2e", "--credential", str(credential["id"]), "--agent-view", view,
+         "--harness", "claude", "--model", _MODEL],
         timeout=400,
     )
     assert res.returncode == 0 and "ALL PASSED" in res.stdout, (

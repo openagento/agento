@@ -136,7 +136,9 @@ jobs:
           AGENTO_E2E_PROJECT_ROOT: ${{ vars.E2E_STACK_DIR || '/home/mklauza/agento-mklauza' }}
         run: |
           uv sync --group dev
-          uv run pytest -q -m e2e -rs | tee "$RUNNER_TEMP/e2e.log"
+          # Parallel first; the token rotation runs alone after it (it must not race a run).
+          uv run pytest -q -m "e2e and not rotates_credentials" -rs | tee "$RUNNER_TEMP/e2e.log"
+          uv run pytest -q -m "e2e and rotates_credentials" -n 0 -rs | tee -a "$RUNNER_TEMP/e2e.log"
           if grep -q '^SKIPPED' "$RUNNER_TEMP/e2e.log"; then
             echo "::error::e2e tests were skipped - the release is not proven"; exit 1
           fi

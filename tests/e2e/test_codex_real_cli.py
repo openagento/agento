@@ -6,10 +6,9 @@ text), and that a rejected credential becomes ``AuthenticationError`` — codex 
 ``turn.failed``, so only the structured event can tell. Both run the codex the sandbox
 pins (``sandbox_package`` in the module's ``di.json``), never a binary on the host.
 
-One module-scoped steering of the discovered agent_view (harness codex, provider openai,
-a cheap model for the credential type, a healthy codex credential forced to win the
-pool), restored in teardown — the same discovery and restore helpers as the happy-path
-suite.
+The run is pinned (harness codex, a cheap model for the credential type, a healthy
+codex credential) on the discovered agent_view; its config and the pool are never
+changed.
 """
 from __future__ import annotations
 
@@ -28,7 +27,6 @@ _VIEW = base._AGENT_VIEW
 
 pytestmark = [
     pytest.mark.e2e,
-    base.E2E_STACK,
     pytest.mark.usefixtures("builtin_harnesses"),
     pytest.mark.skipif(not base._E2E_ENABLED, reason="set AGENTO_E2E=1 to run"),
     pytest.mark.skipif(base._E2E_ENABLED and not _VIEW, reason="no agent_view built"),
@@ -51,29 +49,19 @@ def _model_for(credential: dict) -> str:
 
 
 @pytest.fixture(scope="module")
-def codex_view():
+def codex_credential():
     credential = _codex_credential()
     if credential is None:
         pytest.skip("no healthy codex credential registered")
-    prior = {p: base._agent_view_override(p)
-             for p in ("agent_view/harness", "agent_view/provider", "agent_view/model")}
-    try:
-        base._agento_ok(["config:set", "agent_view/harness", "codex", "--agent-view", _VIEW])
-        base._agento_ok(["config:set", "agent_view/provider", "openai", "--agent-view", _VIEW])
-        base._agento_ok(["config:set", "agent_view/model", _model_for(credential),
-                         "--agent-view", _VIEW])
-        base._agento_ok(["credential:set-priority", str(credential["id"]),
-                         str(base._FORCE_PRIORITY)])
-        yield _VIEW
-    finally:
-        base._agento(["credential:set-priority", str(credential["id"]),
-                      str(credential["priority"])])
-        for path, value in prior.items():
-            base._restore_override(path, value)
+    return credential
 
 
-def test_headless_result_contract(codex_view):
-    res = base._agento(["run", codex_view, "Reply with exactly the word: pong"], timeout=300)
+def test_headless_result_contract(codex_credential):
+    res = base._agento(
+        base.run_args(_VIEW, "codex", _model_for(codex_credential), codex_credential,
+                      "Reply with exactly the word: pong"),
+        timeout=300,
+    )
     assert res.returncode == 0, f"rc={res.returncode}\n{res.stdout[-800:]}{res.stderr[:800]}"
 
     runner = make_runner("codex", dry_run=True, credential_required=False)

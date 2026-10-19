@@ -37,8 +37,10 @@ has `.venv/` with agento-core installed, `docker/docker-compose.yml` + override,
 4. The job waits (up to 120 s) until `.venv/bin/agento workspace:build-status` answers.
    `upgrade.sh` returns when cron is started, not ready, and the tests discover their
    agent_view at collection time — without the wait they skip.
-5. `uv sync --group dev`, then `AGENTO_E2E=1 AGENTO_E2E_PROJECT_ROOT=$STACK uv run pytest -q -m e2e -rs`.
-   The tests read modules from the installed package and call the stack's `.venv/bin/agento`.
+5. `uv sync --group dev`, then, with `AGENTO_E2E=1 AGENTO_E2E_PROJECT_ROOT=$STACK`:
+   `pytest -m "e2e and not rotates_credentials"` in parallel (one worker per CPU), then
+   `pytest -m "e2e and rotates_credentials" -n 0` on its own. The tests read modules from the
+   installed package and call the stack's `.venv/bin/agento`.
 6. `publish` runs only when `e2e` is green.
 
 A failed e2e leaves the stack on the candidate. This is intended: inspect it there.
@@ -72,14 +74,16 @@ working. A separate login gives a separate token, so the stack and your laptop n
 
 ## The first agent_view
 
-The suite runs as the **first agent_view in `workspace:build-status`**. The happy-path
-matrix does not touch its config: each case is one `agento e2e --harness H --model M
---credential ID` job, pinned on the row ([job-runtime.md](../cli/job-runtime.md)), claimed by
-id and parked so the stack's own consumer never takes it.
+The suite runs as the **first agent_view in `workspace:build-status`**, and changes neither its
+config nor the credential pool. Every run pins its harness, model and credential: the
+matrix with `agento e2e --harness H --model M --credential ID` (a pinned job,
+[job-runtime.md](../cli/job-runtime.md)), the Claude and Codex contract suites with the same
+options on `agento run` ([run.md](../cli/run.md)). So the tests run in parallel, and the
+stack's real cron jobs keep running on what they are configured for while the suite runs.
 
-The Claude and Codex contract suites still steer the view: they set its harness, provider and
-model, and make the credential under test win the pool. Teardown restores all of it. If
-teardown fails, a view that runs real cron jobs stays on the cheap model.
+The one exception is `test_refresh_real_cli`: it moves a real token's expiry and rotates its
+single-use refresh token. A run using that token at the same moment could rotate it too, so
+it is marked `rotates_credentials` and runs alone, after the rest.
 
 ## Keep the tokens alive
 

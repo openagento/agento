@@ -7,8 +7,8 @@ one we drive the REAL pipeline with ``agento e2e``:
   cheap model (``--harness`` / ``--model``, see docs/cli/job-runtime.md) — the
   agent_view's own config is never changed, so its real cron jobs keep running
   on what it is configured for,
-- name the credential under test (``--credential``); ``agento e2e`` disables the
-  other credentials of that scope for the run and re-enables them after,
+- name the credential under test (``--credential``); the run claims only that
+  credential, so the rest of the pool is untouched,
 - claim exactly that job and run it in the sandbox: credential materialization,
   the real agent CLI, the toolbox, finalize,
 - assert the command passed its checks (SUCCESS, model, tokens, output, toolbox
@@ -29,9 +29,10 @@ real provider APIs (real money):
     AGENTO_E2E=1 bin/test
 
 The agent_view to drive is auto-discovered (the first row of ``agento
-workspace:build-status``) — there is no env override. The steering helpers below
-(``_agent_view_override`` / ``_restore_override`` / ``_FORCE_PRIORITY``) serve the
-per-harness contract suites, which still run ``agento run`` against view config.
+workspace:build-status``) — there is no env override. No e2e test changes its config
+or the pool: every run pins its harness, model and credential (``run_args``), so the
+tests run in parallel. The one exception, the token rotation in
+``test_refresh_real_cli``, is marked ``rotates_credentials`` and runs on its own.
 
 All DB/run interaction goes through the ``agento`` CLI (which proxies into the
 containers); the deployment DB is not reachable directly from the host.
@@ -78,11 +79,6 @@ _MODEL_BY_CREDENTIAL_TYPE = {
 _SKIPPED_TYPES = {
     ("codex", "codex_access_token"): "codex access-token happy path is not covered",
 }
-
-# Far below any real priority so the chosen credential deterministically wins
-# selection (ORDER BY priority ASC) regardless of the others.
-_FORCE_PRIORITY = -1_000_000
-
 
 def _agento(args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -212,17 +208,11 @@ def _discover_agent_view() -> str | None:
 _AGENT_VIEW = _discover_agent_view() if _E2E_ENABLED else None
 _CASES = _discover_cases()
 
-# The stack e2e tests (this file, test_claude_real_cli, test_refresh_real_cli) steer the SAME
-# agent_view config and credential rows, so under pytest-xdist they share one group and run
-# one after another on a single worker (`--dist loadgroup`).
-E2E_STACK = pytest.mark.xdist_group("e2e_stack")
-
 pytestmark = [
     pytest.mark.e2e,
-    E2E_STACK,
     pytest.mark.skipif(
         not _E2E_ENABLED,
-        reason="set AGENTO_E2E=1 to run (spends real provider credentials, mutates the pool)",
+        reason="set AGENTO_E2E=1 to run (spends real provider credentials)",
     ),
     pytest.mark.skipif(
         _E2E_ENABLED and not _AGENT_VIEW,
@@ -235,26 +225,10 @@ pytestmark = [
 ]
 
 
-def _agent_view_override(path: str) -> str | None:
-    """Return the value of ``path`` set at THIS agent_view's scope, or None when
-    no agent_view-scoped override exists (unset, or the value is shared with
-    another scope — in which case removing it leaves the effective value
-    unchanged). ``config:get`` prints per-scope lines tagged like
-    ``[agent_view: <code>]``; a deduplicated single line (all scopes equal)
-    carries no tag and safely maps to None."""
-    res = _agento(["config:get", path])
-    tag = f"[agent_view: {_AGENT_VIEW}]"
-    for line in res.stdout.splitlines():
-        if tag in line and " = " in line:
-            return line.split(" = ", 1)[1].rsplit("  [", 1)[0].strip()
-    return None
-
-
-def _restore_override(path: str, prior: str | None) -> None:
-    if prior is not None:
-        _agento(["config:set", path, prior, "--agent-view", _AGENT_VIEW])
-    else:
-        _agento(["config:remove", path, "--agent-view", _AGENT_VIEW])
+def run_args(view: str, harness: str, model: str, credential: dict, *rest: str) -> list[str]:
+    """``agento run`` pinned to one harness, model and credential — no config changes."""
+    return ["run", "--harness", harness, "--model", model,
+            "--credential", str(credential["id"]), view, *rest]
 
 
 @pytest.mark.parametrize(
