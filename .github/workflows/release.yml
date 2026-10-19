@@ -118,6 +118,16 @@ jobs:
       - name: Install the candidate wheel into the stack
         run: |
           "$STACK/bin/upgrade.sh" "$PWD/$(ls dist/*.whl)"
+      # upgrade.sh returns as soon as cron is STARTED, not ready. The tests discover
+      # their agent_view at collection time and skip when the CLI cannot answer yet.
+      - name: Wait for the stack to answer
+        run: |
+          cd "$STACK"
+          for _ in $(seq 60); do
+            .venv/bin/agento workspace:build-status >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "::error::the stack did not answer workspace:build-status in 120s"; exit 1
       # The e2e tests SKIP when the stack or a credential is missing. A skip here
       # means an untested release, so it fails the job.
       - name: Run e2e tests

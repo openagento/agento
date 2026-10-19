@@ -34,9 +34,12 @@ has `.venv/` with agento-core installed, `docker/docker-compose.yml` + override,
    images, toolbox health and venv version. On a failed build it restores the previous version.
    It exits non-zero on any failure. A wheel equal to the installed version is allowed, so the
    same candidate can be re-tested.
-4. `uv sync --group dev`, then `AGENTO_E2E=1 AGENTO_E2E_PROJECT_ROOT=$STACK uv run pytest -q -m e2e -rs`.
+4. The job waits (up to 120 s) until `.venv/bin/agento workspace:build-status` answers.
+   `upgrade.sh` returns when cron is started, not ready, and the tests discover their
+   agent_view at collection time — without the wait they skip.
+5. `uv sync --group dev`, then `AGENTO_E2E=1 AGENTO_E2E_PROJECT_ROOT=$STACK uv run pytest -q -m e2e -rs`.
    The tests read modules from the installed package and call the stack's `.venv/bin/agento`.
-5. `publish` runs only when `e2e` is green.
+6. `publish` runs only when `e2e` is green.
 
 A failed e2e leaves the stack on the candidate. This is intended: inspect it there.
 
@@ -56,7 +59,7 @@ A skipped test fails the job, so every harness needs a credential:
 | Harness | Needs |
 |---|---|
 | Claude | an OAuth credential in the stack (present today) |
-| Codex | a Codex credential in the stack, and the `codex` CLI on the host `PATH` (`test_codex_real_cli` skips without it) |
+| Codex | a Codex credential in the stack, and the `codex` CLI on the **runner's** `PATH` (`~/actions-runner/.path`, by default `/usr/local/bin:/usr/bin:/bin`); `test_codex_real_cli` skips without it |
 | Codex (API) | `OPENAI_API_KEY` in the stack's `secrets.env` |
 | Pi | an OpenRouter key |
 
