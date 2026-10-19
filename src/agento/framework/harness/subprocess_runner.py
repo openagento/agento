@@ -321,9 +321,12 @@ class SubprocessRunner(ABC):
         except Exception as exc:
             # A classified failure (auth, usage limit, transient) is raised from the parser
             # BEFORE the generic rc!=0 branch below, so it would otherwise carry no output
-            # and leave `job.output` empty on the most common failure modes.
+            # and leave `job.output` empty on the most common failure modes. A failed process
+            # keeps its stderr too: a stdout-only parser may raise on the empty stdout first.
             if getattr(exc, "agent_output", None) is None:
-                exc.agent_output = raw  # type: ignore[attr-defined]
+                exc.agent_output = (  # type: ignore[attr-defined]
+                    self._failure_output(proc.stdout, proc.stderr) if proc.returncode != 0 else raw
+                )
             raise
         result.harness = str(ctx.harness)
         result.provider = str(ctx.provider)

@@ -82,6 +82,23 @@ class TestNoAgentContentInLogsOrErrorMessage:
 
         assert STDOUT_SENTINEL in getattr(exc.value, "agent_output", "")
 
+    def test_stderr_reaches_job_output_when_the_parser_raises_on_a_failed_process(self):
+        """A CLI that dies with empty stdout makes a strict parser raise first (Pi: "no
+        assistant provider/model"). The process failure is the cause, and its stderr is
+        the only record of it — it must not be dropped for the parser's empty stdout."""
+        runner = self._failing_runner()
+        runner._execute_process.return_value = MagicMock(
+            returncode=1, stdout="", stderr=STDERR_SENTINEL,
+        )
+        # Pi and Codex parse stdout only (base `_extract_raw` would fall back to stderr).
+        runner._extract_raw = lambda proc: proc.stdout or ""
+        runner._parse_output = MagicMock(side_effect=RuntimeError("no identity"))
+        with pytest.raises(RuntimeError) as exc:
+            runner.execute(RunRequest(prompt="p"))
+
+        assert STDERR_SENTINEL in getattr(exc.value, "agent_output", "")
+        assert STDERR_SENTINEL not in str(exc.value)
+
     def test_consumer_persists_agent_output_on_failure(self):
         """The failure UPDATEs previously wrote only error_message/error_class, which is why
         removing content from the message would have blinded operators."""
