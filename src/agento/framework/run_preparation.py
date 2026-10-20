@@ -125,7 +125,8 @@ def materialize_run_workspace(
     if runtime.agent_view is None or runtime.workspace is None:
         return None, None
 
-    (check_build or check_workspace_build)(em or get_event_manager(), runtime.agent_view.id)
+    agent_view_id = runtime.agent_view.id
+    (check_build or check_workspace_build)(em or get_event_manager(), agent_view_id)
 
     artifacts_dir = build_artifacts_dir(
         runtime.workspace.code, runtime.agent_view.code, run_id,
@@ -171,7 +172,7 @@ def materialize_run_workspace(
         )
         kwargs = supply_harness_config(
             writer,
-            {"agent_view_id": runtime.agent_view.id, "toolbox_url": toolbox_url},
+            {"agent_view_id": agent_view_id, "toolbox_url": toolbox_url},
             harness_config,
         )
         writer.prepare_workspace(artifacts_dir, agent_config, **kwargs)

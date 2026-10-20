@@ -11,7 +11,9 @@ from agento.framework.access import accounts, launches, sessions
 from agento.framework.toolbox_capability import token_hash
 from agento.web.toolbox_client import invoke_launch_action, invoke_tool
 
-from .conftest import _test_connection
+from .conftest import NAMED_LOCKS, _test_connection
+
+pytestmark = NAMED_LOCKS
 
 URL = "http://toolbox:3001/internal/tools/versioned_artifact_get_current:invoke"
 

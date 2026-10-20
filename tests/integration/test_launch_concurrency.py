@@ -10,7 +10,9 @@ import pytest
 from agento.framework.access import accounts, launches
 
 from .access_fixtures import conn, scopes  # noqa: F401 (fixtures; tests take them as arguments, F811)
-from .conftest import _test_connection
+from .conftest import NAMED_LOCKS, _test_connection
+
+pytestmark = NAMED_LOCKS
 
 PASSWORD = "correct horse battery"
 V1 = "v-20260101-000000-aaaa"

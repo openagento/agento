@@ -21,6 +21,7 @@ from agento.framework.access import accounts, launches, sessions
 from agento.modules.miniapps.src import activation
 from agento.web.toolbox_client import invoke_launch_action
 
+from .conftest import NAMED_LOCKS
 from .test_miniapp_activation import (  # noqa: F401 (fixtures; tests take them as arguments, F811)
     CODE,
     V1,
@@ -33,6 +34,8 @@ from .test_miniapp_activation import (  # noqa: F401 (fixtures; tests take them 
     store,
     world,
 )
+
+pytestmark = NAMED_LOCKS
 
 _ROOT = Path(__file__).resolve().parents[2]
 

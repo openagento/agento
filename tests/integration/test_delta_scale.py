@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -22,7 +23,13 @@ from agento.modules.claude.src.stream_event_mapper import ClaudeStreamEventMappe
 from agento.modules.conversation.src import service
 from agento.modules.conversation.src.deltas import ConversationDeltaSink
 
-from .conftest import _clean  # noqa: F401
+from .conftest import DB_STRESS, _clean  # noqa: F401
+
+# The latency bounds below are the SCL-1 claim, and they measure wall-clock time: next to
+# other xdist workers on every CPU they measure the load, not the code. bin/test runs this
+# file alone (`-n 0`) after the parallel pass.
+pytestmark = [DB_STRESS, pytest.mark.skipif(
+    bool(os.environ.get("PYTEST_XDIST_WORKER")), reason="timing proof: run alone with -n 0")]
 
 PANEL_RUNS = 200
 SHARED_RUNS = 50                 # on ONE channel thread

@@ -39,6 +39,11 @@ CONCURRENT_WORKERS_STRESS_TEST = 100
 # (`--dist loadgroup` in pyproject.toml). Mark such a module `pytestmark = DB_STRESS`.
 DB_STRESS = pytest.mark.xdist_group("db_stress")
 
+# MySQL `GET_LOCK` names are server-wide, not per database, so the per-worker databases do
+# not keep them apart: two workers taking the artifact retention lock (`va_ret:<sha1(code)>`)
+# for the same code block each other. Mark such a module `pytestmark = NAMED_LOCKS`.
+NAMED_LOCKS = pytest.mark.xdist_group("named_locks")
+
 # Default to this checkout's own MySQL (docker/.env MYSQL_PORT), never a sibling's on 3306.
 # Set in os.environ so spawned node helpers (verify_capability.mjs) inherit it.
 _env_file = Path(__file__).resolve().parents[2] / "docker" / ".env"
@@ -48,6 +53,7 @@ _ports = [
     if line.startswith("MYSQL_PORT=")
 ]
 os.environ.setdefault("TEST_MYSQL_PORT", _ports[-1] if _ports else "3306")
+os.environ["TEST_MYSQL_DATABASE"] = TEST_DB  # this worker's own database, for node helpers
 
 # Ensure encryption key is available for tests (used for credential.credentials and obscure configs)
 os.environ.setdefault("AGENTO_ENCRYPTION_KEY", "test-encryption-key-for-integration")
@@ -329,6 +335,9 @@ def _truncate_tables():
             cur.execute("SET FOREIGN_KEY_CHECKS = 0")
             cur.execute("TRUNCATE TABLE toolbox_capability")
             cur.execute("TRUNCATE TABLE job")
+            # Keyed by job id, which the TRUNCATE above recycles: a stretch a deferring test
+            # left open is closed by the next test's claim of job 1, as a `job.deferred` row.
+            cur.execute("TRUNCATE TABLE job_defer_stretch")
             cur.execute("TRUNCATE TABLE schedule")
             cur.execute("TRUNCATE TABLE usage_log")
             cur.execute("TRUNCATE TABLE credential")

@@ -830,7 +830,7 @@ def refresh_credential_limits(conn, logger, credential_id: int | None = None) ->
 
     rows = list_credentials(conn, enabled_only=True) if credential_id is None else [get_credential(conn, credential_id)]
     for c in rows:
-        if not _eligible(c):
+        if c is None or not _eligible(c):
             continue
         if _token_expired(c):
             c = _renew_expired(conn, c, logger)

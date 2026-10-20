@@ -19,7 +19,7 @@ from agento.framework.access import accounts, launches, sessions
 from agento.modules.miniapps.src.activation import APPROVE_SQL
 from agento.web.toolbox_client import invoke_launch_action
 
-from .conftest import _test_connection
+from .conftest import NAMED_LOCKS, _test_connection
 
 _ROOT = Path(__file__).resolve().parents[2]
 _DRIVER = Path(__file__).parent / "node" / "verify_capability.mjs"
@@ -30,9 +30,9 @@ CONTENT = "c" * 40
 TOOL = "versioned_artifact_get_current"
 URL = f"http://toolbox:3001/internal/tools/{TOOL}:invoke"
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [NAMED_LOCKS, pytest.mark.skipif(
     shutil.which("node") is None or not (_ROOT / "src/agento/toolbox/node_modules/mysql2").is_dir(),
-    reason="needs node and the toolbox's npm install")
+    reason="needs node and the toolbox's npm install")]
 
 
 @pytest.fixture

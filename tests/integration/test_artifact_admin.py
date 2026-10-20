@@ -16,7 +16,9 @@ from agento.modules.miniapps.src.observers import DropActivationsOnArtifactDelet
 from agento.modules.versioned_artifacts.src import routes as handlers
 from agento.web import api, security, toolbox_client
 
-from .conftest import _test_connection, routed
+from .conftest import NAMED_LOCKS, _test_connection, routed
+
+pytestmark = NAMED_LOCKS
 
 routes = routed("versioned_artifacts", handlers)
 

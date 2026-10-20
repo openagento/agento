@@ -9,6 +9,9 @@ from agento.framework.access import accounts, launches
 from agento.framework.toolbox_capability import token_hash
 
 from .access_fixtures import conn, scopes  # noqa: F401 (fixtures; tests take them as arguments, F811)
+from .conftest import NAMED_LOCKS
+
+pytestmark = NAMED_LOCKS
 
 PASSWORD = "correct horse battery"
 V1, V2 = "v-20260101-000000-aaaa", "v-20260102-000000-bbbb"

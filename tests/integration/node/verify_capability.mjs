@@ -18,7 +18,7 @@ const { checkLaunch } = await load('modules/miniapps/toolbox/launch-source.js');
 const pool = mysql.createPool({
   host: process.env.TEST_MYSQL_HOST || 'localhost', port: Number(process.env.TEST_MYSQL_PORT || 3306),
   user: process.env.TEST_MYSQL_USER || 'root', password: process.env.TEST_MYSQL_PASSWORD ?? 'cronagent_root',
-  database: 'cron_agent_test', connectionLimit: 1,
+  database: process.env.TEST_MYSQL_DATABASE || 'cron_agent_test', connectionLimit: 1,
 });
 try {
   const verify = createVerifier((sql, params) => pool.query(sql, params),

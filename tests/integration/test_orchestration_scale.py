@@ -32,7 +32,9 @@ from agento.framework.consumer import Consumer
 from agento.framework.consumer_config import ConsumerConfig
 from agento.framework.runner import client as runner_client
 
-from .conftest import CONCURRENT_WORKERS_STRESS_TEST, FIXTURES_DIR, _test_connection, fetch_all_jobs
+from .conftest import CONCURRENT_WORKERS_STRESS_TEST, DB_STRESS, FIXTURES_DIR, _test_connection, fetch_all_jobs
+
+pytestmark = DB_STRESS
 
 N_VALUES = (CONCURRENT_WORKERS_STRESS_TEST, 2 * CONCURRENT_WORKERS_STRESS_TEST)
 CONNECTION_HEADROOM = 30     # fixtures + other clients, as in test_token_selection_concurrency

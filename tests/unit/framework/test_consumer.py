@@ -310,9 +310,10 @@ class TestDequeue:
         consumer = Consumer(sample_db_config, sample_consumer_config, logging.getLogger("test"))
         assert consumer._try_dequeue(job_id=7) is not None
 
-        sql, params = mock_cursor.execute.call_args_list[0].args
-        assert "WHERE id = %s AND status = 'TODO'" in sql
-        assert params == (7,)
+        # `_db()` sets the isolation level first, so find the claim by its SQL.
+        claims = [c.args for c in mock_cursor.execute.call_args_list
+                  if "WHERE id = %s AND status = 'TODO'" in c.args[0]]
+        assert claims and claims[0][1] == (7,)
 
     @patch("agento.framework.consumer.get_connection")
     def test_dequeue_increments_attempt(self, mock_get_conn, sample_config, sample_db_config, sample_consumer_config):

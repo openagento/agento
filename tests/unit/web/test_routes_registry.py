@@ -246,6 +246,7 @@ def test_the_shipped_miniapps_module_loads_its_own_routes(etc):
         f"DELETE ^{app}$",
         f"PUT ^{app}/members$",
         f"DELETE ^{app}/members/(?P<id>[0-9]{{1,10}})$",
+        f"GET ^{app}/member-options$",
         f"GET ^{approval}$",
         f"POST ^{approval}$",
         f"DELETE ^{approval}$",

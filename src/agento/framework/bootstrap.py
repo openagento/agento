@@ -96,6 +96,22 @@ def dispatch_reload() -> None:
         em.dispatch("module_reload_before", ModuleReloadEvent(name=m.name, path=m.path))
 
 
+def clear_registries() -> None:
+    """Empty every registry ``bootstrap()`` fills, except ``_MANIFESTS`` (see ``bootstrap``)."""
+    channel_registry.clear()
+    clear_workflows()
+    clear_harnesses()
+    clear_commands()
+    clear_onboardings()
+    clear_routers()
+    clear_regex_identity_types()
+    clear_event_manager()
+    clear_job_types()
+    clear_execution_hooks()
+    _DELTA_SINK_DECLARATION.clear()
+    _MODULE_CONFIGS.clear()
+
+
 def bootstrap(
     core_dir: str = CORE_MODULES_DIR,
     user_dir: str = USER_MODULES_DIR,
@@ -115,18 +131,7 @@ def bootstrap(
         quiet: When True, downgrade the final "loaded N module(s)" log to DEBUG
                (used by the consumer's per-tick re-bootstrap to avoid log spam).
     """
-    channel_registry.clear()
-    clear_workflows()
-    clear_harnesses()
-    clear_commands()
-    clear_onboardings()
-    clear_routers()
-    clear_regex_identity_types()
-    clear_event_manager()
-    clear_job_types()
-    clear_execution_hooks()
-    _DELTA_SINK_DECLARATION.clear()
-    _MODULE_CONFIGS.clear()
+    clear_registries()
     # _MANIFESTS is NOT cleared here. Discovery below can raise (a bad manifest, a
     # dependency cycle), and an empty registry between the clear and the repopulate makes
     # every field look like it declares no security metadata. It is replaced atomically

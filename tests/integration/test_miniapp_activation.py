@@ -16,7 +16,9 @@ from agento.modules.miniapps.src import routes as handlers
 from agento.modules.versioned_artifacts.src import admin as va_admin
 from agento.web import api, security, toolbox_client
 
-from .conftest import _test_connection, routed
+from .conftest import NAMED_LOCKS, _test_connection, routed
+
+pytestmark = NAMED_LOCKS
 
 routes = routed("miniapps", handlers)
 

@@ -12,7 +12,9 @@ import pytest
 
 from agento.framework.access import accounts, launches
 
-from .conftest import _test_connection
+from .conftest import NAMED_LOCKS, _test_connection
+
+pytestmark = NAMED_LOCKS
 
 FIXTURE = json.loads((Path(__file__).parents[1] / "fixtures" / "retention_lock_v1.json").read_text())
 LIVE_SQL = FIXTURE["live_launch_versions_sql"].replace("?", "%s")
