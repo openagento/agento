@@ -184,7 +184,8 @@ credential.
   removes a file in a run dir. It only walks the dir and changes owners and modes.
 - **Uid ranges.** Runner i owns the uids `20000 + (i-1)*256` to `+255` (`uids.RUN_UID_BASE`,
   `RUN_UID_SLOTS`). The ranges never overlap, so a uid is never in two runners at once. A uid
-  has a primary group of the same number and no other group. No `/etc/passwd` entry is needed.
+  has a primary group of the same number and no other group, except the gids in
+  `AGENTO_RUN_GROUPS` (D-RUN-GROUPS-1). No `/etc/passwd` entry is needed.
 - **The run dir.** For `execute` it is the context's `home_dir` (a job with no agent_view gets a temp
   HOME under `/workspace/.tmp` from the consumer); for
   `run` the `HOME` it is given (else `cwd`); for `pty` its `home`. Its path must be a

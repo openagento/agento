@@ -276,6 +276,24 @@ def test_as_uid_gives_the_uid_its_own_group_only():
     assert uids.as_uid(20001) == {"user": 20001, "group": 20001, "extra_groups": [], "umask": 0o002}
 
 
+@pytest.mark.parametrize("value", ["0", "1001", "20000", "65534,abc"],
+                         ids=["root", "agent", "run-gid", "not-a-gid"])
+def test_run_groups_refuse_a_gid_that_would_widen_access(value):
+    with pytest.raises(ValueError):
+        uids.parse_shared_groups(value, agent_gid=1001)
+
+
+def test_run_groups_reach_every_run(monkeypatch):
+    assert uids.parse_shared_groups(" 1000,1003,1000 ", agent_gid=1001) == (1000, 1003)
+    monkeypatch.setattr(uids, "_shared_groups", (1000, 1003))
+    assert uids.as_uid(20001)["extra_groups"] == [1000, 1003]
+    calls = []
+    for name in ("setgroups", "setresgid", "setresuid", "umask"):
+        monkeypatch.setattr(uids.os, name, lambda *a, n=name: calls.append((n, a)), raising=False)
+    uids.drop_to(20001)
+    assert calls[0] == ("setgroups", ([1000, 1003],))
+
+
 def test_the_worker_is_spawned_as_the_run_uid(monkeypatch):
     seen = {}
     monkeypatch.setattr(server.subprocess, "Popen", lambda argv, **kw: seen.update(argv=argv, **kw))

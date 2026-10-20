@@ -4,6 +4,19 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-20 — Runs may join operator-named host groups (D-RUN-GROUPS-1)
+
+- **Problem:** since the runner split, each run is its own uid with no other group. A 0.17
+  deployment that mounted a host directory for the agent (with `group_add` on `sandbox`) can
+  read it but no longer write it.
+- **Decision:** `AGENTO_RUN_GROUPS` (gids, comma-separated, in `docker/.env`) is added to every
+  run's groups. Off unless set. The runner refuses gid 0, the `agent` gid (run dirs go back to
+  it) and every gid from `RUN_UID_BASE` up (one run would reach another's dir), and does not
+  start on a bad value.
+- **Rejected:** inheriting the runner's `group_add` (implicit: a group added for another reason
+  would reach every agent); per-uid host ACLs (256 entries per runner).
+- **Cost:** runs share write access to whatever those groups can write. Run dirs stay private.
+
 ## 2026-10-15 — `credential:limits` renews an expired OAuth token
 
 Owner, 2026-10-15: "implement 1st solution. We should be able to run service that would lease,

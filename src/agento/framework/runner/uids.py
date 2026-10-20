@@ -4,7 +4,9 @@ Each run (an ``execute``, ``run`` or ``pty`` op) gets its own uid from the runne
 range, with a primary group of the same number and no other group. The run dir is given to
 that uid with group access (``2770``), so the trusted toolbox, which has every run gid as a
 supplementary group, can write into it; another run is "other" and gets nothing. After the
-run, every process of the uid is stopped and the dir goes back to ``agent``.
+run, every process of the uid is stopped and the dir goes back to ``agent``. The one
+exception is ``AGENTO_RUN_GROUPS``: host groups an operator shares with every run, so the
+agent can write a mounted host directory (docs/deployment/docker-compose-override.md).
 
 The server has no CAP_DAC_OVERRIDE: it never creates, writes or unlinks inside a run dir. It
 only walks it, changes owners (CAP_CHOWN) and modes (CAP_FOWNER, CAP_FSETID).
@@ -185,14 +187,38 @@ def reclaim(state_dir: str, uid: int, gid: int) -> set[int]:
     return kept
 
 
+# Set once at boot by `set_shared_groups`; empty unless the operator sets AGENTO_RUN_GROUPS.
+_shared_groups: tuple[int, ...] = ()
+
+
+def parse_shared_groups(value: str, agent_gid: int) -> tuple[int, ...]:
+    """The gids of ``AGENTO_RUN_GROUPS`` ("1000,1003"). Refuses root's group, ``agent``'s (run
+    dirs go back to it) and every run gid (one run would reach another's dir)."""
+    gids = []
+    for part in filter(None, (p.strip() for p in value.split(","))):
+        if not part.isdigit():
+            raise ValueError(f"AGENTO_RUN_GROUPS: {part!r} is not a gid")
+        gid = int(part)
+        if gid == 0 or gid == agent_gid or gid >= RUN_UID_BASE:
+            raise ValueError(f"AGENTO_RUN_GROUPS: gid {gid} is refused (root, agent or a run gid)")
+        if gid not in gids:
+            gids.append(gid)
+    return tuple(gids)
+
+
+def set_shared_groups(gids: tuple[int, ...]) -> None:
+    global _shared_groups
+    _shared_groups = gids
+
+
 def as_uid(uid: int) -> dict:
-    """``Popen`` arguments that start a child as ``uid``, in its own group only."""
-    return {"user": uid, "group": uid, "extra_groups": [], "umask": 0o002}
+    """``Popen`` arguments that start a child as ``uid``, in its own group plus the shared ones."""
+    return {"user": uid, "group": uid, "extra_groups": list(_shared_groups), "umask": 0o002}
 
 
 def drop_to(uid: int) -> None:
-    """In a forked child, before ``exec``: become ``uid`` with no other group."""
-    os.setgroups([])
+    """In a forked child, before ``exec``: become ``uid`` with only the shared groups."""
+    os.setgroups(list(_shared_groups))
     os.setresgid(uid, uid, uid)
     os.setresuid(uid, uid, uid)
     os.umask(0o002)

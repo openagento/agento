@@ -430,6 +430,10 @@ def main() -> None:
     path = os.environ.get("AGENTO_RUNNER_SOCKET", "runner-1.sock")
     agent = pwd.getpwnam("agent")
     owner = (agent.pw_uid, agent.pw_gid)
+    try:
+        uids.set_shared_groups(uids.parse_shared_groups(os.environ.get("AGENTO_RUN_GROUPS", ""), agent.pw_gid))
+    except ValueError as exc:
+        sys.exit(f"runner: {exc}")
     state = os.path.join(os.path.dirname(path), "live")  # the socket's root-owned volume
     log.info("runner: serving %s boot=%s", path, BOOT)
     Server(socket.socket(fileno=3), index=_index(path), owner=owner,

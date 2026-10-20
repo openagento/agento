@@ -114,6 +114,8 @@ services:
       - TZ=${TZ:-UTC}
       - PYTHONPATH=/opt/agento-src
       - AGENTO_RUNNER_SOCKET=/run/agento-runner/runner-{{ i }}.sock
+      # Host groups every run joins, to write a mounted host dir (docker-compose-override.md).
+      - AGENTO_RUN_GROUPS=${AGENTO_RUN_GROUPS:-}
     volumes:
       - ../workspace:/workspace
       - ../app/code:/app/code:ro

@@ -23,6 +23,28 @@ services:
 
 The volume is **appended** to the volumes already defined in `docker-compose.yml` — existing mounts are preserved.
 
+## Sharing a host directory with the agent
+
+Agents run in `runner-<i>`, each run as its own uid with no other group. To let the agent write a
+host directory, mount it into the runners and name the host group that may write it:
+
+```yaml
+# docker/docker-compose.override.yml
+services:
+  runner-1:
+    volumes:
+      - /home/agent/workspace:/home/agent/workspace
+```
+
+```bash
+# docker/.env — gids every run joins (not 0, not the agent gid, below 20000)
+AGENTO_RUN_GROUPS=1000,1003
+```
+
+`group_add` on a runner does not reach the agent: the runner drops it for each run. Before 1.0,
+agents ran in `sandbox`; move a `sandbox:` block of an older override to `runner-1:` (one block
+per runner).
+
 ## Adding environment variables
 
 ```yaml
