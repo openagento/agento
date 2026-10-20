@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -126,7 +127,24 @@ def builtin_harnesses():
 
 
 @pytest.fixture
-def start_runner(monkeypatch, tmp_path):
+def fake_cli(tmp_path, monkeypatch):
+    """Factory ``make(name, body) -> Path``: write an executable ``body`` as
+    ``tmp_path/bin/<name>`` and put that directory first on PATH."""
+    bin_dir = tmp_path / "bin"
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+    def make(name: str, body: str) -> Path:
+        bin_dir.mkdir(exist_ok=True)
+        path = bin_dir / name
+        path.write_text(body)
+        path.chmod(0o755)
+        return path
+
+    return make
+
+
+@pytest.fixture
+def start_runner(monkeypatch):
     """Start an in-process runner server (framework/runner/server.py) as ``runner-1.sock``;
     the client reaches it through AGENTO_RUNNER_SOCKET_DIR. ``Server`` keyword arguments
     pass through. An ``execute`` runs ``worker.serve`` in a thread with ``make_runner``
@@ -144,7 +162,6 @@ def start_runner(monkeypatch, tmp_path):
     import threading
     from functools import partial
 
-    from agento.framework import workspace_paths
     from agento.framework.harness.registry import create_runner
     from agento.framework.runner.server import Server
     from tests.runner_fakes import FakeUids, thread_worker
@@ -169,7 +186,6 @@ def start_runner(monkeypatch, tmp_path):
 
     monkeypatch.setenv("AGENTO_RUNNER_SOCKET_DIR", sock_dir)
     monkeypatch.setenv("AGENTO_RUNNER_COUNT", "1")
-    monkeypatch.setattr(workspace_paths, "BASE_WORKSPACE_DIR", str(tmp_path / "workspace"))
     yield start
     for server in servers:
         server.close()

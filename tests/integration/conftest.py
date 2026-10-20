@@ -277,12 +277,13 @@ def _keep_bootstrapped_registries():
     event manager means no workspace-build observer, which means a job run resolves its state
     dir under the container's read-only `/workspace`. Every registry bootstrap fills gets the
     same snapshot-and-restore, whatever the test did to it."""
-    from agento.framework import event_manager, execution_hooks
+    from agento.framework import event_manager, execution_hooks, job_types
     from agento.framework.workflows import _WORKFLOW_MAP
 
     manager = event_manager._EVENT_MANAGER
     seams = {name: (slot.get(), slot.module()) for name, slot in execution_hooks.SEAMS.items()}
     workflows = dict(_WORKFLOW_MAP)
+    types = dict(job_types._REGISTRY)
     yield
     if event_manager._EVENT_MANAGER is not manager:
         event_manager._EVENT_MANAGER = manager
@@ -295,6 +296,9 @@ def _keep_bootstrapped_registries():
     if workflows != _WORKFLOW_MAP:
         _WORKFLOW_MAP.clear()
         _WORKFLOW_MAP.update(workflows)
+    if types != job_types._REGISTRY:
+        job_types._REGISTRY.clear()
+        job_types._REGISTRY.update(types)
 
 
 @pytest.fixture(autouse=True)
@@ -326,6 +330,17 @@ def _no_real_cli_refresh():
         yield
 
 
+# Not here, on purpose: `workspace` / `agent_view` (tests reuse the scope rows by code),
+# `ingress_identity` (`int_agent_view` owns it), `role` (seeded) and the migration tables.
+_WIPED_TABLES = (
+    "execution", "execution_delta", "job_event_outbox", "tool_invocation",
+    "conversation", "conversation_event", "message", "conversation_prune_watermark",
+    "launch", "session", "role_grant", "`user`", "credential_login", "limit_bucket",
+    "outlook_poll_cursor", "miniapp", "miniapp_activation", "miniapp_member",
+    "versioned_artifact", "versioned_artifact_audit",
+)
+
+
 @pytest.fixture(autouse=True)
 def _truncate_tables():
     """Truncate all tables before each test for isolation."""
@@ -338,6 +353,13 @@ def _truncate_tables():
             # Keyed by job id, which the TRUNCATE above recycles: a stretch a deferring test
             # left open is closed by the next test's claim of job 1, as a `job.deferred` row.
             cur.execute("TRUNCATE TABLE job_defer_stretch")
+            # Every other per-test table, so no test file wipes its own subset. An outbox or
+            # execution row a test left behind is read as the next test's job 1. DELETE, not
+            # TRUNCATE: the tables are almost always empty, and a TRUNCATE costs ~7 ms each.
+            for table in _WIPED_TABLES:
+                cur.execute(f"DELETE FROM {table}")
+            # The seeded roles stay; a test's own role goes.
+            cur.execute("DELETE FROM role WHERE code NOT IN ('admin', 'user')")
             cur.execute("TRUNCATE TABLE schedule")
             cur.execute("TRUNCATE TABLE usage_log")
             cur.execute("TRUNCATE TABLE credential")
@@ -628,12 +650,9 @@ def update_job(job_id: int, **fields) -> None:
 # file that defines its own `conn` still overrides this one.
 
 def _clean(c):
+    """The scopes: the autouse wipe keeps them, and a test that deactivates the view must not
+    hand the next test a deactivated one (INSERT IGNORE would keep it)."""
     with c.cursor() as cur:
-        for table in ("conversation_event", "message", "conversation", "job_event_outbox",
-                      "job_defer_stretch", "job", "launch", "session", "role_grant", "`user`"):
-            cur.execute(f"DELETE FROM {table}")
-        # The scopes too: a test that deactivates the view must not hand the next test a
-        # deactivated one (INSERT IGNORE would keep it).
         cur.execute("DELETE FROM agent_view WHERE code IN ('c-av', 'c-av2')")
         cur.execute("DELETE FROM workspace WHERE code IN ('c-ws', 'c-ws2')")
     c.commit()
@@ -655,7 +674,6 @@ def conn(int_db_config, monkeypatch):
     c = _test_connection(autocommit=False)
     _clean(c)
     yield c
-    _clean(c)
     c.close()
 
 
@@ -681,6 +699,31 @@ def world(conn):
     accounts.add_grant(conn, "user", "operation", "artifact.launch", agent_view_id=ids["view"])
     ids.update(owner=owner, stranger=stranger, admin=admin)
     return ids
+
+
+@pytest.fixture
+def selects(monkeypatch) -> list[str]:
+    """Every SELECT any connection runs while this is installed."""
+    seen: list[str] = []
+    real = DictCursor.execute
+
+    def spy(self, query, args=None):
+        if query.lstrip().upper().startswith("SELECT"):
+            seen.append(query)
+        return real(self, query, args)
+
+    monkeypatch.setattr(DictCursor, "execute", spy)
+    return seen
+
+
+@pytest.fixture
+def thread(conn, world):
+    """One conversation of the owner's in the view. A test file that needs a turn in it
+    defines its own."""
+    from agento.modules.conversation.src import service
+
+    return service.create_conversation(
+        conn, user_id=world["owner"].id, agent_view_id=world["view"], title="t")
 
 
 def routed(module_name: str, handlers):

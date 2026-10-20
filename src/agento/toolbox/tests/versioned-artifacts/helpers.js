@@ -1,6 +1,7 @@
 import { readdir, readFile, lstat, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { vi } from 'vitest';
 
 // Build an init payload from a directory, the same shape the admin CLI sends.
 export async function readSource(dir, base = dir) {
@@ -43,3 +44,29 @@ export const lastMessage = (root, artifact, versionId) => git(root, artifact, ['
 export const draftDirs = async (root, artifact) =>
   git(root, artifact, ['for-each-ref', '--format=%(refname:lstrip=3)', 'refs/heads/agento-drafts/'])
     .split('\n').filter(Boolean).map(r => r.replace('agento-drafts/', '')).sort();
+
+// A store config over a temp store and published root, with every field the service checks.
+export const vaConfig = (root, pub, over = {}) => ({ storage_root: root, published_root: pub, allowed_artifacts: 'site',
+  'limits/max_files': 2000, 'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600,
+  'limits/max_diff_bytes': 1048576, 'limits/max_agent_artifacts': 50, 'security/allow_symlinks': false,
+  'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', ...over });
+
+export const ADMIN_SUBJECT = 'service:web:user:3';
+
+// An admin route module on a real listener. The server.js guard admits only a viewless
+// internal_rest and parses JSON, so a stand-in middleware does what that mount does; set
+// `capability` on the handle to try another caller.
+export async function startAdminApp(register, cfg, extraCtx = {}) {
+  // Loaded here, so a file that needs only the store helpers does not load the route stack.
+  const [{ default: express }, { createModuleRouteApp }] = await Promise.all([import('express'), import('../../config-loader.js')]);
+  const h = { capability: { kind: 'internal_rest', subject_id: ADMIN_SUBJECT, agent_view_id: null } };
+  const app = express();
+  app.use((req, _res, next) => { req.capability = h.capability; next(); }, express.json());
+  await register({ tool: () => {} }, {
+    app: createModuleRouteApp(app, vi.fn()), log: vi.fn(), db: null, moduleConfigs: { versioned_artifacts: cfg }, ...extraCtx,
+  });
+  const listener = await new Promise((resolve) => { const l = app.listen(0, '127.0.0.1', () => resolve(l)); });
+  h.origin = `http://127.0.0.1:${listener.address().port}`;
+  h.close = () => new Promise((resolve) => listener.close(resolve));
+  return h;
+}

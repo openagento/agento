@@ -9,17 +9,9 @@ import threading
 
 import pytest
 
-from agento.framework.job_types import clear_job_types, register_job_type
 from agento.modules.conversation.src import retention, routes, service
 
 from .conftest import _test_connection
-
-
-@pytest.fixture(autouse=True)
-def _job_type():
-    register_job_type("conversation", module="conversation")
-    yield
-    clear_job_types()
 
 
 class _Session:

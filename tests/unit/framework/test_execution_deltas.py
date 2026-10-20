@@ -13,41 +13,15 @@ import pytest
 
 from agento.framework import execution_deltas
 from agento.framework.execution_hooks import DeltaRecord
+from tests.unit.framework.delta_fakes import FakeSink, HeldSink
+from tests.waiting import wait_until
 
-
-@pytest.fixture(autouse=True)
-def _reset():
-    execution_deltas._reset_for_tests()
-    yield
-    execution_deltas._reset_for_tests()
-
-
-class FakeSink:
-    def __init__(self) -> None:
-        self.batches: list[list[DeltaRecord]] = []
-        self.lock = threading.Lock()
-
-    def write(self, batch) -> None:
-        with self.lock:
-            self.batches.append(list(batch))
-
-    def records(self) -> list[DeltaRecord]:
-        with self.lock:
-            return [r for b in self.batches for r in b]
+pytestmark = pytest.mark.usefixtures("reset_deltas")
 
 
 def _record(seq: int, *, execution_id: str = "e1", kind: str = "delta",
             text: str | None = "x") -> DeltaRecord:
     return DeltaRecord(execution_id=execution_id, seq=seq, kind=kind, text=text, tool_name=None)
-
-
-def _wait_for(predicate, timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.01)
-    return False
 
 
 def _live() -> list[threading.Thread]:
@@ -76,18 +50,13 @@ def test_submit_does_no_database_work_on_the_calling_thread(monkeypatch):
     for i in range(50):
         execution_deltas.submit(_record(i))
 
-    assert _wait_for(lambda: len(sink.records()) == 50)
+    assert wait_until(lambda: len(sink.records()) == 50)
 
 
 def test_submit_never_blocks_on_a_stalled_sink():
     """The queue is bounded and lossy on purpose: a stalled drain thread is a stalled run."""
     gate = threading.Event()
-
-    class Stalled:
-        def write(self, batch):
-            gate.wait(10)
-
-    execution_deltas.sync(Stalled(), module="m", class_path="p")
+    execution_deltas.sync(HeldSink(gate), module="m", class_path="p")
     started = time.monotonic()
     try:
         for i in range(execution_deltas.MAX_QUEUE + 500):
@@ -100,19 +69,14 @@ def test_submit_never_blocks_on_a_stalled_sink():
 
 def test_a_full_queue_drops_the_oldest_and_marks_the_gap():
     gate = threading.Event()
-    sink = FakeSink()
+    sink = HeldSink(gate)
 
-    class Held:
-        def write(self, batch):
-            gate.wait(10)
-            sink.write(batch)
-
-    execution_deltas.sync(Held(), module="m", class_path="p")
+    execution_deltas.sync(sink, module="m", class_path="p")
     for i in range(execution_deltas.MAX_QUEUE + 100):
         execution_deltas.submit(_record(i))
     gate.set()
 
-    assert _wait_for(lambda: any(r.kind == "gap" for r in sink.records()))
+    assert wait_until(lambda: any(r.kind == "gap" for r in sink.records()))
     kinds = [r.kind for r in sink.records()]
     assert kinds.count("gap") >= 1
     assert "delta" in kinds
@@ -164,21 +128,23 @@ def test_a_sink_that_raises_does_not_kill_the_thread_or_the_run():
     execution_deltas.sync(Angry(), module="m", class_path="p")
     execution_deltas.submit(_record(1))
 
-    assert _wait_for(lambda: len(calls) >= 1)
+    assert wait_until(lambda: len(calls) >= 1)
     execution_deltas.submit(_record(2))
-    assert _wait_for(lambda: len(calls) >= 2)      # still draining
+    assert wait_until(lambda: len(calls) >= 2)      # still draining
     assert len(_live()) == 1
 
 
 # --- the thread lifecycle (MOD-2) ------------------------------------------
 
-def test_two_syncs_of_one_declaration_leave_the_same_thread_running():
+@pytest.mark.parametrize("again", [1, 10], ids=["two-syncs", "eleven-syncs"])
+def test_repeated_syncs_of_one_declaration_leave_the_same_thread_running(again):
     """Asserted on IDENTITY: `bootstrap()` builds a new sink object every poll tick, and a
     thread keyed on the object would restart every five seconds for ever."""
     execution_deltas.sync(FakeSink(), module="conversation", class_path="src.deltas.Sink")
     first = _live()[0]
 
-    execution_deltas.sync(FakeSink(), module="conversation", class_path="src.deltas.Sink")
+    for _ in range(again):
+        execution_deltas.sync(FakeSink(), module="conversation", class_path="src.deltas.Sink")
 
     assert _live() == [first]
 
@@ -190,17 +156,7 @@ def test_the_thread_adopts_the_freshly_constructed_sink():
 
     execution_deltas.submit(_record(1))
 
-    assert _wait_for(lambda: len(second.records()) == 1)
-
-
-def test_ten_consecutive_syncs_neither_start_nor_stop_a_thread():
-    execution_deltas.sync(FakeSink(), module="conversation", class_path="src.deltas.Sink")
-    first = _live()[0]
-
-    for _ in range(10):
-        execution_deltas.sync(FakeSink(), module="conversation", class_path="src.deltas.Sink")
-
-    assert _live() == [first]
+    assert wait_until(lambda: len(second.records()) == 1)
 
 
 def test_a_different_declaration_stops_the_first_and_leaves_exactly_one():
@@ -212,44 +168,41 @@ def test_a_different_declaration_stops_the_first_and_leaves_exactly_one():
 
     live = _live()
     assert len(live) == 1 and live[0] is not first
-    assert _wait_for(lambda: not first.is_alive())
+    assert wait_until(lambda: not first.is_alive())
     execution_deltas.submit(_record(1))
-    assert _wait_for(lambda: len(second_sink.records()) == 1)
+    assert wait_until(lambda: len(second_sink.records()) == 1)
 
 
 def test_disabling_the_module_joins_the_thread_and_writes_nothing_after():
     sink = FakeSink()
     execution_deltas.sync(sink, module="conversation", class_path="src.deltas.Sink")
     execution_deltas.submit(_record(1))
-    assert _wait_for(lambda: len(sink.records()) == 1)
+    assert wait_until(lambda: len(sink.records()) == 1)
 
     execution_deltas.sync(None)
 
-    assert _live() == []
-    execution_deltas.submit(_record(2))
-    time.sleep(0.2)
+    assert _live() == [] and execution_deltas.is_streaming() is False
+    execution_deltas.submit(_record(2))     # no worker: nothing is buffered
     assert [r.seq for r in sink.records()] == [1]
 
 
 def test_disabling_discards_the_pending_queue_rather_than_draining_it():
     """Draining into the old sink after the module is off is the MOD-2 leak itself."""
     gate = threading.Event()
-    sink = FakeSink()
-
-    class Held:
-        def write(self, batch):
-            gate.wait(10)
-            sink.write(batch)
-
-    execution_deltas.sync(Held(), module="conversation", class_path="src.deltas.Sink")
-    for i in range(100):
+    sink = HeldSink(gate)
+    execution_deltas.sync(sink, module="conversation", class_path="src.deltas.Sink")
+    execution_deltas.submit(_record(0))
+    assert sink.inside.wait(5)              # the first write holds the handover lock
+    for i in range(1, 100):
         execution_deltas.submit(_record(i))
+
+    disabling = threading.Thread(target=execution_deltas.sync, args=(None,), daemon=True)
+    disabling.start()
     gate.set()
+    disabling.join(5)
 
-    execution_deltas.sync(None)
-    time.sleep(0.2)
-
-    assert len(sink.records()) < 100
+    assert not disabling.is_alive() and _live() == []
+    assert [r.seq for r in sink.records()] == [0]   # the 99 queued behind it are gone
 
 
 def test_re_enabling_starts_a_fresh_thread_and_streams_again():
@@ -261,7 +214,7 @@ def test_re_enabling_starts_a_fresh_thread_and_streams_again():
     execution_deltas.sync(revived, module="conversation", class_path="src.deltas.Sink")
     execution_deltas.submit(_record(1))
 
-    assert _wait_for(lambda: len(revived.records()) == 1)
+    assert wait_until(lambda: len(revived.records()) == 1)
     assert len(_live()) == 1
 
 
@@ -284,82 +237,47 @@ def test_a_worker_that_outlives_its_join_starts_no_second_thread(monkeypatch):
     assert _live() == [stuck]              # no replacement while the first is alive
 
 
-def test_a_write_blocked_past_the_join_blocks_the_handover_rather_than_racing_it(monkeypatch):
-    """There is no "the thread is stuck inside write and the handover went ahead" state: the
-    write holds the handover lock, so the handover waits for it. That is the invariant -
-    no write after the boundary - and it does not depend on the join at all."""
+# --- the commit race the handover lock exists for --------------------------
+
+def test_a_disable_cannot_complete_while_a_write_is_between_insert_and_commit(monkeypatch):
+    """The generation is ours and in memory; the transaction is the sink's and the sink
+    commits it. A check before `write` returns says nothing about the moment it commits, so
+    the write holds the handover lock for the whole call and the disable waits for it. That
+    is the invariant - no write after the boundary - and it does not depend on the join:
+    JOIN_TIMEOUT is tiny here and the disable still waits."""
     monkeypatch.setattr(execution_deltas, "JOIN_TIMEOUT", 0.05)
-    inside, release = threading.Event(), threading.Event()
-
-    class Blocked:
-        def write(self, batch):
-            inside.set()
-            release.wait(10)
-
-    execution_deltas.sync(Blocked(), module="conversation", class_path="src.deltas.A")
+    release = threading.Event()
+    sink = HeldSink(release)                # inside = INSERT done, records = COMMIT
+    execution_deltas.sync(sink, module="conversation", class_path="src.deltas.Sink")
     execution_deltas.submit(_record(1))
-    assert inside.wait(5)
+    assert sink.inside.wait(5)
 
     done = threading.Event()
     threading.Thread(target=lambda: (execution_deltas.sync(None), done.set()),
                      daemon=True).start()
     try:
-        assert not done.wait(0.5)          # blocked on the lock, not racing the commit
+        # A bound only proves "not yet"; a racing disable finishes in well under it.
+        assert not done.wait(0.2)           # BLOCKED on the lock, not racing the commit
+        assert sink.records() == []
     finally:
         release.set()
     assert done.wait(5)
+    assert len(sink.batches) == 1           # it finished before the handover boundary
     assert _live() == []
 
 
-# --- the commit race the handover lock exists for --------------------------
-
-def test_a_disable_cannot_complete_while_a_write_is_between_insert_and_commit():
-    """The generation is ours and in memory; the transaction is the sink's and the sink
-    commits it. A check before `write` returns says nothing about the moment it commits, so
-    the lock spans the whole call - and this is what that buys."""
-    inserted, release = threading.Event(), threading.Event()
-    committed = []
-
-    class SlowCommit:
-        def write(self, batch):
-            inserted.set()                  # INSERT done, transaction still open
-            release.wait(10)
-            committed.append(list(batch))   # COMMIT
-
-    execution_deltas.sync(SlowCommit(), module="conversation", class_path="src.deltas.Sink")
-    execution_deltas.submit(_record(1))
-    assert inserted.wait(5)
-
-    done = threading.Event()
-    threading.Thread(target=lambda: (execution_deltas.sync(None), done.set()),
-                     daemon=True).start()
-
-    # The whole point of the lock: the disable is BLOCKED, not racing the commit.
-    assert not done.wait(0.5)
-    assert committed == []
-
-    release.set()
-    assert done.wait(5)
-    assert len(committed) == 1              # it finished before the handover boundary
-
-
 def test_nothing_commits_after_a_disable_reports_done():
-    committed = []
-
-    class Recording:
-        def write(self, batch):
-            time.sleep(0.05)
-            committed.append(list(batch))
-
-    execution_deltas.sync(Recording(), module="conversation", class_path="src.deltas.Sink")
+    sink = FakeSink()
+    execution_deltas.sync(sink, module="conversation", class_path="src.deltas.Sink")
     for i in range(50):
         execution_deltas.submit(_record(i))
 
     execution_deltas.sync(None)
-    settled = len(committed)
-    time.sleep(0.3)
+    settled = len(sink.records())
 
-    assert len(committed) == settled
+    assert _live() == []                    # no thread is left that could write
+    execution_deltas.submit(_record(50))
+    assert len(sink.records()) == settled
 
 
 def test_a_batch_queued_before_a_completed_handover_is_dropped_not_written():
@@ -415,14 +333,9 @@ def test_shutdown_drains_what_is_queued_through_the_live_sink():
     drain the consumer's shutdown path exists for wrote nothing at all.
     """
     gate = threading.Event()
-    sink = FakeSink()
+    sink = HeldSink(gate)
 
-    class Held:
-        def write(self, batch):
-            gate.wait(10)
-            sink.write(batch)
-
-    execution_deltas.sync(Held(), module="conversation", class_path="src.deltas.Sink")
+    execution_deltas.sync(sink, module="conversation", class_path="src.deltas.Sink")
     execution_deltas.submit(_record(1))
     execution_deltas.submit(_record(2))
     gate.set()

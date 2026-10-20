@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -9,20 +8,15 @@ import pytest
 from agento.framework.access import accounts, sessions
 from agento.web import api, server
 
-from .conftest import APPS, panel_headers
+from .conftest import APPS, TOKEN, a_session, panel_headers, sign_in_as
 
 ALICE = accounts.User(id=1, username="alice", role="user", is_active=True)
-TOKEN = "session-token-value"
 PASSWORD = "correct horse battery"
-
-
-def _session():
-    return sessions.Session(id="sid", user=ALICE, expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1))
 
 
 @pytest.fixture
 def signed_in(monkeypatch):
-    monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: _session() if t == TOKEN else None)
+    sign_in_as(monkeypatch, ALICE)
     revoked = []
     monkeypatch.setattr(sessions, "revoke_session", lambda conn, sid: revoked.append(sid))
     return revoked
@@ -34,7 +28,7 @@ def auth(monkeypatch):
 
     def sign_in(conn, username, password):
         calls.append(username)
-        return (_session(), TOKEN) if (username, password) == ("alice", PASSWORD) else None
+        return (a_session(ALICE), TOKEN) if (username, password) == ("alice", PASSWORD) else None
 
     monkeypatch.setattr(sessions, "sign_in", sign_in)
     return calls

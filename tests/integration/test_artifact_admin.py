@@ -29,18 +29,8 @@ V1, V2 = "v-20260101-000000-aaaa", "v-20260102-000000-bbbb"
 @pytest.fixture
 def conn():
     c = _test_connection(autocommit=True)
-    _clean(c)
     yield c
-    _clean(c)
     c.close()
-
-
-def _clean(c):
-    with c.cursor() as cur:
-        for table in ("miniapp_activation", "versioned_artifact_audit", "versioned_artifact"):
-            cur.execute(f"DELETE FROM {table} WHERE artifact_code LIKE 'aa-%'")
-        for table in ("launch", "session", "role_grant", "`user`"):
-            cur.execute(f"DELETE FROM {table}")
 
 
 @pytest.fixture

@@ -18,7 +18,6 @@ from agento.framework.module_loader import import_class
 from agento.modules.conversation.src import service
 
 from .conftest import _clean  # noqa: F401
-from .test_conversation_submission import _job_type  # noqa: F401
 
 MODULE_DIR = Path(__file__).resolve().parents[2] / "src/agento/modules/conversation"
 

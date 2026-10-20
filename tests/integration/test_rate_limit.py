@@ -26,11 +26,7 @@ CFG = {
 @pytest.fixture
 def conn():
     c = _test_connection(autocommit=True)
-    with c.cursor() as cur:
-        cur.execute("DELETE FROM limit_bucket")
     yield c
-    with c.cursor() as cur:
-        cur.execute("DELETE FROM limit_bucket")
     c.close()
 
 
@@ -232,11 +228,7 @@ def test_no_legacy_db_row_can_weaken_a_limit(conn, key, bad):
             "VALUES ('default', 0, %s, %s, 0) ON DUPLICATE KEY UPDATE value = VALUES(value)",
             (f"core/limits/{key}", bad),
         )
-    try:
-        assert rate_limit.limits(conn)[key] == _SAFE_DIRECTION[key]
-    finally:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM core_config_data WHERE path = %s", (f"core/limits/{key}",))
+    assert rate_limit.limits(conn)[key] == _SAFE_DIRECTION[key]
 
 
 # No single number is inside all six ranges (retention starts at 300, the failure count
@@ -260,11 +252,7 @@ def test_a_value_inside_the_bounds_is_honoured(conn, key):
             "VALUES ('default', 0, %s, %s, 0) ON DUPLICATE KEY UPDATE value = VALUES(value)",
             (f"core/limits/{key}", str(_IN_RANGE[key])),
         )
-    try:
-        assert rate_limit.limits(conn)[key] == _IN_RANGE[key]
-    finally:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM core_config_data WHERE path = %s", (f"core/limits/{key}",))
+    assert rate_limit.limits(conn)[key] == _IN_RANGE[key]
 
 
 # --- persistence (SEC-12) ---------------------------------------------------

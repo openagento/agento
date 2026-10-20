@@ -7,12 +7,22 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from agento.framework.bootstrap import CORE_MODULES_DIR
 from agento.framework.consumer import Consumer
 from agento.framework.dependency_resolver import get_transitive_dependents
 from agento.framework.module_loader import scan_modules
 
-from .conftest import fetch_job, insert_queued_job
+from .conftest import bootstrap_for_tests, fetch_job, insert_queued_job
+
+
+@pytest.fixture
+def full_bootstrap_after():
+    """The test bootstraps without `conversation`; every later test needs it back. Requested
+    before `monkeypatch`, so the module filter is already undone when this tears down."""
+    yield
+    bootstrap_for_tests()
 
 
 def test_disabling_agent_view_also_disables_conversation():
@@ -26,7 +36,7 @@ def test_conversation_declares_no_other_dependency():
 
 
 def test_the_queue_publishes_and_consumes_a_blank_job_without_the_module(
-    int_db_config, int_consumer_config, monkeypatch
+    full_bootstrap_after, int_db_config, int_consumer_config, monkeypatch
 ):
     """With `conversation` never loaded, a blank job still goes through the queue."""
     import agento.framework.bootstrap as bootstrap_module
@@ -36,7 +46,7 @@ def test_the_queue_publishes_and_consumes_a_blank_job_without_the_module(
         "filter_enabled",
         lambda manifests: [m for m in manifests if m.name != "conversation"],
     )
-    bootstrap_module.bootstrap()
+    bootstrap_for_tests()
     job_id = insert_queued_job(job_type="blank", idempotency_key="conv-disabled:1",
                                reference_id="BLANK-1")
 

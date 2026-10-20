@@ -244,9 +244,10 @@ if [ "$fast_mode" -eq 1 ]; then
 else
   echo -e "${CYAN}[7/9] Python e2e Tests${NC}"
   echo "========================================"
-  # Parallel first; the token rotation runs alone after it (it must not race a run).
-  if uv run pytest -q -m "e2e and not rotates_credentials" 2>&1 \
-    && uv run pytest -q -m "e2e and rotates_credentials" -n 0 2>&1; then
+  # Parallel first; the token rotation and the `serial` tests (stack stop, server-wide
+  # MySQL counters) run alone after it (they must not race a run).
+  if uv run pytest -q -m "e2e and not rotates_credentials and not serial" 2>&1 \
+    && uv run pytest -q -m "e2e and (rotates_credentials or serial)" -n 0 2>&1; then
     ((pass++)) || true
   else
     ((fail++)) || true

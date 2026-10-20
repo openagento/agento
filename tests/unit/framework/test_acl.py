@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import ast
-import json
 from pathlib import Path
 
 import pytest
@@ -10,18 +9,7 @@ import pytest
 from agento.framework.access import acl
 from agento.framework.bootstrap import CORE_MODULES_DIR
 from agento.framework.module_validator import validate_all, validate_module
-
-
-def _module(root: Path, name: str, acl_json: object | None = None, *, sequence=(), routes=None) -> Path:
-    mod = root / name
-    mod.mkdir(parents=True)
-    (mod / "module.json").write_text(json.dumps(
-        {"name": name, "version": "1.0.0", "description": name, "sequence": list(sequence)}))
-    if acl_json is not None:
-        (mod / "acl.json").write_text(json.dumps(acl_json))
-    if routes is not None:
-        (mod / "di.json").write_text(json.dumps({"routes": routes}))
-    return mod
+from tests.module_writer import write_module
 
 
 def _screen(title: str, *ids: str) -> dict:
@@ -29,9 +17,9 @@ def _screen(title: str, *ids: str) -> dict:
 
 
 def test_core_first_then_modules_by_name(tmp_path):
-    b = _module(tmp_path, "beta", {"screens": [_screen("Beta", "beta")],
+    b = write_module(tmp_path, "beta", acl_json={"screens": [_screen("Beta", "beta")],
                                    "operations": [{"id": "beta.run", "title": "Run"}]})
-    a = _module(tmp_path, "alpha", {"screens": [_screen("Alpha", "alpha", "alpha.edit")]})
+    a = write_module(tmp_path, "alpha", acl_json={"screens": [_screen("Alpha", "alpha", "alpha.edit")]})
 
     registry = acl.load([("beta", b), ("alpha", a)])
 
@@ -58,7 +46,7 @@ def test_core_first_then_modules_by_name(tmp_path):
     ({"screens": [_screen("Demo", "demo")], "operations": [{"id": "demo", "title": "x"}]}, "declared twice"),
 ])
 def test_a_bad_file_is_refused_by_validate_and_by_load(tmp_path, data, why):
-    mod = _module(tmp_path, "demo", data)
+    mod = write_module(tmp_path, "demo", acl_json=data)
 
     assert any(why in e for e in validate_module(mod)), validate_module(mod)
     with pytest.raises(acl.AclError) as exc:
@@ -67,8 +55,7 @@ def test_a_bad_file_is_refused_by_validate_and_by_load(tmp_path, data, why):
 
 
 def test_an_unparsable_file_is_refused(tmp_path):
-    mod = _module(tmp_path, "demo")
-    (mod / "acl.json").write_text("{")
+    mod = write_module(tmp_path, "demo", acl_json="{")
 
     assert "acl.json: invalid JSON" in validate_module(mod)
     with pytest.raises(acl.AclError):
@@ -77,9 +64,9 @@ def test_an_unparsable_file_is_refused(tmp_path):
 
 def test_an_id_is_unique_across_core_and_modules(tmp_path):
     core, user = tmp_path / "core", tmp_path / "user"
-    _module(core, "alpha", {"screens": [_screen("A", "alpha")]})
-    _module(core, "admin", {"screens": [_screen("Jobs again", "admin.jobs")]})   # a core id
-    _module(user, "alpha_two", {"operations": [{"id": "alpha_two.run", "title": "x"}]})
+    write_module(core, "alpha", acl_json={"screens": [_screen("A", "alpha")]})
+    write_module(core, "admin", acl_json={"screens": [_screen("Jobs again", "admin.jobs")]})   # a core id
+    write_module(user, "alpha_two", acl_json={"operations": [{"id": "alpha_two.run", "title": "x"}]})
 
     results = validate_all(core, user)
 
@@ -90,8 +77,7 @@ def test_an_id_is_unique_across_core_and_modules(tmp_path):
 
 
 def test_a_leftover_di_acl_resources_key_is_a_validate_error(tmp_path):
-    mod = _module(tmp_path, "demo")
-    (mod / "di.json").write_text(json.dumps({"acl_resources": [{"id": "demo.run", "title": "Run"}]}))
+    mod = write_module(tmp_path, "demo", di_json={"acl_resources": [{"id": "demo.run", "title": "Run"}]})
 
     assert any("'acl_resources' is not read" in e for e in validate_module(mod))
 
@@ -105,10 +91,11 @@ ROUTE = {"method": "GET", "path": "/api/demo/x", "handler": "src.routes.x"}
 ])
 def test_validate_checks_a_route_acl_against_own_core_and_sequence_leaves(tmp_path, value, ok):
     core, user = tmp_path / "core", tmp_path / "user"
-    _module(core, "other", {"screens": [_screen("Other", "other")]})
-    _module(core, "stranger", {"screens": [_screen("Stranger", "stranger")]})
+    write_module(core, "other", acl_json={"screens": [_screen("Other", "other")]})
+    write_module(core, "stranger", acl_json={"screens": [_screen("Stranger", "stranger")]})
     route = ROUTE if value is None else {**ROUTE, "acl": value}
-    _module(core, "demo", {"screens": [_screen("Demo", "demo.view")]}, sequence=["other"], routes=[route])
+    write_module(core, "demo", module_json={"sequence": ["other"]},
+                 acl_json={"screens": [_screen("Demo", "demo.view")]}, di_json={"routes": [route]})
 
     errors = validate_all(core, user).get("demo", [])
 

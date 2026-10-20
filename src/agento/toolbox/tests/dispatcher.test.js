@@ -301,29 +301,20 @@ describe('the SQL the dispatcher writes', () => {
     expect(query.mock.calls[1][1][0]).toBe('ok');
   });
 
-  it("writes the RUN's execution id, which is not the call's own", async () => {
+  it.each([
+    ["the RUN's execution id, which is not the call's own", 'mcp_job', { execution_id: 'run-abc' }, {}, 'run-abc'],
+    ['NULL when the capability carries no run', 'mcp_interactive', undefined, {}, null],
+    ['the run on the HTTP transport too', 'internal_rest', { execution_id: 'run-http' }, { endpoint: 'invoke' }, 'run-http'],
+  ])('writes %s', async (_name, kind, over, depsOver, runId) => {
     const query = vi.fn(async () => [{}]);
-    const d = deps({ audit: createAuditStore(query) });
-    await executeTool(capabilityContext('mcp_job', { execution_id: 'run-abc' }), 'echo', { text: 'x' }, d);
+    const d = deps({ audit: createAuditStore(query), ...depsOver });
+    await executeTool(capabilityContext(kind, over), 'echo', { text: 'x' }, d);
     const [sql, params] = query.mock.calls[0];
     // Positionally: the call's own UUID first, the run's id second.
     expect(sql).toMatch(/\(execution_id, run_execution_id,/);
-    expect(params[0]).not.toBe('run-abc');
-    expect(params[1]).toBe('run-abc');
-  });
-
-  it('writes NULL when the capability carries no run', async () => {
-    const query = vi.fn(async () => [{}]);
-    const d = deps({ audit: createAuditStore(query) });
-    await executeTool(capabilityContext('mcp_interactive'), 'echo', { text: 'x' }, d);
-    expect(query.mock.calls[0][1][1]).toBeNull();
-  });
-
-  it('carries the run on the HTTP transport too', async () => {
-    const query = vi.fn(async () => [{}]);
-    const d = deps({ audit: createAuditStore(query), endpoint: 'invoke' });
-    await executeTool(capabilityContext('internal_rest', { execution_id: 'run-http' }), 'echo', { text: 'x' }, d);
-    expect(query.mock.calls[0][1][1]).toBe('run-http');
+    expect(params[0]).toBeTruthy();
+    expect(params[0]).not.toBe(runId);
+    expect(params[1]).toBe(runId);
   });
 
   it('digests arguments canonically', () => {
@@ -467,46 +458,52 @@ describe('POST /internal/tools/{name}:invoke', () => {
     } finally { close(); }
   });
 
-  it('a body that is not application/json gets 400: no audit row, no handler call', async () => {
+  const JSON_CT = { 'content-type': 'application/json' };
+  it.each([
+    ['a text/plain body', () => ({ headers: { 'content-type': 'text/plain' }, body: 'anything' })],
+    ['a body with no content-type', () => ({ headers: {}, body: 'anything' })],
+    ['an empty JSON body', () => ({ headers: JSON_CT })],
+    ['an empty gzip body', () => ({ headers: { ...JSON_CT, 'content-encoding': 'gzip' }, body: gzipSync(Buffer.alloc(0)) })],
+    ['an empty streamed body', () => ({ headers: JSON_CT, body: Readable.toWeb(Readable.from([])), duplex: 'half' })],
+    ['a UTF-8 BOM alone', () => ({ headers: { 'content-type': 'application/json; charset=utf-8' }, body: Buffer.from([0xef, 0xbb, 0xbf]) })],
+    ['a UTF-16LE BOM alone', () => ({ headers: { 'content-type': 'application/json; charset=utf-16le' }, body: Buffer.from([0xff, 0xfe]) })],
+    ['blank JSON', () => ({ headers: JSON_CT, body: '   ' })],
+    ['two JSON values', () => ({ headers: JSON_CT, body: '{} {}' })],
+    ['invalid JSON', () => ({ headers: JSON_CT, body: 'nul' })],
+  ])('%s gets 400: no audit row, no handler call', async (_name, init) => {
     const handler = vi.fn(async () => ({ content: [] }));
     const d = deps({ endpoint: 'invoke', loadRegistry: async () => registryWith({ noargs: { schema: {}, handler } }) });
     const { post, close } = await invokeApp(d, capabilityContext('mcp_job'));
     try {
-      for (const headers of [{ 'content-type': 'text/plain' }, {}]) {
-        const res = await fetch(post.url('noargs'), { method: 'POST', headers, body: 'anything' });
-        expect(res.status).toBe(400);
-        expect((await res.json()).error.code).toBe('invalid_arguments');
-      }
-      const empties = [
-        { headers: { 'content-type': 'application/json' } },
-        { headers: { 'content-type': 'application/json', 'content-encoding': 'gzip' }, body: gzipSync(Buffer.alloc(0)) },
-        { headers: { 'content-type': 'application/json' }, body: Readable.toWeb(Readable.from([])), duplex: 'half' },
-      ];
-      for (const init of empties) {
-        const empty = await fetch(post.url('noargs'), { method: 'POST', ...init });
-        expect(empty.status).toBe(400);
-      }
-      for (const bom of [Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from([0xff, 0xfe])]) {
-        const charset = bom[0] === 0xef ? 'utf-8' : 'utf-16le';
-        const res = await fetch(post.url('noargs'), {
-          method: 'POST', headers: { 'content-type': `application/json; charset=${charset}` }, body: bom,
-        });
-        expect(res.status).toBe(400);
-      }
-      for (const body of ['   ', '{} {}', 'nul']) {
-        expect((await post('noargs', null, body)).status).toBe(400);
-      }
+      const res = await fetch(post.url('noargs'), { method: 'POST', ...init() });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe('invalid_arguments');
       expect(d.audit.insert).not.toHaveBeenCalled();
-      const nullBody = await post('noargs', null, 'null');
-      expect(nullBody.status).toBe(400);
+      expect(handler).not.toHaveBeenCalled();
+      expect((await post('noargs', {})).status).toBe(200);
+    } finally { close(); }
+  });
+
+  it('a JSON null body gets 400 and an invalid_arguments audit row, no handler call', async () => {
+    const handler = vi.fn(async () => ({ content: [] }));
+    const d = deps({ endpoint: 'invoke', loadRegistry: async () => registryWith({ noargs: { schema: {}, handler } }) });
+    const { post, close } = await invokeApp(d, capabilityContext('mcp_job'));
+    try {
+      expect((await post('noargs', null, 'null')).status).toBe(400);
       expect([...d.audit.rows.values()].map(r => r.outcome)).toEqual(['invalid_arguments']);
-      d.audit.insert.mockClear();
-      d.audit.rows.clear();
+      expect(handler).not.toHaveBeenCalled();
+    } finally { close(); }
+  });
+
+  it('a zero Content-Length written as "00" gets 400: no audit row, no handler call', async () => {
+    const handler = vi.fn(async () => ({ content: [] }));
+    const d = deps({ endpoint: 'invoke', loadRegistry: async () => registryWith({ noargs: { schema: {}, handler } }) });
+    const { post, close } = await invokeApp(d, capabilityContext('mcp_job'));
+    try {
       const zeros = await rawPost(post.url('noargs'), 'Content-Type: application/json\r\nContent-Length: 00\r\n');
       expect(zeros).toMatch(/^HTTP\/1\.1 400/);
       expect(d.audit.insert).not.toHaveBeenCalled();
       expect(handler).not.toHaveBeenCalled();
-      expect((await post('noargs', {})).status).toBe(200);
     } finally { close(); }
   });
 

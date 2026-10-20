@@ -105,28 +105,20 @@ def test_success_finalizes_the_attempt_and_ends_the_job(
     assert fetch_job(job.id)["status"] == "SUCCESS"
 
 
-def test_a_retried_attempt_is_finalized_while_its_job_returns_to_todo(
-    conn, recorder, int_db_config, int_consumer_config
+@pytest.mark.parametrize(("attempt", "error", "job_terminal", "status"), [
+    pytest.param(1, "transient", False, "TODO", id="retried-attempt-job-returns-to-todo"),
+    pytest.param(3, "fatal", True, "DEAD", id="dead-letter-finalizes-attempt-and-job"),
+])
+def test_a_failed_attempt_is_finalized(
+    conn, recorder, int_db_config, int_consumer_config, attempt, error, job_terminal, status
 ):
-    job = _insert(conn, attempt=1, max_attempts=3)
+    job = _insert(conn, attempt=attempt, max_attempts=3)
 
     _consumer(int_db_config, int_consumer_config)._finalize_job(
-        job, error=Boom("transient"), job_result=None, elapsed_ms=10)
+        job, error=Boom(error), job_result=None, elapsed_ms=10)
 
-    assert recorder.outcomes == [("failed", False)]
-    assert fetch_job(job.id)["status"] == "TODO"
-
-
-def test_a_dead_letter_finalizes_the_attempt_and_the_job(
-    conn, recorder, int_db_config, int_consumer_config
-):
-    job = _insert(conn, attempt=3, max_attempts=3)
-
-    _consumer(int_db_config, int_consumer_config)._finalize_job(
-        job, error=Boom("fatal"), job_result=None, elapsed_ms=10)
-
-    assert recorder.outcomes == [("failed", True)]
-    assert fetch_job(job.id)["status"] == "DEAD"
+    assert recorder.outcomes == [("failed", job_terminal)]
+    assert fetch_job(job.id)["status"] == status
 
 
 def test_a_pool_wait_abandons_the_attempt_and_refunds_it(

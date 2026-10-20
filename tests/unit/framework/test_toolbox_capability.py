@@ -108,13 +108,14 @@ def test_only_a_jobless_internal_rest_capability_may_be_viewless():
 
 
 
-def test_issue_requires_allowed_transports():
-    for bad in (None, [], ["ftp"], ["http", "http"]):
-        with pytest.raises(ValueError):
-            issue_capability(
-                FakeConn(), kind=KIND_MCP_JOB, agent_view_id=7, job_id=1, ttl_seconds=60,
-                allowed_transports=bad,
-            )
+@pytest.mark.parametrize("bad", [None, [], ["ftp"], ["http", "http"]],
+                         ids=["none", "empty", "unknown", "duplicate"])
+def test_issue_requires_allowed_transports(bad):
+    with pytest.raises(ValueError):
+        issue_capability(
+            FakeConn(), kind=KIND_MCP_JOB, agent_view_id=7, job_id=1, ttl_seconds=60,
+            allowed_transports=bad,
+        )
 
 
 def test_a_token_that_may_travel_on_sse_is_issued_at_the_sse_ttl():
@@ -135,13 +136,14 @@ def test_internal_rest_cannot_be_issued_for_sse():
         )
 
 
-def test_a_service_capability_names_its_own_subject():
-    for bad in (None, "", "service:legacy-internal-rest", "jira"):
-        with pytest.raises(ValueError):
-            issue_capability(
-                FakeConn(), kind=KIND_INTERNAL_REST, agent_view_id=7, ttl_seconds=60,
-                allowed_transports=["http"], subject_id=bad,
-            )
+@pytest.mark.parametrize("bad", [None, "", "service:legacy-internal-rest", "jira"],
+                         ids=["none", "empty", "legacy-shared-subject", "no-service-prefix"])
+def test_a_service_capability_names_its_own_subject(bad):
+    with pytest.raises(ValueError):
+        issue_capability(
+            FakeConn(), kind=KIND_INTERNAL_REST, agent_view_id=7, ttl_seconds=60,
+            allowed_transports=["http"], subject_id=bad,
+        )
 
 
 def test_the_row_takes_its_workspace_from_the_agent_view():

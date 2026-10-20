@@ -42,9 +42,7 @@ def scope():
         conversation_id = cur.lastrowid
     yield conn, {"agent_view": agent_view_id, "user": user_id, "conversation": conversation_id}
     with conn.cursor() as cur:
-        cur.execute("DELETE FROM conversation WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM workspace WHERE id = %s", (workspace_id,))
-        cur.execute("DELETE FROM `user` WHERE id = %s", (user_id,))
     conn.close()
 
 

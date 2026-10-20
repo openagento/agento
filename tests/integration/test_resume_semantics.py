@@ -26,14 +26,12 @@ from agento.modules.conversation.src.channel import ConversationChannel
 from agento.modules.conversation.src.hooks import ConversationResumeSessions
 from agento.modules.conversation.src.workflow import ConversationWorkflow
 
-# `_job_type` is autouse in its own module and does NOT travel with the fixtures imported
-# from it; without it every publish here raises JobTypeUnknown once the registry is clear.
 from .conftest import (
     _clean,  # noqa: F401
     _test_connection,
     bootstrap_for_tests,
 )
-from .test_conversation_submission import _job_type, _Req  # noqa: F401
+from .test_conversation_submission import _Req
 
 
 class SpyRunner:
@@ -246,7 +244,7 @@ def test_the_resume_decision_is_taken_from_the_harness_descriptor():
     registered harness descriptor. A named harness on that path - a vendor string compared
     against `job.agent_type`, a branch per CLI - is the dead shape this bans. Prose about a
     vendor is not, which is why this reads the call graph rather than grepping for a name."""
-    tree = ast.parse(Path("src/agento/framework/consumer.py").read_text())
+    tree = ast.parse((Path(__file__).resolve().parents[2] / "src/agento/framework/consumer.py").read_text())
     vendors = {"claude", "codex", "anthropic", "openai", "pi"}
     literals = {n.value.strip('"\'').lower() for n in ast.walk(tree)
                 if isinstance(n, ast.Constant) and isinstance(n.value, str)}

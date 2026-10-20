@@ -7,20 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from agento.framework.cli._provisioning import render_compose
+from tests.unit.framework.docker.compose_files import DEV, render_template
 
 ROOT = Path(__file__).resolve().parents[4]
-TEMPLATE = ROOT / "src/agento/framework/cli/templates/docker-compose.yml"
-DEV = ROOT / "docker/docker-compose.dev.yml"
 ENTRYPOINT = (ROOT / "src/agento/framework/docker/cron/entrypoint.sh").read_text()
 STORE = re.compile(r"MYSQL_|AGENTO_ENCRYPTION_KEY|CONFIG__|PASSWORD|secrets\.env")
 
 
 def _sources():
     for count in (1, 2):
-        yield pytest.param(render_compose(TEMPLATE.read_text(), python_version="3.12",
-                                          extensions=[],
-                                          runner_count=count), count, id=f"template-{count}")
+        yield pytest.param(render_template(runner_count=count), count, id=f"template-{count}")
     yield pytest.param(DEV.read_text(), 1, id="dev")
 
 

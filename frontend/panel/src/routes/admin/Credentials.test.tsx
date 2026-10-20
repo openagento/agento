@@ -36,10 +36,11 @@ describe("isStale", () => {
 describe("Credentials", () => {
   it("marks old limits stale and reads the list again every minute without a reload", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-10-04T12:06:00Z"));
     try {
       const api = await stubApi({ "/api/admin/credentials": [
         cred(1, { limits: two, limits_at: "2026-10-04T12:00:00Z" }),
-        cred(2, { limits: two, limits_at: new Date().toISOString() }),
+        cred(2, { limits: two, limits_at: "2026-10-04T12:04:00Z" }),
         cred(3, { limits: { windows: [], balance_usd: 5 }, limits_at: "2026-10-04T12:00:00Z" })] });
       renderAt("/admin/credentials", <Credentials />);
       await screen.findByRole("progressbar", { name: "c2 5h free" });

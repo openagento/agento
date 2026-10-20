@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { tempModulesDir, writeModule } from './module-dir.js';
 
 describe('config-loader', () => {
   let loadTools, getModuleToolTypes;
@@ -8,8 +9,7 @@ describe('config-loader', () => {
   const savedEnv = {};
 
   beforeEach(async () => {
-    tmpDir = path.join(import.meta.dirname, '_test_modules_' + Date.now());
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = tempModulesDir('modules');
 
     // Save and set env — use CORE_MODULES_DIR for the new structure
     savedEnv.CORE_MODULES_DIR = process.env.CORE_MODULES_DIR;
@@ -53,12 +53,7 @@ describe('config-loader', () => {
   });
 
   function createModule(name, moduleJson, configJson) {
-    const dir = path.join(tmpDir, name);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'module.json'), JSON.stringify(moduleJson));
-    if (configJson) {
-      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(configJson));
-    }
+    writeModule(tmpDir, name, { 'module.json': moduleJson, ...(configJson && { 'config.json': configJson }) });
   }
 
   it('returns empty when no modules exist', async () => {
@@ -226,8 +221,7 @@ describe('resolveModuleField', () => {
   const savedEnv = {};
 
   beforeEach(async () => {
-    tmpDir = path.join(import.meta.dirname, '_test_modcfg_' + Date.now());
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = tempModulesDir('modcfg');
 
     savedEnv.CORE_MODULES_DIR = process.env.CORE_MODULES_DIR;
     savedEnv.USER_MODULES_DIR = process.env.USER_MODULES_DIR;
@@ -318,8 +312,7 @@ describe('loadModuleConfigs', () => {
   let tmpDir;
 
   beforeEach(async () => {
-    tmpDir = path.join(import.meta.dirname, '_test_modcfg2_' + Date.now());
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = tempModulesDir('modcfg2');
 
     process.env.CORE_MODULES_DIR = tmpDir;
     process.env.USER_MODULES_DIR = path.join(tmpDir, '_nonexistent_');
@@ -394,8 +387,7 @@ describe('loadScopedDbOverrides', () => {
   let tmpDir;
 
   beforeEach(async () => {
-    tmpDir = path.join(import.meta.dirname, '_test_scoped_' + Date.now());
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = tempModulesDir('scoped');
 
     process.env.CORE_MODULES_DIR = tmpDir;
     process.env.USER_MODULES_DIR = path.join(tmpDir, '_nonexistent_');
@@ -548,8 +540,7 @@ describe('toolbox discovery', () => {
   let tmpDir;
 
   beforeEach(async () => {
-    tmpDir = path.join(import.meta.dirname, '_test_discovery_' + Date.now());
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = tempModulesDir('discovery');
 
     process.env.CORE_MODULES_DIR = tmpDir;
     process.env.USER_MODULES_DIR = path.join(tmpDir, '_nonexistent_');
@@ -763,8 +754,7 @@ describe('registerTools integration', () => {
   let tmpDir;
 
   beforeEach(() => {
-    tmpDir = path.join(import.meta.dirname, '_test_reg_' + Date.now());
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = tempModulesDir('reg');
     process.env.CORE_MODULES_DIR = tmpDir;
     process.env.USER_MODULES_DIR = path.join(tmpDir, '_nonexistent_');
   });
@@ -780,12 +770,7 @@ describe('registerTools integration', () => {
   });
 
   function createModule(name, moduleJson, configJson) {
-    const dir = path.join(tmpDir, name);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'module.json'), JSON.stringify(moduleJson));
-    if (configJson) {
-      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(configJson));
-    }
+    writeModule(tmpDir, name, { 'module.json': moduleJson, ...(configJson && { 'config.json': configJson }) });
   }
 
   it('adapter tools use scoped config from agent_view', async () => {

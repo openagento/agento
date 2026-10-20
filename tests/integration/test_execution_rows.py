@@ -16,7 +16,6 @@ from agento.framework.execution_hooks import (
     register_execution_id_provider,
 )
 from agento.framework.execution_hooks import clear as clear_hooks
-from agento.framework.job_types import clear_job_types, register_job_type
 from agento.modules.conversation.src.hooks import ConversationExecutionIds
 
 from .conftest import _test_connection, bootstrap_for_tests, fetch_job
@@ -25,10 +24,6 @@ from .conftest import _test_connection, bootstrap_for_tests, fetch_job
 @pytest.fixture
 def conn():
     c = _test_connection(autocommit=False)
-    with c.cursor() as cur:
-        for table in ("execution", "toolbox_capability", "job"):
-            cur.execute(f"DELETE FROM {table}")
-    c.commit()
     yield c
     c.close()
 
@@ -122,25 +117,21 @@ def test_a_run_stamps_its_execution_id_on_the_capability_it_mints(
 ):
     """The seam's whole purpose, end to end: the run's capability is attributable."""
     bootstrap_for_tests()
-    register_job_type("conversation", module="conversation")
     clear_hooks()
     register_execution_id_provider(ConversationExecutionIds(), module="conversation")
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO job (type, source, reference_id, idempotency_key, status, "
-                "agent_view_id) VALUES ('blank', 'jira', 'E-2', 'exec:run', 'TODO', %s)",
-                (int_agent_view,),
-            )
-            job_id = cur.lastrowid
-        conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO job (type, source, reference_id, idempotency_key, status, "
+            "agent_view_id) VALUES ('blank', 'jira', 'E-2', 'exec:run', 'TODO', %s)",
+            (int_agent_view,),
+        )
+        job_id = cur.lastrowid
+    conn.commit()
 
-        consumer = Consumer(int_db_config, int_consumer_config, logging.getLogger("test"))
-        job = consumer._try_dequeue()
-        assert job is not None and job.id == job_id
-        consumer._execute_job(job)
-    finally:
-        clear_job_types()
+    consumer = Consumer(int_db_config, int_consumer_config, logging.getLogger("test"))
+    job = consumer._try_dequeue()
+    assert job is not None and job.id == job_id
+    consumer._execute_job(job)
 
     assert fetch_job(job_id)["status"] == "SUCCESS"
     executions = _rows(conn, "SELECT execution_id FROM execution WHERE job_id = %s", (job_id,))

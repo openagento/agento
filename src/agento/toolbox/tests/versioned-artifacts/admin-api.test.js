@@ -1,44 +1,30 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import express from 'express';
-import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createModuleRouteApp } from '../../config-loader.js';
 import { register } from '../../../modules/versioned_artifacts/toolbox/admin-api.js';
 import { createService } from '../../../modules/versioned_artifacts/toolbox/service.js';
 import { createBackend } from '../../../modules/versioned_artifacts/toolbox/git-backend.js';
-import { mintVersion, readSource } from './helpers.js';
+import { ADMIN_SUBJECT, mintVersion, readSource, startAdminApp, vaConfig } from './helpers.js';
 
-// The store admin routes under /admin (plan §2.1): the server.js guard admits only a viewless
-// internal_rest and parses JSON, so here a stand-in middleware does what that mount does.
-const SUBJECT = 'service:web:user:3';
+// The store admin routes under /admin (plan §2.1), behind the stand-in guard of startAdminApp.
+const SUBJECT = ADMIN_SUBJECT;
 
-let root, pub, src, listener, base, capability;
-const cfg = () => ({ storage_root: root, published_root: pub, allowed_artifacts: '',
-  'limits/max_files': 2000, 'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600,
-  'limits/max_diff_bytes': 1048576, 'limits/max_agent_artifacts': 50, 'security/allow_symlinks': false,
-  'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080' });
+let root, pub, src, server, base;
+const cfg = () => vaConfig(root, pub, { allowed_artifacts: '' });
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'va-adm-store-'));
   pub = await mkdtemp(path.join(tmpdir(), 'va-adm-pub-'));
   src = await mkdtemp(path.join(tmpdir(), 'va-adm-src-'));
-  await mkdir(src, { recursive: true });
   await writeFile(path.join(src, 'index.html'), '<h1>v1</h1>\n');
   await createService({ config: cfg(), agentViewId: 7 }).init('site', { files: await readSource(src) });
-  capability = { kind: 'internal_rest', subject_id: SUBJECT, agent_view_id: null };
-  const app = express();
-  app.use((req, _res, next) => { req.capability = capability; next(); }, express.json());
-  await register({ tool: () => {} }, {
-    app: createModuleRouteApp(app, vi.fn()), log: vi.fn(), db: null,
-    moduleConfigs: { versioned_artifacts: cfg() }, retentionPins: [],
-  });
-  listener = await new Promise((resolve) => { const l = app.listen(0, '127.0.0.1', () => resolve(l)); });
-  base = `http://127.0.0.1:${listener.address().port}/admin/versioned-artifacts`;
+  server = await startAdminApp(register, cfg(), { retentionPins: [] });
+  base = `${server.origin}/admin/versioned-artifacts`;
 });
 afterEach(async () => {
-  await new Promise((resolve) => listener.close(resolve));
+  await server.close();
   for (const d of [root, pub, src]) await rm(d, { recursive: true, force: true });
 });
 
@@ -98,7 +84,7 @@ describe('versioned_artifacts admin api', () => {
   });
 
   it('refuses a view-bound capability even if a mount mistake lets one through', async () => {
-    capability = { kind: 'internal_rest', subject_id: 'service:consumer', agent_view_id: 7 };
+    server.capability = { kind: 'internal_rest', subject_id: 'service:consumer', agent_view_id: 7 };
     expect((await call('GET', '')).status).toBe(403);
     expect((await call('DELETE', '/site')).status).toBe(403);
     expect(fs.existsSync(path.join(root, 'site'))).toBe(true);

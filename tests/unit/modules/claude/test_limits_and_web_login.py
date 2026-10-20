@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import sys
 import textwrap
-import time
 from datetime import UTC, datetime
 
 import httpx
@@ -15,6 +14,7 @@ import respx
 from agento.framework.agent_manager.errors import AuthenticationError
 from agento.framework.harness.protocols import CredentialLimits, LimitWindow
 from agento.modules.claude.src.auth import ClaudeCredentialAuthenticator
+from tests.waiting import wait_until
 
 # The CLI runs in a runner (WS5): an in-process server here.
 pytestmark = pytest.mark.usefixtures("runner_server")
@@ -80,25 +80,18 @@ FAKE_CLAUDE = textwrap.dedent(f"""\
 
 
 @pytest.fixture
-def fake_claude(tmp_path, monkeypatch):
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "claude").write_text(FAKE_CLAUDE)
-    (bin_dir / "claude").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+def fake_claude(tmp_path, fake_cli):
+    fake_cli("claude", FAKE_CLAUDE)
     home = tmp_path / "home"
     home.mkdir()
     return str(home)
 
 
 def _finish(login, timeout=10):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        result = login.poll()
-        if result is not None:
-            return result
-        time.sleep(0.05)
-    raise AssertionError("login did not finish")
+    results = []
+    finished = wait_until(lambda: results.append(login.poll()) or results[-1] is not None, timeout, 0.05)
+    assert finished, "login did not finish"
+    return results[-1]
 
 
 def test_web_login_code_flow(fake_claude):
@@ -124,18 +117,16 @@ def test_attended_login_runs_the_cli_in_the_runner(fake_claude, monkeypatch):
 
 def test_web_login_wrong_code_fails(fake_claude):
     login = ClaudeCredentialAuthenticator().start_web_login(fake_claude, logging.getLogger("t"))
-    login.submit_code("wrong")
-    with pytest.raises(AuthenticationError):
-        _finish(login)
-    login.close()
+    try:
+        login.submit_code("wrong")
+        with pytest.raises(AuthenticationError):
+            _finish(login)
+    finally:
+        login.close()
 
 
-def test_web_login_without_a_url_raises(tmp_path, monkeypatch):
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "claude").write_text(f"#!{sys.executable}\nprint('no url here')\n")
-    (bin_dir / "claude").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+def test_web_login_without_a_url_raises(tmp_path, fake_cli):
+    fake_cli("claude", f"#!{sys.executable}\nprint('no url here')\n")
     with pytest.raises(AuthenticationError):
         ClaudeCredentialAuthenticator().start_web_login(str(tmp_path), logging.getLogger("t"))
 

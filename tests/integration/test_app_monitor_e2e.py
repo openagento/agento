@@ -118,14 +118,6 @@ def _cleanup_test_data() -> None:
     try:
         with conn.cursor() as cur:
             cur.execute("SET FOREIGN_KEY_CHECKS = 0")
-            cur.execute(
-                "DELETE FROM core_config_data "
-                "WHERE scope IN ('workspace','agent_view') OR path = 'agent_view/provider'"
-            )
-            cur.execute("DELETE FROM workspace_build")
-            cur.execute("DELETE FROM tool_invocation")
-            cur.execute("DELETE FROM toolbox_capability")
-            cur.execute("DELETE FROM job")
             cur.execute("DELETE FROM agent_view")
             cur.execute("DELETE FROM workspace")
             cur.execute("SET FOREIGN_KEY_CHECKS = 1")

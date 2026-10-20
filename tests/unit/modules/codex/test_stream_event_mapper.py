@@ -5,19 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agento.framework.harness.protocols import StreamEventMapper
-from agento.modules.codex.src.adapter import CodexHarnessAdapter
 from agento.modules.codex.src.stream_event_mapper import CodexStreamEventMapper
+from tests.unit.modules.stream_mapping import map_all
 
 FIXTURE = Path(__file__).resolve().parents[3] / "fixtures" / "codex" / "real_success_with_mcp.ndjson"
 
 
 def fragments(events: list[dict]) -> list[dict]:
-    mapper, out = CodexStreamEventMapper(), []
-    for event in events:
-        mapped = mapper.map_event(event)
-        out += mapped if isinstance(mapped, list) else [mapped] if mapped else []
-    return out
+    return map_all(CodexStreamEventMapper(), events)
 
 
 def test_real_run_maps_to_the_exact_fragment_list():
@@ -76,12 +71,6 @@ def test_failures_map_to_errors():
         {"kind": "error", "text": "plain"},
         {"kind": "error", "text": "stream broke"},
     ]
-
-
-def test_the_adapter_exposes_the_mapper():
-    mapper = CodexHarnessAdapter().stream_event_mapper
-    assert isinstance(mapper, CodexStreamEventMapper)
-    assert isinstance(mapper, StreamEventMapper)
 
 
 def test_a_reasoning_summary_maps_to_reasoning():

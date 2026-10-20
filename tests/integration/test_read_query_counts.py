@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import uuid
 
-import pymysql
 import pytest
 
 from agento.framework.execution_hooks import DeltaRecord
@@ -18,22 +17,6 @@ from agento.modules.conversation.src import relay, service
 from agento.modules.conversation.src.deltas import ConversationDeltaSink
 
 from .conftest import _clean  # noqa: F401
-from .test_conversation_submission import _job_type  # noqa: F401
-
-
-@pytest.fixture
-def selects(monkeypatch):
-    """Every SELECT any connection runs while this is installed."""
-    seen: list[str] = []
-    real = pymysql.cursors.DictCursor.execute
-
-    def spy(self, query, args=None):
-        if query.lstrip().upper().startswith("SELECT"):
-            seen.append(query)
-        return real(self, query, args)
-
-    monkeypatch.setattr(pymysql.cursors.DictCursor, "execute", spy)
-    return seen
 
 
 def _threads(conn, world, n: int) -> None:

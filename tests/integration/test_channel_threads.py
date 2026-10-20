@@ -25,7 +25,7 @@ from agento.modules.conversation.src.hooks import ConversationExecutionIds
 
 from .conftest import _test_connection
 from .test_conversation_events import seen  # noqa: F401
-from .test_conversation_submission import _job_type, _Req  # noqa: F401
+from .test_conversation_submission import _Req
 
 
 @pytest.fixture(autouse=True)
@@ -402,32 +402,22 @@ def test_a_crash_before_the_publish_is_recovered_on_the_channel_contract(conn, w
     assert (job["type"], job["source"]) == ("followup", "jira")
 
 
-def test_the_finalizer_marks_a_channel_reply_terminal(conn, world):
+@pytest.mark.parametrize(("outcome", "job_terminal", "job_state"), [
+    pytest.param("succeeded", True, "terminal", id="finished-reply-is-terminal"),
+    pytest.param("failed", False, "published", id="retried-reply-stays-published"),
+])
+def test_the_finalizer_sets_a_channel_reply_state(conn, world, outcome, job_terminal, job_state):
     cid = _channel_thread(conn, world)
     job_id = _reply(conn, world["admin"], cid).body["job_id"]
     execution_id = _claim(conn, job_id)   # the reply runs in the thread it was written in
 
     ConversationFinalizer().finalize(conn=conn, job_id=job_id, attempt=1,
-                                     execution_id=execution_id, outcome="succeeded",
-                                     job_terminal=True)
+                                     execution_id=execution_id, outcome=outcome,
+                                     job_terminal=job_terminal)
     conn.commit()
 
     states = _rows(conn, "SELECT job_state FROM message WHERE job_id = %s", (job_id,))
-    assert [r["job_state"] for r in states] == ["terminal"]
-
-
-def test_a_retried_channel_reply_stays_published(conn, world):
-    cid = _channel_thread(conn, world)
-    job_id = _reply(conn, world["admin"], cid).body["job_id"]
-    execution_id = _claim(conn, job_id)   # the reply runs in the thread it was written in
-
-    ConversationFinalizer().finalize(conn=conn, job_id=job_id, attempt=1,
-                                     execution_id=execution_id, outcome="failed",
-                                     job_terminal=False)
-    conn.commit()
-
-    states = _rows(conn, "SELECT job_state FROM message WHERE job_id = %s", (job_id,))
-    assert [r["job_state"] for r in states] == ["published"]
+    assert [r["job_state"] for r in states] == [job_state]
 
 
 def test_the_channel_list_pages_by_its_cursor_without_overlap(conn, world, monkeypatch):

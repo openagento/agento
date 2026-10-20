@@ -12,16 +12,7 @@ const LAUNCH = { id: 'L1', user_id: 7, role: 'user', artifact_code: 'site', vers
 function fakeQuery({ launch = LAUNCH, ops = ['artifact.launch'], tools = ['jira_search', 'jira_add_comment'] } = {}) {
   return async (sql, params) => {
     if (sql.includes('FROM agent_view')) return [params[0] === 11 ? [{ workspace_id: 1 }] : []];
-    if (sql.includes('FROM launch l')) {
-      expect(sql).toMatch(/exchange_redeemed_at IS NOT NULL/);
-      expect(sql).toMatch(/revoked_at IS NULL/);
-      expect(sql).toMatch(/expires_at > NOW\(\)/);
-      expect(sql).toMatch(/is_active = 1/);
-      expect(sql).toMatch(/a\.agent_view_id = l\.agent_view_id AND a\.approved_version_id = l\.version_id/);
-      expect(sql).toMatch(/u\.role = 'admin' OR EXISTS \(SELECT 1 FROM miniapp_member m/);
-      expect(sql).toMatch(/j\.requester_trust = 'account'/);
-      return [launch && params[0] === launch.id ? [launch] : []];
-    }
+    if (sql.includes('FROM launch l')) return [launch && params[0] === launch.id ? [launch] : []];
     if (sql === GRANTS_SQL) return [(params[1] === 'operation' ? ops : tools).map(name => ({ name }))];
     throw new Error(`unexpected SQL: ${sql}`);
   };
@@ -42,37 +33,42 @@ describe('launch auth source', () => {
     });
   });
 
-  it('refuses a launch the query no longer finds', async () => {
-    expect(await checkLaunch('L1', opts({ query: fakeQuery({ launch: null }) }))).toBeNull();
-    expect(await checkLaunch('L2', opts())).toBeNull();
+  it('puts every liveness, approval and view condition in the launch query', async () => {
+    const seen = [];
+    const query = fakeQuery();
+    await checkLaunch('L1', opts({ query: async (sql, params) => { seen.push(sql); return query(sql, params); } }));
+    const sql = seen.find(q => q.includes('FROM launch l'));
+    expect(sql).toMatch(/exchange_redeemed_at IS NOT NULL/);
+    expect(sql).toMatch(/revoked_at IS NULL/);
+    expect(sql).toMatch(/expires_at > NOW\(\)/);
+    expect(sql).toMatch(/is_active = 1/);
+    expect(sql).toMatch(/a\.agent_view_id = l\.agent_view_id AND a\.approved_version_id = l\.version_id/);
+    expect(sql).toMatch(/u\.role = 'admin' OR EXISTS \(SELECT 1 FROM miniapp_member m/);
+    expect(sql).toMatch(/j\.requester_trust = 'account'/);
   });
 
-  it('refuses when the verifier hands no grant rule (fails closed)', async () => {
-    expect(await checkLaunch('L1', { ...opts(), grants: undefined })).toBeNull();
+  it.each([
+    ['a launch the query no longer finds (revoked, expired, member row gone, ...)', 'L1', () => opts({ query: fakeQuery({ launch: null }) })],
+    ['an unknown launch id', 'L2', () => opts()],
+    ['when the verifier hands no grant rule (fails closed)', 'L1', () => ({ ...opts(), grants: undefined })],
+    ['when artifact.launch was removed', 'L1', () => opts({ query: fakeQuery({ ops: [] }) })],
+    ['when the approval allows no action', 'L1', () => opts({ query: fakeQuery({ launch: { ...LAUNCH, allowed_actions: '[]' } }) })],
+    ['when one manifest action has no tool grant, even if the approved subset is held (S5)', 'L1',
+      () => opts({ query: fakeQuery({ tools: ['jira_search'] }) })],
+    ['an approval made before the manifest was stored (NULL): fail closed', 'L1',
+      () => opts({ query: fakeQuery({ launch: { ...LAUNCH, manifest_actions: null } }) })],
+    ['a launch with no agent view (an approval is per view)', 'L1', () => opts({ agent_view_id: null })],
+    ['another kind', 'L1', () => opts({ capability_kind: 'user_session' })],
+    ['a scope the launch does not have', 'L1', () => opts({ query: fakeQuery({ launch: { ...LAUNCH, agent_view_id: 12 } }) })],
+    ['a view of another workspace', 'L1', () => opts({ agent_view_id: 22 })],
+    ['another workspace', 'L1', () => opts({ workspace_id: 0 })],
+  ])('refuses %s', async (_name, id, o) => {
+    expect(await checkLaunch(id, o())).toBeNull();
   });
 
   it('reads the approved actions as a driver may return them: JSON text or a parsed list', async () => {
     const parsed = fakeQuery({ launch: { ...LAUNCH, allowed_actions: ['jira_search'] } });
     expect((await checkLaunch('L1', opts({ query: parsed }))).permitted_tools).toEqual(['jira_search']);
-  });
-
-  it('refuses when artifact.launch was removed or the approval allows no action', async () => {
-    expect(await checkLaunch('L1', opts({ query: fakeQuery({ ops: [] }) }))).toBeNull();
-    expect(await checkLaunch('L1', opts({ query: fakeQuery({ launch: { ...LAUNCH, allowed_actions: '[]' } }) })))
-      .toBeNull();
-  });
-
-  it('refuses when one manifest action has no tool grant, even if the approved subset is held (S5)', async () => {
-    expect(await checkLaunch('L1', opts({ query: fakeQuery({ tools: ['jira_search'] }) }))).toBeNull();
-  });
-
-  it('refuses an approval made before the manifest was stored (NULL): fail closed', async () => {
-    expect(await checkLaunch('L1', opts({ query: fakeQuery({ launch: { ...LAUNCH, manifest_actions: null } }) })))
-      .toBeNull();
-  });
-
-  it('refuses when the member row is gone (the query finds no row)', async () => {
-    expect(await checkLaunch('L1', opts({ query: fakeQuery({ launch: null }) }))).toBeNull();
   });
 
   it('allows the creator or a member with the grants (the query found the row)', async () => {
@@ -83,17 +79,6 @@ describe('launch auth source', () => {
   it('allows admin with no grant at all (S4); the ceiling stays the approved actions', async () => {
     const admin = fakeQuery({ launch: { ...LAUNCH, role: 'admin', manifest_actions: null }, ops: [], tools: [] });
     expect((await checkLaunch('L1', opts({ query: admin }))).permitted_tools).toEqual(['jira_search']);
-  });
-
-  it('refuses a launch with no agent view (an approval is per view)', async () => {
-    expect(await checkLaunch('L1', opts({ agent_view_id: null }))).toBeNull();
-  });
-
-  it('refuses another kind, a scope the launch does not have, and a view of another workspace', async () => {
-    expect(await checkLaunch('L1', opts({ capability_kind: 'user_session' }))).toBeNull();
-    expect(await checkLaunch('L1', opts({ query: fakeQuery({ launch: { ...LAUNCH, agent_view_id: 12 } }) }))).toBeNull();
-    expect(await checkLaunch('L1', opts({ agent_view_id: 22 }))).toBeNull();
-    expect(await checkLaunch('L1', opts({ workspace_id: 0 }))).toBeNull();
   });
 });
 

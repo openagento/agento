@@ -129,13 +129,7 @@ def scale(conn, world):
                         (execution_id, 900000 + i, conversation_id))
             ids.append((execution_id, conversation_id))
     conn.commit()
-    yield ids
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM execution_delta")
-        cur.execute("DELETE FROM conversation_event")
-        cur.execute("DELETE FROM execution")
-        cur.execute("DELETE FROM conversation")
-    conn.commit()
+    return ids
 
 
 def test_250_parallel_streaming_runs_stay_ordered_paced_and_lossless(conn, scale):

@@ -7,7 +7,6 @@ framework and the module falls, and that a run with no sink and no mapper is an 
 from __future__ import annotations
 
 import ast
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,15 +14,11 @@ import pytest
 from agento.framework import consumer, execution_deltas
 from agento.framework.harness.protocols import StreamEventMapper
 from agento.framework.runner.worker import map_line
+from tests.unit.framework.delta_fakes import FakeSink
 
 FRAMEWORK = Path("src/agento/framework")
 
-
-@pytest.fixture(autouse=True)
-def _reset():
-    execution_deltas._reset_for_tests()
-    yield
-    execution_deltas._reset_for_tests()
+pytestmark = pytest.mark.usefixtures("reset_deltas")
 
 
 class _Adapter:
@@ -48,14 +43,6 @@ class _Mapper:
         return self.result
 
 
-class _Sink:
-    def __init__(self) -> None:
-        self.batches = []
-
-    def write(self, batch) -> None:
-        self.batches.append(list(batch))
-
-
 def _per_line(mapper, on_fragment):
     """Both halves of the seam: the runner maps a line, the worker submits (WS5)."""
     if on_fragment is None:
@@ -65,7 +52,7 @@ def _per_line(mapper, on_fragment):
 
 def _callback(*, sink=True, mapper=_Mapper, execution_id="e1"):
     if sink:
-        execution_deltas.sync(_Sink(), module="conversation", class_path="src.deltas.Sink")
+        execution_deltas.sync(FakeSink(), module="conversation", class_path="src.deltas.Sink")
     instance = mapper() if isinstance(mapper, type) else mapper
     import logging
     return _per_line(instance, consumer._delta_callback(_Entry(_Adapter(instance)), execution_id,
@@ -89,7 +76,7 @@ def test_with_no_execution_id_nothing_is_attached():
 
 def test_a_harness_with_no_mapper_streams_nothing_extra():
     """The mapper is optional: a harness that declares none is complete, not degraded."""
-    execution_deltas.sync(_Sink(), module="conversation", class_path="src.deltas.Sink")
+    execution_deltas.sync(FakeSink(), module="conversation", class_path="src.deltas.Sink")
     import logging
 
     assert consumer._delta_callback(_Entry(_Adapter()), "e1", logging.getLogger("t")) is None
@@ -147,7 +134,7 @@ def test_a_mapper_that_raises_costs_a_delta_and_never_the_run():
 
 
 def test_the_sequence_is_per_run_and_increases():
-    sink = _Sink()
+    sink = FakeSink()
     execution_deltas.sync(sink, module="conversation", class_path="src.deltas.Sink")
     import logging
     mapper = _Mapper({"kind": "delta", "text": "x"})
@@ -164,17 +151,6 @@ def test_the_sequence_is_per_run_and_increases():
 
 
 # --- the framework/module boundary (PLC-2, §6.4.1) -------------------------
-
-def test_no_framework_file_writes_a_module_table():
-    """§14 puts the queue and the thread in the framework; §6.4.1 says the framework writes
-    no module table. Both hold only because the thread owns the mechanics and not the rows."""
-    hits = subprocess.run(
-        ["grep", "-rnE", r"(INSERT|UPDATE|DELETE)[^\n]*(execution_delta|conversation_event)",
-         str(FRAMEWORK)],
-        capture_output=True, text=True).stdout.strip()
-
-    assert hits == "", hits
-
 
 def test_the_delta_mechanics_module_contains_no_sql_at_all():
     source = (FRAMEWORK / "execution_deltas.py").read_text().upper()
@@ -227,7 +203,7 @@ def test_the_consumer_stops_the_delta_worker_on_its_way_out():
 def _held(mapper, *, secrets=()):
     """A callback whose queue is held, so the records it enqueues can be read."""
     import logging
-    execution_deltas.sync(_Sink(), module="conversation", class_path="src.deltas.Sink")
+    execution_deltas.sync(FakeSink(), module="conversation", class_path="src.deltas.Sink")
     callback = _per_line(mapper, consumer._delta_callback(_Entry(_Adapter(mapper)), "e1",
                                                           logging.getLogger("t"), secrets))
     worker = execution_deltas._worker

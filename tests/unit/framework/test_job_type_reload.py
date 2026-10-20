@@ -5,13 +5,14 @@ not cleared accumulates - and since register_job_type raises on a duplicate, the
 bootstrap would crash on the declaration that succeeded the first time.
 """
 
-import json
 from pathlib import Path
 
 import pytest
 
-from agento.framework.bootstrap import bootstrap
+from agento.framework import bootstrap as _bootstrap
 from agento.framework.job_types import BUILTIN_JOB_TYPES, JobTypeUnknown, resolve_job_type
+from tests.module_writer import write_module
+from tests.registry_isolation import clear_registries
 
 WF_SRC = (
     "from agento.framework.workflows.base import Workflow\n"
@@ -20,18 +21,25 @@ WF_SRC = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_registries():
+    """bootstrap() fills process-global registries; the next test on this worker must not see them."""
+    yield
+    clear_registries()
+
+
+def bootstrap(core_dir: str) -> None:
+    """Load ``core_dir`` only: the host's /app/code is never read (TST-4)."""
+    _bootstrap.bootstrap(core_dir, str(Path(core_dir) / "no-user-modules"))
+
+
 def _write_conv_module(modules_dir: Path) -> Path:
-    mod = modules_dir / "conversation"
-    (mod / "src").mkdir(parents=True)
-    (mod / "module.json").write_text(json.dumps({
-        "name": "conversation",
+    return write_module(modules_dir, "conversation", module_json={
         "provides": {
             "job_types": ["conversation"],
             "workflows": [{"type": "conversation", "class": "src.wf.ConvWorkflow"}],
         },
-    }))
-    (mod / "src" / "wf.py").write_text(WF_SRC)
-    return mod
+    }, **{"src/wf.py": WF_SRC})
 
 
 def test_second_bootstrap_does_not_raise_on_the_same_declaration(tmp_path: Path):

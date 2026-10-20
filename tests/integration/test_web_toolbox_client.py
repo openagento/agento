@@ -21,17 +21,8 @@ URL = "http://toolbox:3001/internal/tools/versioned_artifact_get_current:invoke"
 @pytest.fixture
 def conn():
     c = _test_connection(autocommit=True)
-    _clean(c)
     yield c
-    _clean(c)
     c.close()
-
-
-def _clean(c):
-    with c.cursor() as cur:
-        cur.execute("DELETE FROM toolbox_capability WHERE kind IN ('user_session', 'miniapp')")
-        for table in ("launch", "session", "role_grant", "`user`"):
-            cur.execute(f"DELETE FROM {table}")
 
 
 @pytest.fixture

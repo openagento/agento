@@ -1,30 +1,26 @@
 """config_write: the one write path, and the web form that must prove a field is not a secret."""
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agento.framework import bootstrap
 from agento.framework.config_write import ConfigWriteError, save_config, validate_config_write, write_config
+from tests.module_writer import write_module
 
 
 @pytest.fixture
 def modules(tmp_path, monkeypatch):
     core, user = tmp_path / "core", tmp_path / "user"
-    fake = core / "fake"
-    fake.mkdir(parents=True)
     user.mkdir()
-    (fake / "module.json").write_text(json.dumps({
-        "name": "fake", "version": "1", "description": "d",
+    write_module(core, "fake", module_json={
         "tools": [
             {"type": "mcp", "name": "fake_tool", "toolset": "fake", "requires": "fake_switch",
              "fields": {"host": {"type": "string"}, "pass": {"type": "obscure"}, "raw": "string"}},
             {"type": "mcp", "name": "fake_switch", "toolset": "fake"},
         ],
-    }))
-    (fake / "system.json").write_text(json.dumps({
+    }, system_json={
         "limit": {"type": "integer", "label": "Limit"},
         "mode": {"type": "select", "options": [{"value": "a"}, {"value": "b"}]},
         "modes": {"type": "multiselect", "options": [{"value": "a"}, {"value": "b"}]},
@@ -32,11 +28,8 @@ def modules(tmp_path, monkeypatch):
         "hidden": {"type": "string", "access": "toolbox_only"},
         "identity/ssh_private_key": {"type": "obscure"},
         "flat": "string",
-    }))
-    broken = core / "broken"
-    broken.mkdir()
-    (broken / "module.json").write_text(json.dumps({"name": "broken", "version": "1", "description": "d"}))
-    (broken / "system.json").write_text("{not json")
+    })
+    write_module(core, "broken", system_json="{not json")
     monkeypatch.setattr(bootstrap, "CORE_MODULES_DIR", str(core))
     monkeypatch.setattr(bootstrap, "USER_MODULES_DIR", str(user))
     return core
@@ -107,13 +100,19 @@ def test_gate_key_for_registered_skills(modules):
     conn = _registry("git-workflow")
     _web("skill/git-workflow/is_enabled", "1", "agent_view", 3, conn=conn)
     _web("skill/git-workflow/is_enabled", "0", conn=conn)
-    for name in ("other", "Git-Workflow"):
-        with pytest.raises(ConfigWriteError, match="no skill"):
-            _web(f"skill/{name}/is_enabled", conn=conn)
     with pytest.raises(ConfigWriteError, match="0 or 1"):
         _web("skill/git-workflow/is_enabled", "true", conn=conn)
+
+
+@pytest.mark.parametrize(("name", "registered"), [
+    pytest.param("other", ("git-workflow",), id="unregistered"),
+    pytest.param("Git-Workflow", ("git-workflow",), id="case-differs"),
+    pytest.param("git-workflow", None, id="no-connection-proves-nothing"),
+])
+def test_gate_key_for_an_unproven_skill_is_refused(modules, name, registered):
+    conn = None if registered is None else _registry(*registered)
     with pytest.raises(ConfigWriteError, match="no skill"):
-        _web("skill/git-workflow/is_enabled")  # no connection: nothing is proven registered
+        _web(f"skill/{name}/is_enabled", conn=conn)
 
 
 @pytest.mark.parametrize(("path", "module"), [("tools/fake_tool/is_enabled", "tools"),

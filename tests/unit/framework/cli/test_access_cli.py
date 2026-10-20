@@ -24,11 +24,17 @@ def test_user_create_has_no_password_argument():
         parser.parse_args(["alice", "--role", "user", "--password", "x"])
 
 
-@patch.object(access, "_connect")
-def test_user_create_reads_the_password_from_stdin(mock_connect, monkeypatch):
+@pytest.fixture
+def piped_password(monkeypatch):
+    """The password arrives on a pipe, never in argv."""
     piped = io.StringIO("correct horse battery\n")
     monkeypatch.setattr(piped, "isatty", lambda: False)
     monkeypatch.setattr("sys.stdin", piped)
+
+
+@pytest.mark.usefixtures("piped_password")
+@patch.object(access, "_connect")
+def test_user_create_reads_the_password_from_stdin(mock_connect, monkeypatch):
     create = MagicMock(return_value=accounts.User(1, "alice", "user", True))
     monkeypatch.setattr(accounts, "create_user", create)
     cmd = access.UserCreateCommand()
@@ -36,11 +42,9 @@ def test_user_create_reads_the_password_from_stdin(mock_connect, monkeypatch):
     assert create.call_args.args[1:] == ("alice", "user", "correct horse battery")
 
 
+@pytest.mark.usefixtures("piped_password")
 @patch.object(access, "_connect")
 def test_user_create_without_role_uses_select(mock_connect, monkeypatch):
-    piped = io.StringIO("correct horse battery")
-    monkeypatch.setattr(piped, "isatty", lambda: False)
-    monkeypatch.setattr("sys.stdin", piped)
     monkeypatch.setattr(accounts, "list_roles", lambda conn: [{"code": "admin"}, {"code": "support"}, {"code": "user"}])
     monkeypatch.setattr("agento.framework.cli.terminal.select", lambda prompt, options: options.index("support"))
     create = MagicMock(return_value=accounts.User(1, "root", "support", True))
@@ -58,22 +62,32 @@ def test_role_is_any_code_the_db_knows():
 
 
 @patch.object(access, "_connect")
-def test_role_create_list_delete(mock_connect, monkeypatch, capsys):
+def test_role_create(mock_connect, monkeypatch):
     create = MagicMock(return_value={"code": "support", "label": "Support desk"})
-    delete = MagicMock()
     monkeypatch.setattr(accounts, "create_role", create)
-    monkeypatch.setattr(accounts, "delete_role", delete)
+    cmd = access.RoleCreateCommand()
+    cmd.execute(_parse(cmd, ["support", "--label", "Support desk"]))
+    assert create.call_args.args[1:] == ("support", "Support desk")
+    with pytest.raises(SystemExit):
+        _parse(cmd, ["support"])  # --label is required
+
+
+@patch.object(access, "_connect")
+def test_role_list(mock_connect, monkeypatch, capsys):
     monkeypatch.setattr(accounts, "list_roles", lambda conn: [
         {"code": "support", "label": "Support desk", "builtin": False, "users": 2, "scopes": 1}])
-    for cls, argv in ((access.RoleCreateCommand, ["support", "--label", "Support desk"]),
-                      (access.RoleListCommand, []), (access.RoleDeleteCommand, ["support"])):
-        cmd = cls()
-        cmd.execute(_parse(cmd, argv))
-    assert create.call_args.args[1:] == ("support", "Support desk")
-    assert delete.call_args.args[1:] == ("support",)
+    cmd = access.RoleListCommand()
+    cmd.execute(_parse(cmd, []))
     assert "users=2" in capsys.readouterr().out
-    with pytest.raises(SystemExit):
-        _parse(access.RoleCreateCommand(), ["support"])  # --label is required
+
+
+@patch.object(access, "_connect")
+def test_role_delete(mock_connect, monkeypatch):
+    delete = MagicMock()
+    monkeypatch.setattr(accounts, "delete_role", delete)
+    cmd = access.RoleDeleteCommand()
+    cmd.execute(_parse(cmd, ["support"]))
+    assert delete.call_args.args[1:] == ("support",)
 
 
 @patch.object(access, "_connect")

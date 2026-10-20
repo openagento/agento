@@ -31,19 +31,8 @@ MANIFEST = {"title": "Notes", "actions": ["jira_search", "jira_add_comment"]}
 @pytest.fixture
 def conn():
     c = _test_connection(autocommit=True)
-    _clean(c)
     yield c
-    _clean(c)
     c.close()
-
-
-def _clean(c):
-    with c.cursor() as cur:
-        cur.execute("DELETE FROM miniapp_activation WHERE artifact_code LIKE 'ma-%'")
-        cur.execute("DELETE FROM versioned_artifact_audit WHERE artifact_code LIKE 'ma-%'")
-        cur.execute("DELETE FROM versioned_artifact WHERE artifact_code LIKE 'ma-%'")  # and its rights rows
-        for table in ("launch", "session", "role_grant", "`user`"):
-            cur.execute(f"DELETE FROM {table}")
 
 
 @pytest.fixture

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -15,19 +15,13 @@ from agento.framework.access import accounts, acl, sessions
 from agento.framework.admin import data
 from agento.web import admin_api, api, toolbox_client
 
-from .conftest import panel_headers
+from .conftest import TOKEN, panel_headers, sign_in_as
 
-TOKEN = "session-token-value"
 ADMIN = accounts.User(id=1, username="root", role="admin", is_active=True)
 USER = accounts.User(id=2, username="alice", role="user", is_active=True)
 SUPPORT_USER = accounts.User(id=3, username="sam", role="support", is_active=True)
 ADMIN_ACTOR = (ADMIN.id, "admin")
 COOKIES = {"__Host-agento-session": TOKEN}
-
-
-def _as(monkeypatch, user):
-    session = sessions.Session(id="sid", user=user, expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1))
-    monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: session if t == TOKEN else None)
 
 
 def _call(web, method, path, body=None):
@@ -60,7 +54,7 @@ def test_every_admin_route_names_core_leaves():
 
 
 def test_a_self_route_needs_a_session_and_no_leaf(web, monkeypatch):
-    _as(monkeypatch, USER)
+    sign_in_as(monkeypatch, USER)
     monkeypatch.setattr(accounts, "held_admin", lambda conn, role: [])
     monkeypatch.setattr(accounts, "visible_agent_views", lambda conn, user: [])
     assert _call(web, "GET", "/api/agent-views").status_code == 200
@@ -69,7 +63,7 @@ def test_a_self_route_needs_a_session_and_no_leaf(web, monkeypatch):
 
 
 def test_a_role_reaches_exactly_the_routes_of_its_leaves(web, monkeypatch):
-    _as(monkeypatch, SUPPORT_USER)
+    sign_in_as(monkeypatch, SUPPORT_USER)
     monkeypatch.setattr(accounts, "held_admin", lambda conn, role: ["admin.jobs"] if role == "support" else [])
     monkeypatch.setattr(data, "get_jobs", lambda conn, status=None, strict=False: [])
     assert _call(web, "GET", "/api/admin/jobs").status_code == 200
@@ -81,7 +75,7 @@ def test_a_role_reaches_exactly_the_routes_of_its_leaves(web, monkeypatch):
 
 @pytest.mark.parametrize("leaf", ["admin.users", "admin.users.create", "admin.users.edit"])
 def test_a_users_leaf_reads_the_role_labels_but_not_a_role(web, monkeypatch, leaf):
-    _as(monkeypatch, SUPPORT_USER)
+    sign_in_as(monkeypatch, SUPPORT_USER)
     monkeypatch.setattr(accounts, "held_admin", lambda conn, role: [leaf] if role == "support" else [])
     monkeypatch.setattr(accounts, "list_roles", lambda conn: [])
     assert _call(web, "GET", "/api/admin/roles").status_code == 200
@@ -90,7 +84,7 @@ def test_a_users_leaf_reads_the_role_labels_but_not_a_role(web, monkeypatch, lea
 
 @pytest.mark.parametrize("route", ADMIN_ROUTES, ids=lambda r: f"{r.method} {r.pattern.pattern}")
 def test_user_role_gets_403_on_every_admin_route(web, monkeypatch, route):
-    _as(monkeypatch, USER)
+    sign_in_as(monkeypatch, USER)
     monkeypatch.setattr(accounts, "held_admin", lambda conn, role: ["miniapps"])
     for name in ("create_user", "update_user", "set_role", "set_active", "set_password", "add_grant", "remove_grant",
                  "list_users", "list_grants", "list_roles", "role_scopes", "create_role", "rename_role", "delete_role",
@@ -103,7 +97,7 @@ def test_user_role_gets_403_on_every_admin_route(web, monkeypatch, route):
 
 
 def test_admin_user_management(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     created = accounts.User(id=9, username="bob", role="user", is_active=True)
     create = MagicMock(return_value=created)
     update = MagicMock()
@@ -121,7 +115,7 @@ def test_admin_user_management(web, monkeypatch):
 
 
 def test_admin_write_refused_by_the_service_is_403(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(accounts, "update_user", MagicMock(side_effect=accounts.AccessError("not allowed")))
     assert _call(web, "PATCH", "/api/admin/users/9", {"role": "user"}).status_code == 403
 
@@ -134,7 +128,7 @@ def _roles(monkeypatch, *rows):
 
 
 def test_admin_roles_list_detail_and_writes(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     _roles(monkeypatch, SUPPORT)
     assert _call(web, "GET", "/api/admin/roles").json() == [SUPPORT]
     scopes = [{"workspace_id": None, "agent_view_id": 3, "tools": 2, "operations": 1}]
@@ -168,7 +162,7 @@ def test_admin_roles_list_detail_and_writes(web, monkeypatch):
     ("DELETE", "/api/admin/roles/support", None, "delete_role", "not allowed", 403),
 ])
 def test_admin_role_refusals_name_the_reason(web, monkeypatch, method, path, body, fn, refusal, status):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(accounts, fn, MagicMock(side_effect=accounts.AccessError(refusal)))
     r = _call(web, method, path, body)
     assert r.status_code == status
@@ -176,14 +170,14 @@ def test_admin_role_refusals_name_the_reason(web, monkeypatch, method, path, bod
 
 
 def test_role_routes_refuse_a_code_outside_the_grammar(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     _roles(monkeypatch, SUPPORT)
     for path in ("/api/admin/roles/Support", "/api/admin/roles/s", "/api/admin/roles/" + "a" * 17):
         assert _call(web, "GET", path).status_code == 404
 
 
 def test_role_resources_tree_at_an_agent_view(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     _roles(monkeypatch, SUPPORT, {**SUPPORT, "code": "admin", "label": "Administrator", "builtin": True})
     monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: True)
     monkeypatch.setattr(accounts, "grantable_operations",
@@ -228,13 +222,13 @@ def test_role_resources_tree_at_an_agent_view(web, monkeypatch):
     ("", 400), ("?scope=default", 400), ("?scope=agent_view", 400), ("?scope=agent_view&scope_id=x", 400),
 ])
 def test_role_resources_need_a_grant_scope(web, monkeypatch, query, status):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     _roles(monkeypatch, SUPPORT)
     assert _call(web, "GET", f"/api/admin/roles/support/resources{query}").status_code == status
 
 
 def test_role_resources_of_an_unknown_role_or_scope_are_404(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     _roles(monkeypatch, SUPPORT)
     monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: False)
     assert _call(web, "GET", "/api/admin/roles/nobody/resources?scope=workspace&scope_id=1").status_code == 404
@@ -244,7 +238,7 @@ def test_role_resources_of_an_unknown_role_or_scope_are_404(web, monkeypatch):
 
 
 def test_put_role_resources_replaces_one_scope(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     _roles(monkeypatch, SUPPORT)
     monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: True)
     put = MagicMock(return_value={"added": 2, "removed": 1})
@@ -265,7 +259,7 @@ def test_put_role_resources_replaces_one_scope(web, monkeypatch):
 
 
 def test_role_resources_global_scope_is_the_admin_panel(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     _roles(monkeypatch, SUPPORT)
     held = accounts.held_admin
     monkeypatch.setattr(accounts, "held_admin", lambda conn, role: ["admin.jobs"] if role == "support" else held(conn, role))
@@ -284,13 +278,13 @@ def test_role_resources_global_scope_is_the_admin_panel(web, monkeypatch):
 
 
 def test_the_raw_grants_api_is_gone(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     assert not [r for r in api.ROUTES if "/api/admin/grants" in r.pattern.pattern]
     assert _call(web, "GET", "/api/admin/grants").status_code == 404
 
 
 def test_admin_config_uses_the_web_form(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     save = MagicMock(return_value=(False, [("agent_view/provider", "openai")]))
     monkeypatch.setattr(config_write, "save_config", save)
     r = _call(web, "PUT", "/api/admin/config", {"path": "web/launch/max_concurrent", "value": "3",
@@ -300,7 +294,7 @@ def test_admin_config_uses_the_web_form(web, monkeypatch):
 
 
 def test_admin_config_refusal_text_reaches_the_admin(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(config_write, "save_config",
                         MagicMock(side_effect=config_write.ConfigWriteError("set this field with bin/agento config:set")))
     r = _call(web, "PUT", "/api/admin/config", {"path": "jira/jira_token", "value": "x"})
@@ -308,14 +302,14 @@ def test_admin_config_refusal_text_reaches_the_admin(web, monkeypatch):
 
 
 def test_agent_views_lists_only_visible(web, monkeypatch):
-    _as(monkeypatch, USER)
+    sign_in_as(monkeypatch, USER)
     monkeypatch.setattr(accounts, "visible_agent_views",
                         lambda conn, user: [{"id": 3, "code": "dev", "label": "Dev", "workspace_id": 1}])
     assert _call(web, "GET", "/api/agent-views").json() == [{"id": 3, "code": "dev", "label": "Dev", "workspace_id": 1}]
 
 
 def test_invoke_in_an_unreachable_view_is_404(web, monkeypatch):
-    _as(monkeypatch, USER)
+    sign_in_as(monkeypatch, USER)
     monkeypatch.setattr(accounts, "can_reach", lambda conn, user, **kw: False)
     monkeypatch.setattr(toolbox_client, "invoke_tool", MagicMock(side_effect=AssertionError("must not be called")))
     r = _call(web, "POST", "/api/tools/versioned_artifact_get_current:invoke", {"agent_view_id": 3, "arguments": {}})
@@ -323,14 +317,14 @@ def test_invoke_in_an_unreachable_view_is_404(web, monkeypatch):
 
 
 def test_invoke_needs_exactly_one_scope(web, monkeypatch):
-    _as(monkeypatch, USER)
+    sign_in_as(monkeypatch, USER)
     for body in ({"arguments": {}}, {"agent_view_id": 3, "workspace_id": 1}):
         assert _call(web, "POST", "/api/tools/t:invoke", body).status_code == 400
 
 
 def test_invoke_passes_the_toolbox_answer_through(web, monkeypatch):
     """admin + grant + is_enabled=0: the toolbox dispatcher answers not_found and web relays it."""
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(accounts, "can_reach", lambda conn, user, **kw: True)
     body = {"ok": False, "error": {"code": "not_found", "message": "tool not found"}, "execution_id": "e"}
     invoke = MagicMock(return_value=toolbox_client.InvokeResult(404, body))
@@ -347,7 +341,7 @@ T = datetime(2026, 10, 2, 12, 0, 0)
 
 
 def test_scope_id_that_does_not_exist_is_404(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: False)
     monkeypatch.setattr(config_write, "save_config", MagicMock(side_effect=AssertionError("must not be called")))
     r = _call(web, "PUT", "/api/admin/config", {"path": "a/b", "value": "1", "scope": "agent_view", "scope_id": 9})
@@ -357,13 +351,13 @@ def test_scope_id_that_does_not_exist_is_404(web, monkeypatch):
 @pytest.mark.parametrize(("scope", "scope_id"), [("global", "1"), ("workspace", "0"), ("agent_view", "x"),
                                                  ("agent_view", "")])
 def test_bad_scope_in_the_query_is_400(web, monkeypatch, scope, scope_id):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(data, "get_tool_states", MagicMock(side_effect=AssertionError("must not be called")))
     assert _call(web, "GET", f"/api/admin/tools?scope={scope}&scope_id={scope_id}").status_code == 400
 
 
 def test_scopes(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(data, "get_workspaces", lambda conn: [{"id": 1, "code": "ws", "label": "WS", "is_active": 1}])
     monkeypatch.setattr(data, "get_agent_views", lambda conn: [
         {"id": 3, "code": "dev", "label": "Dev", "workspace_id": 1, "is_active": 0}])
@@ -374,7 +368,7 @@ def test_scopes(web, monkeypatch):
 
 
 def test_dashboard_sends_no_error_message(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(data, "get_dashboard_data", lambda conn: data.DashboardData(
         version="0.17.0", python_version="3.12.1", db_connected=True, module_count=12, running_jobs=2,
         recent_jobs=[{"id": 5, "type": "todo", "status": "RUNNING", "reference_id": "AI-1", "created_at": T,
@@ -403,7 +397,7 @@ JOB_ROW = {"id": 5, "type": "todo", "status": "FAILED", "source": "jira", "refer
 
 
 def test_jobs_filters_by_status_strictly(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     get_jobs = MagicMock(return_value=[JOB_ROW])
     monkeypatch.setattr(data, "get_jobs", get_jobs)
     body = _call(web, "GET", "/api/admin/jobs?status=FAILED").json()
@@ -418,13 +412,13 @@ def test_jobs_filters_by_status_strictly(web, monkeypatch):
 
 @pytest.mark.parametrize("status", ["done", "", "failed"])
 def test_jobs_unknown_status_is_400(web, monkeypatch, status):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(data, "get_jobs", MagicMock(side_effect=AssertionError("must not be called")))
     assert _call(web, "GET", f"/api/admin/jobs?status={status}").status_code == 400
 
 
 def test_job_detail_cuts_job_content_to_500_chars(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     detail = {**JOB_ROW, "model": "opus", "prompt": "p" * 501, "output": "short", "result_summary": None,
               "agent_view_id": 3, "attempt": 1}
     monkeypatch.setattr(data, "get_job_detail", lambda conn, job_id: detail if job_id == 5 else None)
@@ -436,14 +430,14 @@ def test_job_detail_cuts_job_content_to_500_chars(web, monkeypatch):
 
 
 def test_agents(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     row = {"id": 3, "code": "dev", "label": "Dev", "workspace_code": "ws", "ingress_count": 2, "build_status": "none"}
     monkeypatch.setattr(data, "get_agents_summary", lambda conn: [row])
     assert _call(web, "GET", "/api/admin/agents").json() == [row]
 
 
 def test_credentials_send_only_the_allow_list(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     row = {"id": 1, "scope": "claude", "label": "main", "status": "error", "enabled": True,
            "error_msg": "refresh failed: sk-ant-oat01-SECRET", "error_source": "operator", "used_at": T,
            "expires_at": T, "token_limit": 1000, "tokens_used": 250, "call_count": 3, "pct_free": 75.0,
@@ -463,7 +457,7 @@ def test_credentials_send_only_the_allow_list(web, monkeypatch):
 @pytest.mark.parametrize(("action", "fn"), [("clear-error", "do_reset_credential_error"),
                                             ("disable", "do_deregister_credential")])
 def test_credential_writes(web, monkeypatch, action, fn):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     write = MagicMock(return_value=True)
     monkeypatch.setattr(data, fn, write)
     monkeypatch.setattr(admin_api, "_credential_exists", lambda conn, cid: cid == 4)
@@ -475,7 +469,7 @@ def test_credential_writes(web, monkeypatch, action, fn):
 
 
 def test_tools_by_toolset_at_the_query_scope(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: True)
     states = MagicMock(return_value=[("fake", [
         data.EnablementItem("fake_tool", "tools/fake_tool/is_enabled", True, False, blocked_by="fake_switch")])])
@@ -488,7 +482,7 @@ def test_tools_by_toolset_at_the_query_scope(web, monkeypatch):
 
 
 def test_skills_at_the_default_scope(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     states = MagicMock(return_value=[data.EnablementItem("git-workflow", "skill/git-workflow/is_enabled", False, True)])
     monkeypatch.setattr(data, "get_skill_states", states)
     body = _call(web, "GET", "/api/admin/skills").json()
@@ -498,7 +492,7 @@ def test_skills_at_the_default_scope(web, monkeypatch):
 
 
 def test_config_modules_lists_names_and_tool_groups(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(data, "get_module_schemas", lambda: [
         data.ModuleSchema("jira", {"jira_token": {"type": "obscure"}}, {"jira_search": {"limit": {}}})])
     assert _call(web, "GET", "/api/admin/config/modules").json() == [{"name": "jira", "tools": ["jira_search"]}]
@@ -511,7 +505,7 @@ def _rf(path, value, secret, **kw):
 
 
 def test_config_fields_never_carry_a_secret_value(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: True)
     monkeypatch.setattr(data, "get_module_schemas", lambda: [data.ModuleSchema("jira", {}, {})])
     fields = MagicMock(return_value=[
@@ -531,14 +525,14 @@ def test_config_fields_never_carry_a_secret_value(web, monkeypatch):
 
 
 def test_config_for_an_unknown_module_is_404(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(data, "get_module_schemas", lambda: [])
     assert _call(web, "GET", "/api/admin/config?module=nope").status_code == 404
     assert _call(web, "GET", "/api/admin/config").status_code == 404
 
 
 def test_delete_config_refuses_a_secret_path(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(config_write, "validate_web_path",
                         MagicMock(side_effect=config_write.ConfigWriteError("set this field with bin/agento config:set")))
     monkeypatch.setattr(data, "delete_config_override", MagicMock(side_effect=AssertionError("must not be called")))
@@ -547,7 +541,7 @@ def test_delete_config_refuses_a_secret_path(web, monkeypatch):
 
 
 def test_delete_config(web, monkeypatch):
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: True)
     check = MagicMock(return_value=False)
     monkeypatch.setattr(config_write, "validate_web_path", check)
@@ -569,7 +563,7 @@ SMTP = "app_monitor/alerts/smtp_host"
 @pytest.fixture
 def toolbox(monkeypatch):
     """The real runner and toolbox arm; only the capability mint and the toolbox are doubles."""
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: True)
     monkeypatch.setattr("agento.framework.config_test.toolbox.rest_capability",
                         lambda **kw: contextlib.nullcontext("tok-rest"))
@@ -673,7 +667,7 @@ def test_config_test_refuses_a_field_with_no_tester(web, toolbox):
 def test_login_code_is_1_to_300_printable_characters(web, monkeypatch, code, status):
     from agento.framework.agent_manager import credential_login
 
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     put = MagicMock(return_value=None)
     monkeypatch.setattr(credential_login, "put_code", put)
     assert _call(web, "POST", "/api/admin/credential-logins/3/code", {"code": code}).status_code == status
@@ -685,7 +679,7 @@ def test_login_code_is_1_to_300_printable_characters(web, monkeypatch, code, sta
 def test_login_request_refusals(web, monkeypatch, refused, status):
     from agento.framework.agent_manager import credential_login
 
-    _as(monkeypatch, ADMIN)
+    sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(credential_login, "request_login", lambda *a: refused)
     r = _call(web, "POST", "/api/admin/credentials/4/login")
     assert r.status_code == status and set(r.json()) == {"error"}

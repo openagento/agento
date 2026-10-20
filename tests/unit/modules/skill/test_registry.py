@@ -1,6 +1,8 @@
 """Tests for skill registry — scan, sync, enabled filtering."""
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agento.modules.skill.src.registry import (
     SkillInfo,
     SyncResult,
@@ -72,25 +74,20 @@ class TestScanSkills:
 
         assert r1[0].checksum != r2[0].checksum
 
-    def test_description_from_frontmatter_inline(self, tmp_path):
+    @pytest.mark.parametrize(("skill_md", "description"), [
+        pytest.param("---\nname: fm\ndescription: Use when testing frontmatter.\n---\n# Fm\nBody line.",
+                     "Use when testing frontmatter.", id="inline"),
+        pytest.param("---\nname: folded\ndescription: >\n  Use when one\n  spans two lines.\n"
+                     "user-invocable: true\n---\n# F\n",
+                     "Use when one spans two lines.", id="folded"),
+        pytest.param("---\nname: nodesc\n---\n# Nodesc\n\nFirst body line.",
+                     "First body line.", id="no-description-uses-first-body-line"),
+    ])
+    def test_description_from_frontmatter(self, tmp_path, skill_md, description):
         skill_dir = tmp_path / "fm"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: fm\ndescription: Use when testing frontmatter.\n---\n# Fm\nBody line.")
-        assert scan_skills(tmp_path)[0].description == "Use when testing frontmatter."
-
-    def test_description_from_frontmatter_folded(self, tmp_path):
-        skill_dir = tmp_path / "folded"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: folded\ndescription: >\n  Use when one\n  spans two lines.\nuser-invocable: true\n---\n# F\n")
-        assert scan_skills(tmp_path)[0].description == "Use when one spans two lines."
-
-    def test_frontmatter_without_description_uses_first_body_line(self, tmp_path):
-        skill_dir = tmp_path / "nodesc"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("---\nname: nodesc\n---\n# Nodesc\n\nFirst body line.")
-        assert scan_skills(tmp_path)[0].description == "First body line."
+        (skill_dir / "SKILL.md").write_text(skill_md)
+        assert scan_skills(tmp_path)[0].description == description
 
 
 # -- DB-backed tests (mocked connection) --

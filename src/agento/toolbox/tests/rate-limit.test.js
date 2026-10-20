@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,9 @@ const VALID = new Set(['good-a', 'good-b']);
 let server;
 let baseUrl;
 
-beforeAll(async () => {
+// A fresh server and limiter per test: the limiter counts per address, so a shared one would
+// make each test depend on the order of the others.
+beforeEach(async () => {
   const app = express();
   app.use(...createRateLimits({ authFailuresPerAddress: 3, requestsPerCapability: 5 }));
   // A stand-in for requireCapability: 401 unless the token is known.
@@ -18,7 +20,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
 
-afterAll(() => new Promise((resolve) => server.close(resolve)));
+afterEach(() => new Promise((resolve) => server.close(resolve)));
 
 const call = (token) => fetch(`${baseUrl}/guarded`, token ? { headers: { authorization: `Bearer ${token}` } } : {});
 

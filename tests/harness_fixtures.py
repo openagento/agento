@@ -113,6 +113,20 @@ def stub_workspace_adapters(**adapters):
         yield mock
 
 
+def usage_recording_runner(monkeypatch, harness: str, ctx):
+    """A ``RemoteRunner`` whose ``_record_usage`` writes through a fake pooled connection.
+
+    The worker records usage (WS5): the runner holds no database, it only sends the numbers
+    that ``RemoteRunner`` writes. Patch ``usage_store.record_usage`` to see them.
+    """
+    from contextlib import nullcontext
+
+    from agento.framework.runner.client import RemoteRunner
+
+    monkeypatch.setattr("agento.framework.db.pooled", lambda *a, **k: nullcontext(MagicMock()))
+    return RemoteRunner(harness, ctx, logger=MagicMock())
+
+
 def _module_config_schema(module_dir):
     """Read the fixture module's system.json (empty when it has none)."""
     import json as _json

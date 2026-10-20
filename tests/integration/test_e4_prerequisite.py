@@ -25,21 +25,10 @@ from agento.framework import job_store
 from agento.modules.conversation.src import routes, service
 
 from .conftest import _clean  # noqa: F401
-from .test_conversation_submission import _job_type, _Req  # noqa: F401
+from .test_conversation_submission import _Req
 
 # Remove when E7 ships the `job_stop_request` table, its acknowledging paths and `admin_audit`.
 pytestmark = pytest.mark.skip(reason="E4 gate: waits for E7 (job_stop_request, admin_audit)")
-
-
-@pytest.fixture(autouse=True)
-def _clean_executions(conn):
-    def wipe():
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM execution")
-        conn.commit()
-    wipe()
-    yield
-    wipe()
 
 
 @pytest.fixture

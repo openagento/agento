@@ -96,18 +96,18 @@ export function render(css: string): string {
 }
 
 /** `--check` writes nothing and fails when the committed skill is not the generated one. */
-export function main(argv: string[]): void {
+export function main(argv: string[], skill = SKILL): void {
   const css = readFileSync(join(KIT, "src/components.css"), "utf8");
   const missing = uncatalogued(css);
   if (missing.length) throw new Error(`components.css: no @catalogue block for ${missing.join(", ")}`);
   if (argv.includes("--check")) {
     let committed = "";
-    try { committed = readFileSync(SKILL, "utf8"); } catch { /* missing = drift */ }
-    if (committed !== render(css)) throw new Error(`${SKILL} is out of date: run \`npm run gen\` and commit it`);
+    try { committed = readFileSync(skill, "utf8"); } catch { /* missing = drift */ }
+    if (committed !== render(css)) throw new Error(`${skill} is out of date: run \`npm run gen\` and commit it`);
     return;
   }
-  mkdirSync(dirname(SKILL), { recursive: true });
-  writeFileSync(SKILL, render(css));
+  mkdirSync(dirname(skill), { recursive: true });
+  writeFileSync(skill, render(css));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main(process.argv.slice(2));

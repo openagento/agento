@@ -64,19 +64,11 @@ FAKE_CODEX = textwrap.dedent(f"""\
 @pytest.fixture
 def db():
     c = _test_connection(autocommit=True)
-    _clean(c)
     with c.cursor() as cur:
         cur.execute("INSERT INTO `user` (username, role) VALUES ('cl-admin', 'admin')")
         _admin["id"] = cur.lastrowid
     yield c
-    _clean(c)
     c.close()
-
-
-def _clean(c):
-    with c.cursor() as cur:
-        cur.execute("DELETE FROM credential WHERE label LIKE 'cl-%%'")  # logins cascade
-        cur.execute("DELETE FROM `user` WHERE username = 'cl-admin'")
 
 
 @pytest.fixture

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import agento.framework.docker as docker_ctx
+from tests.unit.framework.docker.compose_files import compose_sources
 
 PROXY = Path(docker_ctx.__file__).parent / "proxy"
 SHARE_HOSTS = json.loads((Path(__file__).parents[3] / "fixtures" / "share_host_v1.json").read_text())
@@ -109,12 +110,9 @@ def test_apps_serve_the_kit_under_ui_without_auth_or_web():
     assert site.index("handle_path /_ui/* {") < site.index("handle /a/* {")
 
 
-@pytest.mark.parametrize("compose", [
-    Path(__file__).parents[4] / "docker" / "docker-compose.dev.yml",
-    Path(docker_ctx.__file__).parents[1] / "cli" / "templates" / "docker-compose.yml",
-])
-def test_proxy_mounts_the_built_frontend_read_only(compose):
-    text = compose.read_text()
+@pytest.mark.parametrize("load", compose_sources())
+def test_proxy_mounts_the_built_frontend_read_only(load):
+    text = load()
     proxy = text[text.index("\n  proxy:\n"):]
     proxy = proxy[: proxy.index("\n\n")]
     assert re.search(r"framework/web/panel:/srv/panel:ro$", proxy, re.M)
@@ -173,14 +171,12 @@ def _run_entrypoint(tmp_path: Path, share_host: str | None = None, check: bool =
     stub = bin_dir / "caddy"
     stub.write_text('#!/bin/sh\necho "SECRET=$AGENTO_PROXY_SECRET"\necho "ARGS=$*"\n')
     stub.chmod(0o755)
-    env = {
-        **os.environ,
+    env = {  # no host AGENTO_* value: only PATH and the test's own keys
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "AGENTO_PROXY_SECRET_FILE": str(tmp_path / "proxy-secret"),
         "AGENTO_PROXY_CADDYFILE": str(PROXY / "Caddyfile"),
         "AGENTO_PROXY_RUN_CONFIG": str(tmp_path / "run-Caddyfile"),
     }
-    env.pop("AGENTO_SHARE_HOST", None)
     if share_host is not None:
         env["AGENTO_SHARE_HOST"] = share_host
     return subprocess.run(["sh", str(PROXY / "entrypoint.sh")], env=env,

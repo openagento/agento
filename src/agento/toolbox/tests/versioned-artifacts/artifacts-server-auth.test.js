@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -165,18 +165,28 @@ describe('rate limits (SEC-12)', () => {
   });
 
   it('keeps the reservation of an aborted request', async () => {
+    // Every file read waits on a gate, so each request is aborted while its work is held.
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let entered = 0;
     const slow = { ...(await import('node:fs/promises')) };
     const readFile = slow.readFile;
-    slow.readFile = async (...a) => { await new Promise((r) => setTimeout(r, 100)); return readFile(...a); };
+    slow.readFile = async (...a) => { entered += 1; await gate; return readFile(...a); };
     await start({ ...small, fs: slow });
+    let closed = 0;
+    server.on('request', (_req, res) => res.on('close', () => { closed += 1; }));
     verified = 0;
     for (let i = 0; i < 3; i++) {
       const ac = new AbortController();
-      setTimeout(() => ac.abort(), 20);
-      await fetch(`${base}/s/${TOKEN}/`, { headers: from('10.0.0.9', { authorization: authHeader('site', `a${i}`) }), signal: ac.signal })
+      const sent = fetch(`${base}/s/${TOKEN}/`, { headers: from('10.0.0.9', { authorization: authHeader('site', `a${i}`) }), signal: ac.signal })
         .catch(() => {});
+      await vi.waitFor(() => expect(entered).toBe(i + 1));
+      ac.abort();
+      await sent;
     }
-    await new Promise((r) => setTimeout(r, 400)); // let the aborted work finish
+    await vi.waitFor(() => expect(closed).toBe(3)); // the server saw every abort
+    release();
+    await vi.waitFor(() => expect(verified).toBe(3)); // the aborted work finished
     expect((await get(`/s/${TOKEN}/`, from('10.0.0.9', { authorization: authHeader('site', 'x') }))).status).toBe(429);
   });
 

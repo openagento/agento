@@ -6,7 +6,6 @@ import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
-import pymysql
 import pytest
 
 from agento.framework.access import accounts, sessions
@@ -28,16 +27,11 @@ def db():
         cur.execute("INSERT INTO agent_view (workspace_id, code, label) VALUES (%s, 'adm-av', 'Admin AV')", (ws,))
         av = cur.lastrowid
     yield c, ws, av
-    _clean(c)
     c.close()
 
 
 def _clean(c):
     with c.cursor() as cur:
-        cur.execute("DELETE FROM job WHERE idempotency_key LIKE 'adm:%%'")
-        cur.execute("DELETE FROM usage_log WHERE reference_id = 'adm'")
-        cur.execute("DELETE FROM credential WHERE label LIKE 'adm-%%'")
-        cur.execute("DELETE FROM core_config_data WHERE path = 'jira/jira_token' AND scope != 'default'")
         cur.execute("DELETE FROM agent_view WHERE code = 'adm-av'")
         cur.execute("DELETE FROM workspace WHERE code = 'adm-ws'")
 
@@ -109,20 +103,6 @@ def _credentials(conn, n: int) -> list[int]:
         cur.execute("INSERT INTO usage_log (credential_id, tokens_used, input_tokens, output_tokens, reference_id) "
                     "VALUES (%s, 100, 60, 40, 'adm')", (ids[0],))
     return ids
-
-
-@pytest.fixture
-def selects(monkeypatch):
-    seen: list[str] = []
-    real = pymysql.cursors.DictCursor.execute
-
-    def spy(self, query, args=None):
-        if query.lstrip().upper().startswith("SELECT"):
-            seen.append(query)
-        return real(self, query, args)
-
-    monkeypatch.setattr(pymysql.cursors.DictCursor, "execute", spy)
-    return seen
 
 
 @pytest.mark.parametrize("n", [1, 5])

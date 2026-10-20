@@ -27,7 +27,6 @@ from .conftest import (
     _clean,  # noqa: F401
     bootstrap_for_tests,
 )
-from .test_conversation_submission import _job_type  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -39,17 +38,6 @@ def finalizer():
     # later test in the session runs with the seams empty.
     clear_hooks()
     bootstrap_for_tests()
-
-
-@pytest.fixture(autouse=True)
-def _clean_executions(conn):
-    def wipe():
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM execution")
-        conn.commit()
-    wipe()
-    yield
-    wipe()
 
 
 @pytest.fixture

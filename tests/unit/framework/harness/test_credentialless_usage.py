@@ -6,14 +6,12 @@ attributed by ``(harness, provider)`` instead of vanishing. An early ``return`` 
 """
 from __future__ import annotations
 
-from contextlib import nullcontext
 from unittest.mock import MagicMock
 
 import pytest
 
 from agento.framework.harness import HarnessRunContext
-from agento.framework.runner.client import RemoteRunner
-from tests.harness_fixtures import make_runner
+from tests.harness_fixtures import make_runner, usage_recording_runner
 
 
 @pytest.fixture
@@ -31,12 +29,9 @@ def recorder(monkeypatch):
 
 
 def _runner(monkeypatch, harness="claude", *, credential):
-    """The worker records usage (WS5): the runner holds no database, it only sends the
-    ``usage`` event that ``RemoteRunner`` writes."""
     local = make_runner(harness, credential=credential, credential_required=credential is not None,
                         model="opus-4")
-    monkeypatch.setattr("agento.framework.db.pooled", lambda *a, **k: nullcontext(MagicMock()))
-    return RemoteRunner(harness, local.context, logger=MagicMock())
+    return usage_recording_runner(monkeypatch, harness, local.context)
 
 
 def _result(**kw) -> dict:

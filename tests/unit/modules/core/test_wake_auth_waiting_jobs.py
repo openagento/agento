@@ -41,7 +41,7 @@ def test_wake_with_no_waiting_job_writes_nothing():
     assert cur.execute.call_count == 1
 
 
-def test_observer_commits_and_never_crashes_the_caller():
+def test_observer_commits():
     conn, _cur = _conn([1])
     pool = MagicMock()
     pool.return_value.__enter__.return_value = conn
@@ -49,7 +49,9 @@ def test_observer_commits_and_never_crashes_the_caller():
         WakeAuthWaitingJobsObserver().execute(MagicMock())
     conn.commit.assert_called_once()
 
-    pool.side_effect = RuntimeError("db down")
+
+def test_observer_never_crashes_the_caller():
+    pool = MagicMock(side_effect=RuntimeError("db down"))
     with patch.object(observers, "pooled", pool), patch.object(observers, "DatabaseConfig"):
         WakeAuthWaitingJobsObserver().execute(MagicMock())  # no raise
 

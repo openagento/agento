@@ -1,24 +1,9 @@
 """Integration: the per-mailbox delta cursor store round-trips against real MySQL."""
 from __future__ import annotations
 
-import pytest
-
 from agento.modules.outlook.src.cursor import load_cursors, save_cursor
 
 from .conftest import _test_connection
-
-
-@pytest.fixture(autouse=True)
-def _clean_cursor_table():
-    conn = _test_connection(autocommit=True)
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM outlook_poll_cursor")
-        yield
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM outlook_poll_cursor")
-    finally:
-        conn.close()
 
 
 def test_save_then_load_round_trips_keyed_by_normalized_upn():

@@ -4,23 +4,19 @@ from __future__ import annotations
 
 import re
 import threading
-import time
-from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 
-from agento.framework.access import accounts, sessions
+from agento.framework.access import sessions
 from agento.web import api, rate_limit, security
 from agento.web.streaming import StreamingResponse
+from tests.waiting import wait_until
 
-from .conftest import panel_headers
-from .test_streaming import TOKEN, _raw_get, _read_headers
+from .conftest import TOKEN, a_session, panel_headers, raw_get, read_headers
 
 SECRET = "a" * 64
-SESSION = sessions.Session(
-    id="sid", user=accounts.User(id=1, username="root", role="admin", is_active=True),
-    expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1))
+SESSION = a_session()
 
 
 @pytest.fixture
@@ -86,8 +82,8 @@ def test_sec12_runs_in_one_order_before_the_handler(web, monkeypatch, seen, tmp_
 
 
 def _get(web: str, path: str):
-    sock = _raw_get(web, path)
-    _read_headers(sock)
+    sock = raw_get(web, path)
+    read_headers(sock)
     return sock
 
 
@@ -110,10 +106,7 @@ def test_a_dropped_sse_client_releases_its_stream_slot(web, monkeypatch, seen):
     assert stream.live_streams(SESSION.user.id) == 1
     sock.close()
 
-    deadline = time.monotonic() + 5
-    while stream.live_streams(SESSION.user.id) and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert stream.live_streams(SESSION.user.id) == 0
+    assert wait_until(lambda: stream.live_streams(SESSION.user.id) == 0)
 
 
 def test_sixty_open_streams_leave_the_listener_answering(web, monkeypatch, seen):

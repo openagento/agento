@@ -96,6 +96,7 @@ addopts = "-n auto --dist loadgroup"
 markers = [
     "e2e: end-to-end tests that invoke real external binaries / paid APIs / take >5s; skipped by `bin/test --fast`",
     "rotates_credentials: e2e that rotates a real single-use token; run alone with `-n 0`, after the other e2e tests",
+    "serial: e2e that stops a stack service or reads server-wide MySQL counters; run alone with `-n 0`, after the other e2e tests",
 ]
 
 [tool.ruff]

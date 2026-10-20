@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createService } from '../../../modules/versioned_artifacts/toolbox/service.js';
 import { createBackend } from '../../../modules/versioned_artifacts/toolbox/git-backend.js';
-import { readSource } from './helpers.js';   // test-local, see Task 5 Step 1a
+import { readSource, vaConfig } from './helpers.js';   // test-local, see Task 5 Step 1a
 
 const execFileAsync = promisify(execFile);
 
@@ -17,11 +17,7 @@ const linux = process.platform === 'linux';
 
 let root, pub, src, svc, rows, desk, deskFd;
 const opened = [];
-const cfg = (over = {}) => ({ storage_root: root, published_root: pub, allowed_artifacts: 'site',
-  'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', 'limits/max_files': 2000,
-  'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600, 'limits/max_diff_bytes': 1048576,
-  'limits/max_agent_artifacts': 50,
-  'security/allow_symlinks': false, ...over });
+const cfg = (over = {}) => vaConfig(root, pub, over);
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'vf-svc-'));

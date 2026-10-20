@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createService } from '../../../modules/versioned_artifacts/toolbox/service.js';
 import { verifyCredential } from '../../../modules/versioned_artifacts/toolbox/auth.js';
+import { vaConfig } from './helpers.js';
 
 // An in-memory `versioned_artifact` table: enough of MySQL's INSERT/upsert/SELECT for
 // the auth round trip, ignoring the audit INSERTs that share the same pool.
@@ -30,10 +31,7 @@ function fakeDb() {
 
 let root; let pub; let db;
 const files = [{ path: 'index.html', content: Buffer.from('<h1>v1</h1>').toString('base64'), encoding: 'base64' }];
-const cfg = (over = {}) => ({ storage_root: root, published_root: pub, allowed_artifacts: 'site',
-  'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', 'limits/max_files': 2000,
-  'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600, 'limits/max_diff_bytes': 1048576,
-  'limits/max_agent_artifacts': 50, 'security/allow_symlinks': false, ...over });
+const cfg = (over = {}) => vaConfig(root, pub, over);
 const SHARE_ENV = { AGENTO_SHARE_HOST: 'share.localhost', AGENTO_PROXY_PORT: '8443' };
 const svc = (over = {}, opts = {}) => createService({ config: cfg(over), db, log: vi.fn(),
   actor: 'a@b.c', env: SHARE_ENV, ...opts });

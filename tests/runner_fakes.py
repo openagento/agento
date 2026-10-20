@@ -14,8 +14,22 @@ import json
 import os
 import threading
 from collections import defaultdict
+from pathlib import Path
 
+from agento.framework.harness import HarnessRunContext
 from agento.framework.runner import uids, worker
+
+
+def run_dir(tmp_path: Path) -> Path:
+    """A run dir: the server accepts only one under /workspace/artifacts or /workspace/.tmp."""
+    path = tmp_path / "workspace" / "artifacts" / "ws" / "av" / "1"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def run_context(tmp_path: Path, tag: str = "job:1", **kw) -> HarnessRunContext:
+    return HarnessRunContext(harness="claude", provider="anthropic", working_dir=str(run_dir(tmp_path)),
+                             credential_required=False, tag=tag, timeout_seconds=30, **kw)
 
 
 class FakeUids:
@@ -34,7 +48,7 @@ class FakeUids:
     @staticmethod
     def _run_dir(path):
         """Any directory: the tests' HOMEs live in tmp_path. The real rule (only under
-        /workspace/artifacts or /workspace/.tmp) is tested on its own (test_uids.py)."""
+        /workspace/artifacts or /workspace/.tmp) is tested on its own (unit/framework/runner/test_run_uid.py)."""
         real = os.path.realpath(path or "")
         if not path or not os.path.isdir(real):
             raise ValueError("the run dir is not a directory")

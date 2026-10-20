@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -12,8 +13,8 @@ import sys
 import tempfile
 import textwrap
 import threading
-import time
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,25 +26,10 @@ from agento.framework.harness.subprocess_runner import SubprocessRunner
 from agento.framework.retry_policy import NON_RETRYABLE_ERRORS
 from agento.framework.runner import client, server, wire
 from agento.framework.runner.client import RemoteRunner
+from tests.runner_fakes import run_context, run_dir
+from tests.waiting import wait_until
 
 BIG = 3 * wire.MAX_FRAME  # larger than one frame: must arrive as chunks
-
-
-@pytest.fixture(autouse=True)
-def _no_usage_db(monkeypatch):
-    monkeypatch.setattr(RemoteRunner, "_record_usage", lambda self, event: None)
-
-
-def _rundir(tmp_path):
-    """A run dir: the server accepts only one under /workspace/artifacts or /workspace/.tmp."""
-    path = tmp_path / "workspace" / "artifacts" / "ws" / "av" / "1"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _ctx(tmp_path, tag="job:1", **kw) -> HarnessRunContext:
-    return HarnessRunContext(harness="claude", provider="anthropic", working_dir=str(_rundir(tmp_path)),
-                             credential_required=False, tag=tag, timeout_seconds=30, **kw)
 
 
 class _Child:
@@ -72,15 +58,6 @@ def _child(argv, **kw):
     return lambda harness, ctx, dry_run: _Child(argv, **kw)
 
 
-def _wait(predicate, timeout=10.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.05)
-    return False
-
-
 def _gone(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -95,7 +72,7 @@ def _gone(pid: int) -> bool:
 def _raw_execute(tmp_path) -> socket.socket:
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect(client.socket_path("runner-1.sock"))
-    sock.sendall(wire.encode({"op": "execute", "context": _ctx(tmp_path),
+    sock.sendall(wire.encode({"op": "execute", "context": run_context(tmp_path),
                               "request": RunRequest(prompt="p"), "stream": False}))
     return sock
 
@@ -139,7 +116,7 @@ def test_a_harness_run_goes_through_the_socket_whole(start_runner, tmp_path, mon
     monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
     usage = []
     monkeypatch.setattr(RemoteRunner, "_record_usage", lambda self, event: usage.append(event))
-    runner = RemoteRunner("claude", _ctx(tmp_path))
+    runner = RemoteRunner("claude", run_context(tmp_path))
     seen = []
     runner.observe(on_pid=lambda pid: seen.append(runner.runner_ref),
                    on_session_id=lambda sid: seen.append(sid))
@@ -161,7 +138,7 @@ def test_a_timeout_comes_back_as_a_timeout_with_its_whole_output(start_runner, t
     start_runner(make_runner=_child(["true"], error=exc))
 
     with pytest.raises(subprocess.TimeoutExpired) as raised:
-        RemoteRunner("claude", _ctx(tmp_path)).execute(RunRequest(prompt="p"))
+        RemoteRunner("claude", run_context(tmp_path)).execute(RunRequest(prompt="p"))
 
     assert raised.value.agent_output == "y" * BIG and raised.value.session_id == "s-1"
 
@@ -171,7 +148,7 @@ def test_a_usage_limit_keeps_its_reset_time(start_runner, tmp_path):
         "limit", reset_at=datetime(2026, 5, 1, 12, 0))))
 
     with pytest.raises(UsageLimitError) as raised:
-        RemoteRunner("claude", _ctx(tmp_path)).execute(RunRequest(prompt="p"))
+        RemoteRunner("claude", run_context(tmp_path)).execute(RunRequest(prompt="p"))
 
     assert raised.value.reset_at == datetime(2026, 5, 1, 12, 0)
 
@@ -188,7 +165,7 @@ def test_every_error_the_retry_policy_names_keeps_its_name(start_runner, tmp_pat
     start_runner(make_runner=_child(["true"], error=cls("x")))
 
     with pytest.raises(Exception) as raised:
-        RemoteRunner("claude", _ctx(tmp_path)).execute(RunRequest(prompt="p"))
+        RemoteRunner("claude", run_context(tmp_path)).execute(RunRequest(prompt="p"))
 
     assert type(raised.value).__name__ == (name if name in NON_RETRYABLE_ERRORS else "RuntimeError")
 
@@ -197,14 +174,15 @@ def test_every_error_the_retry_policy_names_keeps_its_name(start_runner, tmp_pat
 
 def test_alive_and_signal_answer_only_for_the_owner_and_its_boot(start_runner, tmp_path):
     start_runner(make_runner=_child(["sleep", "30"]))
-    runner = RemoteRunner("claude", _ctx(tmp_path))
+    runner = RemoteRunner("claude", run_context(tmp_path))
     pids = []
-    runner.observe(on_pid=pids.append)
+    started = threading.Event()
+    runner.observe(on_pid=lambda pid: (pids.append(pid), started.set()))
     box = {}
     thread = threading.Thread(daemon=True, target=lambda: box.update(
         result=runner.execute(RunRequest(prompt="p"))))
     thread.start()
-    assert _wait(lambda: pids)
+    assert started.wait(10)
     ref = runner.runner_ref
 
     assert client.alive(ref, "job:1") == "alive"
@@ -231,15 +209,24 @@ def test_a_closed_connection_kills_the_run(start_runner, tmp_path):
 
     sock.close()   # the worker died
 
-    assert _wait(lambda: _gone(pid))
+    assert wait_until(lambda: _gone(pid), timeout=10)
 
 
-def test_a_run_that_starts_after_the_worker_left_is_killed(start_runner, tmp_path):
+def test_a_run_that_starts_after_the_worker_left_is_killed(start_runner, tmp_path, monkeypatch):
     pids = []
+    left = threading.Event()
+    real_kill = server._kill
+
+    def kill(run):  # the EOF watcher saw the worker leave (before any pid)
+        if run.get("eof"):
+            left.set()
+        real_kill(run)
+
+    monkeypatch.setattr(server, "_kill", kill)
 
     class _Late(_Child):
         def execute(self, request):
-            time.sleep(0.5)                  # the worker closes in this window
+            assert left.wait(10)             # the worker has left: now the run starts
             proc = subprocess.Popen(self.argv, start_new_session=True)
             pids.append(proc.pid)
             self.on_pid(proc.pid)
@@ -249,7 +236,7 @@ def test_a_run_that_starts_after_the_worker_left_is_killed(start_runner, tmp_pat
     start_runner(make_runner=lambda h, ctx, dry_run: _Late(["sleep", "30"]))
     _raw_execute(tmp_path).close()
 
-    assert _wait(lambda: pids) and _wait(lambda: _gone(pids[0]))
+    assert wait_until(lambda: pids, timeout=10) and wait_until(lambda: _gone(pids[0]), timeout=10)
 
 
 def test_a_lost_runner_is_a_retryable_error_with_the_session(start_runner, tmp_path):
@@ -267,7 +254,7 @@ def test_a_lost_runner_is_a_retryable_error_with_the_session(start_runner, tmp_p
 
     threading.Thread(target=die_mid_run, daemon=True).start()
     with pytest.raises(RuntimeError, match="connection lost") as raised:
-        RemoteRunner("claude", _ctx(tmp_path)).execute(RunRequest(prompt="p"))
+        RemoteRunner("claude", run_context(tmp_path)).execute(RunRequest(prompt="p"))
     listener.close()
 
     assert raised.value.session_id == "s-1"
@@ -282,7 +269,7 @@ def test_a_peer_inside_the_runner_gets_nothing(start_runner, tmp_path):
 
     assert client.alive("runner-1.sock:" + server.BOOT, "job:1") == "unknown"
     with pytest.raises(RuntimeError, match="connection lost"):
-        RemoteRunner("claude", _ctx(tmp_path)).execute(RunRequest(prompt="p"))
+        RemoteRunner("claude", run_context(tmp_path)).execute(RunRequest(prompt="p"))
 
 
 @pytest.mark.skipif(not hasattr(socket, "SO_PEERCRED"), reason="SO_PEERCRED is Linux only")
@@ -299,10 +286,14 @@ def test_peer_pid_is_none_without_so_peercred(monkeypatch):
 
 
 def test_a_flood_of_refused_peers_neither_starves_the_worker_nor_floods_the_log(
-        start_runner, tmp_path, caplog):
+        start_runner, caplog, monkeypatch, request):
     """10x the accept rate of refused peers while 100 authorized calls all succeed; the
-    log keeps FAILURE_LOG_LIMIT lines per peer (a peer gone before its check is `None`)."""
-    bad_dir = tempfile.mkdtemp(prefix="rb", dir="/tmp")
+    log keeps FAILURE_LOG_LIMIT lines per peer (a peer gone before its check is `None`).
+    The limiter's clock is fake: each call moves it 1/50 s, so no real time passes."""
+    bad_dir = tempfile.mkdtemp(prefix="rb", dir="/tmp")  # AF_UNIX paths are short
+    request.addfinalizer(lambda: shutil.rmtree(bad_dir, ignore_errors=True))
+    now = [0.0]
+    monkeypatch.setattr(server, "time", SimpleNamespace(monotonic=lambda: now[0]))
 
     def peer(conn):  # a bound client path marks the refused peer
         return 4242 if conn.getpeername() else 0
@@ -330,7 +321,8 @@ def test_a_flood_of_refused_peers_neither_starves_the_worker_nor_floods_the_log(
         results = []
         for _ in range(100):
             results.append(client.run(["true"], timeout=10).returncode)
-            time.sleep(0.02)   # 100 calls in ~2 s: under the 50/s accept rate
+            now[0] += 0.02     # 100 calls in 2 fake s: under the 50/s accept rate
+        assert wait_until(lambda: any("refused" in r.getMessage() for r in caplog.records))
         stop.set()
         attacker.join(10)
 
@@ -348,9 +340,9 @@ def test_the_accept_rate_bounds_authorized_connections(start_runner):
 
 def test_max_procs_refuses_the_next_child(start_runner, tmp_path):
     start_runner(max_procs=1, max_control=4)
-    busy = client.pty(["sleep", "30"], str(_rundir(tmp_path)))
+    busy = client.pty(["sleep", "30"], str(run_dir(tmp_path)))
     try:
-        assert _wait(lambda: client.alive("runner-1.sock:" + server.BOOT, "x") == "dead")
+        assert wait_until(lambda: client.alive("runner-1.sock:" + server.BOOT, "x") == "dead", timeout=10)
         with pytest.raises(RuntimeError, match="busy"):
             client.run(["true"], timeout=10)
     finally:
@@ -371,7 +363,7 @@ def test_a_request_line_over_the_limit_is_refused(runner_server):
 # --- run: a vendor CLI that is not a run --------------------------------------------------
 
 def test_run_returns_output_and_gives_the_env_to_the_child(runner_server, tmp_path):
-    home = str(_rundir(tmp_path))
+    home = str(run_dir(tmp_path))
     proc = client.run([sys.executable, "-c",
                        "import os,sys; print(os.environ.get('HOME')); "
                        f"sys.stdout.write('z' * {BIG})"],
@@ -401,7 +393,7 @@ def test_a_runner_with_only_the_published_observe_runs(start_runner, tmp_path):
 
     start_runner(make_runner=lambda h, ctx, dry_run: _Strict())
 
-    assert RemoteRunner("claude", _ctx(tmp_path)).execute(RunRequest(prompt="p")).raw_output == "ok"
+    assert RemoteRunner("claude", run_context(tmp_path)).execute(RunRequest(prompt="p")).raw_output == "ok"
 
 
 class _Sh(SubprocessRunner):
@@ -432,14 +424,14 @@ def test_no_descendant_outlives_its_run(runner_server, tmp_path, op):
     pid_file = tmp_path / "pid"
     argv = ["sh", "-c", f"trap '' HUP; sleep 60 & echo $! > {pid_file}; sleep 60"]
     if op == "pty":
-        sock = client.pty(argv, str(_rundir(tmp_path)))
-        assert _wait(lambda: pid_file.exists() and pid_file.read_text().strip())
+        sock = client.pty(argv, str(run_dir(tmp_path)))
+        assert wait_until(lambda: pid_file.exists() and pid_file.read_text().strip(), timeout=10)
         sock.close()
     else:
         with pytest.raises(subprocess.TimeoutExpired):
             _spawn(op, argv, tmp_path, 1)
 
-    assert _wait(lambda: _dead(int(pid_file.read_text())))
+    assert wait_until(lambda: _dead(int(pid_file.read_text())), timeout=10)
 
 
 @pytest.mark.parametrize("op", ["execute", "run"])
@@ -468,7 +460,7 @@ def test_the_log_has_no_prompt_env_or_credential(start_runner, tmp_path, caplog)
     start_runner(make_runner=_child(["true"], output="ok"))
     cred = CredentialRecord(id=1, scope="anthropic", type="oauth", label="a",
                             credentials={"subscription_key": "SECRET-CRED"})
-    ctx = _ctx(tmp_path, credential=cred, extra_env={"TOKEN": "SECRET-ENV"})
+    ctx = run_context(tmp_path, credential=cred, extra_env={"TOKEN": "SECRET-ENV"})
 
     with caplog.at_level("DEBUG", logger="agento.runner"):
         RemoteRunner("claude", ctx).execute(RunRequest(prompt="SECRET-PROMPT"))

@@ -49,9 +49,12 @@ export async function stubApi(answers: Record<string, Answer>, acl: string[] = A
 // leaves notifications behind would hide the next test's own.
 export function teardown() { endSession(); vi.unstubAllGlobals(); queryClient.clear(); cleanNotifications(); }
 
-export const renderAt = (path: string, ui: ReactNode) => render(
+/** The providers a screen needs; also a `wrapper` for `render`/`renderHook` (it survives `rerender`). */
+export const Providers = ({ path = "/", children }: { path?: string; children: ReactNode }) => (
   <AgentoUiProvider env="test">
     <Notifications />
-    <QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[path]}>{ui}</MemoryRouter></QueryClientProvider>
-  </AgentoUiProvider>,
+    <QueryClientProvider client={queryClient}><MemoryRouter initialEntries={[path]}>{children}</MemoryRouter></QueryClientProvider>
+  </AgentoUiProvider>
 );
+
+export const renderAt = (path: string, ui: ReactNode) => render(<Providers path={path}>{ui}</Providers>);

@@ -1,14 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { tempModulesDir, writeModule } from './module-dir.js';
 
 describe('discoverAuthSources', () => {
   let tmpDir;
   const logs = [];
 
   beforeEach(() => {
-    tmpDir = path.join(import.meta.dirname, '_test_auth_src_' + Date.now() + '_' + Math.random().toString(36).slice(2));
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = tempModulesDir('auth_src');
     process.env.CORE_MODULES_DIR = tmpDir;
     process.env.USER_MODULES_DIR = path.join(tmpDir, '_nonexistent_');
     logs.length = 0;
@@ -29,10 +29,7 @@ describe('discoverAuthSources', () => {
   });
 
   function moduleWith(name, source) {
-    const dir = path.join(tmpDir, name);
-    fs.mkdirSync(path.join(dir, 'toolbox'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'module.json'), JSON.stringify({ name, version: '1.0.0', description: 'd' }));
-    fs.writeFileSync(path.join(dir, 'toolbox', 'auth.js'), source);
+    writeModule(tmpDir, name, { 'module.json': { name, version: '1.0.0', description: 'd' }, 'toolbox/auth.js': source });
   }
 
   async function discover() {

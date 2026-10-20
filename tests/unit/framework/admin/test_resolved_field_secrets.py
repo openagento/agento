@@ -65,13 +65,13 @@ def test_an_unset_secret_and_a_json_default():
     assert (fields["m/hidden"].source, fields["m/hidden"].is_set, fields["m/hidden"].display_value) == ("none", False, "")
 
 
+@pytest.mark.parametrize("in_db", [False, True], ids=["env-only", "env-and-db"])
 @pytest.mark.parametrize(("path", "key"), [("m/secret", "CONFIG__M__SECRET"),
                                            ("m/tools/t/pass", "CONFIG__M__TOOLS__T__PASS")])
-def test_env_wins_over_db_for_a_secret_with_no_value_read(path, key):
-    env = {key: "plain-env-secret"}
-    for merged in ({}, {path: ("ciphertext", True)}):
-        f = _fields(merged=merged, local=merged, env=env)[path]
-        assert (f.source, f.is_set, f.value) == ("env", True, None)
+def test_env_wins_over_db_for_a_secret_with_no_value_read(path, key, in_db):
+    merged = {path: ("ciphertext", True)} if in_db else {}
+    f = _fields(merged=merged, local=merged, env={key: "plain-env-secret"})[path]
+    assert (f.source, f.is_set, f.value) == ("env", True, None)
 
 
 def test_allow_env_false_ignores_env():

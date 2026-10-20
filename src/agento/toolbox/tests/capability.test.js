@@ -77,21 +77,22 @@ describe('verifyCapability', () => {
     expect(await broken('t', { endpoint: 'mcp' })).toBeNull();
   });
 
-  it('rejects every kind when allowed_transports is missing — there is no default', async () => {
-    for (const kind of ['mcp_job', 'mcp_interactive', 'internal_rest']) {
-      for (const value of [null, undefined, [], '[]']) {
-        const verify = createVerifier(fakeQuery([capabilityRow(kind, { allowed_transports: value })]));
-        for (const endpoint of ENDPOINTS) expect(await verify('t', { endpoint })).toBeNull();
-      }
-    }
-  });
+  const MISSING = [['null', null], ['undefined', undefined], ['an empty list', []], ['an empty JSON list', '[]']];
+  it.each(['mcp_job', 'mcp_interactive', 'internal_rest'].flatMap(kind => MISSING.map(([label, value]) => [kind, label, value])))(
+    'rejects %s on every endpoint when allowed_transports is %s — there is no default', async (kind, _label, value) => {
+      const verify = createVerifier(fakeQuery([capabilityRow(kind, { allowed_transports: value })]));
+      for (const endpoint of ENDPOINTS) expect(await verify('t', { endpoint })).toBeNull();
+    });
 
-  it('rejects a guard that names no endpoint, or an unknown one, without touching the DB', async () => {
-    for (const opts of [undefined, {}, { endpoint: 'root' }, { kinds: ['mcp_job'] }]) {
-      const query = fakeQuery([row]);
-      expect(await createVerifier(query)('t', opts)).toBeNull();
-      expect(query).not.toHaveBeenCalled();
-    }
+  it.each([
+    ['no options', undefined],
+    ['empty options', {}],
+    ['an unknown endpoint', { endpoint: 'root' }],
+    ['kinds but no endpoint', { kinds: ['mcp_job'] }],
+  ])('rejects a guard with %s without touching the DB', async (_name, opts) => {
+    const query = fakeQuery([row]);
+    expect(await createVerifier(query)('t', opts)).toBeNull();
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('returns null for an unknown token', async () => {

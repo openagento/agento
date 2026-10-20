@@ -1,10 +1,12 @@
 """Orchestration benchmark: N jobs through the real `Consumer.run()` (ACC2, RULES.md SCL-1).
 
 Real MySQL, consumer loop, credential pool and a child per run: the stub `claude` in
-tests/fixtures/bin answers with the access token it found in its own HOME. One JSON line
-per N goes to `logs/bench/<sha>.json` BEFORE the asserts, so a red run still leaves its
-measurement. "Spawn" = the worker saved the pid (`Consumer._save_pid`). The asserts are
-ratios and counters only, never wall-clock bounds.
+tests/fixtures/bin answers with the access token it found in its own HOME. With
+`AGENTO_BENCH_LOG=1`, one JSON line per N goes to `logs/bench/<sha>.json` BEFORE the asserts,
+so a red run still leaves its measurement. "Spawn" = the worker saved the pid (`Consumer._save_pid`). The asserts are
+ratios and counters only, never wall-clock bounds. They read server-wide MySQL counters
+(`FLUSH STATUS`, `Max_used_connections`), which other xdist workers move too: the tests skip
+under xdist and `bin/test` runs them alone with `-n 0`.
 """
 from __future__ import annotations
 
@@ -31,10 +33,14 @@ from agento.framework.agent_manager.models import encrypt_credentials
 from agento.framework.consumer import Consumer
 from agento.framework.consumer_config import ConsumerConfig
 from agento.framework.runner import client as runner_client
+from tests.waiting import wait_until
 
 from .conftest import CONCURRENT_WORKERS_STRESS_TEST, DB_STRESS, FIXTURES_DIR, _test_connection, fetch_all_jobs
 
-pytestmark = DB_STRESS
+# PYTEST_XDIST_WORKER_COUNT, not _WORKER: only xdist sets it, so `PYTEST_XDIST_WORKER=x -n 0`
+# (a private test DB) still runs the benchmark.
+pytestmark = [DB_STRESS, pytest.mark.serial, pytest.mark.skipif(
+    bool(os.environ.get("PYTEST_XDIST_WORKER_COUNT")), reason="server-wide MySQL counters: run alone with -n 0")]
 
 N_VALUES = (CONCURRENT_WORKERS_STRESS_TEST, 2 * CONCURRENT_WORKERS_STRESS_TEST)
 CONNECTION_HEADROOM = 30     # fixtures + other clients, as in test_token_selection_concurrency
@@ -121,6 +127,36 @@ def _seed(n: int, agent_view_id: int) -> int:
         conn.close()
 
 
+@pytest.fixture
+def nofile_limit():
+    """Raise the open-file soft limit for 2N children (macOS soft is 256); restore it after."""
+    saved = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (min(saved[1], 8192), saved[1]))
+    yield
+    resource.setrlimit(resource.RLIMIT_NOFILE, saved)
+
+
+def _start_stack(n: int, agent_view_id: int, monkeypatch) -> tuple[Connection, int, subprocess.Popen, Path]:
+    """Skip below the needed max_connections, seed N jobs, start the runner. Returns the probe
+    connection, the last execution id before the run, the runner and its socket dir."""
+    probe = _test_connection(autocommit=True)
+    with probe.cursor() as cur:
+        cur.execute("SHOW VARIABLES LIKE 'max_connections'")
+        if int(cur.fetchone()["Value"]) < n + CONNECTION_HEADROOM:
+            probe.close()
+            pytest.skip(f"MySQL max_connections below {n + CONNECTION_HEADROOM}")
+    monkeypatch.setenv("PATH", f"{FIXTURES_DIR / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    last_execution = _seed(n, agent_view_id)
+    sock_dir = Path(tempfile.mkdtemp(prefix="rb", dir="/tmp"))  # AF_UNIX paths are short
+    monkeypatch.setenv("AGENTO_RUNNER_SOCKET_DIR", str(sock_dir))
+    sock = Path(runner_client.socket_path("runner-1.sock"))  # where the consumer connects
+    sock.parent.mkdir()
+    runner = _start_runner(sock, monkeypatch)
+    wait_until(lambda: sock.exists() or runner.poll() is not None, timeout=60)
+    assert sock.exists() and runner.poll() is None, "runner did not start"
+    return probe, last_execution, runner, sock_dir
+
+
 def _status(cur, name: str) -> int:
     cur.execute("SHOW GLOBAL STATUS LIKE %s", (name,))
     return int(cur.fetchone()["Value"])
@@ -136,27 +172,8 @@ def _pct(values: list[float], p: float) -> float | None:
 
 @pytest.mark.e2e
 @pytest.mark.parametrize("n", N_VALUES)
-def test_orchestration_scale(n, int_agent_view, int_db_config, tmp_path, monkeypatch):
-    probe = _test_connection(autocommit=True)
-    with probe.cursor() as cur:
-        cur.execute("SHOW VARIABLES LIKE 'max_connections'")
-        if int(cur.fetchone()["Value"]) < n + CONNECTION_HEADROOM:
-            probe.close()
-            pytest.skip(f"MySQL max_connections below {n + CONNECTION_HEADROOM}")
-
-    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 8192), hard))  # macOS soft is 256
-    monkeypatch.setenv("PATH", f"{FIXTURES_DIR / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    last_execution = _seed(n, int_agent_view)
-    sock_dir = Path(tempfile.mkdtemp(prefix="rb", dir="/tmp"))  # AF_UNIX paths are short
-    monkeypatch.setenv("AGENTO_RUNNER_SOCKET_DIR", str(sock_dir))
-    sock = Path(runner_client.socket_path("runner-1.sock"))  # where the consumer connects
-    sock.parent.mkdir()
-    runner = _start_runner(sock, monkeypatch)
-    deadline = time.monotonic() + 60
-    while not sock.exists():
-        assert runner.poll() is None and time.monotonic() < deadline, "runner did not start"
-        time.sleep(0.05)
+def test_orchestration_scale(n, int_agent_view, int_db_config, tmp_path, monkeypatch, nofile_limit):
+    probe, last_execution, runner, sock_dir = _start_stack(n, int_agent_view, monkeypatch)
 
     claimed: dict[int, float] = {}
     spawned: dict[int, float] = {}
@@ -251,12 +268,13 @@ def test_orchestration_scale(n, int_agent_view, int_db_config, tmp_path, monkeyp
         "too_many_connections": refused,
         "workspace_builds": builds,
     }
-    sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO,
-                         capture_output=True, text=True).stdout.strip() or "unknown"
-    out = REPO / "logs" / "bench" / f"{sha}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("a") as f:
-        f.write(json.dumps(metrics) + "\n")
+    if os.environ.get("AGENTO_BENCH_LOG"):  # opt-in: it writes into the checkout
+        sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO,
+                             capture_output=True, text=True).stdout.strip() or "unknown"
+        out = REPO / "logs" / "bench" / f"{sha}.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("a") as f:
+            f.write(json.dumps(metrics) + "\n")
 
     jobs = fetch_all_jobs()
     assert [j["status"] for j in jobs] == ["SUCCESS"] * (n + 1), metrics
@@ -276,7 +294,7 @@ def test_orchestration_scale(n, int_agent_view, int_db_config, tmp_path, monkeyp
 
 
 @pytest.mark.e2e
-def test_every_crash_is_resumed_once_at_scale(int_agent_view, int_db_config, monkeypatch):
+def test_every_crash_is_resumed_once_at_scale(int_agent_view, int_db_config, monkeypatch, nofile_limit):
     """WI-5 at `CONCURRENT_WORKERS_STRESS_TEST` (SCL-1): every run crashes once after it
     filed its session. Each job makes exactly 2 runner calls (the crash, then one resume in
     the same attempt), all finish SUCCESS on attempt 1, and no job takes a third call."""
@@ -285,27 +303,8 @@ def test_every_crash_is_resumed_once_at_scale(int_agent_view, int_db_config, mon
     from agento.framework.runner.client import RemoteRunner
 
     n = CONCURRENT_WORKERS_STRESS_TEST
-    probe = _test_connection(autocommit=True)
-    with probe.cursor() as cur:
-        cur.execute("SHOW VARIABLES LIKE 'max_connections'")
-        if int(cur.fetchone()["Value"]) < n + CONNECTION_HEADROOM:
-            probe.close()
-            pytest.skip(f"MySQL max_connections below {n + CONNECTION_HEADROOM}")
-
-    _, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 8192), hard))
-    monkeypatch.setenv("PATH", f"{FIXTURES_DIR / 'bin'}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_CRASH_UNLESS_RESUME", "1")  # before the runner starts: it passes env on
-    _seed(n, int_agent_view)
-    sock_dir = Path(tempfile.mkdtemp(prefix="rb", dir="/tmp"))
-    monkeypatch.setenv("AGENTO_RUNNER_SOCKET_DIR", str(sock_dir))
-    sock = Path(runner_client.socket_path("runner-1.sock"))
-    sock.parent.mkdir()
-    runner = _start_runner(sock, monkeypatch)
-    deadline = time.monotonic() + 60
-    while not sock.exists():
-        assert runner.poll() is None and time.monotonic() < deadline, "runner did not start"
-        time.sleep(0.05)
+    probe, _, runner, sock_dir = _start_stack(n, int_agent_view, monkeypatch)
 
     calls: Counter[str] = Counter()
     calls_lock = threading.Lock()

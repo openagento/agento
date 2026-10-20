@@ -16,17 +16,9 @@ afterEach(teardown);
 
 const save = () => fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-// The save contract itself (drafts, batching, failures, scope binding) lives in
+// The save contract itself (drafts, batching, failures, scope binding) and the URL scope live in
 // enablementScreens.test.tsx, which runs it against a server double that remembers writes.
 describe("Tools", () => {
-  it("reads the scope from the URL, so a reload keeps it", async () => {
-    const api = await stubApi({ "/api/admin/scopes": SCOPES, "/api/admin/tools": TOOLS });
-    renderAt("/admin/tools?scope=agent_view&scope_id=3", <Tools />);
-    expect(await screen.findByText("jira_search")).toBeInTheDocument();
-    expect(api.calls("GET", "/api/admin/tools")[0].url.search).toBe("?scope=agent_view&scope_id=3");
-    expect(await screen.findByDisplayValue("av — AV")).toBeInTheDocument();
-  });
-
   it("a blocked tool cannot be toggled; only an inherited enable is marked (TUI prompt_label)", async () => {
     await stubApi({ "/api/admin/scopes": SCOPES, "/api/admin/tools": TOOLS });
     renderAt("/admin/tools", <Tools />);

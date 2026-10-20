@@ -49,17 +49,10 @@ class NoLimitsAuthenticator:
 @pytest.fixture
 def db(monkeypatch):
     c = _test_connection(autocommit=True)
-    _clean(c)
     authenticators = {"lim": FakeAuthenticator(), "old": NoLimitsAuthenticator()}
     monkeypatch.setattr("agento.framework.harness.get_authenticator", authenticators.get)
     yield c
-    _clean(c)
     c.close()
-
-
-def _clean(c):
-    with c.cursor() as cur:
-        cur.execute("DELETE FROM credential WHERE label LIKE 'lim-%%'")
 
 
 def _insert(c, label, *, scope="lim", token="sk-lim-secret", type_="oauth", enabled=True, status="ok", expires=None):

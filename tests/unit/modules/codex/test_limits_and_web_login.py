@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import sys
 import textwrap
-import time
 from datetime import UTC, datetime
 
 import httpx
@@ -15,6 +14,7 @@ import respx
 from agento.framework.agent_manager.errors import AuthenticationError
 from agento.framework.harness.protocols import CredentialLimits, LimitWindow
 from agento.modules.codex.src.auth import CodexCredentialAuthenticator
+from tests.waiting import wait_until
 
 # The CLI runs in a runner (WS5): an in-process server here.
 pytestmark = pytest.mark.usefixtures("runner_server")
@@ -104,24 +104,18 @@ FAKE_CODEX = textwrap.dedent(f"""\
 
 
 @pytest.fixture
-def fake_codex(tmp_path, monkeypatch):
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "codex").write_text(FAKE_CODEX)
-    (bin_dir / "codex").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+def fake_codex(tmp_path, fake_cli):
+    fake_cli("codex", FAKE_CODEX)
     home = tmp_path / "home"
     home.mkdir()
     return str(home)
 
 
 def _finish(login, timeout=10):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if (result := login.poll()) is not None:
-            return result
-        time.sleep(0.05)
-    raise AssertionError("login did not finish")
+    results = []
+    finished = wait_until(lambda: results.append(login.poll()) or results[-1] is not None, timeout, 0.05)
+    assert finished, "login did not finish"
+    return results[-1]
 
 
 def test_web_login_device_flow(fake_codex):
@@ -139,6 +133,8 @@ def test_web_login_device_flow(fake_codex):
 def test_web_login_cli_failure(fake_codex):
     open(f"{fake_codex}/fail", "w").close()
     login = CodexCredentialAuthenticator().start_web_login(fake_codex, logging.getLogger("t"))
-    with pytest.raises(AuthenticationError):
-        _finish(login)
-    login.close()
+    try:
+        with pytest.raises(AuthenticationError):
+            _finish(login)
+    finally:
+        login.close()

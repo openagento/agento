@@ -16,7 +16,6 @@ from agento.framework.access import sessions
 from agento.modules.conversation.src import service, stream
 
 from .conftest import _clean  # noqa: F401
-from .test_conversation_submission import _job_type  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -24,17 +23,6 @@ def _clean_registry():
     stream._open_streams.clear()
     yield
     stream._open_streams.clear()
-
-
-@pytest.fixture
-def thread(conn, world):
-    conversation_id = service.create_conversation(
-        conn, user_id=world["owner"].id, agent_view_id=world["view"], title="t")
-    yield conversation_id
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM conversation_event WHERE conversation_id = %s",
-                    (conversation_id,))
-    conn.commit()
 
 
 @pytest.fixture

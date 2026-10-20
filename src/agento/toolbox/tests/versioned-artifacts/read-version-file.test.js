@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createService } from '../../../modules/versioned_artifacts/toolbox/service.js';
+import { vaConfig } from './helpers.js';
 
 // `readVersionFile`: one root file of a version, as bytes (miniapps reads its manifest
 // through it, PRD E6 §4, so no module outside service.js reaches the storage engine).
@@ -13,10 +14,7 @@ const files = [
   { path: 'miniapp.json', content: b64('{"schema":1}'), encoding: 'base64' },
   { path: 'sub/inner.json', content: b64('{}'), encoding: 'base64' },
 ];
-const svc = (over = {}) => createService({ config: { storage_root: root, published_root: pub, allowed_artifacts: 'site',
-  'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', 'limits/max_files': 2000,
-  'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600, 'limits/max_diff_bytes': 1048576,
-  'limits/max_agent_artifacts': 50, 'security/allow_symlinks': false, ...over }, db: null, log: vi.fn(), actor: 'a@b.c' });
+const svc = (over = {}) => createService({ config: vaConfig(root, pub, over), db: null, log: vi.fn(), actor: 'a@b.c' });
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'va-rvf-'));

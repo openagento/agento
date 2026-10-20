@@ -8,15 +8,11 @@ import path from 'node:path';
 import { createService } from '../../../modules/versioned_artifacts/toolbox/service.js';
 import { createBackend } from '../../../modules/versioned_artifacts/toolbox/git-backend.js';
 import { toToolError, ArtifactError } from '../../../modules/versioned_artifacts/toolbox/errors.js';
-import { readSource } from './helpers.js';
+import { readSource, vaConfig } from './helpers.js';
 import { execFileSync } from 'node:child_process';
 
 let root, pub, src, svc, rows;
-const cfg = (over = {}) => ({ storage_root: root, published_root: pub, allowed_artifacts: 'site',
-  'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', 'limits/max_files': 2000,
-  'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600, 'limits/max_diff_bytes': 1048576,
-  'limits/max_agent_artifacts': 50,
-  'security/allow_symlinks': false, ...over });
+const cfg = (over = {}) => vaConfig(root, pub, over);
 
 const build = (over = {}, opts = {}) => {
   const pool = { query: async () => [[]], execute: async (_sql, params) => { rows.push(params); } };

@@ -1,8 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { register } from '../../modules/jira/toolbox/jira.js';
+import { jiraCtx } from './jira-register-ctx.js';
 
 // The miniapp-build skill is the agent's only guide to a miniapp; its examples must work as written.
 const SKILL = readFileSync(
@@ -10,13 +11,7 @@ const SKILL = readFileSync(
 
 function jiraSchemas() {
   const tools = {};
-  register({ tool(name, desc, schema) { tools[name] = schema; } }, {
-    log: vi.fn(),
-    moduleConfigs: { jira: { jira_host: 'https://x.atlassian.net', jira_user: 'u@x.com', jira_token: 't' } },
-    isToolEnabled: () => true,
-    artifactsDir: '/tmp/art',
-    fileManager: { downloadAndConvert: vi.fn() },
-  });
+  register({ tool(name, desc, schema) { tools[name] = schema; } }, jiraCtx());
   return tools;
 }
 

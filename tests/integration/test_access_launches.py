@@ -83,16 +83,12 @@ def test_max_concurrent_resolution(conn, scopes, monkeypatch):
     # No ENV, no DB row: the web module's config.json, read without bootstrap().
     monkeypatch.setattr(config_resolver, "_config_defaults_cache", {})
     assert launches.max_concurrent(conn, scopes["ws1"]) == 5
-    try:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO core_config_data (scope, scope_id, path, value) VALUES"
-                        " ('default', 0, 'web/launch/max_concurrent', '7'),"
-                        " ('workspace', %s, 'web/launch/max_concurrent', '3')", (scopes["ws1"],))
-        assert launches.max_concurrent(conn, scopes["ws1"]) == 3
-        assert launches.max_concurrent(conn, scopes["ws2"]) == 7
-    finally:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM core_config_data WHERE path = 'web/launch/max_concurrent'")
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO core_config_data (scope, scope_id, path, value) VALUES"
+                    " ('default', 0, 'web/launch/max_concurrent', '7'),"
+                    " ('workspace', %s, 'web/launch/max_concurrent', '3')", (scopes["ws1"],))
+    assert launches.max_concurrent(conn, scopes["ws1"]) == 3
+    assert launches.max_concurrent(conn, scopes["ws2"]) == 7
 
 
 def test_redeem_is_single_use(conn, scopes, alice):

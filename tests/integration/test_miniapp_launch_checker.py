@@ -38,19 +38,8 @@ pytestmark = [NAMED_LOCKS, pytest.mark.skipif(
 @pytest.fixture
 def conn():
     c = _test_connection(autocommit=True)
-    _clean(c)
     yield c
-    _clean(c)
     c.close()
-
-
-def _clean(c):
-    with c.cursor() as cur:
-        cur.execute("DELETE FROM toolbox_capability WHERE kind = 'miniapp'")
-        cur.execute("DELETE FROM miniapp_activation WHERE artifact_code = 'e6-chk'")
-        cur.execute("DELETE FROM versioned_artifact WHERE artifact_code = 'e6-chk'")  # and its members
-        for table in ("launch", "session", "role_grant", "`user`"):
-            cur.execute(f"DELETE FROM {table}")
 
 
 @pytest.fixture

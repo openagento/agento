@@ -68,23 +68,17 @@ def test_fixture_row(scope, table, case):
                 _insert(cur, table, case["row"], refs)
 
 
-def test_deleting_a_user_takes_its_sessions_and_launches(scope):
+@pytest.mark.parametrize(("parent", "ref", "children"), [
+    pytest.param("`user`", "@user", ("session", "launch"), id="user-takes-sessions-and-launches"),
+    pytest.param("agent_view", "@agent_view", ("launch", "role_grant"), id="agent-view-takes-launches-and-grants"),
+])
+def test_deleting_a_parent_takes_its_children(scope, parent, ref, children):
     conn, refs = scope
     with conn.cursor() as cur:
-        _insert(cur, "session", ROWS["session"][0]["row"], refs)
-        _insert(cur, "launch", ROWS["launch"][0]["row"], refs)
-        cur.execute("DELETE FROM `user` WHERE id = %s", (refs["@user"],))
-        cur.execute("SELECT (SELECT COUNT(*) FROM session) + (SELECT COUNT(*) FROM launch) AS n")
-        assert cur.fetchone()["n"] == 0
-
-
-def test_deleting_an_agent_view_takes_its_launches_and_grants(scope):
-    conn, refs = scope
-    with conn.cursor() as cur:
-        _insert(cur, "launch", ROWS["launch"][0]["row"], refs)
-        _insert(cur, "role_grant", ROWS["role_grant"][0]["row"], refs)
-        cur.execute("DELETE FROM agent_view WHERE id = %s", (refs["@agent_view"],))
-        cur.execute("SELECT (SELECT COUNT(*) FROM launch) + (SELECT COUNT(*) FROM role_grant) AS n")
+        for child in children:
+            _insert(cur, child, ROWS[child][0]["row"], refs)
+        cur.execute(f"DELETE FROM {parent} WHERE id = %s", (refs[ref],))
+        cur.execute("SELECT " + " + ".join(f"(SELECT COUNT(*) FROM {c})" for c in children) + " AS n")
         assert cur.fetchone()["n"] == 0
 
 

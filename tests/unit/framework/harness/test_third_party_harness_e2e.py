@@ -133,13 +133,9 @@ class TestCredentiallessProvider:
             lambda conn, **kw: recorded.append(kw) or 1,
         )
 
-        from contextlib import nullcontext
+        from tests.harness_fixtures import usage_recording_runner
 
-        from agento.framework.runner.client import RemoteRunner
-
-        # The shipped recorder is the worker's (WS5): the runner only sends the numbers.
-        monkeypatch.setattr("agento.framework.db.pooled", lambda *a, **k: nullcontext(MagicMock()))
-        runner = RemoteRunner("fake", _ctx(), logger=MagicMock())
+        runner = usage_recording_runner(monkeypatch, "fake", _ctx())
 
         runner._record_usage({"input_tokens": 3, "output_tokens": 2, "duration_ms": None,
                               "model": None})

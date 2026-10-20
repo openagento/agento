@@ -11,21 +11,16 @@ from pathlib import Path
 
 import pytest
 
-from agento.framework.harness.protocols import StreamEventMapper
-from agento.modules.claude.src.adapter import ClaudeHarnessAdapter
 from agento.modules.claude.src.output_parser import parse_claude_output
 from agento.modules.claude.src.stream_event_mapper import ClaudeStreamEventMapper
 from agento.modules.claude.src.stream_renderer import ClaudeStreamRenderer
+from tests.unit.modules.stream_mapping import map_all
 
 FIXTURE = Path(__file__).resolve().parents[3] / "fixtures" / "claude" / "stream_tool_use.jsonl"
 
 
 def fragments(raw: str) -> list[dict]:
-    mapper, out = ClaudeStreamEventMapper(), []
-    for line in raw.splitlines():
-        mapped = mapper.map_event(json.loads(line))
-        out += mapped if isinstance(mapped, list) else [mapped] if mapped else []
-    return out
+    return map_all(ClaudeStreamEventMapper(), (json.loads(line) for line in raw.splitlines()))
 
 
 def test_tool_use_run_maps_to_the_exact_fragment_list():
@@ -51,12 +46,6 @@ def test_an_error_result_maps_to_error():
     mapped = ClaudeStreamEventMapper().map_event(
         {"type": "result", "is_error": True, "result": "Not logged in"})
     assert mapped == {"kind": "error", "text": "Not logged in"}
-
-
-def test_the_adapter_exposes_the_mapper():
-    mapper = ClaudeHarnessAdapter().stream_event_mapper
-    assert isinstance(mapper, ClaudeStreamEventMapper)
-    assert isinstance(mapper, StreamEventMapper)
 
 
 # A resume of a session claude cannot find: no `result`, the message only in `errors`.
@@ -109,11 +98,14 @@ def test_successive_blocks_and_a_cut_off_block_keep_stream_order():
         ("assistant.partial", "Hi"), ("assistant.text", "Hi"), ("assistant.partial", "cut")]
 
 
-def test_other_stream_events_map_to_nothing():
-    for event in ({"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
-                  {"type": "content_block_delta", "delta": {"type": "signature_delta"}},
-                  {"type": "message_stop"}):
-        assert ClaudeStreamEventMapper().map_event({"type": "stream_event", "event": event}) is None
+@pytest.mark.parametrize("event", [
+    pytest.param({"type": "content_block_start", "index": 0, "content_block": {"type": "text"}},
+                 id="content_block_start"),
+    pytest.param({"type": "content_block_delta", "delta": {"type": "signature_delta"}}, id="signature_delta"),
+    pytest.param({"type": "message_stop"}, id="message_stop"),
+])
+def test_other_stream_events_map_to_nothing(event):
+    assert ClaudeStreamEventMapper().map_event({"type": "stream_event", "event": event}) is None
 
 
 def test_the_parser_and_renderer_ignore_partial_lines():

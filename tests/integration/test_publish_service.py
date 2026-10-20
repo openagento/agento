@@ -8,22 +8,12 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from agento.framework.events import JobPublishedEvent
 from agento.framework.job_models import AgentType, JobRequester, RequesterTrust
 from agento.framework.publish_service import publish_job
 from agento.framework.publisher import publish
 
 from .conftest import _test_connection
-
-
-@pytest.fixture(autouse=True)
-def _clean_outbox():
-    conn = _test_connection(autocommit=True)
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM job_event_outbox")
-    conn.close()
 
 
 def _rows(table: str, where: str = "") -> list[dict]:

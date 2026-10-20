@@ -11,114 +11,104 @@ import re
 import httpx
 import pytest
 
+from agento.framework.access import accounts
+from agento.web import security
+
+from .conftest import PANEL, TOKEN, sign_in_as
+
 SECRET = "a" * 64
 APP = "/a/demo/v/v-20260925-120000-ab12/index.html"
+ALICE = accounts.User(id=1, username="alice", role="user", is_active=True)
 
 
 @pytest.fixture
-def secret_file(tmp_path, monkeypatch):
-    path = tmp_path / "proxy-secret"
-    monkeypatch.setenv("AGENTO_PROXY_SECRET_FILE", str(path))
-    return path
+def secret_file(web, tmp_path):
+    """The file the `web` fixture points AGENTO_PROXY_SECRET_FILE at; absent until written."""
+    return tmp_path / "proxy-secret"
 
 
-@pytest.fixture
-def base_url(secret_file, live):
-    return live
-
-
-def test_health_answers_ok(base_url):
-    r = httpx.get(f"{base_url}/health")
+def test_health_answers_ok(web):
+    r = httpx.get(f"{web}/health")
     assert r.status_code == 200
     assert r.text == "ok"
 
 
-def test_direct_call_without_the_proxy_secret_is_denied(base_url, secret_file):
-    secret_file.write_text(SECRET)
-    assert httpx.get(f"{base_url}/internal/authz/app").status_code == 401
+@pytest.mark.parametrize(("secret", "headers"), [
+    pytest.param(SECRET, {}, id="direct-call-without-the-secret"),
+    pytest.param(SECRET, {"X-Agento-Proxy-Auth": "b" * 64}, id="forged-secret"),
+    pytest.param(SECRET, {"X-Agento-User": "1", "X-Forwarded-User": "admin"},
+                 id="caller-identity-headers-without-the-secret"),
+    pytest.param(None, {"X-Agento-Proxy-Auth": ""}, id="missing-secret-on-web-fails-closed"),
+])
+def test_app_authz_without_the_proxy_secret_is_denied(web, secret_file, secret, headers):
+    if secret:
+        secret_file.write_text(secret)
+    assert httpx.get(f"{web}/internal/authz/app", headers=headers).status_code == 401
 
 
-def test_there_is_no_share_authz_endpoint(base_url, secret_file):
+def test_there_is_no_share_authz_endpoint(web, secret_file):
     # Shares are checked by the artifacts server (DECISIONS 2026-09-27, E6 S1).
     secret_file.write_text(SECRET)
-    assert httpx.get(f"{base_url}/internal/authz/share", headers={"X-Agento-Proxy-Auth": SECRET}).status_code == 404
+    assert httpx.get(f"{web}/internal/authz/share", headers={"X-Agento-Proxy-Auth": SECRET}).status_code == 404
 
 
-def test_forged_proxy_secret_is_denied(base_url, secret_file):
+def test_the_proxy_gets_a_deny_without_a_launch_cookie(web, secret_file):
     secret_file.write_text(SECRET)
-    r = httpx.get(f"{base_url}/internal/authz/app", headers={"X-Agento-Proxy-Auth": "b" * 64})
-    assert r.status_code == 401
-
-
-def test_caller_identity_headers_without_the_secret_are_denied(base_url, secret_file):
-    secret_file.write_text(SECRET)
-    r = httpx.get(f"{base_url}/internal/authz/app",
-                  headers={"X-Agento-User": "1", "X-Forwarded-User": "admin"})
-    assert r.status_code == 401
-
-
-def test_the_proxy_gets_a_deny_without_a_launch_cookie(base_url, secret_file):
-    secret_file.write_text(SECRET)
-    r = httpx.get(f"{base_url}/internal/authz/app", headers={"X-Agento-Proxy-Auth": SECRET, "X-Forwarded-Uri": APP})
+    r = httpx.get(f"{web}/internal/authz/app", headers={"X-Agento-Proxy-Auth": SECRET, "X-Forwarded-Uri": APP})
     assert r.status_code == 403
 
 
 @pytest.mark.parametrize("uri", [None, "/a/demo/", "/a/demo/current/index.html",
                                  "/a/demo/v/v-20260925-120000-ab12/%2e%2e/other/index.html"])
-def test_a_path_that_is_not_a_version_path_is_404_without_a_launch_cookie(base_url, secret_file, uri):
+def test_a_path_that_is_not_a_version_path_is_404_without_a_launch_cookie(web, secret_file, uri):
     # The proxy serves only /a/<code>/v/<id>/ (PRD E6 §6.2): the path decides before the cookie.
     secret_file.write_text(SECRET)
     headers = {"X-Agento-Proxy-Auth": SECRET} | ({"X-Forwarded-Uri": uri} if uri else {})
-    assert httpx.get(f"{base_url}/internal/authz/app", headers=headers).status_code == 404
+    assert httpx.get(f"{web}/internal/authz/app", headers=headers).status_code == 404
 
 
-def test_missing_secret_on_web_fails_closed(base_url, secret_file):
-    r = httpx.get(f"{base_url}/internal/authz/app", headers={"X-Agento-Proxy-Auth": ""})
-    assert r.status_code == 401
-
-
-def test_secret_written_after_start_is_picked_up(base_url, secret_file):
+def test_secret_written_after_start_is_picked_up(web, secret_file):
     headers = {"X-Agento-Proxy-Auth": SECRET, "X-Forwarded-Uri": APP}
-    assert httpx.get(f"{base_url}/internal/authz/app", headers=headers).status_code == 401
+    assert httpx.get(f"{web}/internal/authz/app", headers=headers).status_code == 401
     secret_file.write_text(SECRET + "\n")
-    assert httpx.get(f"{base_url}/internal/authz/app", headers=headers).status_code == 403
+    assert httpx.get(f"{web}/internal/authz/app", headers=headers).status_code == 403
 
 
-def test_unknown_path_is_404(base_url):
-    assert httpx.get(f"{base_url}/login").status_code == 404
+def test_unknown_path_is_404(web):
+    assert httpx.get(f"{web}/login").status_code == 404
 
 
-def test_query_string_never_reaches_the_log(base_url, capfd):
-    httpx.get(f"{base_url}/internal/authz/app?cap=SECRETCAP&code=SECRETCODE")
-    httpx.get(f"{base_url}/health?cap=SECRETCAP")
+def test_query_string_never_reaches_the_log(web, capfd):
+    httpx.get(f"{web}/internal/authz/app?cap=SECRETCAP&code=SECRETCODE")
+    httpx.get(f"{web}/health?cap=SECRETCAP")
     err = capfd.readouterr().err
     assert "/internal/authz/app" in err
     assert "SECRET" not in err
 
 
-def test_a_request_to_an_unknown_path_is_still_counted(base_url, counted):
+def test_a_request_to_an_unknown_path_is_still_counted(web, counted):
     """The limiter is mounted before dispatch, so a route cannot escape it by not existing."""
-    assert httpx.get(f"{base_url}/nope").status_code == 404
+    assert httpx.get(f"{web}/nope").status_code == 404
     assert [b.kind for b in counted[-1]] == ["address"]
 
 
-def test_health_is_not_counted(base_url, counted):
-    assert httpx.get(f"{base_url}/health").status_code == 200
+def test_health_is_not_counted(web, counted):
+    assert httpx.get(f"{web}/health").status_code == 200
     assert counted == []
 
 
-def test_the_limiter_fails_closed_when_it_cannot_count(base_url, monkeypatch):
+def test_the_limiter_fails_closed_when_it_cannot_count(web, monkeypatch):
     from agento.web import rate_limit
 
     monkeypatch.setattr(rate_limit, "check", _raise)
-    assert httpx.get(f"{base_url}/api/session").status_code == 503
+    assert httpx.get(f"{web}/api/session").status_code == 503
 
 
 def _raise(*args, **kwargs):
     raise RuntimeError("no database")
 
 
-def test_every_401_is_recorded_as_a_failed_authentication(base_url, monkeypatch, secret_file):
+def test_every_401_is_recorded_as_a_failed_authentication(web, monkeypatch, secret_file):
     """A failed login, a probe without the proxy secret and a dead session all feed the hold."""
     from agento.web import rate_limit
 
@@ -126,7 +116,7 @@ def test_every_401_is_recorded_as_a_failed_authentication(base_url, monkeypatch,
     monkeypatch.setattr(rate_limit, "record_auth_failure", lambda conn, buckets, **kw: failures.append(buckets))
     secret_file.write_text(SECRET)
 
-    httpx.get(f"{base_url}/internal/authz/app")          # no proxy secret -> 401
+    httpx.get(f"{web}/internal/authz/app")          # no proxy secret -> 401
     assert len(failures) == 1
     assert [b.kind for b in failures[0]] == ["address"]
 
@@ -146,7 +136,7 @@ def held(monkeypatch):
 
 @pytest.mark.parametrize("cookie", [None, "__Host-agento-session=not-a-session",
                                     "__Host-agento-launch-" + "d" * 32 + "=not-a-launch"])
-def test_a_held_address_is_refused_whatever_cookie_it_presents(base_url, held, cookie):
+def test_a_held_address_is_refused_whatever_cookie_it_presents(web, held, cookie):
     """Presenting a credential is not proving one.
 
     The hold exists because this address just failed to authenticate repeatedly, which is
@@ -154,65 +144,59 @@ def test_a_held_address_is_refused_whatever_cookie_it_presents(base_url, held, c
     authentication, every hold would have a one-header bypass.
     """
     headers = {"Cookie": cookie} if cookie else {}
-    response = httpx.get(f"{base_url}/api/does-not-exist", headers=headers)
+    response = httpx.get(f"{web}/api/does-not-exist", headers=headers)
 
     assert response.status_code == 429
     assert response.headers["Retry-After"] == "900"
 
 
-def test_a_held_address_still_reaches_health(base_url, held):
+def test_a_held_address_still_reaches_health(web, held):
     """The one exemption stays exempt: a held address must not make the container unhealthy."""
-    assert httpx.get(f"{base_url}/health").status_code == 200
+    assert httpx.get(f"{web}/health").status_code == 200
 
 
 # --- a shared refusal costs the authorized caller nothing, and the stranger no side
 #     effect (SEC-12) --------------------------------------------------------
 
-def _a_session():
-    from datetime import UTC, datetime, timedelta
-
-    from agento.framework.access import accounts, sessions
-
-    return sessions.Session(
-        id="sid", user=accounts.User(id=1, username="alice", role="user", is_active=True),
-        expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1))
-
-
 def test_an_authenticated_caller_survives_another_callers_shared_address_refusal(
-        base_url, held, monkeypatch):
+        web, held, monkeypatch):
     """SEC-12: "the address limit counts failures only, so one caller cannot throttle the
     others' authorized traffic". Behind one NAT, the brute force and the colleague share an
     address; refusing the colleague is the attacker throttling them."""
-    from agento.framework.access import accounts, sessions
-    from agento.web import security
-    from agento.web import server as server_module
-
-    monkeypatch.setattr(server_module, "connect", lambda: None)
-    monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: _a_session())
+    sign_in_as(monkeypatch, ALICE)
     monkeypatch.setattr(accounts, "held_admin", lambda conn, role: [])
 
-    response = httpx.get(f"{base_url}/api/session", headers={"Cookie": f"{security.SESSION_COOKIE}=real"})
+    response = httpx.get(f"{web}/api/session", cookies={security.SESSION_COOKIE: TOKEN})
 
     assert response.status_code == 200
 
 
-def test_a_shared_refusal_lands_before_the_password_is_derived(base_url, held, monkeypatch):
+@pytest.mark.parametrize("signed_in", [pytest.param(False, id="stranger"),
+                                       pytest.param(True, id="signed-in-caller")])
+def test_a_shared_refusal_lands_before_the_password_is_derived(web, held, monkeypatch, signed_in):
     """The refusal is a decision about whether the handler runs, not about which body is
-    written afterwards. A 429 that replaces the answer has already paid for the work."""
+    written afterwards. A 429 that replaces the answer has already paid for the work.
+
+    A session is not a licence to authenticate as someone else (SEC-12): it says who they
+    are, not that THIS attempt succeeded. A route whose purpose is to authenticate is judged
+    on its own outcome, so the shared refusal still applies to a signed-in caller.
+    """
     from agento.framework.access import sessions
 
+    if signed_in:
+        sign_in_as(monkeypatch, ALICE)
     tried: list = []
     monkeypatch.setattr(sessions, "sign_in", lambda conn, u, p: tried.append(u))
 
-    response = httpx.post(f"{base_url}/api/session", json={"username": "alice", "password": "x"},
-                          headers={"Origin": "https://panel.localhost:8443",
-                                   "Sec-Fetch-Site": "same-origin"})
+    response = httpx.post(f"{web}/api/session", json={"username": "victim", "password": "guess"},
+                          headers={"Origin": PANEL, "Sec-Fetch-Site": "same-origin"},
+                          cookies={security.SESSION_COOKIE: TOKEN} if signed_in else {})
 
     assert response.status_code == 429
     assert tried == []
 
 
-def test_a_shared_refusal_consumes_no_launch_code(base_url, held, monkeypatch):
+def test_a_shared_refusal_consumes_no_launch_code(web, held, monkeypatch):
     """Redemption spends a single-use code and commits. A refusal that arrives after it has
     burned the caller's only code and handed them a 429 for it."""
     from agento.web import api
@@ -220,73 +204,37 @@ def test_a_shared_refusal_consumes_no_launch_code(base_url, held, monkeypatch):
     redeemed: list = []
     monkeypatch.setattr(api, "redeem_launch", lambda req: redeemed.append(req.body))
 
-    response = httpx.post(f"{base_url}/internal/launch/redeem", data={"code": "one-use"})
+    response = httpx.post(f"{web}/internal/launch/redeem", data={"code": "one-use"})
 
     assert response.status_code == 429
     assert redeemed == []
 
 
+@pytest.mark.parametrize(("signed_in", "kinds"), [
+    pytest.param(False, ["address"], id="stranger"),
+    # Otherwise one account is all it takes to spend forged launch codes uncounted.
+    pytest.param(True, ["address", "session"], id="signed-in-caller"),
+])
 def test_an_invalid_launch_redemption_is_counted_as_a_failed_authentication(
-        base_url, monkeypatch):
+        web, monkeypatch, signed_in, kinds):
     """A spent or forged exchange code is answered 403, not 401 - and a flood of them is a
     brute force whichever status the route reached for (SEC-12 names both)."""
     from agento.web import api, rate_limit
 
+    if signed_in:
+        sign_in_as(monkeypatch, ALICE)
     failures: list = []
     monkeypatch.setattr(rate_limit, "record_auth_failure",
                         lambda conn, buckets, **kw: failures.append(buckets))
     monkeypatch.setattr(api, "redeem_launch", lambda req: api.error(403, "forbidden"))
 
-    httpx.post(f"{base_url}/internal/launch/redeem", data={"code": "spent"})
+    httpx.post(f"{web}/internal/launch/redeem", data={"code": "forged"},
+               cookies={security.SESSION_COOKIE: TOKEN} if signed_in else {})
 
-    assert len(failures) == 1
-    assert [b.kind for b in failures[0]] == ["address"]
-
-
-# --- a session is not a licence to authenticate as someone else (SEC-12) ----
-
-def test_a_signed_in_caller_gets_no_exemption_when_guessing_a_password(base_url, held,
-                                                                      monkeypatch):
-    """The session says who they are, not that THIS attempt succeeded. A route whose
-    purpose is to authenticate is judged on its own outcome, so the shared refusal still
-    applies to it."""
-    from agento.framework.access import sessions
-    from agento.web import security
-    from agento.web import server as server_module
-
-    monkeypatch.setattr(server_module, "connect", lambda: None)
-    monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: _a_session())
-    tried: list = []
-    monkeypatch.setattr(sessions, "sign_in", lambda conn, u, p: tried.append(u))
-
-    response = httpx.post(f"{base_url}/api/session",
-                          json={"username": "victim", "password": "guess"},
-                          headers={"Cookie": f"{security.SESSION_COOKIE}=real",
-                                   "Origin": "https://panel.localhost:8443",
-                                   "Sec-Fetch-Site": "same-origin"})
-
-    assert response.status_code == 429
-    assert tried == []
+    assert [[b.kind for b in batch] for batch in failures] == [kinds]
 
 
-def test_a_signed_in_callers_failed_redemption_is_still_counted(base_url, monkeypatch):
-    """Otherwise one account is all it takes to spend forged launch codes uncounted."""
-    from agento.framework.access import sessions
-    from agento.web import api, rate_limit, security
-
-    monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: _a_session())
-    failures: list = []
-    monkeypatch.setattr(rate_limit, "record_auth_failure",
-                        lambda conn, buckets, **kw: failures.append(buckets))
-    monkeypatch.setattr(api, "redeem_launch", lambda req: api.error(403, "forbidden"))
-
-    httpx.post(f"{base_url}/internal/launch/redeem", data={"code": "forged"},
-               headers={"Cookie": f"{security.SESSION_COOKIE}=real"})
-
-    assert len(failures) == 1
-
-
-def test_an_authenticated_request_never_spends_the_shared_address_budget(base_url, counted,
+def test_an_authenticated_request_never_spends_the_shared_address_budget(web, counted,
                                                                         monkeypatch):
     """SEC-12: "the address limit counts failures only, so one caller cannot throttle the
     others' authorized traffic".
@@ -295,31 +243,20 @@ def test_an_authenticated_request_never_spends_the_shared_address_budget(base_ur
     every request let one signed-in caller flood it and have every stranger behind that
     address refused - another user's sign-in included.
     """
-    from datetime import UTC, datetime, timedelta
+    sign_in_as(monkeypatch)
 
-    from agento.framework.access import accounts, sessions
-    from agento.web import security
-
-    token = "session-token-value"
-    session = sessions.Session(
-        id="sid", user=accounts.User(id=1, username="root", role="admin", is_active=True),
-        expires_at=datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1))
-    monkeypatch.setattr(sessions, "lookup_session",
-                        lambda conn, t: session if t == token else None)
-
-    httpx.get(f"{base_url}/api/does-not-exist",
-              cookies={security.SESSION_COOKIE: token})
+    httpx.get(f"{web}/api/does-not-exist", cookies={security.SESSION_COOKIE: TOKEN})
 
     kinds = [b.kind for batch in counted for b in batch]
     assert "address" not in kinds
 
     counted.clear()
-    httpx.get(f"{base_url}/api/does-not-exist")          # the same path, no identity
+    httpx.get(f"{web}/api/does-not-exist")          # the same path, no identity
 
     assert "address" in [b.kind for batch in counted for b in batch]
 
 
-def test_an_uncountable_auth_failure_answers_503_not_401(base_url, counted, monkeypatch,
+def test_an_uncountable_auth_failure_answers_503_not_401(web, counted, monkeypatch,
                                                          secret_file):
     """A limiter that cannot count a failed authentication is not a limiter: answering the
     401 anyway is an unbounded number of free guesses (SEC-12). Fail closed."""
@@ -331,7 +268,7 @@ def test_an_uncountable_auth_failure_answers_503_not_401(base_url, counted, monk
     secret_file.write_text(SECRET)
     monkeypatch.setattr(rate_limit, "record_auth_failure", explode)
 
-    assert httpx.get(f"{base_url}/internal/authz/app").status_code == 503
+    assert httpx.get(f"{web}/internal/authz/app").status_code == 503
 
 
 def test_only_a_resolved_session_sets_the_caller_identity():
@@ -359,7 +296,7 @@ def test_only_a_resolved_session_sets_the_caller_identity():
     assert all("_session" in expr or "False" in expr for expr in assigned), assigned
 
 
-def test_a_blank_query_parameter_reaches_the_route_as_present(base_url, monkeypatch):
+def test_a_blank_query_parameter_reaches_the_route_as_present(web, monkeypatch):
     """`?after=` is present-but-empty: a route that answers 400 for it must SEE it.
 
     `parse_qsl` drops blank values by default, so the parameter read as absent and got
@@ -376,5 +313,5 @@ def test_a_blank_query_parameter_reaches_the_route_as_present(base_url, monkeypa
 
     route = api.Route("GET", re.compile("^/api/echo$"), echo, auth="login", acl="anonymous")
     monkeypatch.setattr(api, "ROUTES", [*api.ROUTES, route])
-    httpx.get(f"{base_url}/api/echo?after=&n=1&n=2")
+    httpx.get(f"{web}/api/echo?after=&n=1&n=2")
     assert seen == [{"after": "", "n": "1"}]

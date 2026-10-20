@@ -13,7 +13,6 @@ import socket
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -22,20 +21,11 @@ from agento.framework import workspace_paths
 from agento.framework.harness import HarnessRunContext, RunRequest, RunResult
 from agento.framework.runner import client, server, uids, worker
 from agento.framework.runner.client import RemoteRunner
+from tests.runner_fakes import run_context, run_dir
+from tests.waiting import wait_until
 
 ROOT = os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() == 0 and sys.platform == "linux"
 ENTRYPOINT = Path(__file__).resolve().parents[4] / "src/agento/framework/docker/toolbox/entrypoint.sh"
-
-
-@pytest.fixture(autouse=True)
-def _no_usage_db(monkeypatch):
-    monkeypatch.setattr(RemoteRunner, "_record_usage", lambda self, event: None)
-
-
-def _rundir(tmp_path, name="1") -> Path:
-    path = tmp_path / "workspace" / "artifacts" / "ws" / "av" / name
-    path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 # --- ranges and the pool ---------------------------------------------------------------
@@ -78,7 +68,7 @@ def test_the_pool_gives_unique_uids_under_concurrency_and_none_when_empty():
 def test_run_dir_takes_only_a_dir_strictly_under_the_two_roots(tmp_path, monkeypatch):
     base = tmp_path / "workspace"
     monkeypatch.setattr(workspace_paths, "BASE_WORKSPACE_DIR", str(base))
-    good = _rundir(tmp_path)
+    good = run_dir(tmp_path)
     tmp_home = base / ".tmp" / "h"
     tmp_home.mkdir(parents=True)
     outside = tmp_path / "etc"
@@ -127,7 +117,7 @@ def _tree(tmp_path, monkeypatch):
     """A run dir with a sub dir, a file and two planted links, and an outside dir."""
     base = tmp_path / "workspace"
     monkeypatch.setattr(workspace_paths, "BASE_WORKSPACE_DIR", str(base))
-    top = _rundir(tmp_path)
+    top = run_dir(tmp_path)
     (top / "sub").mkdir()
     (top / "sub" / "f").write_text("x")
     (top / "f").write_text("x")
@@ -335,7 +325,7 @@ def test_kill_all_gives_up_after_its_bound(monkeypatch):
 @pytest.mark.parametrize("argv", [["true"], ["/no/such/cli"]])
 def test_a_uid_is_free_only_after_the_kill_and_the_chown_back(start_runner, tmp_path, argv):
     srv = start_runner()
-    home = str(_rundir(tmp_path))
+    home = str(run_dir(tmp_path))
     with pytest.raises(FileNotFoundError) if argv[0].startswith("/no") else contextlib.nullcontext():
         client.run(argv, env={"HOME": home}, timeout=10)
 
@@ -352,7 +342,7 @@ def test_a_uid_with_survivors_is_kept_out_of_the_pool_and_its_dir_is_not_walked(
     srv = start_runner(state_dir=str(state))
     srv.uids.kill_ok = False
     with pytest.raises(RuntimeError, match="runner cleanup incomplete"):
-        client.run(["true"], env={"HOME": str(_rundir(tmp_path))}, timeout=10)
+        client.run(["true"], env={"HOME": str(run_dir(tmp_path))}, timeout=10)
     uid = srv.uids.calls[0][2]
     assert [c[0] for c in srv.uids.calls] == ["own", "kill"]
     assert os.listdir(state) == [str(uid)]
@@ -372,7 +362,7 @@ def test_a_failed_give_back_is_an_error_and_keeps_the_uid_and_note(start_runner,
 
     monkeypatch.setattr(uids, "own", own)
     with pytest.raises(RuntimeError, match="runner cleanup incomplete"):
-        client.run(["true"], env={"HOME": str(_rundir(tmp_path))}, timeout=10)
+        client.run(["true"], env={"HOME": str(run_dir(tmp_path))}, timeout=10)
     uid = srv.uids.calls[0][2]
     assert os.listdir(state) == [str(uid)] and uid not in srv._uids._free
 
@@ -381,7 +371,7 @@ def test_a_pty_with_survivors_never_sends_an_exit_code(start_runner, tmp_path):
     """No ``\\0<code>`` trailer: the login reads exit code -1, a failure (pty_login.py)."""
     srv = start_runner()
     srv.uids.kill_ok = False
-    sock = client.pty(["true"], str(_rundir(tmp_path)))
+    sock = client.pty(["true"], str(run_dir(tmp_path)))
     data = b""
     while chunk := sock.recv(4096):
         data += chunk
@@ -400,7 +390,7 @@ def test_a_run_dir_that_cannot_be_given_to_the_run_is_an_error(start_runner, tmp
 
     monkeypatch.setattr(uids, "own", own)
     with pytest.raises(RuntimeError, match="could not be given to the run"):
-        client.run(["true"], env={"HOME": str(_rundir(tmp_path))}, timeout=10)
+        client.run(["true"], env={"HOME": str(run_dir(tmp_path))}, timeout=10)
     uid = srv.uids.calls[0][2]
     assert [c[0] for c in srv.uids.calls] == ["own", "kill", "own"] and uid in srv._uids._free
 
@@ -417,8 +407,8 @@ def test_an_execute_with_survivors_ends_in_an_error_and_stays_alive(start_runner
 
 
 def _ctx(tmp_path, tag="job:1"):
-    return HarnessRunContext(harness="claude", provider="anthropic", working_dir=str(_rundir(tmp_path)), home_dir=str(_rundir(tmp_path)),
-                             credential_required=False, tag=tag, timeout_seconds=30)
+    """The run dir is also the HOME: the server gives it to the run uid and back."""
+    return run_context(tmp_path, tag, home_dir=str(run_dir(tmp_path)))
 
 
 class _Ok:
@@ -439,30 +429,43 @@ def test_the_terminal_frame_comes_only_after_the_chown_back(start_runner, tmp_pa
     srv = start_runner(make_runner=lambda h, ctx, dry_run: (_Boom if op == "execute-error" else _Ok)())
     order = []
     fake_own = uids.own
+    walking, release, done = threading.Event(), threading.Event(), threading.Event()
 
     def own(path, uid, gid, *, for_run, retiring=None):
-        if not for_run:
-            time.sleep(0.2)  # a slow walk: the client must still wait for it
+        if not for_run:  # a slow walk: the client must still wait for it
+            walking.set()
+            assert release.wait(10)
             order.append("chown-back")
         fake_own(path, uid, gid, for_run=for_run, retiring=retiring)
 
     monkeypatch.setattr(uids, "own", own)
-    home = str(_rundir(tmp_path))
-    if op.startswith("execute"):
-        with contextlib.suppress(RuntimeError):
-            RemoteRunner("claude", _ctx(tmp_path)).execute(RunRequest(prompt="p"))
-    elif op == "run":
-        client.run(["true"], env={"HOME": home}, timeout=10)
-    else:
-        sock = client.pty(["true"], home)
-        data = b""
-        while chunk := sock.recv(4096):
-            data += chunk
-        sock.close()
-        assert data.endswith(b"\x000")
-    order.append("terminal")
+    home = str(run_dir(tmp_path))
 
-    assert order == ["chown-back", "terminal"]
+    def call():
+        if op.startswith("execute"):
+            with contextlib.suppress(RuntimeError):
+                RemoteRunner("claude", _ctx(tmp_path)).execute(RunRequest(prompt="p"))
+        elif op == "run":
+            client.run(["true"], env={"HOME": home}, timeout=10)
+        else:
+            sock = client.pty(["true"], home)
+            data = b""
+            while chunk := sock.recv(4096):
+                data += chunk
+            sock.close()
+            order.append(data.endswith(b"\x000"))
+        order.append("terminal")
+        done.set()
+
+    caller = threading.Thread(target=call, daemon=True)
+    caller.start()
+    assert walking.wait(10)
+    # A terminal frame sent before the walk would reach the client while the walk is held.
+    assert not done.wait(0.05)
+    release.set()
+    caller.join(10)
+
+    assert order == ["chown-back", *([True] if op == "pty" else []), "terminal"]
     assert [c[0] for c in srv.uids.calls] == ["own", "kill", "own"]
 
 
@@ -470,7 +473,7 @@ def test_the_pty_child_drops_to_the_run_uid(start_runner, tmp_path, monkeypatch)
     start_runner()
     mark = tmp_path / "uid"
     monkeypatch.setattr(uids, "drop_to", lambda uid: mark.write_text(str(uid)))
-    sock = client.pty(["true"], str(_rundir(tmp_path)))
+    sock = client.pty(["true"], str(run_dir(tmp_path)))
     while sock.recv(4096):
         pass
     sock.close()
@@ -481,7 +484,7 @@ def test_run_starts_the_cli_as_the_run_uid(start_runner, tmp_path, monkeypatch):
     start_runner()
     asked = []
     monkeypatch.setattr(uids, "as_uid", lambda uid: asked.append(uid) or {})
-    client.run(["true"], env={"HOME": str(_rundir(tmp_path))}, timeout=10)
+    client.run(["true"], env={"HOME": str(run_dir(tmp_path))}, timeout=10)
     assert len(asked) == 1 and asked[0] in uids.uid_range(1)
 
 
@@ -500,11 +503,11 @@ def test_signal_goes_to_every_process_of_the_runs_uid(start_runner, tmp_path):
     srv = start_runner(make_runner=lambda h, ctx, dry_run: _Sleep())
     runner = RemoteRunner("claude", _ctx(tmp_path, tag="job:7"))
     out = {}
-    pids = []
-    runner.observe(on_pid=pids.append)
+    started = threading.Event()
+    runner.observe(on_pid=lambda pid: started.set())
     t = threading.Thread(target=lambda: out.update(r=runner.execute(RunRequest(prompt="p"))))
     t.start()
-    assert _wait(lambda: pids)
+    assert started.wait(5)
 
     assert client.signal(runner.runner_ref, "job:7", signal.SIGTERM) is True
     t.join(10)
@@ -512,15 +515,6 @@ def test_signal_goes_to_every_process_of_the_runs_uid(start_runner, tmp_path):
     uid = srv.uids.calls[0][2]
     assert ("signal", uid, signal.SIGTERM) in srv.uids.calls
     assert out["r"].raw_output == f"rc={-signal.SIGTERM}"
-
-
-def _wait(predicate, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.02)
-    return False
 
 
 # --- the worker split -------------------------------------------------------------------
@@ -594,13 +588,13 @@ def test_the_toolbox_entrypoint_uses_the_same_uid_constants():
 @pytest.mark.skipif(not ROOT, reason="needs root on Linux (the runner container)")
 def test_real_own_kill_and_chown_back(tmp_path, monkeypatch):
     monkeypatch.setattr(workspace_paths, "BASE_WORKSPACE_DIR", str(tmp_path / "workspace"))
-    top = _rundir(tmp_path)
+    top = run_dir(tmp_path)
     uid = uids.uid_range(8)[0]
     uids.own(str(top), uid, uid, for_run=True)
     assert (top.stat().st_uid, top.stat().st_mode & 0o7777) == (uid, uids.DIR_MODE)
     subprocess.Popen(["setsid", "sleep", "60"], **uids.as_uid(uid), stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL)
-    assert _wait(lambda: uids.processes_of(uid))
+    assert wait_until(lambda: uids.processes_of(uid))
     assert uids.kill_all(uid) and uids.processes_of(uid) == []
     uids.own(str(top), 0, 0, for_run=False)
     assert top.stat().st_uid == 0
@@ -615,7 +609,7 @@ def test_a_run_dir_left_by_a_dead_server_is_given_back_at_start(start_runner, tm
     seen = []
     fake_own = uids.own
     monkeypatch.setattr(uids, "own", lambda *a, **k: (seen.append(sorted(os.listdir(state))), fake_own(*a, **k)))
-    home = _rundir(tmp_path)
+    home = run_dir(tmp_path)
     client.run(["true"], env={"HOME": str(home)}, timeout=10)
     uid = srv.uids.calls[0][2]
     assert seen == [[str(uid)], [str(uid)]] and os.listdir(state) == []
@@ -633,7 +627,7 @@ def test_a_failed_reclaim_keeps_the_note_and_the_uid_out_of_the_pool(start_runne
     state = tmp_path / "live"
     state.mkdir()
     first = uids.uid_range(1)[3]
-    (state / str(first)).write_text(str(_rundir(tmp_path)))
+    (state / str(first)).write_text(str(run_dir(tmp_path)))
 
     def own(*a, **k):
         raise PermissionError("chown")

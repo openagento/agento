@@ -36,12 +36,15 @@ def test_non_ascii_password():
     assert not verify_password("zazolc gesla jazn", stored)
 
 
-def test_length_bounds():
-    check_password_policy("x" * MIN_PASSWORD)
-    check_password_policy("x" * MAX_PASSWORD)
-    for bad in ("x" * (MIN_PASSWORD - 1), "x" * (MAX_PASSWORD + 1)):
-        with pytest.raises(ValueError):
-            check_password_policy(bad)
+@pytest.mark.parametrize("length", [MIN_PASSWORD, MAX_PASSWORD], ids=["min", "max"])
+def test_a_length_inside_the_bounds_is_accepted(length):
+    check_password_policy("x" * length)
+
+
+@pytest.mark.parametrize("length", [MIN_PASSWORD - 1, MAX_PASSWORD + 1], ids=["below-min", "above-max"])
+def test_a_length_outside_the_bounds_is_refused(length):
+    with pytest.raises(ValueError):
+        check_password_policy("x" * length)
 
 
 def test_a_password_over_the_limit_never_matches_its_prefix():

@@ -40,16 +40,16 @@ def test_mints_one_viewless_capability_and_sends_it_in_the_header(minted):
     assert "tok-admin" not in str(request.url)
 
 
+@pytest.mark.parametrize(("mock", "status"), [
+    pytest.param({"return_value": httpx.Response(404, json={"error_code": "ARTIFACT_NOT_FOUND"})}, 404,
+                 id="refusal-passes-through"),
+    pytest.param({"side_effect": httpx.ConnectError("down")}, 503, id="unreachable-is-503"),
+    pytest.param({"return_value": httpx.Response(200, text="<html>")}, 502, id="not-json-is-502"),
+])
 @respx.mock
-def test_passes_a_refusal_through_and_maps_transport_failures(minted):
-    respx.delete(f"{URL}/admin/versioned-artifacts/site").mock(
-        return_value=httpx.Response(404, json={"error_code": "ARTIFACT_NOT_FOUND"}))
-    respx.get(f"{URL}/admin/versioned-artifacts").mock(side_effect=httpx.ConnectError("down"))
-    respx.get(f"{URL}/admin/versioned-artifacts/x/versions").mock(return_value=httpx.Response(200, text="<html>"))
-    assert toolbox_client.admin_request(None, "DELETE", "versioned-artifacts/site", subject_id="service:cli").status == 404
-    assert toolbox_client.admin_request(None, "GET", "versioned-artifacts", subject_id="service:cli").status == 503
-    assert toolbox_client.admin_request(None, "GET", "versioned-artifacts/x/versions",
-                                        subject_id="service:cli").status == 502
+def test_passes_a_refusal_through_and_maps_transport_failures(minted, mock, status):
+    respx.get(f"{URL}/admin/versioned-artifacts").mock(**mock)
+    assert toolbox_client.admin_request(None, "GET", "versioned-artifacts", subject_id="service:cli").status == status
 
 
 def _row(subject_id, agent_view_id=None):

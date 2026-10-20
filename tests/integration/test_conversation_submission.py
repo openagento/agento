@@ -6,17 +6,9 @@ import threading
 import pytest
 
 from agento.framework.access import accounts
-from agento.framework.job_types import clear_job_types, register_job_type
 from agento.modules.conversation.src import routes, service
 
 from .conftest import _test_connection
-
-
-@pytest.fixture(autouse=True)
-def _job_type():
-    register_job_type("conversation", module="conversation")
-    yield
-    clear_job_types()
 
 
 def _conversation(conn, world, user=None, view="view") -> int:
@@ -194,36 +186,22 @@ def test_another_users_conversation_is_invisible(conn, world):
     assert service.list_visible(conn, user=world["stranger"], limit=10) == []
 
 
-def test_a_deactivated_view_hides_the_conversation_from_the_next_request(conn, world):
+@pytest.mark.parametrize(("table", "scope", "user"), [
+    pytest.param("agent_view", "view", "owner", id="deactivated-view"),
+    pytest.param("workspace", "workspace", "owner", id="deactivated-workspace"),
+    pytest.param("agent_view", "view", "admin", id="binds-admin-too"),
+])
+def test_an_inactive_scope_hides_the_conversation_from_the_next_request(conn, world, table,
+                                                                         scope, user):
     cid = _conversation(conn, world)
-    assert service.load_visible(conn, conversation_id=cid, user=world["owner"]) is not None
+    assert service.load_visible(conn, conversation_id=cid, user=world[user]) is not None
 
     with conn.cursor() as cur:
-        cur.execute("UPDATE agent_view SET is_active = 0 WHERE id = %s", (world["view"],))
+        cur.execute(f"UPDATE {table} SET is_active = 0 WHERE id = %s", (world[scope],))
     conn.commit()
 
-    assert service.load_visible(conn, conversation_id=cid, user=world["owner"]) is None
-    assert service.list_visible(conn, user=world["owner"], limit=10) == []
-
-
-def test_a_deactivated_workspace_hides_it_too(conn, world):
-    cid = _conversation(conn, world)
-
-    with conn.cursor() as cur:
-        cur.execute("UPDATE workspace SET is_active = 0 WHERE id = %s", (world["workspace"],))
-    conn.commit()
-
-    assert service.load_visible(conn, conversation_id=cid, user=world["owner"]) is None
-
-
-def test_the_active_gate_binds_admin_too(conn, world):
-    cid = _conversation(conn, world)
-
-    with conn.cursor() as cur:
-        cur.execute("UPDATE agent_view SET is_active = 0 WHERE id = %s", (world["view"],))
-    conn.commit()
-
-    assert service.load_visible(conn, conversation_id=cid, user=world["admin"]) is None
+    assert service.load_visible(conn, conversation_id=cid, user=world[user]) is None
+    assert service.list_visible(conn, user=world[user], limit=10) == []
 
 
 def test_removing_the_grant_hides_the_conversation(conn, world):

@@ -9,12 +9,12 @@ Three halves, and they are not interchangeable:
   unparseable, or the wrong type, rather than serving a value nothing validated (part 3).
 """
 
-import json
 from pathlib import Path
 
 import pytest
 
 from agento.framework.config_write import ConfigWriteError, validate_config_value
+from tests.module_writer import write_module
 
 SYSTEM = {
     "stream/max_per_user": {"type": "integer", "label": "Streams per user", "min": 1, "max": 16},
@@ -25,21 +25,18 @@ SYSTEM = {
 CONFIG = {"stream/max_per_user": 4, "retention/event_days": 90, "unbounded_count": 7, "title": "x"}
 
 
+def _resolvable(monkeypatch, mod: Path) -> Path:
+    """Make ``mod`` the only module _find_module_dir resolves."""
+    from agento.framework import core_config
+
+    monkeypatch.setattr(core_config, "_find_module_dir", lambda name: mod if name == mod.name else None)
+    return mod
+
+
 @pytest.fixture
 def boundmod(tmp_path, monkeypatch):
     """A module on disk named `boundmod`, resolvable by _find_module_dir."""
-    mod = tmp_path / "boundmod"
-    mod.mkdir()
-    (mod / "module.json").write_text(json.dumps(
-        {"name": "boundmod", "version": "1.0.0", "description": "bounds"}
-    ))
-    (mod / "system.json").write_text(json.dumps(SYSTEM))
-    (mod / "config.json").write_text(json.dumps(CONFIG))
-
-    from agento.framework import core_config
-
-    monkeypatch.setattr(core_config, "_find_module_dir", lambda name: mod if name == "boundmod" else None)
-    return mod
+    return _resolvable(monkeypatch, write_module(tmp_path, "boundmod", system_json=SYSTEM, config_json=CONFIG))
 
 
 # --- part 1: the write path --------------------------------------------------------
@@ -79,15 +76,8 @@ def test_a_non_numeric_field_is_unaffected(boundmod):
 
 
 def test_only_the_upper_bound_when_only_max_is_declared(tmp_path, monkeypatch):
-    mod = tmp_path / "maxonly"
-    mod.mkdir()
-    (mod / "module.json").write_text(json.dumps(
-        {"name": "maxonly", "version": "1.0.0", "description": "m"}
-    ))
-    (mod / "system.json").write_text(json.dumps({"n": {"type": "integer", "label": "n", "max": 10}}))
-    from agento.framework import core_config
-
-    monkeypatch.setattr(core_config, "_find_module_dir", lambda name: mod if name == "maxonly" else None)
+    _resolvable(monkeypatch, write_module(
+        tmp_path, "maxonly", system_json={"n": {"type": "integer", "label": "n", "max": 10}}))
     validate_config_value("maxonly/n", "-100")          # no minimum declared
     with pytest.raises(ConfigWriteError):
         validate_config_value("maxonly/n", "11")
@@ -96,48 +86,24 @@ def test_only_the_upper_bound_when_only_max_is_declared(tmp_path, monkeypatch):
 # --- part 2: the default is what makes the fallback trustworthy ---------------------
 
 
-def test_module_validate_refuses_an_out_of_bounds_default(tmp_path):
+def _default_errors(tmp_path, **override) -> list[str]:
     from agento.framework.module_validator import validate_module
 
-    mod = tmp_path / "baddefault"
-    mod.mkdir()
-    (mod / "module.json").write_text(json.dumps(
-        {"name": "baddefault", "version": "1.0.0", "description": "d"}
-    ))
-    (mod / "system.json").write_text(json.dumps(SYSTEM))
-    (mod / "config.json").write_text(json.dumps({**CONFIG, "stream/max_per_user": 0}))
-
-    errors = validate_module(mod)
-    assert any("stream/max_per_user" in e and "range" in e for e in errors), errors
+    return validate_module(write_module(tmp_path, "defaults", system_json=SYSTEM,
+                                        config_json={**CONFIG, **override}))
 
 
-def test_module_validate_refuses_a_non_numeric_default(tmp_path):
-    from agento.framework.module_validator import validate_module
-
-    mod = tmp_path / "baddefault2"
-    mod.mkdir()
-    (mod / "module.json").write_text(json.dumps(
-        {"name": "baddefault2", "version": "1.0.0", "description": "d"}
-    ))
-    (mod / "system.json").write_text(json.dumps(SYSTEM))
-    (mod / "config.json").write_text(json.dumps({**CONFIG, "retention/event_days": "ninety"}))
-
-    errors = validate_module(mod)
-    assert any("retention/event_days" in e for e in errors), errors
+@pytest.mark.parametrize(("override", "needles"), [
+    pytest.param({"stream/max_per_user": 0}, ("stream/max_per_user", "range"), id="out-of-bounds"),
+    pytest.param({"retention/event_days": "ninety"}, ("retention/event_days",), id="non-numeric"),
+])
+def test_module_validate_refuses_a_bad_default(tmp_path, override, needles):
+    errors = _default_errors(tmp_path, **override)
+    assert any(all(n in e for n in needles) for e in errors), errors
 
 
 def test_module_validate_accepts_defaults_inside_their_bounds(tmp_path):
-    from agento.framework.module_validator import validate_module
-
-    mod = tmp_path / "gooddefault"
-    mod.mkdir()
-    (mod / "module.json").write_text(json.dumps(
-        {"name": "gooddefault", "version": "1.0.0", "description": "d"}
-    ))
-    (mod / "system.json").write_text(json.dumps(SYSTEM))
-    (mod / "config.json").write_text(json.dumps(CONFIG))
-
-    assert [e for e in validate_module(mod) if "bound" in e or "min" in e or "max" in e] == []
+    assert [e for e in _default_errors(tmp_path) if "bound" in e or "min" in e or "max" in e] == []
 
 
 def test_shipped_core_modules_have_defaults_inside_their_bounds():
@@ -201,20 +167,14 @@ def test_an_unbounded_field_is_unaffected(monkeypatch):
     assert (got.value, got.source) == (0, "env")
 
 
-def test_a_bounded_field_with_no_default_raises(monkeypatch):
+@pytest.mark.parametrize("env", [None, "0"], ids=["no-override", "out-of-bounds-env"])
+def test_a_bounded_field_with_no_default_raises(monkeypatch, env):
     """Fail closed: there is nothing validated to serve (SEC-9)."""
     from agento.framework.config_resolver import MissingBoundedDefault
 
     with pytest.raises(MissingBoundedDefault) as exc:
-        _resolve("stream/max_per_user", env="0", defaults={}, monkeypatch=monkeypatch)
+        _resolve("stream/max_per_user", env=env, defaults={}, monkeypatch=monkeypatch)
     assert "stream/max_per_user" in str(exc.value)
-
-
-def test_a_bounded_field_with_no_default_and_no_override_raises(monkeypatch):
-    from agento.framework.config_resolver import MissingBoundedDefault
-
-    with pytest.raises(MissingBoundedDefault):
-        _resolve("stream/max_per_user", defaults={}, monkeypatch=monkeypatch)
 
 
 # --- part 4: a `number` field is a number, and a bound that cannot refuse is no bound ---
@@ -276,16 +236,8 @@ def test_a_number_resolves_to_a_float_from_every_source(source, monkeypatch):
 
 
 def test_config_set_refuses_a_non_finite_number(tmp_path, monkeypatch):
-    mod = tmp_path / "nummod"
-    mod.mkdir()
-    (mod / "module.json").write_text(json.dumps(
-        {"name": "nummod", "version": "1.0.0", "description": "numbers"}))
-    (mod / "system.json").write_text(json.dumps({"rate": NUMBER}))
-    (mod / "config.json").write_text(json.dumps({"rate": 0.5}))
-    from agento.framework import core_config
-
-    monkeypatch.setattr(core_config, "_find_module_dir",
-                        lambda name: mod if name == "nummod" else None)
+    _resolvable(monkeypatch, write_module(
+        tmp_path, "nummod", system_json={"rate": NUMBER}, config_json={"rate": 0.5}))
 
     with pytest.raises(ConfigWriteError):
         validate_config_value("nummod/rate", "nan")
@@ -295,12 +247,8 @@ def test_module_validate_refuses_a_non_finite_default(tmp_path):
     """There is no second default to fall back to, so this one must be a real number."""
     from agento.framework.module_validator import validate_module
 
-    mod = tmp_path / "nummod"
-    mod.mkdir()
-    (mod / "module.json").write_text(json.dumps(
-        {"name": "nummod", "version": "1.0.0", "description": "numbers"}))
-    (mod / "system.json").write_text(json.dumps({"rate": NUMBER}))
-    (mod / "config.json").write_text('{"rate": 1e999}')     # JSON has no Infinity literal
+    mod = write_module(tmp_path, "nummod", system_json={"rate": NUMBER},
+                       config_json='{"rate": 1e999}')     # JSON has no Infinity literal
 
     errors = validate_module(mod)
 

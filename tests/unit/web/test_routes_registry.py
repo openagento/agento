@@ -13,9 +13,16 @@ from pathlib import Path
 import httpx
 import pytest
 
+from agento.framework import job_types
 from agento.framework.access import acl
 from agento.web import api
 from agento.web.routes_registry import RouteDeclarationError, load_module_routes
+
+
+@pytest.fixture(autouse=True)
+def _job_types(monkeypatch):
+    """Loading the real core modules registers their job types: keep that in this test."""
+    monkeypatch.setattr(job_types, "_REGISTRY", dict(job_types._REGISTRY))
 
 
 def _dirs(root: Path) -> list[tuple[str, Path]]:
@@ -265,11 +272,8 @@ def test_the_shipped_conversation_module_registers_its_job_type(etc):
     with pytest.raises(JobTypeUnknown):
         resolve_job_type("conversation")
     (etc / "modules.json").write_text(json.dumps({"conversation": True}))
-    try:
-        load_module_routes(etc, _dirs(Path(CORE_MODULES_DIR)))
-        assert resolve_job_type("conversation").module == "conversation"
-    finally:
-        clear_job_types()
+    load_module_routes(etc, _dirs(Path(CORE_MODULES_DIR)))
+    assert resolve_job_type("conversation").module == "conversation"
 
 
 def test_a_disabled_conversation_module_serves_nothing(etc):
@@ -385,6 +389,12 @@ def test_an_installed_extensions_routes_are_composed(etc, tmp_path, monkeypatch)
     assert routes[0].pattern.match("/api/demo/hello")
 
     # `compose_routes` must go through that same call - not a root list of its own.
+    # It reads cwd/app/etc (no /app/etc here): never the host checkout's modules.json.
+    from agento.framework import event_manager
+
+    _status(_app_etc(tmp_path), {"demo": True})
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(event_manager, "_EVENT_MANAGER", None)
     seen: list = []
     monkeypatch.setattr(server, "connect", lambda: None, raising=False)
     monkeypatch.setattr(module_discovery, "module_dirs_by_name",
@@ -473,6 +483,11 @@ def test_a_leaf_of_a_disabled_sequence_module_is_refused(etc, code):
 
     with pytest.raises(RouteDeclarationError):
         load_module_routes(etc, _dirs(code))
+
+
+def _app_etc(root: Path) -> Path:
+    (root / "app" / "etc").mkdir(parents=True)
+    return root / "app" / "etc"
 
 
 def _compose(monkeypatch, tmp_path, dirs):

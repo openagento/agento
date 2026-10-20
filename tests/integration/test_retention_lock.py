@@ -24,17 +24,9 @@ V1, V2 = "v-20260101-000000-aaaa", "v-20260102-000000-bbbb"
 @pytest.fixture
 def conns():
     a, b = _test_connection(autocommit=True), _test_connection(autocommit=True)
-    _clean(a)
     yield a, b
-    _clean(a)
     a.close()
     b.close()
-
-
-def _clean(c):
-    with c.cursor() as cur:
-        for table in ("launch", "session", "role_grant", "`user`"):
-            cur.execute(f"DELETE FROM {table}")
 
 
 def _prune_try(conn, code) -> bool:

@@ -14,18 +14,7 @@ from agento.framework.event_manager import ObserverEntry, clear, get_event_manag
 from agento.modules.conversation.src import routes, service
 
 from .conftest import _clean  # noqa: F401
-from .test_conversation_submission import _job_type, _Req  # noqa: F401
-
-
-@pytest.fixture(autouse=True)
-def _clean_executions(conn):
-    def wipe():
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM execution")
-        conn.commit()
-    wipe()
-    yield
-    wipe()
+from .test_conversation_submission import _Req
 
 
 @pytest.fixture

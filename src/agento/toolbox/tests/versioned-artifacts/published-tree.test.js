@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createService, LIVE_LAUNCH_VERSIONS_SQL } from '../../../modules/versioned_artifacts/toolbox/service.js';
 import { createBackend } from '../../../modules/versioned_artifacts/toolbox/git-backend.js';
 import { pruneVersions, swapCurrent } from '../../../modules/versioned_artifacts/toolbox/published-tree.js';
-import { mintVersion, readSource } from './helpers.js';
+import { mintVersion, readSource, vaConfig } from './helpers.js';
 
 // `saveVersion` takes a desk, which is fd-anchored and Linux-only. The published tree
 // itself is plain fs, so everything reached through `publish` runs everywhere.
@@ -14,10 +14,7 @@ const linux = process.platform === 'linux';
 
 let root, pub, src, svc, be, desk, deskFd;
 const opened = [];
-const cfg = (over = {}) => ({ storage_root: root, published_root: pub, allowed_artifacts: 'site',
-  'limits/max_files': 2000, 'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600,
-  'limits/max_diff_bytes': 1048576, 'limits/max_agent_artifacts': 50, 'security/allow_symlinks': false,
-  'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', ...over });
+const cfg = (over = {}) => vaConfig(root, pub, over);
 
 const mk = (over = {}, backend = undefined, extra = {}) => createService({
   config: cfg(over), db: null, log: vi.fn(), actor: 'a@b.c', ...(backend ? { backend } : {}), ...extra,

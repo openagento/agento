@@ -17,13 +17,7 @@ from .conftest import _test_connection
 @pytest.fixture
 def conn():
     c = _test_connection(autocommit=False)
-    with c.cursor() as cur:
-        cur.execute("DELETE FROM job_event_outbox")
-    c.commit()
     yield c
-    with c.cursor() as cur:
-        cur.execute("DELETE FROM job_event_outbox")
-    c.commit()
     c.close()
 
 
@@ -65,28 +59,20 @@ def test_a_committed_transition_always_leaves_a_row(conn):
 
 
 @pytest.mark.parametrize("payload", [
-    {"conn": object()},
-    {"nested": {"deeper": {"still": object()}}},
-    {"when": ...},
-    ["not", "an", "object"],
-    "a string",
-    None,
+    # A payload is data that will be read back as JSON, never a live object.
+    pytest.param({"conn": object()}, id="not-plain-data-object"),
+    pytest.param({"nested": {"deeper": {"still": object()}}}, id="not-plain-data-nested-object"),
+    pytest.param({"when": ...}, id="not-plain-data-ellipsis"),
+    pytest.param(["not", "an", "object"], id="not-plain-data-list"),
+    pytest.param("a string", id="not-plain-data-string"),
+    pytest.param(None, id="not-plain-data-none"),
+    # The outbox is read by a relay that fans out to clients; a config path or a token in
+    # it is a secret one manifest away from a browser.
+    pytest.param({"path": "core/smtp_pass"}, id="config-shaped-path"),
+    pytest.param({"nested": {"CONFIG__CORE__SMTP_PASS": "x"}}, id="config-shaped-env-name"),
+    pytest.param({"value": "sk-ant-api03-deadbeef"}, id="config-shaped-token"),
 ])
-def test_a_payload_that_is_not_plain_data_is_refused(conn, payload):
-    """A payload is data that will be read back as JSON, never a live object."""
-    with conn.cursor() as cur, pytest.raises(PayloadError):
-        write_outbox(cur, job_id=1, kind="job.claimed", payload=payload)
-    conn.rollback()
-
-
-@pytest.mark.parametrize("payload", [
-    {"path": "core/smtp_pass"},
-    {"nested": {"CONFIG__CORE__SMTP_PASS": "x"}},
-    {"value": "sk-ant-api03-deadbeef"},
-])
-def test_a_config_shaped_payload_is_refused(conn, payload):
-    """The outbox is read by a relay that fans out to clients; a config path or a token in
-    it is a secret one manifest away from a browser."""
+def test_a_payload_that_is_not_plain_safe_data_is_refused(conn, payload):
     with conn.cursor() as cur, pytest.raises(PayloadError):
         write_outbox(cur, job_id=1, kind="job.claimed", payload=payload)
     conn.rollback()

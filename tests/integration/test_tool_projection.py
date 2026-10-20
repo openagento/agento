@@ -16,19 +16,6 @@ import pytest
 from agento.modules.conversation.src import relay, service
 
 from .conftest import _clean  # noqa: F401
-from .test_conversation_submission import _job_type  # noqa: F401
-
-
-@pytest.fixture(autouse=True)
-def _clean_projection_tables(conn):
-    def wipe():
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM tool_invocation")
-            cur.execute("DELETE FROM execution")
-        conn.commit()
-    wipe()
-    yield
-    wipe()
 
 
 @pytest.fixture

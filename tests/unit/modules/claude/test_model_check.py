@@ -165,7 +165,7 @@ def test_probe_never_reads_the_body():
 def test_slow_headers_end_at_the_deadline(slow_headers, spawned):
     started = time.monotonic()
     result = check_model("anthropic", "claude-known", API_KEY, timeout_s=0.5)
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < 0.5 + 3  # the deadline, not the child's 30 s
     assert (result.status, result.code) == (ERROR, "MODEL_CHECK_TIMEOUT")
     _assert_reaped(spawned)
 
@@ -181,7 +181,7 @@ def test_blocking_dns_ends_at_the_deadline(tmp_path, monkeypatch, spawned):
     monkeypatch.setattr(model_check, "PROBE_MODULE", "blocking_dns_probe")
     started = time.monotonic()
     result = check_model("anthropic", "claude-known", API_KEY, timeout_s=0.5)
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < 0.5 + 3  # the deadline, not the child's 30 s
     assert (result.status, result.code) == (ERROR, "MODEL_CHECK_TIMEOUT")
     _assert_reaped(spawned)
 

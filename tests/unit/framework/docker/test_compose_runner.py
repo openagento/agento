@@ -2,39 +2,25 @@
 AGENTO_RUNNER_COUNT, with no secret and no shared PID namespace (SEC-1, SEC-12)."""
 from __future__ import annotations
 
-import json
-import os
-import shutil
-import subprocess
-from pathlib import Path
-
 import pytest
 
 from agento.framework.cli import _provisioning
-from agento.framework.cli._provisioning import render_compose
+from tests.unit.framework.docker.compose_files import (
+    compose_config,
+    needs_compose,
+    render_template,
+    write_compose,
+)
 
-ROOT = Path(__file__).parents[4]
 RUNNER_CAPS = ["SETUID", "SETGID", "CHOWN", "FOWNER", "FSETID", "DAC_READ_SEARCH", "KILL"]
-TEMPLATE = ROOT / "src" / "agento" / "framework" / "cli" / "templates" / "docker-compose.yml"
-HAS_COMPOSE = shutil.which("docker") is not None and subprocess.run(
-    ["docker", "compose", "version"], capture_output=True).returncode == 0
 
 
-def _services(compose: Path) -> dict:
-    out = subprocess.run(["docker", "compose", "-f", str(compose), "config", "--format", "json"],
-                         env={**os.environ, "MYSQL_BACKEND_PASSWORD": "x", "MYSQL_TOOLBOX_PASSWORD": "y"},
-                         capture_output=True, text=True, check=True, cwd=compose.parent).stdout
-    return json.loads(out)
-
-
-@pytest.mark.skipif(not HAS_COMPOSE, reason="needs docker compose")
+@needs_compose()
 @pytest.mark.parametrize("count", [1, 2])
 def test_one_service_per_runner_wired_to_the_worker(tmp_path, count):
     """No secret and no shared PID namespace: runner/test_runner_boundary.py."""
-    path = tmp_path / "docker-compose.yml"
-    path.write_text(render_compose(TEMPLATE.read_text(), python_version="3.12", extensions=["ext"],
-                                   runner_count=count))
-    config = _services(path)
+    path = write_compose(tmp_path, render_template(extensions=["ext"], runner_count=count))
+    config = compose_config(path, {"MYSQL_BACKEND_PASSWORD": "x", "MYSQL_TOOLBOX_PASSWORD": "y"})
     services = config["services"]
     runners = sorted(n for n in services if n.startswith("runner-"))
     cron = services["cron"]

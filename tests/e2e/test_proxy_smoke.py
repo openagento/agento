@@ -37,6 +37,7 @@ _E2E = os.environ.get("AGENTO_E2E") == "1"
 
 pytestmark = [
     pytest.mark.e2e,
+    pytest.mark.serial,  # the script docker-stops `web` and writes users to the live DB
     pytest.mark.skipif(not _E2E, reason="set AGENTO_E2E=1 to run"),
     pytest.mark.skipif(
         _E2E and not _proxy_running(_project()),

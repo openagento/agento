@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from agento.framework.agent_manager.errors import AuthenticationError, UsageLimitError
 from agento.framework.events import JobVerificationFailed, Verdict, VerifyReason
 from agento.framework.retry_policy import BACKOFF_DELAYS, evaluate
@@ -50,25 +52,11 @@ def test_retryable_error_attempt_3_max_reached():
     assert decision.should_retry is False
 
 
-def test_non_retryable_value_error():
-    decision = evaluate("ValueError", attempt=1, max_attempts=3)
+@pytest.mark.parametrize("error_class", ["ValueError", "ModelConfigError", "PermissionError", "KeyError"])
+def test_a_non_retryable_error_fails_on_the_first_attempt(error_class):
+    decision = evaluate(error_class, attempt=1, max_attempts=3)
     assert decision.should_retry is False
     assert "Non-retryable" in decision.reason
-
-
-def test_model_config_error_fails_on_the_first_attempt():
-    decision = evaluate("ModelConfigError", attempt=1, max_attempts=3)
-    assert decision.should_retry is False
-
-
-def test_non_retryable_permission_error():
-    decision = evaluate("PermissionError", attempt=1, max_attempts=3)
-    assert decision.should_retry is False
-
-
-def test_non_retryable_key_error():
-    decision = evaluate("KeyError", attempt=1, max_attempts=3)
-    assert decision.should_retry is False
 
 
 def test_unknown_error_is_retryable():

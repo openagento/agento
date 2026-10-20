@@ -95,6 +95,14 @@ describe.each(SCREENS)("$name save contract", ({ ui, url, api, rows, wire }) => 
     };
   };
 
+  it("reads the scope from the URL, so a reload keeps it", async () => {
+    const api2 = await stubApi(server().answers);
+    renderAt(`${url}?scope=agent_view&scope_id=3`, ui);
+    expect(await screen.findByRole("checkbox", { name: first() })).toBeInTheDocument();
+    expect(api2.calls("GET", api)[0].url.search).toBe("?scope=agent_view&scope_id=3");
+    expect(await screen.findByDisplayValue("av — AV")).toBeInTheDocument();
+  });
+
   it("writes nothing until Save, then sends only the changed paths", async () => {
     const s = server();
     const api2 = await stubApi(s.answers);
@@ -138,12 +146,15 @@ describe.each(SCREENS)("$name save contract", ({ ui, url, api, rows, wire }) => 
 
   it("clears the draft only once the saved scope has refetched", async () => {
     const s = server();
-    await stubApi(s.answers);
+    const api2 = await stubApi(s.answers);
     renderAt(url, ui);
     fireEvent.click(await screen.findByRole("checkbox", { name: first() }));
     s.holdGet(DEFAULT);
+    const reads = api2.calls("GET", api).length;
     save();
-    await new Promise((r) => setTimeout(r, 20));
+    // The write landed and its refetch is asked for (and held): the draft must outlive both.
+    await vi.waitFor(() => expect(api2.calls("GET", api).length).toBeGreaterThan(reads));
+    expect(s.enabled(DEFAULT, firstPath())).toBe(true);
     expect(screen.getByText("1 change not saved")).toBeInTheDocument();
     s.releaseGet(DEFAULT);
     await vi.waitFor(() => expect(screen.queryByText(/not saved/)).not.toBeInTheDocument());

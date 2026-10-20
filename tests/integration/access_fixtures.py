@@ -9,17 +9,8 @@ from .conftest import _test_connection
 @pytest.fixture
 def conn():
     c = _test_connection(autocommit=True)
-    _clean(c)
     yield c
-    _clean(c)
     c.close()
-
-
-def _clean(c):
-    with c.cursor() as cur:
-        for table in ("launch", "session", "role_grant", "`user`"):
-            cur.execute(f"DELETE FROM {table}")
-        cur.execute("DELETE FROM role WHERE code NOT IN ('admin', 'user')")
 
 
 @pytest.fixture

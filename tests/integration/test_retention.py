@@ -15,30 +15,13 @@ from agento.framework.event_manager import ObserverEntry, clear, get_event_manag
 from agento.modules.conversation.src import retention, routes, service, stream
 
 from .conftest import _clean  # noqa: F401
-from .test_conversation_submission import _job_type, _Req  # noqa: F401
+from .test_conversation_submission import _Req
 
 
 class _QReq(_Req):
     def __init__(self, conn, user, params=None, query=None):
         super().__init__(conn, user, params=params)
         self.query = query or {}
-
-
-@pytest.fixture
-def thread(conn, world):
-    conversation_id = service.create_conversation(
-        conn, user_id=world["owner"].id, agent_view_id=world["view"], title="t")
-    yield conversation_id
-    _wipe(conn, conversation_id)
-
-
-def _wipe(conn, conversation_id):
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM conversation_event WHERE conversation_id = %s",
-                    (conversation_id,))
-        cur.execute("DELETE FROM conversation_prune_watermark WHERE conversation_id = %s",
-                    (conversation_id,))
-    conn.commit()
 
 
 def _event(conn, conversation_id, *, age_days: float = 0, kind="assistant.message") -> int:
@@ -145,16 +128,13 @@ def test_the_window_has_a_floor_of_one_day(conn, thread):
 def test_two_conversations_keep_their_own_watermarks(conn, world, thread):
     other = service.create_conversation(
         conn, user_id=world["owner"].id, agent_view_id=world["view"], title="other")
-    try:
-        mine = _event(conn, thread, age_days=100)
-        theirs = _event(conn, other, age_days=100)
+    mine = _event(conn, thread, age_days=100)
+    theirs = _event(conn, other, age_days=100)
 
-        retention.prune_events(conn, event_days=90)
+    retention.prune_events(conn, event_days=90)
 
-        assert _watermark(conn, thread) == mine
-        assert _watermark(conn, other) == theirs
-    finally:
-        _wipe(conn, other)
+    assert _watermark(conn, thread) == mine
+    assert _watermark(conn, other) == theirs
 
 
 # --- cursor_expired --------------------------------------------------------
@@ -199,19 +179,16 @@ def test_interleaved_ids_across_two_conversations_do_not_cross_watermarks(conn, 
     another's ids. The check is per conversation or it expires the wrong cursors."""
     other = service.create_conversation(
         conn, user_id=world["owner"].id, agent_view_id=world["view"], title="other")
-    try:
-        old_mine = _event(conn, thread, age_days=100)
-        new_theirs = _event(conn, other, age_days=1)
-        retention.prune_events(conn, event_days=90)
+    old_mine = _event(conn, thread, age_days=100)
+    new_theirs = _event(conn, other, age_days=1)
+    retention.prune_events(conn, event_days=90)
 
-        assert retention.cursor_expired(conn, conversation_id=thread,
-                                        cursor=old_mine) is True
-        assert retention.cursor_expired(conn, conversation_id=other,
-                                        cursor=new_theirs) is False
-        assert retention.cursor_expired(conn, conversation_id=other,
-                                        cursor=old_mine) is False
-    finally:
-        _wipe(conn, other)
+    assert retention.cursor_expired(conn, conversation_id=thread,
+                                    cursor=old_mine) is True
+    assert retention.cursor_expired(conn, conversation_id=other,
+                                    cursor=new_theirs) is False
+    assert retention.cursor_expired(conn, conversation_id=other,
+                                    cursor=old_mine) is False
 
 
 # --- both cursor paths ask the same question -------------------------------
@@ -572,17 +549,14 @@ def test_the_retention_pass_deletes_only_what_is_archived_and_past_the_window(co
                                       agent_view_id=world["view"], title="old")
     fresh = service.create_conversation(conn, user_id=world["owner"].id,
                                         agent_view_id=world["view"], title="fresh")
-    try:
-        service.archive(conn, old)
-        service.archive(conn, fresh)
-        _age_archive(conn, old, 100)
+    service.archive(conn, old)
+    service.archive(conn, fresh)
+    _age_archive(conn, old, 100)
 
-        assert retention.delete_archived(conn, archived_days=30) == 1
-        assert _status(conn, old) is None
-        assert _status(conn, fresh) == "archived"
-        assert _status(conn, keep_active) == "active"
-    finally:
-        _wipe(conn, fresh)
+    assert retention.delete_archived(conn, archived_days=30) == 1
+    assert _status(conn, old) is None
+    assert _status(conn, fresh) == "archived"
+    assert _status(conn, keep_active) == "active"
 
 
 def test_a_reactivation_during_the_pass_wins_and_the_thread_survives(conn, thread):
@@ -650,45 +624,27 @@ def _alive(conn, *ids) -> set[str]:
     return runs
 
 
-def _drop(conn, *ids) -> None:
-    marks = ", ".join(["%s"] * len(ids))
-    with conn.cursor() as cur:
-        cur.execute(f"DELETE FROM execution_delta WHERE execution_id IN ({marks})", ids)
-        cur.execute(f"DELETE FROM execution WHERE execution_id IN ({marks})", ids)
-        cur.execute(f"DELETE FROM tool_invocation WHERE run_execution_id IN ({marks})", ids)
-    conn.commit()
-
-
 def test_an_old_finished_run_of_an_active_thread_is_pruned_with_its_ledger(conn, thread):
     """One age bound for every run (E9 §3.5): an active channel thread lives as long as its
     issue keeps running, and its runs must not grow with it for ever (CODE-8)."""
     old = _run(conn, started_days=30, finished_days=30, conversation_id=thread)
     young = _run(conn, started_days=1, finished_days=1, conversation_id=thread)
-    try:
-        assert retention.prune_old_executions(conn, event_days=7) == 1
-        assert _alive(conn, old, young) == {young}
-    finally:
-        _drop(conn, old, young)
+    assert retention.prune_old_executions(conn, event_days=7) == 1
+    assert _alive(conn, old, young) == {young}
 
 
 def test_a_running_run_is_never_pruned(conn):
     running = _run(conn, status="running", started_days=30)
-    try:
-        assert retention.prune_old_executions(conn, event_days=7) == 0
-        assert _alive(conn, running) == {running}
-    finally:
-        _drop(conn, running)
+    assert retention.prune_old_executions(conn, event_days=7) == 0
+    assert _alive(conn, running) == {running}
 
 
 def test_the_clock_is_when_the_run_finished_not_when_it_started(conn):
     """Events age by `created_at`; a run that started long ago and finished today still has
     young events, so its row must stay as long as they do."""
     late = _run(conn, started_days=30, finished_days=0)
-    try:
-        assert retention.prune_old_executions(conn, event_days=7) == 0
-        assert _alive(conn, late) == {late}
-    finally:
-        _drop(conn, late)
+    assert retention.prune_old_executions(conn, event_days=7) == 0
+    assert _alive(conn, late) == {late}
 
 
 def test_a_run_with_an_unprojected_tool_call_waits_for_the_relay(conn):
@@ -702,16 +658,13 @@ def test_a_run_with_an_unprojected_tool_call_waits_for_the_relay(conn):
             "VALUES (%s, %s, 1, 'http', 'agent', '7', 'x', %s, 3, 'ok')",
             (str(uuid.uuid4()), old, "a" * 64))
     conn.commit()
-    try:
-        assert retention.prune_old_executions(conn, event_days=7) == 0
-        with conn.cursor() as cur:
-            cur.execute("UPDATE tool_invocation SET conversation_relayed_at = NOW() "
-                        "WHERE run_execution_id = %s", (old,))
-        conn.commit()
-        assert retention.prune_old_executions(conn, event_days=7) == 1
-        assert _alive(conn, old) == set()
-    finally:
-        _drop(conn, old)
+    assert retention.prune_old_executions(conn, event_days=7) == 0
+    with conn.cursor() as cur:
+        cur.execute("UPDATE tool_invocation SET conversation_relayed_at = NOW() "
+                    "WHERE run_execution_id = %s", (old,))
+    conn.commit()
+    assert retention.prune_old_executions(conn, event_days=7) == 1
+    assert _alive(conn, old) == set()
 
 
 def test_every_pass_stops_at_its_per_run_cap(conn, world):
@@ -728,21 +681,16 @@ def test_every_pass_stops_at_its_per_run_cap(conn, world):
         threads.append(cid)
         _event(conn, cid, age_days=400)
         _age_conversation(conn, cid, 400)
-    orphans = [_run(conn, started_days=40, finished_days=40) for _ in range(3)]
+    for _ in range(3):
+        _run(conn, started_days=40, finished_days=40)
 
-    try:
-        assert retention.prune_events(conn, event_days=7, limit=2) == 2
-        assert retention.auto_archive(conn, idle_days=7, limit=2) == 2
-        for cid in threads:
-            _age_archive(conn, cid, 400)
-        assert retention.delete_archived(conn, archived_days=30, limit=1) == 1
-        assert retention.prune_old_executions(conn, event_days=7, limit=1,
-                                              max_rows=2) == 2
-    finally:
-        _drop(conn, *orphans)
-        for cid in threads:
-            _wipe(conn, cid)
-            retention.delete_tree(conn, cid)
+    assert retention.prune_events(conn, event_days=7, limit=2) == 2
+    assert retention.auto_archive(conn, idle_days=7, limit=2) == 2
+    for cid in threads:
+        _age_archive(conn, cid, 400)
+    assert retention.delete_archived(conn, archived_days=30, limit=1) == 1
+    assert retention.prune_old_executions(conn, event_days=7, limit=1,
+                                          max_rows=2) == 2
 
 
 def test_one_long_thread_cannot_exceed_the_run_row_budget(conn, world):
@@ -752,15 +700,11 @@ def test_one_long_thread_cannot_exceed_the_run_row_budget(conn, world):
     cid = service.create_conversation(conn, user_id=world["owner"].id,
                                       agent_view_id=world["view"], title="t")
     ids = [_event(conn, cid, age_days=400) for _ in range(5)]
-    try:
-        assert retention.prune_events(conn, event_days=7, max_rows=2) == 2
-        assert _event_ids(conn, cid) == ids[2:]
-        assert _watermark(conn, cid) == ids[1]
+    assert retention.prune_events(conn, event_days=7, max_rows=2) == 2
+    assert _event_ids(conn, cid) == ids[2:]
+    assert _watermark(conn, cid) == ids[1]
 
-        # What this run left, the next run takes - oldest first, nothing skipped.
-        assert retention.prune_events(conn, event_days=7, max_rows=10) == 3
-        assert _event_ids(conn, cid) == []
-        assert _watermark(conn, cid) == ids[4]
-    finally:
-        _wipe(conn, cid)
-        retention.delete_tree(conn, cid)
+    # What this run left, the next run takes - oldest first, nothing skipped.
+    assert retention.prune_events(conn, event_days=7, max_rows=10) == 3
+    assert _event_ids(conn, cid) == []
+    assert _watermark(conn, cid) == ids[4]

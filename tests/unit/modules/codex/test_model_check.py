@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import subprocess
 import time
 from pathlib import Path
@@ -25,10 +24,8 @@ CRED = CredentialRecord(id=3, scope="codex", type="openai_api_key", label="codex
 
 
 @pytest.fixture
-def fake_codex(tmp_path, monkeypatch):
+def fake_codex(fake_cli):
     """``codex`` whose ``login`` and ``debug models`` [--bundled] behave as told."""
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
 
     def install(*, login_rc=0, live="fixture", bundled="fixture", sleep=0, refreshed=True):
         """``refreshed``: the live call writes $HOME/.codex/models_cache.json, as a
@@ -47,16 +44,14 @@ def fake_codex(tmp_path, monkeypatch):
                         f"echo '{kind}'; exit 0")
             return f"echo '{kind}'; exit 0"
 
-        script = bindir / "codex"
-        script.write_text(
+        fake_cli(
+            "codex",
             "#!/bin/sh\n"
             f'if [ "$1" = login ]; then cat >/dev/null; echo stderr-marker >&2; exit {login_rc}; fi\n'
             f"sleep {sleep}\n"
             f'if [ "$3" = --bundled ]; then {answer(bundled)}; fi\n'
-            f"{answer(live, cache=refreshed)}\n"
+            f"{answer(live, cache=refreshed)}\n",
         )
-        script.chmod(0o755)
-        monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
 
     return install
 
@@ -64,9 +59,14 @@ def fake_codex(tmp_path, monkeypatch):
 def test_parser():
     slugs = parse_slugs(FIXTURE.read_text())
     assert "gpt-5.4-mini" in slugs and "codex-auto-review" in slugs
-    for bad in ("not json", '{"nope": []}', '{"models": {}}', '{"models": ""}',
-                '{"models": []}', '{"models": [{"id": "gpt-5.4"}]}', '{"models": ["gpt-5.4"]}'):
-        assert parse_slugs(bad) is None, bad
+
+
+@pytest.mark.parametrize("bad", [
+    "not json", '{"nope": []}', '{"models": {}}', '{"models": ""}',
+    '{"models": []}', '{"models": [{"id": "gpt-5.4"}]}', '{"models": ["gpt-5.4"]}',
+])
+def test_parser_rejects_an_unreadable_list(bad):
+    assert parse_slugs(bad) is None
 
 
 def test_a_row_without_a_slug_is_unreadable_not_unknown(fake_codex):
@@ -125,10 +125,10 @@ def test_bad_json_is_a_live_failure(fake_codex):
 
 
 def test_total_deadline(fake_codex):
-    fake_codex(sleep=5)
+    fake_codex(sleep=30)
     started = time.monotonic()
     result = check_model("openai", "gpt-5.4", CRED, timeout_s=0.5)
-    assert time.monotonic() - started < 2.0
+    assert time.monotonic() - started < 0.5 + 3  # the deadline, not the child's 30 s
     assert (result.status, result.code) == (ERROR, "MODEL_CHECK_TIMEOUT")
 
 

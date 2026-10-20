@@ -10,7 +10,6 @@ import logging
 import pytest
 
 from agento.framework.channels.registry import get_channel
-from agento.framework.job_types import clear_job_types, register_job_type
 from agento.framework.workflows import clear as clear_workflows
 from agento.framework.workflows import get_workflow_class
 from agento.modules.conversation.src import service
@@ -26,13 +25,6 @@ from .conftest import (
     _test_connection,
     bootstrap_for_tests,
 )
-
-
-@pytest.fixture(autouse=True)
-def _job_type():
-    register_job_type("conversation", module="conversation")
-    yield
-    clear_job_types()
 
 
 def _prompt(conn, reference_id: str) -> str:

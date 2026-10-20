@@ -16,7 +16,6 @@ from agento.modules.conversation.src import service
 from agento.modules.conversation.src.deltas import ConversationDeltaSink
 
 from .conftest import _clean  # noqa: F401
-from .test_conversation_submission import _job_type  # noqa: F401
 
 
 @pytest.fixture
@@ -41,14 +40,8 @@ def run(conn, world):
                     "conversation_id) VALUES (%s, %s, 1, 'running', %s)",
                     (execution_id, job_id, conversation_id))
     conn.commit()
-    yield {"conversation_id": conversation_id, "message_id": message_id,
-           "job_id": job_id, "execution_id": execution_id}
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM execution_delta WHERE execution_id = %s", (execution_id,))
-        cur.execute("DELETE FROM conversation_event WHERE conversation_id = %s",
-                    (conversation_id,))
-        cur.execute("DELETE FROM execution WHERE execution_id = %s", (execution_id,))
-    conn.commit()
+    return {"conversation_id": conversation_id, "message_id": message_id,
+            "job_id": job_id, "execution_id": execution_id}
 
 
 def _delta(run, seq: int, text: str = "fragment", *, kind: str = "assistant.text",
@@ -168,9 +161,6 @@ def test_a_fragment_of_a_run_that_is_not_a_conversation_writes_no_event(conn, si
                      (orphan,))) == 1
     assert _rows(conn, "SELECT id FROM conversation_event WHERE execution_id = %s",
                  (orphan,)) == []
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM execution_delta WHERE execution_id = %s", (orphan,))
-    conn.commit()
 
 
 # --- the caps (§8.2) -------------------------------------------------------
@@ -298,8 +288,8 @@ def test_the_in_memory_budget_map_is_bounded(conn, sink, run, monkeypatch):
     _cap(monkeypatch)
     monkeypatch.setattr(deltas, "_MAX_TRACKED_EXECUTIONS", 4)
 
-    for n in range(20):
-        sink.write([_delta({**run, "execution_id": f"e-{n}"}, 1)])
+    for _ in range(20):
+        sink.write([_delta({**run, "execution_id": str(uuid.uuid4())}, 1)])
 
     assert len(sink._budgets) <= 4
 

@@ -107,19 +107,18 @@ def _run():
     return HarnessChainTester().run(object(), scope="agent_view", scope_id=1)
 
 
-def test_unregistered_harness_during_resolution(env):
-    env.runtime = UnknownHarnessError("No harness registered under 'gone'.")
-    assert (_run().status, _run().code) == (FAIL, "HARNESS_UNKNOWN")
-
-
-def test_invalid_provider_during_resolution(env):
-    env.runtime = ValueError("Harness 'fake' does not offer provider 'x'.")
-    assert (_run().status, _run().code) == (FAIL, "PROVIDER_UNKNOWN")
-
-
-def test_harness_not_registered(env):
-    env.registered = False
-    assert (_run().status, _run().code) == (FAIL, "HARNESS_UNKNOWN")
+@pytest.mark.parametrize(("field", "value", "code"), [
+    pytest.param("runtime", UnknownHarnessError("No harness registered under 'gone'."), "HARNESS_UNKNOWN",
+                 id="unregistered-harness-during-resolution"),
+    pytest.param("runtime", ValueError("Harness 'fake' does not offer provider 'x'."), "PROVIDER_UNKNOWN",
+                 id="invalid-provider-during-resolution"),
+    pytest.param("registered", False, "HARNESS_UNKNOWN", id="harness-not-registered"),
+    pytest.param("runtime", ("fake", "nope", "m-1"), "PROVIDER_UNKNOWN", id="provider-not-declared"),
+])
+def test_an_unresolvable_harness_or_provider_fails(env, field, value, code):
+    setattr(env, field, value)
+    result = _run()
+    assert (result.status, result.code) == (FAIL, code)
 
 
 def test_cli_not_installed(env):
@@ -127,11 +126,6 @@ def test_cli_not_installed(env):
     result = _run()
     assert (result.status, result.code) == (FAIL, "HARNESS_NOT_INSTALLED")
     assert "'fake'" in result.message
-
-
-def test_provider_not_declared(env):
-    env.runtime = ("fake", "nope", "m-1")
-    assert (_run().status, _run().code) == (FAIL, "PROVIDER_UNKNOWN")
 
 
 def test_no_healthy_credential(env):

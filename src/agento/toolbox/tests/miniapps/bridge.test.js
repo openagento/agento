@@ -126,8 +126,10 @@ describe('app sdk', () => {
   ])('ignores a handshake from %s', async (_name, event) => {
     const { panel, app, sdk } = setup();
     await app.deliver(event(panel));
-    const seen = await Promise.race([sdk.ready, new Promise((r) => setTimeout(() => r('none'), 20))]);
-    expect(seen).toBe('none');
+    // Had the bad handshake bound the window, a later genuine one could not rebind it.
+    const other = 'c'.repeat(32);
+    await app.deliver({ source: panel, origin: PANEL, data: { type: 'agento.hello', launch_id: other } });
+    expect(await sdk.ready).toBe(other);
   });
 
   it('ignores a result for another launch', async () => {
@@ -135,9 +137,9 @@ describe('app sdk', () => {
     await app.deliver(hello(panel));
     const call = sdk.callAction('notes_add');
     await vi.waitFor(() => expect(panel.postMessage).toHaveBeenCalledTimes(2));
-    await app.deliver({ source: panel, origin: PANEL, data: { type: 'agento.result', launch_id: 'b'.repeat(32), id: 1, status: 200, body: {} } });
-    const seen = await Promise.race([call, new Promise((r) => setTimeout(() => r('none'), 20))]);
-    expect(seen).toBe('none');
+    await app.deliver({ source: panel, origin: PANEL, data: { type: 'agento.result', launch_id: 'b'.repeat(32), id: 1, status: 500, body: { wrong: true } } });
+    await app.deliver({ source: panel, origin: PANEL, data: { type: 'agento.result', launch_id: LID, id: 1, status: 200, body: { ok: true } } });
+    expect(await call).toEqual({ status: 200, body: { ok: true } });
   });
 
   it('bounds the calls in flight: past the cap a call resolves 429 and posts nothing', async () => {

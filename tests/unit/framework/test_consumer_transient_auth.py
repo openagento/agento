@@ -74,8 +74,10 @@ def test_transient_auth_sets_failover_flag_when_a_healthy_token_remains():
     assert exc.retry_with_other_token is True
 
 
-def test_transient_auth_with_no_healthy_token_left_becomes_an_auth_wait():
-    """WI-6: the token is throttled first, then the job waits for a credential."""
+@pytest.mark.parametrize("rotatable", [True, False], ids=["throttled", "poisoned"])
+def test_transient_auth_with_no_healthy_token_left_becomes_an_auth_wait(rotatable):
+    """WI-6: the token is throttled (or, with nothing to rotate, poisoned) first, then the
+    job waits for a credential."""
     from agento.framework.agent_manager.errors import CredentialsUnavailableError
 
     exc = TransientAuthError("401 OAuth access token has been revoked")
@@ -85,20 +87,11 @@ def test_transient_auth_with_no_healthy_token_left_becomes_an_auth_wait():
         patch("agento.framework.consumer.auth_wait_retry_at", return_value=marker),
         pytest.raises(CredentialsUnavailableError) as exc_info,
     ):
-        _call(healthy=0, exc=exc)
+        _call(healthy=0, exc=exc, rotatable=rotatable)
     assert exc.retry_with_other_token is False
     assert exc_info.value.__cause__ is exc
     assert exc_info.value.pool_retry_at is marker  # one retry time for every entry path
     assert exc_info.value.agent_output == "agent said this"
-
-
-def test_a_poisoned_credential_with_no_healthy_token_left_becomes_an_auth_wait():
-    from agento.framework.agent_manager.errors import CredentialsUnavailableError
-
-    exc = TransientAuthError("401 Invalid authentication credentials")
-    with pytest.raises(CredentialsUnavailableError) as exc_info:
-        _call(healthy=0, exc=exc, rotatable=False)
-    assert exc_info.value.__cause__ is exc
 
 
 def test_a_failed_pool_count_is_not_an_auth_wait():

@@ -17,6 +17,8 @@ from agento.framework.migrate import (
     migrate,
 )
 
+SQL_DIR = Path(__file__).resolve().parents[3] / "src" / "agento" / "framework" / "sql"
+
 
 def _mock_conn(fetchall_return=None):
     """Create a mock pymysql Connection with cursor context manager."""
@@ -177,56 +179,43 @@ class TestApplyMigration:
         conn.commit.assert_called_once()
 
     def test_migration_024_uses_microsecond_used_at(self):
-        sql_file = Path("src/agento/framework/sql/024_oauth_token_used_at_precision.sql")
+        sql_file = SQL_DIR / "024_oauth_token_used_at_precision.sql"
         sql = sql_file.read_text()
         assert "MODIFY COLUMN used_at DATETIME(6) NULL" in sql
         assert "idx_oauth_token_pool_select" in sql
 
-    def test_fresh_init_includes_toolbox_mcp_calls_column(self):
-        sql_file = Path("src/agento/framework/sql/init/000_init.sql")
-        sql = sql_file.read_text()
-        assert "toolbox_mcp_calls INT DEFAULT NULL" in sql
-        assert "('021_job_toolbox_mcp_calls')" in sql
-
-    def test_fresh_init_includes_toolbox_mcp_connected_column(self):
-        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
-        assert "toolbox_mcp_connected BOOLEAN DEFAULT NULL" in sql
-        assert "('025_job_toolbox_mcp_connected')" in sql
-
-    def test_fresh_init_includes_requester_columns(self):
-        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
-        assert "requester_key   VARCHAR(255) NULL" in sql
-        assert "requester_email VARCHAR(320) NULL" in sql
-        assert "requester_trust VARCHAR(32) NOT NULL DEFAULT 'claimed'" in sql
-        assert "requester_meta  JSON NULL" in sql
-        assert "KEY idx_job_requester_key (requester_key)" in sql
-        assert "KEY idx_job_requester_email (requester_email)" in sql
-        assert "('026_job_requester')" in sql
-
-    def test_fresh_init_includes_toolbox_capability(self):
-        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
-        assert "CREATE TABLE toolbox_capability" in sql
-        assert "uk_toolbox_capability_hash (token_hash)" in sql
-        assert "fk_toolbox_capability_view" in sql
-        assert "('035_toolbox_capability')" in sql
-
-    def test_fresh_init_includes_credential_login(self):
-        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
-        assert "limits           JSON         NULL," in sql
-        assert "limits_at        DATETIME     NULL," in sql
-        assert "CREATE TABLE IF NOT EXISTS credential_login (" in sql
-        assert "fk_credential_login_credential" in sql and "fk_credential_login_user" in sql
-        assert "('048_credential_login')" in sql
-
-    def test_fresh_init_includes_tool_invocation_run_execution_index(self):
-        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
-        assert "KEY idx_tool_invocation_run_execution (run_execution_id)" in sql
-        assert "('049_tool_invocation_run_execution_index')" in sql
-
-    def test_fresh_init_includes_job_auth_wait_index(self):
-        sql = Path("src/agento/framework/sql/init/000_init.sql").read_text()
-        assert "KEY idx_job_auth_wait (status, error_class, id)" in sql
-        assert "('052_job_auth_wait_index')" in sql
+    @pytest.mark.parametrize("needles", [
+        pytest.param(("toolbox_mcp_calls INT DEFAULT NULL", "('021_job_toolbox_mcp_calls')"),
+                     id="021-toolbox-mcp-calls"),
+        pytest.param(("toolbox_mcp_connected BOOLEAN DEFAULT NULL", "('025_job_toolbox_mcp_connected')"),
+                     id="025-toolbox-mcp-connected"),
+        pytest.param(("requester_key VARCHAR(255) NULL", "requester_email VARCHAR(320) NULL",
+                      "requester_trust VARCHAR(32) NOT NULL DEFAULT 'claimed'", "requester_meta JSON NULL",
+                      "KEY idx_job_requester_key (requester_key)",
+                      "KEY idx_job_requester_email (requester_email)", "('026_job_requester')"),
+                     id="026-job-requester"),
+        pytest.param(("error_source ENUM('auto','operator') NULL DEFAULT NULL",
+                      "lease_owner VARCHAR(64) NULL DEFAULT NULL", "leased_until DATETIME NULL DEFAULT NULL",
+                      "('034_credential_error_source_and_refresh_lease')"),
+                     id="034-error-source-and-refresh-lease"),
+        pytest.param(("CREATE TABLE toolbox_capability", "uk_toolbox_capability_hash (token_hash)",
+                      "fk_toolbox_capability_view", "('035_toolbox_capability')"),
+                     id="035-toolbox-capability"),
+        pytest.param(("limits JSON NULL,", "limits_at DATETIME NULL,",
+                      "CREATE TABLE IF NOT EXISTS credential_login (", "fk_credential_login_credential",
+                      "fk_credential_login_user", "('048_credential_login')"),
+                     id="048-credential-login"),
+        pytest.param(("KEY idx_tool_invocation_run_execution (run_execution_id)",
+                      "('049_tool_invocation_run_execution_index')"),
+                     id="049-tool-invocation-run-execution-index"),
+        pytest.param(("KEY idx_job_auth_wait (status, error_class, id)", "('052_job_auth_wait_index')"),
+                     id="052-job-auth-wait-index"),
+    ])
+    def test_fresh_init_includes_the_migration_effect(self, needles):
+        # Column alignment in the init DDL is cosmetic, so collapse runs of spaces.
+        sql = re.sub(r"[ \t]+", " ", (SQL_DIR / "init" / "000_init.sql").read_text())
+        missing = [n for n in needles if n not in sql]
+        assert missing == []
 
     def test_every_framework_migration_is_marked_applied_in_fresh_init(self):
         """The class guard: 000_init.sql is the schema a NEW project starts from, so a
@@ -238,26 +227,14 @@ class TestApplyMigration:
         Scope: NAME parity only. It cannot see a migration whose marker is present but whose
         DDL effect is missing from the file, so every migration still needs its own
         effect-specific assertion like the ones above."""
-        migrations = {p.stem for p in Path("src/agento/framework/sql").glob("*.sql")}
-        init = Path("src/agento/framework/sql/init/000_init.sql").read_text()
+        migrations = {p.stem for p in SQL_DIR.glob("*.sql")}
+        init = (SQL_DIR / "init" / "000_init.sql").read_text()
         marked = set(re.findall(r"\('([0-9]{3}_[a-z0-9_]+)'\)", init))
         assert migrations - marked == set(), "migrations with no marker in 000_init.sql"
         assert marked - migrations == set(), "markers in 000_init.sql with no migration file"
 
-    def test_fresh_init_includes_error_source_and_refresh_lease_columns(self):
-        # Column alignment in the init DDL is cosmetic, so collapse runs of spaces.
-        sql = re.sub(
-            r"[ \t]+", " ", Path("src/agento/framework/sql/init/000_init.sql").read_text()
-        )
-        assert "error_source ENUM('auto','operator') NULL DEFAULT NULL" in sql
-        assert "lease_owner VARCHAR(64) NULL DEFAULT NULL" in sql
-        assert "leased_until DATETIME NULL DEFAULT NULL" in sql
-        assert "('034_credential_error_source_and_refresh_lease')" in sql
-
     def test_migration_034_adds_error_source_and_refresh_lease_columns(self):
-        sql = Path(
-            "src/agento/framework/sql/034_credential_error_source_and_refresh_lease.sql"
-        ).read_text()
+        sql = (SQL_DIR / "034_credential_error_source_and_refresh_lease.sql").read_text()
         assert "ADD COLUMN error_source ENUM('auto','operator') NULL DEFAULT NULL" in sql
         assert "ADD COLUMN lease_owner VARCHAR(64) NULL DEFAULT NULL" in sql
         assert "ADD COLUMN leased_until DATETIME NULL DEFAULT NULL" in sql
@@ -268,7 +245,7 @@ class TestApplyMigration:
         assert "NOT NULL" not in sql
 
     def test_migration_026_adds_requester_columns(self):
-        sql = Path("src/agento/framework/sql/026_job_requester.sql").read_text()
+        sql = (SQL_DIR / "026_job_requester.sql").read_text()
         assert "ADD COLUMN requester_key" in sql
         assert "ADD COLUMN requester_email" in sql
         assert "ADD COLUMN requester_trust VARCHAR(32) NOT NULL DEFAULT 'claimed'" in sql

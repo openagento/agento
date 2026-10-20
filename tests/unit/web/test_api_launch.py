@@ -9,9 +9,8 @@ import pytest
 from agento.framework.access import accounts, launches, sessions
 from agento.web import rate_limit, toolbox_client
 
-from .conftest import APPS, PANEL, panel_headers
+from .conftest import APPS, PANEL, TOKEN, panel_headers, sign_in_as
 
-TOKEN = "session-token-value"
 USER = accounts.User(id=2, username="alice", role="user", is_active=True)
 V1, V2 = "v-20260101-000000-aaaa", "v-20260102-000000-bbbb"
 LID, LID2 = "a" * 32, "b" * 32
@@ -26,8 +25,7 @@ def _launch(launch_id=LID, version=V1):
 
 @pytest.fixture
 def signed_in(monkeypatch):
-    session = sessions.Session(id="sid", user=USER, expires_at=LATER)
-    monkeypatch.setattr(sessions, "lookup_session", lambda conn, t: session if t == TOKEN else None)
+    sign_in_as(monkeypatch, USER)
 
 
 def test_end_someone_elses_launch_is_404(web, monkeypatch, signed_in):

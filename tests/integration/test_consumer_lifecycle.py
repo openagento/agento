@@ -227,8 +227,7 @@ class TestResumeOnTimeout:
         job = Consumer(int_db_config, int_consumer_config, logger)._try_dequeue()
 
         assert job is not None and job.id == job_id
-        # The newest row for this id: the suite recycles job ids, the outbox keeps history.
-        assert _outbox(job_id)[-1]["kind"] == "job.claimed"
+        assert _outbox(job_id) == [{"kind": "job.claimed"}]
 
     def test_stale_recovery_to_dead_writes_job_failed(self, int_db_config,
                                                       int_consumer_config):
@@ -242,7 +241,7 @@ class TestResumeOnTimeout:
         Consumer(int_db_config, int_consumer_config, logger)._recover_stale_jobs()
 
         assert fetch_job(job_id)["status"] == "DEAD"
-        assert _outbox(job_id)[-1]["kind"] == "job.failed"
+        assert _outbox(job_id) == [{"kind": "job.failed"}]
 
     def test_stale_recovery_dead_pid_max_attempts(self, int_db_config, int_consumer_config):
         """RUNNING job with dead PID and max attempts exhausted -> DEAD."""

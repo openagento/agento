@@ -19,6 +19,7 @@ from agento.framework.execution_hooks import (
     resolve_resume_session,
     write_execution_deltas,
 )
+from tests.unit.framework.delta_fakes import FakeSink
 
 
 @pytest.fixture(autouse=True)
@@ -44,14 +45,6 @@ class Finalizer:
 class Resolver:
     def resolve(self, *, conn, job_id, attempt):
         return "session-9"
-
-
-class Sink:
-    def __init__(self):
-        self.batches = []
-
-    def write(self, batch):
-        self.batches.append(list(batch))
 
 
 class NotAProvider:
@@ -116,7 +109,7 @@ def test_a_registered_finalizer_is_called_with_the_transition():
 
 def test_a_registered_resolver_and_sink_are_reached():
     register_resume_session_resolver(Resolver(), module="conversation")
-    sink = Sink()
+    sink = FakeSink()
     register_execution_delta_sink(sink, module="conversation")
     record = DeltaRecord("e", 1, "delta", "hi", None)
 
@@ -154,7 +147,7 @@ def test_clear_empties_every_seam():
     register_execution_id_provider(Provider(), module="conversation")
     register_execution_finalizer(Finalizer(), module="conversation")
     register_resume_session_resolver(Resolver(), module="conversation")
-    register_execution_delta_sink(Sink(), module="conversation")
+    register_execution_delta_sink(FakeSink(), module="conversation")
 
     clear()
 

@@ -21,6 +21,7 @@ from agento.framework.harness import (
     register_harness,
 )
 from tests.harness_fixtures import make_runner, register_builtin_harnesses
+from tests.module_writer import write_module
 
 REPO = Path(__file__).resolve().parents[4]
 
@@ -176,10 +177,7 @@ class TestSandboxPinsTriggerRebuild:
     def test_removed_legacy_section_is_ignored(self, tmp_path):
         from agento.framework.cli.module import _declared_sandbox_pins
 
-        m = tmp_path / "app" / "code" / "both"
-        m.mkdir(parents=True)
-        (m / "module.json").write_text(json.dumps({"name": "both", "version": "1"}))
-        (m / "di.json").write_text(json.dumps({
+        write_module(tmp_path / "app" / "code", "both", di_json={
             "agent_harnesses": [{
                 "id": "both", "label": "B", "class": "src.a.A",
                 "default_provider": "p",
@@ -194,7 +192,7 @@ class TestSandboxPinsTriggerRebuild:
                 "binary": "old", "version_env_key": "OLD_VERSION",
                 "default_range": "1.0.0",
             }],
-        }))
+        })
 
         assert _declared_sandbox_pins(tmp_path, "both") == {"MODERN_VERSION"}
 

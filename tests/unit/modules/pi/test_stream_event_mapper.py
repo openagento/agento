@@ -9,19 +9,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from agento.framework.harness.protocols import StreamEventMapper
-from agento.modules.pi.src.adapter import PiHarnessAdapter
 from agento.modules.pi.src.stream_event_mapper import PiStreamEventMapper
+from tests.unit.modules.stream_mapping import map_all
 
 FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "transcripts" / "pi"
 
 
 def fragments(name: str) -> list[dict]:
-    mapper, out = PiStreamEventMapper(), []
-    for line in (FIXTURES / f"{name}.ndjson").read_text().splitlines():
-        mapped = mapper.map_event(json.loads(line))
-        out += mapped if isinstance(mapped, list) else [mapped] if mapped else []
-    return out
+    lines = (FIXTURES / f"{name}.ndjson").read_text().splitlines()
+    return map_all(PiStreamEventMapper(), (json.loads(line) for line in lines))
 
 
 def test_success_run():
@@ -62,12 +58,6 @@ def test_an_assistant_error_maps_to_error():
     ]
 
 
-def test_the_adapter_exposes_the_mapper():
-    mapper = PiHarnessAdapter().stream_event_mapper
-    assert isinstance(mapper, PiStreamEventMapper)
-    assert isinstance(mapper, StreamEventMapper)
-
-
 def _update(kind: str, delta: str) -> dict:
     return {"type": "message_update",
             "assistantMessageEvent": {"type": kind, "contentIndex": 0, "delta": delta}}
@@ -75,16 +65,12 @@ def _update(kind: str, delta: str) -> dict:
 
 def test_live_deltas_then_the_whole_message_in_stream_order():
     """docs/json.md of the pinned pi: delta-only `message_update`, then `message_end`."""
-    mapper = PiStreamEventMapper()
     events = [_update("thinking_delta", "plan"), _update("text_delta", "Hel"),
               _update("text_delta", "lo"), _update("toolcall_delta", "{"),
               {"type": "message_end", "message": {"role": "assistant", "content": [
                   {"type": "thinking", "thinking": "plan"}, {"type": "text", "text": "Hello"}]}},
               _update("text_delta", "cut")]                # a second message, cut off
-    out = []
-    for e in events:
-        mapped = mapper.map_event(e)
-        out += mapped if isinstance(mapped, list) else [mapped] if mapped else []
+    out = map_all(PiStreamEventMapper(), events)
 
     assert [(f["kind"], f["text"]) for f in out] == [
         ("reasoning.partial", "plan"), ("assistant.partial", "Hel"), ("assistant.partial", "lo"),

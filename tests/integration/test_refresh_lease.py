@@ -110,23 +110,6 @@ def _rotating(credential: CredentialRecord) -> bool:
     return bool((credential.credentials or {}).get("refresh_token"))
 
 
-@pytest.fixture(autouse=True)
-def _clean_tokens():
-    conn = _test_connection(autocommit=True)
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM credential")
-    finally:
-        conn.close()
-    yield
-    conn = _test_connection(autocommit=True)
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM job WHERE idempotency_key LIKE 'ag65:%'")
-    finally:
-        conn.close()
-
-
 def test_2026_07_15_two_job_timeline_does_not_replay_a_spent_refresh_token():
     """The incident, end to end. Fails without the lease: job 110416 is handed the same
     spent R0 that job 110409 is about to rotate, 401s, and quarantines the subscription."""

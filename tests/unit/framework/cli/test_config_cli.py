@@ -16,7 +16,6 @@ from agento.framework.cli.config import (
     ConfigSetCommand,
     _validate_config_path,
 )
-from agento.framework.config_write import ConfigWriteError
 from agento.framework.workspace import AgentView
 
 
@@ -67,6 +66,7 @@ def fake_module(tmp_path: Path):
             "showInAgentView": False,
         },
         "model": {"type": "string", "label": "Model"},
+        "mode": {"type": "select", "label": "Mode", "options": [{"value": "a"}, {"value": "b"}]},
     }
     (module_dir / "system.json").write_text(json.dumps(system))
     return module_dir
@@ -275,38 +275,27 @@ class TestConfigSetCommand:
         with pytest.raises(SystemExit):
             ConfigSetCommand().execute(args)
 
+    @pytest.mark.parametrize(("path", "value", "message"), [
+        pytest.param("testmod/mode", "codex", "Invalid value 'codex'", id="value-not-an-option"),
+        pytest.param("testmod/nonexistent", "v", "'nonexistent' not found", id="unknown-field"),
+    ])
     @patch("agento.framework.cli.config.get_connection_or_exit")
     @patch("agento.framework.cli.config._load_framework_config")
-    @patch("agento.framework.config_write.validate_config_write", side_effect=ConfigWriteError("Error: refused"))
     @patch("agento.framework.core_config.config_set_auto_encrypt")
-    def test_invalid_value_exits_nonzero(
-        self, mock_write, _vw, mock_config, mock_conn_fn,
+    def test_a_refused_write_exits_nonzero(
+        self, mock_write, mock_config, mock_conn_fn, fake_module, capsys, path, value, message,
     ):
-        """A rejected select value must fail the process, not print and exit 0 —
+        """A rejected value or path must fail the process, not print and exit 0 —
         scripts (and the e2e suite) treat rc=0 as "the value was set"."""
         mock_config.return_value = ({}, None, None)
         mock_conn_fn.return_value = _mock_conn()[0]
 
-        with pytest.raises(SystemExit) as exc:
-            ConfigSetCommand().execute(_set_args(value="codex"))
+        with patch("agento.framework.core_config._find_module_dir", return_value=fake_module), \
+                pytest.raises(SystemExit) as exc:
+            ConfigSetCommand().execute(_set_args(path=path, value=value))
 
         assert exc.value.code == 1
-        mock_write.assert_not_called()
-
-    @patch("agento.framework.cli.config.get_connection_or_exit")
-    @patch("agento.framework.cli.config._load_framework_config")
-    @patch("agento.framework.config_write.validate_config_write", side_effect=ConfigWriteError("Error: refused"))
-    @patch("agento.framework.core_config.config_set_auto_encrypt")
-    def test_invalid_path_exits_nonzero(
-        self, mock_write, _vw, mock_config, mock_conn_fn,
-    ):
-        mock_config.return_value = ({}, None, None)
-        mock_conn_fn.return_value = _mock_conn()[0]
-
-        with pytest.raises(SystemExit) as exc:
-            ConfigSetCommand().execute(_set_args(value="v"))
-
-        assert exc.value.code == 1
+        assert message in capsys.readouterr().out
         mock_write.assert_not_called()
 
     def test_path_without_slash_exits_nonzero(self):

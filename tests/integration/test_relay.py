@@ -16,7 +16,6 @@ from agento.modules.conversation.src import relay, service
 from .conftest import (
     _clean,  # noqa: F401
     )
-from .test_conversation_submission import _job_type  # noqa: F401
 
 
 def _events(conn, conversation_id=None) -> list[dict]:

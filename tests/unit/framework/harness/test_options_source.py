@@ -13,6 +13,9 @@ from pathlib import Path
 import pytest
 
 from agento.framework.harness import SUPPORTED_SOURCES, resolve_options
+from tests.harness_fixtures import MODULES_ROOT
+
+CORE_SYSTEM_JSONS = sorted(MODULES_ROOT.glob("*/system.json"))
 
 
 def _write_harness_module(root: Path, name: str, harness_id: str, providers: list[dict]) -> Path:
@@ -108,8 +111,11 @@ class TestSourceValidation:
             "agent_harness_registry", "agent_harness_providers", "timezones",
         }
 
-    @pytest.mark.parametrize("system", sorted(Path("src/agento/modules").glob("*/system.json")),
-                             ids=lambda p: p.parent.name)
+    def test_core_modules_ship_system_json(self):
+        """The table below is not vacuous: an empty glob would collect no case and pass."""
+        assert CORE_SYSTEM_JSONS
+
+    @pytest.mark.parametrize("system", CORE_SYSTEM_JSONS, ids=lambda p: p.parent.name)
     def test_core_system_json_uses_only_supported_sources(self, system):
         """A typo in ``system.json`` must be caught by ``module:validate``, not at runtime
         when an operator opens the config picker."""
@@ -121,6 +127,6 @@ class TestSourceValidation:
         assert sources <= set(SUPPORTED_SOURCES)
 
     def test_provider_field_declares_its_dependency_on_harness(self):
-        system = Path("src/agento/modules/agent_view/system.json")
+        system = MODULES_ROOT / "agent_view" / "system.json"
         fields = json.loads(system.read_text())
         assert fields["provider"]["depends_on"] == "agent_view/harness"

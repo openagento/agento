@@ -24,6 +24,7 @@ from agento.framework.cli._provisioning import (
     render_compose,
     write_project_pyproject,
 )
+from tests.unit.framework.docker.compose_files import compose_sources
 
 
 def _service_block(content: str, name: str) -> str:
@@ -1041,27 +1042,7 @@ def _services(content: str) -> set[str]:
     return set(re.findall(r"^  ([a-z][a-z0-9_-]*):\s*$", body, re.M))
 
 
-def _rendered_template() -> str:
-    from agento.framework.cli._templates import get_template
-
-    return render_compose(
-        get_template("docker-compose.yml"),
-        python_version="3.12",
-        extensions=[],
-    )
-
-
-_DEV_COMPOSE = Path(__file__).resolve().parents[4] / "docker" / "docker-compose.dev.yml"
-
-
-def _compose_sources() -> list:
-    sources = [pytest.param(_rendered_template, id="template")]
-    if _DEV_COMPOSE.is_file():
-        sources.append(pytest.param(_DEV_COMPOSE.read_text, id="dev"))
-    return sources
-
-
-@pytest.mark.parametrize("load", _compose_sources())
+@pytest.mark.parametrize("load", compose_sources())
 class TestPlatformFoundationServices:
     """E1.5 §2: the proxy is the only route to artifact files. WS7: each service sits on
     exactly the networks of the reachability table (docs/architecture/containers.md)."""
@@ -1143,6 +1124,10 @@ class TestPlatformFoundationServices:
         assert "urllib.request" in block
         assert "curl" not in block
 
+    def test_mysql_allows_600_connections(self, load):
+        # Sized for 200 parallel jobs (RULES.md SCL-1).
+        assert "    command: --max-connections=600" in _service_block(load(), "mysql").splitlines()
+
 
 def test_no_doc_or_source_names_the_retired_agento_net():
     # WS7 (CLS-1): the flat network is gone. History (DECISIONS.md, old plans) and the one
@@ -1169,7 +1154,7 @@ def test_web_mounts_the_same_extensions_as_cron():
     assert mount in _items(_service_block(content, "cron"), "volumes")
 
 
-@pytest.mark.parametrize("load", _compose_sources())
+@pytest.mark.parametrize("load", compose_sources())
 class TestLeastPrivilegeDbUsers:
     """WS8 (SEC-1): cron_agent migrates; cron and web run as the backend user, the toolbox
     as its own user. MySQL listens on host loopback only (O10)."""

@@ -7,7 +7,7 @@ the boundary as much as about the verdict.
 from __future__ import annotations
 
 import logging
-import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -198,12 +198,13 @@ def test_a_clamped_delay_reaches_the_row(
 
 def test_the_framework_names_no_module_config_path():
     """PLC-2: the delay travels in the verdict; the framework never reads `conversation/*`."""
-    found = subprocess.run(
-        # framework/web/{panel,miniapp-ui} is gitignored build output: the panel bundles module screens.
-        ["grep", "-rn", "--exclude-dir=panel", "--exclude-dir=miniapp-ui", "conversation/", "src/agento/framework/"],
-        capture_output=True, text=True,
-    )
-    assert found.stdout == "", found.stdout
+    framework = Path(__file__).resolve().parents[2] / "src" / "agento" / "framework"
+    # framework/web/{panel,miniapp-ui} is gitignored build output: the panel bundles module screens.
+    skip = {"panel", "miniapp-ui", "__pycache__"}
+    files = [f for f in framework.rglob("*") if f.is_file() and not skip & set(f.relative_to(framework).parts)]
+    assert files, framework
+    found = [str(f) for f in files if "conversation/" in f.read_text(errors="ignore")]
+    assert found == [], found
 
 
 # --- the stretch: one block, one event ------------------------------------

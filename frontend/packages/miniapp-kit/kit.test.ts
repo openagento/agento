@@ -1,13 +1,20 @@
-import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ELEMENTS } from "./src/agento-ui.js";
 import { CATALOGUE } from "./src/catalogue";
 import { dark, light, TONES } from "./scripts/tokens";
 import { blocks, main, SKILL, uncatalogued } from "./scripts/gen-skill";
-import { diffDirs, KIT_VERSION } from "./scripts/build-kit";
+import { diffDirs, KIT_VERSION, kitCss, SDK } from "./scripts/build-kit";
 
 const css = readFileSync(join(__dirname, "src/components.css"), "utf8");
+
+/** A fresh temp dir, removed after `body` — a test writes nothing into the repo. */
+function inTemp<T>(body: (dir: string) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), "miniapp-kit-"));
+  try { return body(dir); } finally { rmSync(dir, { recursive: true, force: true }); }
+}
 
 // WCAG 2.x relative luminance and contrast ratio, of a `#rgb`, `#rrggbb` or `rgba()` literal.
 const channels = (c: string) => (c.startsWith("#")
@@ -45,16 +52,13 @@ describe("catalogue", () => {
     expect(blocks(css).every((b) => b.text.length && b.examples.length)).toBe(true);
   });
 
-  it("--check refuses a stale committed skill", () => {
-    const committed = readFileSync(SKILL, "utf8");
-    try {
-      writeFileSync(SKILL, committed + "stale");
-      expect(() => main(["--check"])).toThrow(/out of date/);
-    } finally {
-      writeFileSync(SKILL, committed);
-    }
+  it("--check refuses a stale or missing skill and accepts the committed one", () => inTemp((dir) => {
+    const copy = join(dir, "SKILL.md");
+    expect(() => main(["--check"], copy)).toThrow(/out of date/);
+    writeFileSync(copy, readFileSync(SKILL, "utf8") + "stale");
+    expect(() => main(["--check"], copy)).toThrow(/out of date/);
     expect(() => main(["--check"])).not.toThrow();
-  });
+  }));
 });
 
 describe("example miniapps", () => {
@@ -71,10 +75,20 @@ describe("example miniapps", () => {
 
 describe("released kit", () => {
   const released = join(__dirname, "released");
-  it("the current version is released and its bytes did not change", () => {
-    expect(existsSync(join(released, KIT_VERSION))).toBe(true);
-    expect(diffDirs(join(released, KIT_VERSION), join(__dirname, "dist", KIT_VERSION))).toEqual([]);
-  });
+  // Built here from the sources, not read from dist/: a stale local build must not decide this.
+  it("the current version is released and its bytes did not change", () => inTemp((dir) => {
+    const frozen = join(released, KIT_VERSION);
+    expect(existsSync(frozen)).toBe(true);
+    const inter = join(__dirname, "../../node_modules/@fontsource/inter");
+    writeFileSync(join(dir, "agento-ui.css"), kitCss());
+    copyFileSync(join(__dirname, "src/agento-ui.js"), join(dir, "agento-ui.js"));
+    copyFileSync(SDK, join(dir, "agento-bridge.js"));
+    mkdirSync(join(dir, "fonts"));
+    for (const f of readdirSync(join(frozen, "fonts"))) {
+      copyFileSync(f === "LICENSE" ? join(inter, f) : join(inter, "files", f), join(dir, "fonts", f));
+    }
+    expect(diffDirs(frozen, dir)).toEqual([]);
+  }));
 
   it("every released version keeps its fonts and bridge", () => {
     for (const v of readdirSync(released)) {

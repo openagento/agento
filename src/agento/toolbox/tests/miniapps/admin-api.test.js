@@ -1,24 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import express from 'express';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createModuleRouteApp } from '../../config-loader.js';
 import { register } from '../../../modules/miniapps/toolbox/admin-api.js';
 import { createService } from '../../../modules/versioned_artifacts/toolbox/service.js';
 import { createBackend } from '../../../modules/versioned_artifacts/toolbox/git-backend.js';
-import { mintVersion, readSource } from '../versioned-artifacts/helpers.js';
+import { mintVersion, readSource, startAdminApp, vaConfig } from '../versioned-artifacts/helpers.js';
 
 // POST /admin/miniapps/<code>/resolve (plan §2.4): a version (or `current`) → its served
 // tree, its content id and its manifest. web approves and launches from this answer.
 const MANIFEST = { schema: 1, title: 'Demo', actions: ['jira_search'] };
 
-let root, pub, src, bare, listener, base, capability;
-const cfg = (over = {}) => ({ storage_root: root, published_root: pub, allowed_artifacts: '',
-  'limits/max_files': 2000, 'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600,
-  'limits/max_diff_bytes': 1048576, 'limits/max_agent_artifacts': 50, 'security/allow_symlinks': false,
-  'serving/keep_versions': 1, 'serving/public_base_url': 'http://localhost:8080', ...over });
+let root, pub, src, bare, server, base;
+const cfg = (over = {}) => vaConfig(root, pub, { allowed_artifacts: '', 'serving/keep_versions': 1, ...over });
 const admin = () => createService({ config: cfg(), admin: true });
 // The agent creates artifacts; the store admin does not (D-MINIAPP-2, O-3).
 const agent = () => createService({ config: cfg(), agentViewId: 7 });
@@ -33,17 +28,11 @@ beforeEach(async () => {
   await writeFile(path.join(bare, 'index.html'), '<h1>no manifest</h1>\n');
   await agent().init('app', { files: await readSource(src) });
   await agent().init('plain', { files: await readSource(bare) });
-  capability = { kind: 'internal_rest', subject_id: 'service:web:user:3', agent_view_id: null };
-  const app = express();
-  app.use((req, _res, next) => { req.capability = capability; next(); }, express.json());
-  await register({ tool: () => {} }, {
-    app: createModuleRouteApp(app, vi.fn()), log: vi.fn(), db: null, moduleConfigs: { versioned_artifacts: cfg() },
-  });
-  listener = await new Promise((resolve) => { const l = app.listen(0, '127.0.0.1', () => resolve(l)); });
-  base = `http://127.0.0.1:${listener.address().port}/admin/miniapps`;
+  server = await startAdminApp(register, cfg());
+  base = `${server.origin}/admin/miniapps`;
 });
 afterEach(async () => {
-  await new Promise((resolve) => listener.close(resolve));
+  await server.close();
   for (const d of [root, pub, src, bare]) await rm(d, { recursive: true, force: true });
 });
 
@@ -102,7 +91,7 @@ describe('miniapps admin resolve', () => {
   });
 
   it('refuses a view-bound capability', async () => {
-    capability = { kind: 'internal_rest', subject_id: 'service:consumer', agent_view_id: 7 };
+    server.capability = { kind: 'internal_rest', subject_id: 'service:consumer', agent_view_id: 7 };
     expect((await resolve('app', 'current')).status).toBe(403);
   });
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { tempModulesDir, writeModule } from './module-dir.js';
 
 // Harness mirrors config-loader.test.js's "registerTools integration" block: a real temp
 // module dir with module.json + toolbox/*.js, with db/log/adapters mocked out.
@@ -9,8 +10,7 @@ describe('registerTools: requires chain in the tool gate', () => {
   let tmpDir;
 
   beforeEach(() => {
-    tmpDir = path.join(import.meta.dirname, '_test_req_' + Date.now() + '_' + Math.random().toString(36).slice(2));
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = tempModulesDir('req');
     process.env.CORE_MODULES_DIR = tmpDir;
     process.env.USER_MODULES_DIR = path.join(tmpDir, '_nonexistent_');
   });
@@ -32,17 +32,12 @@ describe('registerTools: requires chain in the tool gate', () => {
    */
   async function runRegisterTools({ modules, dbValues = {} }) {
     for (const mod of modules) {
-      const dir = path.join(tmpDir, mod.name);
-      fs.mkdirSync(path.join(dir, 'toolbox'), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, 'module.json'),
-        JSON.stringify({ name: mod.name, version: '1.0.0', description: 'd', tools: mod.tools }),
-      );
       const respect = mod.respectGate === undefined ? true : mod.respectGate;
       // A module that consults the gate (the normal case) vs one that registers blindly
       // (what drift detection exists for).
-      fs.writeFileSync(
-        path.join(dir, 'toolbox', 'tools.js'),
+      writeModule(tmpDir, mod.name, {
+        'module.json': { name: mod.name, version: '1.0.0', description: 'd', tools: mod.tools },
+        'toolbox/tools.js':
         `export function register(server, { isToolEnabled }) {\n` +
         (mod.throws ? `  throw new Error('boom');\n` : '') +
         `  const names = ${JSON.stringify(mod.registers)};\n` +
@@ -53,7 +48,7 @@ describe('registerTools: requires chain in the tool gate', () => {
         `  }\n` +
         (mod.throwsAfter ? `  throw new Error('boom');\n` : '') +
         `}\n`,
-      );
+      });
     }
 
     const rows = Object.entries(dbValues).map(([p, value]) => ({ path: p, value, encrypted: 0 }));
