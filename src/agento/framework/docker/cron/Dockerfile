@@ -11,6 +11,9 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     mv /root/.local/bin/uv /usr/local/bin/uv
 
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+# Unpinned, uv takes the newest managed CPython (Debian's python3 is 3.11). A new
+# CPython has no wheels yet for regex, pydantic-core and cffi, and the image has no cc.
+ENV UV_PYTHON=3.12
 
 # Subdirectory of the build context that contains pyproject.toml + uv.lock.
 # Default '.' = client-side context (`.agento/docker/cron/` materialized via

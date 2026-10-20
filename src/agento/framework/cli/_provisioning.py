@@ -28,7 +28,8 @@ from ._output import log_error, log_info
 from ._project import update_dotenv_value
 from ._templates import get_package_version, get_template
 
-_AGENTO_REQUIRES_PYTHON = ">=3.12"
+# Capped: uv takes the newest CPython it may, and a new one has no wheels for native deps.
+_AGENTO_REQUIRES_PYTHON = ">=3.12,<3.15"
 
 
 # ``SandboxPackage`` is imported above purely to re-export it: existing CLI callers
