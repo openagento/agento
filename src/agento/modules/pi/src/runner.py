@@ -157,7 +157,9 @@ class PiSubprocessRunner(SubprocessRunner):
         try:
             from .transcript_reader import PiTranscriptReader
 
-            return PiTranscriptReader().read_toolbox_init(session_id)
+            home = self.context.home_dir
+            # The run's session is in its HOME until the consumer saves it to state/.
+            return PiTranscriptReader(Path(home) if home else None).read_toolbox_init(session_id)
         except Exception:
             return None
 

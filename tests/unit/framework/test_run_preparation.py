@@ -197,11 +197,10 @@ class TestMaterializeRunWorkspace:
         assert home == working == tmp_path / "artifacts" / ws / av / "99"
         assert (home / ".selected-token").read_text() == "run-token"
         assert not (actual_build / ".selected-token").exists()
-        session_link = home / ".agent" / "sessions"
-        assert session_link.is_symlink()
-        assert session_link.resolve() == (
-            build_root / ws / av / "state" / ".agent" / "sessions"
-        ).resolve()
+        # A real dir, not a link into state/: the runner gives a run uid its run dir only.
+        sessions = home / ".agent" / "sessions"
+        assert sessions.is_dir() and not sessions.is_symlink()
+        assert (build_root / ws / av / "state" / ".agent" / "sessions").is_dir()
         assert (actual_build / ".agent" / "sessions").is_dir()
         assert not (actual_build / ".agent" / "sessions").is_symlink()
         writer.write_credentials.assert_called_once()
@@ -262,8 +261,8 @@ class TestMaterializeRunWorkspace:
             assert home is not None
             assert home == tmp_path / "artifacts" / ws / av / str(i)
             assert home.is_dir()
-            assert (home / ".claude" / "projects").is_symlink()
-            assert (home / ".claude" / "todos").is_symlink()
+            assert (home / ".claude" / "projects").is_dir()
+            assert not (home / ".claude" / "todos").is_symlink()
             claude_json = json.loads((home / ".claude.json").read_text())
             assert claude_json["model"] == "sonnet"
             if token.type == "anthropic_api_key":
@@ -567,3 +566,46 @@ def test_a_job_pinned_to_another_harness_gets_its_own_files_and_not_the_views(tm
     assert (run_dir / "AGENTS.md").exists()
     assert not (run_dir / ".claude").exists()
     assert not (run_dir / ".claude.json").exists()
+
+
+def test_persistent_state_round_trips_through_the_run_home(tmp_path):
+    """The run gets a copy of state/ and, after it, only what it changed goes back: an
+    untouched file never overwrites a concurrent run's newer write, and a link is never followed."""
+    import os
+
+    from agento.framework.run_preparation import materialize_run_workspace, save_persistent_state
+
+    ws, av = "acme", "dev"
+    build_root = tmp_path / "build"
+    actual_build = build_root / ws / av / "builds" / "1"
+    actual_build.mkdir(parents=True)
+    (build_root / ws / av / "current").symlink_to(actual_build)
+    sessions = build_root / ws / av / "state" / ".agent" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "old.jsonl").write_text("old")
+    (sessions / "kept.jsonl").write_text("kept")
+    writer = MagicMock()
+    writer.owned_paths.return_value = (set(), {".agent"})
+    writer.persistent_home_paths.return_value = [".agent/sessions"]
+    runtime = _Runtime(agent_view=_AV(code=av, id=7), workspace=_WS(code=ws, id=3), harness="claude")
+
+    with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "artifacts")), \
+         patch("agento.framework.artifacts_dir.BUILD_DIR", str(build_root)), \
+         stub_workspace_adapters(claude=writer):
+        home, _ = materialize_run_workspace(runtime, run_id=99, em=MagicMock())
+        run_sessions = home / ".agent" / "sessions"
+        assert (run_sessions / "old.jsonl").read_text() == "old"
+        (run_sessions / "bucket").mkdir()
+        (run_sessions / "bucket" / "new.jsonl").write_text("new")
+        (run_sessions / "old.jsonl").write_text("old+turn")
+        os.utime(run_sessions / "old.jsonl", (2_000_000_000, 2_000_000_000))
+        (sessions / "kept.jsonl").write_text("newer write of another run")
+        os.utime(sessions / "kept.jsonl", (2_000_000_000, 2_000_000_000))
+        (tmp_path / "secret").write_text("secret")
+        (run_sessions / "leak").symlink_to(tmp_path / "secret")
+        save_persistent_state(runtime, home)
+
+    assert (sessions / "bucket" / "new.jsonl").read_text() == "new"
+    assert (sessions / "old.jsonl").read_text() == "old+turn"
+    assert (sessions / "kept.jsonl").read_text() == "newer write of another run"
+    assert not (sessions / "leak").exists()

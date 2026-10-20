@@ -19,7 +19,7 @@ from .artifacts_dir import (
 )
 from .event_manager import get_event_manager
 from .events import WorkspaceBuildCheckEvent
-from .persistent_home import ensure_state_dir, link_persistent_paths
+from .persistent_home import copy_back_persistent_paths, copy_in_persistent_paths, ensure_state_dir
 from .ssh_identity import (
     ResolvedSshIdentity,
     materialize_ssh_public_identity,
@@ -47,6 +47,23 @@ def _build_root_for_current_build(
         if parent.name == agent_view_code and parent.parent.name == workspace_code:
             return parent.parent.parent
     return Path(BUILD_DIR)
+
+
+def save_persistent_state(runtime: AgentViewRuntime, home_dir: Path | str | None) -> None:
+    """After a run: the persistent HOME paths it changed go back to the agent_view's
+    ``state/`` (``copy_in_persistent_paths`` gave it a copy). Call it only once the runner
+    gave the HOME back to ``agent``."""
+    if home_dir is None or not runtime.harness or runtime.agent_view is None or runtime.workspace is None:
+        return
+    from .harness import persistent_home_paths_for
+    persistent_paths = persistent_home_paths_for(runtime.harness)
+    if not persistent_paths:
+        return
+    ws, av = runtime.workspace.code, runtime.agent_view.code
+    current_build = get_current_build_dir(ws, av)
+    build_root = _build_root_for_current_build(current_build, ws, av) if current_build else Path(BUILD_DIR)
+    state_root = ensure_state_dir(ws, av, persistent_paths, build_root=build_root)
+    copy_back_persistent_paths(Path(home_dir), state_root, persistent_paths)
 
 
 def _ensure_private_ssh_dir(artifacts_dir: Path | str) -> None:
@@ -257,7 +274,7 @@ def materialize_run_workspace(
                 persistent_paths,
                 build_root=state_build_root or BUILD_DIR,
             )
-            link_persistent_paths(artifacts_dir, state_root, persistent_paths)
+            copy_in_persistent_paths(artifacts_dir, state_root, persistent_paths)
 
         if credential is not None:
             writer = workspace_adapter_for(runtime.harness)

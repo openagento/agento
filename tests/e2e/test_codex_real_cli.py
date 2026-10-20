@@ -1,4 +1,4 @@
-"""Real-CLI contract tests for the Codex harness (``AGENTO_E2E=1``), in the sandbox.
+"""Real-CLI contract tests for the Codex harness (``AGENTO_E2E=1``), in the runner.
 
 ``test_agento_run_real_cli.py`` proves that a run exits 0. This file proves what Agento
 READS from the run: the ``codex exec --json`` NDJSON stream (session id, usage, agent
@@ -18,7 +18,7 @@ import subprocess
 import pytest
 
 from agento.framework.agent_manager.errors import AuthenticationError
-from agento.framework.cli._project import compose_file_flags
+from agento.framework.cli._project import EXEC_SERVICE, compose_file_flags
 from agento.framework.harness import RunRequest
 from tests.e2e import test_agento_run_real_cli as base
 from tests.harness_fixtures import make_runner
@@ -74,7 +74,7 @@ def test_headless_result_contract(codex_credential):
 
 @pytest.mark.parametrize("auth_mode", ["api-key", "access-token"])
 def test_rejected_credential_raises_auth_error(auth_mode):
-    """A bogus login in a throw-away CODEX_HOME inside the sandbox: the server rejects
+    """A bogus login in a throw-away CODEX_HOME inside the runner: the server rejects
     it, codex emits ``turn.failed`` (and exits 0), and the parser must raise
     ``AuthenticationError``. Both auth flows codex supports, so both upstream auth
     machineries reach the same parser path. No real credential is involved."""
@@ -92,7 +92,7 @@ def test_rejected_credential_raises_auth_error(auth_mode):
     )
     flags = compose_file_flags(base._PROJECT_ROOT)
     proc = subprocess.run(
-        ["docker", "compose", *flags, "exec", "-T", "-u", "agent", "sandbox", "sh", "-c", script],
+        ["docker", "compose", *flags, "exec", "-T", "-u", "agent", EXEC_SERVICE, "sh", "-c", script],
         stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180,
         cwd=str(base._PROJECT_ROOT / "docker"),
     )

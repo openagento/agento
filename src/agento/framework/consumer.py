@@ -96,7 +96,7 @@ from .harness import (
 from .job_models import Job, JobStatus
 from .outbox import write_outbox
 from .retry_policy import evaluate as evaluate_retry
-from .run_preparation import check_workspace_build, materialize_run_workspace
+from .run_preparation import check_workspace_build, materialize_run_workspace, save_persistent_state
 from .runner import client as runner_client
 from .runner.client import RemoteRunner
 from .secret_redaction import redact_exception, redact_secret
@@ -1185,6 +1185,13 @@ class Consumer:
         finally:
             if temp_home:
                 shutil.rmtree(temp_home, ignore_errors=True)
+            if home_dir is not None:
+                try:
+                    save_persistent_state(runtime, home_dir)
+                except Exception:
+                    # A lost session costs a resume, never the job's outcome.
+                    self.logger.warning("persistent state save failed for job_id=%s", job.id,
+                                        exc_info=True)
             self._finish_credential_lifecycle(
                 job, harness, credential, home_dir,
                 success=success, lease_owner=lease_owner, leased=leased,
