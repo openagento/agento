@@ -19,7 +19,12 @@ from .artifacts_dir import (
 )
 from .event_manager import get_event_manager
 from .events import WorkspaceBuildCheckEvent
-from .persistent_home import copy_back_persistent_paths, copy_in_persistent_paths, ensure_state_dir
+from .persistent_home import (
+    copy_back_persistent_paths,
+    copy_in_persistent_paths,
+    ensure_state_dir,
+    link_persistent_paths,
+)
 from .ssh_identity import (
     ResolvedSshIdentity,
     materialize_ssh_public_identity,
@@ -109,6 +114,7 @@ def materialize_run_workspace(
     capability_token: str | None = None,
     ssh_identity: ResolvedSshIdentity | None = None,
     check_build: Callable[[object, int], None] | None = None,
+    link_state: bool = False,
 ) -> tuple[Path | None, Path | None]:
     """Prepare ``(home_dir, working_dir)`` for one run.
 
@@ -274,7 +280,11 @@ def materialize_run_workspace(
                 persistent_paths,
                 build_root=state_build_root or BUILD_DIR,
             )
-            copy_in_persistent_paths(artifacts_dir, state_root, persistent_paths)
+            # A run uid never gets state/, so it gets a copy (`save_persistent_state`). Only a
+            # run that is `agent`'s own (`agento run`) may link to it.
+            (link_persistent_paths if link_state else copy_in_persistent_paths)(
+                artifacts_dir, state_root, persistent_paths,
+            )
 
         if credential is not None:
             writer = workspace_adapter_for(runtime.harness)

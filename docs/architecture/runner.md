@@ -189,7 +189,8 @@ credential.
 - **Persistent HOME paths.** A harness's `persistent_home_paths()` (session stores) live in the
   agent_view's `state/`, which every run of the view shares, so a run never gets it. The
   run HOME gets a copy of them, and after the run the consumer copies back each file the run
-  added or changed (newer mtime; links skipped). An interactive `agento run` does not copy back.
+  added or changed (newer mtime; links skipped). `agento run` runs its CLI as `agent`, so its HOME
+  links to `state/` instead.
 - **The run dir.** For `execute` it is the context's `home_dir` (a job with no agent_view gets a temp
   HOME under `/workspace/.tmp` from the consumer); for
   `run` the `HOME` it is given (else `cwd`); for `pty` its `home`. Its path must be a

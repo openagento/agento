@@ -609,3 +609,26 @@ def test_persistent_state_round_trips_through_the_run_home(tmp_path):
     assert (sessions / "old.jsonl").read_text() == "old+turn"
     assert (sessions / "kept.jsonl").read_text() == "newer write of another run"
     assert not (sessions / "leak").exists()
+
+
+def test_link_state_links_the_persistent_paths_for_an_agent_run(tmp_path):
+    """`agento run` runs its CLI as `agent`: its HOME links to state/, so the session persists."""
+    from agento.framework.run_preparation import materialize_run_workspace
+
+    build_root = tmp_path / "build"
+    actual_build = build_root / "acme" / "dev" / "builds" / "1"
+    actual_build.mkdir(parents=True)
+    (build_root / "acme" / "dev" / "current").symlink_to(actual_build)
+    writer = MagicMock()
+    writer.owned_paths.return_value = (set(), {".agent"})
+    writer.persistent_home_paths.return_value = [".agent/sessions"]
+    runtime = _Runtime(agent_view=_AV(code="dev", id=7), workspace=_WS(code="acme", id=3), harness="claude")
+
+    with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "artifacts")), \
+         patch("agento.framework.artifacts_dir.BUILD_DIR", str(build_root)), \
+         stub_workspace_adapters(claude=writer):
+        home, _ = materialize_run_workspace(runtime, run_id="run-1", em=MagicMock(), link_state=True)
+
+    assert (home / ".agent" / "sessions").resolve() == (
+        build_root / "acme" / "dev" / "state" / ".agent" / "sessions"
+    ).resolve()

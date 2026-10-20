@@ -246,6 +246,8 @@ class AgentViewPrepareRunCommand:
                 purge_credentials=purge_credentials,
                 effective_model=effective_model,
                 capability_token=capability_token,
+                # `agento run` runs the CLI as `agent`, which may write state/ itself.
+                link_state=True,
             )
 
             writer = workspace_adapter_for(runtime.harness)
