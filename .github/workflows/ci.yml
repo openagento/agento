@@ -47,6 +47,14 @@ jobs:
           TEST_MYSQL_PORT: "3306"
           TEST_MYSQL_USER: root
           TEST_MYSQL_PASSWORD: cronagent_root
+      # The SCL-1 proofs read wall-clock time and server-wide MySQL counters, so they skip
+      # under xdist and run alone here.
+      - run: uv run pytest -q -n 0 tests/integration/test_delta_scale.py tests/integration/test_orchestration_scale.py
+        env:
+          TEST_MYSQL_HOST: 127.0.0.1
+          TEST_MYSQL_PORT: "3306"
+          TEST_MYSQL_USER: root
+          TEST_MYSQL_PASSWORD: cronagent_root
 
   test-js:
     runs-on: ubuntu-latest

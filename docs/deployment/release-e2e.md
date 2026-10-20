@@ -38,9 +38,11 @@ has `.venv/` with agento-core installed, `docker/docker-compose.yml` + override,
    `upgrade.sh` returns when cron is started, not ready, and the tests discover their
    agent_view at collection time — without the wait they skip.
 5. `uv sync --group dev`, then, with `AGENTO_E2E=1 AGENTO_E2E_PROJECT_ROOT=$STACK`:
-   `pytest -m "e2e and not rotates_credentials"` in parallel (one worker per CPU), then
+   `pytest -m "e2e and not rotates_credentials and not serial"` in parallel (one worker per CPU), then
    `pytest -m "e2e and rotates_credentials" -n 0` on its own. The tests read modules from the
    installed package and call the stack's `.venv/bin/agento`.
+   The `serial` tests do not run here: the proxy smoke needs a dev checkout's stack, and the
+   orchestration benchmark runs in the `test` job against its MySQL service.
 6. `publish` runs only when `e2e` is green.
 
 A failed e2e leaves the stack on the candidate. This is intended: inspect it there.

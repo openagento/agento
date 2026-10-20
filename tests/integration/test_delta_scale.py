@@ -29,7 +29,7 @@ from .conftest import DB_STRESS, _clean  # noqa: F401
 # other xdist workers on every CPU they measure the load, not the code. bin/test runs this
 # file alone (`-n 0`) after the parallel pass.
 pytestmark = [DB_STRESS, pytest.mark.skipif(
-    bool(os.environ.get("PYTEST_XDIST_WORKER")), reason="timing proof: run alone with -n 0")]
+    bool(os.environ.get("PYTEST_XDIST_WORKER_COUNT")), reason="timing proof: run alone with -n 0")]
 
 PANEL_RUNS = 200
 SHARED_RUNS = 50                 # on ONE channel thread
