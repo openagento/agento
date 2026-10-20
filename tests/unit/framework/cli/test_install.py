@@ -169,7 +169,7 @@ class TestScaffold:
         pyproject = (tmp_path / "pyproject.toml").read_text()
         assert 'name = "myproj"' in pyproject
         assert 'agento-core==0.8.0' in pyproject
-        assert 'requires-python = ">=3.12"' in pyproject
+        assert 'requires-python = ">=3.12,<3.15"' in pyproject
 
     def test_scaffold_does_not_write_compose_yet(self, tmp_path: Path):
         # docker-compose.yml is rendered later by regenerate_compose() once

@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   them as regexes (`ingress:list` shows existing rows) — this is a note, not a migration.
 
 ### Fixed
+- **Cron image builds again with CPython 3.15 released (AG-73).** The cron Dockerfile ran `uv venv`
+  with no Python pin, so uv took the newest managed CPython (3.15). `regex`, `pydantic-core` and
+  `cffi` have no cp315 wheels, and the build failed with `No such file or directory: 'cc'`. The
+  Dockerfile now sets `ENV UV_PYTHON=3.12`, and `agento install` writes
+  `requires-python = ">=3.12,<3.15"` into a new project's `pyproject.toml`.
 - **Large-result offload files no longer overwrite each other.** `large-result.js` named the file
   `result_YYYYMMDD_HHMMSS.{csv,txt}`, so two calls of the same tool that ended in the same second
   wrote the same path and the second result replaced the first. The name now has a random 8-hex

@@ -47,7 +47,7 @@ class TestWriteProjectPyproject:
         text = (tmp_path / "pyproject.toml").read_text()
         assert 'name = "myproj"' in text
         assert 'agento-core==0.8.0' in text
-        assert 'requires-python = ">=3.12"' in text
+        assert 'requires-python = ">=3.12,<3.15"' in text
 
 
 class TestBumpAgentoVersion:
