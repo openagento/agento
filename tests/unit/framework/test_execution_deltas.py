@@ -72,6 +72,8 @@ def test_a_full_queue_drops_the_oldest_and_marks_the_gap():
     sink = HeldSink(gate)
 
     execution_deltas.sync(sink, module="m", class_path="p")
+    execution_deltas.submit(_record(-1))
+    assert sink.inside.wait(5)              # the worker holds its first write: nothing drains
     for i in range(execution_deltas.MAX_QUEUE + 100):
         execution_deltas.submit(_record(i))
     gate.set()
