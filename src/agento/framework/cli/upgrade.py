@@ -84,6 +84,19 @@ def _upgrade_cli(version: str | None) -> str | None:
     return installed_version or version or get_package_version()
 
 
+def _strip_mysql_bind_address(env_path: Path, existing: dict[str, str]) -> None:
+    """The managed compose binds MySQL to ``127.0.0.1:${MYSQL_PORT}``. A ``MYSQL_PORT`` that
+    still carries its own address (``127.0.0.1:3306``) would render an invalid
+    ``127.0.0.1:127.0.0.1:3306``, so keep only the port."""
+    value = existing.get("MYSQL_PORT", "")
+    if ":" not in value:
+        return
+    port = value.rsplit(":", 1)[1]
+    update_dotenv_value(env_path, "MYSQL_PORT", port)
+    log_info(f"MYSQL_PORT {value} -> {port}: MySQL is published on 127.0.0.1 only. "
+             "To publish it elsewhere, use docker-compose.override.yml.")
+
+
 def _backfill_or_warn_cli_pin(
     env_path: Path,
     existing: dict[str, str],
@@ -208,6 +221,8 @@ class UpgradeCommand:
             if "HOST_GID" not in existing:
                 update_dotenv_value(env_path, "HOST_GID", str(host_gid))
                 log_info(f"HOST_GID backfilled to {host_gid}")
+
+        _strip_mysql_bind_address(env_path, existing)
 
         # Backfill agent CLI pins for deployments that predate them. Then
         # warn — but never overwrite — when a customer's existing pin is

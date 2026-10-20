@@ -38,6 +38,8 @@ services:
 The managed file publishes MySQL on host loopback only (`127.0.0.1:${MYSQL_PORT}`). To reach it
 from another host, add a port in the override. Do this only on a trusted network: the port
 then accepts logins from every address that can reach it.
+`MYSQL_PORT` holds the port only; `agento upgrade` strips an address left in it
+(`127.0.0.1:3306` becomes `3306`).
 
 ```yaml
 # docker/docker-compose.override.yml

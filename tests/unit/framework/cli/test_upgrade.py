@@ -304,6 +304,22 @@ class TestUpgradeCommand:
         mock_build_base.assert_not_called()
 
 
+@pytest.mark.parametrize(("before", "after"), [
+    ("127.0.0.1:3306", "3306"),
+    ("0.0.0.0:3307", "3307"),
+    ("3306", "3306"),
+], ids=["loopback", "any-address", "port-only"])
+def test_mysql_port_keeps_only_the_port(tmp_path: Path, before: str, after: str):
+    from agento.framework.cli.upgrade import _strip_mysql_bind_address
+
+    env = tmp_path / ".env"
+    env.write_text(f"MYSQL_PORT={before}\n")
+
+    _strip_mysql_bind_address(env, {"MYSQL_PORT": before})
+
+    assert env.read_text() == f"MYSQL_PORT={after}\n"
+
+
 class TestBackfillOrWarnCliPin:
     """Verifies the sticky-pin policy: backfill when missing, warn when stale,
     never overwrite an existing value (customers may have intentionally pinned)."""
