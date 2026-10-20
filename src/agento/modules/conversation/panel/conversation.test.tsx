@@ -5,6 +5,13 @@ import { Providers as wrapper, stubApi, teardown } from "../../../../../frontend
 import { Composer, Rail, View } from "./ConversationsPage";
 import { IDLE_POLL_MS, RUN_POLL_MS, type Message } from "./model";
 import { MAX_EVENTS } from "./timeline";
+
+// The cap's rules are proven in timeline.test.ts; a small cap keeps the screen tests from
+// rendering 15 000 rows.
+vi.mock("./timeline", async (actual) => {
+  const m = await actual<typeof import("./timeline")>();
+  return { ...m, MAX_EVENTS: 50, TimelineStore: class extends m.TimelineStore { constructor() { super(50); } } };
+});
 import { REFETCH_DEBOUNCE_MS, useConversation } from "./useConversation";
 
 const ev = (kind: string, execution_id: string | null, payload: Record<string, unknown> = {}, id = 1): StreamEvent =>
@@ -366,7 +373,7 @@ describe("the cap while reading history", () => {
     expect(screen.queryByText("m999")).toBeNull();
     const shown = [...box.querySelectorAll("li")].map((li) => Number(li.textContent!.match(/m(\d+)/)![1]));
     expect(shown).toEqual(newest.map((e) => e.id));
-  }, 60_000);
+  });
 });
 
 describe("a reload held while the operator scrolls up again", () => {

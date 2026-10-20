@@ -42,7 +42,7 @@ has `.venv/` with agento-core installed, `docker/docker-compose.yml` + override,
    `pytest -m "e2e and rotates_credentials" -n 0` on its own. The tests read modules from the
    installed package and call the stack's `.venv/bin/agento`.
    The `serial` tests do not run here: the proxy smoke needs a dev checkout's stack, and the
-   orchestration benchmark runs in the `test` job against its MySQL service.
+   orchestration benchmark needs a test MySQL and many CPUs. `bin/test` runs both.
 6. `publish` runs only when `e2e` is green.
 
 A failed e2e leaves the stack on the candidate. This is intended: inspect it there.

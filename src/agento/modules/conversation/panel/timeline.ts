@@ -26,6 +26,8 @@ export class TimelineStore {
   /** The highest id counted in `unseen`, so an event seen twice counts once. */
   private counted = 0;
 
+  constructor(private readonly max = MAX_EVENTS) {}
+
   subscribe = (l: () => void) => { this.listeners.add(l); return () => { this.listeners.delete(l); }; };
   getVersion = () => this.version;
 
@@ -81,8 +83,8 @@ export class TimelineStore {
   }
 
   private trim(): void {
-    if (this.ids.length <= MAX_EVENTS) return;
-    for (const id of this.ids.splice(0, this.ids.length - MAX_EVENTS)) this.byId.delete(id);
+    if (this.ids.length <= this.max) return;
+    for (const id of this.ids.splice(0, this.ids.length - this.max)) this.byId.delete(id);
     this.hasOlder = true;
   }
 

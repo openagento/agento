@@ -35,8 +35,7 @@ jobs:
       - run: uv sync --group dev
       # Service containers accept no command override, so raise the limit at
       # runtime to what the compose template sets (600; default is 151). The
-      # token-pool contention test and the 200-job orchestration benchmark
-      # skip themselves when it is too low.
+      # token-pool contention test skips itself when it is too low.
       - name: Raise MySQL max_connections
         run: >-
           mysql -h 127.0.0.1 -P 3306 -u root -pcronagent_root
@@ -47,9 +46,10 @@ jobs:
           TEST_MYSQL_PORT: "3306"
           TEST_MYSQL_USER: root
           TEST_MYSQL_PASSWORD: cronagent_root
-      # The SCL-1 proofs read wall-clock time and server-wide MySQL counters, so they skip
-      # under xdist and run alone here.
-      - run: uv run pytest -q -n 0 tests/integration/test_delta_scale.py tests/integration/test_orchestration_scale.py
+      # The SCL-1 latency proof reads wall-clock time, so it skips under xdist and runs alone
+      # here. The 200-job orchestration benchmark needs more CPUs than a hosted runner has:
+      # `bin/test` runs it.
+      - run: uv run pytest -q -n 0 tests/integration/test_delta_scale.py
         env:
           TEST_MYSQL_HOST: 127.0.0.1
           TEST_MYSQL_PORT: "3306"
