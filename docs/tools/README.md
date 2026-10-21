@@ -59,6 +59,15 @@ Discovered by convention from `<module>/toolbox/*.js` files. Each file exports a
 |------|-------------|
 | `versioned_artifact_init`, `versioned_artifact_list`, `versioned_artifact_get_current`, `versioned_artifact_list_versions`, `versioned_artifact_create_draft`, `versioned_artifact_materialize`, `versioned_artifact_save_version`, `versioned_artifact_diff`, `versioned_artifact_publish`, `versioned_artifact_discard_draft` | Versioned file trees — the whole lifecycle (opt-in; each scope owns what it creates and additionally uses whatever `allowed_artifacts` grants it). See [versioned-artifacts.md](../modules/versioned-artifacts.md). |
 
+**Subagent module** (`src/agento/modules/subagent/toolbox/`):
+
+| Tool | Description |
+|------|-------------|
+| `agent_run` (opt-in) | Delegate a task to an agent_view as a child job. Returns the child `job_id` at once. Own view, or a view in `subagent/allowed_agent_views`; max 3 levels deep, max `subagent/max_children_per_job` children per job. |
+| `agent_result` (opt-in) | Read the status of a child job this job created, its `output` after `SUCCESS`, or its `error_class` after `FAILED`/`DEAD`. Only the direct parent can read a child. |
+
+See [subagent.md](../modules/subagent.md).
+
 **User modules** (`app/code/<name>/toolbox/`):
 
 Custom JS tools for your deployment — same convention.

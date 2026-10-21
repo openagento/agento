@@ -25,6 +25,7 @@ import { register as registerSchedule } from '../../modules/core/toolbox/schedul
 import { register as registerGitHub } from '../../modules/github/toolbox/github.js';
 import { register as registerJira } from '../../modules/jira/toolbox/jira.js';
 import { register as registerOutlook } from '../../modules/outlook/toolbox/outlook.js';
+import { register as registerSubagent } from '../../modules/subagent/toolbox/agent.js';
 import { register as registerVersionedArtifacts } from '../../modules/versioned_artifacts/toolbox/versioned-artifacts.js';
 
 // Keyed by the exact toolbox FILE each registrar comes from, so the coverage guard below can
@@ -36,6 +37,7 @@ const REGISTRARS = {
   github: { 'github.js': registerGitHub },
   jira: { 'jira.js': registerJira },
   outlook: { 'outlook.js': registerOutlook },
+  subagent: { 'agent.js': registerSubagent },
   versioned_artifacts: { 'versioned-artifacts.js': registerVersionedArtifacts },
 };
 

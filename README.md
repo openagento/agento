@@ -76,7 +76,7 @@ Agento runs its service containers plus MySQL on three bridge networks (`db-net`
 
 Agento uses a Magento-inspired modular architecture. Each module is a self-contained package.
 
-**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view, conversation, versioned_artifacts, web, admin, miniapps).
+**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view, conversation, versioned_artifacts, web, admin, miniapps, subagent).
 
 **User modules** live in `app/code/` and are deployment-specific (gitignored by default).
 

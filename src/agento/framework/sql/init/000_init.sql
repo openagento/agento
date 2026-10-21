@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS schedule (
 CREATE TABLE IF NOT EXISTS job (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     schedule_id     BIGINT UNSIGNED NULL,
+    parent_job_id   BIGINT UNSIGNED NULL,
+    depth           TINYINT UNSIGNED NOT NULL DEFAULT 0,
     type            VARCHAR(32)  NOT NULL,   -- open vocabulary (PRD E3-E5 §4.2)
     source          VARCHAR(50) NOT NULL DEFAULT 'jira',
     agent_view_id   INT UNSIGNED NULL,
@@ -95,6 +97,7 @@ CREATE TABLE IF NOT EXISTS job (
     KEY idx_job_dequeue (status, scheduled_after),
     KEY idx_job_auth_wait (status, error_class, id),
     KEY idx_job_schedule (schedule_id),
+    KEY idx_job_parent (parent_job_id),
     KEY idx_job_agent_view (agent_view_id),
     KEY idx_job_priority_created (priority DESC, created_at ASC),
     KEY idx_job_requester_key (requester_key),
@@ -103,7 +106,8 @@ CREATE TABLE IF NOT EXISTS job (
     CONSTRAINT fk_job_schedule
         FOREIGN KEY (schedule_id) REFERENCES schedule(id) ON DELETE SET NULL,
     CONSTRAINT fk_job_agent_view
-        FOREIGN KEY (agent_view_id) REFERENCES agent_view(id) ON DELETE SET NULL
+        FOREIGN KEY (agent_view_id) REFERENCES agent_view(id) ON DELETE SET NULL,
+    CONSTRAINT fk_job_parent FOREIGN KEY (parent_job_id) REFERENCES job(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Credential registry (credentials stored encrypted inline; see framework/crypto.py).
@@ -495,4 +499,5 @@ INSERT INTO schema_migration (version) VALUES
     ('049_tool_invocation_run_execution_index'),
     ('050_role'),
     ('051_job_runner_ref'),
-    ('052_job_auth_wait_index');
+    ('052_job_auth_wait_index'),
+    ('053_job_parent_depth');
