@@ -94,6 +94,7 @@ from .harness import (
     workspace_adapter_for,
 )
 from .job_models import Job, JobStatus
+from .job_types import registered_job_types
 from .outbox import write_outbox
 from .retry_policy import evaluate as evaluate_retry
 from .run_preparation import check_workspace_build, materialize_run_workspace, save_persistent_state
@@ -193,10 +194,13 @@ class _JobResult:
             mcp_init=result.mcp_init,
         )
 
+# `{types}` is one `%s` per registered job type (§5.7): a TODO row whose module is
+# disabled is never a candidate, so it cannot stall the queue head. It waits untouched.
 DEQUEUE_SQL = """
     SELECT * FROM job
     WHERE status = 'TODO'
       AND scheduled_after <= NOW()
+      AND type IN ({types})
     ORDER BY priority DESC, created_at ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -650,7 +654,8 @@ class Consumer:
             try:
                 with conn.cursor() as cur:
                     if job_id is None:
-                        cur.execute(DEQUEUE_SQL)
+                        types = registered_job_types()
+                        cur.execute(DEQUEUE_SQL.format(types=", ".join(["%s"] * len(types))), types)
                     else:
                         cur.execute(DEQUEUE_ONE_SQL, (job_id,))
                     row = cur.fetchone()
@@ -880,6 +885,7 @@ class Consumer:
         # UnboundLocalError before the call if anything above raised, so "the callee
         # tolerates None" is not enough.
         home_dir = credential = harness = lease_owner = temp_home = None
+        runtime = None
         capability_token = rest_capability_token = None
         # Whether the lease was actually ACQUIRED, which is not the same as having issued an
         # owner: only a refresh-imminent credential is leased. The detector below depends on
@@ -1185,7 +1191,7 @@ class Consumer:
         finally:
             if temp_home:
                 shutil.rmtree(temp_home, ignore_errors=True)
-            if home_dir is not None:
+            if home_dir is not None and runtime is not None:
                 try:
                     save_persistent_state(runtime, home_dir)
                 except Exception:

@@ -4,6 +4,48 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-21 — Nested sub-agents: `agent_run` / `agent_result` (D-SUBAGENT-1)
+
+Settled by the owner's PRD (2026-10-21): `agent_run` is asynchronous and returns the child
+`job_id` at once; a hard maximum of 3 levels (`sorry, max 3 nested subagents levels`); only the
+direct parent reads a child (`job not found or not accessible`); outside a queued job both tools
+fail; no copy of the parent's context; no cancel and no dedupe in the MVP; `agento run` unchanged.
+
+**Proposals, awaiting owner approval** (the owner may override each one):
+
+- **Placement:** a new core module `subagent` (tools, job type, channel, workflow, config), so it
+  can be disabled. `job.parent_job_id` and `job.depth` are framework columns.
+- **Cross-view delegation needs a grant.** The own view is always allowed. Another view only when
+  its code is in `subagent/allowed_agent_views` at the caller's scope. Empty = own view only; no
+  `*` value (SEC-9). Unknown, inactive and not-allowed views give one error text (no existence
+  oracle).
+- **`agent_result.error` is `error_class` only.** `error_message` can quote CLI output (SEC-6) and
+  stays admin-only.
+- **Fan-out is bounded.** `subagent/max_children_per_job` (default 10) per parent, checked under
+  the parent row lock; a value that is not an integer >= 1 refuses (`agent_run is not
+  configured`), never "no limit". Depth 3 is a code constant. A tree holds at most `N + N² + N³`
+  jobs.
+- **One Node job-insert path.** `src/agento/toolbox/job-enqueue.js` `enqueueJob` (dedupe, insert,
+  `job.queued` outbox row; caller owns the transaction) is used by `schedule_followup` and
+  `agent_run`, injected through `TOOLBOX_HELPERS`. The Python twin stays
+  `publish_service.publish_job`.
+- **A delegated job cannot schedule a follow-up.** `schedule_followup` refuses at `depth > 0`
+  (`schedule_followup is not available in a delegated job`). A follow-up of a child would be a
+  new root that delegates three more levels, or an uncounted extra child. So every non-root job
+  is an `agent_run` child under the cap. Root jobs keep today's behaviour.
+- **The ordinary dequeue selects only registered job types.** Before, a `TODO` row whose type
+  was not registered failed in `Job.from_row` before the claim, and the same head row was picked
+  again on each poll, so it stopped the queue. Now `DEQUEUE_SQL` filters
+  `type IN (registered_job_types())`, read on each poll; such a row waits with no change and runs
+  when its module is enabled again. `_try_dequeue(job_id)` (`agento e2e`) is unchanged.
+- **Rejected:** parent, depth or caller view as tool arguments (the caller would choose its own
+  place in the tree, SEC-7; the dispatcher's strict schema refuses them); a `*` allow-list value.
+- **Deferred, not rejected:** see ROADMAP.md "Nested sub-agents — follow-ups".
+- **No event for the child insert:** the insert is Node (EVT-2, same gap as `schedule_followup`);
+  the `job.queued` outbox row is its announcement.
+
+---
+
 ## 2026-10-20 — Runs may join operator-named host groups (D-RUN-GROUPS-1)
 
 - **Problem:** since the runner split, each run is its own uid with no other group. A 0.17

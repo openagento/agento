@@ -9,6 +9,7 @@ import { logToolboxRest, errorCategory } from './log.js';
 import { rejectScopeMismatch } from './capability.js';
 import { matchesWhitelist } from './email-match.js';
 import { sanitizeHealthError } from './health-run.js';
+import { enqueueJob } from './job-enqueue.js';
 
 // The helpers a module's toolbox/ code may use. A module tree and the toolbox tree are mounted at
 // UNRELATED container paths (/app/modules/core/<m>/toolbox vs the toolbox package root), so a
@@ -17,7 +18,9 @@ import { sanitizeHealthError } from './health-run.js';
 // code reaches a module only through the registration context, so shared helpers travel that way.
 // `errorCategory` is wrapped rather than referenced: this object is built at module load, and a
 // test that partially mocks log.js would fail on the read before any of its own code runs.
-const TOOLBOX_HELPERS = { matchesWhitelist, sanitizeHealthError, errorCategory: err => errorCategory(err) };
+const TOOLBOX_HELPERS = {
+  matchesWhitelist, sanitizeHealthError, enqueueJob, errorCategory: err => errorCategory(err),
+};
 
 const CORE_MODULES_DIR = process.env.CORE_MODULES_DIR || '/app/modules/core';
 const USER_MODULES_DIR = process.env.USER_MODULES_DIR || '/app/modules/user';
