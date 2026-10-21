@@ -18,6 +18,7 @@ TOOLBOX_GRANTS = {
     "user": "SELECT",
     "workspace": "SELECT",
     "job": "SELECT, INSERT",
+    "job_event_outbox": "INSERT",  # enqueueJob announces each job it inserts (job-enqueue.js)
     "miniapp_activation": "SELECT",  # web writes approvals; the checker and the retention pin read
     "miniapp_member": "SELECT",  # the launch checker's `view` (D-MINIAPP-3)
     "versioned_artifact": "SELECT, INSERT, UPDATE",  # web deletes the row (D-MINIAPP-2)

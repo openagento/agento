@@ -93,8 +93,9 @@ invariant is enforced now).
 
 No container uses the migration user `cron_agent` at run time: only `setup:upgrade` does.
 `cron` and `web` run as `agento_backend` (DML, no DDL). The toolbox runs as `agento_toolbox`,
-with a grant on each table its SQL uses and no grant on `credential`, `execution*`,
-`conversation_*` or `job_event_outbox`. `setup:upgrade` makes these grants again on each run
+with a grant on each table its SQL uses and no grant on `credential`, `execution*` or
+`conversation_*`. On `job_event_outbox` it has INSERT only: `enqueueJob` announces each job it
+inserts (`schedule_followup`, `agent_run`). `setup:upgrade` makes these grants again on each run
 (`framework/db_grants.py`). MySQL publishes its port on host loopback only. See
 [upgrade.md](../cli/upgrade.md#database-users).
 

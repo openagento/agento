@@ -42,8 +42,10 @@ argument is accepted: the parent, the depth and the caller's view come from the 
 
 The tool, in one transaction:
 
-1. Locks the parent job row (`SELECT … FOR UPDATE`). This serializes the `agent_run` calls of
-   one parent, so the child cap holds under concurrency.
+1. Takes the named lock `subagent:<parent job id>` (`GET_LOCK`, 10 s). This serializes the
+   `agent_run` calls of one parent, so the child cap holds under concurrency. It is not a row
+   lock: `SELECT … FOR UPDATE` needs UPDATE on `job`, and the toolbox DB user holds only
+   `SELECT, INSERT` there (`framework/db_grants.py`).
 2. Refuses at depth 3.
 3. Finds the target view (active only). It must be the caller's own view or in
    `allowed_agent_views`.

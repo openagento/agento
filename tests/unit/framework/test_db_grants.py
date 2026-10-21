@@ -45,6 +45,7 @@ class TestToolboxAllowList:
             "user": "SELECT",
             "workspace": "SELECT",
             "job": "SELECT, INSERT",
+            "job_event_outbox": "INSERT",
             "miniapp_activation": "SELECT",
             "miniapp_member": "SELECT",
             "versioned_artifact": "SELECT, INSERT, UPDATE",

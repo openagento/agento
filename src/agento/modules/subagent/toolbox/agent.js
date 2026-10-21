@@ -40,14 +40,21 @@ export function register(server, { log, db, isToolEnabled, jobId, agentViewId, m
       async ({ agent_view, prompt }) => {
         if (!jobId) return refuse(NO_JOB);
         let conn;
+        let lock = null;
         try {
           conn = await db.getCronPool().getConnection();
+          // A named lock serializes the agent_run calls of one parent, so the child cap holds.
+          // Not `SELECT … FOR UPDATE`: a locking read needs UPDATE on `job`, which the toolbox
+          // user does not hold (db_grants.py). Taken before the transaction, so its snapshot
+          // sees every child a previous holder committed.
+          const [[{ got }]] = await conn.execute('SELECT GET_LOCK(?, 10) AS got', [`subagent:${jobId}`]);
+          if (Number(got) !== 1) throw new Error('subagent lock timeout');
+          lock = `subagent:${jobId}`;
           await conn.beginTransaction();
           const fail = async (text) => { await conn.rollback(); return refuse(text); };
 
-          // The row lock serializes agent_run calls of one parent, so the child cap holds.
           const [parents] = await conn.execute(
-            'SELECT id, agent_view_id, priority, depth FROM job WHERE id = ? FOR UPDATE', [jobId]);
+            'SELECT id, agent_view_id, priority, depth FROM job WHERE id = ?', [jobId]);
           const parent = parents[0];
           if (!parent || Number(parent.agent_view_id) !== Number(agentViewId)) return await fail(NO_JOB);
           if (parent.depth >= MAX_DEPTH) return await fail(`sorry, max ${MAX_DEPTH} nested subagents levels`);
@@ -82,6 +89,7 @@ export function register(server, { log, db, isToolEnabled, jobId, agentViewId, m
           log('agent_run', 'ERROR', `job=${jobId} ${errorCategory(err)}`);
           return refuse('agent_run failed');
         } finally {
+          if (lock) await conn.execute('SELECT RELEASE_LOCK(?)', [lock]).catch(() => {});
           conn?.release();
         }
       }
