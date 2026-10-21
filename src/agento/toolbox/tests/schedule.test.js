@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { enqueueJob } from '../job-enqueue.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEDULE_PATH = path.resolve(__dirname, '../../modules/core/toolbox/schedule.js');
@@ -61,7 +62,7 @@ function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null, 
 const FUTURE = '2099-01-01T08:00:00';
 
 function baseCtx(overrides = {}) {
-  return { log: vi.fn(), db: {}, isToolEnabled: () => true, jobId: 42, ...overrides };
+  return { log: vi.fn(), db: {}, isToolEnabled: () => true, jobId: 42, enqueueJob, ...overrides };
 }
 
 async function loadRegister() {
@@ -326,5 +327,42 @@ describe('schedule_followup announces the job (ROADMAP F14)', () => {
     expect(calls.commit).toBe(0);
     expect(calls.rollback).toBeGreaterThanOrEqual(1);
     expect(calls.released).toBe(1);
+  });
+});
+
+describe('schedule_followup in a delegated job', () => {
+  it('depth > 0 → refused with the delegated-job text, no INSERT', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb({ source: 'subagent', reference_id: '41', agent_view_id: 3, priority: 50, depth: 1 });
+    register(server, baseCtx({ db }));
+    const res = await server.tools.schedule_followup.handler({
+      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+    });
+    expect(res).toEqual({
+      content: [{ type: 'text', text: 'schedule_followup is not available in a delegated job' }],
+      isError: true,
+    });
+    expect(calls.executed).toHaveLength(1);
+    expect(calls.executed[0].sql).toMatch(/\bdepth\b/);
+    expect(calls.commit).toBe(0);
+    expect(calls.rollback).toBe(1);
+    expect(calls.released).toBe(1);
+  });
+
+  it('depth 0 → the follow-up is a root job (parent_job_id NULL, depth 0)', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb({ source: 'jira', reference_id: 'AG-1', agent_view_id: 3, priority: 50, depth: 0 });
+    register(server, baseCtx({ db }));
+    const res = await server.tools.schedule_followup.handler({
+      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+    });
+    expect(res.isError).toBeFalsy();
+    const insert = calls.executed.find((c) => /INSERT INTO job\b/i.test(c.sql) && !/outbox/i.test(c.sql));
+    expect(insert.sql).toMatch(/parent_job_id, depth/);
+    // [source, agent_view_id, priority, reference_id, context, key, type, max_attempts, parent_job_id, depth, scheduled_after]
+    expect(insert.params.slice(6, 10)).toEqual(['followup', 3, null, 0]);
+    expect(calls.commit).toBe(1);
   });
 });

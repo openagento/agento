@@ -114,7 +114,7 @@ The consumer runs a bounded thread pool (`AGENTO_CONSUMER_MAX_WORKERS`). Each jo
 
 **Sizing.** `AGENTO_CONSUMER_MAX_WORKERS` stays 10 by default. To run 200 jobs at the same time, set it to 200. MySQL `max_connections` must be larger than the peak: about one connection per running job, plus the toolbox, `web` and the CLI. The compose template sets `--max-connections=600`, which is enough for 200 workers. The benchmark `tests/integration/test_orchestration_scale.py` measures connections per job and `Max_used_connections`.
 
-Jobs are dequeued by priority: `ORDER BY priority DESC, created_at ASC`. Priority is stamped at publish time from scoped config path `agent_view/scheduling/priority` (0-100, default 50).
+Jobs are dequeued by priority: `ORDER BY priority DESC, created_at ASC`. The dequeue selects only rows whose `type` is registered now (built-ins plus the enabled modules' `job_types`, read on each poll): a `TODO` row of a disabled module's type is not a candidate, so it does not stop the queue. It waits with no change and runs when the module is enabled again. Priority is stamped at publish time from scoped config path `agent_view/scheduling/priority` (0-100, default 50).
 
 Each job carries `agent_view_id` (resolved via ingress routing at publish time for ingress-routed channels, or set directly by a channel's own per-agent_view publisher — e.g. the Outlook mailbox→agent_view loop). The consumer resolves the agent_view's runtime profile (provider, model, scoped config) and generates per-run config files before CLI execution.
 

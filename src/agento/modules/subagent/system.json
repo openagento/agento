@@ -1,0 +1,4 @@
+{
+  "allowed_agent_views": {"type": "string", "label": "Other agent_views this scope may delegate to (comma-separated codes; empty = own view only)"},
+  "max_children_per_job": {"type": "integer", "label": "Max child jobs one job may create", "min": 1}
+}

@@ -369,6 +369,21 @@ Today an agent_view is statically bound to a harness, model, and effort. This ad
 
 Group related jobs into a thread so agents can collaborate the way people do: an agent does work locally, publishes it, and hands off to another agent for review, decision, or continuation, escalating to a human when they can't agree. The core primitive is a **handoff package** — intent, origin, a work summary, and an artifact manifest — that travels between agent_views, giving a thread a shared workspace and shared, runnable artifacts instead of isolated per-job directories.
 
+### ⚪ Nested sub-agents — follow-ups
+
+The `subagent` module (DECISIONS.md 2026-10-21, [docs/modules/subagent.md](docs/modules/subagent.md))
+ships `agent_run` / `agent_result`: asynchronous child jobs, 3 levels, direct-parent reads. Left out:
+
+- **Job-tree view** in the panel and the TUI (parent, children, status per node).
+- **Child cancellation.** A child is not cancelled when its parent ends or fails.
+- **Idempotent spawn / dedupe.** Each `agent_run` call makes a new child (random key).
+- **Synchronous wait.** The parent polls `agent_result`; no tool blocks until a child ends.
+- **Token and cost roll-up per tree.** Usage is per job only.
+- **Context and artifact attachment.** The child gets the prompt only; no files or parent context.
+- **Sandbox CLI wrapper** (`agento agent run`) for agents that call the CLI, not MCP.
+- **A Python event for the Node-side job insert** (EVT-2 gap, same as `schedule_followup`): the
+  child insert dispatches no `job_publish_after`; the `job.queued` outbox row is its only announcement.
+
 ### ⚪ Areas / selective module loading — parked
 
 Explicitly parked. There is no current justification for selective module loading, and security boundaries stay enforced by process and container separation rather than area declarations. Revisit only if module count creates measurable overhead, deployments need materially different module subsets, or selective loading solves a proven security problem better than the existing boundaries.
@@ -521,6 +536,11 @@ call — plus `framework/e2e.py` for the smoke stack. `schedule.js` remains the 
 path, in the toolbox, in another language, with its own dedupe (since 2026-10-10 it at least
 commits its job and its `job.queued` outbox row together). `grep -rn -i "insert into job"
 src/agento` is the check; a fourth hit is the bug this entry is about.
+
+(2026-10-21: the Node insert moved from `schedule.js` to the shared
+`src/agento/toolbox/job-enqueue.js` `enqueueJob`, which `schedule_followup` and the `subagent`
+module's `agent_run` both call. `agent_run` covers delegation to another agent_view as a child
+job, gated by `subagent/allowed_agent_views`; see [docs/modules/subagent.md](docs/modules/subagent.md).)
 
 ### Ungated Toolbox REST endpoints (raised during the Pi harness work)
 

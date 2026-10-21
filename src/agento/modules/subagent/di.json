@@ -1,0 +1,17 @@
+{
+  "job_types": [
+    "subagent"
+  ],
+  "channels": [
+    {
+      "name": "subagent",
+      "class": "src.channel.SubagentChannel"
+    }
+  ],
+  "workflows": [
+    {
+      "type": "subagent",
+      "class": "src.workflow.SubagentWorkflow"
+    }
+  ]
+}

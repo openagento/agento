@@ -210,6 +210,11 @@ class TestApplyMigration:
                      id="049-tool-invocation-run-execution-index"),
         pytest.param(("KEY idx_job_auth_wait (status, error_class, id)", "('052_job_auth_wait_index')"),
                      id="052-job-auth-wait-index"),
+        pytest.param(("parent_job_id BIGINT UNSIGNED NULL,", "depth TINYINT UNSIGNED NOT NULL DEFAULT 0,",
+                      "KEY idx_job_parent (parent_job_id)",
+                      "CONSTRAINT fk_job_parent FOREIGN KEY (parent_job_id) REFERENCES job(id) ON DELETE SET NULL",
+                      "('053_job_parent_depth')"),
+                     id="053-job-parent-depth"),
     ])
     def test_fresh_init_includes_the_migration_effect(self, needles):
         # Column alignment in the init DDL is cosmetic, so collapse runs of spaces.
@@ -243,6 +248,14 @@ class TestApplyMigration:
         assert sql.count("ALTER TABLE credential") == 3
         # NULL defaults are the "migration resurrects nothing" invariant.
         assert "NOT NULL" not in sql
+
+    def test_migration_053_adds_parent_and_depth(self):
+        sql = re.sub(r"\s+", " ", (SQL_DIR / "053_job_parent_depth.sql").read_text())
+        assert "ADD COLUMN parent_job_id BIGINT UNSIGNED NULL AFTER schedule_id" in sql
+        assert "ADD COLUMN depth TINYINT UNSIGNED NOT NULL DEFAULT 0 AFTER parent_job_id" in sql
+        assert "ADD KEY idx_job_parent (parent_job_id)" in sql
+        assert ("ADD CONSTRAINT fk_job_parent FOREIGN KEY (parent_job_id) REFERENCES job(id) "
+                "ON DELETE SET NULL") in sql
 
     def test_migration_026_adds_requester_columns(self):
         sql = (SQL_DIR / "026_job_requester.sql").read_text()
