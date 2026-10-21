@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import secrets
 import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -15,11 +17,14 @@ from unittest.mock import patch
 import pytest
 
 from agento.framework.consumer import Consumer
+from agento.framework.db_grants import TOOLBOX_GRANTS
 from agento.modules.claude.src.output_parser import ClaudeResult
 
 from .conftest import (
     CONCURRENT_WORKERS_STRESS_TEST,
     DB_STRESS,
+    TEST_DB,
+    _root_connection,
     _test_connection,
     bootstrap_for_tests,
     fetch_all_jobs,
@@ -38,13 +43,43 @@ pytestmark = pytest.mark.skipif(
     reason="needs node and the toolbox's npm install")
 
 
+_DRIVER_ENV: dict[str, str] = {}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def toolbox_db_user():
+    """The driver connects as a user with exactly the toolbox's production grants
+    (db_grants.TOOLBOX_GRANTS) on this worker's database, so SQL the toolbox user may not run
+    fails here as it does in a deployment. Not apply_grants: on this shared server it would
+    reset the live `agento_toolbox` user."""
+    user, password = f"agento_toolbox_it_{TEST_DB[-12:]}", secrets.token_hex(16)
+    conn = _root_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = %s", (TEST_DB,))
+            tables = {row[0] for row in cur.fetchall()}
+            cur.execute("DROP USER IF EXISTS %s@'%%'", (user,))
+            cur.execute("CREATE USER %s@'%%' IDENTIFIED BY %s", (user, password))
+            for table, privileges in TOOLBOX_GRANTS.items():
+                if table in tables:
+                    cur.execute(f"GRANT {privileges} ON `{TEST_DB}`.`{table}` TO %s@'%%'", (user,))
+        _DRIVER_ENV.update(TEST_MYSQL_USER=user, TEST_MYSQL_PASSWORD=password)
+        yield
+        _DRIVER_ENV.clear()
+        with conn.cursor() as cur:
+            cur.execute("DROP USER IF EXISTS %s@'%%'", (user,))
+    finally:
+        conn.close()
+
+
 def _call(tool, args, job_id, view, configs=CONFIGS):
     return {"tool": tool, "args": args, "jobId": job_id, "agentViewId": view, "moduleConfigs": configs}
 
 
 def _run(*calls):
     out = subprocess.run(["node", str(_DRIVER)], input=json.dumps({"calls": list(calls)}),
-                         capture_output=True, text=True, check=True, timeout=120)
+                         capture_output=True, text=True, check=True, timeout=120,
+                         env={**os.environ, **_DRIVER_ENV})
     return json.loads(out.stdout)
 
 

@@ -22,7 +22,8 @@ fail; no copy of the parent's context; no cancel and no dedupe in the MVP; `agen
 - **`agent_result.error` is `error_class` only.** `error_message` can quote CLI output (SEC-6) and
   stays admin-only.
 - **Fan-out is bounded.** `subagent/max_children_per_job` (default 10) per parent, checked under
-  the parent row lock; a value that is not an integer >= 1 refuses (`agent_run is not
+  the named lock `subagent:<parent>` (`GET_LOCK`; a `FOR UPDATE` row lock would need UPDATE on `job`
+  for the toolbox DB user); a value that is not an integer >= 1 refuses (`agent_run is not
   configured`), never "no limit". Depth 3 is a code constant. A tree holds at most `N + N² + N³`
   jobs.
 - **One Node job-insert path.** `src/agento/toolbox/job-enqueue.js` `enqueueJob` (dedupe, insert,

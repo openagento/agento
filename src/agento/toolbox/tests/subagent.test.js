@@ -10,10 +10,10 @@ function fakeServer() {
 }
 
 // A fake connection that answers by SQL, as the real tables would:
-//   parent `SELECT … FOR UPDATE`, `agent_view` lookup, child COUNT, the enqueueJob dedupe
+//   the named lock, parent `SELECT`, `agent_view` lookup, child COUNT, the enqueueJob dedupe
 //   SELECT, the job INSERT, the outbox INSERT, and the agent_result child read.
 function fakeDb({ parent = { id: 42, agent_view_id: 7, priority: 20, depth: 0 }, views = [], children = 0,
-                  child = null, failOn = null } = {}) {
+                  child = null, failOn = null, lockGot = 1 } = {}) {
   const calls = { executed: [], begin: 0, commit: 0, rollback: 0, released: 0 };
   let nextId = 900;
   const conn = {
@@ -24,6 +24,8 @@ function fakeDb({ parent = { id: 42, agent_view_id: 7, priority: 20, depth: 0 },
     async execute(sql, params) {
       calls.executed.push({ sql, params });
       if (failOn && failOn.test(sql)) throw new Error('connect ECONNREFUSED 10.0.0.1 SELECT secret');
+      if (/GET_LOCK/i.test(sql)) return [[{ got: lockGot }]];
+      if (/RELEASE_LOCK/i.test(sql)) return [[{ released: 1 }]];
       if (/FROM agent_view/i.test(sql)) return [views.filter(v => v.code === params[0] && v.is_active)];
       if (/COUNT\(\*\)/i.test(sql)) return [[{ n: children }]];
       if (/idempotency_key = \?/i.test(sql)) return [[]];
@@ -85,7 +87,9 @@ describe('agent_run', () => {
         parentJobId: 42, childDepth: depth + 1 });
     expect(jobInsert(calls).params[0]).toBe('subagent');
     expect(key).toMatch(/^subagent:42:[0-9a-f-]{36}$/);
-    expect(calls.executed[0].sql).toMatch(/FOR UPDATE/);
+    expect(calls.executed[0]).toEqual({ sql: 'SELECT GET_LOCK(?, 10) AS got', params: ['subagent:42'] });
+    expect(calls.executed.some(c => /FOR UPDATE/.test(c.sql))).toBe(false);
+    expect(calls.executed.at(-1)).toEqual({ sql: 'SELECT RELEASE_LOCK(?)', params: ['subagent:42'] });
     expect(calls.commit).toBe(1);
     expect(calls.released).toBe(1);
   });
@@ -164,6 +168,15 @@ describe('agent_run', () => {
     expect(calls.rollback).toBe(1);
     expect(calls.released).toBe(1);
   });
+  it('refuses with the fixed text and inserts nothing when the parent lock is not taken', async () => {
+    const { db, calls } = fakeDb({ views: [OWN], lockGot: 0 });
+    const res = await tools(db).agent_run.handler({ agent_view: 'own', prompt: 'x' });
+    expect(res).toEqual({ content: [{ type: 'text', text: 'agent_run failed' }], isError: true });
+    expect(inserts(calls)).toEqual([]);
+    expect(calls.executed.some(c => /RELEASE_LOCK/.test(c.sql))).toBe(false);
+    expect(calls.released).toBe(1);
+  });
+
   it('answers the same fixed text when no connection can be taken', async () => {
     const db = { getCronPool: () => ({ async getConnection() { throw new Error('connect ECONNREFUSED 10.0.0.1'); } }) };
     const res = await tools(db).agent_run.handler({ agent_view: 'own', prompt: 'x' });
