@@ -43,5 +43,8 @@ export const agentoCssVariables: CSSVariablesResolver = () => ({
   dark: {
     "--mantine-color-dimmed": "#9a9a9a",
     "--mantine-color-error": "var(--mantine-color-red-4)",
+    // The green status badge (SUCCESS, OK, current): a solid green with near-black text (9:1).
+    "--mantine-color-green-light": "#30d158",
+    "--mantine-color-green-light-color": "#06240f",
   },
 });
