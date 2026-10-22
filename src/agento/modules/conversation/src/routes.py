@@ -41,7 +41,9 @@ def _run_json(row: dict, details: bool) -> dict:
             "started_at": _iso(row["started_at"]), "finished_at": _iso(row["finished_at"]),
             "type": row["type"], "harness": row["harness"], "provider": row["provider"],
             "credential": row["credential"], "model": row["model"],
-            "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"]}
+            "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"],
+            "parent_job_id": row["parent_job_id"], "depth": row["depth"],
+            "resume_job_id": row["resume_job_id"], "agent_view": row["agent_view"]}
 
 
 def _message_json(row: dict) -> dict:

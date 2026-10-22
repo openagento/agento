@@ -367,6 +367,23 @@ def validate_execution_hooks(
     return results
 
 
+# Seams that still load but are going away (CODE-5, ROADMAP.md). A warning, not an error:
+# a module that declares one keeps working until the removal release.
+DEPRECATED_EXECUTION_HOOKS = {
+    "resume_session_resolver": "the framework resumes the latest earlier turn of the job's "
+                               "thread line itself (framework/threads.py)",
+}
+
+
+def deprecation_warnings(module_dir: Path) -> list[str]:
+    """What `module:validate` warns about in one module. Never fails the validation."""
+    manifest = _read_json_quietly(Path(module_dir) / "module.json")
+    hooks = execution_hook_declarations(module_dir, manifest if isinstance(manifest, dict) else {})
+    return [f"di.json: execution hook '{seam}' is deprecated, removed in the next minor "
+            f"release: {why}"
+            for seam, why in DEPRECATED_EXECUTION_HOOKS.items() if seam in hooks]
+
+
 def validate_config_defaults(module_dir: Path) -> list[str]:
     """Every numeric ``config.json`` default is inside its ``system.json`` bounds (SEC-9).
 

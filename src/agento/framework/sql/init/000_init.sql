@@ -52,12 +52,29 @@ CREATE TABLE IF NOT EXISTS schedule (
         FOREIGN KEY (agent_view_id) REFERENCES agent_view(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- Thread (054): the jobs of one conversation of work; `key` names its directory.
+CREATE TABLE IF NOT EXISTS thread (
+    id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    agent_view_id   INT UNSIGNED NULL,
+    ref             VARCHAR(600) NOT NULL,
+    ref_hash        CHAR(40) NOT NULL,
+    `key`           CHAR(32) NOT NULL,
+    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_thread_ref (agent_view_id, ref_hash),
+    UNIQUE KEY uq_thread_key (`key`),
+    CONSTRAINT fk_thread_agent_view FOREIGN KEY (agent_view_id) REFERENCES agent_view(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Job
 CREATE TABLE IF NOT EXISTS job (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     schedule_id     BIGINT UNSIGNED NULL,
     parent_job_id   BIGINT UNSIGNED NULL,
     depth           TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    thread_id       BIGINT UNSIGNED NULL,
+    resume_job_id   BIGINT UNSIGNED NULL,
+    line_id         BIGINT UNSIGNED NULL,
     type            VARCHAR(32)  NOT NULL,   -- open vocabulary (PRD E3-E5 §4.2)
     source          VARCHAR(50) NOT NULL DEFAULT 'jira',
     agent_view_id   INT UNSIGNED NULL,
@@ -81,7 +98,7 @@ CREATE TABLE IF NOT EXISTS job (
     max_attempts    TINYINT UNSIGNED NOT NULL DEFAULT 3,
     scheduled_after TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     started_at      TIMESTAMP NULL,
-    finished_at     TIMESTAMP NULL,
+    finished_at     TIMESTAMP(6) NULL,
     result_summary  TEXT NULL,
     error_message   TEXT NULL,
     error_class     VARCHAR(100) NULL,
@@ -98,6 +115,10 @@ CREATE TABLE IF NOT EXISTS job (
     KEY idx_job_auth_wait (status, error_class, id),
     KEY idx_job_schedule (schedule_id),
     KEY idx_job_parent (parent_job_id),
+    KEY idx_job_thread (thread_id, depth, status),
+    KEY idx_job_thread_turn (thread_id, depth, finished_at),
+    KEY idx_job_resume (resume_job_id),
+    KEY idx_job_line (line_id, status),
     KEY idx_job_agent_view (agent_view_id),
     KEY idx_job_priority_created (priority DESC, created_at ASC),
     KEY idx_job_requester_key (requester_key),
@@ -107,7 +128,9 @@ CREATE TABLE IF NOT EXISTS job (
         FOREIGN KEY (schedule_id) REFERENCES schedule(id) ON DELETE SET NULL,
     CONSTRAINT fk_job_agent_view
         FOREIGN KEY (agent_view_id) REFERENCES agent_view(id) ON DELETE SET NULL,
-    CONSTRAINT fk_job_parent FOREIGN KEY (parent_job_id) REFERENCES job(id) ON DELETE SET NULL
+    CONSTRAINT fk_job_parent FOREIGN KEY (parent_job_id) REFERENCES job(id) ON DELETE SET NULL,
+    CONSTRAINT fk_job_thread FOREIGN KEY (thread_id) REFERENCES thread(id) ON DELETE SET NULL,
+    CONSTRAINT fk_job_resume FOREIGN KEY (resume_job_id) REFERENCES job(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Credential registry (credentials stored encrypted inline; see framework/crypto.py).
@@ -413,6 +436,7 @@ CREATE TABLE IF NOT EXISTS job_defer_stretch (
     job_id      BIGINT UNSIGNED NOT NULL,   -- no FK: jobs are pruned on their own schedule
     stretch_seq INT UNSIGNED NOT NULL,
     defer_count INT UNSIGNED NOT NULL DEFAULT 0,
+    line_wait   TINYINT(1) NOT NULL DEFAULT 0,
     opened_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     closed_at   DATETIME NULL,
     UNIQUE KEY uq_job_stretch (job_id, stretch_seq),
@@ -500,4 +524,5 @@ INSERT INTO schema_migration (version) VALUES
     ('050_role'),
     ('051_job_runner_ref'),
     ('052_job_auth_wait_index'),
-    ('053_job_parent_depth');
+    ('053_job_parent_depth'),
+    ('054_thread');

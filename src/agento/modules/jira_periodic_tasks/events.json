@@ -1,0 +1,5 @@
+{
+  "job_claim_before": [
+    {"name": "jira_periodic_tasks_resume_session", "class": "src.session_policy.PeriodicResumeSessionPolicy", "order": 110}
+  ]
+}

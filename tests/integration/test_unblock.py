@@ -117,6 +117,32 @@ def test_the_next_turn_claims_once_the_thread_is_free(conn, world, stuck):
     assert verdict(second_job) is not ClaimVerdict.DEFER
 
 
+def test_after_an_unblock_the_consumer_claims_the_next_turn(conn, world, stuck, int_db_config,
+                                                            int_consumer_config):
+    """Through the real claim: the framework's line rule must not hold the thread either
+    (a PAUSED job with no session can never resume, so it holds no line)."""
+    import logging
+
+    from agento.framework.consumer import Consumer
+
+    from .conftest import bootstrap_for_tests
+
+    bootstrap_for_tests()
+    _, second_job, _ = service.submit_message(
+        conn, conversation_id=stuck["conversation_id"], user_id=world["owner"].id,
+        client_message_id="c2", content="drugie")
+    consumer = Consumer(int_db_config, int_consumer_config, logging.getLogger("test"))
+    assert consumer._try_dequeue() is None                  # the module still holds it
+
+    _unblock(conn, world, stuck)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE job SET scheduled_after = NOW() WHERE id = %s", (second_job,))
+    conn.commit()
+
+    claimed = consumer._try_dequeue()
+    assert claimed is not None and claimed.id == second_job
+
+
 def test_the_event_carries_all_three_fields(conn, world, stuck, seen):
     _unblock(conn, world, stuck)
 

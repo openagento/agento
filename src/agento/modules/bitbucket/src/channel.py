@@ -171,4 +171,7 @@ class BitbucketPublisher:
             priority=pub_priority,
             skip_if_active=True,
             requester=requester,
+            # One thread per PR for both lanes: the lane is in `source`, so the default ref
+            # would split one PR's review rounds into two threads.
+            thread=f"bitbucket:{ref}",
         )

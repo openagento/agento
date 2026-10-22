@@ -11,8 +11,10 @@ want it explicitly; nothing in the framework calls it.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -21,8 +23,24 @@ from .workspace_paths import ARTIFACTS_DIR, BUILD_DIR
 logger = logging.getLogger(__name__)
 
 
+# A workspace / agent_view code as a run-dir segment: never `_…` (the root's own dirs), `.…`
+# or a separator.
+_RUN_DIR_CODE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+
+
 def build_artifacts_dir(workspace_code: str, agent_view_code: str, job_id: int | str) -> Path:
-    """Build the artifacts directory path for a single job execution."""
+    """Build the artifacts directory path for a single job execution.
+
+    A code is a path segment next to the artifacts root's own dirs (``_threads``,
+    ``_fallback``), which start with ``_``. ``validate_code`` guards the write paths; this
+    check is where every run dir is named, so a row no write path checked (a raw INSERT, a
+    module's data patch) still cannot name one of them. It is wider than ``validate_code``
+    (the toolbox's ``buildArtifactsDir`` keeps ``-`` and capitals too), so a view made by
+    hand before this check keeps running.
+    """
+    for code in (workspace_code, agent_view_code):
+        if not isinstance(code, str) or not _RUN_DIR_CODE.fullmatch(code):
+            raise ValueError(f"code {code!r} cannot name a run dir: must match {_RUN_DIR_CODE.pattern}")
     return Path(ARTIFACTS_DIR) / workspace_code / agent_view_code / str(job_id)
 
 
@@ -50,6 +68,88 @@ def prepare_artifacts_dir(artifacts_dir: Path) -> None:
                 )
             raise
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+
+# The thread dirs (docs/architecture/threads.md). `_threads` starts with `_`, which no
+# workspace code may (`validate_code`), so it never meets a run dir.
+THREADS_DIRNAME = "_threads"
+SHARED_LINK = "shared"
+_THREAD_KEY = re.compile(r"[0-9a-f]{32}")
+_OPEN_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def thread_dir(key: str) -> Path:
+    """``<artifacts>/_threads/<key>``: the dir of the thread whose random key is ``key``."""
+    if not _THREAD_KEY.fullmatch(key):
+        raise ValueError("a thread key is 32 lowercase hex characters")
+    return Path(ARTIFACTS_DIR) / THREADS_DIRNAME / key
+
+
+def shared_dir(key: str) -> Path:
+    """The dir every run of the thread reads and writes (``./shared`` in its run dir)."""
+    return thread_dir(key) / SHARED_LINK
+
+
+def downloads_dir(key: str) -> Path:
+    """The dir the toolbox downloads the thread's files into; a run only reads it."""
+    return thread_dir(key) / "downloads"
+
+
+def _thread_subdir(parent_fd: int, name: str, mode: int, gid: int) -> int:
+    """An open fd of the dir ``name`` in ``parent_fd``, made when missing. An existing entry
+    must be a directory (not a symlink) that this process owns: it then gets ``mode`` and
+    group ``gid`` (-1 keeps the group) on its own fd, so the inode checked is the inode
+    changed (SEC-5)."""
+    with contextlib.suppress(FileExistsError):
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+    try:
+        fd = os.open(name, _OPEN_DIR, dir_fd=parent_fd)
+    except OSError as exc:
+        raise RuntimeError(f"thread dir component {name!r} is not a directory or is a symlink") from exc
+    try:
+        if os.fstat(fd).st_uid != os.geteuid():
+            raise RuntimeError(f"thread dir component {name!r} is not owned by this process")
+        try:
+            os.fchown(fd, -1, gid)
+        except PermissionError as exc:
+            raise RuntimeError(
+                f"cannot give {name!r} group {gid}: this process is not in the thread group "
+                "(the image adds `agent` to `agento_thread`; rebuild it)") from exc
+        os.fchmod(fd, mode)  # after the group: a chown may clear the setgid bit
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def prepare_thread_dir(key: str, run_dir: Path, *, gid: int | None = None) -> Path:
+    """Make the thread's dirs and link ``<run_dir>/shared`` to its ``shared/``. Idempotent.
+
+    ``_threads`` 0711 (traverse only), ``<key>`` 2750 and ``downloads`` 2750 (no run adds,
+    renames or removes an entry: the toolbox writes there), ``shared`` 2770 (every run of the
+    thread). The group is ``THREAD_GID``, which the runner gives to every run. ``gid`` is
+    for tests only. A component that is a symlink or that another uid owns fails the run.
+    An entry ``shared`` the build copied into the run dir gives way to the link.
+    """
+    from .runner.uids import THREAD_GID
+    group = THREAD_GID if gid is None else gid
+    path = thread_dir(key)
+    fds = [os.open(ARTIFACTS_DIR, _OPEN_DIR)]
+    try:
+        fds.append(_thread_subdir(fds[-1], THREADS_DIRNAME, 0o711, -1))
+        fds.append(_thread_subdir(fds[-1], key, 0o2750, group))
+        for sub, mode in ((shared_dir(key), 0o2770), (downloads_dir(key), 0o2750)):
+            os.close(_thread_subdir(fds[-1], sub.name, mode, group))
+    finally:
+        for fd in fds:
+            os.close(fd)
+    link = run_dir / SHARED_LINK
+    if link.is_symlink() or link.is_file():
+        link.unlink()
+    elif link.exists():
+        shutil.rmtree(link)
+    link.symlink_to(shared_dir(key))
+    return path
 
 
 def cleanup_artifacts_dir(artifacts_dir: Path) -> None:

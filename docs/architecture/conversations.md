@@ -181,16 +181,28 @@ stopped: if a worker outlives it, no replacement starts. The sink's own statemen
 
 ## Every job has a thread (E9)
 
-**Channel threads.** At claim, `ConversationExecutionIds.mint` gives the new `execution` row its
-`conversation_id` (`service.link_execution`). A panel job is in the thread of the message it
-answers. Any other job (Jira, Outlook, cron) is in its **channel thread**: `user_id` NULL,
-`channel` = `job.source`, `external_ref` = `job.reference_id`, and a unique `external_key` =
-sha1 of `source|view|reference` (`job:<id>` when there is no reference). The next run on the same
-issue, and a follow-up that copies its parent's source and reference, land in the same thread; an
-archived one is reactivated. Each run adds `run.started`, and the finalizer adds `run.finished`
+**Channel threads.** A conversation is 1:1 with a framework thread (`conversation.thread_id`,
+unique; see [threads.md](threads.md)). At claim,
+`ConversationExecutionIds.mint` gives the new `execution` row the `conversation_id` of its job's
+thread (`service.link_execution`), one path for every job. A panel conversation gets its thread
+(`conversation:<id>`) when it is created. Any other thread (a Jira issue, a mail conversation, a
+PR, a cron) gets its **channel conversation** at its first run: `user_id` NULL, `channel` =
+`job.source`, `external_ref` = the `reference_id` of the latest depth-0 run of that source (in
+a mail conversation usually the newest mail; a requeued older job moves it back). Every round on one issue, a follow-up, a panel reply and a
+sub-agent placed in its parent's thread land in that one conversation; an archived channel
+conversation is reactivated, a user's is not. The conversation's view is the thread's: a sub-agent
+in another view shows in its parent's conversation, and its `run.started` (and its run in
+`GET …/threads/{id}`) carries `parent_job_id`, `depth`, `resume_job_id` and `agent_view`, so
+the panel nests it under the parent's turn (the runs list shows them with run details only). A job that answers a user's message runs in that message's
+conversation, also when the claim detached it from the thread (an Outlook reply whose thread
+read was turned off; not a claim in the one commit before `complete_pending` records the job,
+and not a sub-agent of a detached reply, which go by the thread). A run left in the thread of a deleted panel conversation is shown nowhere. `external_key` (the pre-thread dedupe key) is no longer written;
+the data patch `AssignConversationThreads` gave each older conversation its thread and moved its
+open jobs into it. Each run adds `run.started`, and the finalizer adds `run.finished`
 and, on success, the answer (`assistant.message`). Channel threads are an admin's only
 (DECISIONS.md D-E9-3). An admin **may** post into one: the reply is a `followup` job on the
-thread's own `source` and `external_ref`, with the operator's text as the job's `context`, gated
+thread's own `source` and `external_ref`, in the channel's thread (`thread_id`), with the
+operator's text as the job's `context`, gated
 by `conversation.channel_write` and refused with 409 when the thread has no `external_ref`. Every
 other reader still sees 404.
 
@@ -227,7 +239,10 @@ job's prompt, one query each per page. The prompt and tool `data.input` / `data.
 grant on the thread's workspace or view (`service.can_see_run_details`, DECISIONS.md D-E9-6).
 `GET …/threads/{id}` says `run_details: true|false`; without it each run keeps its fields
 `execution_id`, `status`, `attempt`, `started_at`, `finished_at` and omits harness, provider,
-credential label, model, tokens and job id. The harness, provider, model and credential id are
+credential label, model, tokens, job id, and a sub-agent's `parent_job_id`, `depth`,
+`resume_job_id` and `agent_view`. The `run.started` event carries those four (as it carries
+`job_id`) for every reader of the timeline: the panel nests a sub-agent's run under its parent's
+turn from it. The harness, provider, model and credential id are
 written when the attempt is minted (`RunProfile`), so a failed run shows them too; the model is
 the one the CLI reported when the job finished, else the configured one.
 

@@ -1,6 +1,8 @@
 """Tests for the e2e test harness (src.e2e) — mocked runner, no real LLM calls."""
 from __future__ import annotations
 
+import pytest
+
 from agento.framework.channels.base import PromptFragments
 from agento.framework.channels.test import TestChannel
 from agento.framework.e2e import _run_checks
@@ -92,37 +94,51 @@ class TestRunChecks:
 
 
 class TestInsertTestJob:
-    def test_agent_view_id_reaches_the_job_row(self, monkeypatch):
+    @pytest.mark.parametrize(("pin", "expected"), [
+        ({}, (None, None)),  # no pin: the consumer resolves from config
+        ({"harness": "codex", "model": "gpt-x"}, ("codex", "gpt-x")),
+    ])
+    def test_the_job_goes_through_insert_job_and_is_parked(self, monkeypatch, pin, expected):
         from unittest.mock import MagicMock
 
         from agento.framework import e2e
 
         conn = MagicMock()
         cur = conn.cursor.return_value.__enter__.return_value
-        cur.lastrowid = 7
+        insert = MagicMock(return_value=7)
         monkeypatch.setattr(e2e, "get_connection", lambda _cfg: conn)
+        monkeypatch.setattr(e2e, "insert_job", insert)
 
-        assert e2e._insert_test_job(MagicMock(), "REF", 42) == 7
+        assert e2e._insert_test_job(MagicMock(), "REF", 42, **pin) == 7
+        kwargs = insert.call_args.kwargs
+        assert (kwargs["reference_id"], kwargs["agent_view_id"]) == ("REF", 42)
+        assert (kwargs["harness"], kwargs["model"]) == expected
         sql, params = cur.execute.call_args.args
-        assert "agent_view_id" in sql
-        assert "'2038-01-01 00:00:00'" in sql  # parked: a live consumer never claims it
-        assert params[:2] == ("REF", 42)
-        assert params[-2:] == (None, None)  # no pin: the consumer resolves from config
+        assert "'2038-01-01 00:00:00'" in sql and params == (7,)  # parked: a live consumer never claims it
+        assert kwargs["thread"].startswith("e2e:")       # a thread of its own per run
+        conn.commit.assert_called_once()
 
-    def test_harness_and_model_pin_the_job_row(self, monkeypatch):
+
+class TestDeleteJob:
+    @pytest.mark.parametrize(("row", "deletes"), [
+        ({"thread_id": 5}, [("DELETE FROM job WHERE id = %s", (7,)),
+                            ("DELETE FROM thread WHERE id = %s", (5,))]),
+        (None, [("DELETE FROM job WHERE id = %s", (7,))]),
+    ])
+    def test_the_job_and_then_its_thread_are_deleted(self, monkeypatch, row, deletes):
         from unittest.mock import MagicMock
 
         from agento.framework import e2e
 
         conn = MagicMock()
         cur = conn.cursor.return_value.__enter__.return_value
-        cur.lastrowid = 7
+        cur.fetchone.return_value = row
         monkeypatch.setattr(e2e, "get_connection", lambda _cfg: conn)
 
-        e2e._insert_test_job(MagicMock(), "REF", 42, harness="codex", model="gpt-x")
-        sql, params = cur.execute.call_args.args
-        assert "agent_type, model" in sql
-        assert params[-2:] == ("codex", "gpt-x")
+        e2e._delete_job(MagicMock(), 7)
+
+        assert [c.args for c in cur.execute.call_args_list if c.args[0].startswith("DELETE")] == deletes
+        conn.commit.assert_called_once()
 
 
 class TestPickCredential:

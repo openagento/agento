@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import { useState } from "react";
 import {
-  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, ToolCall, ToolGroup,
+  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, SubagentRun, ToolCall, ToolGroup,
 } from "./Chat";
 import { SplitView, ThreadList } from "./ChatShell";
 import { RowMenu } from "./RowMenu";
@@ -45,6 +45,29 @@ export const ToolsAndErrors: StoryObj = {
   play: async ({ canvasElement }) => {
     const c = within(canvasElement);
     const row = c.getByRole("button", { name: /Used 2 tools/ });
+    await userEvent.click(row);
+    await expect(row).toHaveAttribute("aria-expanded", "true");
+  },
+};
+
+export const Subagents: StoryObj = {
+  render: () => (
+    <ChatList>
+      <li><ToolCall summary="agent_run" running={false} duration="0.2 s" /></li>
+      <li>
+        <SubagentRun label="Sub-agent #12 · reviewer · claude" state="succeeded">
+          <ChatList>
+            <li><ToolCall summary="Read src/app.py" running={false} duration="0.1 s" /></li>
+            <li><ChatMessage author="assistant" text="Two findings." /></li>
+          </ChatList>
+        </SubagentRun>
+      </li>
+      <li><SubagentRun label="Sub-agent #13 · tester" state="running" /></li>
+    </ChatList>
+  ),
+  play: async ({ canvasElement }) => {
+    const row = within(canvasElement).getByRole("button", { name: /Sub-agent #12/ });
+    await expect(row).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(row);
     await expect(row).toHaveAttribute("aria-expanded", "true");
   },

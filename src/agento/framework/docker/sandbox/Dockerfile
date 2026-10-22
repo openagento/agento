@@ -80,6 +80,12 @@ RUN bash -c 'exec 3< <(printf x); case "$(readlink /proc/self/fd/3)" in pipe:*) 
 # Allow agent to write workspace files owned by node:node (GID 1000)
 RUN usermod -aG node agent 2>/dev/null || true
 
+# The thread group (framework/runner/uids.py THREAD_GID; a test keeps the two equal). cron
+# makes each thread dir `agent:agento_thread`, and the runner gives this group to every run,
+# so the runs of one thread share its `shared/` dir (docs/architecture/threads.md). No
+# `|| true`: a build whose HOST_GID is 19990 must fail here, not later.
+RUN groupadd -g 19990 agento_thread && usermod -aG agento_thread agent
+
 # Let each installed agent CLI self-update: hand its package dir and binary to `agent`.
 # Rendered from the harness declarations, so a new harness needs no edit here.
 RUN chown -R agent /usr/local/lib/node_modules/@anthropic-ai/claude-code 2>/dev/null || true && \

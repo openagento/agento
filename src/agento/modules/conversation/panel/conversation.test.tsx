@@ -500,6 +500,91 @@ describe("the thread view, history and triggers", () => {
     expect(screen.getByText("PROJ-2 is due")).toBeInTheDocument();
     expect(screen.getByText("PROJ-2 is due").closest("li")).toBe(sep);
   });
+
+  it("a follow-up that resumes a session says so instead of the source", async () => {
+    captureHub();
+    await stubApi({
+      "/api/conversation/threads/5/timeline": () => page([ev("run.started", "x", { job_id: 4, source: "jira", type: "followup", resume_job_id: 3 }, 1)]),
+      "/api/conversation/threads/5/messages": () => [],
+      "/api/conversation/threads/5": () => thread("jira"),
+    });
+    render(<View threadId={5} />, { wrapper });
+    expect(await screen.findByText("Follow-up · resumes #3")).toBeInTheDocument();
+  });
+});
+
+describe("sub-agents in the timeline", () => {
+  const started = (id: number, x: string, job: number, extra: Record<string, unknown> = {}) =>
+    ev("run.started", x, { job_id: job, attempt: 1, max_attempts: 3, depth: 0, parent_job_id: null, source: "jira", ...extra }, id);
+  const finished = (id: number, x: string, job: number) => ev("run.finished", x, { job_id: job, attempt: 1, outcome: "succeeded" }, id);
+  const routes = (events: StreamEvent[], runs: unknown[] = []) => ({
+    "/api/conversation/threads/5/timeline": () => page(events),
+    "/api/conversation/threads/5/messages": () => [],
+    "/api/conversation/threads/5": () => ({ ...thread("jira"), run_details: true, runs }),
+  });
+
+  it("a child job is a collapsed card in its parent's turn: number, view, harness, state; open, its answer", async () => {
+    captureHub();
+    await stubApi(routes([
+      started(1, "p", 10),
+      started(2, "c", 11, { depth: 1, parent_job_id: 10, agent_view: "reviewer" }),
+      ev("assistant.message", "c", { message_id: 9, content: "Two findings." }, 3),
+      finished(4, "c", 11),
+    ], [{ execution_id: "c", attempt: 1, status: "succeeded", started_at: null, finished_at: null, harness: "claude" }]));
+    render(<View threadId={5} />, { wrapper });
+    const card = await screen.findByRole("button", { name: /Sub-agent #11 · reviewer · claude/ });
+    expect(card).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Succeeded")).toBeInTheDocument();
+    // One turn (the parent's trigger), not two.
+    expect(screen.getAllByText(/^From jira/)).toHaveLength(1);
+    fireEvent.click(card);
+    expect(await screen.findByText("Two findings.")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["Running", [], 1],
+    ["Succeeded", [{ outcome: "succeeded" }], 1],
+    ["Failed", [{ outcome: "failed" }], 3],
+    ["Failed", [{ outcome: "dead" }], 1],
+    ["Blocked", [{ outcome: "abandoned" }], 1],
+    ["Queued", [{ failed: true }], 1],
+  ])("a child card says %s (%j, attempt %i of 3)", async (label, ends, attempt) => {
+    captureHub();
+    const end = ends.map((e: { outcome?: string; failed?: boolean }) => (e.failed
+      ? ev("job.failed", "c", { job_id: 11, attempt: 1, kind: "harness" }, 3)
+      : ev("run.finished", "c", { job_id: 11, attempt: 1, outcome: e.outcome }, 3)));
+    await stubApi(routes([started(1, "p", 10), started(2, "c", 11, { depth: 1, parent_job_id: 10, attempt }), ...end]));
+    render(<View threadId={5} />, { wrapper });
+    await screen.findByRole("button", { name: /Sub-agent #11/ });
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it("with run details the card says which session it resumes; without, no view, harness or resume", async () => {
+    captureHub();
+    const events = [started(1, "p", 10), started(2, "c", 11, { depth: 1, parent_job_id: 10, agent_view: "reviewer", resume_job_id: 9 })];
+    const runs = [{ execution_id: "c", attempt: 1, status: "running", started_at: null, finished_at: null, harness: "claude" }];
+    await stubApi(routes(events, runs));
+    const { unmount } = render(<View threadId={5} />, { wrapper });
+    expect(await screen.findByRole("button", { name: /Sub-agent #11 · reviewer · claude · resumes #9/ })).toBeInTheDocument();
+    unmount();
+    teardown();
+    captureHub();
+    // The server strips `agent_view` and `resume_job_id` from the event without run details;
+    // a run row that still names a harness is not shown either.
+    const plain = [started(1, "p", 10), started(2, "c", 11, { depth: 1, parent_job_id: 10 })];
+    await stubApi({ ...routes(plain, runs), "/api/conversation/threads/5": () => ({ ...thread("jira"), run_details: false, runs }) });
+    render(<View threadId={5} />, { wrapper });
+    const card = await screen.findByRole("button", { name: /Sub-agent #11/ });
+    expect(card.textContent).not.toMatch(/claude|reviewer|resumes/);
+  });
+
+  it("a child whose parent run is not loaded names its parent", async () => {
+    captureHub();
+    await stubApi(routes([started(2, "c", 11, { depth: 1, parent_job_id: 10 })]));
+    render(<View threadId={5} />, { wrapper });
+    expect(await screen.findByRole("button", { name: /Sub-agent #11 of #10/ })).toBeInTheDocument();
+    expect(screen.queryByText(/^From jira/)).toBeNull();
+  });
 });
 
 describe("the chat turn", () => {

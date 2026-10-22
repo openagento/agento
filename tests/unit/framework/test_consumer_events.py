@@ -248,8 +248,11 @@ class TestJobFinalizeEvents:
 
 
 class TestDequeueEvents:
+    @patch("agento.framework.consumer.resolve_resume", return_value=None)
+    @patch("agento.framework.consumer.line_blocked", return_value=False)
+    @patch("agento.framework.consumer.place_claim")
     @patch("agento.framework.consumer.get_connection")
-    def test_dequeue_dispatches_job_claimed(self, mock_get_conn):
+    def test_dequeue_dispatches_job_claimed(self, mock_get_conn, *_threads):
         from datetime import datetime
 
         em = get_event_manager()
@@ -267,6 +270,7 @@ class TestDequeueEvents:
             "finished_at": None, "result_summary": None,
             "error_message": None, "error_class": None,
             "idempotency_key": "key-1",
+            "key": None,  # the thread row the claim locks reads it
             "created_at": now, "updated_at": now,
         }
 
@@ -359,10 +363,20 @@ def test_finalize_branch_pins(mock_conn, mock_revoke, mock_finalize, mock_outbox
 @patch("agento.framework.consumer.get_connection")
 def test_stale_recovery_branch_pins(mock_conn, mock_revoke, mock_finalize, mock_outbox,
                                     attempt, status, outbox, outcome, terminal):
+    from datetime import datetime
+
+    from agento.framework.consumer import StaleJobRecovery
+
     conn = mock_conn.return_value
+    now = datetime(2026, 1, 1)
+    # The whole row, as `SELECT *` returns it: a dead job is announced with it.
     conn.cursor.return_value.__enter__.return_value.fetchall.return_value = [
-        {"id": 7, "reference_id": "R", "pid": 99999, "runner_ref": "runner-1.sock:b1",
-         "attempt": attempt, "max_attempts": 3, "started_at": None}]
+        {"id": 7, "schedule_id": None, "type": "cron", "source": "jira", "reference_id": "R",
+         "idempotency_key": "k", "status": "RUNNING", "pid": 99999,
+         "runner_ref": "runner-1.sock:b1", "attempt": attempt, "max_attempts": 3,
+         "scheduled_after": now, "started_at": None, "finished_at": None,
+         "result_summary": None, "error_message": None, "error_class": None,
+         "created_at": now, "updated_at": now, "thread_id": 5, "depth": 1, "parent_job_id": 3}]
     _collect_job_events()
 
     with patch("agento.framework.consumer.runner_client.alive", return_value="dead"):
@@ -372,4 +386,41 @@ def test_stale_recovery_branch_pins(mock_conn, mock_revoke, mock_finalize, mock_
     assert "GREATEST" not in update.args[0]
     assert "StaleJobRecovery" in update.args[0] or "StaleJobRecovery" in update.args[1]
     mock_revoke.assert_called_once()
-    assert _EventCollector.events == []  # recovery dispatches no job event
+    if not terminal:
+        assert _EventCollector.events == []  # a retried job is not announced here
+        return
+    # EVT-2: the dead-letter is announced like the finalizer's, with the row an observer reads.
+    [event] = _EventCollector.events
+    assert isinstance(event, JobDeadEvent)
+    assert (event.job.id, event.job.parent_job_id, event.job.thread_id) == (7, 3, 5)
+    assert isinstance(event.error, StaleJobRecovery)
+    assert "max attempts reached" in str(event.error)
+
+
+@patch("agento.framework.consumer.write_outbox")
+@patch("agento.framework.consumer.finalize_execution")
+@patch("agento.framework.consumer.revoke_job_capabilities")
+@patch("agento.framework.consumer.get_connection")
+def test_stale_recovery_dead_letters_a_job_whose_module_is_disabled(
+    mock_conn, mock_revoke, mock_finalize, mock_outbox,
+):
+    """MOD-1: a type no module registers is still dead-lettered, with no event, and the
+    rows after it are still recovered."""
+    from datetime import datetime
+
+    conn = mock_conn.return_value
+    now = datetime(2026, 1, 1)
+    row = {"schedule_id": None, "source": "jira", "reference_id": "R", "idempotency_key": "k",
+           "status": "RUNNING", "pid": 99999, "runner_ref": "runner-1.sock:b1", "attempt": 3,
+           "max_attempts": 3, "scheduled_after": now, "started_at": None, "finished_at": None,
+           "result_summary": None, "error_message": None, "error_class": None,
+           "created_at": now, "updated_at": now}
+    conn.cursor.return_value.__enter__.return_value.fetchall.return_value = [
+        {**row, "id": 7, "type": "a_disabled_modules_type"}, {**row, "id": 8, "type": "cron"}]
+    _collect_job_events()
+
+    with patch("agento.framework.consumer.runner_client.alive", return_value="dead"):
+        _consumer()._recover_stale_jobs()
+
+    assert mock_revoke.call_count == 2
+    assert [e.job.id for e in _EventCollector.events] == [8]

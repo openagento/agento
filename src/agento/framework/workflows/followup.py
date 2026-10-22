@@ -15,7 +15,8 @@ class FollowupWorkflow(Workflow):
         if not job.context:
             raise ValueError(f"Followup job {job.id} has no context")
         return self.execute(
-            channel, job.reference_id, instructions=job.context, config=context.config
+            channel, job.reference_id, context=context, instructions=job.context,
+            config=context.config,
         )
 
     def build_prompt(

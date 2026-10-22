@@ -270,7 +270,7 @@ class ModuleValidateCommand:
         parser.add_argument("name", nargs="?", default=None, help="Module name (validates all if omitted)")
 
     def execute(self, args: argparse.Namespace) -> None:
-        from ..module_validator import validate_all, validate_module
+        from ..module_validator import deprecation_warnings, validate_all, validate_module
 
         core_dir, user_dir = _module_dirs()
 
@@ -294,17 +294,19 @@ class ModuleValidateCommand:
                 sys.exit(1)
             else:
                 print(f"\u2714 {args.name}")
+                for warning in deprecation_warnings(module_dir):
+                    print(f"  ! {warning}")
                 print("  note: tool-name collisions with OTHER modules are checked only by "
                       "'module:validate' without a module name, and by setup:upgrade")
         else:
             # Validate all
             results = validate_all(core_dir, user_dir)
-            all_modules = set()
+            all_modules = {}
             for scan_dir in (core_dir, user_dir):
                 if scan_dir.is_dir():
                     for entry in sorted(scan_dir.iterdir()):
                         if entry.is_dir() and not entry.name.startswith("_") and not entry.name.startswith("."):
-                            all_modules.add(entry.name)
+                            all_modules[entry.name] = entry
 
             has_errors = False
             for name in sorted(all_modules):
@@ -315,6 +317,8 @@ class ModuleValidateCommand:
                     has_errors = True
                 else:
                     print(f"\u2714 {name}")
+                for warning in deprecation_warnings(all_modules[name]):
+                    print(f"  ! {warning}")
 
             if has_errors:
                 sys.exit(1)

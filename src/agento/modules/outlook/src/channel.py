@@ -12,6 +12,7 @@ from agento.framework.events import SecurityBreachEvent
 from agento.framework.job_models import AgentType, JobRequester, RequesterTrust
 from agento.framework.publisher import publish
 from agento.modules.outlook.src import activation
+from agento.modules.outlook.src.thread_gate import conversation_ref
 
 _REFERENCE_SEP = "::"  # multi-char: base64/base64url message ids never contain two consecutive ':'
 _SLUG_MAX = 60
@@ -281,12 +282,17 @@ class OutlookPublisher:
     def publish_admitted_mail(
         self, db_config: object, message_id: str, admission: OutlookAdmission, *,
         agent_view_id: int, priority: int = 50, subject: str | None = None,
+        conversation_id: str | None = None,
         logger: logging.Logger | None = None,
     ) -> bool:
         """Publish an already-admitted message to ``agent_view_id``. The sender is taken ONLY from
         ``admission.sender`` (already strip+lower) — the identity that passed the gate (and in routed
         mode chose the route) IS the audited requester, used for BOTH the JobRequester.key sha256
         digest AND the email field. DMARC pass cryptographically aligned the From domain -> trust=DOMAIN.
+
+        ``conversation_id`` joins the message to its mail conversation's thread. Pass it ONLY
+        while thread read is on for the view (``thread_gate.thread_read_on``); with None the
+        message is its own thread.
         """
         sender = admission.sender
         digest = hashlib.sha256(sender.encode()).hexdigest()
@@ -305,6 +311,7 @@ class OutlookPublisher:
             reference_id=_build_reference_id(message_id, subject), logger=logger,
             agent_view_id=agent_view_id, priority=priority,
             skip_if_active=True, requester=requester,
+            thread=conversation_ref(conversation_id) if conversation_id else None,
         )
 
     def publish_mail(
@@ -315,6 +322,7 @@ class OutlookPublisher:
         to=None, cc=None, body_preview: str | None = None,
         agent_authored: bool = False, auto_reply: bool = False,
         mailbox: str | None = None, aliases=None, cfg=None,
+        conversation_id: str | None = None,
         logger: logging.Logger | None = None,
     ) -> bool:
         """Thin admit->publish wrapper (direct/single-view polling): admit the message through the
@@ -329,7 +337,7 @@ class OutlookPublisher:
             return False
         return self.publish_admitted_mail(
             db_config, message_id, admission, agent_view_id=agent_view_id,
-            priority=priority, subject=subject, logger=logger,
+            priority=priority, subject=subject, conversation_id=conversation_id, logger=logger,
         )
 
     def _alert_security_breach(

@@ -128,6 +128,7 @@ def _make_row(**overrides) -> dict:
         "output": None,
         "context": None,
         "idempotency_key": "jira:cron:AI-1:20260220_0800",
+        "key": None,  # the thread row the claim locks reads it
         "status": "TODO",
         "attempt": 0,
         "max_attempts": 3,
@@ -275,6 +276,15 @@ class TestRecoverStaleJobs:
 
 
 class TestDequeue:
+    @pytest.fixture(autouse=True)
+    def _line_is_free(self):
+        # One fetchone row answers every query of these mocks; the thread rules have their
+        # own tests (test_threads.py, test_consumer_claim_threads.py).
+        with (patch("agento.framework.consumer.place_claim"),
+              patch("agento.framework.consumer.line_blocked", return_value=False),
+              patch("agento.framework.consumer.resolve_resume", return_value=None)):
+            yield
+
     @patch("agento.framework.consumer.get_connection")
     def test_dequeue_empty_queue(self, mock_get_conn, sample_config, sample_db_config, sample_consumer_config):
         mock_conn, _mock_cursor = _mock_connection(row=None)

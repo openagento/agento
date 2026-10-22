@@ -52,7 +52,7 @@ def pause_job(conn, job_id: int) -> Job:
         cur.execute(
             """
             UPDATE job
-            SET status = 'PAUSED', finished_at = NOW(), updated_at = NOW()
+            SET status = 'PAUSED', finished_at = NOW(6), updated_at = NOW()
             WHERE id = %s AND status = 'RUNNING'
             """,
             (job_id,),

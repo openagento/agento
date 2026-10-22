@@ -294,6 +294,24 @@ def test_run_groups_reach_every_run(monkeypatch):
     assert calls[0] == ("setgroups", ([1000, 1003],))
 
 
+def test_every_run_gets_the_thread_group(monkeypatch):
+    monkeypatch.setattr(uids, "_shared_groups", ())
+    uids.set_shared_groups((1000, 1003))
+    assert uids.as_uid(20001)["extra_groups"] == [1000, 1003, uids.THREAD_GID]
+    uids.set_shared_groups(())
+    assert uids.as_uid(20001)["extra_groups"] == [uids.THREAD_GID]
+    uids.set_shared_groups((uids.THREAD_GID, 1000))  # an operator naming it gets it once
+    assert uids.as_uid(20001)["extra_groups"] == [uids.THREAD_GID, 1000]
+
+
+def test_the_thread_group_is_no_run_gid_and_the_image_names_it():
+    assert 0 < uids.THREAD_GID < uids.RUN_UID_BASE
+    docker = Path(__file__).resolve().parents[4] / "src/agento/framework"
+    for dockerfile in (docker / "docker/sandbox/Dockerfile", docker / "cli/templates/sandbox.Dockerfile"):
+        text = dockerfile.read_text()
+        assert f"groupadd -g {uids.THREAD_GID} agento_thread && usermod -aG agento_thread agent" in text
+
+
 def test_the_worker_is_spawned_as_the_run_uid(monkeypatch):
     seen = {}
     monkeypatch.setattr(server.subprocess, "Popen", lambda argv, **kw: seen.update(argv=argv, **kw))
@@ -616,6 +634,37 @@ def test_real_own_kill_and_chown_back(tmp_path, monkeypatch):
     assert uids.kill_all(uid) and uids.processes_of(uid) == []
     uids.own(str(top), 0, 0, for_run=False)
     assert top.stat().st_uid == 0
+
+
+@pytest.mark.skipif(not ROOT, reason="needs root on Linux (Docker Desktop does not enforce uid/gid)")
+def test_real_thread_dir_two_runs_share_shared_and_add_nothing_elsewhere(tmp_path, monkeypatch):
+    """Two run uids of one thread write one `shared/`; neither can add an entry in `<key>/`
+    or `downloads/` (artifacts_dir.prepare_thread_dir)."""
+    from agento.framework import artifacts_dir
+    artifacts = tmp_path / "artifacts"
+    run = artifacts / "acme" / "dev" / "1"
+    run.mkdir(parents=True)
+    artifacts.chmod(0o755)
+    monkeypatch.setattr(artifacts_dir, "ARTIFACTS_DIR", str(artifacts))
+    monkeypatch.setattr(uids, "_shared_groups", ())
+    uids.set_shared_groups(())
+    key = "0123456789abcdef0123456789abcdef"
+    thread = artifacts_dir.prepare_thread_dir(key, run)
+    for parent in tmp_path.parents:  # pytest's tmp dirs are 0700: let the run uids through
+        os.chmod(parent, os.stat(parent).st_mode | 0o711)
+    tmp_path.chmod(0o711)
+
+    def write_as(uid: int, path) -> int:
+        return subprocess.run([sys.executable, "-I", "-S", "-c", "import sys; open(sys.argv[1], 'x').write('x')",
+                               str(path)], **uids.as_uid(uid), stderr=subprocess.DEVNULL).returncode
+
+    first, second = uids.uid_range(9)[0], uids.uid_range(9)[1]
+    assert write_as(first, thread / "shared" / "a.md") == 0
+    assert write_as(second, thread / "shared" / "b.md") == 0
+    assert sorted(os.listdir(thread / "shared")) == ["a.md", "b.md"]
+    assert write_as(first, thread / "planted") != 0
+    assert write_as(first, thread / "downloads" / "planted") != 0
+    assert write_as(first, artifacts / "_threads" / "planted") != 0
 
 
 def test_a_run_dir_left_by_a_dead_server_is_given_back_at_start(start_runner, tmp_path, monkeypatch):

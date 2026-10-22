@@ -69,7 +69,11 @@ workspace/
 │               ├── modules/     → build/…  #     Symlink (RO)
 │               ├── screenshots/{job_id}/   #     Written by browser_take_screenshot
 │               ├── videos/{job_id}/        #     Written by browser_stop_video
-│               └── jira/{ISSUE-KEY}/       #     Attachments downloaded via jira_get_issue (newest N only; N=jira/attachment_download_limit, default 10)
+│               ├── shared → _threads/{key}/shared  # The thread's shared dir (a job only)
+│               └── jira/{ISSUE-KEY}/       #     Jira attachments of a run with no thread (`agento run`)
+│       _threads/{key}/                     #   One dir per thread, 2750 (D-THREAD-2)
+│           ├── shared/                     #     2770: every run of the thread reads and writes
+│           └── downloads/jira/{ISSUE-KEY}/ #     Attachments via jira_get_issue (newest N only; N=jira/attachment_download_limit, default 10); toolbox-written, runs read
 │
 ├── .claude/                                #     Agent CLI session store (Claude)
 │   └── projects/-workspace/
@@ -409,14 +413,14 @@ This symlink is the **only thing the consumer looks at** to find "the active bui
 **Lifecycle:**
 
 - **Created** at job start. `prepare_artifacts_dir()` wipes any prior content and recreates the dir.
-- **Used** throughout the job as the agent's cwd. The agent CLI writes its own scratch here; toolbox tools drop outputs here (screenshots, videos, Jira attachments, etc.).
+- **Used** throughout the job as the agent's cwd. The agent CLI writes its own scratch here; toolbox tools drop outputs here (screenshots, videos, etc.). A job's Jira attachments go to its thread's `downloads/`, which the turns of the issue share.
 - **Retained after completion** — clean or not. The dir holds the run's artifacts for post-mortem inspection until the same run dir is reused, which wipes it. Periodic cleanup of old run dirs is a ROADMAP item, not current behaviour.
 
 **Why a separate artifacts dir per job:**
 
 1. **Parallel jobs can't clobber each other.** If two jobs ran against the same `build/.../current` directly, they'd both try to mutate `.mcp.json` (injecting their own capability) and race.
 2. **Agent CLIs write scratch files.** Claude Code drops `.claude/` state, history, cache. A per-job dir keeps this isolated from the build.
-3. **Outputs are scoped per job.** Screenshots, recorded videos, downloaded Jira attachments all land under `artifacts/{ws}/{av}/{job_id}/` so they're trivially attributable.
+3. **Outputs are scoped per job.** Screenshots and recorded videos land under `artifacts/{ws}/{av}/{job_id}/` so they're trivially attributable. What the turns of one thread share (`./shared`, the Jira attachments in `downloads/`) is under `artifacts/_threads/{key}/` instead.
 
 ### The copy/symlink strategy
 

@@ -254,6 +254,23 @@ It is an **input sanity bound**, not a security mechanism. On
 `agent_view/identity/ssh_private_key` it bounds a secret that travels through the process environment;
 what keeps that key off disk is the per-run `ssh-agent` ([identity docs](identity.md)).
 
+## Thread and session settings
+
+A job runs in a thread, and by default it continues the harness session of the thread's line
+([threads.md](../architecture/threads.md)). Three module settings change that. Each is a
+boolean, default `1`, set at default, workspace or agent_view scope:
+
+| Path | Read at | `0` means |
+|---|---|---|
+| `jira/resume_session` | the job's view, for a `jira` job of type `todo` or `followup` | the job starts a fresh session; it stays in the issue's thread and `./shared` ([jira.md](../modules/jira.md)) |
+| `jira_periodic_tasks/resume_session` | the job's view, for a `jira` job of type `cron` | the same, for a periodic task ([jira.md](../modules/jira.md)) |
+| `subagent/wake_parent` | the parent's view | no wake: the parent is not resumed when its children end; it polls `agent_result` or uses `schedule_followup` ([subagent.md](../modules/subagent.md)) |
+
+```bash
+agento config:set jira/resume_session 0 --scope=agent_view --scope-id=<id>
+agento config:set subagent/wake_parent 0 --scope=workspace --scope-id=<id>
+```
+
 ## Further Reading
 
 - [ENV Variables](env-vars.md) — naming convention, examples, and the `allowEnv: false` exception

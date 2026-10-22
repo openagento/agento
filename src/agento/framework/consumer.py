@@ -94,13 +94,14 @@ from .harness import (
     workspace_adapter_for,
 )
 from .job_models import Job, JobStatus
-from .job_types import registered_job_types
+from .job_types import JobTypeUnknown, registered_job_types
 from .outbox import write_outbox
 from .retry_policy import evaluate as evaluate_retry
 from .run_preparation import check_workspace_build, materialize_run_workspace, save_persistent_state
 from .runner import client as runner_client
 from .runner.client import RemoteRunner
 from .secret_redaction import redact_exception, redact_secret
+from .threads import line_blocked, line_defer_ms, lock_thread, place_claim, resolve_resume
 from .toolbox_capability import (
     KIND_INTERNAL_REST,
     KIND_MCP_JOB,
@@ -153,6 +154,11 @@ def _should_resume(
 
 
 _CAPABILITY_PURGE_INTERVAL_SECONDS = 3600
+
+
+class StaleJobRecovery(RuntimeError):
+    """The error a job dead-lettered by stale recovery is announced with: its run ended
+    while the job was RUNNING, and no process is left to report why."""
 
 
 @dataclass
@@ -213,9 +219,11 @@ DEQUEUE_ONE_SQL = """
     FOR UPDATE SKIP LOCKED
 """
 
+# `resume_job_id` is the session target `threads.resolve_resume` found for this claim.
 CLAIM_SQL = """
     UPDATE job
-    SET status = 'RUNNING', started_at = NOW(), attempt = attempt + 1, updated_at = NOW()
+    SET status = 'RUNNING', started_at = NOW(), attempt = attempt + 1, updated_at = NOW(),
+        resume_job_id = %s
     WHERE id = %s AND status = 'TODO'
 """
 
@@ -348,6 +356,8 @@ class Consumer:
         # consumer runs one job that must use the credential under test.
         self.credential_id = credential_id
         self._shutdown = threading.Event()
+        # Set by `_try_dequeue`: its None was a deferral, not an empty queue.
+        self._claim_deferred = False
         self._db_config = db_config
         self._consumer_config = consumer_config
         db.IDLE_CAP = consumer_config.max_workers  # one idle connection per worker (SCL-1)
@@ -426,7 +436,11 @@ class Consumer:
                     executor.submit(_run_and_release, job)
                 else:
                     semaphore.release()
-                    self._shutdown.wait(timeout=self._consumer_config.poll_interval)
+                    # A deferred job is not an empty queue: it moved back by its delay, so
+                    # the next pass reaches the jobs behind it. Sleeping here would let one
+                    # waiting turn hold the head of the queue for every source.
+                    if not self._claim_deferred:
+                        self._shutdown.wait(timeout=self._consumer_config.poll_interval)
         finally:
             get_event_manager().dispatch("consumer_stop_before", ConsumerStoppingEvent())
             self.logger.info("Consumer shutting down, waiting for running jobs...")
@@ -549,6 +563,47 @@ class Consumer:
         except Exception:
             self.logger.warning(f"Failed to save PID {pid} for job {job_id} (best-effort)")
 
+    def _stale_dead_event(self, row: dict, error_msg: str) -> tuple[str, object] | None:
+        """The `job_dead_after` of a job stale recovery dead-letters, or None.
+
+        A row of a job type no module registers now (its module is disabled, MOD-1) is
+        still dead-lettered, with no event: no observer of that module is loaded, and one
+        such row must not stop the recovery of every other stale job.
+        """
+        try:
+            job = Job.from_row(row)
+        except JobTypeUnknown:
+            self.logger.warning(f"Stale job {row['id']} has an unregistered type "
+                                f"{row['type']!r}: dead-lettered without job_dead_after")
+            return None
+        return "job_dead_after", JobDeadEvent(job=job, error=StaleJobRecovery(error_msg))
+
+    @staticmethod
+    def _resume_session(conn, job: Job, harness: str | None) -> str | None:
+        """The harness session this turn continues, or None for a fresh one.
+
+        The target is `job.resume_job_id`, set at claim (`threads.resolve_resume`). A retry
+        that saved a session of its own resumes that run on the retry path instead
+        (`_should_resume`); a retry whose first attempt saved none still continues the line. A
+        session belongs to the harness that made it: a target that ran on another harness
+        gives a fresh session. With no target, a job that this claim did not detach or ask
+        for a fresh session (`JobClaimBeforeEvent`) still asks the deprecated
+        `resume_session_resolver` seam (CODE-5; removed in the next minor release,
+        ROADMAP.md).
+        """
+        if job.resume_job_id is None:
+            if job.thread_detached or job.fresh_session:
+                return None
+            return resolve_resume_session(conn=conn, job_id=job.id, attempt=job.attempt)
+        if job.attempt > 1 and job.session_id is not None:
+            return None
+        with conn.cursor() as cur:
+            cur.execute("SELECT session_id, agent_type FROM job WHERE id = %s", (job.resume_job_id,))
+            row = cur.fetchone()
+        if row is None or row["agent_type"] != harness:
+            return None
+        return row["session_id"]
+
     def _save_session_id(self, job_id: int, session_id: str) -> None:
         """Best-effort: save session_id to job row."""
         try:
@@ -577,10 +632,8 @@ class Consumer:
             # too, and it is the one path with no scale test of its own (CLS-1).
             with self._db() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT id, reference_id, pid, runner_ref, attempt, max_attempts, started_at "
-                        "FROM job WHERE status = 'RUNNING'"
-                    )
+                    # The whole row: a dead-lettered job is announced with it (job_dead_after).
+                    cur.execute("SELECT * FROM job WHERE status = 'RUNNING'")
                     running_jobs = cur.fetchall()
 
                     retried = 0
@@ -616,18 +669,20 @@ class Consumer:
                                 continue
 
                         retry = attempt < max_attempts
+                        error_msg = f"Recovered: process dead (pid={pid})" + (
+                            "" if retry else ", max attempts reached")
                         # Another process's run: its id was never ours, so the finalizer
                         # resolves the row by (job_id, attempt). A dead transition writes
                         # `job.failed` here (§6.4.2): the process that ran it cannot.
                         recovered.append(self._transition(
                             conn, job_id, attempt, None,
                             status="TODO" if retry else "DEAD",
-                            error_msg=f"Recovered: process dead (pid={pid})"
-                            + ("" if retry else ", max attempts reached"),
-                            error_class="StaleJobRecovery",
+                            error_msg=error_msg,
+                            error_class=StaleJobRecovery.__name__,
                             scheduled_after=datetime.now(UTC).replace(tzinfo=None, microsecond=0) if retry else None,
                             revoke=True, write_failed=not retry,
                             outcome="abandoned" if retry else "failed", terminal=not retry,
+                            after=None if retry else self._stale_dead_event(row, error_msg),
                         ))
                         retried += retry
                         dead += not retry
@@ -649,7 +704,9 @@ class Consumer:
 
     def _try_dequeue(self, job_id: int | None = None) -> Job | None:
         """Claim one job from the queue — or exactly ``job_id`` while it is still TODO.
-        Returns None if there is nothing to claim."""
+        Returns None if there is nothing to claim, or if the claim deferred the job
+        (then `_claim_deferred` is True)."""
+        self._claim_deferred = False
         with self._db() as conn:
             try:
                 with conn.cursor() as cur:
@@ -674,17 +731,28 @@ class Consumer:
                         # An observer that cannot decide has not decided "yes". This is the one
                         # dispatch in the framework that is not fail-open.
                         claim.verdict = ClaimVerdict.DEFER
-                    if claim.verdict is ClaimVerdict.DEFER:
+                    # The thread first (a row with none gets its default one; a detach moves
+                    # the job to it), then the line rules read it: one open turn per line.
+                    place_claim(cur, job, detach=claim.detach_thread)
+                    job.thread_key = lock_thread(cur, job.thread_id)
+                    if claim.verdict is ClaimVerdict.DEFER or line_blocked(cur, job):
+                        by_observer = claim.verdict is ClaimVerdict.DEFER
+                        _seq, defer_count = open_or_bump_stretch(
+                            cur, job_id=job.id, line_wait=not by_observer)
+                        delay_ms = claim.delay_ms if by_observer else line_defer_ms(defer_count)
                         cur.execute(
                             "UPDATE job SET scheduled_after = NOW() + INTERVAL %s SECOND "
                             "WHERE id = %s",
-                            (defer_seconds(claim.delay_ms), job.id),
+                            (defer_seconds(delay_ms), job.id),
                         )
-                        open_or_bump_stretch(cur, job_id=job.id)
                         conn.commit()
+                        self._claim_deferred = True
                         return None
 
-                    cur.execute(CLAIM_SQL, (job.id,))
+                    # `fresh_session`: the turn keeps its thread and line but resumes nothing.
+                    job.fresh_session = claim.fresh_session
+                    job.resume_job_id = None if job.fresh_session else resolve_resume(cur, job)
+                    cur.execute(CLAIM_SQL, (job.resume_job_id, job.id))
                     # §6.4.2: `job.claimed` is written by the FRAMEWORK, in the consumer's claim
                     # transaction. In it and not after it - a row written on a second commit is a
                     # transition a crash can lose, and the claim is the one a waiting reader is
@@ -995,6 +1063,7 @@ class Consumer:
                     effective_model=model_override,
                     ssh_identity=ssh_identity,
                     check_build=self._check_build,
+                    thread_key=job.thread_key,
                 )
             except Exception as exc:
                 redact_exception(exc, capability_token, rest_capability_token)
@@ -1122,16 +1191,13 @@ class Consumer:
                         if agent_config_svc is not None
                         else None
                     ) or get_module_config(job.source)
-                # §5.2's third seam. The resolver's answer is honoured ONLY when the
-                # harness declares `resume`: handing a session id to a CLI that cannot
-                # take one would drop the turn. With no resolver registered this is None
-                # and the workflow builds the same prompt it builds today.
+                # The session this turn continues is honoured ONLY when the harness
+                # declares `resume`: handing a session id to a CLI that cannot take one
+                # would drop the turn. None: the workflow starts a fresh session.
                 resume_session_id = None
                 if harness_entry.descriptor.capabilities.resume:
                     with self._db() as resume_conn:
-                        resume_session_id = resolve_resume_session(
-                            conn=resume_conn, job_id=job.id, attempt=job.attempt,
-                        )
+                        resume_session_id = self._resume_session(resume_conn, job, harness)
 
                 context = JobContext(
                     config=module_config,
@@ -1534,11 +1600,12 @@ class Consumer:
                     agent_output: str | None = None, session_id: str | None = None,
                     scheduled_after: datetime | None = None, refund_attempt: bool = False,
                     revoke: bool, write_failed: bool, outcome: str,
-                    terminal: bool) -> Callable[[], None]:
+                    terminal: bool, after: tuple[str, object] | None = None) -> Callable[[], None]:
         """Move a RUNNING job out of an attempt that failed, on the caller's transaction.
 
         The one writer of every failure transition (finalize and stale recovery). The
-        caller commits, then calls the returned announcement (see `_end_execution`).
+        caller commits, then calls the returned announcement (see `_end_execution`), which
+        also dispatches `after`, the job event of the transition (EVT-2).
         `status` is one of a closed set of literals, never input. Pool-wait and blocked
         keep the job's capabilities; retry and dead revoke them (SEC-7).
 
@@ -1553,7 +1620,7 @@ class Consumer:
             cur.execute(
                 f"""
                 UPDATE job
-                SET status = '{status}', finished_at = NOW(), {refund}
+                SET status = '{status}', finished_at = NOW(6), {refund}
                     error_message = %s, error_class = %s,
                     output = COALESCE(%s, output),
                     session_id = COALESCE(%s, session_id),
@@ -1573,7 +1640,13 @@ class Consumer:
                              payload={"job_id": job_id, "attempt": attempt,
                                       "kind": failure_kind(error_class),
                                       "execution_id": execution_id})
-        return announce
+        if after is None:
+            return announce
+
+        def announce_all() -> None:
+            announce()
+            get_event_manager().dispatch(*after)
+        return announce_all
 
     def _end_execution(self, conn, *, job_id: int, attempt: int,
                        execution_id: str | None, outcome: str,
@@ -1669,7 +1742,7 @@ class Consumer:
                             cur.execute(
                                 """
                                 UPDATE job
-                                SET status = 'SUCCESS', finished_at = NOW(),
+                                SET status = 'SUCCESS', finished_at = NOW(6),
                                     result_summary = %s,
                                     input_tokens = %s, output_tokens = %s,
                                     prompt = %s, output = %s,
@@ -1829,15 +1902,14 @@ class Consumer:
                             conn, job.id, job.attempt, job.execution_id,
                             error_msg=error_msg, error_class=error_class,
                             agent_output=agent_output, session_id=session_id,
-                            scheduled_after=scheduled_after, **how,
+                            scheduled_after=scheduled_after, after=after, **how,
                         )
                         conn.commit()
-                        announce()
                         self.logger.log(level, message, extra={
                             "job_id": job.id, "reference_id": job.reference_id,
                             "status": how["status"], "duration_ms": elapsed_ms,
                         })
-                        em.dispatch(*after)
+                        announce()
                     finalize_after_pending = True
                     return  # DB update succeeded
             except Exception:  # checkout included; pooled() already discarded a failed conn

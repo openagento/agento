@@ -1,5 +1,8 @@
 {
   "module_ready_after": [
     {"name": "jira_resolve_account_id", "class": "src.observers.ResolveAccountIdObserver", "order": 100}
+  ],
+  "job_claim_before": [
+    {"name": "jira_resume_session", "class": "src.session_policy.ResumeSessionPolicy", "order": 110}
   ]
 }
