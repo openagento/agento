@@ -81,16 +81,16 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 |-------|-----------|--------|------|
 | `job_publish_after` | `JobPublishedEvent` | `type, source, reference_id, idempotency_key, agent_view_id, priority, requester` | After job inserted into queue |
 | `job_claim_after` | `JobClaimedEvent` | `job` | After job dequeued (status → RUNNING) |
-| `job_succeed_after` | `JobSucceededEvent` | `job, summary, agent_type, model, elapsed_ms` | After SUCCESS commit |
+| `job_succeed_after` | `JobSucceededEvent` | `job, summary, agent_type, model, elapsed_ms` | After SUCCESS commit. Observer: the `subagent` parent wake (also on `job_blocked_after`, `job_dead_after`) |
 | `job_fail_after` | `JobFailedEvent` | `job, error, elapsed_ms` | On any failure (fires before retry/blocked/dead) |
 | `job_retry_after` | `JobRetryingEvent` | `job, error, delay_seconds, elapsed_ms` | After retry scheduled (status → TODO) |
-| `job_dead_after` | `JobDeadEvent` | `job, error, elapsed_ms` | After max retries exhausted (status → DEAD) |
+| `job_dead_after` | `JobDeadEvent` | `job, error, elapsed_ms` | After max retries exhausted (status → DEAD); also after a stale recovery marks a job DEAD. Observers: `app_monitor`, the `subagent` parent wake |
 | `job_blocked_after` | `JobBlockedEvent` | `job, error, elapsed_ms` | After a *blocked* verdict halts the job without retry (status → FAILED) |
 | `job_pause_after` | `JobPausedEvent` | `job` | After CLI `job:pause` pauses a running job (status → PAUSED) |
 | `job_resume_after` | `JobResumedEvent` | `job` | After CLI `job:resume` re-queues a paused job (status → TODO) |
 | `job_finalize_before` | `JobFinalizeEvent` | `job, job_result, elapsed_ms, verdict` | After `rc=0`, **before** the SUCCESS UPDATE. The mutable `verdict` field lets an observer veto a "ghost success"; **no in-tree observer sets it** — `verdict` stays `None` by default |
 | `job_finalize_after` | `JobFinalizeEvent` | `job, job_result, elapsed_ms, verdict` | After the terminal status (`SUCCESS`/`TODO`/`FAILED`/`DEAD`) commits. `verdict=None` (the in-tree default) means SUCCESS; a populated `verdict` — if a future module sets one — means the run was vetoed |
-| `job_claim_before` | `JobClaimBeforeEvent` | `job_id, verdict, delay_ms` | Inside the claim transaction, **before** the row goes RUNNING. An observer may set `verdict = ClaimVerdict.DEFER` and a `delay_ms` to hold the job for another tick |
+| `job_claim_before` | `JobClaimBeforeEvent` | `job_id, verdict, delay_ms, detach_thread, fresh_session` | Inside the claim transaction, **before** the row goes RUNNING. An observer may set `verdict = ClaimVerdict.DEFER` and a `delay_ms` to hold the job for another tick; `detach_thread` to move the job to its own default thread with no session (`outlook`); `fresh_session` to keep the job in its thread and line but resume no earlier session (`jira`, `jira_periodic_tasks`) |
 | `job_defer_after` | `JobDeferAfterEvent` | `job_id, stretch_seq, defer_count, reason` | When a block ends — once per stretch, carrying the number of deferrals it collapsed |
 | `execution_start_after` | `ExecutionEvent` | `execution_id, job_id, attempt` | After the run's capabilities commit — the attempt has begun |
 | `execution_finish_after` | `ExecutionEvent` | `execution_id, job_id, attempt` | After a transition ends the attempt with a result (`succeeded` / `failed`) |

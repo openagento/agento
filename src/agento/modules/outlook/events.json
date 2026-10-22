@@ -1,0 +1,5 @@
+{
+  "job_claim_before": [
+    {"name": "outlook_thread_gate", "class": "src.thread_gate.OutlookThreadGate", "order": 100}
+  ]
+}

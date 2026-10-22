@@ -119,7 +119,7 @@ class TestGetToolStates:
         cursor.fetchone.return_value = {"workspace_id": 7}
         captured = {}
 
-        def _fake_build(c, agent_view_id=None, workspace_id=None):
+        def _fake_build(c, agent_view_id=None, workspace_id=None, *, strict=False):
             captured["agent_view_id"] = agent_view_id
             captured["workspace_id"] = workspace_id
             return {}

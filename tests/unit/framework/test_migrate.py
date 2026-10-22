@@ -215,6 +215,16 @@ class TestApplyMigration:
                       "CONSTRAINT fk_job_parent FOREIGN KEY (parent_job_id) REFERENCES job(id) ON DELETE SET NULL",
                       "('053_job_parent_depth')"),
                      id="053-job-parent-depth"),
+        pytest.param(("CREATE TABLE IF NOT EXISTS thread (", "UNIQUE KEY uq_thread_ref (agent_view_id, ref_hash)",
+                      "UNIQUE KEY uq_thread_key (`key`)", "thread_id BIGINT UNSIGNED NULL,",
+                      "resume_job_id BIGINT UNSIGNED NULL,", "line_id BIGINT UNSIGNED NULL,",
+                      "KEY idx_job_thread (thread_id, depth, status)", "KEY idx_job_resume (resume_job_id)",
+                      "KEY idx_job_line (line_id, status)", "KEY idx_job_thread_turn (thread_id, depth, finished_at)",
+                      "finished_at TIMESTAMP(6) NULL,", "line_wait TINYINT(1) NOT NULL DEFAULT 0,",
+                      "CONSTRAINT fk_job_thread FOREIGN KEY (thread_id) REFERENCES thread(id) ON DELETE SET NULL",
+                      "CONSTRAINT fk_job_resume FOREIGN KEY (resume_job_id) REFERENCES job(id) ON DELETE SET NULL",
+                      "('054_thread')"),
+                     id="054-thread"),
     ])
     def test_fresh_init_includes_the_migration_effect(self, needles):
         # Column alignment in the init DDL is cosmetic, so collapse runs of spaces.

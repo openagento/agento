@@ -17,10 +17,7 @@ from agento.framework.execution_hooks import SEAMS, clear
 from agento.framework.module_loader import ModuleManifest
 from agento.modules.conversation.src.deltas import ConversationDeltaSink
 from agento.modules.conversation.src.finalizer import ConversationFinalizer
-from agento.modules.conversation.src.hooks import (
-    ConversationExecutionIds,
-    ConversationResumeSessions,
-)
+from agento.modules.conversation.src.hooks import ConversationExecutionIds
 
 from .conftest import bootstrap_for_tests
 
@@ -41,7 +38,8 @@ def test_bootstrap_registers_the_modules_declared_hooks():
 
     live = _registered()
     assert isinstance(live["execution_id_provider"], ConversationExecutionIds)
-    assert isinstance(live["resume_session_resolver"], ConversationResumeSessions)
+    # The deprecated seam stays, empty: the framework resumes a thread's line itself.
+    assert live["resume_session_resolver"] is None
     assert isinstance(live["execution_finalizer"], ConversationFinalizer)
     assert isinstance(live["execution_delta_sink"], ConversationDeltaSink)
 
@@ -132,7 +130,6 @@ def test_the_shipped_manifest_declares_its_hooks():
 
     assert di["execution_hooks"] == {
         "execution_id_provider": "src.hooks.ConversationExecutionIds",
-        "resume_session_resolver": "src.hooks.ConversationResumeSessions",
         "execution_finalizer": "src.finalizer.ConversationFinalizer",
         "execution_delta_sink": "src.deltas.ConversationDeltaSink"}
 

@@ -2,6 +2,8 @@ import hashlib
 import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agento.framework.channels.base import Channel, PromptFragments
 from agento.framework.job_models import RequesterTrust
 from agento.modules.outlook.src.channel import (
@@ -198,6 +200,21 @@ def test_publish_mail_builds_compound_reference_id_from_subject():
     args, kwargs = mock_publish.call_args
     assert kwargs["reference_id"] == "re-faktura::m1"
     assert args[3] == "outlook:mail:m1"  # idempotency_key stays bare
+
+
+@pytest.mark.parametrize(("conversation_id", "thread"), [
+    ("AAQkAD==", "outlook:conversation:AAQkAD=="),   # thread read on: the conversation's thread
+    (None, None),                                    # off: the message is its own thread
+])
+def test_publish_mail_joins_the_conversation_thread_only_when_given_one(conversation_id, thread):
+    p = OutlookPublisher()
+    with patch("agento.modules.outlook.src.channel.publish", return_value=True) as mock_publish:
+        p.publish_mail(
+            object(), "m1", agent_view_id=1, conversation_id=conversation_id,
+            sender_email="sender@example.com", dmarc="pass",
+            allowed_senders=["sender@example.com"], logger=MagicMock(),
+        )
+    assert mock_publish.call_args.kwargs["thread"] == thread
 
 
 def test_publish_mail_bare_reference_id_when_no_subject():

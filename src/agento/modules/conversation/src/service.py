@@ -15,7 +15,6 @@ Two things carry the weight here:
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -30,9 +29,10 @@ from agento.framework.events import (
     ConversationReactivatedEvent,
     ConversationUnblockedEvent,
 )
-from agento.framework.job_models import JobRequester, RequesterTrust
+from agento.framework.job_models import TERMINAL_STATUSES, JobRequester, RequesterTrust
 from agento.framework.job_types import resolve_job_type
 from agento.framework.publish_service import publish_job
+from agento.framework.threads import ensure_thread
 
 MODULE_DIR = Path(__file__).resolve().parent.parent
 JOB_TYPE = "conversation"
@@ -167,16 +167,20 @@ MAX_RUNS = 50
 
 def list_runs(conn, *, conversation_id: int) -> list[dict]:
     """The thread's runs, newest first. Harness, provider and credential are the attempt's own
-    (written at mint); the model is the one the CLI reported, else the configured one."""
+    (written at mint); the model is the one the CLI reported, else the configured one. A
+    sub-agent's run (`depth` > 0) names its parent job and its view, which may be another
+    view than the conversation's."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT e.execution_id, e.job_id, e.attempt, e.status, e.started_at, "
             "       e.finished_at, j.type, COALESCE(e.harness, j.agent_type) AS harness, "
             "       COALESCE(e.provider, j.provider) AS provider, "
             "       COALESCE(j.model, e.model) AS model, c.label AS credential, "
-            "       j.input_tokens, j.output_tokens "
+            "       j.input_tokens, j.output_tokens, j.parent_job_id, j.depth, j.resume_job_id, "
+            "       v.code AS agent_view "
             "FROM execution e LEFT JOIN job j ON j.id = e.job_id "
             "LEFT JOIN credential c ON c.id = e.credential_id "
+            "LEFT JOIN agent_view v ON v.id = j.agent_view_id "
             "WHERE e.conversation_id = %s ORDER BY e.id DESC LIMIT %s",
             (conversation_id, MAX_RUNS))
         return list(cur.fetchall())
@@ -253,6 +257,9 @@ def list_timeline(conn, *, conversation_id: int, before_id: int | None,
 RUN_DETAILS = "conversation.run_details"
 CHANNEL_WRITE = "conversation.channel_write"
 _RUN_DETAIL_DATA = ("input", "output")
+# Which view a run ran in (a sub-agent may run in another view) and which session it resumed
+# are run details too; `parent_job_id` and `depth` stay, so every reader sees the nesting.
+_RUN_DETAIL_STARTED = ("agent_view", "resume_job_id")
 _PROMPTED = ("run.started", "run.finished")
 
 
@@ -323,6 +330,9 @@ def project_events(conn, rows: list[dict], user: User, conversation: dict) -> li
         if not details and isinstance(payload.get("data"), dict):
             payload["data"] = {k: v for k, v in payload["data"].items()
                                if k not in _RUN_DETAIL_DATA}
+        if not details and row["kind"] == "run.started":
+            for key in _RUN_DETAIL_STARTED:
+                payload.pop(key, None)
         if not details and row["kind"] == "error":
             payload["text"] = None          # the raw harness error is a run detail (U4)
         created = row.get("created_at")
@@ -355,13 +365,24 @@ def _dispatch(name: str, event: object) -> None:
     get_event_manager().dispatch(name, event)
 
 
+def panel_thread_ref(conversation_id: int) -> str:
+    """The thread ref of a panel conversation: every turn of it is one thread."""
+    return f"{SOURCE}:{conversation_id}"
+
+
 def create_conversation(conn, *, user_id: int, agent_view_id: int | None, title: str | None) -> int:
+    """A panel conversation and its thread, in one transaction (a conversation is 1:1 with
+    a thread, so no turn can be published before the conversation has one)."""
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO conversation (user_id, agent_view_id, title) VALUES (%s, %s, %s)",
             (user_id, agent_view_id, title),
         )
         conversation_id = cur.lastrowid
+        thread_id = ensure_thread(cur, agent_view_id=agent_view_id,
+                                  ref=panel_thread_ref(conversation_id))
+        cur.execute("UPDATE conversation SET thread_id = %s WHERE id = %s",
+                    (thread_id, conversation_id))
     conn.commit()
     _dispatch("conversation_create_after", ConversationCreatedEvent(
         conversation_id=conversation_id, agent_view_id=agent_view_id, user_id=user_id))
@@ -598,58 +619,73 @@ def append_event(cur, conversation_id: int, *, kind: str, payload: dict, source_
 
 # --- channel threads (E9 §3.5) ------------------------------------------------
 
-def channel_key(source: str, agent_view_id: int | None, reference_id: str | None,
-                job_id: int) -> str:
-    """The dedupe key of a channel thread: one per (source, view, reference)."""
-    ref = reference_id or f"job:{job_id}"
-    return hashlib.sha1(f"{source}|{agent_view_id or ''}|{ref}".encode()).hexdigest()
-
-
 def link_execution(cur, *, execution_row_id: int, execution_id: str, job_id: int,
                    attempt: int) -> int | None:
-    """Give a freshly minted run its thread, and announce it there. Returns the thread.
+    """Give a freshly minted run its conversation, and announce it there. Returns it.
 
-    A panel job (`source = 'conversation'`) is in the thread of the message it answers.
-    Every other job is in its **channel thread**, keyed by `(source, view, reference)` and
-    created or reactivated here - so the next run on the same Jira issue, and a follow-up
-    that copies its parent's source and reference, land in the same thread.
+    A conversation is 1:1 with a thread (framework/threads.py), so every job takes one
+    path: the conversation of its thread. A panel thread has its conversation from
+    `create_conversation`; any other thread gets an ownerless **channel conversation** here,
+    created or reactivated, so every turn on one Jira issue, mail conversation or PR - and
+    a sub-agent placed in its parent's thread, in any view - lands in one conversation. The
+    conversation's view is the thread's, not the job's: a child in another view is shown to
+    the readers of its parent's conversation.
     """
-    cur.execute("SELECT type, source, reference_id, agent_view_id, max_attempts FROM job "
-                "WHERE id = %s", (job_id,))
+    cur.execute(
+        "SELECT j.type, j.source, j.reference_id, j.max_attempts, j.thread_id, "
+        "       j.parent_job_id, j.depth, j.resume_job_id, t.agent_view_id AS thread_view, "
+        "       t.ref AS thread_ref, v.code AS agent_view "
+        "FROM job j LEFT JOIN thread t ON t.id = j.thread_id "
+        "LEFT JOIN agent_view v ON v.id = j.agent_view_id WHERE j.id = %s", (job_id,))
     job = cur.fetchone()
-    if job is None:
-        return None
-    if job["source"] == SOURCE:
-        from .workflow import ReferenceUnusable, parse_reference
-        try:
-            _, message_id = parse_reference(job["reference_id"])
-        except ReferenceUnusable:
-            return None
-        cur.execute("SELECT conversation_id FROM message WHERE id = %s", (message_id,))
+    if job is None or job["thread_ref"] is None:
+        return None             # the claim gives every job a thread (`place_claim`)
+    # A job that answers a user's message runs in that message's conversation, also when
+    # the claim moved it out of the conversation's thread (an Outlook reply whose thread
+    # read was turned off): the user waits for the answer where they posted. A claim that
+    # mints before `complete_pending` wrote `message.job_id` (a window of one commit) and
+    # a child of a detached reply take the thread path below.
+    cur.execute("SELECT conversation_id FROM message WHERE job_id = %s LIMIT 1", (job_id,))
+    asked = cur.fetchone()
+    if asked is not None:
+        conversation_id = asked["conversation_id"]
+    elif job["thread_ref"].startswith(f"{SOURCE}:"):
+        # A panel thread belongs to its user's conversation and never gets an ownerless
+        # one: a run left after that conversation was deleted is shown nowhere.
+        cur.execute("SELECT id FROM conversation WHERE thread_id = %s", (job["thread_id"],))
         row = cur.fetchone()
         if row is None:
             return None
-        conversation_id = row["conversation_id"]
+        conversation_id = row["id"]
     else:
         ref = job["reference_id"]
         title = f"{job['source']} {ref or f'job {job_id}'}"[:MAX_TITLE]
         cur.execute(
-            # The view through a sub-select: a job may outlive its view, and the FK would
-            # then refuse the insert and with it the claim.
-            "INSERT INTO conversation (user_id, agent_view_id, title, channel, external_ref, "
-            "                          external_key, last_activity_at) "
-            "VALUES (NULL, (SELECT id FROM agent_view WHERE id = %s), %s, %s, %s, %s, NOW()) "
+            "INSERT INTO conversation (user_id, agent_view_id, thread_id, title, channel, "
+            "                          external_ref, last_activity_at) "
+            "VALUES (NULL, %s, %s, %s, %s, %s, NOW()) "
+            # Only a channel thread reaches here (a user's conversation is a panel thread).
             "ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), status = 'active'",
-            (job["agent_view_id"], title, job["source"], ref,
-             channel_key(job["source"], job["agent_view_id"], ref, job_id)))
+            (job["thread_view"], job["thread_id"], title, job["source"], ref))
         conversation_id = cur.lastrowid
+        if job["depth"] == 0 and ref:
+            # A panel reply continues the item of the channel's latest run
+            # (`complete_pending`): in a mail conversation that is usually the newest mail,
+            # not the first. A run of another source in the thread does not move it.
+            cur.execute("UPDATE conversation SET external_ref = %s WHERE id = %s "
+                        "AND channel = %s",
+                        (ref, conversation_id, job["source"]))
     cur.execute("UPDATE execution SET conversation_id = %s WHERE id = %s",
                 (conversation_id, execution_row_id))
     append_event(cur, conversation_id, kind="run.started", execution_id=execution_id,
                  source_kind="execution", source_id=execution_row_id,
                  payload={"job_id": job_id, "attempt": attempt,
                           "max_attempts": job["max_attempts"], "type": job["type"],
-                          "source": job["source"], "reference_id": job["reference_id"]})
+                          "source": job["source"], "reference_id": job["reference_id"],
+                          # The panel nests a sub-agent's run under its parent's turn.
+                          "parent_job_id": job["parent_job_id"], "depth": job["depth"],
+                          "resume_job_id": job["resume_job_id"],
+                          "agent_view": job["agent_view"]})
     return conversation_id
 
 
@@ -809,7 +845,7 @@ def complete_pending(conn, message_id: int) -> int:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT m.id, m.content, m.job_id, m.job_state, m.conversation_id, "
-            "       c.agent_view_id, c.user_id, c.channel, c.external_ref "
+            "       c.agent_view_id, c.user_id, c.channel, c.external_ref, c.thread_id "
             "FROM message m JOIN conversation c ON c.id = m.conversation_id "
             "WHERE m.id = %s",
             (message_id,),
@@ -832,6 +868,8 @@ def complete_pending(conn, message_id: int) -> int:
             requester=requester,
             priority=50,
             prompt=row["content"],
+            # Every turn of one conversation is one thread: a turn continues the last one.
+            thread=panel_thread_ref(row["conversation_id"]),
         )
     else:
         # A channel thread mirrors an external system, so the turn continues THAT task:
@@ -847,6 +885,11 @@ def complete_pending(conn, message_id: int) -> int:
             requester=requester,
             priority=50,
             context=row["content"],
+            # The channel's own thread: the reply is the next turn of the mail conversation,
+            # issue or PR, and its run lands in this conversation (`link_execution`). A
+            # thread whose view is gone has no owner to join (`join_thread`): the reply then
+            # gets its default thread.
+            thread_id=row["thread_id"] if row["agent_view_id"] is not None else None,
         )
     with conn.cursor() as cur:
         # The JOB row first, then the message: the finalizer takes them in that order, and
@@ -857,7 +900,7 @@ def complete_pending(conn, message_id: int) -> int:
         cur.execute("SELECT status FROM job WHERE id = %s FOR UPDATE", (job_id,))
         status = (cur.fetchone() or {}).get("status")
         # Same statuses as `reconcile_terminal`: TODO/RUNNING/PAUSED is a live or retried job.
-        state = "terminal" if status in ("SUCCESS", "FAILED", "DEAD") else "published"
+        state = "terminal" if status in TERMINAL_STATUSES else "published"
         cur.execute(
             "UPDATE message SET job_id = %s, job_state = %s "
             "WHERE id = %s AND job_state = 'pending'",
@@ -910,9 +953,9 @@ def reconcile_terminal(conn, limit: int = 500) -> int:
         # Selected first, then updated by id: MySQL refuses LIMIT on a multi-table UPDATE.
         cur.execute(
             "SELECT m.id FROM message m JOIN job j ON j.id = m.job_id "
-            "WHERE m.job_state = 'published' AND j.status IN ('SUCCESS','FAILED','DEAD') "
+            "WHERE m.job_state = 'published' AND j.status IN %s "
             "ORDER BY m.id LIMIT %s",
-            (limit,),
+            (TERMINAL_STATUSES, limit),
         )
         ids = [r["id"] for r in cur.fetchall()]
         if not ids:

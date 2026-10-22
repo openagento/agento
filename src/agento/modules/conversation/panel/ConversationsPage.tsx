@@ -3,11 +3,11 @@ import { useNavigate, useParams } from "react-router";
 import { apiFetch, LIVE_REFETCH_MS, ApiError, useMutation, useQuery, useQueryClient, useSession, type StreamEvent } from "@agento/api";
 import {
   AppLink, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
-  LoadingState, MenuButton, Rail as RailFrame, Reasoning, RegenerateAction, RowMenu, SearchToggle, SelectField, SplitView, TextField,
-  ThreadList, ToolCall, ToolGroup, type ThreadLink,
+  LoadingState, MenuButton, Rail as RailFrame, Reasoning, RegenerateAction, RowMenu, SearchToggle, SelectField, SplitView, SubagentRun,
+  TextField, ThreadList, ToolCall, ToolGroup, type JobState, type ThreadLink,
 } from "@agento/ui";
 import { DAY_GROUPS, dayGroup, inFlight, turnState, type Message, type Thread, type ThreadDetail } from "./model";
-import { buildItems, turns, type Item, type Shown, type Tool, type Turn } from "./timeline";
+import { buildItems, isSubagent, turns, type Item, type Shown, type Tool, type Turn } from "./timeline";
 import { duration, liveSummary, toolSummary } from "./tools";
 import { fetchPage, messagesKey, useConversation } from "./useConversation";
 
@@ -201,8 +201,11 @@ function toolView(t: Tool) {
   );
 }
 
+/** What a sub-agent card reads besides its turn: the thread's runs (harness, run details only). */
+interface Ctx { detail: ThreadDetail | undefined; details: boolean }
+
 /** `actions` reaches the one message that offers them: Regenerate on the newest answer. */
-function shownView(item: Shown, actions?: ReactNode) {
+function shownView(item: Shown, ctx: Ctx, actions?: ReactNode) {
   switch (item.type) {
     case "user":
       return <li key={item.key}><ChatMessage author="user" text={item.content} time={item.createdAt} /></li>;
@@ -220,11 +223,50 @@ function shownView(item: Shown, actions?: ReactNode) {
           <ToolGroup count={item.tools.length} running={item.tools.some((t) => !t.done)}>{item.tools.map(toolView)}</ToolGroup>
         </li>
       );
+    case "subagent":
+      return <li key={item.key}>{subagentView(item.turn, ctx)}</li>;
     case "marker":
       return <li key={item.key} className="ag-muted">{MARKER[item.kind]}</li>;
     case "error": // a failure no run holds (its execution is unknown); text only with run details
       return <li key={item.key}><ChatError title="The agent reported an error." details={item.text || undefined} /></li>;
   }
+}
+
+/** `abandoned`: the run stopped and the job is not finished (a pause, a re-claim, a pool
+ *  wait); the timeline cannot tell which, so the card says it is not done: blocked. */
+const OUTCOME: Record<string, JobState> = { succeeded: "succeeded", failed: "failed", dead: "failed", abandoned: "blocked" };
+
+/** A sub-agent's state from its newest run: running until `run.finished`; an attempt that
+ *  will run again is queued. (A card always has a `run.started`: it is what marks a child.) */
+function subagentState(turn: Turn): JobState {
+  if (turn.failure?.retrying) return "published";
+  if (!turn.finished) return "running";
+  return OUTCOME[String(turn.finished.outcome)] ?? "blocked";
+}
+
+/** "Sub-agent #12 · reviewer · claude · resumes #9". The view and the resumed job are run
+ *  details (the server leaves them out), the harness comes from the run row (run details). A
+ *  child whose parent run is not loaded names its parent: "Sub-agent #12 of #10". */
+function subagentLabel(turn: Turn, ctx: Ctx, orphan: boolean): string {
+  const p = turn.first ?? {};
+  const job = turn.started?.job_id ?? turn.finished?.job_id ?? p.job_id;
+  const harness = ctx.details ? ctx.detail?.runs.find((r) => r.execution_id === turn.executionId)?.harness : null;
+  return [
+    `Sub-agent${job === undefined ? "" : ` #${String(job)}`}${orphan && p.parent_job_id != null ? ` of #${String(p.parent_job_id)}` : ""}`,
+    typeof p.agent_view === "string" ? p.agent_view : null,
+    harness || null,
+    p.resume_job_id != null ? `resumes #${String(p.resume_job_id)}` : null,
+  ].filter(Boolean).join(" · ");
+}
+
+/** A sub-agent's turn as one collapsed card: its items, nested sub-agents and its failure. */
+function subagentView(turn: Turn, ctx: Ctx, orphan = false) {
+  const body = [...turn.items.map((i) => shownView(i, ctx)), ...(turn.failure && !turn.failure.retrying ? [failureView(turn, ctx.details)] : [])];
+  return (
+    <SubagentRun label={subagentLabel(turn, ctx, orphan)} state={subagentState(turn)}>
+      {body.length ? <ChatList>{body}</ChatList> : undefined}
+    </SubagentRun>
+  );
 }
 
 /** The incoming message a channel run answers: its source and reference; the trigger text
@@ -233,11 +275,14 @@ function triggerView(turn: Turn, detail: ThreadDetail) {
   const p = turn.first ?? {};
   const from = [String(p.source ?? detail.channel), p.reference_id ?? detail.external_ref].filter(Boolean).join(" · ");
   const prompt = turn.first?.prompt ?? turn.finished?.prompt;
+  // A follow-up (`schedule_followup` or a sub-agent's wake) says what it is; its prompt says why.
+  const label = [p.type === "followup" ? "Follow-up" : `From ${from}`,
+    p.resume_job_id != null ? `resumes #${String(p.resume_job_id)}` : null].filter(Boolean).join(" · ");
   return (
     <li key={`${turn.key}-trigger`}>
       {typeof prompt === "string"
-        ? <ChatMessage author="incoming" label={`From ${from}`} text={prompt} />
-        : <p className="ag-muted">From {from}</p>}
+        ? <ChatMessage author="incoming" label={label} text={prompt} />
+        : <p className="ag-muted">{label}</p>}
     </li>
   );
 }
@@ -365,7 +410,9 @@ export function View({ threadId }: { threadId: number }) {
   const channel = detail && detail.channel !== "panel" ? detail.channel : null;
   const details = detail?.run_details ?? admin;
   const busy = inFlight(rows);
-  const newest = top.findLast((i): i is Turn => i.type === "turn") ?? null;
+  const ctx: Ctx = { detail, details };
+  // A sub-agent whose parent run is not loaded is top-level, but it is not the thread's turn.
+  const newest = top.findLast((i): i is Turn => i.type === "turn" && !isSubagent(i)) ?? null;
   const status = statusText(rows, newest);
   const blocked = rows.filter((m) => m.blocked_reason === "paused_unrecoverable");
   const lastUser = rows.map((m) => m.role).lastIndexOf("user");
@@ -374,7 +421,7 @@ export function View({ threadId }: { threadId: number }) {
 
   // Regenerate hangs off the newest answer's own hover row, as the chat apps do (U9), not
   // under the whole timeline. It is offered on the same condition as before.
-  const answers = top.flatMap((i) => (i.type === "turn" ? i.items : [i]))
+  const answers = top.flatMap((i) => (i.type === "turn" ? (isSubagent(i) ? [] : i.items) : [i]))
     .filter((i) => i.type === "text" || i.type === "answer");
   const newestAnswer = !channel && lastUser !== -1 && !busy && !unanswered ? answers.at(-1) : undefined;
   const regenAction = <RegenerateAction onClick={() => regenerate.mutate(rows[lastUser].id)}
@@ -385,11 +432,12 @@ export function View({ threadId }: { threadId: number }) {
   for (const item of top) {
     if (item.type !== "turn") {
       if (item.type === "user") asked = item.content;
-      list.push(shownView(item, item === newestAnswer ? regenAction : undefined)!);
+      list.push(shownView(item, ctx, item === newestAnswer ? regenAction : undefined)!);
       continue;
     }
+    if (isSubagent(item)) { list.push(<li key={item.key}>{subagentView(item, ctx, true)}</li>); continue; }
     if (channel) list.push(triggerView(item, detail!));
-    for (const i of item.items) list.push(shownView(i, i === newestAnswer ? regenAction : undefined)!);
+    for (const i of item.items) list.push(shownView(i, ctx, i === newestAnswer ? regenAction : undefined)!);
     if (item.failure && !item.failure.retrying) {
       const text = asked;
       const retryable = !channel && item === newest && item.failure.failed && !busy && text !== "";

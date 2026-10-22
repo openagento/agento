@@ -8,8 +8,8 @@ Requires healthy tokens and DISABLE_LLM=0.
 from __future__ import annotations
 
 import logging
+import secrets
 import sys
-import time
 
 from .agent_manager.credential_store import get_credential, select_credential
 from .agent_manager.models import CredentialRecord
@@ -20,6 +20,8 @@ from .consumer_config import ConsumerConfig
 from .database_config import DatabaseConfig
 from .db import get_connection
 from .harness import find_harness
+from .job_models import AgentType
+from .publisher import insert_job
 
 
 def _insert_test_job(
@@ -33,23 +35,22 @@ def _insert_test_job(
     docs/cli/job-runtime.md), so a test needs no ``config:set`` on the view.
 
     ``scheduled_after`` is far in the future so a live stack's consumer never claims the
-    row; ``agento e2e`` claims it by id, which ignores the schedule.
+    row; ``agento e2e`` claims it by id, which ignores the schedule. It is set before the
+    commit, so no consumer ever sees the row claimable.
     """
     conn = get_connection(db_config)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO job (type, source, reference_id, agent_view_id,
-                                  idempotency_key, status, attempt, max_attempts,
-                                  agent_type, model, scheduled_after)
-                VALUES ('blank', 'blank', %s, %s, %s, 'TODO', 0, 1, %s, %s,
-                        '2038-01-01 00:00:00')
-                """,
-                (reference_id, agent_view_id, f"e2e:{reference_id}:{int(time.time())}",
-                 harness, model),
+            job_id = insert_job(
+                cur, agent_type=AgentType.BLANK, source="blank", agent_view_id=agent_view_id,
+                priority=50, reference_id=reference_id,
+                idempotency_key=f"e2e:{reference_id}:{secrets.token_hex(8)}", max_attempts=1,
+                requester=None, harness=harness, model=model,
+                # Its own thread: a kept or crashed earlier run must not be its line.
+                thread=f"e2e:{secrets.token_hex(8)}",
             )
-            job_id = cur.lastrowid
+            cur.execute("UPDATE job SET scheduled_after = '2038-01-01 00:00:00' WHERE id = %s",
+                        (job_id,))
         conn.commit()
         return job_id
     finally:
@@ -68,11 +69,15 @@ def _fetch_job(db_config: DatabaseConfig, job_id: int) -> dict | None:
 
 
 def _delete_job(db_config: DatabaseConfig, job_id: int) -> None:
-    """Delete a test job row."""
+    """Delete a test job row and its thread (each e2e run has a thread of its own)."""
     conn = get_connection(db_config)
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT thread_id FROM job WHERE id = %s", (job_id,))
+            row = cur.fetchone()
             cur.execute("DELETE FROM job WHERE id = %s", (job_id,))
+            if row is not None and row["thread_id"] is not None:
+                cur.execute("DELETE FROM thread WHERE id = %s", (row["thread_id"],))
         conn.commit()
     finally:
         conn.close()

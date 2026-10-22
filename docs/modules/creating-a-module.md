@@ -290,7 +290,7 @@ EOF
 
 `moduleConfigs['my-crm']` holds the module's `system.json` fields (step 10), resolved by the 3-level fallback. The toolbox decrypts `obscure` fields, so `cfg.api_token` is the plain value. Gate each registration on its own `tools/<name>/is_enabled` key. A tool is off until you enable it: `agento tool:enable crm_search_contacts`. See [Adding a Tool](../tools/adding-a-tool.md#every-tool-must-be-declared-in-modulejson).
 
-Convention-based discovery: any `.js` file in `toolbox/` is auto-discovered by the Toolbox at startup. The `context` object provides `{ app, log, db, playwright, fileManager, moduleConfigs, isToolEnabled }` -- no imports from framework files needed. `app` is set only in the startup (REST) pass; `isToolEnabled` is set only per MCP session.
+Convention-based discovery: any `.js` file in `toolbox/` is auto-discovered by the Toolbox at startup. The `context` object provides `{ app, log, db, playwright, fileManager, moduleConfigs, isToolEnabled }` -- no imports from framework files needed. `app` is set only in the startup (REST) pass; `isToolEnabled` is set only per MCP session. A per-session registration also gets `artifactsDir` (the run dir), `downloadsDir` (the thread's tool-owned `downloads/` dir, or `null` when the job has no thread) and `jobId`.
 
 Always log tool activity via the injected `log` (never import a logger or hardcode a file path). The Toolbox auto-routes it: handlers registered as MCP tools (`server.tool(...)`) log to `toolbox_mcp.log`, while REST route handlers (`app.post('/api/...')`) log to `toolbox_rest.log`. You don't pass a type -- the correct log is injected per registration path.
 

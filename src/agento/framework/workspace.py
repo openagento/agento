@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 
-_CODE_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_CODE_RE = re.compile(r"[a-z][a-z0-9_]*")
 
 
 def validate_code(code: str, entity: str = "code") -> None:
@@ -13,9 +13,10 @@ def validate_code(code: str, entity: str = "code") -> None:
 
     Codes must start with a lowercase letter and contain only lowercase letters,
     digits, and underscores.  Starting with ``_`` is reserved for theme/workspace
-    layering scope directories.
+    layering scope directories and for the artifacts root's own dirs (``_threads``,
+    ``_fallback``). ``fullmatch``: ``$`` would also take a code that ends in a newline.
     """
-    if not _CODE_RE.match(code):
+    if not isinstance(code, str) or not _CODE_RE.fullmatch(code):
         raise ValueError(
             f"Invalid {entity} code {code!r}: must match [a-z][a-z0-9_]* "
             "(lowercase start, no leading underscore)"

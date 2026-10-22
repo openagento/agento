@@ -27,7 +27,7 @@ function fakeServer() {
 //     duplicate, else [[]]
 //   INSERT -> [ {affectedRows} ]
 function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null, insertDupError = false,
-                         failOutbox = false, insertId = 777 } = {}) {
+                         failOutbox = false, insertId = 777, thread = null } = {}) {
   const calls = { getConnection: 0, executed: [], released: 0, begin: 0, commit: 0, rollback: 0 };
   const conn = {
     async beginTransaction() { calls.begin += 1; },
@@ -41,6 +41,7 @@ function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null, 
         if (failOutbox) throw new Error('outbox boom');
         return [{ affectedRows: 1 }];
       }
+      if (/FROM thread/i.test(sql)) return [thread ? [thread] : []];
       if (/^\s*SELECT/i.test(sql) && /idempotency_key/i.test(sql)) return [dupRow ? [dupRow] : []];
       if (/^\s*SELECT/i.test(sql)) return [jobRow ? [jobRow] : []];
       // Simulate a lost race: the dedupe SELECT saw no row, but a concurrent
@@ -364,5 +365,59 @@ describe('schedule_followup in a delegated job', () => {
     // [source, agent_view_id, priority, reference_id, context, key, type, max_attempts, parent_job_id, depth, scheduled_after]
     expect(insert.params.slice(6, 10)).toEqual(['followup', 3, null, 0]);
     expect(calls.commit).toBe(1);
+  });
+});
+
+describe('schedule_followup continues the current job thread', () => {
+  const ARGS = { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' };
+  const insertOf = (calls) => calls.executed.find((c) => /INSERT INTO job/i.test(c.sql) && !/outbox/i.test(c.sql));
+
+  it('copies thread_id from the current job, checked against its view', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(
+      { source: 'jira', reference_id: 'AI-9', agent_view_id: 7, priority: 20, depth: 0, thread_id: 5 },
+      { thread: { agent_view_id: 7 } });
+    register(server, baseCtx({ db }));
+
+    const res = await server.tools.schedule_followup.handler(ARGS);
+
+    expect(res.isError).toBeFalsy();
+    expect(calls.executed[0].sql).toMatch(/thread_id FROM job WHERE id = \?/);
+    const thread = calls.executed.find((c) => /FROM thread/i.test(c.sql));
+    expect(thread.params).toEqual([5]);
+    const insert = insertOf(calls);
+    expect(insert.sql).toMatch(/thread_id, line_id/);
+    expect(insert.params.at(-3)).toBe(5);
+    expect(insert.params.at(-2)).toBeNull();
+  });
+
+  it('a job with no view passes no thread: the follow-up gets its own at claim', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(
+      { source: 'jira', reference_id: 'AI-9', agent_view_id: null, priority: 20, depth: 0, thread_id: 5 });
+    register(server, baseCtx({ db }));
+
+    const res = await server.tools.schedule_followup.handler(ARGS);
+
+    expect(res.isError).toBeFalsy();
+    expect(calls.executed.some((c) => /FROM thread/i.test(c.sql))).toBe(false);
+    expect(insertOf(calls).params.at(-3)).toBeNull();
+  });
+
+  it('a thread of another view is refused and nothing is written', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(
+      { source: 'jira', reference_id: 'AI-9', agent_view_id: 7, priority: 20, depth: 0, thread_id: 5 },
+      { thread: { agent_view_id: 8 } });
+    register(server, baseCtx({ db }));
+
+    const res = await server.tools.schedule_followup.handler(ARGS);
+
+    expect(res.isError).toBe(true);
+    expect(insertOf(calls)).toBeUndefined();
+    expect(calls.rollback).toBe(1);
   });
 });

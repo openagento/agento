@@ -49,6 +49,7 @@ def test_publish_comments_lane_publishes_once_with_base_priority():
     assert kwargs["skip_if_active"] is True
     assert kwargs["requester"].key == "github:login:alice"
     assert kwargs["requester"].trust.name == "ACCOUNT"
+    assert kwargs["thread"] == "github:acme/api:7"  # one thread per PR, both lanes
 
 
 def test_publish_changes_lane_bumps_priority_and_caps_at_100():
@@ -58,6 +59,7 @@ def test_publish_changes_lane_bumps_priority_and_caps_at_100():
         GitHubPublisher().publish_pr(object(), pr, lane=LANE_CHANGES, agent_view_id=3, priority=50, login=AGENT)
     assert pub.call_args.args[3] == "github:changes:acme/api:7:2026-01-05T00:00:00Z:55"
     assert pub.call_args.kwargs["priority"] == 50 + CHANGES_PRIORITY_BUMP
+    assert pub.call_args.kwargs["thread"] == "github:acme/api:7"
     with patch("agento.modules.github.src.channel.publish", return_value=True) as pub:
         GitHubPublisher().publish_pr(object(), pr, lane=LANE_CHANGES, agent_view_id=3, priority=95, login=AGENT)
     assert pub.call_args.kwargs["priority"] == 100

@@ -12,7 +12,7 @@ class CronWorkflow(Workflow):
     def execute_job(self, channel: Channel, job: Job, context: JobContext) -> RunResult:
         if not job.reference_id:
             raise ValueError(f"Cron job {job.id} has no reference_id")
-        return self.execute(channel, job.reference_id)
+        return self.execute(channel, job.reference_id, context=context)
 
     def build_prompt(
         self, channel: Channel, reference_id: str, **kwargs: object

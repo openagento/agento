@@ -5,11 +5,13 @@ import {
   Text, Textarea, Title, Tooltip, UnstyledButton,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
-import { Brain, ChevronRight, CircleAlert, Info, Layers, RotateCcw, SendHorizontal, Wrench } from "lucide-react";
+import { Bot, Brain, ChevronRight, CircleAlert, Info, Layers, RotateCcw, SendHorizontal, Wrench } from "lucide-react";
 import type { FormEvent, KeyboardEvent, ReactNode, Ref, UIEvent } from "react";
 import classes from "./Chat.module.css";
 import { CopyButton } from "./CopyButton";
+import { JOB_STATE_LABEL, type JobState } from "./JobStatusCard";
 import { Markdown } from "./Markdown";
+import { StatusBadge } from "./StatusBadge";
 import { Timestamp } from "./Timestamp";
 
 /** Half the theme's `xs` spacing: tool rows and message actions sit closer than `xs` (UI-1). */
@@ -124,6 +126,17 @@ export function ToolGroup({ count, running, children }: { count: number; running
   return (
     <Disclosure icon={running ? <Loader size={14} /> : <Layers size={14} aria-hidden />} label={`Used ${count} tools`}>
       <div className={classes.group}>{children}</div>
+    </Disclosure>
+  );
+}
+
+/** A sub-agent's job inside its parent's turn: one line with its state, collapsed; open, its
+ *  own turn (`children`, a `ChatList`). */
+export function SubagentRun({ label, state, children }: { label: string; state: JobState; children?: ReactNode }) {
+  return (
+    <Disclosure icon={state === "running" ? <Loader size={14} /> : <Bot size={14} aria-hidden />} label={label}
+      trailing={<StatusBadge tone={state}>{JOB_STATE_LABEL[state]}</StatusBadge>}>
+      {children}
     </Disclosure>
   );
 }

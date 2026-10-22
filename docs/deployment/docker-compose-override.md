@@ -37,7 +37,8 @@ services:
 ```
 
 ```bash
-# docker/.env — gids every run joins (not 0, not the agent gid, below 20000)
+# docker/.env — gids every run joins (not 0, not the agent gid, below 20000; 19990, the
+# thread group, is added for you)
 AGENTO_RUN_GROUPS=1000,1003
 ```
 

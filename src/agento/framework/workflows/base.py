@@ -20,9 +20,9 @@ class JobContext:
     # Short-lived internal_rest capability for the discovery flow. `repr=False` so a
     # dataclass repr in a log line can never carry it.
     capability_token: str | None = field(default=None, repr=False)
-    # The harness session this turn continues, resolved through §5.2's seam and honoured
-    # only when the harness declares `resume`. `None` means a fresh session, which is what
-    # every workflow saw before the seam existed.
+    # The harness session this turn continues (the latest earlier turn of its line, see
+    # framework/threads.py), set only when the harness declares `resume`. `None` means a
+    # fresh session.
     resume_session_id: str | None = None
 
 
@@ -50,13 +50,25 @@ class Workflow(ABC):
         )
 
     def execute(
-        self, channel: Channel, reference_id: str, **kwargs: object
+        self, channel: Channel, reference_id: str, *, context: JobContext | None = None,
+        **kwargs: object,
     ) -> RunResult:
-        prompt = self.build_prompt(channel, reference_id, **kwargs)
-        result = self.runner.execute(RunRequest(prompt=prompt))
+        """Run one turn. With `context.resume_session_id` the turn continues that session,
+        and `build_prompt` gets `resumed=True`, so a workflow can send only the new part."""
+        session = context.resume_session_id if context else None
+        # Optional on a runner (RemoteRunner has it): a runner without it resumes the
+        # session as given.
+        prepare = getattr(self.runner, "prepare_resume", None)
+        if session is not None and prepare is not None and not prepare(session):
+            # The session is gone (pruned, or made under another HOME): a fresh one, not a
+            # turn the agent has no context for.
+            self.logger.warning(f"ref={reference_id} session not found; starting a fresh one")
+            session = None
+        prompt = self.build_prompt(channel, reference_id, resumed=session is not None, **kwargs)
+        result = self.runner.execute(RunRequest(prompt=prompt, session_id=session))
         result.prompt = prompt
         self.logger.info(
-            f"channel={channel.name} ref={reference_id} "
+            f"channel={channel.name} ref={reference_id} resumed={session is not None} "
             f"session_id={result.session_id or '?'} {result.stats_line}"
         )
         return result

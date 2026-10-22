@@ -568,12 +568,16 @@ def test_show_says_whether_the_caller_sees_run_details(conn, world):
     run = {"execution_id": "e", "job_id": 7, "attempt": 1, "status": "done", "started_at": None,
            "finished_at": None, "type": "conversation", "harness": "claude",
            "provider": "anthropic", "credential": "team-1", "model": "m",
-           "input_tokens": 1, "output_tokens": 2}
+           "input_tokens": 1, "output_tokens": 2, "parent_job_id": 5, "depth": 1,
+           "resume_job_id": 4, "agent_view": "b"}
     assert set(routes._run_json(run, False)) == {"execution_id", "attempt", "status",
                                                  "started_at", "finished_at"}
     shown = routes._run_json(run, True)
     assert (shown["harness"], shown["provider"], shown["credential"], shown["model"]) == (
         "claude", "anthropic", "team-1", "m")
+    # A sub-agent's run says whose child it is, and in which view it ran.
+    assert (shown["parent_job_id"], shown["depth"], shown["resume_job_id"],
+            shown["agent_view"]) == (5, 1, 4, "b")
 
 
 # --- regenerate (ROADMAP E3-E5) -------------------------------------------------

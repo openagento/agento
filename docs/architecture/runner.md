@@ -184,8 +184,14 @@ credential.
   removes a file in a run dir. It only walks the dir and changes owners and modes.
 - **Uid ranges.** Runner i owns the uids `20000 + (i-1)*256` to `+255` (`uids.RUN_UID_BASE`,
   `RUN_UID_SLOTS`). The ranges never overlap, so a uid is never in two runners at once. A uid
-  has a primary group of the same number and no other group, except the gids in
-  `AGENTO_RUN_GROUPS` (D-RUN-GROUPS-1). No `/etc/passwd` entry is needed.
+  has a primary group of the same number. Its other groups are `THREAD_GID` (19990,
+  `agento_thread`: the thread dirs, D-THREAD-2) and the gids in `AGENTO_RUN_GROUPS`
+  (D-RUN-GROUPS-1). No `/etc/passwd` entry is needed. The run dir's `shared` entry is a link to
+  the thread's `shared/`; the owner walk skips links, so a thread dir never goes to a run uid.
+  The group comes from the sandbox image (the cron and runner image): after an upgrade to it,
+  rebuild the images (`agento upgrade` does; in dev, `docker compose -f
+  docker-compose.dev.yml build`). A restart only leaves the consumer outside the group, and every
+  job of a thread then fails at run preparation with "not in the thread group".
 - **Persistent HOME paths.** A harness's `persistent_home_paths()` (session stores) live in the
   agent_view's `state/`, which every run of the view shares, so a run never gets it. The
   run HOME gets a copy of them, and after the run the consumer copies back each file the run

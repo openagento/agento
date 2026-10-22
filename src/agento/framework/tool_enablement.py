@@ -64,3 +64,28 @@ def is_effective(
 ) -> bool:
     """Whether ``name`` is actually available: its own value AND its whole chain."""
     return resolve(name) and blocked_by(name, requires, resolve) is None
+
+
+def is_effective_for_view(conn, name: str, *, agent_view_id: int) -> bool:
+    """Whether tool ``name`` is available to one agent_view, as the toolbox gate decides it.
+
+    The value resolves agent_view -> workspace -> default (``ScopedConfigService``). The
+    ``requires`` chain comes from the manifests the last ``bootstrap()`` loaded, so a hot
+    path (a claim, a poll) does not scan the module tree on every call. Fails closed
+    (SEC-9): an unreadable scope level or no bootstrapped manifests raise, never answer
+    with a less specific value or an unchecked chain.
+    """
+    from .bootstrap import get_manifests
+    from .config_resolver import ScopedConfigService
+    from .scoped_config import Scope
+
+    manifests = get_manifests()
+    if not manifests:
+        raise RuntimeError("no bootstrapped manifests: the requires chain cannot be checked")
+    svc = ScopedConfigService(conn, Scope.AGENT_VIEW, agent_view_id, strict=True)
+    requires = {
+        tool["name"]: tool["requires"]
+        for manifest in manifests for tool in manifest.tools
+        if tool.get("name") and isinstance(tool.get("requires"), str) and tool["requires"]
+    }
+    return is_effective(name, requires, lambda tool: svc.get(f"tools/{tool}/is_enabled") == "1")

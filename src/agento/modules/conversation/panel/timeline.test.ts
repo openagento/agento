@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StreamEvent } from "@agento/api";
-import { buildItems, foldTools, MAX_EVENTS, TimelineStore, turns, type Item, type Run, type Turn } from "./timeline";
+import { buildItems, foldTools, isSubagent, MAX_EVENTS, spawnedJob, TimelineStore, turns, type Item, type Run, type Turn } from "./timeline";
 
 const ev = (id: number, kind: string, execution_id: string | null, payload: Record<string, unknown> = {}): StreamEvent =>
   ({ id, kind, execution_id, payload, created_at: null });
@@ -202,5 +202,57 @@ describe("foldTools and turns", () => {
   it("an error in a run that did not fail is reported, not a failure", () => {
     expect(turn([started(1, "a", 1), ev(2, "error", "a", { text: "warn" }), ev(3, "run.finished", "a", { job_id: 7, outcome: "succeeded" })]).failure)
       .toEqual({ text: "warn", count: 1, failed: false, retrying: false });
+  });
+});
+
+describe("sub-agents", () => {
+  const start = (id: number, x: string, job: number, extra: Record<string, unknown> = {}) =>
+    ev(id, "run.started", x, { job_id: job, attempt: 1, max_attempts: 3, depth: 0, parent_job_id: null, ...extra });
+  const child = (id: number, x: string, job: number, parent: number, depth = 1) => start(id, x, job, { depth, parent_job_id: parent });
+  const call = (id: number, x: string, output?: unknown) => ev(id, "tool.completed", x, {
+    tool_name: "mcp__agento__agent_run", data: { call_id: `c${id}`, ...(output === undefined ? {} : { output }) } });
+  const top = (events: StreamEvent[]) => turns(buildItems(events));
+  const kinds = (t: Turn) => t.items.map((i) => (i.type === "subagent" ? `sub:${String(i.turn.first?.job_id)}` : i.type));
+
+  it("a Jira issue with 7 rounds is 7 turns of one conversation", () => {
+    const events = Array.from({ length: 7 }, (_, n) => [start(n * 2 + 1, `x${n}`, 100 + n), text(n * 2 + 2, `round ${n}`, `x${n}`)]).flat();
+    expect(top(events).filter((i) => i.type === "turn")).toHaveLength(7);
+  });
+
+  it("a child sits after the agent_run call that returned its job id, not as a turn", () => {
+    const t = top([start(1, "p", 10), call(2, "p", '{"job_id":11,"status":"TODO"}'), text(3, "waiting", "p"),
+      child(4, "c", 11, 10), text(5, "child answer", "c")]);
+    expect(t).toHaveLength(1);
+    expect(kinds(t[0] as Turn)).toEqual(["tool", "sub:11", "text"]);
+    const sub = (t[0] as Turn).items[1];
+    expect(sub.type === "subagent" && sub.turn.items.map((i) => i.type === "text" && i.text)).toEqual(["child answer"]);
+  });
+
+  it("without run details (no tool output) a child goes to the end of the parent run", () => {
+    const t = top([start(1, "p", 10), call(2, "p"), text(3, "waiting", "p"), child(4, "c", 11, 10)]);
+    expect(kinds(t[0] as Turn)).toEqual(["tool", "text", "sub:11"]);
+  });
+
+  it("the attempts of one child are one card; a grandchild nests in its child", () => {
+    const t = top([start(1, "p", 10), child(2, "c1", 11, 10), ev(3, "job.failed", "c1", { job_id: 11, attempt: 1, kind: "harness" }),
+      child(4, "c2", 11, 10), child(5, "g", 12, 11, 2)]);
+    expect(kinds(t[0] as Turn)).toEqual(["sub:11"]);
+    const sub = (t[0] as Turn).items[0];
+    expect(sub.type === "subagent" && kinds(sub.turn)).toEqual(["sub:12"]);
+  });
+
+  it("a child whose parent run is not loaded stays top-level and is a sub-agent turn", () => {
+    const t = top([child(4, "c", 11, 10), text(5, "child answer", "c")]);
+    expect(t).toHaveLength(1);
+    expect(isSubagent(t[0] as Turn)).toBe(true);
+  });
+
+  it.each([
+    ["mcp__agento__agent_run", '{"job_id":11}', 11],
+    ["agent_run", [{ type: "text", text: '{"job_id":12,"status":"TODO","depth":1}' }], 12],
+    ["agent_result", '{"job_id":11}', null],
+    ["agent_run", "no id", null],
+  ])("spawnedJob(%s, %j) is %s", (name, output, job) => {
+    expect(spawnedJob({ type: "tool", key: "k", name, output, done: true, isError: false })).toBe(job);
   });
 });

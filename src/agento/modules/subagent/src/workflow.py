@@ -15,7 +15,7 @@ class SubagentWorkflow(Workflow):
     def execute_job(self, channel: Channel, job: Job, context: JobContext) -> RunResult:
         if not job.context:
             raise ValueError(f"Subagent job {job.id} has no context")
-        return self.execute(channel, job.reference_id or "", prompt=job.context)
+        return self.execute(channel, job.reference_id or "", context=context, prompt=job.context)
 
     def build_prompt(self, channel: Channel, reference_id: str, **kwargs: object) -> str:
         return (

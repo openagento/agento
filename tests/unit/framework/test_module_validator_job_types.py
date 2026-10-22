@@ -6,6 +6,7 @@ import pytest
 
 from agento.framework.module_validator import (
     declaration_shape_errors,
+    deprecation_warnings,
     job_type_declarations,
     validate_job_type_grammar,
     validate_job_types,
@@ -111,3 +112,16 @@ def test_a_malformed_declaration_is_refused_not_ignored(tmp_path: Path, di, expe
 def test_an_absent_or_empty_declaration_is_not_an_error(tmp_path: Path, di):
     """Present means checked; absent means absent. A key nobody wrote is not a violation."""
     assert declaration_shape_errors(write_module(tmp_path, "fine", di_json=di), {}) == []
+
+
+@pytest.mark.parametrize(("hooks", "warned"), [
+    ({"resume_session_resolver": "src.hooks.Resolver"}, True),
+    ({"execution_delta_sink": "src.deltas.Sink"}, False),
+])
+def test_the_deprecated_resolver_seam_warns_and_still_validates(tmp_path: Path, hooks, warned):
+    """CODE-5: the seam keeps loading until the next minor release; module:validate says so."""
+    mod = write_module(tmp_path, "legacy", di_json={"execution_hooks": hooks})
+    warnings = deprecation_warnings(mod)
+    assert bool(warnings) is warned
+    assert all("deprecated, removed in the next minor release" in w for w in warnings)
+    assert not any("resume_session_resolver" in e for e in validate_module(mod))

@@ -108,7 +108,6 @@
   ],
   "execution_hooks": {
     "execution_id_provider": "src.hooks.ConversationExecutionIds",
-    "resume_session_resolver": "src.hooks.ConversationResumeSessions",
     "execution_finalizer": "src.finalizer.ConversationFinalizer",
     "execution_delta_sink": "src.deltas.ConversationDeltaSink"
   }

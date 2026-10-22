@@ -80,6 +80,7 @@ def test_publish_pr_comments_lane(mock_publish):
     assert kwargs["priority"] == 50  # base priority, no bump
     assert kwargs["skip_if_active"] is True
     assert kwargs["agent_view_id"] == 7
+    assert kwargs["thread"] == "bitbucket:acme/api:42"  # one thread per PR, both lanes
     req = kwargs["requester"]
     assert req.key == f"bitbucket:account:{REV}"
     assert req.trust is RequesterTrust.ACCOUNT
@@ -112,6 +113,7 @@ def test_publish_pr_changes_lane_prioritized(mock_publish):
     assert kwargs["priority"] == min(100, 50 + CHANGES_PRIORITY_BUMP)
     assert kwargs["skip_if_active"] is True
     assert kwargs["requester"].meta["basis"] == "changes"
+    assert kwargs["thread"] == "bitbucket:acme/api:42"
 
 
 @patch("agento.modules.bitbucket.src.channel.publish", return_value=True)

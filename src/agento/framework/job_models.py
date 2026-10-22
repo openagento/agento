@@ -57,6 +57,12 @@ class JobStatus(Enum):
     PAUSED = "PAUSED"
 
 
+# The statuses a job never leaves. TODO, RUNNING and PAUSED are open: a retry and a stale
+# recovery both pass back through TODO.
+TERMINAL_STATUSES = ("SUCCESS", "FAILED", "DEAD")
+OPEN_STATUSES = ("TODO", "RUNNING", "PAUSED")
+
+
 @dataclass
 class Job:
     id: int
@@ -102,6 +108,21 @@ class Job:
     execution_id: str | None = None
     # `<runner socket>:<boot id>` of the runner that started the run (runner/client.py).
     runner_ref: str | None = None
+    # The job that ran agent_run for this one, and how deep it is (0 = a root job).
+    parent_job_id: int | None = None
+    depth: int = 0
+    # The job's thread, the session it resumes (set at claim) and, for depth > 0, the
+    # first job of the agent line it continues (framework/threads.py).
+    thread_id: int | None = None
+    resume_job_id: int | None = None
+    line_id: int | None = None
+    # Not a `job` column: the random key of the job's thread, read at claim; it names the
+    # thread's dir (artifacts_dir.thread_dir).
+    thread_key: str | None = None
+    # Not a `job` column: a `job_claim_before` observer moved THIS claim to its own thread.
+    thread_detached: bool = False
+    # Not a `job` column: a `job_claim_before` observer asked THIS claim for a fresh session.
+    fresh_session: bool = False
 
     @classmethod
     def stub(
@@ -170,6 +191,11 @@ class Job:
             error_class=row["error_class"],
             pid=row.get("pid"),
             runner_ref=row.get("runner_ref"),
+            parent_job_id=row.get("parent_job_id"),
+            depth=row.get("depth") or 0,
+            thread_id=row.get("thread_id"),
+            resume_job_id=row.get("resume_job_id"),
+            line_id=row.get("line_id"),
             session_id=row.get("session_id"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
