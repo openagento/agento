@@ -4,12 +4,151 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-22 — A channel's thread is its workspace (D-THREAD-1)
+
+Plan §4, §6, §9 (AG-41). Status: every channel at once is the owner's (Marcin Klauza, 2026-10-22,
+S3: "all channels must work at once"); a child of another view shown in its parent's thread is
+S5. Insert-time assignment is a proposal (plan §15) for the owner's review of this branch.
+
+- **A thread is the item a channel works on**, `(agent_view_id, sha1(ref))`: `jira:<KEY>`,
+  `github:<ref>` / `bitbucket:<ref>` for both lanes of a PR, `conversation:<id>` for a panel
+  conversation, else `default_ref()` (the source item or the job). Its jobs share one directory
+  and run as lines (D-THREAD-3).
+- **Every job gets its thread at insert** (`publisher.insert_job` and the Node inserts), not at
+  claim: the thread row lock then orders the jobs of one thread by id, and a follow-up, a wake or
+  a child copies `thread_id` from the job that made it. The claim gives a thread only to a row
+  that some other INSERT left without one.
+- **A conversation is 1:1 with its thread** (`conversation.thread_id`, unique). One path
+  (`link_execution`) serves every job, so a child in another view lands in its parent's
+  conversation. `conversation.external_key` is kept one release (ROADMAP.md).
+
+## 2026-10-22 — One resume mechanism: the end of the line (D-THREAD-3)
+
+Plan §5 (AG-41). Status: removing the conversation resume resolver is the owner's (S5, open
+decision 1: "1. ok"); lines and keeping the deprecated seam one release are proposals (plan §15).
+
+- **Before**, each channel had its own idea of the session to resume (the conversation module's
+  `resume_session_resolver`, Jira none), so a wake and a new comment could fork a session.
+- **Now** the claim picks one target for every job: the turn of its **line** that finished last
+  and has a session (`threads.resolve_resume`), written to `job.resume_job_id`. A line is the
+  depth-0 jobs of a thread, or one sub-agent and its continuations. A line runs one turn at a time:
+  a later turn is deferred while an earlier one is open (`line_blocked`, `line_wait = 1`), so the
+  finish order is the run order and the session stays linear.
+- **Seams, not channel code:** `JobClaimBeforeEvent.fresh_session` (a module drops the target,
+  D-FRESH-SESSION-1) and `detach_thread` (D-THREAD-4). The `resume_session_resolver` seam is
+  deprecated: no shipped module registers it, and it is asked only for a job with no target
+  (removal: ROADMAP.md).
+
+## 2026-10-22 — An Outlook mail conversation is a thread only while thread read is on (D-THREAD-4)
+
+Plan §6 (AG-41). Status: a proposal (plan §15, "§6 Outlook gating", "§6 `detach_thread` claim
+re-check") for the owner's review; the directory exception after revocation is the owner's (S7,
+D-THREAD-2).
+
+- **Why a gate.** A resumed session holds the earlier turns of its thread. Jira, GitHub,
+  Bitbucket and panel turns are readable with the channel's tools anyway; earlier mails are
+  readable only through `outlook_list_thread`. So the poller puts a message into
+  `outlook:conversation:<id>` only while that tool is effective for the view; else each message is
+  its own thread, as before. The tool stays the single gate (no second switch).
+- **Checked again at every claim.** The `outlook_thread_gate` observer, keyed on the thread and
+  its view, sets `detach_thread` when the tool is off: the claim moves the job to its own default
+  thread and clears its session before the line rules run. A gate that cannot be read defers the
+  job (fail closed).
+- **Open:** with the `outlook` module disabled no observer runs the gate (zero-trust.md, owner
+  decision pending).
+
+## 2026-10-22 — Thread directory: random key, one group, tool-owned downloads (D-THREAD-2)
+
+Plan §7 (AG-41). Status: the random key with one group and the revocation exception are the
+owner's (Marcin Klauza, 2026-10-22, S7: "a random key is enough protection, and the Outlook
+revocation is a very large edge case"); the child in another view is S5. The `downloads/` layout
+is a proposal (plan §15) for the owner's review of this branch.
+
+- **Layout.** `/workspace/artifacts/_threads/<key>/` (2750 `agent:agento_thread`) holds `shared/`
+  (2770, every run of the thread reads and writes) and `downloads/` (2750, the toolbox writes, runs
+  read). cron makes them at each run (`artifacts_dir.prepare_thread_dir`, descriptor walk with
+  `O_NOFOLLOW`, an owner check) and links `<run dir>/shared` to `shared/`. `agento run` has no
+  job, so no thread and no link.
+- **One group, a random key.** Every run gets `THREAD_GID` 19990 (`runner/uids.py`; the image
+  adds `agent` to `agento_thread`). The key is 128 random bits and `_threads/` is 0711, so a run
+  cannot list the threads. A run that has another thread's absolute path can open it. Per-thread
+  groups would need a group per thread in the image or at run time; the owner judged the random
+  key enough (S2, S7). Listed in zero-trust.md.
+- **Revocation (S7).** After the Outlook gate detaches a job, the job gets a fresh `./shared`, but a
+  run that kept the old absolute path still reaches the old dir while it is there. Accepted; the
+  key bounds it.
+- **A child in another view (S5)** joins its parent's thread, so it uses view A's thread dir. The
+  operator's `subagent/allowed_agent_views` entry is the consent.
+- **Why `downloads/` is apart from `shared/` (SEC-5).** The toolbox writes only through dirs that
+  `agent` owns and no run can write: a run cannot plant a symlink on that path. The toolbox never
+  writes under `shared/`. It makes its subdirs without a chmod (the setgid parent gives the group;
+  the toolbox is not in it, so a chmod would drop the setgid bit), and its files 0640.
+- **Jira** writes attachments to `downloads/jira/<KEY>/<id>_<name>` and skips a file that is there,
+  so the turns of one issue fetch each attachment once. The FileManager writes into a `.part-*` dir
+  and renames the conversion first and the file last: a file that is there is complete. Other
+  toolbox writers keep the run dir.
+- **Codes.** `_threads` starts with `_`, which `validate_code` refuses. The one write path in the
+  framework (the `SeedWorkspace` patch) checks it; `build_artifacts_dir` refuses a code that starts
+  with `_` or `.`, or has a separator, so a row no write path checked cannot name `_threads`.
+
+## 2026-10-22 — Sub-agent lines, scope and the parent wake (D-SUBAGENT-LINE-1)
+
+Plan §8 (AG-41; owner S6: "a checkbox to wake the parent ... we may wait on 5 parallel
+sub-agents"). Status: the wake is the owner's (S6); the scope by line, the cap per line and the
+dropped `type` filter are proposals (plan §15 lists §8.1 as one) for the owner's review of this
+branch.
+
+- **Scope by line, not by direct parent.** A caller reads and continues the jobs delegated from
+  any job of its own line, in its thread. A wake turn and a later Jira turn are new jobs of the
+  line, so they must reach the children an earlier turn started; the line is the trusted
+  relationship (written only at insert) that survives resume. A sibling branch stays out.
+- **Wake jobs are in scope, with no `type` filter.** The plan said `type = 'subagent'`. A child
+  line's later turns include its wake (`followup`), whose output is that line's latest result,
+  and the parent's wake prompt names it. Every job with a `parent_job_id` is a child's first job,
+  a continuation or a wake, so dropping the filter widens nothing else. The cap still counts
+  `subagent` jobs only.
+- **The cap is per job at depth 0 and per line deeper.** A long Jira history must not use up a
+  root's cap; a child line's cap bounds its wakes, so one parent holds at most `cap + cap²`
+  delegated jobs whatever the number of root turns.
+- **A wake is a `followup` with the key `subagent_wake:<id>`, published by an observer after the
+  terminal commit.** No new event, no new table: the idempotency key makes two deciding observers
+  publish one job, and the `pending` rule (a settled child with no wake yet) keeps an ancestor
+  from waking early. "Due" and "woken" are one test (SUCCESS, a view, a reference, `wake_parent`
+  on), and the observer checks every ancestor of the ending job, so a child that is never woken
+  itself cannot strand its parent. A wake lost to a crash is a ROADMAP sweep.
+- **Lock order of an insert with a parent: job, then thread** (as in the claim). Python
+  `insert_job` locks the parent row `FOR SHARE` before the thread; the toolbox INSERT takes no
+  lock of its own, and InnoDB checks its foreign keys in constraint-name order (`fk_job_parent`
+  before `fk_job_thread`). `tests/integration/test_subagent_wake.py` proves both, with the
+  reverse order as a deadlock control.
+
+## 2026-10-22 — A fresh session in the same thread (D-FRESH-SESSION-1)
+
+Owner request (AG-41): an operator may turn off session continuity per agent_view
+(`jira/resume_session`, `jira_periodic_tasks/resume_session`). The framework seam is
+`JobClaimBeforeEvent.fresh_session`; the module decides.
+
+- **The job stays in its thread and line.** Unlike `detach_thread`, nothing moves: the turns keep
+  their order and their shared directory; only the resume target is dropped (and the deprecated
+  `resume_session_resolver` is not asked).
+- **A retry still resumes its own crashed attempt, and `session_id` is not cleared.** That session
+  is the job's own unfinished work, not the thread's history; the retry path (`_should_resume`)
+  stays as it is.
+- **The policy keys on the job's source and type, not on the thread** (as `OutlookThreadGate`
+  does). The field is a choice about a module's own jobs, not a read gate on the thread: a
+  sub-agent or another source's job in a Jira thread is not governed by it.
+
+---
+
 ## 2026-10-21 — Nested sub-agents: `agent_run` / `agent_result` (D-SUBAGENT-1)
 
 Settled by the owner's PRD (2026-10-21): `agent_run` is asynchronous and returns the child
 `job_id` at once; a hard maximum of 3 levels (`sorry, max 3 nested subagents levels`); only the
 direct parent reads a child (`job not found or not accessible`); outside a queued job both tools
 fail; no copy of the parent's context; no cancel and no dedupe in the MVP; `agento run` unchanged.
+
+- 2026-10-22: "only the direct parent reads a child" is replaced by the scope by line
+  (D-SUBAGENT-LINE-1): a caller reads the children of any job of its own line, in its thread.
 
 **Proposals, awaiting owner approval** (the owner may override each one):
 
@@ -25,7 +164,8 @@ fail; no copy of the parent's context; no cancel and no dedupe in the MVP; `agen
   the named lock `subagent:<parent>` (`GET_LOCK`; a `FOR UPDATE` row lock would need UPDATE on `job`
   for the toolbox DB user); a value that is not an integer >= 1 refuses (`agent_run is not
   configured`), never "no limit". Depth 3 is a code constant. A tree holds at most `N + N² + N³`
-  jobs.
+  `subagent` jobs. (2026-10-22: the parent wake adds at most as many `followup` wake jobs,
+  outside the cap; see docs/modules/subagent.md "Limits".)
 - **One Node job-insert path.** `src/agento/toolbox/job-enqueue.js` `enqueueJob` (dedupe, insert,
   `job.queued` outbox row; caller owns the transaction) is used by `schedule_followup` and
   `agent_run`, injected through `TOOLBOX_HELPERS`. The Python twin stays
@@ -33,7 +173,8 @@ fail; no copy of the parent's context; no cancel and no dedupe in the MVP; `agen
 - **A delegated job cannot schedule a follow-up.** `schedule_followup` refuses at `depth > 0`
   (`schedule_followup is not available in a delegated job`). A follow-up of a child would be a
   new root that delegates three more levels, or an uncounted extra child. So every non-root job
-  is an `agent_run` child under the cap. Root jobs keep today's behaviour.
+  is an `agent_run` child under the cap (2026-10-22: or a parent wake, one per job that
+  delegated). Root jobs keep today's behaviour.
 - **The ordinary dequeue selects only registered job types.** Before, a `TODO` row whose type
   was not registered failed in `Job.from_row` before the claim, and the same head row was picked
   again on each poll, so it stopped the queue. Now `DEQUEUE_SQL` filters
@@ -951,6 +1092,10 @@ Plan: `~/.claude/plans/e9-unified-conversations-552df5.md`.
   keyset cursor, and the source lives on `conversation` (`channel`, `external_ref`,
   `external_key`). The live path decodes the harness's stdout through the existing
   `StreamEventMapper` seam; reading native session files is deferred (ROADMAP.md).
+  - *2026-10-22, AG-41 (Owner, plan §15 S5):* a conversation is keyed 1:1 by `thread_id` (conversation migration
+    007), not by `external_key`, and its view is the thread's view. Every job of a thread - a
+    panel reply into a channel conversation and a sub-agent in another view included - runs in
+    the thread's one conversation. `external_key` is no longer written (ROADMAP.md removal row).
 - **D-E9-2: a commit-ordered append.** The cursor is a global AUTO_INCREMENT, so two writers of one
   thread could take ids 10 and 11 and commit 11 first, and a reader at `id > 10` would never see
   10. Every insert goes through `service.append_event`, which takes the thread's row lock first

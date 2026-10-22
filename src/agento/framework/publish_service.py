@@ -33,11 +33,17 @@ def publish_job(
     context: str | None = None,
     max_attempts: int = 3,
     config: object | None = None,
+    thread: str | None = None,
+    thread_id: int | None = None,
+    parent_job_id: int | None = None,
+    depth: int = 0,
+    line_id: int | None = None,
 ) -> int:
     """Insert a job (or find the one this key already published) and return its id.
 
     `reference_id` is set in the insert, which is what makes the §6.4.1 relay's
     resolution of it race-free: the row a relay reads is never half-written.
+    `thread` .. `line_id` place the job in its thread and line (`publisher.insert_job`).
     """
     conn = get_connection(config if config is not None else DatabaseConfig.from_env())
     try:
@@ -60,6 +66,11 @@ def publish_job(
                     requester=requester,
                     prompt=prompt,
                     context=context,
+                    thread=thread,
+                    thread_id=thread_id,
+                    parent_job_id=parent_job_id,
+                    depth=depth,
+                    line_id=line_id,
                 )
                 write_outbox(
                     cur,

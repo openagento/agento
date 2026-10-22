@@ -1,5 +1,6 @@
 {
   "jira_status": {"type": "string", "label": "Jira issue status identifying periodic tasks"},
   "jira_frequency_field": {"type": "string", "label": "Jira custom field key for cron frequency"},
-  "frequency_map": {"type": "json", "label": "Frequency label to cron expression map"}
+  "frequency_map": {"type": "json", "label": "Frequency label to cron expression map"},
+  "resume_session": {"type": "boolean", "label": "Resume the task's previous session (1, default) or start every periodic task run with a fresh session (0). The run stays in the task's thread either way.", "showInDefault": true, "showInWorkspace": true, "showInAgentView": true}
 }

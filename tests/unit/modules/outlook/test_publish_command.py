@@ -22,6 +22,15 @@ def _no_real_capability():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _thread_read():
+    """Thread read (`outlook_list_thread`) per view; off unless a test turns it on."""
+    views: set[int] = set()
+    with patch(f"{P}.thread_read_on", side_effect=lambda conn, view: view in views) as gate:
+        gate.views = views
+        yield gate
+
+
 def _views(*specs):
     # specs: (id, code)
     return [SimpleNamespace(id=i, code=c) for (i, c) in specs]
@@ -1223,3 +1232,64 @@ def test_publisher_logs_effective_policy_per_view_at_start(
     assert recs
     # count only — a raw allow-list pattern (e.g. "*@dev.com") must never appear in the log call
     assert not any("*@dev.com" in str(c) for c in recs)
+
+
+# ---- One mail conversation = one thread, only while thread read is on (thread_gate) ----
+
+
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50)
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+@pytest.mark.parametrize(("on", "expected"), [(True, "conv-1"), (False, None)])
+def test_direct_mode_passes_the_conversation_only_while_thread_read_is_on(
+    MockClient, MockPub, mock_gaav, mock_prio, mock_load, mock_save, on, expected, _thread_read,
+):
+    mock_gaav.return_value = _views((1, "dev"))
+    resp = {"mailbox": "dev@x.com", "deltaLink": "L", "messages": [
+        {"id": "d1", "conversationId": "conv-1", "from": {"address": "sklep@x.com"}, "dmarc": "pass"}]}
+    client, pub = _patch_env({1: _cfg(mailbox="dev@x.com")}, lambda top, *, agent_view_id, cursors: resp)
+    MockClient.return_value = client
+    MockPub.return_value = pub
+    if on:
+        _thread_read.views.add(1)
+
+    publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    assert pub.publish_mail.call_args.kwargs["conversation_id"] == expected
+
+
+@patch(f"{P}.save_cursor")
+@patch(f"{P}.load_cursors", return_value={})
+@patch(f"{P}.get_active_identities_for_type", return_value=[object()])
+@patch(f"{P}.resolve_publish_priority", side_effect=lambda conn, av_id: 50)
+@patch(f"{P}.resolve_agent_view")
+@patch(f"{P}.ScopedConfigService", _FakeScoped)
+@patch(f"{P}.get_active_agent_views")
+@patch(f"{P}.OutlookPublisher")
+@patch(f"{P}.OutlookToolboxClient")
+def test_routed_mode_asks_the_target_view_once_per_poll(
+    MockClient, MockPub, mock_gaav, mock_resolve, mock_prio, mock_bindings, mock_load, mock_save, _thread_read,
+):
+    mock_gaav.return_value = _views((1, "dev"), (2, "ops"))
+    shared = {"mailbox": "shared@x.com", "deltaLink": "L", "messages": [
+        {"id": f"s{i}", "conversationId": f"c{i}", "from": {"address": sender}, "dmarc": "pass"}
+        for i, sender in enumerate(["sklep@x.com", "boss@x.com", "sklep@x.com"])]}
+    client, pub = _patch_env({1: _cfg(mailbox="shared@x.com"), 2: _cfg(mailbox="shared@x.com")},
+                             lambda top, *, agent_view_id, cursors: shared)
+    pub.admit_mail.side_effect = _admit_by_sender
+    pub.publish_admitted_mail.return_value = True
+    route = {"sklep@x.com": 1, "boss@x.com": 2}
+    mock_resolve.side_effect = lambda conn, ctx, **kw: _decision(route[ctx.identity_value])
+    MockClient.return_value = client
+    MockPub.return_value = pub
+    _thread_read.views.add(2)                     # on for ops only
+
+    publish_all_views(object(), MagicMock(), "http://tb:3001", MagicMock())
+
+    joined = {c.args[1]: c.kwargs["conversation_id"] for c in pub.publish_admitted_mail.call_args_list}
+    assert joined == {"s0": None, "s1": "c1", "s2": None}   # the TARGET view decides
+    assert sorted(c.args[1] for c in _thread_read.call_args_list) == [1, 2]

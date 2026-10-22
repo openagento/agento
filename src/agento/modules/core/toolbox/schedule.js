@@ -78,7 +78,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
           // Inherit the channel + reference + execution scope (agent_view_id, priority) from the
           // current job, so the follow-up runs in the same context as its parent.
           const [rows] = await conn.execute(
-            'SELECT source, reference_id, agent_view_id, priority, depth FROM job WHERE id = ?',
+            'SELECT source, reference_id, agent_view_id, priority, depth, thread_id FROM job WHERE id = ?',
             [jobId]
           );
           const job = rows[0];
@@ -101,6 +101,10 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
             };
           }
           const { source, reference_id, agent_view_id, priority } = job;
+          // The follow-up is the next turn of this job's thread, so it continues the thread's
+          // session (the claim picks the turn, framework/threads.py resolve_resume). A job with
+          // no view has a thread no one owns: the follow-up then gets its own thread at claim.
+          const threadId = (agent_view_id ?? null) === null ? null : (job.thread_id ?? null);
 
           // Idempotency key: minute-granular per source+reference
           const isoMinute = scheduledDate.toISOString().slice(0, 16).replace(':', '');
@@ -108,7 +112,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
 
           const { duplicate } = await enqueueJob(conn, {
             type: 'followup', source, agentViewId: agent_view_id, priority, referenceId: reference_id,
-            context: instructions, idempotencyKey, scheduledAfter: mysqlDatetime,
+            context: instructions, idempotencyKey, scheduledAfter: mysqlDatetime, threadId,
           });
           if (duplicate) {
             await conn.rollback();

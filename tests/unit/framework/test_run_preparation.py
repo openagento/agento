@@ -106,6 +106,26 @@ class TestMaterializeRunWorkspace:
         assert isinstance(payload, WorkspaceBuildCheckEvent)
         assert payload.agent_view_id == 7
 
+    @pytest.mark.parametrize("thread_key", [None, "0123456789abcdef0123456789abcdef"],
+                             ids=["agento-run", "job"])
+    def test_a_job_run_links_its_threads_shared_dir(self, tmp_path, thread_key):
+        import os
+
+        from agento.framework.run_preparation import materialize_run_workspace
+        from agento.framework.runner import uids
+        runtime = _Runtime(agent_view=_AV(code="dev", id=7), workspace=_WS(code="acme", id=3),
+                           harness=None)
+        with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "artifacts")), \
+             patch("agento.framework.artifacts_dir.BUILD_DIR", str(tmp_path / "build")), \
+             patch.object(uids, "THREAD_GID", os.getgid()):
+            _home, run = materialize_run_workspace(runtime, run_id=1, em=MagicMock(),
+                                                   thread_key=thread_key)
+        link = run / "shared"
+        if thread_key is None:
+            assert not link.exists() and not (tmp_path / "artifacts" / "_threads").exists()
+        else:
+            assert os.readlink(link) == str(tmp_path / "artifacts" / "_threads" / thread_key / "shared")
+
     def test_reraises_event_error(self, tmp_path):
         from agento.framework.run_preparation import materialize_run_workspace
         runtime = _Runtime(

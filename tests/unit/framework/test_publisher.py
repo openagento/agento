@@ -29,8 +29,7 @@ def test_publish_inserts_job(mock_get_conn, sample_config):
     assert result is True
     sql_calls = [c[0][0] for c in mock_cursor.execute.call_args_list]
     assert any("SELECT id FROM job WHERE idempotency_key" in s for s in sql_calls)
-    insert_sql = next(s for s in sql_calls if "INSERT" in s)
-    assert "INSERT INTO job" in insert_sql
+    insert_sql = next(s for s in sql_calls if "INSERT INTO job" in s)
     assert "INSERT IGNORE" not in insert_sql
 
 
@@ -202,7 +201,7 @@ class TestSkipIfActive:
         assert "type" in sql and "source" in sql
         assert "agent_view_id" in sql and "reference_id" in sql
         assert "status" in sql
-        assert params == ("todo", "jira", 2, "AI-64")
+        assert params == ("todo", "jira", 2, "AI-64", ("TODO", "RUNNING", "PAUSED"))
 
 
 def _insert_call(mock_cursor):
@@ -227,8 +226,8 @@ class TestRequester:
         sql, params = _insert_call(mock_cursor)
         for col in ("requester_key", "requester_email", "requester_trust", "requester_meta"):
             assert col in sql
-        # last 4 params are the requester fields
-        assert params[-6:-2] == (None, None, "claimed", None)
+        # the requester fields come before harness, model and the five thread columns
+        assert params[-10:-6] == (None, None, "claimed", None)
 
     @patch("agento.framework.publisher.get_connection")
     def test_requester_values_persisted(self, mock_get_conn, sample_config):
@@ -246,7 +245,7 @@ class TestRequester:
         )
 
         _sql, params = _insert_call(mock_cursor)
-        r_key, r_email, r_trust, r_meta = params[-6:-2]
+        r_key, r_email, r_trust, r_meta = params[-10:-6]
         assert r_key == "jira:acct-1"
         assert r_email == "user@example.com"  # normalized
         assert r_trust == "account"
@@ -284,7 +283,7 @@ class TestRequester:
             c for c in mock_cursor.execute.call_args_list if "SELECT" in c[0][0]
         )
         # SELECT params unchanged by the requester - still only the 4 dedupe keys
-        assert select_call[0][1] == ("todo", "jira", 2, "AI-64")
+        assert select_call[0][1] == ("todo", "jira", 2, "AI-64", ("TODO", "RUNNING", "PAUSED"))
 
     @patch("agento.framework.publisher.get_event_manager")
     @patch("agento.framework.publisher.get_connection")
@@ -319,10 +318,10 @@ def test_publish_pins_harness_and_model(mock_get_conn, sample_config):
     )
 
     insert_sql, params = next(
-        c[0] for c in mock_cursor.execute.call_args_list if "INSERT" in c[0][0]
+        c[0] for c in mock_cursor.execute.call_args_list if "INSERT INTO job" in c[0][0]
     )
     assert "agent_type" in insert_sql and "model" in insert_sql
-    assert params[-2:] == ("codex", "gpt-x")
+    assert params[-6:-4] == ("codex", "gpt-x")
 
 
 @patch("agento.framework.publisher.get_connection")
@@ -336,7 +335,7 @@ def test_publish_without_pins_writes_nulls(mock_get_conn, sample_config):
     params = next(
         c[0][1] for c in mock_cursor.execute.call_args_list if "INSERT" in c[0][0]
     )
-    assert params[-2:] == (None, None)
+    assert params[-6:-4] == (None, None)
 
 
 @patch("agento.framework.publisher.get_connection")
@@ -349,3 +348,58 @@ def test_pins_are_not_part_of_the_idempotency_key(mock_get_conn, sample_config):
     assert publish(
         sample_config, AgentType.TODO, "jira", "key:same", harness="codex",
     ) is False
+
+
+class TestInsertJobThread:
+    """Every job gets its thread in the insert (framework/threads.py)."""
+
+    _COLUMNS = ("parent_job_id", "depth", "thread_id", "line_id")
+
+    def _insert(self, **kwargs):
+        from agento.framework.publisher import insert_job
+
+        cur = MagicMock()
+        cur.lastrowid = 41
+        ensure = MagicMock(return_value=6)
+        with (patch("agento.framework.publisher.ensure_thread", ensure),
+              patch("agento.framework.publisher.join_thread") as self.joined):
+            insert_job(cur, agent_type=AgentType.TODO, source="jira", agent_view_id=3,
+                       priority=50, idempotency_key="k", max_attempts=3, requester=None,
+                       **{"reference_id": "AI-1", **kwargs})
+        sql, params = next(c.args for c in cur.execute.call_args_list if "INSERT INTO job" in c.args[0])
+        assert "parent_job_id, depth, thread_id, line_id)" in sql
+        return ensure, cur, dict(zip(self._COLUMNS, params[-4:], strict=True))
+
+    @pytest.mark.parametrize(("kwargs", "ref"), [
+        ({}, "jira:AI-1"),                                # the source item is the thread
+        ({"thread": "github:o/r:7"}, "github:o/r:7"),     # the channel names it
+    ])
+    def test_the_thread_is_written_in_the_insert(self, kwargs, ref):
+        ensure, cur, written = self._insert(**kwargs)
+        ensure.assert_called_once_with(cur, agent_view_id=3, ref=ref, lock=True)
+        assert written["thread_id"] == 6
+        assert not any(c.args[0].startswith("UPDATE") for c in cur.execute.call_args_list)
+
+    def test_a_copied_thread_creates_none_and_the_line_columns_pass_through(self):
+        ensure, cur, written = self._insert(thread_id=9, parent_job_id=2, depth=1, line_id=4)
+        ensure.assert_not_called()
+        self.joined.assert_called_once_with(cur, 9, agent_view_id=3, depth=1)
+        assert written == {"parent_job_id": 2, "depth": 1, "thread_id": 9, "line_id": 4}
+
+    def test_a_job_with_no_reference_is_its_own_thread_set_after_the_insert(self):
+        ensure, cur, written = self._insert(reference_id=None)
+        ensure.assert_called_once_with(cur, agent_view_id=3, ref="job:41")
+        assert written["thread_id"] is None
+        assert cur.execute.call_args.args == ("UPDATE job SET thread_id = %s WHERE id = %s", (6, 41))
+
+    @patch("agento.framework.publisher.get_connection")
+    def test_publish_passes_the_thread_arguments_through(self, mock_get_conn, sample_config):
+        mock_conn, mock_cursor = _mock_connection(rowcount=1)
+        mock_cursor.fetchone.return_value = None
+        mock_get_conn.return_value = mock_conn
+        with patch("agento.framework.publisher.insert_job", return_value=1) as insert:
+            publish(sample_config, AgentType.FOLLOWUP, "jira", "key:t", reference_id="AI-1",
+                    thread_id=9, parent_job_id=2, depth=1, line_id=4)
+        passed = {k: insert.call_args.kwargs[k] for k in ("thread", *self._COLUMNS)}
+        assert passed == {"thread": None, "parent_job_id": 2, "depth": 1, "thread_id": 9,
+                          "line_id": 4}

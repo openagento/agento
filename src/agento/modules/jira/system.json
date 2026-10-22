@@ -11,5 +11,6 @@
   "jira_admin_user": {"type": "string", "label": "Jira admin user email (owner of jira_admin_token; falls back to jira_user when unset)", "tester": {"kind": "http", "url": "{jira/jira_host}/rest/api/2/myself", "basic": ["{jira/jira_admin_user}", "{jira/jira_admin_token}"], "expect": 200}},
   "todo_statuses": {"type": "json", "label": "Jira statuses treated as To Do (JSON array)"},
   "create_issue_limit_per_hour": {"type": "integer", "label": "Max issues created per hour"},
-  "attachment_download_limit": {"type": "integer", "label": "Max newest attachments auto-downloaded by jira_get_issue (0 = all)"}
+  "attachment_download_limit": {"type": "integer", "label": "Max newest attachments auto-downloaded by jira_get_issue (0 = all)"},
+  "resume_session": {"type": "boolean", "label": "Resume the issue's previous session (1, default) or start every Jira TODO and follow-up run with a fresh session (0). The run stays in the issue's thread either way.", "showInDefault": true, "showInWorkspace": true, "showInAgentView": true}
 }

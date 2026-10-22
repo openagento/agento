@@ -5,10 +5,12 @@ import json
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agento.framework.admin.data import EnablementItem
 from agento.framework.admin.screens._enablement import prompt_label
 from agento.framework.module_validator import validate_module
-from agento.framework.tool_enablement import blocked_by, is_effective, scan_tool_requires
+from agento.framework.tool_enablement import blocked_by, is_effective, is_effective_for_view, scan_tool_requires
 
 BASE = {"name": "demo", "version": "1.0.0", "description": "d"}
 
@@ -162,3 +164,74 @@ class TestToolListStatus:
         assert "jira_search" in out
         assert "disabled (blocked by jira)" in out
         assert "enabled (blocked by jira)" not in out
+
+
+class TestIsEffectiveForView:
+    """The toolbox gate's answer for one view: its own value and its requires chain, with the
+    chain read from the bootstrapped manifests (no module scan on a hot path)."""
+
+    class _Svc:
+        values: ClassVar[dict] = {}
+
+        def __init__(self, conn, scope, scope_id, *, strict):
+            assert (scope, scope_id, strict) == ("agent_view", 7, True)   # fails closed (SEC-9)
+
+        def get(self, path):
+            return self.values.get(path)
+
+    def _run(self, values, manifests=None):
+        if manifests is None:
+            manifests = [MagicMock(tools=[_t("demo"), _t("demo_a", requires="demo")])]
+        self._Svc.values = values
+        with patch("agento.framework.bootstrap.get_manifests", return_value=manifests), \
+             patch("agento.framework.config_resolver.ScopedConfigService", self._Svc):
+            return is_effective_for_view(object(), "demo_a", agent_view_id=7)
+
+    @pytest.mark.parametrize(("values", "expected"), [
+        ({"tools/demo_a/is_enabled": "1", "tools/demo/is_enabled": "1"}, True),
+        ({"tools/demo_a/is_enabled": "1", "tools/demo/is_enabled": "0"}, False),   # master off
+        ({}, False),                                                              # unset is off
+    ])
+    def test_own_value_and_chain(self, values, expected):
+        assert self._run(values) is expected
+
+    def test_no_bootstrapped_manifests_is_an_error_not_an_unchecked_chain(self):
+        with pytest.raises(RuntimeError):
+            self._run({"tools/demo_a/is_enabled": "1"}, manifests=[])
+
+
+class TestStrictScopedConfig:
+    """`strict=True`: an unreadable level raises; it never lets a less specific level answer."""
+
+    @staticmethod
+    def _conn(*, fail_on=None, view_row=True):
+        conn = MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+
+        def execute(sql, params=()):
+            if fail_on and fail_on(sql, params):
+                raise RuntimeError("query failed")
+            cur.fetchone.return_value = {"workspace_id": 2} if view_row else None
+            cur.fetchall.return_value = []
+
+        cur.execute.side_effect = execute
+        return conn
+
+    @pytest.mark.parametrize("fail_on", [
+        lambda sql, p: "FROM agent_view" in sql,                              # the workspace lookup
+        lambda sql, p: "core_config_data" in sql and p[0] == "agent_view",     # the view level
+        lambda sql, p: "core_config_data" in sql and p[0] == "workspace",      # the workspace level
+        lambda sql, p: "core_config_data" in sql and p[0] == "default",        # the default level
+    ])
+    def test_a_failed_level_raises(self, fail_on):
+        from agento.framework.config_resolver import ScopedConfigService
+
+        with pytest.raises(RuntimeError):
+            ScopedConfigService(self._conn(fail_on=fail_on), "agent_view", 7, strict=True)
+        ScopedConfigService(self._conn(fail_on=fail_on), "agent_view", 7)    # lenient: as before
+
+    def test_a_missing_view_raises(self):
+        from agento.framework.config_resolver import ScopedConfigService
+
+        with pytest.raises(LookupError):
+            ScopedConfigService(self._conn(view_row=False), "agent_view", 7, strict=True)

@@ -16,6 +16,7 @@ from .artifacts_dir import (
     copy_build_to_artifacts_dir,
     get_current_build_dir,
     prepare_artifacts_dir,
+    prepare_thread_dir,
 )
 from .event_manager import get_event_manager
 from .events import WorkspaceBuildCheckEvent
@@ -115,6 +116,7 @@ def materialize_run_workspace(
     ssh_identity: ResolvedSshIdentity | None = None,
     check_build: Callable[[object, int], None] | None = None,
     link_state: bool = False,
+    thread_key: str | None = None,
 ) -> tuple[Path | None, Path | None]:
     """Prepare ``(home_dir, working_dir)`` for one run.
 
@@ -141,6 +143,10 @@ def materialize_run_workspace(
     build itself carries no claims, so a run without one reaches the toolbox with none.
     Each is passed only to an adapter that names the keyword, so an adapter predating
     either keeps the build's baked config as-is.
+
+    ``thread_key`` is the random key of the job's thread (``Job.thread_key``): the run dir
+    gets ``./shared``, a link to the thread's ``shared/`` dir (``prepare_thread_dir``).
+    ``agento run`` has no job, so no thread and no link.
 
     Returns ``(None, None)`` when ``runtime`` carries no agent_view/workspace
     (blank jobs), mirroring the consumer guard.
@@ -241,6 +247,10 @@ def materialize_run_workspace(
                 capability_token=capability_token,
                 toolbox_url=toolbox_url,
             )
+
+    # After the build copy: the link wins over an entry the build named `shared`.
+    if thread_key is not None:
+        prepare_thread_dir(thread_key, artifacts_dir)
 
     # SSH identity: the NON-SECRET files only. The private key is never written — it is
     # delivered in memory through the per-run env to a per-run ssh-agent (ssh_prelude.py).

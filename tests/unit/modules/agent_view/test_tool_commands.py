@@ -123,7 +123,7 @@ class TestToolListCommand:
         ToolListCommand().execute(args)
 
         mock_av.assert_called_once_with(conn, "developer")
-        mock_overrides.assert_called_once_with(conn, agent_view_id=5, workspace_id=2)
+        mock_overrides.assert_called_once_with(conn, agent_view_id=5, workspace_id=2, strict=False)
 
     @patch("agento.framework.workspace.get_agent_view_by_code")
     @patch("agento.framework.scoped_config.build_scoped_overrides")

@@ -20,6 +20,7 @@ from agento.framework.workspace import get_active_agent_views
 from agento.modules.outlook.src.channel import OutlookPublisher
 from agento.modules.outlook.src.config import OutlookConfig
 from agento.modules.outlook.src.cursor import load_cursors, save_cursor
+from agento.modules.outlook.src.thread_gate import thread_read_on
 from agento.modules.outlook.src.toolbox_client import OutlookToolboxClient
 
 # Non-secret outlook config paths, read per-path (never get_module). The Graph secrets are now
@@ -75,8 +76,10 @@ def _shared_policy_divergence(group_views, view_cfgs) -> list[tuple[str, str]]:
     return divergent
 
 
-def _publish_view_messages(publisher, db_config, av, cfg, messages, priority, logger, mailbox, aliases):
-    """Gate+publish each message. Returns (published_count, hold). hold=True means a genuinely
+def _publish_view_messages(publisher, db_config, av, cfg, messages, priority, logger, mailbox, aliases,
+                           thread_read=False):
+    """Gate+publish each message. With ``thread_read`` (``outlook_list_thread`` effective for the
+    view) each message joins its mail conversation's thread. Returns (published_count, hold). hold=True means a genuinely
     TRANSIENT condition (a publish exception, e.g. a DB blip) was seen → caller must NOT advance the
     cursor so the batch is re-fetched next poll. Per-message errors never abort the batch.
 
@@ -103,6 +106,7 @@ def _publish_view_messages(publisher, db_config, av, cfg, messages, priority, lo
                 agent_authored=bool(msg.get("agent_authored")),
                 auto_reply=bool(msg.get("auto_reply")),
                 mailbox=mailbox, aliases=aliases, cfg=cfg,
+                conversation_id=msg.get("conversationId") if thread_read else None,
                 logger=logger,
             ):
                 published += 1
@@ -135,6 +139,8 @@ def _publish_group_routed(publisher, db_config, conn, group_views, cfg, view_cfg
     dropped = {"unroutable": 0, "ambiguous": 0, "per_view_allowlist": 0}
     # sender -> (target_view_id, priority) for a publishable route, or None for a deterministic drop.
     memo: dict[str, tuple[int, int] | None] = {}
+    # target view -> whether its messages join their conversation's thread (once per view per poll).
+    thread_read: dict[int, bool] = {}
     published = 0
     hold = False
     for msg in messages:
@@ -199,10 +205,14 @@ def _publish_group_routed(publisher, db_config, conn, group_views, cfg, view_cfg
             continue  # deterministic drop — advance
         target_view_id, priority = routed
         try:
+            if target_view_id not in thread_read:
+                thread_read[target_view_id] = thread_read_on(conn, target_view_id)
             if publisher.publish_admitted_mail(
                 db_config, message_id, admission,
                 agent_view_id=target_view_id, priority=priority,
-                subject=msg.get("subject"), logger=logger,
+                subject=msg.get("subject"),
+                conversation_id=msg.get("conversationId") if thread_read[target_view_id] else None,
+                logger=logger,
             ):
                 published += 1
         except Exception:
@@ -369,6 +379,7 @@ def publish_all_views(
                 pub_count, hold = _publish_view_messages(
                     publisher, db_config, poll_owner, cfg, messages, priority, logger,
                     mailbox_key, cfg.mailbox_aliases_list,
+                    thread_read=thread_read_on(conn, poll_owner.id),
                 )
             published += pub_count
             # PERSIST-THEN-ADVANCE: only after publishing, and only when the batch had no

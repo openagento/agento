@@ -11,5 +11,6 @@
   "tools/jira_assign_issue/is_enabled": "1",
   "tools/jira_attach_file/is_enabled": "1",
   "tools/jira_create_issue/is_enabled": "1",
-  "tools/jira_update_issue/is_enabled": "1"
+  "tools/jira_update_issue/is_enabled": "1",
+  "resume_session": true
 }

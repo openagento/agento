@@ -9,6 +9,8 @@ from __future__ import annotations
 import pymysql
 import pytest
 
+from agento.framework.threads import ensure_thread
+
 from .conftest import TEST_DB, _root_connection, _test_connection
 
 TABLES = (
@@ -82,9 +84,9 @@ def test_execution_keeps_no_session_id():
         ("conversation_event", "conversation_id,id"),
         ("conversation_event", "created_at"),
         ("execution", "job_id,attempt"),
-        # E9: the channel-thread dedupe key, the channel list, a thread's runs, and the
-        # run's toolbox calls the relay and the run prune both look up.
-        ("conversation", "external_key"),
+        # The conversation of a thread (1:1, migration 007), the channel list, a thread's
+        # runs, and the run's toolbox calls the relay and the run prune both look up.
+        ("conversation", "thread_id"),
         ("conversation", "channel,last_activity_at,id"),
         ("execution", "conversation_id,id"),
         ("tool_invocation", "run_execution_id"),
@@ -108,6 +110,7 @@ def test_the_index_exists(table, columns):
     [
         ("conversation", "agent_view_id", "SET NULL"),
         ("conversation", "user_id", "RESTRICT"),
+        ("conversation", "thread_id", "SET NULL"),
         ("message", "conversation_id", "CASCADE"),
         ("conversation_event", "conversation_id", "CASCADE"),
         ("conversation_prune_watermark", "conversation_id", "CASCADE"),
@@ -234,14 +237,16 @@ def test_one_source_row_yields_one_event(scope):
 
 
 def test_a_channel_thread_has_no_owner_and_one_row_per_key(scope):
-    """E9 §3.4: `user_id` NULL is a channel thread; `external_key` is unique."""
+    """E9 §3.4: `user_id` NULL is a channel thread; one conversation per thread (007)."""
     conn, ids = scope
     with conn.cursor() as cur:
+        thread_id = ensure_thread(cur, agent_view_id=ids["agent_view"], ref="jira:SCHEMA-1")
         cur.execute("INSERT INTO conversation (agent_view_id, user_id, title, channel, "
-                    "external_key) VALUES (%s, NULL, 'j', 'jira', %s)",
-                    (ids["agent_view"], "k" * 40))
+                    "thread_id) VALUES (%s, NULL, 'j', 'jira', %s)",
+                    (ids["agent_view"], thread_id))
         with pytest.raises(pymysql.err.IntegrityError):
             cur.execute("INSERT INTO conversation (agent_view_id, user_id, title, channel, "
-                        "external_key) VALUES (%s, NULL, 'j', 'jira', %s)",
-                        (ids["agent_view"], "k" * 40))
-        cur.execute("DELETE FROM conversation WHERE external_key = %s", ("k" * 40,))
+                        "thread_id) VALUES (%s, NULL, 'j', 'jira', %s)",
+                        (ids["agent_view"], thread_id))
+        cur.execute("DELETE FROM conversation WHERE thread_id = %s", (thread_id,))
+        cur.execute("DELETE FROM thread WHERE id = %s", (thread_id,))

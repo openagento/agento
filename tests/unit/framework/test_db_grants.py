@@ -45,6 +45,7 @@ class TestToolboxAllowList:
             "user": "SELECT",
             "workspace": "SELECT",
             "job": "SELECT, INSERT",
+            "thread": "SELECT",
             "job_event_outbox": "INSERT",
             "miniapp_activation": "SELECT",
             "miniapp_member": "SELECT",

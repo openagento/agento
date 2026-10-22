@@ -1,8 +1,8 @@
 """Every job in a thread, and who may read it (E9 §3.4-§3.7).
 
-A panel job runs in the thread of the message it answers. Any other job (Jira, Outlook, a
-cron) runs in its **channel thread**: one per `(source, view, reference)`, with no owner,
-read-only, and readable by an admin only.
+A conversation is 1:1 with a framework thread. A panel job runs in its conversation's thread.
+Any other job (Jira, Outlook, a cron) runs in its thread's **channel conversation**, with no
+owner, read-only, and readable by an admin only.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import pytest
 
 from agento.framework.access import accounts
 from agento.framework.execution_hooks import DeltaRecord
+from agento.framework.threads import default_ref, ensure_thread
 from agento.modules.conversation.src import retention, routes, service, stream
 from agento.modules.conversation.src.deltas import ConversationDeltaSink
 from agento.modules.conversation.src.finalizer import ConversationFinalizer
@@ -46,6 +47,10 @@ def _job(conn, *, source="jira", reference="AI-7", view=None, prompt=None, outpu
             "VALUES ('cron', %s, %s, %s, %s, 'RUNNING', 1, 3, %s, %s)",
             (source, view, reference, str(uuid.uuid4()), prompt, output))
         job_id = cur.lastrowid
+        # The thread the claim gives a job that has none (`threads.place_claim`).
+        cur.execute("UPDATE job SET thread_id = %s WHERE id = %s",
+                    (ensure_thread(cur, agent_view_id=view,
+                                   ref=default_ref(source, reference, job_id)), job_id))
     conn.commit()
     return job_id
 

@@ -33,5 +33,6 @@ Agento runs as Docker containers with strict security separation between the AI 
 - [Publisher-Consumer](publisher-consumer.md) — job queue architecture
 - [Cron Env Contract](cron-env-contract.md) — `AGENTO_*` env-var prefix convention for the cron container
 - [Event-Observer System](events.md) — cross-module communication via events
+- [Threads](threads.md) — job threads, lines, resume, and the thread's `shared/` and `downloads/` directory
 - [Conversations](conversations.md) — the thread model, the four identifiers, the event contract
 - [FileManager](file-manager.md) — external file handling, conversion, and security

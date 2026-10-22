@@ -1458,7 +1458,7 @@ class TestValidateCode:
         for code in ("default", "agent01", "my_company_dev", "my_workspace", "a"):
             validate_code(code)  # should not raise
 
-    @pytest.mark.parametrize("code", ["_hidden", ".dotted", "MyWorkspace", "", "1abc"])
+    @pytest.mark.parametrize("code", ["_hidden", "_threads", ".dotted", "MyWorkspace", "", "1abc", "abc\n", None])
     def test_rejects(self, code):
         from agento.framework.workspace import validate_code
         with pytest.raises(ValueError, match="must match"):

@@ -18,6 +18,28 @@ Every file download follows a three-step pipeline:
 2. **Download** -- fetch the file from the URL and write it to disk.
 3. **Convert** -- if a converter is registered for the file extension, run it to produce a text-friendly format (e.g., PDF to Markdown, XLSX to CSV). Conversion failures are non-fatal; the original file remains available.
 
+### Options
+
+`download(url, filename, { headers, dir, maxSize, name, skipExisting, root })`:
+
+- `dir` -- the dir the file goes into. Without `root` it is a dir the run can change (its run
+  dir): the file gets a generated name (`<base>_<Date.now()>_<8 random hex><ext>`: two files with one name never collide, and a run cannot guess it), is written with `wx` (an entry
+  planted at the name fails the write, it is not followed) and is converted in place. Nothing in
+  that dir is listed or moved.
+- `root` -- a tool-owned tree that `dir` lies in, such as a thread's `downloads/` (2750, group
+  THREAD_GID). Each component of `dir` below `root` is checked with `lstat`; a symlink, a non-dir
+  or a dir outside `root` is refused. A missing dir is made 0750 and takes the setgid bit and the
+  group of its parent. Files are 0640.
+- `name` -- the exact file name (one path segment). Needs `root`.
+- `skipExisting` -- return the file that is already there (and its conversion) with no fetch.
+  Needs `root`.
+
+Under `root` the body is written in a fresh `.part-*` dir in `dir` and converted there. The
+converter's outputs (in the input's dir) are renamed into `dir`, then a `.<name>.converted` note
+that names the conversion, then the file last; the `.part-*` dir is removed after. A file that is
+there is complete, and `skipExisting` returns it only while the noted conversion is there too.
+A converter that writes outside the input's dir is not moved.
+
 ## Converter Interface
 
 Every converter must implement:

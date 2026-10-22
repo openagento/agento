@@ -1,3 +1,4 @@
 {
-  "max_children_per_job": 10
+  "max_children_per_job": 10,
+  "wake_parent": 1
 }

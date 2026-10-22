@@ -8,5 +8,6 @@
     "Daily at 1:00": "0 1 * * *",
     "Twice daily at 6:00 and 18:00": "0 6,18 * * *",
     "Weekly (Mon, 7:00)": "0 7 * * 1"
-  }
+  },
+  "resume_session": true
 }

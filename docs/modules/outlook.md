@@ -430,6 +430,41 @@ trigger. Load-bearing properties:
   *transient* error (enumeration / header hydration / attachment metadata) additionally flags the result
   `incomplete` and is **not** cached, so a later call can recover instead of replaying an empty view.
 
+**One mail conversation = one thread, only while thread read is on.** A job's thread resumes the
+session of the thread's earlier turns (see [harness contract](../architecture/harness-contract.md)).
+Earlier messages of a conversation are readable only through `outlook_list_thread`, so the poller
+puts a message into its conversation's thread (ref `outlook:conversation:<conversationId>`) only
+when that tool is effective for the target view (its own value and its `requires` chain). With
+the tool off each message is its own thread, as before. The tool stays the single gate: there is
+no second switch. Every earlier turn in such a thread was itself an admitted trigger (allow-list +
+DMARC `pass`) of the same view.
+
+**Revocation.** The tool can be turned off while jobs of a conversation thread wait (a queued
+message, a `schedule_followup`, a delegated child). The `outlook_thread_gate` observer on
+`job_claim_before` checks the gate again at every claim, keyed on the **thread** and its view (the
+mailbox's view), not on the job's source or view. With the tool off (or the thread's view deleted)
+it sets `detach_thread`: the claim moves the job to its own default thread and clears its session
+before the resume rules run, so the job, a retry of it included, starts fresh. A gate that
+cannot be read (a failed config query) fails closed: the claim defers the job and the poll holds
+its cursor; neither detaches nor joins on a guess. What revocation
+cannot take back is text an earlier turn already put into a job it created (a follow-up prompt).
+
+**Known exception: the thread directory after revocation.** A detached job gets its own
+`./shared`. A run that kept the old thread's absolute path
+(`/workspace/artifacts/_threads/<key>/`, in its session or a file it wrote) can still open that
+directory while it is there: the boundary is the thread's random key, not the gate. Accepted by
+the owner (S7, [DECISIONS.md](../../DECISIONS.md) D-THREAD-2); listed in
+[zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt).
+
+**Known exception: the outlook module disabled.** The gate is an observer of this module. With
+`module:disable outlook`, no observer checks the gate at claim, so a job that already waits in a
+conversation thread (a follow-up, a delegated child, a wake) still joins that thread and resumes
+its session. This is recorded as debt; the owner decision is pending (see
+[zero-trust.md](../architecture/zero-trust.md#known-exceptions-and-debt)). Those jobs were admitted while thread read
+was on, and the thread directory is reached only by its random key. An operator who must cut
+the threads off turns `outlook_list_thread` off while the module is still enabled, and lets the
+waiting jobs be claimed (they run detached) before disabling the module.
+
 **Operator escape hatch:** an interactive `agento run` has no triggering job (`jobId` is null), so this
 binding is not applied — the operator is trusted at a console. The by-construction guarantee applies to
 headless, email-triggered jobs.

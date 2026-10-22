@@ -18,7 +18,12 @@ import pytest
 
 from agento.framework.consumer import Consumer
 from agento.framework.db_grants import TOOLBOX_GRANTS
+from agento.framework.events import JobSucceededEvent
+from agento.framework.job_models import Job
+from agento.framework.job_types import resolve_job_type
+from agento.framework.publish_service import publish_job
 from agento.modules.claude.src.output_parser import ClaudeResult
+from agento.modules.subagent.src.observers import WakeParentObserver, wake_key
 
 from .conftest import (
     CONCURRENT_WORKERS_STRESS_TEST,
@@ -30,7 +35,6 @@ from .conftest import (
     fetch_all_jobs,
     fetch_job,
     insert_primary_token,
-    insert_queued_job,
     update_job,
 )
 
@@ -83,8 +87,8 @@ def _run(*calls):
     return json.loads(out.stdout)
 
 
-def _spawn(job_id, view, prompt="Summarize the logs."):
-    [res] = _run(_call("agent_run", {"agent_view": "developer", "prompt": prompt}, job_id, view))
+def _spawn(caller, view, prompt="Summarize the logs.", *, target="developer", configs=CONFIGS, **args):
+    [res] = _run(_call("agent_run", {"agent_view": target, "prompt": prompt, **args}, caller, view, configs))
     assert not res["isError"], res["text"]
     return json.loads(res["text"])
 
@@ -95,9 +99,36 @@ def _result(job_id, child, view):
 
 
 def _root(view, key="root:1"):
-    job_id = insert_queued_job(job_type="blank", idempotency_key=key, agent_view_id=view)
+    """A running root turn in its own thread (the reference names the thread)."""
+    job_id = publish_job(source="jira", agent_type=resolve_job_type("blank"), agent_view_id=view,
+                         reference_id=key, idempotency_key=key, requester=None, priority=50)
     update_job(job_id, status="RUNNING")
     return job_id
+
+
+def _finish(job_id, session_id="s"):
+    """End a run as the consumer does: commit SUCCESS, then dispatch job_succeed_after."""
+    update_job(job_id, status="SUCCESS", session_id=session_id, finished_at=datetime.now(UTC))
+    WakeParentObserver().execute(JobSucceededEvent(job=Job.from_row(fetch_job(job_id))))
+
+
+def _wake_of(job_id):
+    return next((j for j in fetch_all_jobs() if j["idempotency_key"] == wake_key(job_id)), None)
+
+
+@pytest.fixture
+def reviewer(int_agent_view):
+    """A second view of the same workspace."""
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT IGNORE INTO agent_view (workspace_id, code, label) "
+                        "SELECT workspace_id, 'reviewer', 'reviewer' FROM agent_view WHERE id = %s",
+                        (int_agent_view,))
+            cur.execute("SELECT id FROM agent_view WHERE code = 'reviewer'")
+            return cur.fetchone()["id"]
+    finally:
+        conn.close()
 
 
 def _count(sql, params=()):
@@ -119,6 +150,8 @@ def test_agent_run_child_runs_in_the_consumer_and_agent_result_returns_its_outpu
     child = fetch_job(spawned["job_id"])
     assert (child["type"], child["parent_job_id"], child["depth"], child["agent_view_id"]) == (
         "subagent", root, 1, int_agent_view)
+    # The child runs in its parent's thread (and so its conversation), as a line of its own.
+    assert (child["thread_id"], child["line_id"]) == (fetch_job(root)["thread_id"], None)
     assert _count("SELECT COUNT(*) AS n FROM job_event_outbox WHERE job_id = %s AND kind = 'job.queued'",
                   (child["id"],)) == 1
     assert json.loads(_result(root, child["id"], int_agent_view)["text"]) == {
@@ -160,7 +193,7 @@ def test_three_levels_then_the_fourth_is_refused_with_no_new_row(int_agent_view)
     assert len(fetch_all_jobs()) == before
 
 
-def test_only_the_direct_parent_reads_a_child(int_agent_view):
+def test_only_the_callers_line_reads_a_child(int_agent_view):
     root = _root(int_agent_view)
     a = _spawn(root, int_agent_view)["job_id"]
     b = _spawn(root, int_agent_view)["job_id"]
@@ -193,7 +226,7 @@ def test_concurrent_calls_of_one_parent_hold_the_child_cap(int_agent_view):
 
     assert sum(not r["isError"] for r in results) == 10
     refusals = [r["text"] for r in results if r["isError"]]
-    assert refusals == ["max 10 child jobs per job reached"] * (CONCURRENT_WORKERS_STRESS_TEST - 10)
+    assert refusals == ["max 10 sub-agents for this agent"] * (CONCURRENT_WORKERS_STRESS_TEST - 10)
     assert _count("SELECT COUNT(*) AS n FROM job WHERE parent_job_id = %s", (root,)) == 10
     assert _count("SELECT COUNT(*) AS n FROM job_event_outbox o JOIN job j ON j.id = o.job_id "
                   "WHERE j.parent_job_id = %s AND o.kind = 'job.queued'", (root,)) == 10
@@ -236,7 +269,8 @@ def test_waiting_subagent_rows_do_not_stall_the_queue_while_the_module_is_disabl
                 [(f"subagent:1:{i}",) for i in range(300)])
     finally:
         conn.close()
-    blank = insert_queued_job(job_type="blank", idempotency_key="blank:1", reference_id="BLANK-1")
+    blank = publish_job(source="jira", agent_type=resolve_job_type("blank"), agent_view_id=None,
+                        reference_id="BLANK-1", idempotency_key="blank:1", requester=None, priority=50)
 
     consumer = Consumer(int_db_config, int_consumer_config, logging.getLogger("test"))
     job = consumer._try_dequeue()
@@ -249,3 +283,115 @@ def test_waiting_subagent_rows_do_not_stall_the_queue_while_the_module_is_disabl
     bootstrap_for_tests()
     job = consumer._try_dequeue()
     assert job is not None and fetch_job(job.id)["type"] == "subagent"
+
+
+# --- lines, the scope rule and the wake (plan §8) -------------------------------------
+
+def test_a_wake_turn_resumes_the_parent_and_reads_and_continues_its_children(
+    int_agent_view, int_db_config, int_consumer_config
+):
+    """The real consumer runs both children; the last one's end wakes the parent. The wake
+    turn is a row of the parent's line: the claim resumes the parent's session, and the turn
+    reaches the children the parent started."""
+    root = _root(int_agent_view)
+    kids = [_spawn(root, int_agent_view, f"task {i}")["job_id"] for i in range(2)]
+    update_job(root, status="SUCCESS", session_id="s-root", finished_at=datetime.now(UTC))
+
+    insert_primary_token("claude")
+    consumer = Consumer(int_db_config, int_consumer_config, logging.getLogger("test"))
+    result = ClaudeResult(raw_output="done", input_tokens=1, output_tokens=1, cost_usd=0.0,
+                          num_turns=1, duration_ms=1, session_id="s-kid")
+    with patch("agento.modules.claude.src.runner.ClaudeSubprocessRunner.execute", return_value=result):
+        for _ in kids:
+            job = consumer._try_dequeue()
+            assert job is not None and job.id in kids
+            consumer._execute_job(job)
+
+    wake = _wake_of(root)
+    assert wake is not None and [j["id"] for j in fetch_all_jobs()
+                                 if j["idempotency_key"].startswith("subagent_wake:")] == [wake["id"]]
+    claimed = consumer._try_dequeue()
+    assert claimed is not None and (claimed.id, claimed.resume_job_id) == (wake["id"], root)
+
+    for kid in kids:
+        assert json.loads(_result(wake["id"], kid, int_agent_view)["text"])["output"] == "done"
+    again = _spawn(wake["id"], int_agent_view, "Fix the review findings.", job_id=kids[0])
+    row = fetch_job(again["job_id"])
+    assert (row["parent_job_id"], row["depth"], row["line_id"], row["thread_id"]) == (
+        wake["id"], 1, kids[0], wake["thread_id"])
+
+
+def test_five_rounds_of_one_child_stay_one_line(int_agent_view):
+    root = _root(int_agent_view)
+    head = _spawn(root, int_agent_view)["job_id"]
+    latest = head
+    for _ in range(5):
+        _finish(latest)
+        # Either the first row or the latest one names the line.
+        latest = _spawn(root, int_agent_view, "next round", job_id=latest)["job_id"]
+        assert fetch_job(latest)["line_id"] == head
+    assert not _result(root, latest, int_agent_view)["isError"]
+
+
+def test_a_continuation_waits_for_its_line_and_keeps_its_view(int_agent_view, reviewer):
+    root = _root(int_agent_view)
+    head = _spawn(root, int_agent_view)["job_id"]
+    configs = {"subagent": {**CONFIGS["subagent"], "allowed_agent_views": "reviewer"}}
+
+    def again(target):
+        [res] = _run(_call("agent_run", {"agent_view": target, "prompt": "x", "job_id": head},
+                           root, int_agent_view, configs))
+        return res
+
+    assert again("developer") == {"text": "job is still running", "isError": True}
+    _finish(head)
+    assert again("reviewer") == {"text": "job not found or not accessible", "isError": True}
+    assert not again("developer")["isError"]
+
+
+def test_a_sibling_branch_in_another_view_is_out_of_scope(int_agent_view, reviewer):
+    configs = {"subagent": {**CONFIGS["subagent"], "allowed_agent_views": "developer,reviewer"}}
+    root = _root(int_agent_view)
+    a = _spawn(root, int_agent_view, configs=configs)["job_id"]
+    b = _spawn(root, int_agent_view, target="reviewer", configs=configs)["job_id"]
+    a1 = _spawn(a, int_agent_view, configs=configs)["job_id"]
+    _finish(a1)
+
+    denied = {"text": "job not found or not accessible", "isError": True}
+    assert _result(b, a1, reviewer) == denied
+    [res] = _run(_call("agent_run", {"agent_view": "developer", "prompt": "x", "job_id": a1},
+                       b, reviewer, configs))
+    assert res == denied
+    assert not _result(a, a1, int_agent_view)["isError"]
+    assert not _result(root, b, int_agent_view)["isError"]  # a child in another view
+
+
+def test_the_cap_holds_per_line_and_bounds_the_rows_under_one_parent(int_agent_view):
+    """With cap 2: the root starts 2 lines; each line runs 2 delegations, so 2 wakes; its
+    third delegation is refused. The rows under the root are cap + cap * cap = 6."""
+    cap = 2
+    configs = {"subagent": {**CONFIGS["subagent"], "max_children_per_job": str(cap)}}
+    root = _root(int_agent_view)
+    lines = [_spawn(root, int_agent_view, configs=configs)["job_id"] for _ in range(cap)]
+    [res] = _run(_call("agent_run", {"agent_view": "developer", "prompt": "x"}, root, int_agent_view, configs))
+    assert res == {"text": f"max {cap} sub-agents for this agent", "isError": True}
+    _finish(root)
+
+    for line in lines:
+        turn = line
+        for _ in range(cap):
+            update_job(turn, status="RUNNING")
+            grandchild = _spawn(turn, int_agent_view, configs=configs)["job_id"]
+            _finish(turn)
+            _finish(grandchild)
+            turn = _wake_of(turn)["id"]          # the line's next turn
+            assert fetch_job(turn)["line_id"] == line
+        update_job(turn, status="RUNNING")
+        [res] = _run(_call("agent_run", {"agent_view": "developer", "prompt": "x"}, turn, int_agent_view,
+                           configs))
+        assert res == {"text": f"max {cap} sub-agents for this agent", "isError": True}
+        _finish(turn)
+
+    under_root = [j for j in fetch_all_jobs() if j["parent_job_id"] == root]
+    assert len(under_root) == cap + cap * cap
+    assert _wake_of(root) is not None

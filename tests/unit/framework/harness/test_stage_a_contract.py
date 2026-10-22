@@ -661,7 +661,7 @@ class TestProductionWiring:
             id=1, agent_view_id=7, source="blank", type="blank", attempt=attempt,
             session_id=session_id, pid=None, priority=0, reference_id=None,
             # The claim resolves the run's harness/provider/model from these columns.
-            agent_type=None, provider=None, model=None,
+            agent_type=None, provider=None, model=None, thread_key=None,
         )
         c._run_job(job)
         return captured

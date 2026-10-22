@@ -226,6 +226,179 @@ describe('FileManager', () => {
     expect(result.conversionError).toBe('Bad archive');
   });
 
+  function okFetch(text = 'body') {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async () => ({
+      ok: true,
+      arrayBuffer: async () => new globalThis.TextEncoder().encode(text).buffer,
+    }));
+  }
+
+  it('name sets the exact file name and leaves no .part entry behind', async () => {
+    okFetch('hello');
+    const fm = createFileManager();
+    const result = await fm.download('http://x/a.txt', 'a.txt', { dir: tmpDir, root: tmpDir, name: '10_a.txt' });
+    expect(result.localPath).toBe(path.join(tmpDir, '10_a.txt'));
+    expect(fs.readFileSync(result.localPath, 'utf8')).toBe('hello');
+    expect(fs.readdirSync(tmpDir)).toEqual(['10_a.txt']);
+  });
+
+  it.each(['../x.txt', 'a/b.txt', '..', ''])('refuses the name %j', async (name) => {
+    const fetchSpy = okFetch();
+    const result = await createFileManager().download('http://x/a.txt', 'a.txt', { dir: tmpDir, root: tmpDir, name });
+    expect(result.skipped).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([{ name: '1_a.txt' }, { skipExisting: true }])('in a run dir (no root) refuses %j', async (opts) => {
+    const fetchSpy = okFetch();
+    const result = await createFileManager().download('http://x/a.txt', 'a.txt', { dir: tmpDir, ...opts });
+    expect(result).toEqual({ skipped: true, skipReason: 'name and skipExisting need root' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('in a run dir (no root) two files with one name in one millisecond both land', async () => {
+    okFetch('x');
+    vi.spyOn(Date, 'now').mockReturnValue(5);
+    const fm = createFileManager();
+    const [a, b] = await Promise.all([
+      fm.download('http://x/1', 'image.png', { dir: tmpDir }), fm.download('http://x/2', 'image.png', { dir: tmpDir })]);
+    expect(a.skipped).toBe(false);
+    expect(b.skipped).toBe(false);
+    expect(a.localPath).not.toBe(b.localPath);
+  });
+
+  it('in a run dir (no root) a symlink planted at the file name is not followed', async () => {
+    const victim = path.join(tmpDir, 'victim.txt');
+    fs.writeFileSync(victim, 'keep');
+    const dir = path.join(tmpDir, 'run');
+    fs.mkdirSync(dir);
+    vi.spyOn(Date, 'now').mockReturnValue(7);
+    vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((a) => a.fill(0));
+    fs.symlinkSync(victim, path.join(dir, 'a_7_00000000.txt'));
+    okFetch('ATTACKER');
+    const result = await createFileManager().download('http://x/a.txt', 'a.txt', { dir });
+    expect(result.skipped).toBe(true);
+    expect(fs.readFileSync(victim, 'utf8')).toBe('keep');
+  });
+
+  it('skipExisting returns the file that is there with no fetch', async () => {
+    const fetchSpy = okFetch('first');
+    const fm = createFileManager();
+    const opts = { dir: tmpDir, root: tmpDir, name: '10_a.txt', skipExisting: true };
+    const first = await fm.download('http://x/a.txt', 'a.txt', opts);
+    const second = await fm.download('http://x/a.txt', 'a.txt', opts);
+    expect(second).toEqual(first);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it('skipExisting fetches again while the conversion is missing', async () => {
+    const convert = vi.fn(async (p) => { fs.writeFileSync(p.replace(/\.pdf$/, '.md'), 'md'); return p.replace(/\.pdf$/, '.md'); });
+    registry.register({ fromExt: '.pdf', toExt: '.md', convert });
+    const fetchSpy = okFetch();
+    const fm = createFileManager();
+    const opts = { dir: tmpDir, root: tmpDir, name: '10_d.pdf', skipExisting: true };
+    const first = await fm.download('http://x/d.pdf', 'd.pdf', opts);
+    expect(first.convertedPath).toBe(path.join(tmpDir, '10_d.md'));
+    expect(fs.readFileSync(first.convertedPath, 'utf8')).toBe('md');
+    expect(await fm.download('http://x/d.pdf', 'd.pdf', opts)).toEqual(first);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    fs.rmSync(first.convertedPath);
+    await fm.download('http://x/d.pdf', 'd.pdf', opts);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('two downloads of one file at once both end with the whole file', async () => {
+    okFetch('same bytes');
+    const fm = createFileManager();
+    const opts = { dir: tmpDir, root: tmpDir, name: '10_a.txt', skipExisting: true };
+    const [a, b] = await Promise.all([
+      fm.download('http://x/a.txt', 'a.txt', opts), fm.download('http://x/a.txt', 'a.txt', opts)]);
+    expect(a.localPath).toBe(b.localPath);
+    expect(fs.readFileSync(a.localPath, 'utf8')).toBe('same bytes');
+    expect(fs.readdirSync(tmpDir)).toEqual(['10_a.txt']);
+  });
+
+  it('skipExisting reuses a conversion with its own name (one CSV per XLSX sheet)', async () => {
+    const convert = vi.fn(async (p) => {
+      const base = p.replace(/\.xlsx$/, '');
+      fs.writeFileSync(`${base}_Sheet2.csv`, 'b');
+      fs.writeFileSync(`${base}_Sheet1.csv`, 'a');
+      return `${base}_Sheet1.csv`;
+    });
+    registry.register({ fromExt: '.xlsx', toExt: '.csv', convert });
+    const fetchSpy = okFetch();
+    const fm = createFileManager();
+    const opts = { dir: tmpDir, root: tmpDir, name: '10_d.xlsx', skipExisting: true };
+    const first = await fm.download('http://x/d.xlsx', 'd.xlsx', opts);
+    expect(first.convertedPath).toBe(path.join(tmpDir, '10_d_Sheet1.csv'));
+    expect(fs.existsSync(path.join(tmpDir, '10_d_Sheet2.csv'))).toBe(true);
+    expect(await fm.download('http://x/d.xlsx', 'd.xlsx', opts)).toEqual(first);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it('in a run dir (no root) nothing there is listed or moved: a swapped dir is never emptied', async () => {
+    // A run owns its run dir and could swap a dir the toolbox lists for a link to another
+    // run's dir; without root the toolbox writes the file in place and moves nothing.
+    const other = path.join(tmpDir, 'other-run');
+    fs.mkdirSync(other);
+    fs.writeFileSync(path.join(other, 'secret.txt'), 's');
+    const dir = path.join(tmpDir, 'run', 'jira', 'AI-1');
+    fs.mkdirSync(dir, { recursive: true });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      fs.symlinkSync(other, path.join(dir, '.part-planted'));
+      return { ok: true, arrayBuffer: async () => new globalThis.TextEncoder().encode('x').buffer };
+    });
+    vi.spyOn(Date, 'now').mockReturnValue(1);
+    vi.spyOn(globalThis.crypto, 'getRandomValues').mockImplementation((a) => a.fill(0));
+    const result = await createFileManager().download('http://x/a.txt', 'a.txt', { dir });
+    expect(result.skipped).toBe(false);
+    expect(fs.readdirSync(other)).toEqual(['secret.txt']);
+    expect(fs.readdirSync(dir).sort()).toEqual(['.part-planted', 'a_1_00000000.txt']);
+  });
+
+  it('under root: makes the missing dirs 0750 and the file 0640', async () => {
+    okFetch();
+    const root = path.join(tmpDir, 'downloads');
+    fs.mkdirSync(root);
+    const dir = path.join(root, 'jira', 'AI-1');
+    const result = await createFileManager().download('http://x/a.txt', 'a.txt', { dir, root, name: '1_a.txt' });
+    expect(result.skipped).toBe(false);
+    expect(fs.statSync(path.join(root, 'jira')).mode & 0o777).toBe(0o750);
+    expect(fs.statSync(dir).mode & 0o777).toBe(0o750);
+    expect(fs.statSync(result.localPath).mode & 0o777).toBe(0o640);
+  });
+
+  it.each(['root', 'jira', 'AI-1'])('under root: refuses a planted symlink at %s', async (at) => {
+    const fetchSpy = okFetch();
+    const elsewhere = path.join(tmpDir, 'elsewhere');
+    fs.mkdirSync(elsewhere);
+    const real = path.join(tmpDir, 'downloads');
+    let root = real;
+    if (at === 'root') {
+      root = path.join(tmpDir, 'link');
+      fs.symlinkSync(elsewhere, root);
+    } else {
+      fs.mkdirSync(real);
+      if (at === 'jira') fs.symlinkSync(elsewhere, path.join(real, 'jira'));
+      else { fs.mkdirSync(path.join(real, 'jira')); fs.symlinkSync(elsewhere, path.join(real, 'jira', 'AI-1')); }
+    }
+    const dir = path.join(root, 'jira', 'AI-1');
+    const result = await createFileManager().download('http://x/a.txt', 'a.txt', { dir, root, name: '1_a.txt' });
+    expect(result.skipped).toBe(true);
+    expect(result.skipReason).toMatch(/symlink/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+  });
+
+  it('under root: refuses a dir outside it', async () => {
+    okFetch();
+    const root = path.join(tmpDir, 'downloads');
+    fs.mkdirSync(root);
+    const result = await createFileManager().download('http://x/a.txt', 'a.txt',
+      { dir: path.join(root, '..', 'other'), root, name: '1_a.txt' });
+    expect(result.skipped).toBe(true);
+  });
+
   it('logs converter errors via injected log function', async () => {
     const logSpy = vi.fn();
     registry.register({

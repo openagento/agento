@@ -63,8 +63,8 @@ Discovered by convention from `<module>/toolbox/*.js` files. Each file exports a
 
 | Tool | Description |
 |------|-------------|
-| `agent_run` (opt-in) | Delegate a task to an agent_view as a child job. Returns the child `job_id` at once. Own view, or a view in `subagent/allowed_agent_views`; max 3 levels deep, max `subagent/max_children_per_job` children per job. |
-| `agent_result` (opt-in) | Read the status of a child job this job created, its `output` after `SUCCESS`, or its `error_class` after `FAILED`/`DEAD`. Only the direct parent can read a child. |
+| `agent_run` (opt-in) | Delegate a task to an agent_view as a child job. Returns the child `job_id` at once. Own view, or a view in `subagent/allowed_agent_views`; max 3 levels deep, max `subagent/max_children_per_job` sub-agents per job (per agent line below the root). An optional `job_id` continues an earlier child's session. |
+| `agent_result` (opt-in) | Read the status of a job delegated from this job's line, its `output` after `SUCCESS`, or its `error_class` after `FAILED`/`DEAD`. A job reads the children its own line started (any turn of that line), never a sibling branch or a grandchild. |
 
 See [subagent.md](../modules/subagent.md).
 

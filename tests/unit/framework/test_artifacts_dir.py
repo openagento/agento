@@ -1,5 +1,7 @@
 """Tests for per-job artifacts directory management."""
 import logging
+import os
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +12,8 @@ from agento.framework.artifacts_dir import (
     cleanup_artifacts_dir,
     copy_build_to_artifacts_dir,
     prepare_artifacts_dir,
+    prepare_thread_dir,
+    thread_dir,
 )
 
 
@@ -110,3 +114,106 @@ class TestCopyBuildToArtifactsDir:
         assert gc.read_text() == '[user]\n\tname = "X"\n'
         # .ssh stays symlinked (keys are read-only-used; only .gitconfig is at write-through risk).
         assert (artifacts_dir / ".ssh").is_symlink()
+
+
+class TestRunDirCodes:
+    """A workspace or agent_view code names a dir next to `_threads`: one starting with `_`
+    (or not a code at all) names no run dir, whatever path wrote the row."""
+
+    @pytest.mark.parametrize(("ws", "av"), [("_threads", "dev"), ("acme", "_fallback"),
+                                            ("acme\n", "dev"), ("..", "dev"), ("acme", "a/b")])
+    def test_a_code_that_is_not_valid_names_no_run_dir(self, ws, av):
+        with pytest.raises(ValueError, match="cannot name a run dir"):
+            build_artifacts_dir(ws, av, 1)
+
+    def test_a_code_made_by_hand_with_a_dash_still_runs(self):
+        assert build_artifacts_dir("e2-tc", "Dev-1", 1).parts[-3:] == ("e2-tc", "Dev-1", "1")
+
+
+class TestPrepareThreadDir:
+    """The thread dirs (docs/architecture/threads.md): modes, the link, and SEC-5 refusals."""
+
+    KEY = "0123456789abcdef0123456789abcdef"
+
+    @pytest.fixture
+    def root(self, tmp_path):
+        root = tmp_path / "artifacts"
+        run = root / "acme" / "dev" / "7"
+        run.mkdir(parents=True)
+        with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(root)):
+            yield root, run
+
+    def _prepare(self, run):
+        return prepare_thread_dir(self.KEY, run, gid=os.getgid())
+
+    def test_creates_the_dirs_with_their_modes_and_the_link(self, root):
+        base, run = root
+        thread = self._prepare(run)
+        assert thread == base / "_threads" / self.KEY
+        modes = {p: stat.S_IMODE(os.lstat(p).st_mode) for p in (
+            base / "_threads", thread, thread / "shared", thread / "downloads")}
+        assert modes == {base / "_threads": 0o711, thread: 0o2750,
+                         thread / "shared": 0o2770, thread / "downloads": 0o2750}
+        link = run / "shared"
+        assert link.is_symlink() and os.readlink(link) == str(thread / "shared")
+        assert os.path.isabs(os.readlink(link))
+
+    def test_a_retry_keeps_the_threads_files(self, root):
+        _base, run = root
+        thread = self._prepare(run)
+        (run / "shared" / "notes.md").write_text("turn 1")
+        prepare_artifacts_dir(run)  # the retry wipes the run dir: the link, not its target
+        assert not (run / "shared").exists()
+        self._prepare(run)
+        assert (thread / "shared" / "notes.md").read_text() == "turn 1"
+        assert (run / "shared" / "notes.md").read_text() == "turn 1"
+
+    def test_the_link_replaces_a_build_entry_named_shared(self, root):
+        _base, run = root
+        (run / "shared").mkdir()
+        (run / "shared" / "x").write_text("from the build")
+        self._prepare(run)
+        assert (run / "shared").is_symlink() and not (run / "shared" / "x").exists()
+
+    @pytest.mark.parametrize("planted", ["_threads", "key", "shared", "downloads"])
+    def test_a_planted_symlink_component_is_refused(self, root, tmp_path, planted):
+        base, run = root
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        threads = base / "_threads"
+        if planted == "_threads":
+            threads.symlink_to(elsewhere)
+        else:
+            threads.mkdir(mode=0o711)
+            key = threads / self.KEY
+            if planted == "key":
+                key.symlink_to(elsewhere)
+            else:
+                key.mkdir()
+                (key / planted).symlink_to(elsewhere)
+        with pytest.raises(RuntimeError, match="symlink"):
+            self._prepare(run)
+        assert list(elsewhere.iterdir()) == []
+        assert not (run / "shared").exists()
+
+    @pytest.mark.parametrize("key", ["../../etc", "ABCDEF0123456789ABCDEF0123456789", "", "a" * 31])
+    def test_a_key_that_is_not_32_hex_is_refused(self, key):
+        with pytest.raises(ValueError):
+            thread_dir(key)
+
+    def test_a_host_not_in_the_thread_group_fails_the_run(self, root, monkeypatch):
+        _base, run = root
+
+        def refuse(*_a):
+            raise PermissionError(1, "Operation not permitted")
+        monkeypatch.setattr(os, "fchown", refuse)
+        with pytest.raises(RuntimeError, match="thread group"):
+            prepare_thread_dir(self.KEY, run, gid=12345)
+
+    def test_the_thread_group_is_the_default(self, root, monkeypatch):
+        from agento.framework.runner import uids
+        _base, run = root
+        seen = []
+        monkeypatch.setattr(os, "fchown", lambda fd, uid, gid: seen.append(gid))
+        prepare_thread_dir(self.KEY, run)
+        assert seen == [-1, uids.THREAD_GID, uids.THREAD_GID, uids.THREAD_GID]

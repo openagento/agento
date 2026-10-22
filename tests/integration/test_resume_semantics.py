@@ -1,9 +1,9 @@
-"""§5.2's three cases, each asserted on what the harness actually received.
+"""A panel turn, asserted on what the harness actually received.
 
-A retry resumes the interrupted run. A follow-up on a resumable harness resumes the thread's
-session and is sent the new turn alone. A follow-up on a harness that cannot resume gets a
-fresh session and the assembled history. The bound on that history is `message.id <=
-reference_id` in all three cases.
+A retry resumes the interrupted run. A resumed turn is sent the new turn alone; a fresh one
+gets the assembled history. The bound on that history is `message.id <= reference_id` in
+both cases. WHICH session a turn resumes is the framework's line rule (the conversation's
+own resolver is gone): tests/integration/test_thread_claim.py.
 """
 from __future__ import annotations
 
@@ -11,19 +11,11 @@ import ast
 import logging
 from pathlib import Path
 
-import pytest
-
-from agento.framework.consumer import _should_resume
-from agento.framework.execution_hooks import clear as clear_hooks
-from agento.framework.execution_hooks import (
-    register_resume_session_resolver,
-    resolve_resume_session,
-)
+from agento.framework.consumer import Consumer, _should_resume
 from agento.framework.harness import RunRequest, RunResult
 from agento.framework.workflows.base import JobContext
 from agento.modules.conversation.src import routes, service
 from agento.modules.conversation.src.channel import ConversationChannel
-from agento.modules.conversation.src.hooks import ConversationResumeSessions
 from agento.modules.conversation.src.workflow import ConversationWorkflow
 
 from .conftest import (
@@ -48,17 +40,6 @@ class SpyRunner:
 
     def observe(self, **kwargs) -> None:
         pass
-
-
-@pytest.fixture
-def resolver():
-    clear_hooks()
-    register_resume_session_resolver(ConversationResumeSessions(), module="conversation")
-    yield
-    # The registry is global: leave the shipped registrations behind us, or every
-    # later test in the session runs with the seams empty.
-    clear_hooks()
-    bootstrap_for_tests()
 
 
 def _turn(conn, cid, world, client_message_id, content) -> tuple[int, int]:
@@ -104,36 +85,37 @@ def _run(conn, job_id, reference_id, *, resume: str | None,
 
 # --- case 1: a retry resumes the interrupted run, not the previous turn ----
 
-def test_a_retry_is_the_frameworks_own_rule_and_the_resolver_declines(
-    conn, world, resolver
-):
-    cid = service.create_conversation(conn, user_id=world["owner"].id,
-                                      agent_view_id=world["view"], title="t")
-    _, first_job = _turn(conn, cid, world, "c1", "pytanie jeden")
-    _answer(conn, cid, first_job, session_id="session-one")
-    _, second_job = _turn(conn, cid, world, "c2", "pytanie dwa")
-
-    assert resolve_resume_session(conn=conn, job_id=second_job, attempt=2) is None
-
-
 def test_the_frameworks_retry_rule_is_unchanged():
     assert _should_resume(attempt=2, session_id="s", pid_alive=False, can_resume=True)
     assert not _should_resume(attempt=1, session_id="s", pid_alive=False, can_resume=True)
     assert not _should_resume(attempt=2, session_id="s", pid_alive=False, can_resume=False)
 
 
-# --- case 2: a follow-up on a resumable harness ---------------------------
+# --- which session: the conversation is one thread --------------------------
 
-def test_a_follow_up_resolves_the_previous_turns_session(conn, world, resolver):
+def test_a_follow_up_turn_continues_the_previous_turns_session(conn, world, int_db_config,
+                                                               int_consumer_config):
+    """Every turn of one conversation is one thread, so the claim picks the previous turn as
+    the session target; a session that another harness made is not resumed."""
     cid = service.create_conversation(conn, user_id=world["owner"].id,
                                       agent_view_id=world["view"], title="t")
-    _, first_job = _turn(conn, cid, world, "c1", "pytanie jeden")
+    bootstrap_for_tests()
+    first_msg, first_job = _turn(conn, cid, world, "c1", "pytanie jeden")
     _answer(conn, cid, first_job, session_id="session-one")
+    with conn.cursor() as cur:
+        cur.execute("UPDATE job SET agent_type = 'claude' WHERE id = %s", (first_job,))
+        cur.execute("UPDATE message SET job_state = 'terminal' WHERE id = %s", (first_msg,))
+    conn.commit()
     _, second_job = _turn(conn, cid, world, "c2", "pytanie dwa")
 
-    assert resolve_resume_session(
-        conn=conn, job_id=second_job, attempt=1) == "session-one"
+    job = Consumer(int_db_config, int_consumer_config, logging.getLogger("test"))._try_dequeue()
 
+    assert job is not None and (job.id, job.resume_job_id) == (second_job, first_job)
+    assert Consumer._resume_session(conn, job, "claude") == "session-one"
+    assert Consumer._resume_session(conn, job, "codex") is None
+
+
+# --- case 2: a follow-up on a resumable harness ---------------------------
 
 def test_a_resumed_follow_up_is_sent_the_new_turn_alone(conn, world):
     cid = service.create_conversation(conn, user_id=world["owner"].id,
@@ -148,47 +130,6 @@ def test_a_resumed_follow_up_is_sent_the_new_turn_alone(conn, world):
     assert "pytanie dwa" in request.prompt
     assert "pytanie jeden" not in request.prompt
     assert "odpowiedź" not in request.prompt
-
-
-def test_the_first_turn_of_a_thread_resolves_nothing(conn, world, resolver):
-    cid = service.create_conversation(conn, user_id=world["owner"].id,
-                                      agent_view_id=world["view"], title="t")
-    _, job_id = _turn(conn, cid, world, "c1", "pytanie jeden")
-
-    assert resolve_resume_session(conn=conn, job_id=job_id, attempt=1) is None
-
-
-def test_a_turn_whose_predecessor_never_got_a_session_resolves_nothing(
-    conn, world, resolver
-):
-    cid = service.create_conversation(conn, user_id=world["owner"].id,
-                                      agent_view_id=world["view"], title="t")
-    _turn(conn, cid, world, "c1", "pytanie jeden")
-    _, second_job = _turn(conn, cid, world, "c2", "pytanie dwa")
-
-    assert resolve_resume_session(conn=conn, job_id=second_job, attempt=1) is None
-
-
-def test_a_session_of_another_harness_is_not_resumed(conn, world, resolver):
-    """A session belongs to its harness: after a harness change the turn starts fresh,
-    with the whole thread from the database (case 3)."""
-    cid = service.create_conversation(conn, user_id=world["owner"].id,
-                                      agent_view_id=world["view"], title="t")
-    _, first_job = _turn(conn, cid, world, "c1", "pytanie jeden")
-    _answer(conn, cid, first_job, session_id="session-one")
-    _, second_job = _turn(conn, cid, world, "c2", "pytanie dwa")
-    with conn.cursor() as cur:
-        cur.execute("UPDATE job SET agent_type = 'harness-a' WHERE id = %s", (first_job,))
-        cur.execute("UPDATE job SET agent_type = 'harness-b' WHERE id = %s", (second_job,))
-    conn.commit()
-
-    assert resolve_resume_session(conn=conn, job_id=second_job, attempt=1) is None
-
-    with conn.cursor() as cur:
-        cur.execute("UPDATE job SET agent_type = 'harness-a' WHERE id = %s", (second_job,))
-    conn.commit()
-    assert resolve_resume_session(
-        conn=conn, job_id=second_job, attempt=1) == "session-one"
 
 
 # --- case 3: a fresh session gets the assembled history --------------------

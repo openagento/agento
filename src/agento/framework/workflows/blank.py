@@ -10,7 +10,7 @@ class BlankWorkflow(Workflow):
     """Minimal workflow — sends a simple prompt, no MCP instructions."""
 
     def execute_job(self, channel: Channel, job: Job, context: JobContext) -> RunResult:
-        return self.execute(channel, job.reference_id or "BLANK")
+        return self.execute(channel, job.reference_id or "BLANK", context=context)
 
     def build_prompt(
         self, channel: Channel, reference_id: str, **kwargs: object

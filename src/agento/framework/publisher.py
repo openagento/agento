@@ -8,8 +8,9 @@ import pymysql
 from .db import get_connection
 from .event_manager import get_event_manager
 from .events import JobPublishedEvent
-from .job_models import AgentType, JobRequester
+from .job_models import OPEN_STATUSES, AgentType, JobRequester
 from .job_types import JobTypeLike
+from .threads import default_ref, ensure_thread, join_thread
 
 
 def existing_job_id(cur, idempotency_key: str) -> int | None:
@@ -39,11 +40,25 @@ def insert_job(
     context: str | None = None,
     harness: str | None = None,
     model: str | None = None,
+    thread: str | None = None,
+    thread_id: int | None = None,
+    parent_job_id: int | None = None,
+    depth: int = 0,
+    line_id: int | None = None,
 ) -> int:
     """The single INSERT both entry points use. Returns the new job id.
 
     It does not commit: the caller owns the transaction, which is what lets
     `publish_service` put the outbox row in it.
+
+    Every job gets its thread here (framework/threads.py). ``thread_id`` copies the thread
+    of the job this one is made from (at depth 0 a thread of the same view); else
+    ``thread`` names the thread ref; else the job's source item is the thread
+    (``default_ref``). The thread row stays locked until the caller commits, so the jobs of
+    one thread commit in id order. A job with no reference_id is its own thread, which
+    needs its id: that row is updated after the INSERT, in the same transaction.
+    ``line_id`` is the depth > 0 line the job continues. The session a job continues is
+    the claim's decision (``threads.resolve_resume``), not the publisher's.
     """
     # requester is pure metadata - never part of idempotency_key or skip_if_active dedupe
     requester_meta = (
@@ -51,24 +66,43 @@ def insert_job(
         if requester and requester.meta is not None    # preserve explicit {}, only None -> NULL
         else None
     )
+    if parent_job_id is not None:
+        # The lock order is job, then thread, as in the claim (`threads.lock_thread`). The
+        # INSERT's foreign key check takes a shared lock on the parent row; taken after the
+        # thread lock, it would wait on a claim of the parent (a retry) that holds the job
+        # row and waits on the thread: a deadlock.
+        cur.execute("SELECT id FROM job WHERE id = %s FOR SHARE", (parent_job_id,))
+    if thread_id is not None:
+        join_thread(cur, thread_id, agent_view_id=agent_view_id, depth=depth)
+    elif thread is not None or reference_id:
+        # With a reference_id the default ref does not use the job id, which is not known yet.
+        ref = thread if thread is not None else default_ref(source, reference_id, 0)
+        thread_id = ensure_thread(cur, agent_view_id=agent_view_id, ref=ref, lock=True)
     cur.execute(
         """
         INSERT INTO job
             (type, source, agent_view_id, priority, reference_id,
              idempotency_key, status, attempt, max_attempts, prompt, context,
              requester_key, requester_email, requester_trust, requester_meta,
-             agent_type, model)
+             agent_type, model, parent_job_id, depth, thread_id, line_id)
         VALUES
-            (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+             %s, %s, %s, %s)
         """,
         (agent_type.value, source, agent_view_id, priority, reference_id,
          idempotency_key, max_attempts, prompt, context,
          requester.key if requester else None,
          requester.email if requester else None,
          requester.trust.value if requester else "claimed",
-         requester_meta, harness, model),
+         requester_meta, harness, model,
+         parent_job_id, depth, thread_id, line_id),
     )
-    return cur.lastrowid
+    job_id = cur.lastrowid
+    if thread_id is None:
+        cur.execute("UPDATE job SET thread_id = %s WHERE id = %s",
+                    (ensure_thread(cur, agent_view_id=agent_view_id,
+                                   ref=default_ref(source, reference_id, job_id)), job_id))
+    return job_id
 
 
 
@@ -86,6 +120,11 @@ def publish(
     requester: JobRequester | None = None,
     harness: str | None = None,
     model: str | None = None,
+    thread: str | None = None,
+    thread_id: int | None = None,
+    parent_job_id: int | None = None,
+    depth: int = 0,
+    line_id: int | None = None,
 ) -> bool:
     """Insert a job into the queue. Returns True if inserted, False if duplicate.
 
@@ -99,6 +138,8 @@ def publish(
     ``harness`` and ``model`` PIN this job's runtime: the consumer uses them instead of
     the agent_view config when it claims the job. Either one left ``None`` is resolved
     from config as before. Neither is part of the idempotency key.
+
+    ``thread`` .. ``line_id`` place the job in its thread and line (see ``insert_job``).
     """
     conn = get_connection(config)
     try:
@@ -109,10 +150,10 @@ def publish(
                     SELECT 1 FROM job
                     WHERE type = %s AND source = %s
                       AND agent_view_id <=> %s AND reference_id = %s
-                      AND status IN ('TODO','RUNNING','PAUSED')
+                      AND status IN %s
                     LIMIT 1
                     """,
-                    (agent_type.value, source, agent_view_id, reference_id),
+                    (agent_type.value, source, agent_view_id, reference_id, OPEN_STATUSES),
                 )
                 if cur.fetchone() is not None:
                     if logger:
@@ -141,6 +182,11 @@ def publish(
                     requester=requester,
                     harness=harness,
                     model=model,
+                    thread=thread,
+                    thread_id=thread_id,
+                    parent_job_id=parent_job_id,
+                    depth=depth,
+                    line_id=line_id,
                 )
             except pymysql.err.IntegrityError:
                 # Race: another publisher inserted the same idempotency_key between

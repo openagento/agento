@@ -13,7 +13,7 @@ from __future__ import annotations
 from agento.framework.channels.base import Channel
 from agento.framework.database_config import DatabaseConfig
 from agento.framework.db import get_connection
-from agento.framework.harness import RunRequest, RunResult
+from agento.framework.harness import RunResult
 from agento.framework.job_models import Job
 from agento.framework.workflows.base import JobContext, Workflow
 
@@ -48,24 +48,8 @@ def load_turns(conn, conversation_id: int, up_to_message_id: int) -> list[dict]:
 class ConversationWorkflow(Workflow):
     def execute_job(self, channel: Channel, job: Job, context: JobContext) -> RunResult:
         """One turn. A resumed session already holds the thread, so it is sent the new turn
-        alone (§5.2); a fresh one is sent the assembled history as well."""
-        reference_id = job.reference_id or ""
-        session_id = context.resume_session_id
-        # Optional on a runner (SubprocessRunner has it); absent means "found".
-        prepare = getattr(self.runner, "prepare_resume", None)
-        if session_id is not None and prepare is not None and not prepare(session_id):
-            # The session is gone (pruned, or made under another HOME): a fresh one with
-            # the whole thread, not a turn the agent has no context for.
-            self.logger.warning(f"ref={reference_id} session not found; starting a fresh one")
-            session_id = None
-        prompt = self.build_prompt(channel, reference_id, history=session_id is None)
-        result = self.runner.execute(RunRequest(prompt=prompt, session_id=session_id))
-        result.prompt = prompt
-        self.logger.info(
-            f"channel={channel.name} ref={reference_id} "
-            f"resumed={session_id is not None} {result.stats_line}"
-        )
-        return result
+        alone; a fresh one is sent the assembled history as well (`build_prompt`)."""
+        return self.execute(channel, job.reference_id or "", context=context)
 
     def build_prompt(self, channel: Channel, reference_id: str, **kwargs: object) -> str:
         conversation_id, message_id = parse_reference(reference_id)
@@ -84,7 +68,7 @@ class ConversationWorkflow(Workflow):
         fragments = channel.get_prompt_fragments(reference_id)
         # The bound is the same either way: a resumed turn must not pick up a turn queued
         # behind it any more than a fresh one may.
-        if kwargs.get("history", True) is False:
+        if kwargs.get("resumed"):
             turns = turns[-1:]
         history = "\n\n".join(
             f"{_ROLE_LABEL.get(t['role'], t['role'])}: {t['content']}" for t in turns

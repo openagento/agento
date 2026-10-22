@@ -23,7 +23,7 @@ import {
 } from './config-tests.js';
 import * as db from './db.js';
 import * as playwright from './playwright-client.js';
-import { buildArtifactsDir, FALLBACK_ARTIFACTS_DIR } from './artifacts-dir.js';
+import { buildArtifactsDir, FALLBACK_ARTIFACTS_DIR, loadDownloadsDir } from './artifacts-dir.js';
 import { createRateLimits } from './rate-limit.js';
 
 const PORT = process.env.PORT || 3001;
@@ -66,7 +66,10 @@ async function buildRegistration(server, authContext, runId = null) {
   // invocationLog is the MCP tool-invocation logger for this session: logToolboxMcp for
   // interactive/tool-list runs, or the agent_view-scoped variant when an agent_view is known.
   let invocationLog = logToolboxMcp;
-  let sessionContext = { ...context, artifactsDir, jobId };
+  // The job's thread dir for downloads two turns of one thread share (Jira attachments),
+  // null without a job: every caller keeps artifactsDir then.
+  const downloadsDir = await loadDownloadsDir(dbQuery, jobId);
+  let sessionContext = { ...context, artifactsDir, downloadsDir, jobId };
   let preloadedOverrides;
   if (agentViewId) {
     const { overrides, agentViewMeta } = await loadScopedDbOverridesStrict(agentViewId);
