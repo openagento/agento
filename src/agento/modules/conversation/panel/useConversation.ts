@@ -1,6 +1,6 @@
 // One thread on screen (E9 §3.8). The timeline store holds every event: the newest page first,
 // then the stream from that page's newest id, so there is no window between them. The messages
-// (turn state, Unblock) and the runs stay REST rows; a persisted kind refetches them (debounced).
+// (turn state, Unblock) and the runs stay REST rows; a persisted kind refetches them (throttled).
 // The REST poll is the fallback when the stream is down: each messages poll also pages the
 // timeline forward through the replay route, and the runs poll on the same clock.
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -8,12 +8,17 @@ import { apiFetch, ApiError, hub, useQuery, useQueryClient, type StreamEvent, ty
 import { IDLE_POLL_MS, inFlight, RUN_POLL_MS, type Message, type ThreadDetail, type TimelinePage } from "./model";
 import { TimelineStore } from "./timeline";
 
-export const REFETCH_DEBOUNCE_MS = 250;
+/** Every persisted event in this window shares ONE refetch (messages, runs, one replay page).
+ *  A run with sub-agents writes several such events a second; refetching per event put one tab
+ *  past `limits/max_requests_per_user` (429). */
+export const REFETCH_MS = 2_000;
 const refetches = (kind: string) =>
   kind === "message.created" || kind === "assistant.message" || kind.startsWith("job.") || kind.startsWith("run.");
 
 export const messagesKey = (threadId: number) => ["messages", threadId] as const;
 export const threadKey = (threadId: number) => ["thread", threadId] as const;
+export const fetchThread = (threadId: number, signal?: AbortSignal) =>
+  apiFetch<ThreadDetail>(`/api/conversation/threads/${threadId}`, { signal });
 
 /** The newest timeline page, or the page before event `before`. */
 export const fetchPage = (threadId: number, before?: number, signal?: AbortSignal) =>
@@ -68,7 +73,7 @@ export function useConversation(threadId: number) {
   });
   const thread = useQuery({
     queryKey: threadKey(threadId),
-    queryFn: ({ signal }) => apiFetch<ThreadDetail>(`/api/conversation/threads/${threadId}`, { signal }),
+    queryFn: ({ signal }) => fetchThread(threadId, signal),
     refetchInterval: () => (inFlight(qc.getQueryData<Message[]>(messagesKey(threadId))) ? RUN_POLL_MS : IDLE_POLL_MS),
     refetchIntervalInBackground: false,
   });
@@ -84,15 +89,15 @@ export function useConversation(threadId: number) {
 
   useEffect(() => {
     const ctrl = new AbortController();
+    // A pending refetch is not pushed back: a steady stream of events still refetches every
+    // REFETCH_MS. The list is not refetched here: it polls every LIVE_REFETCH_MS by itself.
     const refetch = () => {
-      if (timer.current) clearTimeout(timer.current);
+      if (timer.current) return;
       timer.current = setTimeout(() => {
         timer.current = null;
         void qc.invalidateQueries({ queryKey: messagesKey(threadId) });
         void qc.invalidateQueries({ queryKey: threadKey(threadId) });
-        // The list's live dot, activity group and title move with the thread (U9).
-        void qc.invalidateQueries({ queryKey: ["threads"] });
-      }, REFETCH_DEBOUNCE_MS);
+      }, REFETCH_MS);
     };
     let opened = false;
     reload(threadId, store, cursor, ctrl.signal).then((page) => {

@@ -57,8 +57,34 @@
 .threadRow {
   display: flex; align-items: center; gap: calc(var(--mantine-spacing-xs) / 2);
   border-radius: var(--mantine-radius-md); padding-inline: var(--mantine-spacing-xs);
+  /* Mantine ActionIcon md (--ai-size-md): the row menu's height, so a row without one is as tall. */
+  min-height: calc(1.75rem * var(--mantine-scale));
 }
 .threadRow:hover, .threadActive { background-color: var(--mantine-color-default-hover); }
+.threadTitle { display: flex; align-items: center; }
+/* A tree row (a sub-agent job): one indent step per level, the highlight still the full row.
+   Level 1's chevron column starts where the conversation's title does. */
+.threadRow[data-depth="2"] { padding-inline-start: calc(var(--mantine-spacing-xs) + var(--mantine-spacing-md)); }
+.threadRow[data-depth="3"] { padding-inline-start: calc(var(--mantine-spacing-xs) + 2 * var(--mantine-spacing-md)); }
+.treeGutter { display: inline-flex; justify-content: center; flex: none; width: var(--mantine-spacing-md); }
+/* The disclosure chevron is secondary: it reads after the title, not before it. */
+.threadTitle .chevron { color: var(--mantine-color-dimmed); }
+/* A job's status in the Jobs page tones (StatusBadge); a running job breathes a green halo. */
+.statusDot {
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  margin-inline: calc(var(--mantine-spacing-xs) / 5) calc(var(--mantine-spacing-xs) * 0.8);
+  background-color: var(--mantine-color-gray-5);
+}
+.statusDot[data-tone="succeeded"], .statusDot[data-tone="running"] { background-color: var(--mantine-color-green-filled); }
+.statusDot[data-tone="failed"] { background-color: var(--mantine-color-red-filled); }
+.statusDot[data-tone="blocked"] { background-color: var(--mantine-color-yellow-filled); }
+.statusDot[data-tone="info"] { background-color: var(--mantine-color-blue-filled); }
+.statusDot[data-tone="running"] { animation: statusHalo 1.6s ease-out infinite; }
+@keyframes statusHalo {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--mantine-color-green-filled) 60%, transparent); }
+  to { box-shadow: 0 0 0 5px color-mix(in srgb, var(--mantine-color-green-filled) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .statusDot[data-tone="running"] { animation: none; } }
 .threadTitle {
   flex: 1; min-width: 0; padding: calc(var(--mantine-spacing-xs) / 2) 0;
   font-size: var(--mantine-font-size-sm); text-align: left;
