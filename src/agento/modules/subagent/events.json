@@ -1,0 +1,11 @@
+{
+  "job_succeed_after": [
+    {"name": "subagent_wake_parent", "class": "src.observers.WakeParentObserver", "order": 100}
+  ],
+  "job_blocked_after": [
+    {"name": "subagent_wake_parent", "class": "src.observers.WakeParentObserver", "order": 100}
+  ],
+  "job_dead_after": [
+    {"name": "subagent_wake_parent", "class": "src.observers.WakeParentObserver", "order": 100}
+  ]
+}

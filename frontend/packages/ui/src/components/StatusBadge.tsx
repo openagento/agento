@@ -14,3 +14,7 @@ const COLOR: Record<BadgeTone, MantineColor> = {
 export function StatusBadge({ tone, children }: { tone: BadgeTone; children: ReactNode }) {
   return <Badge variant="light" color={COLOR[tone]}>{children}</Badge>;
 }
+
+const JOB_TONE: Record<string, BadgeTone> = { TODO: "pending", RUNNING: "running", SUCCESS: "succeeded", FAILED: "failed", DEAD: "failed" };
+/** A `job.status` as a tone: the Jobs page and the conversation rail colour it alike. */
+export const jobTone = (status: string): BadgeTone => JOB_TONE[status] ?? "neutral";

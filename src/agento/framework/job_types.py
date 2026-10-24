@@ -72,6 +72,11 @@ def resolve_job_type(value: str) -> JobTypeLike:
     return declared
 
 
+def registered_job_types() -> tuple[str, ...]:
+    """Every value that resolves now: the built-ins, then each module declaration."""
+    return BUILTIN_JOB_TYPES + tuple(_REGISTRY)
+
+
 def clear_job_types() -> None:
     """Drop every module declaration. Called by bootstrap() on each (re)load.
 

@@ -67,22 +67,26 @@ def build_scoped_overrides(
     conn,
     agent_view_id: int | None = None,
     workspace_id: int | None = None,
+    *,
+    strict: bool = False,
 ) -> dict[str, tuple[str, bool]]:
     """Build merged DB overrides with 3-tier fallback: agent_view -> workspace -> global.
 
-    Later tiers (more specific) override earlier ones for the same path.
+    Later tiers (more specific) override earlier ones for the same path. ``strict`` is
+    passed to every tier (``load_scoped_db_overrides``): one unreadable tier must not let a
+    less specific one answer for it.
     """
     # Start with global
-    merged = load_scoped_db_overrides(conn, Scope.DEFAULT, 0)
+    merged = load_scoped_db_overrides(conn, Scope.DEFAULT, 0, strict=strict)
 
     # Layer workspace overrides
     if workspace_id is not None:
-        ws_overrides = load_scoped_db_overrides(conn, Scope.WORKSPACE, workspace_id)
+        ws_overrides = load_scoped_db_overrides(conn, Scope.WORKSPACE, workspace_id, strict=strict)
         merged.update(ws_overrides)
 
     # Layer agent_view overrides (most specific)
     if agent_view_id is not None:
-        av_overrides = load_scoped_db_overrides(conn, Scope.AGENT_VIEW, agent_view_id)
+        av_overrides = load_scoped_db_overrides(conn, Scope.AGENT_VIEW, agent_view_id, strict=strict)
         merged.update(av_overrides)
 
     return merged

@@ -1,0 +1,5 @@
+{
+  "allowed_agent_views": {"type": "string", "label": "Other agent_views this scope may delegate to (comma-separated codes; empty = own view only)"},
+  "max_children_per_job": {"type": "integer", "label": "Max sub-agents one agent may start (per job at depth 0, per agent line deeper)", "min": 1},
+  "wake_parent": {"type": "boolean", "label": "Resume the parent when all its children finish"}
+}

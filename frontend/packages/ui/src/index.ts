@@ -1,6 +1,6 @@
 export { AgentoUiProvider } from "./Provider";
 export { Button, type ButtonVariant } from "./components/Button";
-export { StatusBadge, type BadgeTone } from "./components/StatusBadge";
+export { jobTone, StatusBadge, type BadgeTone } from "./components/StatusBadge";
 export { Card } from "./components/Card";
 export { JobStatusCard, JOB_STATE_LABEL, type JobState } from "./components/JobStatusCard";
 export {
@@ -25,6 +25,6 @@ export { ConfirmDialog } from "./components/ConfirmDialog";
 export { FormSection, TextField, SelectField } from "./components/Form";
 export { ConnectionStatus, type ConnectionState } from "./components/ConnectionStatus";
 export {
-  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, ToolCall, ToolGroup,
+  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, SubagentRun, ToolCall, ToolGroup,
 } from "./components/Chat";
 export { MenuButton, Rail, SearchToggle, SplitView, ThreadList, type ThreadLink } from "./components/ChatShell";

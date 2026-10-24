@@ -218,11 +218,26 @@ class JobClaimBeforeEvent:
     This is the one dispatch in the framework that is **not fail-open**: an observer that
     raises defers the job. A claim is a decision about ordering, and an ordering rule that
     silently stops applying when its observer breaks is worse than a delayed job.
+
+    An observer may set `detach_thread = True` to take the job out of its thread: before
+    the line rules run, the framework moves it to its own default thread (`default_ref`)
+    and clears its session (framework/threads.py `place_claim`). The move is permanent, also
+    when the claim defers. A job already in its default thread stays there and continues
+    the earlier turns of that thread. For a module that gates thread context by config.
+    Checked on every claim.
+
+    An observer may set `fresh_session = True` to start this turn with no earlier session:
+    the job stays in its thread and line (the same order, the same shared directory), but
+    the claim gives it no resume target and the deprecated `resume_session_resolver` is not
+    asked. A retry still resumes its own crashed attempt. For a module that makes session
+    continuity a config choice. Checked on every claim.
     """
 
     job_id: int
     verdict: ClaimVerdict = ClaimVerdict.ALLOW
     delay_ms: int | None = None
+    detach_thread: bool = False
+    fresh_session: bool = False
 
 
 @dataclass

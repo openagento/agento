@@ -28,6 +28,8 @@ chown -R agent /app/logs 2>/dev/null || true
 # Never an entry of a run uid (20000 and up, framework/runner/uids.py): that run may be live
 # in a runner, and its runner gives the dir back itself (or at its next start). Not in a
 # runner: cron does it, and a runner start must not wait for a walk of every artifact.
+# The thread dirs (`_threads/`) are not touched either: each entry there is `agent`'s (the
+# dirs and `downloads/`) or a run uid's (what a run wrote in `shared/`).
 if [ "${1:-}" != runner ] && [ -d /workspace/artifacts ]; then
     find /workspace/artifacts -uid -20000 ! -user agent -exec chown -h agent:agent {} + 2>/dev/null || true
 fi

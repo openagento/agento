@@ -1,12 +1,14 @@
 """Per-run uids for the root runner server (docs/architecture/runner.md#per-run-uid).
 
 Each run (an ``execute``, ``run`` or ``pty`` op) gets its own uid from the runner's fixed
-range, with a primary group of the same number and no other group. The run dir is given to
-that uid with group access (``2770``), so the trusted toolbox, which has every run gid as a
-supplementary group, can write into it; another run is "other" and gets nothing. After the
-run, every process of the uid is stopped and the dir goes back to ``agent``. The one
-exception is ``AGENTO_RUN_GROUPS``: host groups an operator shares with every run, so the
-agent can write a mounted host directory (docs/deployment/docker-compose-override.md).
+range, with a primary group of the same number. The run dir is given to that uid with group
+access (``2770``), so the trusted toolbox, which has every run gid as a supplementary group,
+can write into it; another run is "other" and gets nothing. After the run, every process of
+the uid is stopped and the dir goes back to ``agent``. A run has two kinds of other group:
+``THREAD_GID``, so the runs of one thread share its ``shared/`` dir
+(docs/architecture/threads.md), and ``AGENTO_RUN_GROUPS``, host groups an operator shares
+with every run, so the agent can write a mounted host directory
+(docs/deployment/docker-compose-override.md).
 
 The server has no CAP_DAC_OVERRIDE: it never creates, writes or unlinks inside a run dir. It
 only walks it, changes owners (CAP_CHOWN) and modes (CAP_FOWNER, CAP_FSETID).
@@ -33,6 +35,11 @@ RUN_UID_SLOTS = 256
 KILL_ROUNDS = 50        # x KILL_PAUSE_S: a fork bomb of the uid gets 1 s, then the uid is kept
 KILL_PAUSE_S = 0.02
 DIR_MODE = 0o2770       # setgid: a new entry keeps the run's gid
+# Every run's supplementary group: the thread dirs are `agent:THREAD_GID`, so the runs of
+# one thread share its `shared/` (artifacts_dir.prepare_thread_dir). Below RUN_UID_BASE, so
+# no run uid has it as its own. The sandbox Dockerfile names it `agento_thread`; a test keeps
+# the two equal.
+THREAD_GID = 19990
 
 
 def uid_range(index: int) -> range:
@@ -187,7 +194,7 @@ def reclaim(state_dir: str, uid: int, gid: int) -> set[int]:
     return kept
 
 
-# Set once at boot by `set_shared_groups`; empty unless the operator sets AGENTO_RUN_GROUPS.
+# Set once at boot by `set_shared_groups`: THREAD_GID and the operator's AGENTO_RUN_GROUPS.
 _shared_groups: tuple[int, ...] = ()
 
 
@@ -207,8 +214,9 @@ def parse_shared_groups(value: str, agent_gid: int) -> tuple[int, ...]:
 
 
 def set_shared_groups(gids: tuple[int, ...]) -> None:
+    """The groups of every run: ``gids`` (``AGENTO_RUN_GROUPS``) and ``THREAD_GID``."""
     global _shared_groups
-    _shared_groups = gids
+    _shared_groups = gids if THREAD_GID in gids else (*gids, THREAD_GID)
 
 
 def as_uid(uid: int) -> dict:

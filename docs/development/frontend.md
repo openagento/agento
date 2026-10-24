@@ -84,7 +84,8 @@ npm test            # build, lint, then every unit test and every story in headl
   timeline page, an older page ("Load older") and each stream frame merge into it, so an event seen
   twice renders once. The hub opens the stream with `?after=<newest id of the page>`, so there is no
   window between them; a stream frame that changes a message or a run also refetches the messages
-  and the runs over REST (debounced). The turn state and Unblock still come from the messages. When
+  and the runs over REST, at most once per 2 s (`REFETCH_MS`: one tab on a run with sub-agents
+  otherwise passes `limits/max_requests_per_user`); the list keeps its own 10 s poll. The turn state and Unblock still come from the messages. When
   the stream is down, the REST poll (10 s while a run is in flight, 30 s idle) is the fallback:
   each tick pages the timeline forward through `GET …/events?after=<cursor>` and refetches the
   runs. The cursor is the highest id up to which every event is held: only replay pages (or the
@@ -121,10 +122,12 @@ npm test            # build, lint, then every unit test and every story in headl
   row actions, and the kit has no menu class (ROADMAP: the `.ag-menu` twin is due in a later kit version
   if a miniapp ever needs a menu).
 - **The chat is panel-only.** `ChatLayout`, `ChatList`, `ChatMessage`, `ToolCall`, `ToolGroup`,
-  `Reasoning`, `ChatStatus`, `ChatError`, `ChatComposer`, `SplitView`, `Rail`, `SearchToggle`, `ThreadList` and
+  `SubagentRun`, `Reasoning`, `ChatStatus`, `ChatError`, `ChatComposer`, `SplitView`, `Rail`, `SearchToggle`, `ThreadList` and
   `MenuButton` (`packages/ui/src/components/Chat*.tsx`) are Mantine components with no `.ag-*`
   twin: a miniapp shows no chat (UI-2). The timeline fills the shell's main area; below `sm` the
   thread list is a `Drawer`. Each rendered timeline item is exactly one `li` of `ChatList`.
+  A sub-agent's job is a `SubagentRun` card (collapsed, with its state badge) nested in its
+  parent's turn; open, it holds its own `ChatList` ([conversation.md](../modules/conversation.md#turns-and-sub-agents-in-the-panel)).
   `Rail` is the thread column: a fixed top block (new conversation, the `SearchToggle`, and — when
   search is open or the reader is an admin — the search box beside the scope picker) over a
   scrolling `ThreadList`. A `ThreadLink` with `onPin` / `onRename` / `actions` shows a `RowMenu` on

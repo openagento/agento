@@ -14,13 +14,13 @@ pytestmark = pytest.mark.usefixtures("builtin_harnesses")
 def db(monkeypatch):
     rows: dict[tuple[Scope, int], dict[str, tuple[str | None, bool]]] = {}
 
-    def _load(_conn, scope, scope_id):
+    def _load(_conn, scope, scope_id, *, strict=False):
         return dict(rows.get((scope, scope_id), {}))
 
     monkeypatch.setattr("agento.framework.scoped_config.load_scoped_db_overrides", _load)
     monkeypatch.setattr(
         "agento.framework.config_resolver.ScopedConfigService._resolve_workspace_id",
-        staticmethod(lambda _conn, _id: 3),
+        staticmethod(lambda _conn, _id, *, strict=False: 3),
     )
     monkeypatch.setattr(
         "agento.framework.agent_view_runtime.get_agent_view",

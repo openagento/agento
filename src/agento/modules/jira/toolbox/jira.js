@@ -19,6 +19,37 @@ const ATTACHMENT_DOWNLOAD_CONCURRENCY = 6;
 // Validated before issue_key becomes a filesystem path below (anti path-traversal / least-privilege).
 const JIRA_KEY_RE = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 
+// An attachment file name as one safe path segment: separators and anything outside a
+// small set become `_`, and the extension (which picks the converter) is kept.
+function safeName(filename) {
+  return String(basename(String(filename))).replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '_').slice(-200);
+}
+
+// Where an issue's attachments go: the thread's downloads dir, which every turn of the
+// thread reads, so three comments on one issue fetch each file once; else the run dir.
+// `root` marks the tool-owned tree for the FileManager (symlinks refused, read-only files).
+function attachmentTarget(downloadsDir, artifactsDir, issueKey) {
+  return downloadsDir
+    ? { dir: join(downloadsDir, 'jira', issueKey), root: downloadsDir }
+    : { dir: join(artifactsDir, 'jira', issueKey) };
+}
+
+// Jira gives each attachment an id (numeric); it names the attachment's file as is.
+const ATTACHMENT_ID_RE = /^[A-Za-z0-9]+$/;
+const NO_ATTACHMENT_ID = 'Jira gave no attachment id';
+
+// The FileManager options of one attachment. In the thread's downloads tree: an exact name
+// per attachment id, so a second turn finds the first turn's file and does not fetch it
+// again. In a run dir (no thread): a generated name, as a run can plant entries there.
+// Null when Jira gave no such id: two such attachments could share one name.
+function attachmentOptions(att, target, authHeader) {
+  const idOk = (typeof att.id === 'string' || typeof att.id === 'number') && ATTACHMENT_ID_RE.test(String(att.id));
+  if (!idOk) return null;
+  const options = { headers: authHeader, ...target, maxSize: att.size };
+  if (!target.root) return options;
+  return { ...options, name: `${att.id}_${safeName(att.filename)}`, skipExisting: true };
+}
+
 // Run `worker` over `items` with at most `limit` concurrent in-flight calls.
 // Used to bound parallel attachment downloads (avoids hammering Jira / the FS).
 async function mapWithConcurrency(items, limit, worker) {
@@ -63,7 +94,7 @@ export async function healthcheck({ moduleConfigs, sanitizeHealthError }) {
   }
 }
 
-export function register(server, { log, moduleConfigs, isToolEnabled, artifactsDir, fileManager }) {
+export function register(server, { log, moduleConfigs, isToolEnabled, artifactsDir, downloadsDir, fileManager }) {
   const cfg = moduleConfigs?.jira || {};
   const config = {
     host: cfg.jira_host || null,
@@ -132,7 +163,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
       'jira_get_issue',
       [
         'Get full details of a Jira issue by key. Returns summary, status, assignee (with accountId), reporter (with accountId), priority, dates, description, comments, and attachments.',
-        'Attachments are automatically downloaded to the artifacts directory. Binary files (PDF, XLSX) are auto-converted to text formats (MD, CSV) when converters are available.',
+        'Attachments are automatically downloaded. In a job they go to the thread downloads directory, which is read-only and shared by the turns of the issue (an earlier turn may have downloaded them already); copy a file to ./shared to change it. Binary files (PDF, XLSX) are auto-converted to text formats (MD, CSV) when converters are available.',
         'Image attachments are referenced in description/comments as [Obrazek: filename](local_path). To view an image, use the Read tool on the local path.',
         'For converted files, use the Read tool on convertedPath (e.g. .md for PDF, .csv for XLSX).',
         'Comments include author accountId — use it with jira_add_comment reply_to_comment_id to reply.',
@@ -183,16 +214,20 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
           const errorMap = new Map();  // att.id -> real download/convert failure reason
           const imageMap = new Map();  // filename -> localPath (for inline image refs)
 
-          if (toDownload.length > 0 && fileManager) {
-            const dir = `${artifactsDir}/jira/${data.key}`;
+          // `data.key` comes from the Jira site, and it becomes a path: same rule as issue_key.
+          if (toDownload.length > 0 && fileManager && !JIRA_KEY_RE.test(String(data.key))) {
+            for (const att of toDownload) errorMap.set(att.id, `invalid issue key "${data.key}" from Jira`);
+          } else if (toDownload.length > 0 && fileManager) {
+            const target = attachmentTarget(downloadsDir, artifactsDir, data.key);
 
             await mapWithConcurrency(toDownload, ATTACHMENT_DOWNLOAD_CONCURRENCY, async (att) => {
+              const options = attachmentOptions(att, target, authHeader);
+              if (!options) {
+                errorMap.set(att.id, NO_ATTACHMENT_ID);
+                return;
+              }
               try {
-                const result = await fileManager.download(att.content, att.filename, {
-                  headers: authHeader,
-                  dir,
-                  maxSize: att.size,
-                });
+                const result = await fileManager.download(att.content, att.filename, options);
                 if (result.skipped) {
                   errorMap.set(att.id, result.skipReason);
                   log('jira_get_issue', 'WARN', `Attachment skipped: ${att.filename}: ${result.skipReason}`);
@@ -798,17 +833,14 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
             throw new Error(`HTTP ${metaRes.status}: ${text}`);
           }
           const meta = await metaRes.json();
-
           if (!fileManager) {
             throw new Error('File manager unavailable');
           }
 
-          const dir = join(artifactsDir, 'jira', issue_key);
-          const result = await fileManager.download(meta.content, meta.filename, {
-            headers: authHeader,
-            dir,
-            maxSize: meta.size,
-          });
+          // The file name is the id Jira gave with the content, not the caller's argument.
+          const options = attachmentOptions(meta, attachmentTarget(downloadsDir, artifactsDir, issue_key), authHeader);
+          if (!options) throw new Error(NO_ATTACHMENT_ID);
+          const result = await fileManager.download(meta.content, meta.filename, options);
 
           if (result.skipped) {
             log('jira_get_attachment', 'WARN', `user=${user} ${issue_key} att=${attachment_id} skipped: ${result.skipReason}`);

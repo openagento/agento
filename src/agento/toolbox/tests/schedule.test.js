@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { enqueueJob } from '../job-enqueue.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEDULE_PATH = path.resolve(__dirname, '../../modules/core/toolbox/schedule.js');
@@ -26,7 +27,7 @@ function fakeServer() {
 //     duplicate, else [[]]
 //   INSERT -> [ {affectedRows} ]
 function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null, insertDupError = false,
-                         failOutbox = false, insertId = 777 } = {}) {
+                         failOutbox = false, insertId = 777, thread = null } = {}) {
   const calls = { getConnection: 0, executed: [], released: 0, begin: 0, commit: 0, rollback: 0 };
   const conn = {
     async beginTransaction() { calls.begin += 1; },
@@ -40,6 +41,7 @@ function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null, 
         if (failOutbox) throw new Error('outbox boom');
         return [{ affectedRows: 1 }];
       }
+      if (/FROM thread/i.test(sql)) return [thread ? [thread] : []];
       if (/^\s*SELECT/i.test(sql) && /idempotency_key/i.test(sql)) return [dupRow ? [dupRow] : []];
       if (/^\s*SELECT/i.test(sql)) return [jobRow ? [jobRow] : []];
       // Simulate a lost race: the dedupe SELECT saw no row, but a concurrent
@@ -61,7 +63,7 @@ function fakeDb(jobRow, { affectedRows = 1, failExecute = false, dupRow = null, 
 const FUTURE = '2099-01-01T08:00:00';
 
 function baseCtx(overrides = {}) {
-  return { log: vi.fn(), db: {}, isToolEnabled: () => true, jobId: 42, ...overrides };
+  return { log: vi.fn(), db: {}, isToolEnabled: () => true, jobId: 42, enqueueJob, ...overrides };
 }
 
 async function loadRegister() {
@@ -326,5 +328,96 @@ describe('schedule_followup announces the job (ROADMAP F14)', () => {
     expect(calls.commit).toBe(0);
     expect(calls.rollback).toBeGreaterThanOrEqual(1);
     expect(calls.released).toBe(1);
+  });
+});
+
+describe('schedule_followup in a delegated job', () => {
+  it('depth > 0 → refused with the delegated-job text, no INSERT', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb({ source: 'subagent', reference_id: '41', agent_view_id: 3, priority: 50, depth: 1 });
+    register(server, baseCtx({ db }));
+    const res = await server.tools.schedule_followup.handler({
+      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+    });
+    expect(res).toEqual({
+      content: [{ type: 'text', text: 'schedule_followup is not available in a delegated job' }],
+      isError: true,
+    });
+    expect(calls.executed).toHaveLength(1);
+    expect(calls.executed[0].sql).toMatch(/\bdepth\b/);
+    expect(calls.commit).toBe(0);
+    expect(calls.rollback).toBe(1);
+    expect(calls.released).toBe(1);
+  });
+
+  it('depth 0 → the follow-up is a root job (parent_job_id NULL, depth 0)', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb({ source: 'jira', reference_id: 'AG-1', agent_view_id: 3, priority: 50, depth: 0 });
+    register(server, baseCtx({ db }));
+    const res = await server.tools.schedule_followup.handler({
+      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+    });
+    expect(res.isError).toBeFalsy();
+    const insert = calls.executed.find((c) => /INSERT INTO job\b/i.test(c.sql) && !/outbox/i.test(c.sql));
+    expect(insert.sql).toMatch(/parent_job_id, depth/);
+    // [source, agent_view_id, priority, reference_id, context, key, type, max_attempts, parent_job_id, depth, scheduled_after]
+    expect(insert.params.slice(6, 10)).toEqual(['followup', 3, null, 0]);
+    expect(calls.commit).toBe(1);
+  });
+});
+
+describe('schedule_followup continues the current job thread', () => {
+  const ARGS = { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' };
+  const insertOf = (calls) => calls.executed.find((c) => /INSERT INTO job/i.test(c.sql) && !/outbox/i.test(c.sql));
+
+  it('copies thread_id from the current job, checked against its view', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(
+      { source: 'jira', reference_id: 'AI-9', agent_view_id: 7, priority: 20, depth: 0, thread_id: 5 },
+      { thread: { agent_view_id: 7 } });
+    register(server, baseCtx({ db }));
+
+    const res = await server.tools.schedule_followup.handler(ARGS);
+
+    expect(res.isError).toBeFalsy();
+    expect(calls.executed[0].sql).toMatch(/thread_id FROM job WHERE id = \?/);
+    const thread = calls.executed.find((c) => /FROM thread/i.test(c.sql));
+    expect(thread.params).toEqual([5]);
+    const insert = insertOf(calls);
+    expect(insert.sql).toMatch(/thread_id, line_id/);
+    expect(insert.params.at(-3)).toBe(5);
+    expect(insert.params.at(-2)).toBeNull();
+  });
+
+  it('a job with no view passes no thread: the follow-up gets its own at claim', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(
+      { source: 'jira', reference_id: 'AI-9', agent_view_id: null, priority: 20, depth: 0, thread_id: 5 });
+    register(server, baseCtx({ db }));
+
+    const res = await server.tools.schedule_followup.handler(ARGS);
+
+    expect(res.isError).toBeFalsy();
+    expect(calls.executed.some((c) => /FROM thread/i.test(c.sql))).toBe(false);
+    expect(insertOf(calls).params.at(-3)).toBeNull();
+  });
+
+  it('a thread of another view is refused and nothing is written', async () => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb(
+      { source: 'jira', reference_id: 'AI-9', agent_view_id: 7, priority: 20, depth: 0, thread_id: 5 },
+      { thread: { agent_view_id: 8 } });
+    register(server, baseCtx({ db }));
+
+    const res = await server.tools.schedule_followup.handler(ARGS);
+
+    expect(res.isError).toBe(true);
+    expect(insertOf(calls)).toBeUndefined();
+    expect(calls.rollback).toBe(1);
   });
 });

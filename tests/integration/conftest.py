@@ -264,6 +264,19 @@ def _framework_registries():
 
 
 @pytest.fixture(autouse=True)
+def _thread_group_of_this_host():
+    """The thread dirs get group THREAD_GID (artifacts_dir.prepare_thread_dir). A host that
+    is not in that group (a developer's machine) gives them its own group instead; root and
+    the image's `agent` keep the real one."""
+    from agento.framework.runner import uids
+    if os.geteuid() == 0 or uids.THREAD_GID in os.getgroups():
+        yield
+        return
+    with patch.object(uids, "THREAD_GID", os.getgid()):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _runner(start_runner):
     """Every agent CLI starts in a runner (WS5): an in-process one per test, so a consumer
     run here goes through the socket, as in a deployment."""
@@ -337,7 +350,7 @@ _WIPED_TABLES = (
     "conversation", "conversation_event", "message", "conversation_prune_watermark",
     "launch", "session", "role_grant", "`user`", "credential_login", "limit_bucket",
     "outlook_poll_cursor", "miniapp", "miniapp_activation", "miniapp_member",
-    "versioned_artifact", "versioned_artifact_audit",
+    "versioned_artifact", "versioned_artifact_audit", "thread",
 )
 
 

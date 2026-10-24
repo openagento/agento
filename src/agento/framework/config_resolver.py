@@ -412,11 +412,15 @@ class ScopedConfigService:
     exposes the raw merged dict for dict-indexing consumers.
     """
 
-    def __init__(self, conn, scope: str = "default", scope_id: int = 0, workspace_id: int | None = None):
+    def __init__(self, conn, scope: str = "default", scope_id: int = 0, workspace_id: int | None = None,
+                 *, strict: bool = False):
         """Build a resolver for a (scope, scope_id).
 
         When ``scope`` is agent_view, pass ``workspace_id`` if already known to
-        skip the ``agent_view -> workspace`` lookup query.
+        skip the ``agent_view -> workspace`` lookup query. ``strict`` raises when a
+        scope level cannot be read (a failed query, an agent_view that does not exist)
+        instead of resolving without it: for a security gate, "unreadable" must never
+        become "unset" and let a less specific level answer.
         """
         from .scoped_config import (
             Scope,
@@ -432,19 +436,21 @@ class ScopedConfigService:
         if scope == Scope.AGENT_VIEW:
             agent_view_id = scope_id
             if workspace_id is None:
-                workspace_id = self._resolve_workspace_id(conn, scope_id)
+                workspace_id = self._resolve_workspace_id(conn, scope_id, strict=strict)
         elif scope == Scope.WORKSPACE:
             workspace_id = scope_id
 
         self._overrides = build_scoped_overrides(
-            conn, agent_view_id=agent_view_id, workspace_id=workspace_id
+            conn, agent_view_id=agent_view_id, workspace_id=workspace_id, strict=strict
         )
         # Rows set at exactly this (scope, scope_id) — for db:inherited detection.
-        self._scope_overrides = load_scoped_db_overrides(conn, scope, scope_id)
+        self._scope_overrides = load_scoped_db_overrides(conn, scope, scope_id, strict=strict)
 
     @staticmethod
-    def _resolve_workspace_id(conn, agent_view_id: int) -> int | None:
+    def _resolve_workspace_id(conn, agent_view_id: int, *, strict: bool = False) -> int | None:
         if conn is None:
+            if strict:
+                raise RuntimeError("no database connection")
             return None
         try:
             with conn.cursor() as cur:
@@ -455,7 +461,11 @@ class ScopedConfigService:
                 if row:
                     return row["workspace_id"] if isinstance(row, dict) else row[0]
         except Exception:
+            if strict:
+                raise
             logger.warning("Failed to resolve workspace_id for agent_view_id=%s", agent_view_id)
+        if strict:
+            raise LookupError(f"agent_view {agent_view_id} not found")
         return None
 
     @property

@@ -42,8 +42,12 @@ def _send(conn, cid, world, client_message_id, content) -> tuple[int, int]:
 
 
 def _finish(conn, message_id: int) -> None:
+    # The job too: the framework's line rule (framework/threads.py) also holds a later turn
+    # while an earlier job of the conversation's thread is open.
     with conn.cursor() as cur:
         cur.execute("UPDATE message SET job_state = 'terminal' WHERE id = %s", (message_id,))
+        cur.execute("UPDATE job SET status = 'SUCCESS' WHERE id = "
+                    "(SELECT job_id FROM message WHERE id = %s)", (message_id,))
     conn.commit()
 
 
@@ -77,6 +81,33 @@ def test_two_turns_of_one_thread_are_claimed_in_order(
     _release(conn)
 
     assert consumer._try_dequeue().id == second_job
+
+
+def test_an_earlier_message_published_late_does_not_livelock_with_the_line_rule(
+    conn, world, int_db_config, int_consumer_config, monkeypatch
+):
+    """Message order is not job-id order when an earlier turn is published late (a lost
+    publish that the sweep repeats). The module defers the later message's LOWER job id;
+    that deferral is the module's, not a line wait, so it must not hold the earlier
+    message's job behind it, or each rule waits for the other forever."""
+    cid = _thread(conn, world)
+    real = service.complete_pending
+    monkeypatch.setattr(service, "complete_pending", lambda c, m: None)   # M1's publish is lost
+    first_msg, _, _ = service.submit_message(conn, conversation_id=cid, user_id=world["owner"].id,
+                                             client_message_id="c1", content="pierwsze")
+    monkeypatch.setattr(service, "complete_pending", real)
+    _, second_job = _send(conn, cid, world, "c2", "drugie")
+    first_job = real(conn, first_msg)
+    assert second_job < first_job
+    consumer = _consumer(int_db_config, int_consumer_config)
+
+    claimed = []
+    for _ in range(3):
+        claimed += [consumer._try_dequeue(), consumer._try_dequeue()]
+        _release(conn)
+
+    assert first_job in [j.id for j in claimed if j is not None]
+    assert second_job not in [j.id for j in claimed if j is not None]
 
 
 def test_a_deferred_turn_does_not_hold_another_thread(

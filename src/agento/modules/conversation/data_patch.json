@@ -1,0 +1,5 @@
+{
+    "patches": [
+        {"name": "AssignConversationThreads", "class": "src.patches.assign_conversation_threads.AssignConversationThreads"}
+    ]
+}

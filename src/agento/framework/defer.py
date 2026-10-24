@@ -41,12 +41,14 @@ def defer_seconds(delay_ms: object) -> int:
     return -(-clamp_delay(delay_ms) // 1000)
 
 
-def open_or_bump_stretch(cur, *, job_id: int) -> tuple[int, int]:
+def open_or_bump_stretch(cur, *, job_id: int, line_wait: bool = False) -> tuple[int, int]:
     """Open this job's stretch, or count one more deferral on the open one.
 
     Returns `(stretch_seq, defer_count)`. Runs on the CALLER's cursor, inside the claim
     transaction - a count that committed while the deferral rolled back would announce a
-    block that never happened.
+    block that never happened. `line_wait` records the cause of this deferral: the
+    framework's line rule (True) or an observer (False). Only a line wait keeps the job
+    ahead of the later turns of its line (`threads.line_blocked`).
     """
     cur.execute(
         "SELECT id, stretch_seq, defer_count FROM job_defer_stretch "
@@ -56,8 +58,9 @@ def open_or_bump_stretch(cur, *, job_id: int) -> tuple[int, int]:
     row = cur.fetchone()
     if row is not None:
         cur.execute(
-            "UPDATE job_defer_stretch SET defer_count = defer_count + 1 WHERE id = %s",
-            (row["id"],),
+            "UPDATE job_defer_stretch SET defer_count = defer_count + 1, line_wait = %s "
+            "WHERE id = %s",
+            (line_wait, row["id"]),
         )
         return row["stretch_seq"], row["defer_count"] + 1
 
@@ -67,8 +70,9 @@ def open_or_bump_stretch(cur, *, job_id: int) -> tuple[int, int]:
     )
     stretch_seq = cur.fetchone()["next"]
     cur.execute(
-        "INSERT INTO job_defer_stretch (job_id, stretch_seq, defer_count) VALUES (%s, %s, 1)",
-        (job_id, stretch_seq),
+        "INSERT INTO job_defer_stretch (job_id, stretch_seq, defer_count, line_wait) "
+        "VALUES (%s, %s, 1, %s)",
+        (job_id, stretch_seq, line_wait),
     )
     return stretch_seq, 1
 

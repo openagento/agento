@@ -120,6 +120,7 @@ export type Item =
   | Run;
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
+const num = (v: unknown) => (typeof v === "number" ? v : null);
 
 /** The open partial segment of each kind, per run (B1: stream order, no id). */
 interface Open { text?: Text; reasoning?: Thought }
@@ -233,25 +234,78 @@ export function buildItems(events: StreamEvent[]): Item[] {
     if (!run.finished) continue;
     for (const i of run.items) if (i.type === "text" || i.type === "reasoning") i.live = false;
   }
-  return top;
+  return nest(top);
+}
+
+// --- sub-agents: a child job's runs sit inside its parent's run ------------------------------
+
+const jobOf = (r: Run) => num(r.started?.job_id ?? r.finished?.job_id);
+
+/** The `agent_run` tool (any harness prefix, e.g. `mcp__agento__agent_run`). */
+const AGENT_RUN = /(^|__|\.)agent_run$/;
+
+/** The job id an `agent_run` call returned. Its output is a run detail: a reader without
+ *  `conversation.run_details` gets none, so the child goes to the end of the parent run. */
+export function spawnedJob(t: Tool): number | null {
+  if (!AGENT_RUN.test(t.name) || t.output === undefined) return null;
+  const text = typeof t.output === "string" ? t.output : JSON.stringify(t.output);
+  const m = /\\?"job_id\\?"\s*:\s*(\d+)/.exec(text);
+  return m ? Number(m[1]) : null;
+}
+
+/** Each run with `depth > 0` moves into the newest loaded run of its `parent_job_id`: after
+ *  the `agent_run` call that returned its job id, else at the end. A child whose parent run is
+ *  not loaded stays top-level. Children of a child nest the same way. */
+function nest(top: Item[]): Item[] {
+  const parents = new Map<number, Run>();
+  for (const i of top) {
+    const job = i.type === "run" ? jobOf(i) : null;
+    if (job !== null) parents.set(job, i as Run);
+  }
+  return top.filter((i) => {
+    if (i.type !== "run" || !num(i.started?.depth)) return true;
+    const parent = parents.get(num(i.started?.parent_job_id) ?? NaN);
+    if (!parent || parent === i) return true;
+    const job = jobOf(i);
+    let at = parent.items.findIndex((x) => x.type === "tool" && job !== null && spawnedJob(x) === job);
+    if (at === -1) { parent.items.push(i); return false; }
+    while (parent.items[at + 1]?.type === "run") at += 1;
+    parent.items.splice(at + 1, 0, i);
+    return false;
+  });
 }
 
 // --- the chat view of the items (U2-U4) ---------------------------------------------------
 
 export interface ToolGroupItem { type: "tools"; key: string; tools: Tool[] }
-export type Shown = Exclude<Item, Run> | ToolGroupItem;
+/** A sub-agent's job inside its parent's turn: every attempt of it, as one turn. */
+export interface SubagentItem { type: "subagent"; key: string; turn: Turn }
+export type Shown = Exclude<Item, Run> | ToolGroupItem | SubagentItem;
 
-/** Two or more tool calls in a row fold into one group ("Used N tools"). */
+/** Two or more tool calls in a row fold into one group ("Used N tools"). The runs of one
+ *  sub-agent job become one `subagent` item, at its first run's place. */
 export function foldTools(items: Item[]): Shown[] {
   const out: Shown[] = [];
+  const children = new Map<string, Run[]>();
+  const pending: [SubagentItem, Run[]][] = [];
   for (const i of items) {
-    if (i.type === "run") continue;
+    if (i.type === "run") {
+      const id = jobKey(i);
+      const runs = children.get(id);
+      if (runs) { runs.push(i); continue; }
+      const item = { type: "subagent", key: i.key } as SubagentItem;
+      children.set(id, [i]);
+      pending.push([item, children.get(id)!]);
+      out.push(item);
+      continue;
+    }
     const last = out.at(-1);
     if (i.type !== "tool") { out.push(i); continue; }
     if (last?.type === "tools") last.tools.push(i);
     else if (last?.type === "tool") out[out.length - 1] = { type: "tools", key: `tools-${last.key}`, tools: [last, i] };
     else out.push(i);
   }
+  for (const [item, runs] of pending) item.turn = turnOf(runs);
   return out;
 }
 
@@ -270,13 +324,33 @@ export interface Failure {
  *  folded failure and "attempt n of m" (B7). */
 export interface Turn {
   type: "turn"; key: string;
+  /** The newest attempt's execution (its row in `ThreadDetail.runs`). */
+  executionId: string;
   /** `run.started` of the first attempt (the trigger) and of the newest one. */
   first: Record<string, unknown> | null; started: Record<string, unknown> | null;
   finished: Record<string, unknown> | null;
   items: Shown[]; failure: Failure | null; attempt: number | null; maxAttempts: number | null;
 }
 
-const num = (v: unknown) => (typeof v === "number" ? v : null);
+const jobKey = (r: Run) => {
+  const job = r.started?.job_id ?? r.finished?.job_id;
+  return job === undefined ? `x:${r.executionId}` : `j:${String(job)}`;
+};
+
+/** A sub-agent's turn (`depth > 0`). One whose parent run is not loaded stays top-level. */
+export const isSubagent = (t: Turn) => (num(t.first?.depth) ?? 0) > 0;
+
+/** The turn of job `job`, at the top level or inside a sub-agent card at any depth. */
+export function findTurn(items: readonly (Shown | Exclude<Item, Run> | Turn)[], job: number): Turn | null {
+  for (const i of items) {
+    const t = i.type === "turn" ? i : i.type === "subagent" ? i.turn : null;
+    if (!t) continue;
+    if (num(t.started?.job_id ?? t.finished?.job_id ?? t.first?.job_id) === job) return t;
+    const inner = findTurn(t.items, job);
+    if (inner) return inner;
+  }
+  return null;
+}
 
 /** The top-level items with each job's runs merged into one turn, at its first run's place. */
 export function turns(top: Item[]): (Exclude<Item, Run> | Turn)[] {
@@ -284,8 +358,7 @@ export function turns(top: Item[]): (Exclude<Item, Run> | Turn)[] {
   const out: (Exclude<Item, Run> | Run[])[] = [];
   for (const i of top) {
     if (i.type !== "run") { out.push(i); continue; }
-    const job = i.started?.job_id ?? i.finished?.job_id;
-    const id = job === undefined ? `x:${i.executionId}` : `j:${String(job)}`;
+    const id = jobKey(i);
     const runs = jobs.get(id);
     if (runs) runs.push(i);
     else { jobs.set(id, [i]); out.push(jobs.get(id)!); }
@@ -304,7 +377,7 @@ function turnOf(runs: Run[]): Turn {
   const outcome = newest.finished ? str(newest.finished.outcome) : "";
   const failed = mine.some((e) => e.attempt !== undefined) || outcome === "failed" || outcome === "dead";
   return {
-    type: "turn", key: runs[0].key, first: runs[0].started, started: newest.started, finished: newest.finished,
+    type: "turn", key: runs[0].key, executionId: newest.executionId, first: runs[0].started, started: newest.started, finished: newest.finished,
     items: foldTools(newest.items.filter((x) => !isErr(x))),
     failure: mine.length || failed ? {
       text: mine.at(-1)?.text ?? "The run failed.",

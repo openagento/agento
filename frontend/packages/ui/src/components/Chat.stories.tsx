@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import { useState } from "react";
 import {
-  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, ToolCall, ToolGroup,
+  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, SubagentRun, ToolCall, ToolGroup,
 } from "./Chat";
 import { SplitView, ThreadList } from "./ChatShell";
 import { RowMenu } from "./RowMenu";
@@ -50,6 +50,29 @@ export const ToolsAndErrors: StoryObj = {
   },
 };
 
+export const Subagents: StoryObj = {
+  render: () => (
+    <ChatList>
+      <li><ToolCall summary="agent_run" running={false} duration="0.2 s" /></li>
+      <li>
+        <SubagentRun label="Sub-agent #12 · reviewer · claude" state="succeeded">
+          <ChatList>
+            <li><ToolCall summary="Read src/app.py" running={false} duration="0.1 s" /></li>
+            <li><ChatMessage author="assistant" text="Two findings." /></li>
+          </ChatList>
+        </SubagentRun>
+      </li>
+      <li><SubagentRun label="Sub-agent #13 · tester" state="running" /></li>
+    </ChatList>
+  ),
+  play: async ({ canvasElement }) => {
+    const row = within(canvasElement).getByRole("button", { name: /Sub-agent #12/ });
+    await expect(row).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(row);
+    await expect(row).toHaveAttribute("aria-expanded", "true");
+  },
+};
+
 export const Status: StoryObj = {
   render: () => (
     <>
@@ -63,7 +86,10 @@ function Screen() {
   const [text, setText] = useState("");
   return (
     <SplitView navLabel="Conversations" nav={() => (
-      <ThreadList groups={[{ label: "Today", threads: [{ id: 1, title: "List the files", description: "Support", live: true, active: true, onSelect: () => undefined }] }]} />
+      <ThreadList groups={[{ label: "Today", threads: [{ id: 1, title: "List the files", description: "Support", live: true, active: true, onSelect: () => undefined,
+        children: [{ id: "job-2", title: "Sub-agent #2", status: "succeeded", onSelect: () => undefined,
+          children: [{ id: "job-3", title: "Sub-agent #3", status: "running", onSelect: () => undefined },
+            { id: "job-4", title: "Sub-agent #4", status: "pending", onSelect: () => undefined }] }] }] }]} />
     )}>
       <ChatLayout title="List the files" actions={<RowMenu label="Conversation actions" details={[{ label: "Attempt", value: "1 of 3" }]} actions={[]} />}
         footer={<ChatComposer value={text} onChange={setText} onSend={() => setText("")} canSend hint="Enter sends." />}>

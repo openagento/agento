@@ -17,7 +17,7 @@ the four identifiers and the event contract. This page is the module's operation
 
 | Table | Holds |
 | --- | --- |
-| `conversation` | One thread: its owner, its agent_view, `active` or `archived`, and `pinned_at` (NULL = not pinned). |
+| `conversation` | One thread: its owner, its agent_view, `active` or `archived`, `pinned_at` (NULL = not pinned), and `thread_id` — the framework thread it shows, one conversation per thread (migration 007). |
 | `message` | One turn. A `user` row carries the job bookkeeping (`job_id`, `execution_id`, `job_state`); a CHECK keeps that off an `assistant` row. |
 | `execution` | One attempt at answering a turn. `execution_id` is unique; `(job_id, attempt)` is **not** — the pool-wait path refunds an attempt, so two real attempts can carry one number. The mint writes the attempt's harness, provider, model and `credential_id` (an id; the label is read through a join). |
 | `conversation_event` | The append-only log a stream replays. Its `id` is the cursor, and it is global, not per-thread. `UNIQUE (source_kind, source_id)` makes the relay idempotent. |
@@ -62,7 +62,7 @@ tool's input or output) before the per-run byte cap counts it.
 | --- | --- | --- |
 | POST | `/api/conversation/threads` | `201 {id}` |
 | GET | `/api/conversation/threads` | the caller's active threads; `?scope=channels[&channel=<source>][&before=<cursor>]` lists the channel threads instead (admins only, a non-admin gets `[]`), newest activity first, each row with a `cursor` for the next page |
-| GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (harness, provider, credential label, model, tokens and job id only with `run_details`) |
+| GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (harness, provider, credential label, model, tokens, job id, and a sub-agent's `parent_job_id`, `depth`, `resume_job_id` and `agent_view` only with `run_details`; the `run.started` event carries `parent_job_id` and `depth` for every reader, and `resume_job_id` and `agent_view` only with `run_details`), and its newest 50 sub-agent `jobs` (`id`, `parent_job_id`, `depth`, `status`, for every reader: the rail's tree) |
 | GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&limit=<n>`: one page of events, oldest first, `{events, has_older, newest_id}`; a `before` at or below the prune watermark is `409 cursor_expired` |
 | PATCH | `/api/conversation/threads/{id}` | `{title?, pinned?}`: renames the thread, pins or unpins it — the refreshed thread; `400` on an empty body, a title past 255 characters or a non-boolean `pinned`, `404` on a thread this caller cannot see or that has no owner, `409` past `MAX_PINNED` (50) pinned threads |
 | DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path) |
@@ -111,6 +111,32 @@ model, tokens and job id. `admin` has it built in; a
 (`bin/agento grant:add --role user --operation conversation.run_details --workspace <code>`).
 Tool names, statuses and the fact of an error stay visible to everyone who reads the thread.
 
+### Turns and sub-agents in the panel
+
+A conversation is one thread, and each job of the thread is one turn: a Jira issue that had
+seven rounds shows seven turns. A run with `depth > 0` (a sub-agent job) is not a turn. It is a
+collapsed card inside its parent's turn — "Sub-agent #id · view · harness · resumes #id" and
+its state — that opens to the child's own items and answer. The card sits after the
+`agent_run` call that returned its job id; without `run_details` the tool output is not sent,
+so it goes to the end of the parent's run. The view, the resumed job and the harness are run
+details and are left out without the grant. A child whose parent run is not loaded (an older
+page) stays at the top level as "Sub-agent #id of #parent". A run is known as a sub-agent's
+only from its `run.started` event: when that event is on an older page that is not loaded (or
+was trimmed from the timeline), the run shows as a plain turn until "Load older" brings it back.
+In a channel thread, a follow-up turn
+(`schedule_followup`, or a sub-agent's wake) is labelled "Follow-up", with "resumes #id" when
+it continues a session.
+
+The rail shows the same nesting as a tree under the open conversation: one row per sub-agent
+job, under its parent job's row, built from the thread's `jobs` (a queued job has a row too).
+Between the chevron and the name a dot shows the job's status in the Jobs page tones (TODO
+gray, SUCCESS green, FAILED and DEAD red), and a running job's dot pulses green. A click on a job row opens
+`/conversations/<id>?job=<job id>`: the main panel shows only that job's run (its task with
+`run_details`, its items, its own sub-agents as cards), read-only, with a link back. A click on
+the open conversation or the open job folds or unfolds its rows. A child whose parent is not in
+the newest 50 jobs hangs from the conversation. A job whose events are on an older page says
+"This run is not loaded" until "Load older" brings them.
+
 ### Channel write (ACL resource)
 
 A **channel** thread mirrors a Jira issue or a mailbox, so a post into it speaks to whoever is on
@@ -123,7 +149,7 @@ open to a role (ROADMAP E9). The resource exists now because the write gate belo
 write, not because a non-admin can use it yet. Once reads open, the grant is the gate:
 `bin/agento grant:add --role user --operation conversation.channel_write --workspace <code>`.
 The reply is published by `complete_pending` as a **`followup` job on the thread's own source and
-`external_ref`**, with the operator's text as the job's `context` — so it continues the external
+`external_ref`**, in the channel's own thread (`conversation.thread_id`), with the operator's text as the job's `context` — so it continues the external
 task instead of starting a panel conversation. Everything else is the panel path unchanged: the
 message row and its `message.created` event commit first, the publish follows, and `sweep_pending`
 recovers a crash between them through the same one publisher.
@@ -247,7 +273,7 @@ refuses a second before `setup:upgrade` applies a single schema change.
 | --- | --- | --- |
 | `execution_id_provider` | `ConversationExecutionIds` (records the `RunProfile`: harness, provider, model, credential id) | the execution id is `None` |
 | `execution_finalizer` | `ConversationFinalizer` | no finalize write; the transition is today's |
-| `resume_session_resolver` | `ConversationResumeSessions` | the shipped attempt-based resume rule |
+| `resume_session_resolver` | none (deprecated: a turn continues the session of its thread's line, `framework/threads.py`) | the session comes from the thread line only |
 | `execution_delta_sink` | `ConversationDeltaSink` | deltas are discarded |
 
 A follow-up turn resumes the previous turn's session and is sent the new turn alone. Before

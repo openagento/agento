@@ -1,0 +1,11 @@
+{
+  "name": "subagent",
+  "version": "1.0.0",
+  "description": "Delegate a task to an agent_view as a child job (agent_run / agent_result)",
+  "sequence": [],
+  "order": 65,
+  "tools": [
+    {"type": "mcp", "name": "agent_run", "description": "Delegate a task to an agent_view as a child job and return its job_id at once", "toolset": "subagent"},
+    {"type": "mcp", "name": "agent_result", "description": "Read the status and output of a child job this agent line created", "toolset": "subagent"}
+  ]
+}

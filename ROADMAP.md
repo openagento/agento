@@ -369,6 +369,37 @@ Today an agent_view is statically bound to a harness, model, and effort. This ad
 
 Group related jobs into a thread so agents can collaborate the way people do: an agent does work locally, publishes it, and hands off to another agent for review, decision, or continuation, escalating to a human when they can't agree. The core primitive is a **handoff package** — intent, origin, a work summary, and an artifact manifest — that travels between agent_views, giving a thread a shared workspace and shared, runnable artifacts instead of isolated per-job directories.
 
+The thread directory is in (DECISIONS.md D-THREAD-2: `_threads/<key>/shared` and `downloads/`).
+Left out:
+
+- **Retention of `_threads/`**, with the run-dir retention item: a thread dir is kept for good,
+  and a toolbox crash can leave a `.part-*` dir in `downloads/`.
+- **A "Shared files" panel tab** for a thread's `shared/` and `downloads/`.
+
+### ⚪ Nested sub-agents — follow-ups
+
+The `subagent` module (DECISIONS.md 2026-10-21, [docs/modules/subagent.md](docs/modules/subagent.md))
+ships `agent_run` / `agent_result`: asynchronous child jobs, 3 levels, reads by the caller's line,
+continuation by `job_id`, and the parent wake (`subagent/wake_parent`). Left out:
+
+- **Job-tree view** in the admin jobs screen and the TUI (parent, children, status per node). The
+  conversation timeline already nests each child as a card in its parent's turn.
+- **Child cancellation.** A child is not cancelled when its parent ends or fails.
+- **Idempotent spawn / dedupe.** Each `agent_run` call makes a new child (random key).
+- **Synchronous wait.** No tool blocks until a child ends: the parent polls, or ends its turn and is
+  woken (`wake_parent`).
+- **A sweep for a missed wake.** The wake is published by an observer after the child's terminal
+  commit; a consumer crash between the two loses it. A cron sweep would run `maybe_wake` over
+  SUCCESS jobs that have children and no `subagent_wake:<id>` job, older than N minutes.
+- **A bound on delegation rounds of a root line.** The cap is per job at depth 0, and a wake is a
+  new depth-0 job with a fresh cap, so a root can delegate, be woken and delegate again with no
+  limit on rounds (as with `schedule_followup` today). A per-thread round limit would close it.
+- **Token and cost roll-up per tree.** Usage is per job only.
+- **Context and artifact attachment.** The child gets the prompt only; no files or parent context.
+- **Sandbox CLI wrapper** (`agento agent run`) for agents that call the CLI, not MCP.
+- **A Python event for the Node-side job insert** (EVT-2 gap, same as `schedule_followup`): the
+  child insert dispatches no `job_publish_after`; the `job.queued` outbox row is its only announcement.
+
 ### ⚪ Areas / selective module loading — parked
 
 Explicitly parked. There is no current justification for selective module loading, and security boundaries stay enforced by process and container separation rather than area declarations. Revisit only if module count creates measurable overhead, deployments need materially different module subsets, or selective loading solves a proven security problem better than the existing boundaries.
@@ -481,6 +512,8 @@ block and a parity pair (UI-2, UI-3). Cutting a kit version for it is the owner'
 |---|---|---|
 | Legacy `aes256:` read path + the `core/RekeyToScrypt` data patch | `framework/crypto.py` (`decrypt` legacy branch, `is_legacy`), `toolbox/crypto.js`, `modules/core/src/patches/rekey_to_scrypt.py`, `modules/core/data_patch.json` | v0.18.0 — the patch ships in 0.17.0, so every deployment that upgraded has been rekeyed to `aes256s:`. Delete both legacy branches, `is_legacy`, the patch and its test, and the legacy-format bullet in `docs/config/encryption.md`. CodeQL alerts `py/weak-sensitive-data-hashing` / `js/insufficient-password-hash` were dismissed for this path and close with it |
 | `TranscriptReader`, `ToolUse`, `ParseSummary` (deprecated: `toolbox_mcp_calls` comes from the toolbox audit) | `framework/harness/protocols.py` and the `framework/harness/__init__.py` exports; the `transcript_reader` property of the test fixture `tests/fixtures/modules/fake_harness` | v0.18. Delete the three names, their exports and the fixture property. An external adapter that still sets `transcript_reader` loads with or without them |
+| `conversation.external_key` and its unique key `uq_conversation_external` (deprecated: a conversation is keyed by `thread_id`, migration 007) | `modules/conversation/sql/` | the next minor release after the one that ships migration 007. Nothing writes the column, and only the data patch `AssignConversationThreads` reads it (its `legacy:` ref). Drop it in a new migration (MOD-3: 002 is not edited), make that ref `legacy:<id>`, and update its tests |
+| The `resume_session_resolver` execution seam (deprecated: a job continues the session of its thread line, `framework/threads.py` `resolve_resume`; no shipped module registers it since the conversation resolver was removed) | `framework/execution_hooks.py` (`ResumeSessionResolver`, the slot, `register_resume_session_resolver`, `resolve_resume_session`), the fallback call in `consumer.py` `_resume_session`, `DEPRECATED_EXECUTION_HOOKS` in `module_validator.py`, the note in `events.py` (`JobClaimBeforeEvent`) | the next minor release. Delete the slot, the call (a job with no `resume_job_id` then starts fresh), the validator entry (a `di.json` `execution_hooks` entry `resume_session_resolver` then fails as unknown) and their tests, and the deprecated row in `docs/modules/conversation.md` |
 | `agento admin` TUI (deprecated: use the admin panel; the CLI commands stay) | `framework/admin/{app.py,screens/,widgets/,styles/}`, `AdminCommand`, the `textual` dependency | after v1.0.0. Delete them and `docs/cli/admin.md`. `framework/admin/data.py` stays: `web` uses it (`web/admin_api.py`, `web/api.py`) |
 | `workspace:ssh-purge` command (+ its `wo:sp` shortcut) | `workspace_build/src/commands/ssh_purge.py`, `workspace_build/di.json` | every deployment has upgraded past the release that stopped writing `ssh_private_key` to disk and has run the sweep once. Nothing on this code writes a key file, so the command then has nothing to find. Delete the command, its `di.json` entry, its tests, and the doc sections in `docs/cli/workspace-build.md` / `docs/cli/README.md` / `docs/config/identity.md`; keep `find_private_keys` only if `workspace:build`'s own legacy pruning still uses it |
 
@@ -521,6 +554,11 @@ call — plus `framework/e2e.py` for the smoke stack. `schedule.js` remains the 
 path, in the toolbox, in another language, with its own dedupe (since 2026-10-10 it at least
 commits its job and its `job.queued` outbox row together). `grep -rn -i "insert into job"
 src/agento` is the check; a fourth hit is the bug this entry is about.
+
+(2026-10-21: the Node insert moved from `schedule.js` to the shared
+`src/agento/toolbox/job-enqueue.js` `enqueueJob`, which `schedule_followup` and the `subagent`
+module's `agent_run` both call. `agent_run` covers delegation to another agent_view as a child
+job, gated by `subagent/allowed_agent_views`; see [docs/modules/subagent.md](docs/modules/subagent.md).)
 
 ### Ungated Toolbox REST endpoints (raised during the Pi harness work)
 

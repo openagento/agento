@@ -12,14 +12,14 @@ vi.mock("./timeline", async (actual) => {
   const m = await actual<typeof import("./timeline")>();
   return { ...m, MAX_EVENTS: 50, TimelineStore: class extends m.TimelineStore { constructor() { super(50); } } };
 });
-import { REFETCH_DEBOUNCE_MS, useConversation } from "./useConversation";
+import { REFETCH_MS, useConversation } from "./useConversation";
 
 const ev = (kind: string, execution_id: string | null, payload: Record<string, unknown> = {}, id = 1): StreamEvent =>
   ({ id, kind, execution_id, payload, created_at: null });
 const page = (events: StreamEvent[], has_older = false) => ({ events, has_older, newest_id: events.at(-1)?.id ?? null });
 const thread = (channel = "panel") => ({
   id: 5, agent_view_id: 1, title: null, status: "active", created_at: null, updated_at: null, channel,
-  external_ref: null, last_activity_at: null, live: false, runs: [],
+  external_ref: null, last_activity_at: null, live: false, runs: [], jobs: [],
 });
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -60,10 +60,15 @@ describe("useConversation", () => {
     });
     expect(result.current.store.events().map((e) => e.id)).toEqual([7, 8]);
 
-    act(() => { opened[0].handlers.onEvent(ev("assistant.message", "e", {}, 9)); opened[0].handlers.onEvent(ev("job.claimed", "e", {}, 10)); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS + 10); });
+    // Events spread over the window share one refetch; the list is left to its own poll.
+    act(() => { opened[0].handlers.onEvent(ev("assistant.message", "e", {}, 9)); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(REFETCH_MS / 2); });
+    act(() => { opened[0].handlers.onEvent(ev("job.claimed", "e", {}, 10)); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(REFETCH_MS / 2 + 10); });
     expect(api.calls("GET", "/api/conversation/threads/5/messages").length).toBe(before + 1);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["threads"] });   // the list moves too
+    await act(async () => { await vi.advanceTimersByTimeAsync(REFETCH_MS); });
+    expect(api.calls("GET", "/api/conversation/threads/5/messages").length).toBe(before + 1);
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["threads"] });
     expect(setData).not.toHaveBeenCalled();
   });
 
@@ -500,6 +505,117 @@ describe("the thread view, history and triggers", () => {
     expect(screen.getByText("PROJ-2 is due")).toBeInTheDocument();
     expect(screen.getByText("PROJ-2 is due").closest("li")).toBe(sep);
   });
+
+  it("a follow-up that resumes a session says so instead of the source", async () => {
+    captureHub();
+    await stubApi({
+      "/api/conversation/threads/5/timeline": () => page([ev("run.started", "x", { job_id: 4, source: "jira", type: "followup", resume_job_id: 3 }, 1)]),
+      "/api/conversation/threads/5/messages": () => [],
+      "/api/conversation/threads/5": () => thread("jira"),
+    });
+    render(<View threadId={5} />, { wrapper });
+    expect(await screen.findByText("Follow-up · resumes #3")).toBeInTheDocument();
+  });
+});
+
+describe("sub-agents in the timeline", () => {
+  const started = (id: number, x: string, job: number, extra: Record<string, unknown> = {}) =>
+    ev("run.started", x, { job_id: job, attempt: 1, max_attempts: 3, depth: 0, parent_job_id: null, source: "jira", ...extra }, id);
+  const finished = (id: number, x: string, job: number) => ev("run.finished", x, { job_id: job, attempt: 1, outcome: "succeeded" }, id);
+  const routes = (events: StreamEvent[], runs: unknown[] = []) => ({
+    "/api/conversation/threads/5/timeline": () => page(events),
+    "/api/conversation/threads/5/messages": () => [],
+    "/api/conversation/threads/5": () => ({ ...thread("jira"), run_details: true, runs }),
+  });
+
+  it("a child job is a collapsed card in its parent's turn: number, view, harness, state; open, its answer", async () => {
+    captureHub();
+    await stubApi(routes([
+      started(1, "p", 10),
+      started(2, "c", 11, { depth: 1, parent_job_id: 10, agent_view: "reviewer" }),
+      ev("assistant.message", "c", { message_id: 9, content: "Two findings." }, 3),
+      finished(4, "c", 11),
+    ], [{ execution_id: "c", attempt: 1, status: "succeeded", started_at: null, finished_at: null, harness: "claude" }]));
+    render(<View threadId={5} />, { wrapper });
+    const card = await screen.findByRole("button", { name: /Sub-agent #11 · reviewer · claude/ });
+    expect(card).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Succeeded")).toBeInTheDocument();
+    // One turn (the parent's trigger), not two.
+    expect(screen.getAllByText(/^From jira/)).toHaveLength(1);
+    fireEvent.click(card);
+    expect(await screen.findByText("Two findings.")).toBeInTheDocument();
+  });
+
+  it("opened from the rail, a job shows only its own run: task, items, nested cards; no composer", async () => {
+    captureHub();
+    await stubApi(routes([
+      started(1, "p", 10),
+      ev("assistant.message", "p", { message_id: 8, content: "Parent answer." }, 2),
+      started(3, "c", 11, { depth: 1, parent_job_id: 10, prompt: "Review it." }),
+      started(4, "g", 12, { depth: 2, parent_job_id: 11 }),
+      ev("assistant.message", "c", { message_id: 9, content: "Two findings." }, 5),
+      finished(6, "c", 11),
+    ]));
+    render(<View threadId={5} job={11} />, { wrapper });
+    expect(await screen.findByText("Two findings.")).toBeInTheDocument();
+    expect(screen.getByText("Review it.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Sub-agent #12/ })).toBeInTheDocument();
+    expect(screen.queryByText("Parent answer.")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("link", { name: "Back to the conversation" })).toHaveAttribute("href", "/conversations/5");
+  });
+
+  it("a job whose run is not loaded says so", async () => {
+    captureHub();
+    await stubApi(routes([started(1, "p", 10)]));
+    render(<View threadId={5} job={99} />, { wrapper });
+    expect(await screen.findByText("This run is not loaded")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["Running", [], 1],
+    ["Succeeded", [{ outcome: "succeeded" }], 1],
+    ["Failed", [{ outcome: "failed" }], 3],
+    ["Failed", [{ outcome: "dead" }], 1],
+    ["Blocked", [{ outcome: "abandoned" }], 1],
+    ["Queued", [{ failed: true }], 1],
+  ])("a child card says %s (%j, attempt %i of 3)", async (label, ends, attempt) => {
+    captureHub();
+    const end = ends.map((e: { outcome?: string; failed?: boolean }) => (e.failed
+      ? ev("job.failed", "c", { job_id: 11, attempt: 1, kind: "harness" }, 3)
+      : ev("run.finished", "c", { job_id: 11, attempt: 1, outcome: e.outcome }, 3)));
+    await stubApi(routes([started(1, "p", 10), started(2, "c", 11, { depth: 1, parent_job_id: 10, attempt }), ...end]));
+    render(<View threadId={5} />, { wrapper });
+    await screen.findByRole("button", { name: /Sub-agent #11/ });
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it("with run details the card says which session it resumes; without, no view, harness or resume", async () => {
+    captureHub();
+    const events = [started(1, "p", 10), started(2, "c", 11, { depth: 1, parent_job_id: 10, agent_view: "reviewer", resume_job_id: 9 })];
+    const runs = [{ execution_id: "c", attempt: 1, status: "running", started_at: null, finished_at: null, harness: "claude" }];
+    await stubApi(routes(events, runs));
+    const { unmount } = render(<View threadId={5} />, { wrapper });
+    expect(await screen.findByRole("button", { name: /Sub-agent #11 · reviewer · claude · resumes #9/ })).toBeInTheDocument();
+    unmount();
+    teardown();
+    captureHub();
+    // The server strips `agent_view` and `resume_job_id` from the event without run details;
+    // a run row that still names a harness is not shown either.
+    const plain = [started(1, "p", 10), started(2, "c", 11, { depth: 1, parent_job_id: 10 })];
+    await stubApi({ ...routes(plain, runs), "/api/conversation/threads/5": () => ({ ...thread("jira"), run_details: false, runs }) });
+    render(<View threadId={5} />, { wrapper });
+    const card = await screen.findByRole("button", { name: /Sub-agent #11/ });
+    expect(card.textContent).not.toMatch(/claude|reviewer|resumes/);
+  });
+
+  it("a child whose parent run is not loaded names its parent", async () => {
+    captureHub();
+    await stubApi(routes([started(2, "c", 11, { depth: 1, parent_job_id: 10 })]));
+    render(<View threadId={5} />, { wrapper });
+    expect(await screen.findByRole("button", { name: /Sub-agent #11 of #10/ })).toBeInTheDocument();
+    expect(screen.queryByText(/^From jira/)).toBeNull();
+  });
 });
 
 describe("the chat turn", () => {
@@ -760,6 +876,34 @@ describe("the rail", () => {
     const patch = () => api.calls("PATCH", "/api/conversation/threads/1");
     await vi.waitFor(() => expect(patch()).toHaveLength(1));
     expect(patch()[0].body).toEqual({ title: "PZU mail" });
+  });
+
+  it("the open conversation shows its sub-agent jobs as a tree; a click on the open row folds its children", async () => {
+    // A depth-0 turn is not in `jobs`, so job 11 (its child) is a root; a queued job has a row too.
+    await stubApi({ ...views, "/api/conversation/threads": () => [row(1, "Fan out"), row(2, "Other")],
+      "/api/conversation/threads/1": () => ({ ...row(1, "Fan out"), runs: [], jobs: [
+        { id: 13, parent_job_id: 11, depth: 2, status: "TODO" },
+        { id: 12, parent_job_id: 11, depth: 2, status: "RUNNING" },
+        { id: 11, parent_job_id: 10, depth: 1, status: "SUCCESS" }] }) }, []);
+    const { rerender } = render(<Rail current={1} job={11} close={() => {}} />, { wrapper });
+    const child = await screen.findByRole("button", { name: "Sub-agent #11" });
+    expect(child).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "Sub-agent #12" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sub-agent #13" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sub-agent #10" })).toBeNull();
+    // The dot: the Jobs page tone of each job's status.
+    const tone = (name: string) => screen.getByRole("button", { name }).querySelector("[data-tone]")?.getAttribute("data-tone");
+    expect([tone("Sub-agent #11"), tone("Sub-agent #12"), tone("Sub-agent #13")]).toEqual(["succeeded", "running", "pending"]);
+    // The open job folds on a click; a job that is not open is opened, not folded.
+    fireEvent.click(child);
+    expect(screen.queryByRole("button", { name: "Sub-agent #12" })).toBeNull();
+    rerender(<Rail current={1} close={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sub-agent #11" }));
+    expect(screen.queryByRole("button", { name: "Sub-agent #12" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Fan out" }));
+    expect(screen.queryByRole("button", { name: "Sub-agent #11" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Fan out" }));
+    expect(screen.getByRole("button", { name: "Sub-agent #11" })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("a channel thread offers neither pin nor rename (it has no owner)", async () => {

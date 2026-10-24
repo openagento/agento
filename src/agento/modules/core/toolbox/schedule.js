@@ -11,7 +11,7 @@ export async function healthcheck({ db, sanitizeHealthError }) {
   }
 }
 
-export function register(server, { log, db, isToolEnabled, jobId }) {
+export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) {
   if (isToolEnabled && !isToolEnabled('schedule_followup')) return;
   server.tool(
     'schedule_followup',
@@ -33,7 +33,7 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
     async ({ user, scheduled_at, instructions }) => {
       // NOTE: source/reference_id are NOT agent inputs — they are inherited from the current job
       // (looked up by the MCP session's job_id). A stray `source`/`reference_id` from an older agent
-      // is simply ignored (zod strips unknown keys). See plan schedule-followup-inherit-source.
+      // is rejected by the dispatcher's strict argument schema. See plan schedule-followup-inherit-source.
       try {
         const scheduledDate = new Date(scheduled_at);
         if (isNaN(scheduledDate.getTime())) {
@@ -78,7 +78,7 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
           // Inherit the channel + reference + execution scope (agent_view_id, priority) from the
           // current job, so the follow-up runs in the same context as its parent.
           const [rows] = await conn.execute(
-            'SELECT source, reference_id, agent_view_id, priority FROM job WHERE id = ?',
+            'SELECT source, reference_id, agent_view_id, priority, depth, thread_id FROM job WHERE id = ?',
             [jobId]
           );
           const job = rows[0];
@@ -90,20 +90,31 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
               isError: true,
             };
           }
+          // A delegated job is one-shot: its result is what its parent reads. A follow-up of it
+          // would be a root that delegates again, or an uncounted extra child of the parent.
+          if (job.depth > 0) {
+            await conn.rollback();
+            log('schedule_followup', 'ERROR', `user=${user} job=${jobId} refused in a delegated job (depth=${job.depth})`);
+            return {
+              content: [{ type: 'text', text: 'schedule_followup is not available in a delegated job' }],
+              isError: true,
+            };
+          }
           const { source, reference_id, agent_view_id, priority } = job;
+          // The follow-up is the next turn of this job's thread, so it continues the thread's
+          // session (the claim picks the turn, framework/threads.py resolve_resume). A job with
+          // no view has a thread no one owns: the follow-up then gets its own thread at claim.
+          const threadId = (agent_view_id ?? null) === null ? null : (job.thread_id ?? null);
 
           // Idempotency key: minute-granular per source+reference
           const isoMinute = scheduledDate.toISOString().slice(0, 16).replace(':', '');
           const idempotencyKey = `followup:${source}:${reference_id}:${isoMinute}`;
 
-          // Dedupe with a SELECT before INSERT: an INSERT IGNORE rejected by the
-          // unique idempotency_key still burns an auto_increment id, growing the job
-          // id counter on every duplicate (AG-22). Check first to keep it flat.
-          const [dup] = await conn.execute(
-            'SELECT id FROM job WHERE idempotency_key = ? LIMIT 1',
-            [idempotencyKey]
-          );
-          if (dup.length > 0) {
+          const { duplicate } = await enqueueJob(conn, {
+            type: 'followup', source, agentViewId: agent_view_id, priority, referenceId: reference_id,
+            context: instructions, idempotencyKey, scheduledAfter: mysqlDatetime, threadId,
+          });
+          if (duplicate) {
             await conn.rollback();
             log('schedule_followup', 'DUP', `user=${user} source=${source} ref=${reference_id} key=${idempotencyKey}`);
             return {
@@ -111,57 +122,14 @@ export function register(server, { log, db, isToolEnabled, jobId }) {
                 `Follow-up already scheduled for ${reference_id} at that time (duplicate prevented).` }],
             };
           }
-
-          let result;
-          try {
-            [result] = await conn.execute(
-              `INSERT INTO job
-                 (type, source, agent_view_id, priority, reference_id, context, idempotency_key, status, attempt, max_attempts, scheduled_after)
-               VALUES
-                 ('followup', ?, ?, ?, ?, ?, ?, 'TODO', 0, 3, ?)`,
-              [source, agent_view_id, priority, reference_id, instructions, idempotencyKey, mysqlDatetime]
-            );
-          } catch (err) {
-            // Race: another publisher inserted the same idempotency_key between our
-            // dedupe SELECT and this INSERT. The unique key rejects it — treat as a
-            // duplicate, not an error (mirrors publisher.py).
-            if (err && (err.code === 'ER_DUP_ENTRY' || err.errno === 1062)) {
-              await conn.rollback();
-              log('schedule_followup', 'DUP', `user=${user} source=${source} ref=${reference_id} key=${idempotencyKey} (race)`);
-              return {
-                content: [{ type: 'text', text:
-                  `Follow-up already scheduled for ${reference_id} at that time (duplicate prevented).` }],
-              };
-            }
-            throw err;
-          }
-
-          // `job.queued`, the same kind and payload shape the Python publisher writes
-          // (framework/publish_service.py). The relay turns it into the thread's first
-          // event; without it a follow-up surfaces only once it starts running.
-          await conn.execute(
-            `INSERT INTO job_event_outbox (job_id, execution_id, kind, payload)
-             VALUES (?, NULL, 'job.queued', ?)`,
-            [result.insertId, JSON.stringify({
-              type: 'followup', source, agent_view_id: agent_view_id ?? null, priority,
-            })]
-          );
           await conn.commit();
 
-          if (result.affectedRows > 0) {
-            log('schedule_followup', 'OK', `user=${user} source=${source} ref=${reference_id} av=${agent_view_id} at=${mysqlDatetime} key=${idempotencyKey}`);
-            return {
-              content: [{ type: 'text', text:
-                `Follow-up scheduled for ${reference_id} (${source}) at ${mysqlDatetime}.\n` +
-                `Idempotency key: ${idempotencyKey}` }],
-            };
-          } else {
-            log('schedule_followup', 'DUP', `user=${user} source=${source} ref=${reference_id} key=${idempotencyKey}`);
-            return {
-              content: [{ type: 'text', text:
-                `Follow-up already scheduled for ${reference_id} at that time (duplicate prevented).` }],
-            };
-          }
+          log('schedule_followup', 'OK', `user=${user} source=${source} ref=${reference_id} av=${agent_view_id} at=${mysqlDatetime} key=${idempotencyKey}`);
+          return {
+            content: [{ type: 'text', text:
+              `Follow-up scheduled for ${reference_id} (${source}) at ${mysqlDatetime}.\n` +
+              `Idempotency key: ${idempotencyKey}` }],
+          };
         } catch (err) {
           // A job with no announcement is the case the transaction exists to prevent.
           await conn.rollback().catch(() => {});

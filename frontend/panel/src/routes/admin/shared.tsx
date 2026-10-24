@@ -5,7 +5,6 @@ import { useSearchParams } from "react-router";
 import { Box } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { apiFetch, ApiError, refreshDisplay, useMutation, useQueryClient } from "@agento/api";
-import type { BadgeTone } from "@agento/ui";
 
 export const message = (e: unknown) => (e instanceof ApiError ? e.message : "The request failed.");
 
@@ -77,8 +76,6 @@ export const durationOf = (j: JobHead): number | null => {
   return Number.isFinite(ms) ? Math.round(ms / 1000) : null;
 };
 
-const JOB_TONE: Record<string, BadgeTone> = { TODO: "pending", RUNNING: "running", SUCCESS: "succeeded", FAILED: "failed", DEAD: "failed" };
-export const jobTone = (status: string): BadgeTone => JOB_TONE[status] ?? "neutral";
 
 /** `credential.error_msg` never reaches the browser (SEC-6): the panel names where to read it. */
 export const CREDENTIAL_ERROR_HINT = "See the message with bin/agento credential:list.";
