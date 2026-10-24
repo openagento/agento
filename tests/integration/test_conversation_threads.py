@@ -175,6 +175,10 @@ def test_a_sub_agent_of_another_view_shows_to_the_parents_readers_gated_by_its_r
 
     runs, started = seen()
     assert len(runs) == 2 and all("agent_view" not in r and "job_id" not in r for r in runs)
+    # The rail's tree is for every reader: the child's id, parent, depth and status.
+    jobs = routes.show(_Req(conn, world["owner"], params={"id": str(cid)})).body["jobs"]
+    assert [(j["id"], j["parent_job_id"], j["depth"]) for j in jobs] == [(child, parent, 1)]
+    assert set(jobs[0]) == {"id", "parent_job_id", "depth", "status"}
     assert (started["job_id"], started["parent_job_id"], started["depth"]) == (child, parent, 1)
     assert "agent_view" not in started and "resume_job_id" not in started
 

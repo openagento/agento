@@ -12,14 +12,14 @@ vi.mock("./timeline", async (actual) => {
   const m = await actual<typeof import("./timeline")>();
   return { ...m, MAX_EVENTS: 50, TimelineStore: class extends m.TimelineStore { constructor() { super(50); } } };
 });
-import { REFETCH_DEBOUNCE_MS, useConversation } from "./useConversation";
+import { REFETCH_MS, useConversation } from "./useConversation";
 
 const ev = (kind: string, execution_id: string | null, payload: Record<string, unknown> = {}, id = 1): StreamEvent =>
   ({ id, kind, execution_id, payload, created_at: null });
 const page = (events: StreamEvent[], has_older = false) => ({ events, has_older, newest_id: events.at(-1)?.id ?? null });
 const thread = (channel = "panel") => ({
   id: 5, agent_view_id: 1, title: null, status: "active", created_at: null, updated_at: null, channel,
-  external_ref: null, last_activity_at: null, live: false, runs: [],
+  external_ref: null, last_activity_at: null, live: false, runs: [], jobs: [],
 });
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -60,10 +60,15 @@ describe("useConversation", () => {
     });
     expect(result.current.store.events().map((e) => e.id)).toEqual([7, 8]);
 
-    act(() => { opened[0].handlers.onEvent(ev("assistant.message", "e", {}, 9)); opened[0].handlers.onEvent(ev("job.claimed", "e", {}, 10)); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(REFETCH_DEBOUNCE_MS + 10); });
+    // Events spread over the window share one refetch; the list is left to its own poll.
+    act(() => { opened[0].handlers.onEvent(ev("assistant.message", "e", {}, 9)); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(REFETCH_MS / 2); });
+    act(() => { opened[0].handlers.onEvent(ev("job.claimed", "e", {}, 10)); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(REFETCH_MS / 2 + 10); });
     expect(api.calls("GET", "/api/conversation/threads/5/messages").length).toBe(before + 1);
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["threads"] });   // the list moves too
+    await act(async () => { await vi.advanceTimersByTimeAsync(REFETCH_MS); });
+    expect(api.calls("GET", "/api/conversation/threads/5/messages").length).toBe(before + 1);
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ["threads"] });
     expect(setData).not.toHaveBeenCalled();
   });
 
@@ -541,6 +546,32 @@ describe("sub-agents in the timeline", () => {
     expect(await screen.findByText("Two findings.")).toBeInTheDocument();
   });
 
+  it("opened from the rail, a job shows only its own run: task, items, nested cards; no composer", async () => {
+    captureHub();
+    await stubApi(routes([
+      started(1, "p", 10),
+      ev("assistant.message", "p", { message_id: 8, content: "Parent answer." }, 2),
+      started(3, "c", 11, { depth: 1, parent_job_id: 10, prompt: "Review it." }),
+      started(4, "g", 12, { depth: 2, parent_job_id: 11 }),
+      ev("assistant.message", "c", { message_id: 9, content: "Two findings." }, 5),
+      finished(6, "c", 11),
+    ]));
+    render(<View threadId={5} job={11} />, { wrapper });
+    expect(await screen.findByText("Two findings.")).toBeInTheDocument();
+    expect(screen.getByText("Review it.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Sub-agent #12/ })).toBeInTheDocument();
+    expect(screen.queryByText("Parent answer.")).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("link", { name: "Back to the conversation" })).toHaveAttribute("href", "/conversations/5");
+  });
+
+  it("a job whose run is not loaded says so", async () => {
+    captureHub();
+    await stubApi(routes([started(1, "p", 10)]));
+    render(<View threadId={5} job={99} />, { wrapper });
+    expect(await screen.findByText("This run is not loaded")).toBeInTheDocument();
+  });
+
   it.each([
     ["Running", [], 1],
     ["Succeeded", [{ outcome: "succeeded" }], 1],
@@ -845,6 +876,34 @@ describe("the rail", () => {
     const patch = () => api.calls("PATCH", "/api/conversation/threads/1");
     await vi.waitFor(() => expect(patch()).toHaveLength(1));
     expect(patch()[0].body).toEqual({ title: "PZU mail" });
+  });
+
+  it("the open conversation shows its sub-agent jobs as a tree; a click on the open row folds its children", async () => {
+    // A depth-0 turn is not in `jobs`, so job 11 (its child) is a root; a queued job has a row too.
+    await stubApi({ ...views, "/api/conversation/threads": () => [row(1, "Fan out"), row(2, "Other")],
+      "/api/conversation/threads/1": () => ({ ...row(1, "Fan out"), runs: [], jobs: [
+        { id: 13, parent_job_id: 11, depth: 2, status: "TODO" },
+        { id: 12, parent_job_id: 11, depth: 2, status: "RUNNING" },
+        { id: 11, parent_job_id: 10, depth: 1, status: "SUCCESS" }] }) }, []);
+    const { rerender } = render(<Rail current={1} job={11} close={() => {}} />, { wrapper });
+    const child = await screen.findByRole("button", { name: "Sub-agent #11" });
+    expect(child).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "Sub-agent #12" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sub-agent #13" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sub-agent #10" })).toBeNull();
+    // The dot: the Jobs page tone of each job's status.
+    const tone = (name: string) => screen.getByRole("button", { name }).querySelector("[data-tone]")?.getAttribute("data-tone");
+    expect([tone("Sub-agent #11"), tone("Sub-agent #12"), tone("Sub-agent #13")]).toEqual(["succeeded", "running", "pending"]);
+    // The open job folds on a click; a job that is not open is opened, not folded.
+    fireEvent.click(child);
+    expect(screen.queryByRole("button", { name: "Sub-agent #12" })).toBeNull();
+    rerender(<Rail current={1} close={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sub-agent #11" }));
+    expect(screen.queryByRole("button", { name: "Sub-agent #12" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Fan out" }));
+    expect(screen.queryByRole("button", { name: "Sub-agent #11" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Fan out" }));
+    expect(screen.getByRole("button", { name: "Sub-agent #11" })).toHaveAttribute("aria-expanded", "false");
   });
 
   it("a channel thread offers neither pin nor rename (it has no owner)", async () => {

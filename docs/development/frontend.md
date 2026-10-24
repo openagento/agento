@@ -84,7 +84,8 @@ npm test            # build, lint, then every unit test and every story in headl
   timeline page, an older page ("Load older") and each stream frame merge into it, so an event seen
   twice renders once. The hub opens the stream with `?after=<newest id of the page>`, so there is no
   window between them; a stream frame that changes a message or a run also refetches the messages
-  and the runs over REST (debounced). The turn state and Unblock still come from the messages. When
+  and the runs over REST, at most once per 2 s (`REFETCH_MS`: one tab on a run with sub-agents
+  otherwise passes `limits/max_requests_per_user`); the list keeps its own 10 s poll. The turn state and Unblock still come from the messages. When
   the stream is down, the REST poll (10 s while a run is in flight, 30 s idle) is the fallback:
   each tick pages the timeline forward through `GET …/events?after=<cursor>` and refetches the
   runs. The cursor is the highest id up to which every event is held: only replay pages (or the

@@ -186,6 +186,16 @@ def list_runs(conn, *, conversation_id: int) -> list[dict]:
         return list(cur.fetchall())
 
 
+def list_subagent_jobs(conn, *, thread_id: int) -> list[dict]:
+    """The thread's sub-agent jobs (`depth` > 0), newest first: the rail's tree. A queued
+    job has no execution yet, so this reads `job`, not the runs."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, parent_job_id, depth, status FROM job "
+                    "WHERE thread_id = %s AND depth > 0 ORDER BY id DESC LIMIT %s",
+                    (thread_id, MAX_RUNS))
+        return list(cur.fetchall())
+
+
 def is_live(conn, *, conversation_id: int) -> bool:
     with conn.cursor() as cur:
         cur.execute("SELECT 1 FROM execution WHERE conversation_id = %s "
