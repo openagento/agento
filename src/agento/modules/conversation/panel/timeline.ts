@@ -340,6 +340,18 @@ const jobKey = (r: Run) => {
 /** A sub-agent's turn (`depth > 0`). One whose parent run is not loaded stays top-level. */
 export const isSubagent = (t: Turn) => (num(t.first?.depth) ?? 0) > 0;
 
+/** The turn of job `job`, at the top level or inside a sub-agent card at any depth. */
+export function findTurn(items: readonly (Shown | Exclude<Item, Run> | Turn)[], job: number): Turn | null {
+  for (const i of items) {
+    const t = i.type === "turn" ? i : i.type === "subagent" ? i.turn : null;
+    if (!t) continue;
+    if (num(t.started?.job_id ?? t.finished?.job_id ?? t.first?.job_id) === job) return t;
+    const inner = findTurn(t.items, job);
+    if (inner) return inner;
+  }
+  return null;
+}
+
 /** The top-level items with each job's runs merged into one turn, at its first run's place. */
 export function turns(top: Item[]): (Exclude<Item, Run> | Turn)[] {
   const jobs = new Map<string, Run[]>();

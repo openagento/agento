@@ -13,13 +13,33 @@ export interface Thread {
 export interface RunRow {
   execution_id: string; attempt: number; status: string; started_at: string | null; finished_at: string | null;
   job_id?: number; type?: string; harness?: string | null; provider?: string | null; credential?: string | null;
-  model?: string | null;
+  model?: string | null; agent_view?: string | null;
   input_tokens?: number | null; output_tokens?: number | null;
+}
+
+/** A sub-agent job of the thread (`ThreadDetail.jobs`): every reader gets these four fields. */
+export interface SubJob { id: number; parent_job_id: number | null; depth: number; status: string }
+
+/** One node of the rail's tree: a sub-agent job and the jobs it started. */
+export interface JobNode { job: SubJob; children: JobNode[] }
+
+/** The thread's sub-agent jobs as a tree, oldest first (`jobs` comes newest first). A child
+ *  whose parent is not loaded (a depth-0 turn, or past the newest 50) is a root.
+ *  ponytail: the newest `MAX_RUNS` (50) jobs only; a bigger fan-out loses its oldest jobs. */
+export function jobTree(jobs: SubJob[]): JobNode[] {
+  const nodes = new Map(jobs.map((j) => [j.id, { job: j, children: [] as JobNode[] }]));
+  const roots: JobNode[] = [];
+  for (const n of [...nodes.values()].reverse()) {
+    (n.job.parent_job_id !== null ? nodes.get(n.job.parent_job_id)?.children ?? roots : roots).push(n);
+  }
+  return roots;
 }
 
 /** The newest runs come first. `run_details`: the reader holds `conversation.run_details`. */
 export interface ThreadDetail extends Thread {
   runs: RunRow[]; run_details?: boolean;
+  /** The thread's newest 50 sub-agent jobs, newest first. */
+  jobs: SubJob[];
   /** Channel threads only: the reader holds `conversation.channel_write`. */
   channel_write?: boolean;
 }

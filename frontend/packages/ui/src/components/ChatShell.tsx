@@ -2,12 +2,13 @@
 // breakpoint the thread list moves into a Drawer behind a Burger (U9).
 import { Box, Burger, Button, Drawer, Menu, Text, Tooltip, UnstyledButton } from "@mantine/core";
 import { useDisclosure, useMediaQuery } from "@mantine/hooks";
-import { ChevronDown, PinOff, Search, SquarePen, X } from "lucide-react";
+import { ChevronDown, ChevronRight, PinOff, Search, SquarePen, X } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import classes from "./Chat.module.css";
 import { EditableTitle } from "./Headers";
 import { IconAction } from "./IconAction";
 import { RowMenu, type RowAction } from "./RowMenu";
+import type { BadgeTone } from "./StatusBadge";
 
 /** `nav` gets `close` so a pick in the narrow Drawer also shuts it. It is called, never
  *  rendered as a component (UI-6). */
@@ -37,8 +38,8 @@ export function SplitView({ navLabel, nav, children }: {
 export function Rail({ top, children }: { top: ReactNode; children: ReactNode }) {
   return (
     <>
-      <div className={classes.railTop}>{top}</div>
-      <div className={classes.railList}>{children}</div>
+        <div className={classes.railTop}>{top}</div>
+        <div className={classes.railList}>{children}</div>
     </>
   );
 }
@@ -66,10 +67,17 @@ export interface ThreadLink {
   onRename?: (title: string) => void;
   /** Anything else the row may do (Archive). */
   actions?: RowAction[];
+  /** Rows nested under this one (sub-agent jobs), shown unless `collapsed`. */
+  children?: ThreadLink[];
+  collapsed?: boolean;
+  /** A status dot before the title (a job row); `running` pulses. The text is in `description`. */
+  status?: BadgeTone;
 }
 
-/** One row: the title opens the thread, the rest shows on hover (UI-7). */
-function ThreadRow({ thread }: { thread: ThreadLink }) {
+/** One row: the title opens the thread, the rest shows on hover (UI-7). `depth` > 0 is a tree
+ *  row: a chevron column (kept when empty, so sibling dots line up), then the dot and the title.
+ *  The open conversation's chevron trails its title, which stays in line with the other rows. */
+function ThreadRow({ thread, depth = 0 }: { thread: ThreadLink; depth?: number }) {
   const [renaming, setRenaming] = useState(false);
   const actions: RowAction[] = [
     ...(thread.onRename ? [{ label: "Rename", icon: "rename" as const, onClick: () => setRenaming(true) }] : []),
@@ -77,8 +85,13 @@ function ThreadRow({ thread }: { thread: ThreadLink }) {
          onClick: () => thread.onPin!(!thread.pinned) }] : []),
     ...(thread.actions ?? []),
   ];
+  const nested = !!thread.children?.length;
+  const chevron = nested && (
+    <ChevronRight size={14} className={`${classes.chevron} ${thread.collapsed ? "" : classes.open}`} aria-hidden />
+  );
   return (
-    <div className={`${classes.threadRow} ${thread.active ? classes.threadActive : ""}`}>
+    <>
+    <div className={`${classes.threadRow} ${thread.active ? classes.threadActive : ""}`} data-depth={depth || undefined}>
       {renaming && thread.onRename ? (
         <div className={classes.threadTitle}>
           <EditableTitle value={thread.title} label="Conversation title" maxLength={255} startEditing
@@ -87,8 +100,11 @@ function ThreadRow({ thread }: { thread: ThreadLink }) {
       ) : (
         <Tooltip label={thread.description} disabled={!thread.description} withArrow openDelay={400}>
           <UnstyledButton className={classes.threadTitle} onClick={thread.onSelect}
-            aria-current={thread.active ? "page" : undefined}>
-            <Text size="sm" truncate>{thread.title}</Text>
+            aria-current={thread.active ? "page" : undefined} aria-expanded={nested ? !thread.collapsed : undefined}>
+            {depth > 0 && <span className={classes.treeGutter}>{chevron}</span>}
+            {thread.status && <span className={classes.statusDot} data-tone={thread.status} aria-hidden />}
+            <Text size="sm" truncate className={classes.grow}>{thread.title}</Text>
+            {depth === 0 && chevron}
           </UnstyledButton>
         </Tooltip>
       )}
@@ -101,6 +117,8 @@ function ThreadRow({ thread }: { thread: ThreadLink }) {
         <RowMenu actions={actions} label="Conversation actions" />
       </div>
     </div>
+    {nested && !thread.collapsed && thread.children!.map((c) => <ThreadRow key={c.id} thread={c} depth={depth + 1} />)}
+    </>
   );
 }
 

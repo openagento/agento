@@ -124,6 +124,9 @@ def show(req: Request) -> Response:
         body["channel_write"] = service.can_write_channel(req.conn, req.session.user, row)
     body["runs"] = [_run_json(r, details)
                     for r in service.list_runs(req.conn, conversation_id=row["id"])]
+    # Ids, nesting and status only: what the timeline already shows every reader.
+    body["jobs"] = (service.list_subagent_jobs(req.conn, thread_id=row["thread_id"])
+                    if row["thread_id"] is not None else [])
     return Response(200, body)
 
 

@@ -62,7 +62,7 @@ tool's input or output) before the per-run byte cap counts it.
 | --- | --- | --- |
 | POST | `/api/conversation/threads` | `201 {id}` |
 | GET | `/api/conversation/threads` | the caller's active threads; `?scope=channels[&channel=<source>][&before=<cursor>]` lists the channel threads instead (admins only, a non-admin gets `[]`), newest activity first, each row with a `cursor` for the next page |
-| GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (harness, provider, credential label, model, tokens, job id, and a sub-agent's `parent_job_id`, `depth`, `resume_job_id` and `agent_view` only with `run_details`; the `run.started` event carries `parent_job_id` and `depth` for every reader, and `resume_job_id` and `agent_view` only with `run_details`) |
+| GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (harness, provider, credential label, model, tokens, job id, and a sub-agent's `parent_job_id`, `depth`, `resume_job_id` and `agent_view` only with `run_details`; the `run.started` event carries `parent_job_id` and `depth` for every reader, and `resume_job_id` and `agent_view` only with `run_details`), and its newest 50 sub-agent `jobs` (`id`, `parent_job_id`, `depth`, `status`, for every reader: the rail's tree) |
 | GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&limit=<n>`: one page of events, oldest first, `{events, has_older, newest_id}`; a `before` at or below the prune watermark is `409 cursor_expired` |
 | PATCH | `/api/conversation/threads/{id}` | `{title?, pinned?}`: renames the thread, pins or unpins it — the refreshed thread; `400` on an empty body, a title past 255 characters or a non-boolean `pinned`, `404` on a thread this caller cannot see or that has no owner, `409` past `MAX_PINNED` (50) pinned threads |
 | DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path) |
@@ -126,6 +126,16 @@ was trimmed from the timeline), the run shows as a plain turn until "Load older"
 In a channel thread, a follow-up turn
 (`schedule_followup`, or a sub-agent's wake) is labelled "Follow-up", with "resumes #id" when
 it continues a session.
+
+The rail shows the same nesting as a tree under the open conversation: one row per sub-agent
+job, under its parent job's row, built from the thread's `jobs` (a queued job has a row too).
+Between the chevron and the name a dot shows the job's status in the Jobs page tones (TODO
+gray, SUCCESS green, FAILED and DEAD red), and a running job's dot pulses green. A click on a job row opens
+`/conversations/<id>?job=<job id>`: the main panel shows only that job's run (its task with
+`run_details`, its items, its own sub-agents as cards), read-only, with a link back. A click on
+the open conversation or the open job folds or unfolds its rows. A child whose parent is not in
+the newest 50 jobs hangs from the conversation. A job whose events are on an older page says
+"This run is not loaded" until "Load older" brings them.
 
 ### Channel write (ACL resource)
 

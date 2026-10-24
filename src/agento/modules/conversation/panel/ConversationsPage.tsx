@@ -1,15 +1,15 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useNavigate, useParams, useSearchParams } from "react-router";
 import { apiFetch, LIVE_REFETCH_MS, ApiError, useMutation, useQuery, useQueryClient, useSession, type StreamEvent } from "@agento/api";
 import {
   AppLink, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
   LoadingState, MenuButton, Rail as RailFrame, Reasoning, RegenerateAction, RowMenu, SearchToggle, SelectField, SplitView, SubagentRun,
-  TextField, ThreadList, ToolCall, ToolGroup, type JobState, type ThreadLink,
+  TextField, ThreadList, ToolCall, ToolGroup, jobTone, type JobState, type ThreadLink,
 } from "@agento/ui";
-import { DAY_GROUPS, dayGroup, inFlight, turnState, type Message, type Thread, type ThreadDetail } from "./model";
-import { buildItems, isSubagent, turns, type Item, type Shown, type Tool, type Turn } from "./timeline";
+import { DAY_GROUPS, dayGroup, inFlight, jobTree, turnState, type JobNode, type Message, type Thread, type ThreadDetail } from "./model";
+import { buildItems, findTurn, isSubagent, turns, type Item, type Shown, type Tool, type Turn } from "./timeline";
 import { duration, liveSummary, toolSummary } from "./tools";
-import { fetchPage, messagesKey, useConversation } from "./useConversation";
+import { fetchPage, fetchThread, messagesKey, threadKey, useConversation } from "./useConversation";
 
 interface AgentView { id: number; code: string; label: string }
 const message = (e: unknown) => (e instanceof ApiError ? e.message : "The request failed.");
@@ -22,7 +22,8 @@ const threadsUrl = (scope: string) => (scope === "mine" ? "/api/conversation/thr
 
 const useViews = () => useQuery({ queryKey: ["agent-views"], queryFn: ({ signal }) => apiFetch<AgentView[]>("/api/agent-views", { signal }) });
 
-export function Rail({ current, close }: { current: number | null; close: () => void }) {
+/** `job`: the sub-agent job open in the main panel, or null for the whole conversation. */
+export function Rail({ current, job = null, close }: { current: number | null; job?: number | null; close: () => void }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const admin = useSession()?.role === "admin";
@@ -40,6 +41,21 @@ export function Rail({ current, close }: { current: number | null; close: () => 
     queryFn: ({ signal }) => apiFetch<Thread[]>(threadsUrl("channels"), { signal }),
   });
   const seen = [...new Set((all.data ?? []).map((t) => t.channel))];
+  // The open conversation's sub-agent jobs, from the runs its View already polls (one cache entry).
+  const open = useQuery({
+    queryKey: threadKey(current ?? 0), enabled: current !== null,
+    queryFn: ({ signal }) => fetchThread(current!, signal),
+  });
+  const tree = open.data ? jobTree(open.data.jobs) : [];
+  // A job's view and harness, from its newest run: run details, so only such a reader has them.
+  const runOf = new Map([...(open.data?.runs ?? [])].reverse().map((r) => [r.job_id, r]));
+  // Folded rows: `c<conversation id>` and `j<job id>`; everything else is unfolded.
+  const [folded, setFolded] = useState<ReadonlySet<string>>(new Set());
+  const fold = (key: string) => setFolded((s) => {
+    const next = new Set(s);
+    if (!next.delete(key)) next.add(key);
+    return next;
+  });
   const views = useViews();
   const viewName = new Map((views.data ?? []).map((v) => [v.id, v.label || v.code]));
   const create = useMutation({
@@ -56,14 +72,27 @@ export function Rail({ current, close }: { current: number | null; close: () => 
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["threads"] }); },
   });
 
+  const jobLink = ({ job: j, children }: JobNode): ThreadLink => ({
+    id: `job-${j.id}`,
+    title: `Sub-agent #${j.id}`,
+    description: [runOf.get(j.id)?.agent_view, runOf.get(j.id)?.harness, j.status].filter(Boolean).join(" · "),
+    status: jobTone(j.status), active: j.id === job,
+    children: children.map(jobLink), collapsed: folded.has(`j${j.id}`),
+    // The first click opens the job's run; a click on the open job folds its rows.
+    onSelect: j.id === job && children.length ? () => fold(`j${j.id}`)
+      : () => { close(); navigate(`/conversations/${current}?job=${j.id}`); },
+  });
   const link = (t: Thread): ThreadLink => ({
     id: t.id,
     title: t.title || `Conversation ${t.id}`,
     // One line per row (U9): what used to be a second line is the row's hover title.
     description: [t.channel !== "panel" ? t.channel : null, t.agent_view_id ? viewName.get(t.agent_view_id) : null,
       t.status === "archived" ? "archived" : null].filter(Boolean).join(" · ") || undefined,
-    live: t.live, active: t.id === current, pinned: t.pinned,
-    onSelect: () => { close(); navigate(`/conversations/${t.id}`); },
+    live: t.live, active: t.id === current && job === null, pinned: t.pinned,
+    // A click on the open conversation folds or unfolds its sub-agent rows; from a job, it goes back.
+    onSelect: t.id === current && job === null && tree.length ? () => fold(`c${t.id}`)
+      : () => { close(); navigate(`/conversations/${t.id}`); },
+    ...(t.id === current && tree.length ? { children: tree.map(jobLink), collapsed: folded.has(`c${t.id}`) } : {}),
     // A channel thread has no owner, so it has neither pin nor rename (the route answers 404).
     ...(t.channel === "panel" ? {
       onPin: (pinned: boolean) => patch.mutate({ id: t.id, pinned }),
@@ -325,7 +354,8 @@ function statusText(rows: Message[], turn: Turn | null): string | null {
   return null;
 }
 
-export function View({ threadId }: { threadId: number }) {
+/** `job`: show only that sub-agent job's run, read-only (the rail's tree opens it). */
+export function View({ threadId, job = null }: { threadId: number; job?: number | null }) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const admin = useSession()?.role === "admin";
@@ -383,7 +413,7 @@ export function View({ threadId }: { threadId: number }) {
     } else if (following) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [version, following, ready]);
+  }, [version, following, ready, job]);
 
   if (loadError) return <ErrorState message={message(loadError)} onRetry={retry} />;
   if (!loaded || messages.isPending) return <LoadingState />;
@@ -445,6 +475,31 @@ export function View({ threadId }: { threadId: number }) {
     }
   }
   const run = detail?.runs[0];
+  const olderButton = store.hasOlder && (
+    <div className="ag-row"><Button variant="subtle" onClick={() => older.mutate()} disabled={older.isPending}>Load older</Button></div>
+  );
+
+  if (job !== null) {
+    const turn = findTurn(top, job);
+    const prompt = turn?.first?.prompt ?? turn?.finished?.prompt;
+    const body = turn ? [
+      ...(typeof prompt === "string" ? [<li key="prompt"><ChatMessage author="incoming" label="Task" text={prompt} /></li>] : []),
+      ...turn.items.map((i) => shownView(i, ctx)),
+      ...(turn.failure && !turn.failure.retrying ? [failureView(turn, details)] : []),
+    ] : [];
+    return (
+      <ChatLayout title={turn ? subagentLabel(turn, ctx, false) : `Sub-agent #${job}`}
+        actions={stream !== "live" && <ConnectionStatus state={stream} />}
+        viewportRef={box} onScroll={onScroll}
+        footer={<p className="ag-muted">Read-only: a sub-agent's run. <AppLink to={`/conversations/${threadId}`}>Back to the conversation</AppLink></p>}>
+        {olderButton}
+        {turn ? <ChatList>{body}</ChatList> : (
+          <EmptyState title="This run is not loaded">{store.hasOlder ? "Load older events to find it." : "Its events were removed, or it has not started."}</EmptyState>
+        )}
+        {turn && !turn.finished && <ChatStatus>Running…</ChatStatus>}
+      </ChatLayout>
+    );
+  }
 
   return (
     <ChatLayout
@@ -480,9 +535,7 @@ export function View({ threadId }: { threadId: number }) {
           : <p className="ag-muted">Read-only: this conversation comes from {channel}.</p>)
         : <Composer threadId={threadId} busy={busy} />)}
     >
-      {store.hasOlder && (
-        <div className="ag-row"><Button variant="subtle" onClick={() => older.mutate()} disabled={older.isPending}>Load older</Button></div>
-      )}
+      {olderButton}
       {older.error && (
         <p className="ag-field__error" role="alert">
           {older.error instanceof ApiError && older.error.status === 409 ? "Older events were removed." : message(older.error)}
@@ -518,9 +571,11 @@ export function View({ threadId }: { threadId: number }) {
 export default function ConversationsPage() {
   const { threadId } = useParams();
   const id = threadId && /^[0-9]{1,19}$/.test(threadId) ? Number(threadId) : null;
+  const jobParam = useSearchParams()[0].get("job");
+  const job = jobParam && /^[0-9]{1,19}$/.test(jobParam) ? Number(jobParam) : null;
   return (
-    <SplitView navLabel="Conversations" nav={(close) => <Rail current={id} close={close} />}>
-      {id === null ? <EmptyState title="Pick a conversation">Or start a new one.</EmptyState> : <View key={id} threadId={id} />}
+    <SplitView navLabel="Conversations" nav={(close) => <Rail current={id} job={job} close={close} />}>
+      {id === null ? <EmptyState title="Pick a conversation">Or start a new one.</EmptyState> : <View key={id} threadId={id} job={job} />}
     </SplitView>
   );
 }

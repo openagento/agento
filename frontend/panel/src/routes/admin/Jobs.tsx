@@ -4,9 +4,9 @@ import { Drawer, Group, SegmentedControl, Stack, Table, Text, TextInput } from "
 import { useSearchParams } from "react-router";
 import { apiFetch, LIVE_REFETCH_MS, useQuery } from "@agento/api";
 import {
-  CodeBlock, IconAction, DataTable, ErrorState, LoadingState, PageHeader, SectionHeader, StatusBadge, Timestamp, type Column,
+  CodeBlock, IconAction, DataTable, ErrorState, jobTone, LoadingState, PageHeader, SectionHeader, StatusBadge, Timestamp, type Column,
 } from "@agento/ui";
-import { durationOf, jobTone, message, whole, type JobHead, type JobRow } from "./shared";
+import { durationOf, message, whole, type JobHead, type JobRow } from "./shared";
 
 interface JobDetail extends JobRow {
   model: string | null; error_message: string | null; result_summary: string | null; prompt: string | null; output: string | null;
