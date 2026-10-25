@@ -105,7 +105,7 @@ def get_dashboard_data(conn) -> DashboardData:
     with contextlib.suppress(Exception):
         data.module_count = _count_modules()
 
-    if not data.db_connected:
+    if conn is None or not data.db_connected:
         return data
 
     # Running jobs

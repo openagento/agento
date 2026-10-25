@@ -1,7 +1,7 @@
 # AI Coding Agents Container
 # Lightweight container for running Claude Code and Codex CLI in isolation
 
-FROM node:22-slim
+FROM node:26-slim
 
 LABEL maintainer="saipix"
 LABEL description="Isolated AI coding agents execution environment"

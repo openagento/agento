@@ -1,4 +1,4 @@
-FROM node:22-slim
+FROM node:26-slim
 
 LABEL description="MCP toolbox - thin runtime, source mounted at runtime"
 
@@ -69,7 +69,7 @@ EXPOSE 3001
 
 # Liveness check: HTTP 200 on /health = toolbox process responds. Does NOT check
 # Playwright (intentionally — a dead Playwright leaves the container healthy so
-# other adapters keep serving). curl is not in node:22-slim; node has native fetch.
+# other adapters keep serving). curl is not in node:26-slim; node has native fetch.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD node --eval "fetch('http://127.0.0.1:3001/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 

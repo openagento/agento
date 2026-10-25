@@ -44,7 +44,7 @@ jobs:
           TEST_MYSQL_PASSWORD: cronagent_root
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "26"
       # The versioned_artifacts desk tests run against the REAL mount point
       # (`ARTIFACTS_ROOT = /workspace/artifacts`) rather than an injected test root, so
       # that containment is proven on the path production uses. A clean runner has no
