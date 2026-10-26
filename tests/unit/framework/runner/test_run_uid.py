@@ -272,6 +272,17 @@ def test_a_run_dir_swapped_for_a_link_after_the_check_is_refused(tmp_path, monke
     assert seen == {"fchown": [], "fchmod": [], "chown": []}
 
 
+def test_every_run_uid_gets_one_passwd_entry_with_no_usable_home(tmp_path):
+    # ssh stops with "No user exists for uid" when getpwuid() finds no entry.
+    passwd = tmp_path / "passwd"
+    passwd.write_text("root:x:0:0:root:/root:/bin/bash\nagent:x:1000:1000::/home/agent:/bin/bash")
+    uids.add_passwd_entries(uids.uid_range(1), str(passwd))
+    uids.add_passwd_entries(uids.uid_range(1), str(passwd))  # a restart adds nothing
+    lines = passwd.read_text().splitlines()
+    assert lines[:2] == ["root:x:0:0:root:/root:/bin/bash", "agent:x:1000:1000::/home/agent:/bin/bash"]
+    assert lines[2:] == [f"run{u}:x:{u}:{u}::/nonexistent:/usr/sbin/nologin" for u in uids.uid_range(1)]
+
+
 def test_as_uid_gives_the_uid_its_own_group_only():
     assert uids.as_uid(20001) == {"user": 20001, "group": 20001, "extra_groups": [], "umask": 0o002}
 
