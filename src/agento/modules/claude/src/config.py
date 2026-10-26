@@ -74,7 +74,6 @@ _AUTH_IDENTITY_KEYS = frozenset({
     "userID",
     "numStartups",
     "firstStartTime",
-    "hasCompletedOnboarding",
 })
 
 
@@ -375,18 +374,22 @@ class ClaudeWorkspaceAdapter:
 
     @staticmethod
     def _trust_run_dir(artifacts_dir: Path) -> None:
-        """Pre-accept the CLI's "trust this folder" dialog for this run dir only.
+        """Pre-accept the CLI's "trust this folder" dialog for this run dir only, and
+        mark the first-run onboarding (the theme picker) done.
 
-        The interactive TUI asks it once per cwd and its default answer exits. The run
+        The interactive TUI asks trust once per cwd and its default answer exits. The run
         dir is HOME and cwd in both containers, so the key is the same path string.
         Only this one entry: never the developer's ``projects`` map, never an ancestor
-        (DECISIONS.md 2026-10-06 "Claude trust pre-accept").
+        (DECISIONS.md 2026-10-06 "Claude trust pre-accept"). A credential logged in
+        through the runner has no ``hasCompletedOnboarding``, so it is not taken from the
+        credential.
         """
         path = artifacts_dir / ".claude.json"
         data = _load_json(path) if path.is_file() else {}
-        data = _merge_json(
-            data, {"projects": {str(artifacts_dir): {"hasTrustDialogAccepted": True}}}
-        )
+        data = _merge_json(data, {
+            "hasCompletedOnboarding": True,
+            "projects": {str(artifacts_dir): {"hasTrustDialogAccepted": True}},
+        })
         path.write_text(json.dumps(data, indent=2) + "\n")
 
     def credential_ttl_seconds(self, credential: CredentialRecord) -> int | None:
