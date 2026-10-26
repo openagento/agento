@@ -435,8 +435,10 @@ def main() -> None:
     except ValueError as exc:
         sys.exit(f"runner: {exc}")
     state = os.path.join(os.path.dirname(path), "live")  # the socket's root-owned volume
+    index = _index(path)
+    uids.add_passwd_entries(uids.uid_range(index))
     log.info("runner: serving %s boot=%s", path, BOOT)
-    Server(socket.socket(fileno=3), index=_index(path), owner=owner,
+    Server(socket.socket(fileno=3), index=index, owner=owner,
            state_dir=state).serve_forever()
 
 
