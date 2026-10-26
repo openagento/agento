@@ -51,6 +51,20 @@ def uid_range(index: int) -> range:
     return range(start, start + RUN_UID_SLOTS)
 
 
+def add_passwd_entries(run_uids: Iterable[int], passwd: str = "/etc/passwd") -> None:
+    """Give every run uid a passwd entry. ``ssh`` stops with "No user exists for uid" when
+    ``getpwuid()`` finds none. The home is ``/nonexistent``: ``ssh`` reads ``~/.ssh`` from
+    it, not from ``$HOME``, and a run uid cannot create it, so no run plants an identity
+    there for a later run. Idempotent: a container restart keeps the file."""
+    with open(passwd, "r+") as f:
+        text = f.read()
+        have = {line.split(":")[2] for line in text.splitlines() if line.count(":") >= 2}
+        new = "".join(f"run{uid}:x:{uid}:{uid}::/nonexistent:/usr/sbin/nologin\n"
+                      for uid in run_uids if str(uid) not in have)
+        if new:
+            f.write(("\n" if text and not text.endswith("\n") else "") + new)
+
+
 class UidPool:
     """The free uids of one runner. ``take`` gives ``None`` when none is free."""
 

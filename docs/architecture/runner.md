@@ -186,7 +186,10 @@ credential.
   `RUN_UID_SLOTS`). The ranges never overlap, so a uid is never in two runners at once. A uid
   has a primary group of the same number. Its other groups are `THREAD_GID` (19990,
   `agento_thread`: the thread dirs, D-THREAD-2) and the gids in `AGENTO_RUN_GROUPS`
-  (D-RUN-GROUPS-1). No `/etc/passwd` entry is needed. The run dir's `shared` entry is a link to
+  (D-RUN-GROUPS-1). At start the server adds a `/etc/passwd` entry `run<uid>` for each uid
+  of its range (`uids.add_passwd_entries`), because `ssh` stops with "No user exists for
+  uid" without one. Its home is `/nonexistent`: `ssh` reads `~/.ssh` there, not in
+  `$HOME`, and a run uid cannot create it. The run dir's `shared` entry is a link to
   the thread's `shared/`; the owner walk skips links, so a thread dir never goes to a run uid.
   The group comes from the sandbox image (the cron and runner image): after an upgrade to it,
   rebuild the images (`agento upgrade` does; in dev, `docker compose -f
