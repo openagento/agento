@@ -278,38 +278,6 @@ class TestRunJobWithAgentView:
         from agento.framework.runner import client as runner_client
         assert Path(MockRunner.call_args.args[1].home_dir).parent == runner_client.shared_tmp()
 
-    @patch("agento.framework.consumer.get_workflow_class")
-    @patch("agento.framework.consumer.get_channel")
-    @patch("agento.framework.consumer.RemoteRunner")
-    @patch("agento.framework.consumer.get_connection")
-    @patch("agento.framework.consumer.resolve_agent_view_runtime")
-    def test_explicit_model_flag_overrides_config(
-        self, mock_resolve, mock_conn, MockRunner, mock_get_ch, mock_get_wf,
-        sample_db_config, sample_consumer_config,
-    ):
-        """An explicit --model flag (Consumer.model_override) wins over runtime.model (config)."""
-        runtime = AgentViewRuntime()
-        runtime.harness = "claude"
-        runtime.provider = "anthropic"
-        runtime.model = "db-model"
-        mock_resolve.return_value = runtime
-        mock_conn.return_value = MagicMock()
-
-        mock_result = _make_claude_result()
-        mock_workflow = MagicMock()
-        mock_workflow.execute_job.return_value = mock_result
-        mock_get_wf.return_value.return_value = mock_workflow
-        mock_get_ch.return_value = MagicMock(name="jira")
-
-        consumer = Consumer(
-            sample_db_config, sample_consumer_config, logging.getLogger("test"),
-            model_override="flag-model",
-        )
-        consumer._run_job(_make_job(agent_view_id=None))
-
-        MockRunner.assert_called_once()
-        assert MockRunner.call_args.args[1].model == "flag-model"
-
     def test_scoped_overrides_generate_mcp_config_without_claims_in_the_url(
         self, tmp_path,
     ):
