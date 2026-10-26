@@ -30,7 +30,6 @@ class TestNoAgentContentInLogsOrErrorMessage:
 
     def _failing_runner(self):
         runner = make_runner("claude", credential=None, credential_required=False)
-        runner._record_usage = MagicMock()
         runner.logger = logging.getLogger("round7-log-test")
         runner._execute_process = MagicMock(
             return_value=MagicMock(
@@ -82,6 +81,23 @@ class TestNoAgentContentInLogsOrErrorMessage:
 
         assert STDOUT_SENTINEL in getattr(exc.value, "agent_output", "")
 
+    def test_stderr_reaches_job_output_when_the_parser_raises_on_a_failed_process(self):
+        """A CLI that dies with empty stdout makes a strict parser raise first (Pi: "no
+        assistant provider/model"). The process failure is the cause, and its stderr is
+        the only record of it — it must not be dropped for the parser's empty stdout."""
+        runner = self._failing_runner()
+        runner._execute_process.return_value = MagicMock(
+            returncode=1, stdout="", stderr=STDERR_SENTINEL,
+        )
+        # Pi and Codex parse stdout only (base `_extract_raw` would fall back to stderr).
+        runner._extract_raw = lambda proc: proc.stdout or ""
+        runner._parse_output = MagicMock(side_effect=RuntimeError("no identity"))
+        with pytest.raises(RuntimeError) as exc:
+            runner.execute(RunRequest(prompt="p"))
+
+        assert STDERR_SENTINEL in getattr(exc.value, "agent_output", "")
+        assert STDERR_SENTINEL not in str(exc.value)
+
     def test_consumer_persists_agent_output_on_failure(self):
         """The failure UPDATEs previously wrote only error_message/error_class, which is why
         removing content from the message would have blinded operators."""
@@ -90,8 +106,9 @@ class TestNoAgentContentInLogsOrErrorMessage:
         source = Path(consumer.__file__).read_text()
         assert 'agent_output = getattr(error, "agent_output", None)' in source
         # All failure branches (retry, usage-limit pool-wait, blocked, and
-        # dead-letter) must store it.
-        assert source.count("output = COALESCE(%s, output)") == 4
+        # dead-letter) go through the one writer, `_transition`, which stores it.
+        assert source.count("output = COALESCE(%s, output)") == 1
+        assert "agent_output=agent_output" in source
 
 
 class TestCredentialErrorLogsCarryNoContent:
@@ -159,7 +176,7 @@ class TestModuleToggleReprovisionsTheSandbox:
         assert _declared_sandbox_pins(REPO, "does_not_exist") == set()
 
     def _project(self, tmp_path):
-        """A minimal installed project: managed compose builds .agento/docker/sandbox."""
+        """A minimal installed project: the sandbox image builds from .agento/docker/sandbox."""
         (tmp_path / ".agento").mkdir()
         (tmp_path / ".agento" / "project.json").write_text('{"name": "p"}')
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "p"\n')
@@ -191,8 +208,8 @@ class TestModuleToggleReprovisionsTheSandbox:
         return [" ".join(c) for c in calls]
 
     def test_toggle_renders_the_project_context_docker_builds(self, tmp_path):
-        """Round 8: my round-7 fix rendered the IN-PACKAGE Dockerfile, but managed compose
-        builds `<project>/.agento/docker/sandbox` — so the rebuild used a stale image. Assert
+        """Round 8: my round-7 fix rendered the IN-PACKAGE Dockerfile, but the managed build
+        uses `<project>/.agento/docker/sandbox` — so the rebuild used a stale image. Assert
         the real file appears and carries the declared pins."""
         project = self._project(tmp_path)
 
@@ -203,8 +220,10 @@ class TestModuleToggleReprovisionsTheSandbox:
         text = dockerfile.read_text()
         assert "ARG CODEX_VERSION=" in text
         assert "{{" not in text, "markers must be rendered, not shipped"
-        assert any("build sandbox" in c for c in joined), joined
-        assert any("up -d" in c for c in joined), joined
+        # No sandbox service: the image is built directly, then the cron image the
+        # runners use (FROM the sandbox image), then the containers are recreated.
+        assert joined[0].split(" ")[:4] == ["docker", "build", "-t", "agento-sandbox:latest"]
+        assert joined[1:] == ["docker compose -f c.yml build cron", "docker compose -f c.yml up -d"]
 
     def test_toggle_does_not_touch_docker_for_a_non_harness_local_module(self, tmp_path):
         project = self._project(tmp_path)
@@ -282,7 +301,7 @@ class TestCliMigrationCompleted:
         parser = argparse.ArgumentParser()
         ReplayCommand().configure(parser)
 
-        for flag in ("--credential", "--credential-id", "--oauth_token"):
+        for flag in ("--credential", "--credential-id"):
             ns = parser.parse_args(["7", flag, "5"])
             assert ns.credential_id == 5, flag
 

@@ -45,6 +45,10 @@ class CredentialRecord:
     # leased_until is a liveness deadline the owning consumer renews, NOT a duration.
     lease_owner: str | None = None
     leased_until: datetime | None = None
+    # What `credential:limits` last read from the provider ({"windows": [...],
+    # "balance_usd": ...}), and when. None when there is nothing to show.
+    limits: dict | None = None
+    limits_at: datetime | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> CredentialRecord:
@@ -66,6 +70,8 @@ class CredentialRecord:
             error_source=row.get("error_source"),
             lease_owner=row.get("lease_owner"),
             leased_until=row.get("leased_until"),
+            limits=json.loads(row["limits"]) if row.get("limits") else None,
+            limits_at=row.get("limits_at"),
             used_at=row.get("used_at"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],

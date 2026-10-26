@@ -47,7 +47,9 @@ const ROUTE_ONLY_FILES = new Set([
   'bitbucket/api.js',
   'github/api.js',
   'jira/api.js',
+  'miniapps/admin-api.js',
   'outlook/api.js',
+  'versioned_artifacts/admin-api.js',
 ]);
 
 // Support files: no register() export, so production never invokes them. Listed explicitly so an
@@ -62,12 +64,12 @@ const SUPPORT_FILES = new Set([
   'github/github-auth.js',
   'jira/api-handlers.js',
   'jira/jira-proxy.js',
+  'miniapps/manifest.js',
   'outlook/api-handlers.js',
   'outlook/credentials.js',
   'outlook/graph-auth.js',
   'versioned_artifacts/audit.js',
   'versioned_artifacts/auth.js',
-  'versioned_artifacts/cli.js',
   'versioned_artifacts/desk-io.js',
   'versioned_artifacts/errors.js',
   'versioned_artifacts/git-backend.js',
@@ -76,6 +78,9 @@ const SUPPORT_FILES = new Set([
   'versioned_artifacts/paths.js',
   'versioned_artifacts/published-tree.js',
   'versioned_artifacts/service.js',
+  'versioned_artifacts/share-host.js',
+  'miniapps/launch-source.js',
+  'web/auth-sources.js',
 ]);
 
 // The AUTHORITATIVE "every tool is declared" check for shipped modules.

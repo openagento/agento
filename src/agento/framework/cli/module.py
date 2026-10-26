@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import subprocess
 import sys
 from pathlib import Path
@@ -41,10 +40,10 @@ def _set_module_state(name: str, enabled: bool) -> None:
         source = resolve_module_source(name, project_root)
     else:
         # In-container fallback: only modules visible to scan can be toggled.
-        from ..module_loader import scan_modules
+        from ..module_discovery import scan_all_modules
 
         core_dir, user_dir = _module_dirs()
-        all_names = {m.name for m in scan_modules(str(core_dir)) + scan_modules(str(user_dir))}
+        all_names = {m.name for m in scan_all_modules(str(core_dir), str(user_dir))}
         if name not in all_names:
             print(f"Module '{name}' not found")
             sys.exit(1)
@@ -80,11 +79,11 @@ def _set_module_state(name: str, enabled: bool) -> None:
         print("Regenerated docker-compose.yml")
 
     if pins:
-        from ._provisioning import materialize_docker_context
+        from ._provisioning import build_sandbox_image, materialize_docker_context
 
         verb = "installs" if enabled else "removes"
         print(f"Sandbox image {verb}: {', '.join(sorted(pins))} — rebuilding")
-        # The MANAGED compose file builds `<project>/.agento/docker/sandbox`, so that is the
+        # The managed build uses `<project>/.agento/docker/sandbox`, so that is the
         # context to re-render — not the in-package Dockerfile, which only the dev compose
         # file builds. `force=True` because the agento-core version stamp has not changed,
         # and without it the copy is skipped and the stale image (missing or still carrying
@@ -92,11 +91,14 @@ def _set_module_state(name: str, enabled: bool) -> None:
         materialize_docker_context(project_root, force=True)
         flags = compose_file_flags(project_root)
         if flags:
-            build = subprocess.run(["docker", "compose", *flags, "build", "sandbox"])
-            if build.returncode != 0:
+            # The runners use the cron image, which is FROM the sandbox image: rebuild both.
+            ok = build_sandbox_image(project_root) == 0 and subprocess.run(
+                ["docker", "compose", *flags, "build", "cron"]).returncode == 0
+            if not ok:
                 print(
-                    "Warning: sandbox rebuild failed — run 'docker compose build sandbox' "
-                    "before the next job, or the declared agent CLI will be missing."
+                    "Warning: image rebuild failed — run 'agento upgrade --version "
+                    "<installed version>' before the next job, or the declared agent CLI "
+                    "will be missing."
                 )
 
     if needs_compose:
@@ -128,31 +130,17 @@ def _declared_sandbox_pins(project_root, name: str) -> set[str]:
     if module_dir is None:
         return set()
 
-    from ..harness.manifest import (
-        _parse_legacy_sandbox_packages,
-        parse_harness_declarations,
-    )
+    from ..harness.manifest import parse_harness_declarations
 
-    pins: set[str] = set()
     try:
         decls = parse_harness_declarations(module_dir / "di.json", name)
     except ValueError:
-        decls = []
-    pins |= {
+        return set()
+    return {
         d.descriptor.sandbox_package.version_env_key
         for d in decls
         if d.descriptor.sandbox_package is not None
     }
-    # The deprecated top-level `sandbox_packages` array is still honoured for one release
-    # (see harness/manifest.py), so a module that has not migrated must still trigger the
-    # rebuild — otherwise its CLI is missing after enable, or left installed after disable.
-    # A malformed legacy entry is reported by module:validate, not here.
-    with contextlib.suppress(RuntimeError):
-        pins |= {
-            p.version_env_key
-            for p in _parse_legacy_sandbox_packages(module_dir / "di.json", name)
-        }
-    return pins
 
 
 class MakeModuleCommand:
@@ -250,11 +238,11 @@ class ModuleListCommand:
 
     def execute(self, args: argparse.Namespace) -> None:
         from ..dependency_resolver import resolve_order
-        from ..module_loader import scan_modules
+        from ..module_discovery import scan_all_modules
         from ..module_status import is_enabled, read_module_status
 
         core_dir, user_dir = _module_dirs()
-        all_modules = resolve_order(scan_modules(str(core_dir)) + scan_modules(str(user_dir)))
+        all_modules = resolve_order(scan_all_modules(str(core_dir), str(user_dir)))
         status = read_module_status()
 
         for m in all_modules:

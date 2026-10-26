@@ -82,7 +82,8 @@ class ConfigureCommand:
                 sys.exit(1)
             try:
                 with rest_capability(
-                    agent_view_id=probe_views[0].id, db_config=db_config
+                    agent_view_id=probe_views[0].id, subject_id="service:jira_periodic_tasks",
+                    db_config=db_config
                 ) as probe_token, closing(
                     ToolboxClient(toolbox_url, capability_token=probe_token)
                 ) as toolbox:

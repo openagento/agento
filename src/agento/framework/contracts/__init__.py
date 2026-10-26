@@ -35,8 +35,6 @@ from ..events import (
     RoutingResolvedEvent,
     SetupBeforeEvent,
     SetupCompleteEvent,
-    TokenRefreshedEvent,
-    TokenRegisteredEvent,
 )
 from ..harness import Runner, RunResult, SubprocessRunner
 from ..ingress_identity import IngressIdentity
@@ -94,8 +92,6 @@ __all__ = [
     "SetupBeforeEvent",
     "SetupCompleteEvent",
     "SubprocessRunner",
-    "TokenRefreshedEvent",
-    "TokenRegisteredEvent",
     "WorkItem",
     "Workflow",
 ]

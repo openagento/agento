@@ -28,12 +28,18 @@ def load_scoped_db_overrides(
     conn,
     scope: str = Scope.DEFAULT,
     scope_id: int = 0,
+    *,
+    strict: bool = False,
 ) -> dict[str, tuple[str, bool]]:
     """Load core_config_data rows for a specific (scope, scope_id).
 
-    Returns {path: (value, encrypted)}.
+    Returns {path: (value, encrypted)}. ``strict=True`` raises instead of answering ``{}``
+    for a missing connection or a failed query — for a security bound, "unreadable" must
+    never silently become "unset".
     """
     if conn is None:
+        if strict:
+            raise RuntimeError("no database connection")
         return {}
     try:
         with conn.cursor() as cur:
@@ -51,6 +57,8 @@ def load_scoped_db_overrides(
                 result[row[0]] = (row[1], bool(row[2]))
         return result
     except Exception:
+        if strict:
+            raise
         logger.warning("Failed to load scoped overrides (%s/%s)", scope, scope_id, exc_info=True)
         return {}
 
@@ -128,10 +136,11 @@ def resolve_with_origin(
     legacy harness/provider fallback need this, so it does per-scope lookups instead
     of rewriting the shared resolver.
     """
-    from . import store_env
+    import os
+
     from .config_resolver import path_to_env_key
 
-    env_value = store_env.get(path_to_env_key(path))
+    env_value = os.environ.get(path_to_env_key(path))
     if env_value is not None:
         return env_value, ORIGIN_ENV
 

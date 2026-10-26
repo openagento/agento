@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createService } from '../../../modules/versioned_artifacts/toolbox/service.js';
 import { createBackend } from '../../../modules/versioned_artifacts/toolbox/git-backend.js';
-import { readSource } from './helpers.js';   // test-local, see Task 5 Step 1a
+import { readSource, vaConfig } from './helpers.js';   // test-local, see Task 5 Step 1a
 
 const execFileAsync = promisify(execFile);
 
@@ -17,11 +17,7 @@ const linux = process.platform === 'linux';
 
 let root, pub, src, svc, rows, desk, deskFd;
 const opened = [];
-const cfg = (over = {}) => ({ storage_root: root, published_root: pub, allowed_artifacts: 'site',
-  'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', 'limits/max_files': 2000,
-  'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600, 'limits/max_diff_bytes': 1048576,
-  'limits/max_agent_artifacts': 50,
-  'security/allow_symlinks': false, ...over });
+const cfg = (over = {}) => vaConfig(root, pub, over);
 
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'vf-svc-'));
@@ -29,7 +25,7 @@ beforeEach(async () => {
   src = await mkdtemp(path.join(tmpdir(), 'vf-src-'));
   await writeFile(path.join(src, 'index.html'), '<h1>v1</h1>\n');
   rows = [];
-  const pool = { execute: async (_sql, params) => { rows.push(params); } };
+  const pool = { query: async () => [[]], execute: async (_sql, params) => { rows.push(params); } };
   svc = createService({ config: cfg(), db: { getCronPool: () => pool }, log: vi.fn(),
     jobId: 12345, agentViewId: 7, actor: 'a@b.c' });
   await svc.init('site', { files: await readSource(src) });
@@ -114,7 +110,7 @@ describe('audit', () => {
   });
 
   it('records the artifact initialization', async () => {
-    const s = createService({ config: cfg({ allowed_artifacts: 'other' }), db: { getCronPool: () => ({ execute: async (_s, p) => rows.push(p) }) },
+    const s = createService({ config: cfg({ allowed_artifacts: 'other' }), db: { getCronPool: () => ({ query: async () => [[]], execute: async (_s, p) => rows.push(p) }) },
       log: vi.fn(), actor: 'admin' });
     rows.length = 0;
     await s.init('other', { files: await readSource(src) });
@@ -132,7 +128,7 @@ describe('audit', () => {
   });
 
   it('falls back to a file when the DB insert fails, rather than losing the event', async () => {
-    const s = createService({ config: cfg(), db: { getCronPool: () => ({ execute: async () => { throw new Error('db down'); } }) },
+    const s = createService({ config: cfg(), db: { getCronPool: () => ({ query: async () => [[]], execute: async () => { throw new Error('db down'); } }) },
       log: vi.fn(), actor: 'a@b.c' });
     await s.createDraft('site', 'current', 'x');
     const line = await readFile(path.join(root, 'audit-fallback.log'), 'utf8');
@@ -146,7 +142,7 @@ describe('audit', () => {
     // `actor` is asserted beside `description` because it was the field left
     // behind when `description` was bounded: one `cap()` now covers both, and
     // this is the test that keeps them together.
-    const s = createService({ config: cfg(), db: { getCronPool: () => ({ execute: async () => { throw new Error('db down'); } }) },
+    const s = createService({ config: cfg(), db: { getCronPool: () => ({ query: async () => [[]], execute: async () => { throw new Error('db down'); } }) },
       log: vi.fn(), actor: `${'a'.repeat(5000)}@b.c` });
     await s.createDraft('site', 'current', 'D'.repeat(5000));
     const rec = JSON.parse((await readFile(path.join(root, 'audit-fallback.log'), 'utf8')).trim());
@@ -159,7 +155,7 @@ describe('audit', () => {
     // create. Its failure is logged by the service — the layer that owns a
     // logger — and the valid creation proceeds.
     const log = vi.fn();
-    const s = createService({ config: cfg(), db: { getCronPool: () => ({ execute: async (_s, p) => rows.push(p) }) },
+    const s = createService({ config: cfg(), db: { getCronPool: () => ({ query: async () => [[]], execute: async (_s, p) => rows.push(p) }) },
       log, actor: 'a@b.c',
       backend: { ...createBackend(), reconcileDrafts: async () => { throw new Error('unreadable'); } } });
     await expect(s.createDraft('site', 'current', 'x')).resolves.toHaveProperty('draft_id');
@@ -287,17 +283,18 @@ describe('listing the artifacts a scope may use', () => {
     expect(site.open_drafts).toEqual([{ draft_id: d.draft_id, base_version: site.current_version }]);
   });
 
-  it('takes title, owner and created_at from the metadata row when one exists', async () => {
+  it('takes title and created_at from the metadata row when one exists; there is no owner field', async () => {
     const created = new Date('2026-09-11T08:30:00Z');
     const [site] = await withMeta([
-      { artifact_code: 'site', title: 'Marketing site', owner: 'a@b.c', created_at: created },
+      { artifact_code: 'site', title: 'Marketing site', created_at: created },
     ]).listArtifacts();
-    expect(site).toMatchObject({ title: 'Marketing site', owner: 'a@b.c', created_at: created });
+    expect(site).toMatchObject({ title: 'Marketing site', created_at: created });
+    expect(site).not.toHaveProperty('owner');   // D-MINIAPP-2: the owner marker lives in the store
   });
 
   it('lists an artifact that has no metadata row yet', async () => {
-    const [site] = await withMeta([{ artifact_code: 'unrelated', title: 't', owner: 'o' }]).listArtifacts();
-    expect(site).toMatchObject({ artifact_code: 'site', title: null, owner: null, created_at: null });
+    const [site] = await withMeta([{ artifact_code: 'unrelated', title: 't' }]).listArtifacts();
+    expect(site).toMatchObject({ artifact_code: 'site', title: null, created_at: null });
   });
 
   it('still lists the store when the metadata table cannot be read', async () => {
@@ -380,9 +377,49 @@ describe('the artifacts an agent_view may create', () => {
   it('records an audit row for a refused creation', async () => {
     const audited = [];
     const s = createService({ config: cfg({ allowed_artifacts: '' }), agentViewId: 0, log: vi.fn(),
-      db: { getCronPool: () => ({ execute: async (_q, p) => audited.push(p) }) } });
+      db: { getCronPool: () => ({ query: async () => [[]], execute: async (_q, p) => audited.push(p) }) } });
     await expect(s.init('report')).rejects.toThrow(/ARTIFACT_ACCESS_DENIED/);
     expect(audited.at(-1)).toContain('ARTIFACT_ACCESS_DENIED');
+  });
+
+  // A `versioned_artifact` row outlives its store when a delete fails between the two: the
+  // code is still taken (its rights rows hang off that row), so `init` moves on (D-MINIAPP-3).
+  const rowDb = (left, written = []) => ({ getCronPool: () => ({
+    query: async (_q, p) => [left.includes(p[0]) ? [{ 1: 1 }] : []],
+    execute: async (q, p) => { if (/INSERT INTO versioned_artifact \(/.test(q)) written.push(p); },
+  }) });
+
+  it('writes the creating job into the metadata row (null without a job)', async () => {
+    const written = [];
+    await createService({ config: cfg({ allowed_artifacts: '' }), db: rowDb([], written), log: vi.fn(),
+      agentViewId: 7, jobId: 42 }).init('report');
+    await createService({ config: cfg({ allowed_artifacts: '' }), db: rowDb([], written), log: vi.fn(),
+      agentViewId: 7 }).init('notes');
+    expect(written.map(p => [p[0], p[2]])).toEqual([['report', 42], ['notes', null]]);
+  });
+
+  it('takes a code that still has a metadata row: a wish moves on, an operator name is refused', async () => {
+    const s = createService({ config: cfg({ allowed_artifacts: 'kept' }), db: rowDb(['report', 'kept']),
+      log: vi.fn(), agentViewId: 7 });
+    expect((await s.init('report')).artifact_code).toBe('report-2');
+    await expect(s.init('kept')).rejects.toMatchObject({ code: 'ARTIFACT_ALREADY_EXISTS' });
+  });
+
+  it('fails init when the metadata check fails', async () => {
+    const s = createService({ config: cfg({ allowed_artifacts: '' }), log: vi.fn(), agentViewId: 7,
+      db: { getCronPool: () => ({ query: async () => { throw new Error('db down'); }, execute: async () => {} }) } });
+    await expect(s.init('report')).rejects.toThrow(/db down/);
+  });
+
+  it('fails init before creating anything when the pool cannot be had', async () => {
+    for (const getCronPool of [() => { throw new Error('no pool'); }, () => null]) {
+      const s = createService({ config: cfg({ allowed_artifacts: '' }), log: vi.fn(), agentViewId: 7,
+        db: { getCronPool } });
+      await expect(s.init('report')).rejects.toThrow(/no pool|STORAGE_OPERATION_FAILED|unavailable/);
+    }
+    // Nothing was created: the name is still free.
+    const s = createService({ config: cfg({ allowed_artifacts: '' }), db: rowDb([]), log: vi.fn(), agentViewId: 7 });
+    expect((await s.init('report')).artifact_code).toBe('report');
   });
 
   it('creates an artifact an operator pre-granted', async () => {
@@ -425,12 +462,9 @@ describe('the artifacts an agent_view may create', () => {
     expect(String(capped[0].reason)).toMatch(/ARTIFACT_LIMIT_REACHED/);
   });
 
-  it('exempts the administrator from the namespace and the cap', async () => {
-    // `admin: true` is set by cli.js alone: `artifact:init` must keep creating any code.
-    const admin = createService({ config: cfg({ allowed_artifacts: '', 'limits/max_agent_artifacts': 1 }),
-      db: null, log: vi.fn(), admin: true });
-    await admin.init('operator-one');
-    expect((await admin.init('operator-two')).artifact_code).toBe('operator-two');
+  it('lets the store admin create nothing: creation is the agent job (O-3)', async () => {
+    const admin = createService({ config: cfg({ allowed_artifacts: '' }), db: null, log: vi.fn(), admin: true });
+    await expect(admin.init('operator-one')).rejects.toMatchObject({ code: 'ARTIFACT_ACCESS_DENIED' });
   });
 });
 
@@ -440,17 +474,16 @@ describe('remove', () => {
     await expect(svc.remove('site')).rejects.toMatchObject({ code: 'ARTIFACT_ACCESS_DENIED' });
   });
 
-  it('removes the published tree, the store and the row', async () => {
-    const deleted = [];
-    const pool = { execute: async (sql, params) => { deleted.push([sql, params]); } };
+  it('removes the published tree and the store; web deletes the row', async () => {
+    const sql = [];
+    const pool = { query: async () => [[]], execute: async (q) => { sql.push(q); } };
     const admin = createService({ config: cfg(), db: { getCronPool: () => pool }, log: vi.fn(),
       actor: 'admin', admin: true });
     const r = await admin.remove('site');
     expect(r).toMatchObject({ artifact_code: 'site', removed_store: true, removed_published: true });
     await expect(stat(path.join(root, 'site'))).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(stat(path.join(pub, 'site'))).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(deleted.some(([sql, params]) => /DELETE FROM versioned_artifact\b/.test(sql) && params[0] === 'site'))
-      .toBe(true);
+    expect(sql.filter((q) => /DELETE FROM versioned_artifact\b/.test(q))).toEqual([]);
   });
 
   // The half-cleaned state is exactly what an operator reaches for this command to
@@ -481,15 +514,16 @@ describe('delete is excluded by an active mutation on the same artifact', () => 
   // until the mutation releases the lock.
   const runsAfter = async (method, drive) => {
     let open; const gate = new Promise((r) => { open = r; });
+    let entered; const inside = new Promise((r) => { entered = r; });
     const real = createBackend();
     const order = [];
     const watched = { ...real, [method]: async (...a) => {
-      order.push('mut'); await gate; return real[method](...a);
+      order.push('mut'); entered(); await gate; return real[method](...a);
     } };
     const actor = createService({ config: cfg(), db: null, log: vi.fn(), agentViewId: 7, backend: watched });
     const admin = createService({ config: cfg(), db: null, log: vi.fn(), actor: 'admin', admin: true, backend: real });
     const mutating = drive(actor);
-    await new Promise((r) => setTimeout(r, 40));           // the mutation enters and holds the lock
+    await inside;                                          // the mutation entered and holds the lock
     const removing = admin.remove('site').then(() => order.push('remove'));
     await new Promise((r) => setTimeout(r, 40));           // remove must be BLOCKED on the lock
     expect(order).toEqual(['mut']);

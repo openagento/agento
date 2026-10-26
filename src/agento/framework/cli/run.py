@@ -1,4 +1,5 @@
-"""`agento run <agent_view_code> [--yolo] [--pretty] [prompt]` — spawn the configured agent CLI.
+"""`agento run <agent_view_code> [--yolo] [--pretty] [--harness H] [--model M] [--credential ID] [prompt]`
+— spawn the configured agent CLI.
 
 Host-side LOCAL command. Two-step docker exec:
 1. Query cron for a full run profile via ``agent_view:prepare-run`` —
@@ -6,7 +7,7 @@ Host-side LOCAL command. Two-step docker exec:
    dir (same path the consumer uses for jobs), and returns the unified CLI
    command + a possibly-non-empty ``env`` dict for credentials that must be
    delivered at runtime.
-2. Exec into sandbox with HOME=per-run artifacts, cwd=per-run artifacts, running
+2. Exec into the runner (``EXEC_SERVICE``) with HOME=per-run artifacts, cwd=per-run artifacts, running
    the command cron told us to run. Runtime env values are injected via
    **name-only** ``-e KEY`` so the secret never appears in argv/``ps``;
    docker reads the value from the parent's environment.
@@ -30,7 +31,7 @@ from pathlib import Path
 
 from ..harness.stream_style import sanitize
 from ..ssh_prelude import wrap_with_ssh_prelude
-from ._project import compose_file_flags, find_project_root
+from ._project import EXEC_SERVICE, compose_file_flags, find_project_root
 
 
 class RunCommand:
@@ -45,7 +46,7 @@ class RunCommand:
     @property
     def help(self) -> str:
         return (
-            "Run the configured agent CLI in the sandbox container. "
+            "Run the configured agent CLI in the runner container. "
             "With a prompt: headless (one-shot); without: interactive."
         )
 
@@ -64,6 +65,16 @@ class RunCommand:
             action="store_true",
             help="Render the agent's event stream as readable lines instead of raw "
                  "JSONL. Headless runs only (interactive is already readable).",
+        )
+        parser.add_argument(
+            "--harness",
+            help="Run this harness instead of agent_view/harness, with its default "
+                 "provider. No config is changed.",
+        )
+        parser.add_argument("--model", help="Run this model instead of agent_view/model.")
+        parser.add_argument(
+            "--credential", type=int,
+            help="Use this credential id instead of the pool's pick.",
         )
         parser.add_argument(
             "prompt",
@@ -94,9 +105,11 @@ class RunCommand:
         yolo = bool(getattr(args, "yolo", False)) or "--yolo" in prompt_tokens
         pretty = bool(getattr(args, "pretty", False)) or "--pretty" in prompt_tokens
         prompt_tokens = [t for t in prompt_tokens if t not in ("--yolo", "--pretty")]
+        pins = {k: getattr(args, k, None) for k in _VALUE_OPTIONS}
+        prompt_tokens = _take_leading_options(prompt_tokens, pins)
         prompt = " ".join(prompt_tokens).strip()
         runtime = _fetch_runtime(
-            compose_flags, args.agent_view_code, prompt=prompt, yolo=yolo,
+            compose_flags, args.agent_view_code, prompt=prompt, yolo=yolo, pins=pins,
         )
         harness = runtime.get("harness")
         if harness is None:
@@ -151,7 +164,7 @@ class RunCommand:
                 "-e", f"HOME={home_in_container}",
                 *env_args,
                 "-w", working_dir,
-                "sandbox",
+                EXEC_SERVICE,
                 *wrapped,
             ]
             # Pass the secret via the child env so docker reads it from there
@@ -193,13 +206,34 @@ class RunCommand:
             "-e", "COLORTERM=truecolor",
             *env_args,
             "-w", working_dir,
-            "sandbox",
+            EXEC_SERVICE,
             *wrapped,
         ]
         # execvp inherits the current process's environment; set secrets there
         # so docker resolves them from the parent for each name-only -e KEY.
         os.environ.update(secret_env)
         os.execvp("docker", exec_args)
+
+
+_VALUE_OPTIONS = ("harness", "model", "credential")
+
+
+def _take_leading_options(tokens: list[str], pins: dict) -> list[str]:
+    """Move ``--harness/--model/--credential`` typed after the agent_view code out of the
+    prompt into ``pins``; return the rest. Only LEADING tokens: a prompt may contain the
+    same words."""
+    while tokens:
+        name, eq, value = tokens[0].partition("=")
+        key = name[2:] if name.startswith("--") else None
+        if key not in _VALUE_OPTIONS:
+            break
+        if not eq:
+            if len(tokens) < 2:
+                break
+            value, tokens = tokens[1], tokens[1:]
+        pins[key] = value
+        tokens = tokens[1:]
+    return tokens
 
 
 def _load_stream_renderer(runtime: dict):
@@ -297,7 +331,7 @@ def _run_pretty(
 
 def _fetch_runtime(
     compose_flags: list[str], agent_view_code: str, *, prompt: str = "",
-    yolo: bool = False,
+    yolo: bool = False, pins: dict | None = None,
 ) -> dict:
     """Ask cron to prepare a run environment; return parsed JSON.
 
@@ -318,6 +352,9 @@ def _fetch_runtime(
         cmd.extend(["--prompt", prompt])
     if yolo:
         cmd.append("--yolo")
+    for key, value in (pins or {}).items():
+        if value is not None:
+            cmd.extend([f"--{key}", str(value)])
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)

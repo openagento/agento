@@ -29,6 +29,7 @@ from .errors import (
     AuthenticationError,
     CredentialLeasedError,
     CredentialsBusyError,
+    CredentialsUnavailableError,
     UsageLimitError,
 )
 from .models import (
@@ -54,6 +55,7 @@ __all__ = [
     "CredentialStatus",
     "CredentiallessUsage",
     "CredentialsBusyError",
+    "CredentialsUnavailableError",
     "RefreshLease",
     "UsageLimitError",
     "UsageSummary",

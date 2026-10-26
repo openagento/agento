@@ -101,8 +101,8 @@ Python no longer resolves them **at all**: `outlook_client_secret`, `outlook_cer
 `outlook_cert_password` declare `access: "toolbox_only"`, so `bootstrap()` skips them, `resolve_all()`
 skips them, and a direct `.get()` on one raises `ToolboxOnlyConfigError`. They also declare
 `allowEnv: false`, so a `CONFIG__OUTLOOK__*` variable cannot supply them either. The transient
-decrypt that earlier versions performed on the cron is gone for these fields; the remaining open case
-is `app_monitor`'s SMTP password, which is consumed cron-side by design — see the
+decrypt that earlier versions performed on the cron is gone for these fields. `app_monitor`'s SMTP
+password is used in `cron` by design: the backend is trusted (DECISIONS.md D-BACKEND-2) — see the
 [toolbox-only secret-boundary hardening PRD](../security/toolbox-only-secret-boundary.md). Loop suppression
 introduces **no new secret** — it is address-based and **auto-derived from the agent_views** (no
 hand-maintained list), so there is nothing extra to resolve or protect (see

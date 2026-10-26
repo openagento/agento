@@ -1,6 +1,6 @@
 """Git commit author identity — single source of truth (agent-agnostic).
 
-The agent commits with ``git`` inside the sandbox; the SSH key authenticates the
+The agent commits with ``git`` inside the runner; the SSH key authenticates the
 *push* but never sets the author. The author/committer come from git config, which
 ``workspace:build`` materializes into ``~/.gitconfig`` ``[user]`` from the agent_view's
 ``identity/git_author_*`` config — AND, because a repo-local ``.git/config [user]``

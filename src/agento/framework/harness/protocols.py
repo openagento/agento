@@ -10,6 +10,7 @@ import inspect
 import logging
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -49,6 +50,9 @@ class Runner(Protocol):
         Both hooks are best-effort and may be ignored: ``on_pid`` is meaningless for a
         runner that spawns no process, and a harness with no streaming session id simply
         never calls ``on_session_id``. Implementations that cannot report either may no-op.
+        A runner may also take ``on_line`` (one raw stdout line) and ``on_usage`` (the parsed
+        ``RunResult``); the runner service passes each only to an ``observe`` that names it
+        or takes ``**kwargs``.
         """
         ...
 
@@ -167,8 +171,9 @@ class WorkspaceAdapter(Protocol):
         ``agento.framework.harness.run_scope.scope_toolbox_url`` rather than by hand.
 
         ``capability_token`` is the run's toolbox credential, with the trusted
-        ``toolbox_url`` it belongs to. Append it (``cap=<token>``) ONLY to a server whose
-        URL is our toolbox's MCP endpoint — match with
+        ``toolbox_url`` it belongs to. Attach it with
+        ``agento.framework.harness.run_scope.toolbox_auth`` (a Bearer header on ``/mcp``,
+        ``cap=<token>`` on ``/sse``) ONLY to a server whose URL is our toolbox's MCP endpoint — match with
         ``agento.framework.harness.is_toolbox_endpoint(url, toolbox_origin(toolbox_url))``,
         never a ``"/mcp" in url`` test — so it can never travel to an operator's
         third-party MCP server. An adapter that does not accept it gets no token, and the
@@ -304,9 +309,17 @@ class WorkspaceAdapter(Protocol):
         ...
 
 
+# --- Deprecated: transcript reading (removed in v0.18 — see ROADMAP.md) ---
+#
+# ``toolbox_mcp_calls`` now comes from the toolbox audit (``tool_invocation``), so the
+# framework reads no transcript and ``AgentHarnessAdapter`` no longer has a
+# ``transcript_reader`` member. The three names stay importable so an out-of-tree
+# harness that still imports them or sets ``transcript_reader`` keeps loading (CODE-5).
+
+
 @dataclass(frozen=True)
 class ToolUse:
-    """Single tool invocation observed in an agent session."""
+    """Deprecated. Single tool invocation observed in an agent session."""
 
     name: str
     tool_use_id: str
@@ -314,7 +327,7 @@ class ToolUse:
 
 @dataclass(frozen=True)
 class ParseSummary:
-    """Result of parsing a session transcript.
+    """Deprecated. Result of parsing a session transcript.
 
     ``total_json_lines`` counts lines whose JSON parses (regardless of shape);
     ``recognized_records`` counts lines whose outer shape matched. Non-zero
@@ -329,7 +342,7 @@ class ParseSummary:
 
 @runtime_checkable
 class TranscriptReader(Protocol):
-    """Reads a harness's own session transcript format."""
+    """Deprecated. Reads a harness's own session transcript format."""
 
     def parse(self, session_id: str) -> ParseSummary:
         """Return parse stats + tool uses for ``session_id``.
@@ -361,6 +374,39 @@ class StreamRenderer(Protocol):
         falls back to printing the raw line, so a renderer bug can never
         swallow a run's output.
         """
+        ...
+
+
+@runtime_checkable
+class StreamEventMapper(Protocol):
+    """Turns one event of a harness's stdout event stream into a framework-shaped fragment.
+
+    The sibling of ``StreamRenderer``: that one produces terminal text for a human, this one
+    produces canonical fragments for the delta seam (PRD E3-E5 §8.2, E9 §3.2). Same
+    rule behind both — the framework **never parses** a harness's stream format, it asks the
+    harness. ``kind`` is the framework's own vocabulary, so a reader never has to know which
+    CLI produced the run.
+
+    **Optional, like ``stream_renderer``.** A harness that declares no mapper streams nothing
+    extra and its users get §8.1's behaviour; it is read with
+    ``getattr(adapter, "stream_event_mapper", None)`` and is deliberately not a member of
+    ``AgentHarnessAdapter``, which is ``runtime_checkable`` and would then refuse every
+    harness written before this existed.
+    """
+
+    def map_event(self, event: dict) -> dict | list[dict] | None:
+        """Return one fragment, a list of them (one native event may hold text and two tool
+        calls), or ``None`` to suppress the event. A fragment is one of:
+
+        - ``{"kind": "assistant.text", "text": str}`` — one assistant message's prose;
+        - ``{"kind": "tool.started", "tool_name": str, "data": {"call_id", "input": str}}``;
+        - ``{"kind": "tool.completed", "tool_name": str | None,
+          "data": {"call_id", "output": str, "is_error": bool}}``;
+        - ``{"kind": "error", "text": str}``.
+
+        ``{"kind": "delta", ...}`` (the pre-E9 shape) still means ``assistant.text``; any
+        other kind is dropped. Raising is allowed: the caller logs and drops the fragment,
+        so a mapper bug costs a delta and never the run."""
         ...
 
 
@@ -398,6 +444,63 @@ class CredentialAuthenticator(Protocol):
     #         '''Human-facing account identity (e.g. the OAuth e-mail) recorded in the
     #         decrypted ``credentials`` payload, or ``None`` when the payload carries no
     #         account (API-key credentials) or it cannot be extracted.'''
+    #
+    # ``fetch_limits`` and ``start_web_login`` are optional for the same reason, and the
+    # framework reads them the same way (``getattr(authenticator, name, None)``): an
+    # authenticator without ``fetch_limits`` shows no limits, and one without
+    # ``start_web_login`` cannot re-login from the panel (``unsupported``).
+    #
+    #     def fetch_limits(self, credentials: dict, credential_type: str) -> CredentialLimits | None:
+    #         '''The provider's usage windows or balance for one decrypted credential, or
+    #         ``None`` when this credential has none to show (an API key with no balance
+    #         endpoint). May raise on any HTTP or shape error: ``credential:limits`` then
+    #         stores no limits for the row.'''
+    #
+    #     def start_web_login(self, tmp_home: str, logger: logging.Logger) -> InteractiveLogin:
+    #         '''Start the vendor CLI login in ``tmp_home`` and return once the login URL
+    #         is known. Raises ``AuthenticationError`` when the CLI does not start.'''
+
+
+@dataclass(frozen=True)
+class LimitWindow:
+    """One provider usage window of a credential (``credential:limits``)."""
+
+    label: str  # "5h", "Week": the module names the window
+    used_pct: float  # 0-100
+    resets_at: datetime | None  # aware UTC
+
+
+@dataclass(frozen=True)
+class CredentialLimits:
+    """What ``fetch_limits`` read: usage windows (a subscription) or a balance (an API key)."""
+
+    windows: tuple[LimitWindow, ...] = ()
+    balance_usd: float | None = None
+
+
+@dataclass(frozen=True)
+class LoginPrompt:
+    """What the operator needs to finish a web login started by ``start_web_login``."""
+
+    url: str  # the framework accepts https only
+    user_code: str | None  # shown to the operator (device flow)
+    needs_code: bool  # the operator pastes a code back
+
+
+class InteractiveLogin(Protocol):
+    """A vendor CLI login in progress (``start_web_login``)."""
+
+    prompt: LoginPrompt
+
+    def submit_code(self, code: str) -> None: ...
+
+    def poll(self) -> AuthResult | None:
+        """``None`` while the login runs. Raises ``AuthenticationError`` on failure."""
+        ...
+
+    def close(self) -> None:
+        """Stop the CLI. Removes nothing outside ``tmp_home``."""
+        ...
 
 
 @runtime_checkable
@@ -418,8 +521,8 @@ class AgentHarnessAdapter(Protocol):
         """Build a runner bound to ``ctx``."""
         ...
 
-    @property
-    def transcript_reader(self) -> TranscriptReader | None: ...
+    # ``stream_event_mapper`` (-> StreamEventMapper | None) is omitted here for exactly
+    # the same reason as ``stream_renderer`` below, and read the same way.
 
     # ``stream_renderer`` (-> StreamRenderer | None) is deliberately NOT declared
     # here. ``AgentHarnessAdapter`` is ``runtime_checkable`` and ``register_harness``
@@ -427,6 +530,15 @@ class AgentHarnessAdapter(Protocol):
     # existing or third-party harness without it would stop loading entirely. Pretty
     # rendering must be opt-in, so it is read with ``getattr(adapter,
     # "stream_renderer", None)`` and a harness that omits it simply streams raw.
+
+    # ``check_model(provider, model, credential, *, timeout_s) -> TestResult | None`` is
+    # optional for the same reason, and read the same way. The ``agent_view/model``
+    # config tester calls it to ask the harness if ``model`` is valid for ``provider``.
+    # ``credential`` is the decrypted pool credential (``None`` when the provider needs
+    # none). ``None`` means "this harness cannot check this provider's models". It
+    # writes nothing to the DB and puts no secret in the result. ``timeout_s`` is a
+    # total budget for everything it does; when it runs out the result is
+    # ``error`` / ``MODEL_CHECK_TIMEOUT``.
 
     @property
     def authenticators(self) -> Mapping[CredentialScope, CredentialAuthenticator]:

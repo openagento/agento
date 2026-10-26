@@ -1,13 +1,13 @@
 """Guard the docs against the half-renames a big vocabulary change leaves behind.
 
 Deliberately narrow: it fails on phrases that are **genuinely dead** after the
-harness/provider split, not on everything containing the word "token". Three things stay
-legal and are allowlisted rather than banned:
+harness/provider split, not on everything containing the word "token". One thing stays
+legal and is allowlisted rather than banned:
 
 - ``agent_view/provider`` — still a correct config path, only its semantics changed
-  (``anthropic`` instead of ``claude``); banning the name would be plain wrong;
-- ``token:*`` — documented compatibility aliases, deliberately described as deprecated;
-- ``sandbox_packages`` — the legacy ``di.json`` section, read for one more cycle.
+  (``anthropic`` instead of ``claude``); banning the name would be plain wrong.
+
+The ``token:*`` command aliases were removed in v0.17, so a doc that names one is drift.
 
 ``docs/migrations/**`` and ``docs/superpowers/plans/**`` are explicitly historical
 records of what the system *used to be*, so they are exempt entirely.
@@ -79,6 +79,10 @@ DEAD_PHRASES: dict[str, tuple[str, ...]] = {
     ),
     # Operator-facing command names that no longer exist as the primary spelling.
     r"token:register\s+claude": (),
+    # The `token:*` aliases were removed in v0.17; only the rename note and history may name them.
+    r"\btoken:(?:register|refresh|list|deregister|mark-error|reset|set-priority|usage)\b": (
+        "docs/cli/credentials.md", "DECISIONS.md",
+    ),
     r"agent provider selection": (),
     # Operator-facing surfaces that outlived the rename (round 8).
     r"^#+ .*\bTokens\b": (),                    # a "Tokens" heading
@@ -89,6 +93,14 @@ DEAD_PHRASES: dict[str, tuple[str, ...]] = {
     # correct documentation, not drift.
     r"[Ss]et\b[^.\n]{0,40}\btoken\b[^.\n]{0,25}\bprimary\b": (),
     r"\bprimary token\b": ("docs/cli/credentials.md", "DECISIONS.md", "ROADMAP.md"),
+    r"(?:run\.sh|agent|agento) +(?:token +(?:register|refresh|list|usage|deregister|set)|rotate)\b": (),
+    # Removed by the runner split (2026-10-09); only dated records may name them.
+    r"\bdrop\.py\b|\bsplit-env\b|store_env\b|credential-store file": (
+        "DECISIONS.md", "ROADMAP.md", "docs/architecture/zero-trust.md",
+        "docs/architecture/cron-env-contract.md",
+    ),
+    r"\bcron (?:credential )?store\b|`?web`? holds no key|agent inside the `?cron": ("DECISIONS.md",),
+    r"\bThreadingHTTPServer\b": ("DECISIONS.md", "docs/architecture/conversations.md"),
 }
 
 # Source files that print operator-facing command names — a stale hint here is as
@@ -100,7 +112,7 @@ COMMAND_HINT_SOURCES = (
 
 # Phrases that MUST stay allowed — asserted below so a future tightening of the guard
 # cannot quietly ban something the project still documents on purpose.
-STILL_LEGAL = ("agent_view/provider", "token:register", "sandbox_packages")
+STILL_LEGAL = ("agent_view/provider",)
 
 
 def _docs() -> list[Path]:
@@ -109,6 +121,7 @@ def _docs() -> list[Path]:
     # (and admin.md, getting-started.md, identity.md) still saying "Tokens".
     files += [
         REPO / "README.md", REPO / "AGENTS.md", REPO / "ROADMAP.md", REPO / "DECISIONS.md",
+        *REPO.glob("docker/**/*.md"),
     ]
     return [f for f in files if f.exists()]
 

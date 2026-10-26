@@ -7,9 +7,6 @@ and emits one launcher line per job. Neither input is agent-writable: ``app/etc/
 is deliberately NOT read here (it lives on a writable mount and ``mo:en``/``mo:di`` edit it as
 ``agent``), and enablement is enforced *after* the privilege drop by ``cron:run``.
 
-The store requirement is fixed policy, not a declarable field: a job whose executable is the
-framework CLI (``run.sh``) gets ``--store``; anything else does not.
-
 Two failure policies. A **validation** failure (malformed ``cron.json``, bad schedule, rejected
 argv) omits only the offending module or row. An **operational** failure (env file unreadable,
 DB unreachable) leaves the current crontab byte-identical and renders nothing — otherwise a
@@ -27,7 +24,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from agento.framework import store_env
 from agento.framework.module_discovery import iter_module_dirs, resolve_module_root
 from agento.framework.module_validator import _PLACEHOLDER_RE
 
@@ -79,16 +75,11 @@ class Job:
     schedule: str
     argv: tuple[str, ...]
 
-    @property
-    def wants_store(self) -> bool:
-        return self.argv[0] == RUN_SH
-
     def to_line(self) -> str:
-        store = "--store " if self.wants_store else ""
         quoted = " ".join(shlex.quote(a) for a in self.argv)
         return (
             f"# {self.comment}\n"
-            f"{self.schedule} {LAUNCHER} {store}-- {quoted} {LOG_REDIRECT}"
+            f"{self.schedule} {LAUNCHER} -- {quoted} {LOG_REDIRECT}"
         )
 
 
@@ -216,17 +207,25 @@ def _module_jobs(module_dir: Path) -> list[Job]:
     return jobs
 
 
-def _mysql_settings() -> dict[str, str]:
-    """MySQL fields only — the renderer decrypts nothing and never reads the crypto key."""
+def _env_file() -> dict[str, str]:
+    """The entrypoint's whitelist file: NUL-delimited ``KEY=value`` records, split at the
+    FIRST ``=``. Fail closed: a malformed record is an operational error."""
     try:
         raw = Path(ENV_FILE).read_bytes()
     except OSError as exc:
         raise OperationalError(f"cannot read {ENV_FILE}: {exc}") from exc
-    try:
-        parsed = store_env.parse(raw)
-    except ValueError as exc:
-        raise OperationalError(f"cannot parse {ENV_FILE}: {exc}") from exc
-    return {k: v for k, v in parsed.items() if k.startswith("MYSQL_")}
+    parsed = {}
+    for record in filter(None, raw.split(b"\0")):
+        name, sep, value = record.decode("utf-8", errors="surrogateescape").partition("=")
+        if not sep or not name:
+            raise OperationalError(f"cannot parse {ENV_FILE}: a record has no '='")
+        parsed[name] = value
+    return parsed
+
+
+def _mysql_settings() -> dict[str, str]:
+    """MySQL fields only — the renderer decrypts nothing and never reads the crypto key."""
+    return {k: v for k, v in _env_file().items() if k.startswith("MYSQL_")}
 
 
 def _connect():
@@ -252,10 +251,7 @@ def _config_overrides() -> tuple[dict[str, str], dict[str, tuple[str, bool]]]:
 
     Loaded once, and only when a schedule holds a directive. Nothing is decrypted.
     """
-    try:
-        env = store_env.parse(Path(ENV_FILE).read_bytes())
-    except (OSError, ValueError) as exc:
-        raise OperationalError(f"cannot read {ENV_FILE}: {exc}") from exc
+    env = _env_file()
     conn = _connect()
     try:
         with conn.cursor() as cur:

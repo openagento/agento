@@ -12,8 +12,6 @@ def _cleanup():
     try:
         with conn.cursor() as cur:
             cur.execute("SET FOREIGN_KEY_CHECKS = 0")
-            cur.execute("TRUNCATE TABLE skill_registry")
-            cur.execute("DELETE FROM core_config_data WHERE path LIKE 'skill/%'")
             cur.execute("DELETE FROM agent_view")
             cur.execute("DELETE FROM workspace")
             cur.execute("SET FOREIGN_KEY_CHECKS = 1")

@@ -122,6 +122,9 @@ agento config:test core/smtp_pass
 # At an agent_view's scope
 agento config:test agent_view/identity/ssh_private_key --agent-view dev_01
 
+# Can this agent_view's runs start? Harness, CLI, provider, credential and model
+agento config:test agent_view/model --agent-view dev_01
+
 # Every field that declares a tester — a post-deploy smoke check
 agento config:test --all
 ```

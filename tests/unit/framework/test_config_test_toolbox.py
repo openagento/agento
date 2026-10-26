@@ -36,7 +36,7 @@ def minted(monkeypatch):
 def url(monkeypatch, minted):
     """Pin the endpoint without a DB — the resolver is exercised separately."""
     monkeypatch.setattr(
-        "agento.framework.config_test.toolbox._resolve_toolbox_url",
+        "agento.framework.config_test.toolbox.resolve_toolbox_url",
         lambda conn: DEFAULT_TOOLBOX_URL,
     )
     return DEFAULT_TOOLBOX_URL
@@ -85,7 +85,7 @@ def test_printing_a_malformed_url_does_not_raise():
 
 def test_an_invalid_configured_url_is_an_error(monkeypatch):
     monkeypatch.setattr(
-        "agento.framework.config_test.toolbox._resolve_toolbox_url",
+        "agento.framework.config_test.toolbox.resolve_toolbox_url",
         lambda conn: (_ for _ in ()).throw(ToolboxUrlError("core/toolbox/url must be http://")),
     )
     r = run_toolbox_test(None, PATH, scope="default")
@@ -173,7 +173,7 @@ def test_the_capability_is_minted_for_the_tested_scope_and_sent_as_a_bearer(url,
 
 def test_a_failed_mint_is_an_error_not_a_raise(monkeypatch):
     monkeypatch.setattr(
-        "agento.framework.config_test.toolbox._resolve_toolbox_url",
+        "agento.framework.config_test.toolbox.resolve_toolbox_url",
         lambda conn: DEFAULT_TOOLBOX_URL,
     )
 

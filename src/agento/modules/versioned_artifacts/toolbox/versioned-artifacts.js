@@ -3,6 +3,7 @@ import { createService } from './service.js';
 import { DRAFT_ID_RE, ARTIFACT_CODE_RE, VERSION_ID_RE, selectorSourceId } from './paths.js';
 import { openDesk, closeDesk, deskPath, requireSession } from './desk-io.js';
 import { ArtifactError, ERROR_CODES, toToolError, errorFacts } from './errors.js';
+import { panelOrigin } from './share-host.js';
 
 const ok = (payload) => ({ content: [{ type: 'text', text: JSON.stringify(payload) }] });
 
@@ -30,23 +31,17 @@ const versionId = () => z.string().regex(VERSION_ID_RE);
 const selectorId = (args) => selectorSourceId({ draftId: args.draft_id, versionId: args.version_id });
 
 export async function register(server, context) {
-  const { app, log, moduleConfigs, isToolEnabled, db, jobId, agentViewId, artifactsDir } = context;
+  const { app, log, moduleConfigs, isToolEnabled, db, jobId, agentViewId, artifactsDir, retentionPins } = context;
 
   // The service is constructed ONCE per register(), before the first
   // server.tool(...), and a construction failure registers nothing: a bad
   // storage_root or limit surfaces at boot, in the operator's log, with no tool
   // exposed — never as ten identical runtime errors seen only by the model.
-  // The framework's AES helper, resolved the SAME container-only way `cli.js` resolves
-  // its DB handle: `/opt/agento-toolbox-src/` exists only inside the toolbox, so a static
-  // import would break the Vitest suite. A test may inject `context.crypto` instead; when
-  // neither resolves, `crypto` is null and only the auth features refuse (AUTH_UNAVAILABLE).
-  const crypto = context.crypto ?? await import('/opt/agento-toolbox-src/crypto.js').catch(() => null);
-
   let service;
   try {
     service = createService({
       config: moduleConfigs?.versioned_artifacts ?? {},
-      db, log, jobId, agentViewId, crypto,
+      db, log, jobId, agentViewId, retentionPins,
     });
   } catch (err) {
     log?.('versioned_artifacts', 'ERROR', `configuration rejected: ${errorFacts(err) ?? 'unknown'}`);
@@ -145,7 +140,8 @@ export async function register(server, context) {
 
   if (enabled('versioned_artifact_create_draft')) {
     server.tool('versioned_artifact_create_draft',
-      'Create an editable draft from a version and copy it into your workspace',
+      'Create an editable draft from a version and copy it into your workspace. '
+      + 'panel_origin is the exact Agento panel origin a page gives the panel bridge',
       { ...artifactArg,
         base_version: z.union([z.literal('current'), versionId()]).default('current')
           .describe("'current' or a version_id"),
@@ -156,7 +152,8 @@ export async function register(server, context) {
         requireSession(artifactsDir);
         const d = await service.createDraft(args.artifact_code, args.base_version, args.description);
         return { draft_id: d.draft_id, base_version: d.base_version,
-          path: await copyToDesk(args.artifact_code, { draftId: d.draft_id }, d.draft_id) };
+          path: await copyToDesk(args.artifact_code, { draftId: d.draft_id }, d.draft_id),
+          panel_origin: panelOrigin() };
       }));
   }
 

@@ -5,7 +5,7 @@ Tools are exposed to the AI agent via MCP (Model Context Protocol). The Toolbox 
 ## Architecture
 
 ```
-Agent (cron/sandbox)                    Toolbox
+Agent (runner-<i>)                      Toolbox
 ┌─────────────┐    MCP/HTTP   ┌─────────────────────────┐
 │ Claude CLI   │◄────────────►│ MCP Server (:3001)      │
 │ reads .mcp.json             │                         │

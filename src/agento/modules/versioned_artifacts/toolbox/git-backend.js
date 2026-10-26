@@ -582,6 +582,29 @@ export function createBackend({ newVersionId = defaultVersionId, hooks = {} } = 
    *  is internal maintenance with no caller — an artifact that sits in no agent_view's
    *  allowlist is exactly where an orphan would otherwise stay forever. A directory
    *  that is not a well-formed artifact_code, or holds no store, is not an artifact. */
+  /** One regular file at the ROOT of a version, as bytes; null when the version has no
+   *  such file. Larger than `maxBytes` is FILE_TOO_LARGE, checked on the listed size
+   *  before the bytes are read. */
+  async function readVersionFile(storageRoot, artifactCode, versionId, name, maxBytes) {
+    const { repo, treeish } = await resolveSelector(storageRoot, artifactCode, { versionId });
+    let listing;
+    try { listing = out(await gitBare(repo, ['ls-tree', '-l', '-z', treeish, '--', name], { maxBytes: 4096 })); }
+    catch (err) { throw new ArtifactError(ERROR_CODES.STORAGE_OPERATION_FAILED, 'the artifact store could not be read', { cause: err }); }
+    const m = /^(\d+) (\w+) ([0-9a-f]+) +(\d+)\t([^\0]*)\0$/.exec(listing);
+    if (!m || m[5] !== name || m[2] !== 'blob' || !['100644', '100755'].includes(m[1])) return null;
+    if (Number(m[4]) > maxBytes) throw new ArtifactError(ERROR_CODES.FILE_TOO_LARGE, 'the file is too large');
+    try { return (await gitBare(repo, ['cat-file', 'blob', m[3]], { maxBytes })).stdout; }
+    catch (err) { throw new ArtifactError(ERROR_CODES.STORAGE_OPERATION_FAILED, 'the artifact store could not be read', { cause: err }); }
+  }
+
+  /** The immutable identity of a version's whole tree: its Git tree id. Equal bytes give an
+   *  equal id across re-creation, which a version id (from the clock) does not. */
+  async function versionContentId(storageRoot, artifactCode, versionId) {
+    const { repo, treeish } = await resolveSelector(storageRoot, artifactCode, { versionId });
+    try { return out(await gitBare(repo, ['rev-parse', '--verify', `${treeish}^{tree}`], { maxBytes: 4096 })).trim(); }
+    catch (err) { throw new ArtifactError(ERROR_CODES.STORAGE_OPERATION_FAILED, 'the artifact store could not be read', { cause: err }); }
+  }
+
   async function listArtifacts(storageRoot) {
     const artifacts = [];
     for (const e of await listDirOrEmpty(storageRoot)) {
@@ -790,6 +813,6 @@ export function createBackend({ newVersionId = defaultVersionId, hooks = {} } = 
     init, getCurrent, listVersions, publish, materialize, materializePublished, sweepScratch,
     createDraft, commitDraft, saveVersion, diff, discardDraft,
     recoverDraft, draftState, reconcileDrafts, listOpenDrafts, listArtifacts, getDraftPath,
-    readOwningView, removeArtifact,
+    readOwningView, removeArtifact, readVersionFile, versionContentId,
   };
 }

@@ -138,7 +138,7 @@ export function createOpenPrsHandler({ loadScopedDbOverridesStrict, loadModuleCo
   return async (req, res) => {
     if (refusedForEnvOverride(res, log, 'api/github/open-prs')) return;
     const { lane, top } = req.body || {};
-    const viewId = req.capability.agentViewId;
+    const viewId = req.capability.agent_view_id;
     // A typo'd lane must fail loudly: silently returning bare records would make the publisher find
     // no work forever, which looks exactly like "nothing to do".
     if (!LANES.includes(lane)) {

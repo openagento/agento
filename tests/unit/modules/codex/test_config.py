@@ -232,8 +232,9 @@ class TestInjectRuntimeParams:
         writer.inject_runtime_params(work_dir, capability_token="tok123", toolbox_url=self.TOOLBOX)
 
         data = tomllib.loads((codex_dir / "config.toml").read_text())
-        assert data["mcp_servers"]["toolbox"]["url"] == "http://toolbox:3001/mcp?cap=tok123"
-        assert data["mcp_servers"]["vendor"]["url"] == "https://vendor.example.com/mcp"
+        assert data["mcp_servers"]["toolbox"]["url"] == "http://toolbox:3001/mcp"
+        assert data["mcp_servers"]["toolbox"]["http_headers"] == {"Authorization": "Bearer tok123"}
+        assert data["mcp_servers"]["vendor"] == {"type": "sse", "url": "https://vendor.example.com/mcp"}
 
     def test_does_not_leak_to_a_lookalike_host(self, writer, work_dir):
         codex_dir = self._write(work_dir, "http://toolbox.evil.com:3001/mcp")
@@ -349,7 +350,7 @@ class TestWriteCredentials:
         from unittest.mock import MagicMock
         fake_run = MagicMock(return_value=subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""))
-        monkeypatch.setattr("agento.modules.codex.src.config.subprocess.run", fake_run)
+        monkeypatch.setattr("agento.modules.codex.src.config.runner_client.run", fake_run)
 
         token = self._make_token("openai_api_key", {"api_key": "sk-X"})
         writer.write_credentials(work_dir, token)
@@ -373,7 +374,7 @@ class TestWriteCredentials:
         from unittest.mock import MagicMock
         fake_run = MagicMock(return_value=subprocess.CompletedProcess(
             args=[], returncode=0, stdout="", stderr=""))
-        monkeypatch.setattr("agento.modules.codex.src.config.subprocess.run", fake_run)
+        monkeypatch.setattr("agento.modules.codex.src.config.runner_client.run", fake_run)
 
         token = self._make_token("codex_access_token", {
             "access_token": "eyJ.payload.sig", "expires_at": 9999999999})
@@ -396,7 +397,7 @@ class TestWriteCredentials:
 
         fake_run = MagicMock(return_value=subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="invalid agent identity JWT format"))
-        monkeypatch.setattr("agento.modules.codex.src.config.subprocess.run", fake_run)
+        monkeypatch.setattr("agento.modules.codex.src.config.runner_client.run", fake_run)
 
         token = self._make_token("codex_access_token", {
             "access_token": "eyJ.bad.sig", "expires_at": 9999999999})

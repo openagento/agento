@@ -10,6 +10,7 @@ No GHCR pulls — images are built locally from the in-package context.
 from __future__ import annotations
 
 import argparse
+import importlib.resources as ires
 import subprocess
 import sys
 from pathlib import Path
@@ -83,6 +84,19 @@ def _upgrade_cli(version: str | None) -> str | None:
     return installed_version or version or get_package_version()
 
 
+def _strip_mysql_bind_address(env_path: Path, existing: dict[str, str]) -> None:
+    """The managed compose binds MySQL to ``127.0.0.1:${MYSQL_PORT}``. A ``MYSQL_PORT`` that
+    still carries its own address (``127.0.0.1:3306``) would render an invalid
+    ``127.0.0.1:127.0.0.1:3306``, so keep only the port."""
+    value = existing.get("MYSQL_PORT", "")
+    if ":" not in value:
+        return
+    port = value.rsplit(":", 1)[1]
+    update_dotenv_value(env_path, "MYSQL_PORT", port)
+    log_info(f"MYSQL_PORT {value} -> {port}: MySQL is published on 127.0.0.1 only. "
+             "To publish it elsewhere, use docker-compose.override.yml.")
+
+
 def _backfill_or_warn_cli_pin(
     env_path: Path,
     existing: dict[str, str],
@@ -110,6 +124,18 @@ def _backfill_or_warn_cli_pin(
             f"{default}. To bump: edit docker/.env and rebuild "
             f"({display} pin)."
         )
+
+
+def grant_migrate_user(compose: list[str]) -> bool:
+    """One-time root step (WS8): the initdb SQL, so cron_agent may grant the runtime DB users.
+    The root password stays in the mysql container's environment, never in a host argv."""
+    sql = (ires.files("agento.framework.sql.init") / "001_migrate_user.sql").read_text()
+    if subprocess.run([*compose, "up", "-d", "--wait", "mysql"]).returncode != 0:
+        return False
+    return subprocess.run(
+        [*compose, "exec", "-T", "mysql", "sh", "-c", 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot'],
+        input=sql, text=True,
+    ).returncode == 0
 
 
 class UpgradeCommand:
@@ -196,6 +222,8 @@ class UpgradeCommand:
                 update_dotenv_value(env_path, "HOST_GID", str(host_gid))
                 log_info(f"HOST_GID backfilled to {host_gid}")
 
+        _strip_mysql_bind_address(env_path, existing)
+
         # Backfill agent CLI pins for deployments that predate them. Then
         # warn — but never overwrite — when a customer's existing pin is
         # older than this release's default. The customer may have left it
@@ -243,10 +271,6 @@ class UpgradeCommand:
             # Without this, compose merges the override's build: section over
             # ours and the managed Dockerfile is never built.
             build_base_images(project_root, version)
-            result = subprocess.run([*compose, "build", "sandbox"])
-            if result.returncode != 0:
-                log_error("Failed to build sandbox image.")
-                sys.exit(result.returncode)
             result = subprocess.run([*compose, "build", "toolbox", "cron"])
             if result.returncode != 0:
                 log_error("Failed to build toolbox/cron images.")
@@ -254,7 +278,13 @@ class UpgradeCommand:
 
         if args.no_restart:
             log_info("Skipping container restart (--no-restart).")
+            log_warn("Run 'agento upgrade' without --no-restart once: the MySQL root grant "
+                     "for the migration user runs only there.")
         else:
+            if not grant_migrate_user(compose):
+                log_error("MySQL root grant for the migration user failed (check MYSQL_ROOT_PASSWORD "
+                          "in docker/.env). Nothing was restarted.")
+                sys.exit(1)
             log_info("Restarting containers...")
             result = subprocess.run([*compose, "up", "-d"])
             if result.returncode != 0:

@@ -7,6 +7,14 @@ import { createBackend } from './git-backend.js';
 import { recordAudit } from './audit.js';
 import * as published from './published-tree.js';
 import { generatePassword, defaultAuthUser, hashSecret } from './auth.js';
+import { SHARE_TOKEN_RE, shareUrl } from './share-host.js';
+import { createHash, randomBytes } from 'node:crypto';
+
+/** The MySQL named lock web's `create_launch` takes too (fixture retention_lock_v1.json). */
+export const retentionLockName = (code) => `va_ret:${createHash('sha1').update(code).digest('hex')}`;
+/** What the prune keeps: versions a live launch pins (the same fixture; run against the real schema). */
+export const LIVE_LAUNCH_VERSIONS_SQL = 'SELECT DISTINCT version_id FROM launch WHERE artifact_code = ? '
+  + 'AND revoked_at IS NULL AND expires_at > NOW()';
 
 // A resolved value is not typed: resolveModuleFieldStrict returns an ENV string
 // verbatim and a DB override's raw column value; only a config.json default keeps
@@ -78,7 +86,7 @@ const isNameTaken = (err) => err instanceof ArtifactError
   && err.code === ERROR_CODES.ARTIFACT_ALREADY_EXISTS;
 
 export function createService({ config = {}, db = null, log = null, jobId = null, agentViewId = null,
-  actor = null, backend = null, admin = false, crypto = null } = {}) {
+  actor = null, backend = null, admin = false, env = process.env, retentionPins = [] } = {}) {
   const storageRoot = asStorageRoot(config.storage_root);
   const publishedRoot = asStorageRoot(config.published_root, 'published_root');
   const keepVersions = asNonNegInt(config['serving/keep_versions'], 'serving/keep_versions');
@@ -117,12 +125,11 @@ export function createService({ config = {}, db = null, log = null, jobId = null
   /** The ONE rule for "may this caller touch that artifact", used by the gate below and
    *  by the listing, which used to spell it out a second time and could drift from it.
    *
-   *  `admin` is the SAME exemption `init` has always carried, widened to the other
-   *  operations the admin CLI performs: `allowed_artifacts` is agent_view-scoped and
-   *  empty by default, while the CLI resolves DEFAULT scope — so without it
-   *  `artifact:list` would print nothing and `artifact:publish` would be denied on every
-   *  deployment. Set ONLY by `cli.js`, never derived from the `actor` string, and never
-   *  reachable from the tool layer.
+   *  `admin` is the store administration of the trusted backend: `allowed_artifacts` is
+   *  agent_view-scoped and empty by default, so without it the panel could list and
+   *  publish nothing. Set ONLY by `admin-api.js` (the `/admin` endpoint, which a viewless
+   *  `internal_rest` alone reaches), never derived from the `actor` string, and never
+   *  reachable from the tool layer. It does not create: `init` is the agent's.
    *
    *  `allowed_artifacts` is the operator's grant, and it is what hands an artifact from
    *  one agent_view to another — one `config:set`, no new mechanism. It is not a second
@@ -164,69 +171,62 @@ export function createService({ config = {}, db = null, log = null, jobId = null
   // Serializes one owner's creations, so its cap check and its create are atomic. The
   // lifecycle lock is per-name and cannot: two inits of DIFFERENT names would both read
   // the same count and both slip past the cap.
+  /** The store -> the served tree of one version. Idempotent: an existing tree is kept.
+   *  The CALLER holds the lifecycle lock. */
+  const serveVersion = (artifactCode, versionId) => be.materializePublished(storageRoot, artifactCode, versionId, {
+    destDir: published.publishedVersionDir(publishedRoot, artifactCode, versionId),
+    scratchDir: published.scratchRoot(publishedRoot),
+  });
   const ownerLock = () => path.join(storageRoot, '.locks', `owner-${ownView ?? 'anon'}.lock`);
 
-  // Basic auth stores the password TWICE, in two forms that never meet: the serving
-  // container gets a one-way scrypt hash in the `.auth` sidecar (it holds no key and no
-  // DB handle, so a reversible secret must never reach it), and the DB keeps the
-  // reversibly-encrypted copy so an operator can read the password back. `crypto` is the
-  // framework's AES helper, INJECTED the same way the CLI injects its DB handle —
-  // `/opt/agento-toolbox-src/` exists only in the container, so a static import would
-  // make this module untestable.
-  const requireCrypto = () => {
-    if (typeof crypto?.encrypt !== 'function' || typeof crypto?.decrypt !== 'function') {
-      throw new ArtifactError(ERROR_CODES.AUTH_UNAVAILABLE, 'artifact authentication is not configured');
-    }
-    return crypto;
-  };
-  // `encrypt` throws when AGENTO_ENCRYPTION_KEY is absent — a misconfiguration, so it is
-  // remapped to a plain AUTH_UNAVAILABLE rather than surfacing as a damaged store.
-  const encryptSecret = (plaintext) => {
-    try { return requireCrypto().encrypt(plaintext); }
-    catch (err) {
-      if (err instanceof ArtifactError) throw err;
-      throw new ArtifactError(ERROR_CODES.AUTH_UNAVAILABLE, 'the encryption key is not configured', { cause: err });
-    }
-  };
-  const decryptSecret = (enc) => {
-    try { return requireCrypto().decrypt(enc); }
-    catch (err) {
-      if (err instanceof ArtifactError) throw err;
-      throw new ArtifactError(ERROR_CODES.AUTH_UNAVAILABLE, 'the stored credential could not be read', { cause: err });
-    }
-  };
-
+  // Basic auth keeps the password in ONE form: a one-way scrypt hash in the `.auth`
+  // sidecar, which the serving container verifies against. No copy that can be read back
+  // is kept (D-MINIAPP-2, O-4): the password is returned once, to the caller that set it.
+  //
   // Both write the sidecar FIRST, because it is what the server actually enforces: a
-  // failure there must abort (encrypt/write throw), never leave a credential in the DB
-  // that nothing checks. The DB row only DECORATES — a failed upsert costs the
-  // recoverable copy, never the enforcement — the same degradation `init`'s INSERT has.
-  // The CALLER holds the lifecycle lock.
+  // failure there must abort, never leave a credential in the DB that nothing checks. The
+  // DB row only DECORATES — a failed upsert costs the listing's auth columns, never the
+  // enforcement — the same degradation `init`'s INSERT has. The CALLER holds the lifecycle lock.
+  //
+  // The share token (PRD E6 §9) lives in the sidecar beside the hash: a rotation keeps
+  // it, and the server serves a share only when the record and the sidecar name each
+  // other, so a stale record never opens a later artifact of the same code.
   const applyAuth = async (artifactCode, { user, password }) => {
-    const enc = encryptSecret(password);
-    await published.writeAuthSidecar(publishedRoot, artifactCode, { user, ...hashSecret(password) });
+    const prior = (await published.readAuthSidecar(publishedRoot, artifactCode))?.share;
+    const share = SHARE_TOKEN_RE.test(prior ?? '') ? prior : randomBytes(16).toString('hex');
+    await published.writeAuthSidecar(publishedRoot, artifactCode, { user, ...hashSecret(password), share });
+    await published.writeShareRecord(publishedRoot, share, artifactCode);
     const db2 = pool();
     if (db2) {
       try {
         await db2.execute(
-          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc)
+          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, share_token)
            VALUES (?, 1, ?, ?)
-           ON DUPLICATE KEY UPDATE auth_enabled = 1, auth_user = VALUES(auth_user), auth_secret_enc = VALUES(auth_secret_enc)`,
-          [artifactCode, user, enc]);
+           ON DUPLICATE KEY UPDATE auth_enabled = 1, auth_user = VALUES(auth_user), share_token = VALUES(share_token)`,
+          [artifactCode, user, share]);
       } catch (err) {
         log?.('versioned_artifacts', 'ERROR',
           `auth credential not recorded for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
       }
     }
+    return share;
+  };
+  /** The token the sidecar names, if any. Its record goes with the sidecar: a share needs a Basic credential. */
+  const shareOf = async (artifactCode) => {
+    const share = (await published.readAuthSidecar(publishedRoot, artifactCode))?.share;
+    return SHARE_TOKEN_RE.test(share ?? '') ? share : null;
   };
   const clearAuth = async (artifactCode) => {
+    const share = await shareOf(artifactCode);
     const removed = await published.removeAuthSidecar(publishedRoot, artifactCode);
+    if (share) await published.removeShareRecord(publishedRoot, share);
     const db2 = pool();
     if (db2) {
       try {
         await db2.execute(
-          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, auth_secret_enc)
+          `INSERT INTO versioned_artifact (artifact_code, auth_enabled, auth_user, share_token)
            VALUES (?, 0, NULL, NULL)
-           ON DUPLICATE KEY UPDATE auth_enabled = 0, auth_user = NULL, auth_secret_enc = NULL`,
+           ON DUPLICATE KEY UPDATE auth_enabled = 0, auth_user = NULL, share_token = NULL`,
           [artifactCode]);
       } catch (err) {
         log?.('versioned_artifacts', 'ERROR',
@@ -278,10 +278,43 @@ export function createService({ config = {}, db = null, log = null, jobId = null
     }
 
     /** Retention is maintenance, never a reason to fail the operation that triggered it. */
+    /** Retention never deletes a version a live launch serves (PRD E6 §5), nor one a
+     *  module pins (`retentionPins`: SQL with one `artifact_code` parameter that selects
+     *  `version_id`; miniapps pins each approved version). web's
+     *  `create_launch` holds the same named lock from reading `current` to committing
+     *  the launch, so a launch either lands before this reads the live set or reads a
+     *  `current` this prune keeps. A named lock belongs to its connection, so one
+     *  borrowed connection carries the whole step. Busy lock or failed query: skip, the
+     *  next save prunes — keeping files is the safe side. */
     async function pruneQuietly(artifactCode) {
-      try { await published.pruneVersions(publishedRoot, artifactCode, keepVersions); }
-      catch (err) {
-        log?.('versioned_artifacts', 'ERROR', `preview retention failed for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
+      if (!keepVersions) return;
+      const db2 = pool();
+      if (!db2) {
+        // No DB, no launches: nothing can be pinned.
+        try { await published.pruneVersions(publishedRoot, artifactCode, keepVersions); }
+        catch (err) { log?.('versioned_artifacts', 'ERROR', `preview retention failed for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`); }
+        return;
+      }
+      let conn;
+      try {
+        conn = await db2.getConnection();
+        const name = retentionLockName(artifactCode);
+        const [[{ got }]] = await conn.query('SELECT GET_LOCK(?, 0) AS got', [name]);
+        if (Number(got) !== 1) return;
+        try {
+          const keep = new Set();
+          for (const sql of [LIVE_LAUNCH_VERSIONS_SQL, ...retentionPins]) {
+            const [rows] = await conn.query(sql, [artifactCode]);
+            for (const r of rows) keep.add(r.version_id);
+          }
+          await published.pruneVersions(publishedRoot, artifactCode, keepVersions, keep);
+        } finally {
+          await conn.query('SELECT RELEASE_LOCK(?)', [name]);
+        }
+      } catch (err) {
+        log?.('versioned_artifacts', 'ERROR', `preview retention skipped for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
+      } finally {
+        conn?.release();
       }
     }
 
@@ -290,10 +323,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
      *  around its CAS and cannot share this. */
     async function publishVersionTree(artifactCode, versionId, { swap = false } = {}) {
       return withLock(lifecycleLock(artifactCode), async () => {
-        await be.materializePublished(storageRoot, artifactCode, versionId, {
-          destDir: published.publishedVersionDir(publishedRoot, artifactCode, versionId),
-          scratchDir: published.scratchRoot(publishedRoot),
-        });
+        await serveVersion(artifactCode, versionId);
         // `init` swaps because it creates the store's `current`; a save does not,
         // since only a publish moves what the server shows. Under this lock the STORE
         // is the authority on what `current` is: `init` swaps AFTER its own lock
@@ -316,17 +346,16 @@ export function createService({ config = {}, db = null, log = null, jobId = null
 
     return {
       // --------------------------------------------------------- lifecycle
-      /** Creation, for the agent as much as for the administrator: the agent owns the
-       *  whole loop — init, draft, version, publish, next draft — and an operator is
-       *  needed to bootstrap none of it.
+      /** Creation is the agent's: the agent owns the whole loop — init, draft, version,
+       *  publish, next draft — and an operator is needed to bootstrap none of it.
        *
        *  An agent creates under any free name and OWNS what it created; an operator
        *  hands one view another's artifact through `allowed_artifacts`, with no new
        *  mechanism. The name asked for is a wish — the answer carries the real one.
-       *  `files` is CLI-only — the tool schema declares no such parameter, and an agent
-       *  fills version 1 through a draft on its desk, so no agent-supplied tree ever
-       *  enters here. */
-      async init(artifactCode, { files = [], title = null, owner = null } = {}) {
+       *  `files` is for test fixtures only — the tool schema declares no such parameter,
+       *  and an agent fills version 1 through a draft on its desk, so no agent-supplied
+       *  tree ever enters here. */
+      async init(artifactCode, { files = [], title = null } = {}) {
         // The ONLY check above the audit boundary, and it must stay there: an invalid
         // code audited is up to 64 bytes of arbitrary caller text written into
         // `versioned_artifact_audit` and into audit-fallback.log, on demand.
@@ -334,13 +363,12 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         // Every POLICY refusal below is INSIDE it — a denied creation is an attempt on
         // the store and the row's `error_code` column exists to record exactly that.
         return audited(OPS.init, { artifactCode }, async () => {
-          // A name the OPERATOR chose — the admin CLI, or a code pre-granted through
-          // `allowed_artifacts`. Such a name is taken literally: it is created exactly as
+          // A name the OPERATOR chose — a code pre-granted through `allowed_artifacts`. Such a name is taken literally: it is created exactly as
           // spelled and a collision is an error, because the operator picked that address
           // on purpose (the "pretty URL" path) and quietly publishing at a different one
           // is not a service. Everything else is an agent naming its own work, where the
           // name is a wish and the next free number is a better answer than a refusal.
-          const namedByOperator = admin || allowedArtifacts.includes(artifactCode);
+          const namedByOperator = allowedArtifacts.includes(artifactCode);
           if (!namedByOperator && ownView === null) {
             throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, 'this session may not create artifacts');
           }
@@ -350,17 +378,15 @@ export function createService({ config = {}, db = null, log = null, jobId = null
           // under the owner lock — without it two inits of different names both read the
           // same count and both slip past the cap.
           const createUnderCap = async () => {
-            if (!admin) {
-              const held = (await filterUsable(await be.listArtifacts(storageRoot))).length;
-              if (held >= limits.max_agent_artifacts) {
-                throw new ArtifactError(ERROR_CODES.ARTIFACT_LIMIT_REACHED,
-                  `this scope already holds ${held} artifacts`);
-              }
+            const held = (await filterUsable(await be.listArtifacts(storageRoot))).length;
+            if (held >= limits.max_agent_artifacts) {
+              throw new ArtifactError(ERROR_CODES.ARTIFACT_LIMIT_REACHED,
+                `this scope already holds ${held} artifacts`);
             }
             // The name the caller ASKED for is a wish, not the identity: a taken name is
             // answered with `-2`, `-3`, … because the caller cannot see what another
-            // agent_view already took. The ADMIN path keeps the error: an operator names
-            // a code deliberately, and renaming it would publish at an address nobody chose.
+            // agent_view already took. An operator-named code keeps the error: renaming
+            // it would publish at an address nobody chose.
             let created = null;
             let finalCode = artifactCode;
             for (let attempt = 1; created === null; attempt += 1) {
@@ -368,17 +394,30 @@ export function createService({ config = {}, db = null, log = null, jobId = null
               try {
                 // eslint-disable-next-line no-await-in-loop
                 created = await withLock(lifecycleLock(candidate), async () => {
+                  // A code whose row is still there (a delete that removed the store but
+                  // not yet the row) is TAKEN: rights rows hang off that row (D-MINIAPP-3),
+                  // so a new artifact must never inherit them. A read only; a failed pool or
+                  // read fails the init (nothing is created yet): `pool()` degrades to null,
+                  // which would skip the check, so the guard asks the DB directly.
+                  const db2 = db?.getCronPool ? db.getCronPool() : null;
+                  if (db?.getCronPool && !db2) {
+                    throw new ArtifactError(ERROR_CODES.STORAGE_OPERATION_FAILED, 'artifact metadata unavailable');
+                  }
+                  if (db2) {
+                    const [left] = await db2.query('SELECT 1 FROM versioned_artifact WHERE artifact_code = ?', [candidate]);
+                    if (left.length) throw new ArtifactError(ERROR_CODES.ARTIFACT_ALREADY_EXISTS, 'artifact already exists');
+                  }
                   const made = await be.init(storageRoot, candidate, {
-                    files, allowSymlinks, limits, owningView: admin ? null : ownView,
+                    files, allowSymlinks, limits, owningView: ownView,
                   });
                   // The row only DECORATES the store, so a failed INSERT costs a title,
                   // never the artifact — the same degradation `recordAudit` has.
-                  const db2 = pool();
+                  // `created_job_id`: the job whose run made it (null for a session run).
                   if (db2) {
                     try {
                       await db2.execute(
-                        'INSERT INTO versioned_artifact (artifact_code, title, owner) VALUES (?, ?, ?)',
-                        [candidate, title, owner]);
+                        'INSERT INTO versioned_artifact (artifact_code, title, created_job_id) VALUES (?, ?, ?)',
+                        [candidate, title, jobId ?? null]);
                     } catch (err) {
                       log?.('versioned_artifacts', 'ERROR',
                         `artifact metadata not recorded for '${candidate}': ${errorFacts(err) ?? 'unknown'}`);
@@ -396,9 +435,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             }
             return { created, finalCode };
           };
-          const { created, finalCode } = admin
-            ? await createUnderCap()
-            : await withLock(ownerLock(), createUnderCap);
+          const { created, finalCode } = await withLock(ownerLock(), createUnderCap);
           // Everything below names the artifact that EXISTS, never the one that was
           // asked for: they differ whenever the wished-for name was taken.
           // AFTER the lock, the way `save_version` publishes: `init` already answers a
@@ -421,8 +458,8 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             const user = defaultAuthUser(finalCode);
             const password = generatePassword();
             try {
-              await withLock(lifecycleLock(finalCode), () => applyAuth(finalCode, { user, password }));
-              basicAuth = { user, password };
+              const share = await withLock(lifecycleLock(finalCode), () => applyAuth(finalCode, { user, password }));
+              basicAuth = { user, password, share_url: shareUrl(share, env, log) };
             } catch (err) {
               log?.('versioned_artifacts', 'ERROR',
                 `basic auth not enabled for '${finalCode}': ${errorFacts(err) ?? 'unknown'}`);
@@ -437,7 +474,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
       },
 
       /** Destruction, and the ONE lifecycle step the agent does not own: it is reachable
-       *  from `artifact:delete` only, never from a tool. `agent_view_id` is asserted by
+       *  from the panel delete only (`/admin`), never from a tool. `agent_view_id` is asserted by
        *  the caller, so ownership scopes rather than authorizes — a self-asserted identity
        *  must not be able to unmake an immutable history.
        *
@@ -445,7 +482,8 @@ export function createService({ config = {}, db = null, log = null, jobId = null
        *  a removal that dies halfway has stopped serving rather than left a live preview
        *  of an artifact the store no longer holds. Existence is checked on BOTH roots, not
        *  through `requireArtifact`, because the half-cleaned store is exactly the state an
-       *  operator runs this to repair.
+       *  operator runs this to repair. The `versioned_artifact` row is web's to delete,
+       *  after this returns (D-MINIAPP-2).
        *
        *  Takes the lifecycle lock — the SAME lock every mutation takes, and one that lives
        *  OUTSIDE the removed root — so a delete never runs beside an in-flight draft, save
@@ -459,21 +497,12 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             throw new ArtifactError(ERROR_CODES.ARTIFACT_ACCESS_DENIED, 'this session may not delete artifacts');
           }
           return withLock(lifecycleLock(artifactCode), async () => {
+            const share = await shareOf(artifactCode);
             const removedPublished = await published.removeArtifact(publishedRoot, artifactCode);
+            if (share) await published.removeShareRecord(publishedRoot, share);
             const removedStore = await be.removeArtifact(storageRoot, artifactCode);
             if (!removedPublished && !removedStore) {
               throw new ArtifactError(ERROR_CODES.ARTIFACT_NOT_FOUND, 'artifact not found');
-            }
-            // The row only DECORATES the store, so a failed DELETE costs a stale title,
-            // never the removal — the same degradation `init`'s INSERT has.
-            const db2 = pool();
-            if (db2) {
-              try {
-                await db2.execute('DELETE FROM versioned_artifact WHERE artifact_code = ?', [artifactCode]);
-              } catch (err) {
-                log?.('versioned_artifacts', 'ERROR',
-                  `artifact metadata not removed for '${artifactCode}': ${errorFacts(err) ?? 'unknown'}`);
-              }
             }
             return { artifact_code: artifactCode, removed_store: removedStore, removed_published: removedPublished };
           });
@@ -481,7 +510,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
       },
 
       /** Set, rotate or disable an artifact's Basic auth. Operator-facing (the
-       *  `artifact:auth` CLI); there is no tool equivalent, so a self-asserted
+       *  `artifact:auth` cron CLI, through `/admin`); there is no tool equivalent, so a self-asserted
        *  `agent_view_id` cannot change who may read a published tree.
        *
        *  An empty user or password is FILLED, not rejected: the user defaults to the
@@ -499,32 +528,11 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             }
             const finalUser = (user && String(user).trim()) || defaultAuthUser(artifactCode);
             const finalPass = (password && String(password)) || generatePassword();
-            await applyAuth(artifactCode, { user: finalUser, password: finalPass });
-            return { artifact_code: artifactCode, auth_enabled: true, auth_user: finalUser, password: finalPass };
+            const share = await applyAuth(artifactCode, { user: finalUser, password: finalPass });
+            return { artifact_code: artifactCode, auth_enabled: true, auth_user: finalUser, password: finalPass,
+              share_url: shareUrl(share, env, log) };
           });
         }, (r) => ({ description: r.auth_enabled ? 'enabled' : 'disabled' }));
-      },
-
-      /** Read back the credential an operator set, decrypting the stored copy. A read, so
-       *  no audit row. `auth_enabled: false` and a null password mean the tree is open. */
-      async getAuth(artifactCode) {
-        validateArtifactCode(artifactCode);
-        await assertArtifactAllowed(artifactCode);
-        await be.getCurrent(storageRoot, artifactCode);
-        const db2 = pool();
-        if (!db2) throw new ArtifactError(ERROR_CODES.AUTH_UNAVAILABLE, 'the credential store is unavailable');
-        let row;
-        try {
-          const [rows] = await db2.query(
-            'SELECT auth_enabled, auth_user, auth_secret_enc FROM versioned_artifact WHERE artifact_code = ?',
-            [artifactCode]);
-          row = rows?.[0];
-        } catch (err) {
-          throw new ArtifactError(ERROR_CODES.AUTH_UNAVAILABLE, 'the credential store could not be read', { cause: err });
-        }
-        if (!row || !row.auth_enabled) return { artifact_code: artifactCode, auth_enabled: false };
-        return { artifact_code: artifactCode, auth_enabled: true, auth_user: row.auth_user,
-          password: row.auth_secret_enc ? decryptSecret(row.auth_secret_enc) : null };
       },
 
       // ------------------------------------------------------------- reads
@@ -532,6 +540,33 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         await assertArtifactAllowed(artifactCode);
         const current = await be.getCurrent(storageRoot, artifactCode);
         return { ...current, preview_url: published.previewUrl(publicBaseUrl, artifactCode) };
+      },
+      /** One file at the root of a version, as bytes, or null. Mechanism for a module
+       *  that gives a root file a meaning (miniapps reads `miniapp.json`); a read, so no
+       *  audit row. */
+      async readVersionFile(artifactCode, versionId, name, maxBytes = 64 * 1024) {
+        validateArtifactCode(artifactCode);
+        validateVersionId(versionId);
+        if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name)) {
+          throw new ArtifactError(ERROR_CODES.INVALID_PATH, 'invalid file name');
+        }
+        await assertArtifactAllowed(artifactCode);
+        return be.readVersionFile(storageRoot, artifactCode, versionId, name, maxBytes);
+      },
+      /** The content identity of a version (`content_id`): equal bytes, equal id. A read. */
+      async versionContentId(artifactCode, versionId) {
+        validateArtifactCode(artifactCode);
+        validateVersionId(versionId);
+        await assertArtifactAllowed(artifactCode);
+        return be.versionContentId(storageRoot, artifactCode, versionId);
+      },
+      /** Serve a version's tree again if retention pruned it: step 1 of `publish`, without
+       *  moving `current`. Idempotent; no audit row, the store does not change. */
+      async ensureServed(artifactCode, versionId) {
+        validateArtifactCode(artifactCode);
+        validateVersionId(versionId);
+        await assertArtifactAllowed(artifactCode);
+        await withLock(lifecycleLock(artifactCode), () => serveVersion(artifactCode, versionId));
       },
       async listVersions(artifactCode, opts = {}) {
         await assertArtifactAllowed(artifactCode);
@@ -566,7 +601,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
         if (db2) {
           try {
             const [rows] = await db2.query(
-              'SELECT artifact_code, title, owner, created_at, auth_enabled, auth_user FROM versioned_artifact');
+              'SELECT artifact_code, title, created_at, auth_enabled, auth_user FROM versioned_artifact');
             meta = new Map(rows.map((r) => [r.artifact_code, r]));
           } catch (err) {
             log?.('versioned_artifacts', 'ERROR', `artifact metadata unreadable: ${errorFacts(err) ?? 'unknown'}`);
@@ -579,7 +614,6 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             out.push({
               artifact_code,
               title: row?.title ?? null,
-              owner: row?.owner ?? null,
               created_at: row?.created_at ?? null,
               auth_enabled: !!row?.auth_enabled,
               auth_user: row?.auth_user ?? null,
@@ -692,10 +726,7 @@ export function createService({ config = {}, db = null, log = null, jobId = null
             //    This only writes an immutable directory and is safely repeatable; if
             //    it fails, nothing has changed anywhere and the caller retries with the
             //    arguments it already has.
-            await be.materializePublished(storageRoot, artifactCode, versionId, {
-              destDir: published.publishedVersionDir(publishedRoot, artifactCode, versionId),
-              scratchDir: published.scratchRoot(publishedRoot),
-            });
+            await serveVersion(artifactCode, versionId);
             // 2. The CAS — unchanged, and the only serialization point. There is
             //    deliberately NO "skip it when expected equals the target" shortcut:
             //    the recovery call IS the ordinary call with

@@ -1,17 +1,25 @@
 # Docker Containers
 
-Five containers. Four share the `agento-net` bridge network; `artifacts` declares no
-`networks:` key and deliberately joins none of it.
+Seven containers with one runner (`runner-<i>`, one per `AGENTO_RUNNER_COUNT`), on three
+bridge networks: `db-net`, `exec-net` and `web-net` ([Network](#network)). `artifacts`
+declares no `networks:` key and deliberately joins none of them. `proxy` is the only other
+service on the project `default` network that `artifacts` sits on.
 
 ## Services
 
 | Service | Image | Role | Language |
 |---------|-------|------|----------|
-| **cron** | agento-cron | Job consumer + cron scheduler + Python CLI | Python |
+| **cron** | agento-cron | Job consumer + cron scheduler + Python CLI. Starts no agent CLI: it asks a runner | Python |
 | **toolbox** | agento-toolbox | MCP server — credential broker, tool execution | Node.js |
 | **mysql** | mysql:8.0 | Job queue DB (`cron_agent`) | — |
-| **sandbox** | agento-sandbox | Interactive agent execution (ad-hoc) | Python |
 | **artifacts** | agento-toolbox | Static HTTP for the `versioned_artifacts` published tree | Node.js |
+| **web** | agento-cron | Panel API (sign-in, roles and grants, admin, launches), the launch redeem, and `/internal/authz/app` for the proxy; one backend with `cron`: the same env file (with the encryption key) and DB user (DECISIONS.md D-BACKEND-1); also the internal proxy secret; no upstream tool credential ([panel.md](panel.md)) | Python |
+| **runner-1** | agento-cron | Where every agent CLI runs. No database, no key, no `env_file`. The worker in cron sends it runs over a Unix socket ([runner.md](runner.md)). More runners: `runner-2` … | Python |
+| **proxy** | caddy:2.11 | TLS, the panel / apps / share origins, `forward_auth` to `web`; the only route to artifact files | — |
+
+The `agento-sandbox` image has no service. It holds the agent CLIs and is the base of the
+`agento-cron` image, so every runner has them. `agento run` and `agento doctor` exec into
+`runner-1`.
 
 ## Volume Mounts
 
@@ -19,14 +27,15 @@ Five containers. Four share the `agento-net` bridge network; `artifacts` declare
 
 | Mount | Containers | Access | Purpose |
 |-------|-----------|--------|---------|
-| `modules/` | cron, toolbox, sandbox | read-only | Module manifests + config.json |
+| `modules/` (`app/code`, core modules) | cron, runner-<i>, web, toolbox | read-only | Module manifests + config.json |
 | `logs/` | cron, toolbox | read-write | Structured JSON logs |
 
 ### Toolbox-Only
 
 | Mount | Access | Purpose |
 |-------|--------|---------|
-| `storage/versioned-artifacts/` → `/srv/versioned-artifacts` | read-write | `versioned_artifacts` store (bare repos + draft checkouts) and its published tree (materialized versions plus the `current` symlink). Mounted into **toolbox only** — the sandbox and cron never see it, so the agent reaches versioned content exclusively through gated MCP tools. |
+| `app/etc` → `/app/etc` | read-only | `modules.json`: a module off with `module:disable` loads no toolbox code — no tools from the next MCP session, no auth sources or REST routes from the next start. |
+| `storage/versioned-artifacts/` → `/srv/versioned-artifacts` | read-write | `versioned_artifacts` store (bare repos + draft checkouts) and its published tree (materialized versions plus the `current` symlink). Mounted into **toolbox only** — the runners, cron and web never see it, so the agent reaches versioned content exclusively through gated MCP tools. |
 
 ### Artifacts-Only
 
@@ -36,18 +45,27 @@ Five containers. Four share the `agento-net` bridge network; `artifacts` declare
 | `app/etc` → `/app/etc` | read-only | `modules.json` only, so `mo:di versioned_artifacts` makes every route answer 503 without a restart. |
 
 The `artifacts` service declares **no `networks:` key** and carries no `env_file:` or
-`environment:`. Compose therefore leaves it alone on the project's `default` network while
-every other service names `agento-net` — measured: the sandbox cannot resolve the name
-`artifacts`. It is published on `127.0.0.1:${AGENTO_ARTIFACTS_PORT:-8080}` on the host and
-reachable from no other container. Putting it on `agento-net` would let every agent in every
+`environment:`. Compose therefore leaves it on the project's `default` network while every
+other service names `db-net`, `exec-net` or `web-net` — measured: a runner (exec-net) cannot resolve the name
+`artifacts`. It publishes **no host port**: the only other container on `default` is `proxy`,
+which is the only route to these files, and it serves only `/a/<code>/v/<id>/` paths after
+`web` authorizes them against a live launch ([panel.md](panel.md)). Shares are E6's and every
+share request is denied until then, so VA `preview_url` links and Basic-auth shares are not
+reachable from the host. Putting it on `exec-net` would let every agent in every
 agent_view read every artifact over plain HTTP, bypassing `allowed_artifacts` with no audit row.
 
-### Agent-Only (cron + sandbox)
+### Workspace (cron, runner-<i>, web)
 
-| Mount | Purpose |
-|-------|---------|
-| `workspace/` | Agent workspace — AGENTS.md, SOUL.md, systems/, app/, tmp/ |
-| `tokens/` | OAuth credentials (Claude, Codex) |
+| Mount | Containers | Purpose |
+|-------|-----------|---------|
+| `workspace/` → `/workspace` | cron, runner-<i>, web | Agent workspace — AGENTS.md, SOUL.md, systems/, the per-run HOMEs under `artifacts/`, and temporary HOMEs under `.tmp/`. `web` needs it for a `local` config tester: the model check starts its CLI in a runner with a temporary HOME the runner sees at the same path ([runner.md](runner.md)). A runner gives a live run dir to the run's own uid ([runner.md](runner.md#per-run-uid)); this needs a Linux file system, see there. |
+
+### Runner sockets
+
+| Volume | Containers | Access | Purpose |
+|--------|-----------|--------|---------|
+| `runner-<i>-sock` | runner-<i> | read-write | `/run/agento-runner`: the socket (made by root `listen.py`) and the root-only notes of live run dirs |
+| `runner-<i>-sock` | cron, web | read-only | `/run/agento-runner/runner-<i>/`: the backend sends runs and tester CLIs to the runner. No other service mounts it: an agent in another runner would pass the peer check |
 
 The SSH identity is **not** a mount. The non-secret SSH files (`id_rsa.pub`, `config`, `known_hosts`)
 are written per run into the run HOME under `workspace/artifacts/`; the private key is delivered
@@ -71,6 +89,11 @@ config → env → an inherited file descriptor → a per-run `ssh-agent` and is
 - `AGENTO_ENCRYPTION_KEY` — Decrypt core_config_data secrets
 - `CONFIG__*` — Config overrides (highest priority)
 
+### Web
+- `MYSQL_*` — MySQL connection, the same user as `cron`
+- `AGENTO_ENCRYPTION_KEY` — from the same `env_file` as `cron`; encrypts a pasted re-login code
+- `AGENTO_PANEL_HOST`, `AGENTO_APPS_HOST`, `AGENTO_PROXY_PORT` — the browser-facing origins, same defaults as `proxy`
+
 ### Cron
 - `MYSQL_*` — MySQL connection
 - `DISABLE_LLM` — Skip LLM calls (testing)
@@ -78,9 +101,70 @@ config → env → an inherited file descriptor → a per-run `ssh-agent` and is
 
 ## Network
 
-All containers **except `artifacts`** communicate on `agento-net` (bridge). DNS names match service names: `toolbox`, `mysql`. `artifacts` declares no `networks:` key, so Compose leaves it alone on the project `default` network and no other container can even resolve its name.
+Three bridge networks. A container reaches, and can resolve the name of, only a container
+that shares one of its networks. DNS names match service names.
 
-Being on `agento-net` grants **reachability, not authorization**. The toolbox authenticates east-west
+| Network | Members | Why |
+|---|---|---|
+| `db-net` | mysql, cron, web, toolbox | the services that hold a DB user |
+| `exec-net` | runner-<i>, toolbox, proxy | agents reach the toolbox and the panel origin |
+| `web-net` | proxy, web | the proxy reaches `web` |
+
+None is `internal`: agents and vendor CLIs need egress. MySQL publishes its port on host
+loopback only (`127.0.0.1:${MYSQL_PORT:-3306}`).
+
+Reachability ("yes" = a TCP connect works, not "trusted"):
+
+| From → To | web | cron | runner | toolbox | mysql | proxy |
+|---|---|---|---|---|---|---|
+| web | — | yes (nothing listens) | no | yes | yes | yes |
+| cron | yes | — | Unix socket only | yes | yes | no |
+| runner | no | no | — | yes | no | yes |
+| toolbox | yes | yes (nothing listens) | yes (nothing listens on TCP) | — | yes | yes |
+
+The security claims are the "no" cells. Where a cell says yes but the caller is not
+trusted, the guard is authentication: `web` authenticates every route (SEC-12 limiter, then
+identity), and `proxy` authenticates every non-static path. `docker/smoke/runner-net-smoke.sh`
+checks every cell on a running stack.
+
+**Docker Desktop:** a container reaches `host.docker.internal` (also by its raw IP), and
+Desktop forwards it to host loopback, where MySQL is published. So on Desktop an agent can
+open a TCP connection to MySQL; it holds no DB user, and MySQL authentication is the guard
+(DECISIONS.md 2026-10-09 Network split). On Linux that route fails; the smoke checks it
+there only.
+
+`artifacts` declares no `networks:` key, so Compose leaves it on the project `default` network, which it shares with `proxy` alone; no other container can even resolve its name.
+
+### Proxy and web
+
+`proxy` (Caddy, config in `src/agento/framework/docker/proxy/`) terminates TLS (`tls internal`
+by default) on `127.0.0.1:${AGENTO_PROXY_PORT:-8443}` and serves three origins, named by
+`AGENTO_PANEL_HOST`, `AGENTO_APPS_HOST` and `AGENTO_SHARE_HOST` (default `panel.localhost`,
+`apps.localhost`, `*.share.localhost`):
+
+- **panel** → `web:8000`, except `/internal/*`, which answers `404`;
+- **apps** → only `/a/<code>/v/<id>/…`, authorized by `forward_auth` to `web`'s
+  `/internal/authz/app`, then served by `artifacts`, and `POST /launch`, rewritten to `web`'s
+  `/internal/launch/redeem` (the launch exchange); anything else is `404`;
+- **share** (one origin per share, `<token>.<AGENTO_SHARE_HOST>`) → rewritten to `/s/<token>/…`
+  on `artifacts`, which checks the Basic credential itself; no route reaches `web`. `proxy`
+  renders this site only when `AGENTO_SHARE_HOST` is set, and refuses to start when it is not a
+  valid host name (PRD E6 §9).
+
+Hardening: every caller-supplied `X-Agento-*`, `X-Forwarded-User`, `X-Remote-User` and
+`Remote-User` header is dropped before any upstream or subrequest sees it; the proxy sets
+`X-Agento-Proxy-Auth` only inside `forward_auth`. The `cap` and `code` (launch exchange code)
+query values are replaced with `REDACTED` in both the access log and Caddy's error log, and no
+route targets the toolbox.
+
+No agent reaches `web`, but `toolbox` and `cron` do (`db-net`), so **reachability is not
+trust**. The shared secret
+`X-Agento-Proxy-Auth` lives in the `proxy-internal` volume, which only `proxy` (writes it once
+at start) and `web` (reads it per request) mount. A request without it — a direct call from
+another container — gets `401` on `/internal/authz/*`. Nothing on `web` may trust an identity or
+forwarding header without that check.
+
+Being on `exec-net` or `db-net` grants **reachability, not authorization**. The toolbox authenticates east-west
 traffic itself: `/mcp`, `/sse`, `/config-test` and every `/api/*` route require a capability token and take their scope
 from the `toolbox_capability` row, so a process on the network cannot pick a scope by asking for it. Bare
 `/health` is unauthenticated **liveness only** (`200`, tool names and Playwright state). It runs no
@@ -90,6 +174,6 @@ diagnostic `/health?test=true` needs an `internal_rest` capability (whose row su
 `?agent_view_id=` that disagrees is a `400`) and answers `401`
 without one. See [zero-trust.md](zero-trust.md) and [docs/cli/capability.md](../cli/capability.md).
 
-Agent connects to Toolbox via MCP. Claude and Codex use streamable HTTP at `http://toolbox:3001/mcp` — Claude via `.mcp.json` (`{"type": "http", "url": …}`; the `type` discriminator is mandatory, a typeless entry is dropped at validation), Codex via `.codex/config.toml`. Claude's toolbox entry also carries `"alwaysLoad": true`: Claude connects MCP servers non-blocking by default, so without it `system/init` always reports the toolbox as `pending` (and `job.toolbox_mcp_connected` can never be `TRUE`). `alwaysLoad` makes the CLI await that one handshake before emitting init, bounded by `MCP_CONNECT_TIMEOUT_MS` (default 5 s), after which it proceeds with the connect continuing in the background. Agento injects `alwaysLoad` **only** into the auto-injected toolbox entry: operator servers from `agent_view/mcp/servers` are preserved wholesale, so they stay non-blocking unless the operator explicitly opts in by setting `"alwaysLoad": true` themselves — and an operator entry that shadows `toolbox` replaces ours, opting out of the injected one. **Shadowing also opts out of the injected capability.** The framework adds `?cap=<token>` only to an entry whose URL matches the toolbox's own origin *and* path (`/mcp` or `/sse`); a shadowing entry that points anywhere else gets no token, and our toolbox refuses that session with `401`. Shadowing stays legal — but an operator who shadows `toolbox` must supply their own reachable MCP server, because ours will no longer serve that session. Each harness's `WorkspaceAdapter` constructs the URL from the shared `core/toolbox/url` base value (via `serialize_toolbox_connection`, which is deliberately unconstrained — a harness that consumes the Toolbox as CLI flags or env vars rather than MCP JSON is equally valid). The deprecated SSE transport at `/sse` is still served for operator-pinned `type: sse` entries.
+Agent connects to Toolbox via MCP. Claude and Codex use streamable HTTP at `http://toolbox:3001/mcp` — Claude via `.mcp.json` (`{"type": "http", "url": …}`; the `type` discriminator is mandatory, a typeless entry is dropped at validation), Codex via `.codex/config.toml`. Claude's toolbox entry also carries `"alwaysLoad": true`: Claude connects MCP servers non-blocking by default, so without it `system/init` always reports the toolbox as `pending` (and `job.toolbox_mcp_connected` can never be `TRUE`). `alwaysLoad` makes the CLI await that one handshake before emitting init, bounded by `MCP_CONNECT_TIMEOUT_MS` (default 5 s), after which it proceeds with the connect continuing in the background. Agento injects `alwaysLoad` **only** into the auto-injected toolbox entry: operator servers from `agent_view/mcp/servers` are preserved wholesale, so they stay non-blocking unless the operator explicitly opts in by setting `"alwaysLoad": true` themselves — and an operator entry that shadows `toolbox` replaces ours, opting out of the injected one. **Shadowing also opts out of the injected capability.** The framework adds the token only to an entry whose URL matches the toolbox's own origin *and* path — an `Authorization: Bearer` header on `/mcp`, `?cap=<token>` on `/sse`; a shadowing entry that points anywhere else gets no token, and our toolbox refuses that session with `401`. Shadowing stays legal — but an operator who shadows `toolbox` must supply their own reachable MCP server, because ours will no longer serve that session. Each harness's `WorkspaceAdapter` constructs the URL from the shared `core/toolbox/url` base value (via `serialize_toolbox_connection`, which is deliberately unconstrained — a harness that consumes the Toolbox as CLI flags or env vars rather than MCP JSON is equally valid). The deprecated SSE transport at `/sse` is still served for operator-pinned `type: sse` entries.
 
 Source: [docker/docker-compose.yml](../../docker/docker-compose.yml)

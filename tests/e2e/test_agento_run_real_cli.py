@@ -1,18 +1,21 @@
-"""End-to-end happy path for every credential type via ``agento run``.
+"""End-to-end happy path for every credential type, through the consumer.
 
 The three axes are independent (harness / provider / model), so a case is a
 ``(harness, provider, credential_type)`` triple, not a provider alone. For each
-one we drive the REAL pipeline:
-- point the agent_view at that harness AND its provider via scoped config
-  (``agent_view/harness`` selects the program, ``agent_view/provider`` the model
-  vendor — setting only the latter would run the OLD harness against the new
-  vendor's model and 404),
-- pick a cheap model for the harness (``agent_view/model``),
-- force the credential under test to win pool selection by giving it the lowest
-  priority (``credential:set-priority``; lower wins),
-- run ``agento run <agent_view> "<prompt>"`` which shells into the Docker
-  sandbox, materializes the credential, and invokes the real agent CLI,
-- assert the run exits 0 (auth + model + execution all worked).
+one we drive the REAL pipeline with ``agento e2e``:
+- insert one test job for the discovered agent_view that PINS its harness and a
+  cheap model (``--harness`` / ``--model``, see docs/cli/job-runtime.md) — the
+  agent_view's own config is never changed, so its real cron jobs keep running
+  on what it is configured for,
+- name the credential under test (``--credential``); the run claims only that
+  credential, so the rest of the pool is untouched,
+- claim exactly that job and run it in runner-1: credential materialization,
+  the real agent CLI, the toolbox, finalize,
+- assert the command passed its checks (SUCCESS, model, tokens, output, toolbox
+  connected).
+
+The provider is never pinned: it follows the pinned harness (its
+``default_provider``), so only default-provider cases are discovered.
 
 The matrix is DISCOVERED, never hardcoded: harness/provider/credential_scope come
 from the ``agent_harnesses`` declarations of enabled modules (same source the
@@ -21,18 +24,15 @@ harness module is covered by adding it to ``_CHEAP_MODEL_BY_HARNESS`` — no oth
 edit here.
 
 Marked ``@pytest.mark.e2e`` because they invoke the real Docker stack and the
-real provider APIs (real money). They are gated behind a single explicit opt-in
-because they also TEMPORARILY MUTATE the deployment DB (one credential's priority
-and the agent_view's harness/provider/model), restored in a ``finally`` block:
+real provider APIs (real money):
 
     AGENTO_E2E=1 bin/test
 
 The agent_view to drive is auto-discovered (the first row of ``agento
-workspace:build-status``) — there is no env override. Teardown captures the
-agent_view-scoped harness/provider/model overrides BEFORE the run and restores
-them afterwards — setting them back if they existed, or removing them only if
-they were unset — so pre-existing config for that agent_view is preserved, not
-erased.
+workspace:build-status``) — there is no env override. No e2e test changes its config
+or the pool: every run pins its harness, model and credential (``run_args``), so the
+tests run in parallel. The one exception, the token rotation in
+``test_refresh_real_cli``, is marked ``rotates_credentials`` and runs on its own.
 
 All DB/run interaction goes through the ``agento`` CLI (which proxies into the
 containers); the deployment DB is not reachable directly from the host.
@@ -42,28 +42,30 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
-_PROJECT_ROOT = Path(__file__).parents[2]
-_AGENTO = shutil.which("agento") or str(_PROJECT_ROOT / "bin" / "agento")
+from tests.e2e._stack import AGENTO as _AGENTO
+from tests.e2e._stack import MODULES_DIR as _MODULES_DIR
+from tests.e2e._stack import PROJECT_ROOT as _PROJECT_ROOT
+
 _E2E_ENABLED = os.environ.get("AGENTO_E2E") == "1"
 
 # Cheap model per harness — keeps the real run inexpensive. The harness ids
 # themselves are discovered; only "which model is cheap" needs a human. A harness
 # missing here is skipped with an explicit reason rather than failing the suite.
-# `pi` uses a FREE OpenRouter model, so its case costs nothing. Deliberately a
-# concrete model and not a router (`openrouter/free`, `openrouter/auto`, …): a router
-# dispatches to a different model by design, which Pi reports as the model that ran, and
-# the identity guard would correctly flag that as a mismatch. Routers need
+# `pi` uses a paid OpenRouter model at a fraction of a cent per run: the `:free` ids
+# answer 429 from a shared upstream pool, and the id must be in Pi's catalogue or its
+# guard fails the run. Deliberately a concrete model and not a router (`openrouter/free`,
+# `openrouter/auto`, …): a router dispatches to a different model by design, which Pi
+# reports as the model that ran, and the identity guard would correctly flag that as a
+# mismatch. Routers need
 # `pi/allow_model_substitution=1`; a concrete id exercises the STRICT path instead.
 _CHEAP_MODEL_BY_HARNESS = {
     "claude": "haiku",
     "codex": "gpt-5.4-mini",
-    "pi": "nvidia/nemotron-3.5-lightning:free",
+    "pi": "openai/gpt-oss-20b",
 }
 
 # A ChatGPT-account login (Codex `oauth`) refuses the API-only mini models
@@ -77,11 +79,6 @@ _MODEL_BY_CREDENTIAL_TYPE = {
 _SKIPPED_TYPES = {
     ("codex", "codex_access_token"): "codex access-token happy path is not covered",
 }
-
-# Far below any real priority so the chosen credential deterministically wins
-# selection (ORDER BY priority ASC) regardless of the others.
-_FORCE_PRIORITY = -1_000_000
-
 
 def _agento(args: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -120,7 +117,7 @@ def _harness_declarations() -> list[dict]:
     """
     disabled = {name for name, on in _enabled_modules().items() if on is False}
     roots = [
-        _PROJECT_ROOT / "src" / "agento" / "modules",
+        _MODULES_DIR,
         _PROJECT_ROOT / "app" / "code",
     ]
     harnesses: list[dict] = []
@@ -177,6 +174,9 @@ def _discover_cases() -> list[tuple[str, str, str, str]]:
     cases: list[tuple[str, str, str, str]] = []
     for harness in _harness_declarations():
         for provider in harness.get("providers") or []:
+            # A pinned job's provider is the harness default; another one cannot be pinned.
+            if provider.get("id") != harness.get("default_provider"):
+                continue
             if not provider.get("credential_required", True):
                 continue
             scope = provider.get("credential_scope")
@@ -212,7 +212,7 @@ pytestmark = [
     pytest.mark.e2e,
     pytest.mark.skipif(
         not _E2E_ENABLED,
-        reason="set AGENTO_E2E=1 to run (spends real provider credentials, mutates the pool)",
+        reason="set AGENTO_E2E=1 to run (spends real provider credentials)",
     ),
     pytest.mark.skipif(
         _E2E_ENABLED and not _AGENT_VIEW,
@@ -225,26 +225,10 @@ pytestmark = [
 ]
 
 
-def _agent_view_override(path: str) -> str | None:
-    """Return the value of ``path`` set at THIS agent_view's scope, or None when
-    no agent_view-scoped override exists (unset, or the value is shared with
-    another scope — in which case removing it leaves the effective value
-    unchanged). ``config:get`` prints per-scope lines tagged like
-    ``[agent_view: <code>]``; a deduplicated single line (all scopes equal)
-    carries no tag and safely maps to None."""
-    res = _agento(["config:get", path])
-    tag = f"[agent_view: {_AGENT_VIEW}]"
-    for line in res.stdout.splitlines():
-        if tag in line and " = " in line:
-            return line.split(" = ", 1)[1].rsplit("  [", 1)[0].strip()
-    return None
-
-
-def _restore_override(path: str, prior: str | None) -> None:
-    if prior is not None:
-        _agento(["config:set", path, prior, "--agent-view", _AGENT_VIEW])
-    else:
-        _agento(["config:remove", path, "--agent-view", _AGENT_VIEW])
+def run_args(view: str, harness: str, model: str, credential: dict, *rest: str) -> list[str]:
+    """``agento run`` pinned to one harness, model and credential — no config changes."""
+    return ["run", "--harness", harness, "--model", model,
+            "--credential", str(credential["id"]), view, *rest]
 
 
 @pytest.mark.parametrize(
@@ -252,7 +236,7 @@ def _restore_override(path: str, prior: str | None) -> None:
     _CASES,
     ids=[f"{h}-{p}-{t}" for h, p, _s, t in _CASES],
 )
-def test_agento_run_happy_path_per_credential_type(
+def test_pinned_job_happy_path_per_credential_type(
     harness: str, provider: str, credential_scope: str, credential_type: str,
 ):
     if (harness, credential_type) in _SKIPPED_TYPES:
@@ -270,47 +254,18 @@ def test_agento_run_happy_path_per_credential_type(
     if not candidates:
         pytest.skip(f"no healthy {credential_scope}/{credential_type} credential registered")
     credential = candidates[0]
-    old_priority = credential["priority"]
-    prior_harness = _agent_view_override("agent_view/harness")
-    prior_provider = _agent_view_override("agent_view/provider")
-    prior_model = _agent_view_override("agent_view/model")
 
-    try:
-        # Steer the run: harness FIRST (it narrows which providers are valid),
-        # then the provider, then the cheap model — and force this exact
-        # credential to win pool selection.
-        _agento_ok(["config:set", "agent_view/harness", harness, "--agent-view", _AGENT_VIEW])
-        _agento_ok(["config:set", "agent_view/provider", provider, "--agent-view", _AGENT_VIEW])
-        _agento_ok(["config:set", "agent_view/model", model, "--agent-view", _AGENT_VIEW])
-        _agento_ok(["credential:set-priority", str(credential["id"]), str(_FORCE_PRIORITY)])
-
-        run = _agento(
-            ["run", _AGENT_VIEW, "Reply with exactly the word: pong"],
-            timeout=300,
-        )
-        if run.returncode != 0 and "reached your specified API usage limits" in run.stdout:
-            # The account's spend cap, not a defect: nothing can be checked until it resets.
-            pytest.skip(f"{harness}/{credential_type}: provider usage limit reached")
-        assert run.returncode == 0, (
-            f"`agento run` failed for {harness}/{provider}/{credential_type} "
-            f"(model={model}): rc={run.returncode}\n"
-            f"stdout={run.stdout[-800:]}\nstderr={run.stderr[:800]}"
-        )
-        assert run.stdout.strip(), "agent produced no output"
-        if harness == "claude":
-            # What the consumer reads from the same stream: a result and the init report.
-            from agento.modules.claude.src.output_parser import parse_claude_output
-
-            parsed = parse_claude_output(run.stdout)
-            assert parsed.session_id and parsed.num_turns, "no result event parsed"
-            assert parsed.mcp_init is not None and [
-                (s.name, s.status) for s in parsed.mcp_init.servers
-            ] == [("toolbox", "connected")]
-    finally:
-        # Restore exactly what we changed (best-effort): credential priority and
-        # the agent_view-scoped overrides. Harness first again, so restoring the
-        # provider is validated against the harness it belongs to.
-        _agento(["credential:set-priority", str(credential["id"]), str(old_priority)])
-        _restore_override("agent_view/harness", prior_harness)
-        _restore_override("agent_view/provider", prior_provider)
-        _restore_override("agent_view/model", prior_model)
+    res = _agento(
+        ["e2e", "--agent-view", _AGENT_VIEW, "--harness", harness, "--model", model,
+         "--credential", str(credential["id"])],
+        timeout=600,
+    )
+    if res.returncode != 0 and "reached your specified API usage limits" in res.stdout:
+        # The account's spend cap, not a defect: nothing can be checked until it resets.
+        pytest.skip(f"{harness}/{credential_type}: provider usage limit reached")
+    assert res.returncode == 0, (
+        f"`agento e2e` failed for {harness}/{provider}/{credential_type} (model={model}):\n"
+        + "\n".join(line for line in res.stdout.splitlines()
+                    if "[FAIL]" in line or "ERROR" in line)
+        + f"\nstderr={res.stderr[-800:]}"
+    )

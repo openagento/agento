@@ -2,8 +2,7 @@
 
 > **RENAMED in v0.15:** every `token:*` command is now `credential:*`, and the
 > `oauth_token` table is now `credential`, keyed by **credential scope** rather than by
-> agent type. The old `token:*` names remain as hidden aliases for one release cycle so
-> existing runbooks keep working; removal is tracked in [ROADMAP.md](../../ROADMAP.md).
+> agent type. The old `token:*` aliases were removed in v0.17.
 > A "scope" is the credential pool a `(harness, provider)` pair draws from — see
 > [harness-contract.md](../architecture/harness-contract.md).
 
@@ -41,7 +40,7 @@ Health state lives on each row:
 | `error_source` | Who quarantined the row: `auto` (the framework) or `operator` (an explicit human decision). `auto` is lifted automatically by the next **successful** run; `operator` never is. `NULL` means unknown provenance — every row quarantined before this column existed — and is treated as `operator`. |
 | `expires_at` | Credential expiry (from the stored payload). A row is skipped once `expires_at` is in the **past** (a *future* value means still-valid). **Claude OAuth leaves this NULL on purpose** — see the note below. |
 | `throttled_until` | Temporary **cooldown**. Set either to a usage/session limit's reset time (default 1h when unparseable), or to `now + 15 min` on a **transient auth failure** (revoked/stale access token — usually a concurrent-refresh race, not a dead credential). The pool skips the token while `throttled_until` is in the **future** and auto-includes it once it passes. Distinct from `expires_at` (credential expiry) and from `status='error'` (poison): `status` stays `'ok'` and the token self-recovers. |
-| `lease_owner` / `leased_until` | **Refresh lease.** While `leased_until` is in the future, no other worker may use this row, because its credential is close to expiry and a rotating refresh token is single-use — a second worker replaying it would 401. The job that claims the row (`job-<id>-attempt-<n>`) refreshes it **out of band** first (a short headless CLI call, at most 60s, lease TTL 120s) and releases the lease at once when the refresh made the credential fresh; then every worker shares it again. Only if the harness cannot refresh out of band does the job keep the lease for its run, as a *liveness* deadline the owning consumer keeps pushing forward. If the consumer dies, the lease expires on its own (no reaper). Releasing a lease wakes the jobs that were deferred because the pool was busy. |
+| `lease_owner` / `leased_until` | **Refresh lease.** While `leased_until` is in the future, no other worker may use this row, because its credential is close to expiry and a rotating refresh token is single-use — a second worker replaying it would 401. The job that claims the row (`job-<id>-attempt-<n>`) refreshes it **out of band** first (a short headless CLI call in a runner, at most 60s, lease TTL 120s) and releases the lease at once when the refresh made the credential fresh; then every worker shares it again. Only if the harness cannot refresh out of band does the job keep the lease for its run, as a *liveness* deadline the owning consumer keeps pushing forward. If the consumer dies, the lease expires on its own (no reaper). Releasing a lease wakes the jobs that were deferred because the pool was busy. |
 | `used_at`    | Last time a worker claimed the row — drives LRU ordering within a priority tier. |
 | `priority`   | Pool selection weight. Lower value wins; 0 = default.                   |
 
@@ -95,7 +94,8 @@ register → [use via LRU+priority] → (near-expiry rotating credential → exc
 
 ### Interactive OAuth
 
-Requires a TTY — opens a browser for the OAuth flow.
+Requires a TTY. It runs the same login as the panel re-login, in a runner: open the URL it
+prints and follow its prompt.
 
 ```bash
 # Claude (OAuth)
@@ -215,6 +215,72 @@ agento credential:usage             # Show usage stats across all scopes
 agento credential:usage --scope claude --window 72
 ```
 
+## Usage Limits
+
+```bash
+agento credential:limits    # shortcut: cr:lim
+```
+
+Asks each vendor how much of its usage limits every credential has used, and stores the answer
+in `credential.limits` (JSON) and `credential.limits_at`. Cron runs it every minute
+(`core/cron.json`). The `core` observer `core_refresh_credential_limits` also reads one
+credential's limits right after `credential_register_after` (`credential:register`, a panel
+re-login) and `credential_refresh_after`, so the panel shows them at once. It skips a credential that is disabled or in `status='error'`. An OAuth
+credential whose access token has expired (the harness's `credential_ttl_seconds`, else
+`expires_at`) is renewed first, as a job would: it takes the same refresh lease (owner
+`limits-<id>-…`, 120 s), calls the harness's `refresh_credentials` (its CLI runs in a runner),
+then releases the lease. It skips the credential when a job holds the lease, when the
+credential became disabled, `error` or deleted meanwhile, or when the refresh did not renew the
+token (a failure logs the credential id and the exception class only; the next job classifies
+it). A skipped credential keeps its last result and `limits_at`. A harness that has no
+`fetch_limits` member, or a credential type the vendor has no endpoint for, stores `NULL` with
+no `limits_at`: the panel shows "—". A failed call stores `NULL` with `limits_at` set: the panel
+shows "Check failed". The Credentials page reads the list again every minute, with no reload,
+and marks limits not read for 5 minutes "Stale". A failure logs the credential id, the exception class and the HTTP status
+only, never the payload or the vendor's answer. The update does not change `updated_at`.
+
+The usage endpoints check the client: `claude` sends `User-Agent: claude-code/<version>` and
+`codex` sends its own agent name, because `chatgpt.com` refuses the default `python-httpx`
+agent (as CodexBar does).
+
+| Harness | Credential type | Endpoint | Stored |
+|---|---|---|---|
+| `claude` | `oauth` | `api.anthropic.com/api/oauth/usage` | windows `5h`, `Week` |
+| `codex` | `oauth` | `chatgpt.com/backend-api/wham/usage` | windows `5h`, `Week` (other lengths `<n>h`) |
+| `pi` | `openrouter_api_key` | `openrouter.ai/api/v1/credits` | `balance_usd` |
+
+The stored shape is `{"windows": [{"label", "used_pct", "resets_at"}], "balance_usd"}`.
+These endpoints are not public API: if a vendor changes one, the credential shows "Check failed"
+until the harness module is fixed.
+
+## Re-login From the Panel
+
+```bash
+agento credential:web-login    # shortcut: cr:wl
+```
+
+The worker for a re-login that an admin starts in the panel. Cron runs it every minute; it
+claims new logins for up to 55 s. A login it has claimed runs to its end, even past
+55 s, but after 55 s it claims no other login and exits. It first sweeps: a login past `expires_at` fails with
+`expired`, a running login whose heartbeat is older than 30 s fails with `abandoned`,
+finished rows older than one day are deleted, and stale temp homes under
+`$TMPDIR/agento-web-login/` are removed. Then it claims each `pending` row and runs the
+harness's `start_web_login` in a PTY with a temp `HOME` and a minimal environment
+(`PATH`, `HOME`, `LANG`, `TERM`), never the cron environment.
+
+- **Claude** (`claude auth login --claudeai`): the panel shows the URL; the admin pastes the
+  code from the browser. `web` encrypts the code with `AGENTO_ENCRYPTION_KEY`;
+  the worker decrypts it once and clears it.
+- **Codex** (`codex login --device-auth`): the panel shows the URL and the user code; no code
+  is pasted back.
+
+On success the worker saves the new payload through the same function as
+`credential:register` (`register_credential_and_dispatch`), so `credential_register_after` is
+dispatched. A login fails with `cli_failed`, `bad_url`, `busy` (a refresh lease is live),
+`disabled`, `unsupported`, `expired` or `abandoned`; a cancel in the panel wins over a save
+that has not committed. API-key credentials are not re-logged from the panel: use
+`credential:register --with-api-key`.
+
 ## Deregister
 
 ```bash
@@ -248,6 +314,6 @@ once via the `SplitProviderIntoHarness` data patch.
 ## Requirements
 
 - `AGENTO_ENCRYPTION_KEY` must be set (same key used for `core_config_data` obscure fields). See [encryption.md](../config/encryption.md).
-- The `credential` schema is maintained by framework migrations beginning with `019_oauth_token_inline_credentials.sql`; the rename plus the `scope` column land in `030_credential_scope_and_rename.sql`, and `error_source` / `lease_owner` / `leased_until` in `034_credential_error_source_and_refresh_lease.sql`. `agento setup:upgrade` applies pending migrations.
+- The `credential` schema is maintained by framework migrations beginning with `019_oauth_token_inline_credentials.sql`; the rename plus the `scope` column land in `030_credential_scope_and_rename.sql`, and `error_source` / `lease_owner` / `leased_until` in `034_credential_error_source_and_refresh_lease.sql`, and `limits` / `limits_at` plus the `credential_login` table in `048_credential_login.sql`. `agento setup:upgrade` applies pending migrations.
 
-Source: [src/agento/framework/cli/credential.py](../../src/agento/framework/cli/credential.py) (deprecated aliases: [credential_aliases.py](../../src/agento/framework/cli/credential_aliases.py))
+Source: [src/agento/framework/cli/credential.py](../../src/agento/framework/cli/credential.py)

@@ -141,7 +141,8 @@ pattern (which post-normalization may be PII). The Outlook module contributes `o
 > `job` row (`requester_key`/`requester_email`/`requester_trust`/`requester_meta`) are a
 > separate, channel-agnostic snapshot of *who triggered the job* — **audit / future-policy
 > metadata only**. They never participate in dedupe (`idempotency_key`/`skip_if_active`), auth,
-> or routing, and are never fed into `RoutingContext.payload` or the routing events.
+> or routing, and are never fed into `RoutingContext.payload` or the routing events. One exception:
+> the miniapp creator right reads `requester_key` when `requester_trust = 'account'` (D-MINIAPP-3).
 
 ### CLI Commands
 

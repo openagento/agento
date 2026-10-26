@@ -1,9 +1,8 @@
 """End-to-end tests using real LLM calls and the prod database.
 
 Exercises the full consumer pipeline: dequeue → channel → workflow → runner → finalize.
-The selected credential drives the run; for deterministic targeting the scenario
-temporarily disables every other credential in the same scope so the LRU pool
-has only one candidate, then restores their enabled state at teardown.
+The selected credential drives the run: the scenario's consumer claims only that
+credential, so the pool and the other credentials are left as they are.
 Requires healthy tokens and DISABLE_LLM=0.
 """
 from __future__ import annotations
@@ -12,7 +11,7 @@ import logging
 import sys
 import time
 
-from .agent_manager.credential_store import get_credential, list_credentials, select_credential
+from .agent_manager.credential_store import get_credential, select_credential
 from .agent_manager.models import CredentialRecord
 from .channels.registry import register_channel
 from .channels.test import TestChannel
@@ -20,15 +19,21 @@ from .consumer import Consumer
 from .consumer_config import ConsumerConfig
 from .database_config import DatabaseConfig
 from .db import get_connection
+from .harness import find_harness
 
 
 def _insert_test_job(
     db_config: DatabaseConfig, reference_id: str, agent_view_id: int | None = None,
+    *, harness: str | None = None, model: str | None = None,
 ) -> int:
     """Insert a TODO job with type/source='blank' and return its id.
 
     With ``agent_view_id`` the job runs as that agent_view: its harness, its workspace
-    build and its toolbox.
+    build and its toolbox. ``harness`` / ``model`` PIN the job's runtime (see
+    docs/cli/job-runtime.md), so a test needs no ``config:set`` on the view.
+
+    ``scheduled_after`` is far in the future so a live stack's consumer never claims the
+    row; ``agento e2e`` claims it by id, which ignores the schedule.
     """
     conn = get_connection(db_config)
     try:
@@ -36,10 +41,13 @@ def _insert_test_job(
             cur.execute(
                 """
                 INSERT INTO job (type, source, reference_id, agent_view_id,
-                                  idempotency_key, status, attempt, max_attempts)
-                VALUES ('blank', 'blank', %s, %s, %s, 'TODO', 0, 1)
+                                  idempotency_key, status, attempt, max_attempts,
+                                  agent_type, model, scheduled_after)
+                VALUES ('blank', 'blank', %s, %s, %s, 'TODO', 0, 1, %s, %s,
+                        '2038-01-01 00:00:00')
                 """,
-                (reference_id, agent_view_id, f"e2e:{reference_id}:{int(time.time())}"),
+                (reference_id, agent_view_id, f"e2e:{reference_id}:{int(time.time())}",
+                 harness, model),
             )
             job_id = cur.lastrowid
         conn.commit()
@@ -70,51 +78,15 @@ def _delete_job(db_config: DatabaseConfig, job_id: int) -> None:
         conn.close()
 
 
-def _disable_other_credentials(
-    db_config: DatabaseConfig, credential: CredentialRecord
-) -> list[int]:
-    """Disable every other enabled credential in the same scope; return their ids."""
-    conn = get_connection(db_config)
-    try:
-        peers = [
-            c.id for c in list_credentials(conn, scope=credential.scope)
-            if c.id != credential.id
-        ]
-        if peers:
-            placeholders = ",".join(["%s"] * len(peers))
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"UPDATE credential SET enabled = FALSE WHERE id IN ({placeholders})",
-                    peers,
-                )
-            conn.commit()
-        return peers
-    finally:
-        conn.close()
-
-
-def _restore_credentials(db_config: DatabaseConfig, credential_ids: list[int]) -> None:
-    """Re-enable credentials previously disabled by ``_disable_other_credentials``."""
-    if not credential_ids:
-        return
-    conn = get_connection(db_config)
-    try:
-        placeholders = ",".join(["%s"] * len(credential_ids))
-        with conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE credential SET enabled = TRUE WHERE id IN ({placeholders})",
-                credential_ids,
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _run_checks(row: dict, *, agent_view: bool = False) -> list[tuple[str, bool, str]]:
+def _run_checks(
+    row: dict, *, agent_view: bool = False, mcp_init_report: bool = True,
+) -> list[tuple[str, bool, str]]:
     """Return list of (label, passed, detail) for a finished job row.
 
     ``agent_view``: the job ran with a toolbox, so the telemetry columns that
     ``app_monitor`` writes from the run's init event and transcript must be set.
+    ``mcp_init_report``: the harness's capability. Without it the CLI never says
+    whether ``toolbox`` connected, so ``toolbox_mcp_connected`` stays NULL by design.
     """
     checks = [
         ("status=SUCCESS", row["status"] == "SUCCESS", row["status"]),
@@ -127,10 +99,9 @@ def _run_checks(row: dict, *, agent_view: bool = False) -> list[tuple[str, bool,
     ]
     if agent_view:
         connected, calls = row.get("toolbox_mcp_connected"), row.get("toolbox_mcp_calls")
-        checks += [
-            ("toolbox_mcp_connected = 1", connected == 1, str(connected)),
-            ("toolbox_mcp_calls counted", calls is not None, str(calls)),
-        ]
+        if mcp_init_report:
+            checks.append(("toolbox_mcp_connected = 1", connected == 1, str(connected)))
+        checks.append(("toolbox_mcp_calls counted", calls is not None, str(calls)))
     return checks
 
 
@@ -143,6 +114,7 @@ def run_scenario(
     keep: bool = False,
     model: str | None = None,
     agent_view_id: int | None = None,
+    harness: str | None = None,
 ) -> bool:
     """Run one e2e scenario for the given credential. True if all checks pass."""
     description = f"{credential.scope} ({credential.label})"
@@ -153,64 +125,76 @@ def run_scenario(
     print(f"{'='*60}")
 
     register_channel(TestChannel())
-    disabled_peers = _disable_other_credentials(db_config, credential)
 
-    try:
-        job_id = _insert_test_job(db_config, ref_id, agent_view_id)
-        print(f"  Inserted job id={job_id}, reference_id={ref_id}")
+    job_id = _insert_test_job(db_config, ref_id, agent_view_id, harness=harness, model=model)
+    print(f"  Inserted job id={job_id}, reference_id={ref_id}")
 
-        consumer = Consumer(db_config, consumer_config, logger, model_override=model)
-        job = consumer._try_dequeue()
-        if job is None:
-            print("  FAIL: could not dequeue test job")
-            if not keep:
-                _delete_job(db_config, job_id)
-            return False
+    consumer = Consumer(db_config, consumer_config, logger, credential_id=credential.id)
+    job = consumer._try_dequeue(job_id)
+    if job is None:
+        # The job is parked, so no consumer polls it; only something that claims by
+        # id can have taken it. It is left to that claimant (not deleted).
+        print(f"  FAIL: job {job_id} was claimed by someone else — run again")
+        return False
+    print(f"  Dequeued job {job.id}, executing...")
 
-        assert job.id == job_id, f"Expected job {job_id}, got {job.id}"
-        print(f"  Dequeued job {job.id}, executing...")
+    consumer._execute_job(job)
 
-        consumer._execute_job(job)
+    row = _fetch_job(db_config, job_id)
+    if row is None:
+        print("  FAIL: job row not found after execution")
+        return False
 
-        row = _fetch_job(db_config, job_id)
-        if row is None:
-            print("  FAIL: job row not found after execution")
-            return False
+    registered = find_harness(row["agent_type"]) if row["agent_type"] else None
+    checks = _run_checks(
+        row, agent_view=agent_view_id is not None,
+        mcp_init_report=bool(registered and registered.descriptor.capabilities.mcp_init_report),
+    )
+    all_ok = all(ok for _, ok, _ in checks)
 
-        checks = _run_checks(row, agent_view=agent_view_id is not None)
-        all_ok = all(ok for _, ok, _ in checks)
+    for label, ok, detail in checks:
+        status = "PASS" if ok else "FAIL"
+        print(f"  [{status}] {label}: {detail}")
 
-        for label, ok, detail in checks:
-            status = "PASS" if ok else "FAIL"
-            print(f"  [{status}] {label}: {detail}")
+    print(f"\n  Model:  {row['model']}")
+    print(f"  Tokens: in={row['input_tokens']} out={row['output_tokens']}")
+    output_preview = (row["output"] or "")[:120]
+    print(f"  Output: {output_preview}")
 
-        print(f"\n  Model:  {row['model']}")
-        print(f"  Tokens: in={row['input_tokens']} out={row['output_tokens']}")
-        output_preview = (row["output"] or "")[:120]
-        print(f"  Output: {output_preview}")
+    if keep:
+        print(f"  Keeping job {job_id} (--keep)")
+    else:
+        _delete_job(db_config, job_id)
+        print(f"  Cleaned up job {job_id}")
 
-        if keep:
-            print(f"  Keeping job {job_id} (--keep)")
-        else:
-            _delete_job(db_config, job_id)
-            print(f"  Cleaned up job {job_id}")
-
-        return all_ok
-    finally:
-        _restore_credentials(db_config, disabled_peers)
+    return all_ok
 
 
-def _pick_credential(conn, agent_view_id: int | None, credential_id: int | None) -> CredentialRecord:
+def _pick_credential(
+    conn, agent_view_id: int | None, credential_id: int | None, harness: str | None = None,
+) -> CredentialRecord:
     """The credential the consumer will use for this job — from the pool of the job's
-    harness/provider (agent_view, else global config), exactly as ``Consumer._execute_job``
-    selects. Raises ``ValueError`` with an operator message when there is none.
+    EFFECTIVE harness/provider (the pinned ``harness``, else the agent_view's, else global
+    config), resolved as the consumer resolves it at claim. Raises ``ValueError`` with an
+    operator message when there is none.
     """
-    from .agent_view_runtime import resolve_agent_view_runtime
+    from .agent_view_runtime import (
+        InvalidJobRuntime,
+        resolve_agent_view_runtime,
+        resolve_job_runtime,
+    )
     from .harness import resolve_provider
 
-    runtime = resolve_agent_view_runtime(conn, agent_view_id)
-    if runtime.harness is None:
-        raise ValueError("No agent_view/harness configured for this job.")
+    try:
+        runtime = resolve_job_runtime(
+            resolve_agent_view_runtime(
+                conn, agent_view_id, tolerate_pair_error=harness is not None,
+            ),
+            pinned_harness=harness,
+            pinned_model=None,
+        )
+    except InvalidJobRuntime as exc:
+        raise ValueError(str(exc)) from exc
     provider = resolve_provider(runtime.harness, runtime.provider)
     if not provider.credential_required:
         raise ValueError(
@@ -263,7 +247,9 @@ def cmd_e2e(args) -> None:
                 sys.exit(1)
             agent_view_id = view.id
         try:
-            credential = _pick_credential(conn, agent_view_id, args.credential_id)
+            credential = _pick_credential(
+                conn, agent_view_id, args.credential_id, args.harness,
+            )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             sys.exit(1)
@@ -274,6 +260,7 @@ def cmd_e2e(args) -> None:
         ok = run_scenario(
             credential, db_config, consumer_config, logger,
             keep=args.keep, model=args.model, agent_view_id=agent_view_id,
+            harness=args.harness,
         )
     except Exception as exc:
         print(f"  ERROR: {exc}")

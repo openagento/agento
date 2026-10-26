@@ -10,8 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from agento.framework.harness import HarnessRunContext, RunResult
-from tests.harness_fixtures import make_runner
+from agento.framework.harness import HarnessRunContext
+from tests.harness_fixtures import make_runner, usage_recording_runner
 
 
 @pytest.fixture
@@ -28,20 +28,14 @@ def recorder(monkeypatch):
     return calls
 
 
-def _runner(monkeypatch, *, credential):
-    runner = make_runner(
-        "claude", credential=credential, credential_required=credential is not None,
-        model="opus-4",
-    )
-    monkeypatch.setattr(runner, "_get_db_connection", lambda: MagicMock())
-    return runner
+def _runner(monkeypatch, harness="claude", *, credential):
+    local = make_runner(harness, credential=credential, credential_required=credential is not None,
+                        model="opus-4")
+    return usage_recording_runner(monkeypatch, harness, local.context)
 
 
-def _result() -> RunResult:
-    return RunResult(
-        raw_output="ok", input_tokens=100, output_tokens=50,
-        duration_ms=1200, model="opus-4",
-    )
+def _result(**kw) -> dict:
+    return {"input_tokens": 100, "output_tokens": 50, "duration_ms": 1200, "model": "opus-4", **kw}
 
 
 class TestCredentiallessUsage:
@@ -78,10 +72,10 @@ class TestCredentiallessUsage:
     def test_harness_and_provider_travel_with_the_context(self, monkeypatch, recorder):
         """Attribution comes from the run context, not from the parsed result — a
         harness whose output omits them is still attributable."""
-        runner = make_runner("codex", credential=None, credential_required=False)
-        monkeypatch.setattr(runner, "_get_db_connection", lambda: MagicMock())
+        runner = _runner(monkeypatch, "codex", credential=None)
 
-        runner._record_usage(RunResult(raw_output="ok"))
+        runner._record_usage(_result(input_tokens=None, output_tokens=None, duration_ms=None,
+                                     model=None))
 
         assert (recorder[0]["harness"], recorder[0]["provider"]) == ("codex", "openai")
 

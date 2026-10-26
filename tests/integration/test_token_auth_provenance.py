@@ -10,8 +10,6 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from agento.framework.agent_manager.credential_store import (
     clear_auto_credential_error,
     clear_credential_error,
@@ -52,17 +50,6 @@ def _row(token_id: int) -> dict:
             return cur.fetchone()
     finally:
         conn.close()
-
-
-@pytest.fixture(autouse=True)
-def _clean_tokens():
-    conn = _test_connection(autocommit=True)
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM credential")
-    finally:
-        conn.close()
-    yield
 
 
 def test_auto_quarantine_self_heals_on_the_next_successful_run(sample_db_config):

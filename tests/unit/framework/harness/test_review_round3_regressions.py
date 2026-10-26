@@ -222,15 +222,16 @@ class TestOneSaveOperationForCliAndAdmin:
     def test_admin_save_goes_through_the_shared_operation(self):
         import inspect
 
+        from agento.framework import config_write
         from agento.framework.admin import data
 
-        source = inspect.getsource(data.set_config_value)
-        assert "set_config_with_dependents" in source
+        assert "write_config(" in inspect.getsource(data.set_config_value)
+        assert "set_config_with_dependents" in inspect.getsource(config_write.write_config)
 
     def test_cli_save_goes_through_the_shared_operation(self):
         from agento.framework.cli import config
 
-        assert "set_config_with_dependents" in Path(config.__file__).read_text()
+        assert "save_config(" in Path(config.__file__).read_text()
 
     def test_repair_uses_the_declared_default_provider_not_the_first_option(
         self, monkeypatch,

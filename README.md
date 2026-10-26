@@ -15,7 +15,7 @@ Agento is extensible by design. Creating and sharing custom modules is simple. W
 
 ## Why Agento?
 
-- **Secure by architecture** — agents run in an isolated sandbox with no access to the credential store; the one scoped exception is the per-run git SSH identity (see `DECISIONS.md` D-SSH-1). A *scheduled* agent runs as the cron container's own uid, but the store is not reachable from it: it lives in a root-only file that a root-owned program reads before dropping privilege in-process, so it never crosses an `execve` (D-SSH-1 residual channel (6), closed 2026-09-23).
+- **Secure by architecture** — agents run in an isolated runner container with no access to the credential store; the one scoped exception is the per-run git SSH identity (see `DECISIONS.md` D-SSH-1). Each run starts as its own uid in a runner, so one run cannot read another run's files. The backend (`cron`, `web`) holds the store and is trusted; the runner is the boundary (`DECISIONS.md` D-BACKEND-2).
 - **Controlled tool access** — enforce policies for tools like email, browser, and external systems.
 - **Modular by default** — extend behavior through modules, not by patching core code.
 - **Deployment-specific customization** — adapt agents, policies, and workflows per workspace or environment.
@@ -61,19 +61,22 @@ agento install                        # Interactive wizard — scaffolds, starts
 
 ## Architecture
 
-Agento runs four service containers plus MySQL. All but one share the `agento-net` bridge
-network — the **Artifacts** container deliberately joins none of it:
+Agento runs its service containers plus MySQL on three bridge networks (`db-net`,
+`exec-net`, `web-net`; [containers](docs/architecture/containers.md#network)) — the
+**Artifacts** container deliberately joins none of them:
 
 - **Cron** (Python) -- Job queue consumer, scheduler, CLI host. Manages the lifecycle of agent jobs, runs migrations, and dispatches events. Connects to MySQL for job state, config, and module metadata.
 - **Toolbox** (Node.js) -- MCP credential broker. Registers tools from modules (MySQL adapters, API clients) and exposes them over MCP (streamable HTTP `/mcp`, SSE `/sse`). Designed to be the only container that holds tool credentials (known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)).
-- **Sandbox** (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract) -- Ephemeral container for interactive `agento run`. Holds no upstream service credentials and no direct database access — only its own harness credential (in its per-run HOME) and its run's toolbox capability, scoped to one agent_view and expiring. Headless jobs run the agent inside the `cron` container and inherit its env (a known gap, see [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)). Communicates with the toolbox exclusively through MCP tool calls.
-- **Artifacts** (Node.js) -- Static HTTP for the `versioned_artifacts` published tree. On no shared network and holding no secret, published on `127.0.0.1` only, so an artifact is readable by a person at the host and by no agent.
+- **Artifacts** (Node.js) -- Static HTTP for the `versioned_artifacts` published tree. On no shared network, holding no secret and publishing no host port: `proxy` is the only route to its files.
+- **Runner** (`runner-<i>`, Python on the cron image) -- Starts every agent CLI (Claude Code / OpenAI Codex / Pi -- the set is open, see the harness contract), each run as its own uid; interactive `agento run` execs into `runner-1`. A run holds only its own harness credential (in its per-run HOME) and its run's toolbox capability, scoped to one agent_view and expiring (known gaps: [zero-trust](docs/architecture/zero-trust.md#known-exceptions-and-debt)). The cron consumer sends each run over a Unix socket. Holds no `env_file`, no database credential and no encryption key. See [docs/architecture/runner.md](docs/architecture/runner.md).
+- **Web** (Python) -- The panel API: sign-in, per-role grants, admin, artifact launches. Web and Cron are one trusted backend: the same env file (with the encryption key) and one DB user (DECISIONS.md D-BACKEND-1). It holds no upstream tool credential and stores only hashes of session and launch tokens. See [docs/architecture/panel.md](docs/architecture/panel.md).
+- **Proxy** (Caddy) -- TLS and the panel / apps / share origins; asks `web` to authorize every artifact file request.
 
 ## Module System
 
 Agento uses a Magento-inspired modular architecture. Each module is a self-contained package.
 
-**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view, versioned_artifacts).
+**Core modules** ship with the framework in `src/agento/modules/` (jira, claude, codex, pi, core, crypt, agent_view, conversation, versioned_artifacts, web, admin, miniapps).
 
 **User modules** live in `app/code/` and are deployment-specific (gitignored by default).
 
@@ -113,7 +116,10 @@ The installer offers **Basic** (recommended) and **Advanced** modes. Basic uses 
 agento doctor                         # Verify prerequisites
 ```
 
-## Admin TUI
+## Admin TUI (deprecated)
+
+> **Deprecated:** use the admin panel. `agento admin` stays until v1.0.0; the CLI commands stay.
+> See [docs/cli/admin.md](docs/cli/admin.md).
 
 `agento admin` launches an interactive terminal dashboard for operational visibility and configuration management.
 

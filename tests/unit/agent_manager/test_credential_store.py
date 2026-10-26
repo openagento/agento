@@ -291,9 +291,18 @@ class TestSelectToken:
 
         select_credential(conn, "codex")
 
-        # The locking SELECT still binds exactly the provider (statement 0 of 3).
+        # The locking SELECT binds the scope, and no credential pin (statement 0 of 3).
         params = cursor.execute.call_args_list[0][0][1]
-        assert params == ("codex",)
+        assert params == ("codex", None, None)
+
+    def test_credential_id_pins_the_claim_to_that_row(self):
+        conn, cursor = _mock_conn_with_fetches([{"id": 7}, _SAMPLE_ROW])
+
+        select_credential(conn, "codex", credential_id=7)
+
+        sql, params = cursor.execute.call_args_list[0][0]
+        assert "(%s IS NULL OR id = %s)" in sql
+        assert params == ("codex", 7, 7)
 
 
 class TestMarkAndClearTokenError:

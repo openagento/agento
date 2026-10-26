@@ -63,20 +63,6 @@ def launcher(tmp_path):
     """))
     id_stub.chmod(0o755)
 
-    # The --store branch hands the command to root-owned drop.py through the venv python.
-    (root / "run.sh").write_text("#!/bin/bash\nexit 1\n")
-    (root / "run.sh").chmod(0o755)
-    venv_python = root / ".venv" / "bin" / "python"
-    venv_python.parent.mkdir(parents=True)
-    drop_argv = tmp_path / "drop-argv.txt"
-    venv_python.write_text(textwrap.dedent(f"""\
-        #!/bin/bash
-        printf '%s\\n' "$@" > {drop_argv}
-        env > {env_out}
-        /bin/sh -c 'env > {grandchild_env_out}'
-    """))
-    venv_python.chmod(0o755)
-
     script = tmp_path / "launch.sh"
     script.write_text(
         LAUNCH_SH.read_text()
@@ -109,13 +95,8 @@ def launcher(tmp_path):
             self.env_out = env_out
             self.grandchild_env_out = grandchild_env_out
             self.setpriv_args = setpriv_args
-            self.drop_argv = drop_argv
-            self.run_sh = root / "run.sh"
 
-        def public(self, payload: bytes) -> None:
-            (root / "env.public").write_bytes(payload)
-
-        def store(self, payload: bytes) -> None:
+        def env_file(self, payload: bytes) -> None:
             (root / "env").write_bytes(payload)
 
         def run(self, *args, env_extra=None):
@@ -133,8 +114,7 @@ def launcher(tmp_path):
             return _parse_env(self.grandchild_env_out)
 
     harness = Harness()
-    harness.public(b"")
-    harness.store(b"MYSQL_HOST=db\0")
+    harness.env_file(b"")
     return harness
 
 
@@ -157,7 +137,7 @@ def test_the_command_receives_exactly_the_argv_it_was_given(launcher):
 
 def test_bad_usage_exits_64(launcher):
     assert launcher.run(str(launcher.dump)).returncode == 64
-    assert launcher.run("--store", str(launcher.dump)).returncode == 64
+    assert launcher.run("--store", "--", str(launcher.dump)).returncode == 64  # removed (WS6)
     assert launcher.run("--").returncode == 64
 
 
@@ -169,41 +149,13 @@ def test_the_privilege_drop_never_uses_reset_env(launcher):
     assert "--reset-env" not in LAUNCH_SH.read_text()
 
 
-def test_the_store_branch_hands_the_command_to_the_dropper(launcher):
-    """`drop.py` drops in-process, so the store crosses no exec — nothing else may run."""
-    result = launcher.run("--store", "--", str(launcher.run_sh), "consumer")
-
-    assert result.returncode == 0, result.stderr
-    argv = launcher.drop_argv.read_text().split()
-    assert argv[0].endswith("drop.py")
-    assert argv[1:] == ["consumer"]
-    assert "AGENTO_STORE_ENV_FD" not in launcher.child_env
-
-
-def test_the_store_runs_nothing_but_the_cli(launcher):
-    result = launcher.run("--store", "--", str(launcher.dump), "whoami")
-
-    assert result.returncode == 64
-    assert "run.sh" in result.stderr
-
-
 def test_the_login_environment_su_used_to_supply_is_rebuilt(launcher):
     launcher.run("--", str(launcher.dump))
     assert launcher.child_env["HOME"] == "/home/agent"
     assert launcher.child_env["USER"] == "agent"
 
 
-# --- the class this change exists for: no store in any inherited environment ------------
-
-@pytest.mark.parametrize("store_flag", [[], ["--store"]])
-def test_no_store_canary_reaches_the_command_or_its_grandchild(launcher, store_flag):
-    command = str(launcher.run_sh) if store_flag else str(launcher.dump)
-    launcher.run(*store_flag, "--", command, env_extra=CANARIES)
-    for env in (launcher.child_env, launcher.grandchild_env):
-        for name, value in CANARIES.items():
-            assert name not in env
-            assert value not in "".join(env.values())
-
+# --- the scrub: only the whitelist file reaches the command -----------------------------
 
 def test_an_inherited_clean_marker_cannot_skip_the_scrub(launcher):
     """The guard is a positional argument, so no inherited variable can fake it."""
@@ -215,10 +167,10 @@ def test_an_inherited_clean_marker_cannot_skip_the_scrub(launcher):
         assert name not in launcher.child_env
 
 
-# --- env.public import ------------------------------------------------------------------
+# --- env file import -------------------------------------------------------------------
 
-def test_public_values_reach_the_command(launcher):
-    launcher.public(b"TZ=Europe/Warsaw\0AGENTO_CONSUMER_MAX_WORKERS=4\0")
+def test_env_file_values_reach_the_command(launcher):
+    launcher.env_file(b"TZ=Europe/Warsaw\0AGENTO_CONSUMER_MAX_WORKERS=4\0")
     launcher.run("--", str(launcher.dump))
     assert launcher.child_env["TZ"] == "Europe/Warsaw"
     assert launcher.child_env["AGENTO_CONSUMER_MAX_WORKERS"] == "4"
@@ -226,14 +178,14 @@ def test_public_values_reach_the_command(launcher):
 
 def test_a_malformed_name_is_skipped_and_the_launch_still_succeeds(launcher):
     """A glob guard accepts ``A-B=x``; ``export`` then fails and ``set -e`` would abort."""
-    launcher.public(b"A-B=x\0TZ=UTC\0noequalshere\0=novalue\0")
+    launcher.env_file(b"A-B=x\0TZ=UTC\0noequalshere\0=novalue\0")
     result = launcher.run("--", str(launcher.dump))
     assert result.returncode == 0, result.stderr
     assert launcher.child_env["TZ"] == "UTC"
     assert "A-B" not in launcher.child_env
 
 
-def test_public_values_arrive_byte_identical_and_never_execute(launcher, tmp_path):
+def test_env_file_values_arrive_byte_identical_and_never_execute(launcher, tmp_path):
     side_effect = tmp_path / "pwned"
     values = {
         "SPACES": "two words",
@@ -243,7 +195,7 @@ def test_public_values_arrive_byte_identical_and_never_execute(launcher, tmp_pat
         "EQUALS": "a=b=c",
     }
     payload = b"".join(f"{k}={v}".encode() + b"\0" for k, v in values.items())
-    launcher.public(payload)
+    launcher.env_file(payload)
     result = launcher.run("--", str(launcher.dump))
     assert result.returncode == 0, result.stderr
 

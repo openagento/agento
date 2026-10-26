@@ -13,7 +13,7 @@ Publisher (cron, every minute)
     │
     ▼
 MySQL (jobs table)
-    │  INSERT IGNORE (idempotent)
+    │  SELECT-then-INSERT on idempotency_key
     │
     ▼
 Consumer (loop, poll every 5s)
@@ -36,14 +36,56 @@ Each job has a unique key preventing duplicates:
 jira:{type}:{issue_key}:{time_window|comment_id}
 ```
 
-`INSERT IGNORE` ensures the same task isn't queued twice within a time window.
+The unique key on `idempotency_key` ensures the same task isn't queued twice within a time
+window. The publisher checks with a `SELECT` first and only then inserts, catching the
+`IntegrityError` a racing insert raises: `INSERT IGNORE` would burn an auto_increment id on
+every rejected duplicate (see DECISIONS.md, AG-22).
+
+### Two entry points, one insert
+
+| Function | Returns | Also writes |
+|---|---|---|
+| `publisher.publish(...)` | `True` if inserted, `False` if duplicate | nothing |
+| `publish_service.publish_job(...)` | the job **id**, existing or new | a `job.queued` row in `job_event_outbox`, **in the insert's transaction** |
+
+A caller that must then point a row at the job (a conversation message waiting on its turn)
+needs the id, and needs the announcement to commit with the job or not at all. Both share
+`publisher.insert_job()`, so a job row is still born in exactly one place.
+
+## Job Types
+
+The four built-ins are `cron`, `todo`, `followup` and `blank`. A module may add its own —
+`job.type` is a `VARCHAR(32)`, not an enum (migration `043`).
+
+```jsonc
+// <module>/di.json
+{
+  "job_types": ["conversation"],
+  "workflows": [{ "type": "conversation", "class": "src.workflow.ConversationWorkflow" }]
+}
+```
+
+- **Grammar:** lowercase letters and underscores, starting with a letter, at most 32 characters.
+- **`job_types` declares; `workflows` binds.** A `workflows` entry whose `type` is a built-in
+  *replaces* that built-in's workflow (`modules/jira_periodic_tasks` does this for `cron`) — it
+  declares nothing. Only `job_types` adds a value to the vocabulary.
+- **Collisions are refused at `module:validate`:** a built-in's value, or a value another enabled
+  module already declares. The load order would otherwise decide whose workflow runs a job.
+- **Unknown at runtime fails closed** with `JobTypeUnknown`, the same shape `get_channel()` raises
+  for an unregistered source.
+- **Compatibility:** a built-in resolves to its `AgentType` member, so `job.type == AgentType.CRON`,
+  its hash and its use as a dict key are all unchanged. A module type resolves to a `ModuleJobType`
+  value object with the same `.value` attribute, so `job.type.value` works for both.
+- **Disabling the module removes the type.** The registry is cleared on every `bootstrap()`, which
+  the consumer re-runs each poll interval when idle, so a disabled module leaves nothing behind.
 
 ## Job States
 
 ```
 TODO → RUNNING → SUCCESS
                 → TODO (retry)
-                → DEAD (max retries)
+                → TODO (wait for a credential, attempt refunded)
+                → DEAD (max retries, or a credential wait older than 24 h)
 ```
 
 | State | Description |
@@ -59,11 +101,18 @@ TODO → RUNNING → SUCCESS
 - **Max attempts:** 3
 - **Backoff:** exponential (1 min → 5 min → 30 min)
 - **Non-retryable errors** → immediately DEAD (e.g., invalid issue key)
+- **Process crash** → a run that stops with a plain crash after it filed its session is resumed once in the same attempt (see [runner.md](runner.md#crash-handling)). Only a second crash spends an attempt.
+- **Pool wait** → when the whole credential pool is throttled or busy, the job goes back to `TODO` for the time the pool recovers. The attempt is refunded and the capabilities are kept.
+- **Credential wait** → when no credential can serve the run (none enabled, or every one errored, expired or throttled, also after an auth failure removed the last healthy one), the job goes back to `TODO` with `error_class = 'CredentialsUnavailableError'`. It asks the pool again after 15 minutes (`AUTH_WAIT_RETRY`), with the attempt refunded. A `credential:register` or `credential:refresh` (and a panel re-login) wakes up to 200 waiting jobs at once, lowest id first (the `core` module observer). The wake does not filter by credential scope: a woken job of another pool asks the pool once and waits again. A job whose `created_at` is more than 24 hours ago goes `DEAD` (`job_dead_after`) instead of waiting again.
 - **Blocked verdict** → immediately `FAILED` (no retry), with an admin alert instead of a dead-letter. A verification observer sets `Verdict(blocked=True)` when the veto cause is a deterministic config/infra fault (a missing tool credential, a broken MCP config): retrying re-runs the full LLM against an unchanged world for the same result, so it stops after the first attempt and the failure is framed as a deployment fault, not an agent fault. It lands in `FAILED` (not `DEAD`) so ops can tell a config fault apart from genuine agent exhaustion.
 
 ## Concurrency & Per-Run Isolation (Phase 9.5)
 
 The consumer runs a bounded thread pool (`AGENTO_CONSUMER_MAX_WORKERS`). Each job gets an isolated run directory with freshly generated config files (`.claude.json`, `.mcp.json`, `AGENTS.md`, `SOUL.md`), eliminating the shared-file corruption that previously forced `concurrency=1`.
+
+**Database connections.** The consumer borrows connections from a pool (`db.pooled`). The pool keeps at most `AGENTO_CONSUMER_MAX_WORKERS` idle connections. When none is idle, it opens a new one; it never waits. The pool checks each connection at checkout and rolls it back at return. Code that runs `GET_LOCK` or `SET SESSION` must not use the pool, because both outlive the checkout (a test enforces this). The consumer renews refresh leases once per poll interval, and it runs the build freshness check at most once per poll interval for each agent_view. So a config change reaches new runs within one poll interval.
+
+**Sizing.** `AGENTO_CONSUMER_MAX_WORKERS` stays 10 by default. To run 200 jobs at the same time, set it to 200. MySQL `max_connections` must be larger than the peak: about one connection per running job, plus the toolbox, `web` and the CLI. The compose template sets `--max-connections=600`, which is enough for 200 workers. The benchmark `tests/integration/test_orchestration_scale.py` measures connections per job and `Max_used_connections`.
 
 Jobs are dequeued by priority: `ORDER BY priority DESC, created_at ASC`. Priority is stamped at publish time from scoped config path `agent_view/scheduling/priority` (0-100, default 50).
 
@@ -112,6 +161,7 @@ job_publish_after → job_claim_after → job_succeed_after
 |-----------|------|
 | Consumer loop | [src/agento/framework/consumer.py](../../src/agento/framework/consumer.py) |
 | Publisher | [src/agento/framework/publisher.py](../../src/agento/framework/publisher.py) |
+| Publishing service (job id + `job.queued`) | [src/agento/framework/publish_service.py](../../src/agento/framework/publish_service.py) |
 | Job models | [src/agento/framework/job_models.py](../../src/agento/framework/job_models.py) |
 | Harness contract (runner, command builder, workspace adapter) | [src/agento/framework/harness/](../../src/agento/framework/harness/) |
 | Event data classes | [src/agento/framework/events.py](../../src/agento/framework/events.py) |

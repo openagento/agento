@@ -69,7 +69,7 @@ function openPrs(fetchSpy, { cfg = CFG, agentViewMeta = { id: 1, code: 'dev' }, 
 }
 
 // The scope is the capability's, never the body's: every call carries a verified capability.
-const cap = (agentViewId = 1) => ({ kind: 'internal_rest', agentViewId, jobId: null });
+const cap = (agentViewId = 1) => ({ kind: 'internal_rest', agent_view_id: agentViewId, job_id: null });
 
 async function callOpenPrs(routes, { body = { lane: 'changes' }, capability = cap(), ...opts } = {}) {
   const fetchSpy = makeFetch(routes);

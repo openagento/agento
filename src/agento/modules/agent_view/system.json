@@ -15,7 +15,11 @@
   "model": {
     "type": "string",
     "label": "Agent model",
-    "description": "Model ID passed to the harness CLI. Claude: claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 (aliases: opus, sonnet, haiku). Codex: gpt-5.4 | gpt-5.4-mini. Pi: an EXACT catalogue id (e.g. anthropic/claude-sonnet-4.5) \u2014 Pi resolves an unmatched name by silent substring matching, so Agento fails the run on any mismatch; see docs/modules/pi.md."
+    "description": "Model ID passed to the harness CLI. Claude: claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 (aliases: opus, sonnet, haiku). Codex: gpt-5.4 | gpt-5.4-mini. Pi: an EXACT catalogue id (e.g. anthropic/claude-sonnet-4.5) \u2014 Pi resolves an unmatched name by silent substring matching, so Agento fails the run on any mismatch; see docs/modules/pi.md. Press t (or run config:test agent_view/model) to check the harness, its installed CLI, the provider, the credential and the model together.",
+    "tester": {
+      "kind": "local",
+      "class": "src.testers.harness_chain.HarnessChainTester"
+    }
   },
   "provider_options/base_url": {
     "type": "string",

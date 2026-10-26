@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { tempModulesDir, writeModule } from './module-dir.js';
 
 // Harness mirrors config-loader.test.js's "registerTools integration" block: a real temp
 // module dir with module.json + toolbox/*.js, with db/log/adapters mocked out.
@@ -9,8 +10,7 @@ describe('registerTools: requires chain in the tool gate', () => {
   let tmpDir;
 
   beforeEach(() => {
-    tmpDir = path.join(import.meta.dirname, '_test_req_' + Date.now() + '_' + Math.random().toString(36).slice(2));
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = tempModulesDir('req');
     process.env.CORE_MODULES_DIR = tmpDir;
     process.env.USER_MODULES_DIR = path.join(tmpDir, '_nonexistent_');
   });
@@ -32,26 +32,23 @@ describe('registerTools: requires chain in the tool gate', () => {
    */
   async function runRegisterTools({ modules, dbValues = {} }) {
     for (const mod of modules) {
-      const dir = path.join(tmpDir, mod.name);
-      fs.mkdirSync(path.join(dir, 'toolbox'), { recursive: true });
-      fs.writeFileSync(
-        path.join(dir, 'module.json'),
-        JSON.stringify({ name: mod.name, version: '1.0.0', description: 'd', tools: mod.tools }),
-      );
       const respect = mod.respectGate === undefined ? true : mod.respectGate;
       // A module that consults the gate (the normal case) vs one that registers blindly
       // (what drift detection exists for).
-      fs.writeFileSync(
-        path.join(dir, 'toolbox', 'tools.js'),
+      writeModule(tmpDir, mod.name, {
+        'module.json': { name: mod.name, version: '1.0.0', description: 'd', tools: mod.tools },
+        'toolbox/tools.js':
         `export function register(server, { isToolEnabled }) {\n` +
+        (mod.throws ? `  throw new Error('boom');\n` : '') +
         `  const names = ${JSON.stringify(mod.registers)};\n` +
         `  const respect = ${respect};\n` +
         `  for (const name of names) {\n` +
         `    if (respect && isToolEnabled && !isToolEnabled(name)) continue;\n` +
         `    server.tool(name, 'desc', {}, async () => ({ content: [] }));\n` +
         `  }\n` +
+        (mod.throwsAfter ? `  throw new Error('boom');\n` : '') +
         `}\n`,
-      );
+      });
     }
 
     const rows = Object.entries(dbValues).map(([p, value]) => ({ path: p, value, encrypted: 0 }));
@@ -227,5 +224,38 @@ describe('registerTools: requires chain in the tool gate', () => {
       dbValues: { 'tools/a/is_enabled': '1', 'tools/b/is_enabled': '1' },
     });
     expect(registered).not.toContain('a');
+  });
+
+  // The dispatcher's half of the same gate: one predicate, re-run per call against the
+  // overrides read at that call.
+  it('returns the registry and the same requires predicate for per-call dispatch', async () => {
+    const { tools, isEnabled } = await runRegisterTools({
+      modules: [{ name: 'jira', tools: MASTERED, registers: ['jira_search'] }],
+      dbValues: { 'tools/jira/is_enabled': '1', 'tools/jira_search/is_enabled': '1' },
+    });
+    expect([...tools.keys()]).toEqual(['jira_search']);
+    expect(tools.get('jira_search').module).toBe('jira');
+    const on = { 'tools/jira/is_enabled': { value: '1' }, 'tools/jira_search/is_enabled': { value: '1' } };
+    expect(isEnabled('jira_search', on)).toBe(true);
+    expect(isEnabled('jira_search', { ...on, 'tools/jira/is_enabled': { value: '0' } })).toBe(false);
+    expect(isEnabled('undeclared_tool', { 'tools/undeclared_tool/is_enabled': { value: '1' } })).toBe(false);
+  });
+
+  it('reports the tools of a module whose register() threw as unavailable, not unknown', async () => {
+    const { unavailableTools, tools } = await runRegisterTools({
+      modules: [{ name: 'jira', tools: MASTERED, registers: ['jira_search'], throws: true }],
+      dbValues: { 'tools/jira/is_enabled': '1', 'tools/jira_search/is_enabled': '1' },
+    });
+    expect(tools.size).toBe(0);
+    expect([...unavailableTools].sort()).toEqual(['jira', 'jira_get_issue', 'jira_search']);
+  });
+
+  it('keeps every tool of a module that registered some and then threw unavailable', async () => {
+    const { unavailableTools, tools } = await runRegisterTools({
+      modules: [{ name: 'jira', tools: MASTERED, registers: ['jira_search'], throwsAfter: true }],
+      dbValues: { 'tools/jira/is_enabled': '1', 'tools/jira_search/is_enabled': '1' },
+    });
+    expect(tools.has('jira_search')).toBe(true);
+    expect(unavailableTools.has('jira_search')).toBe(true);
   });
 });

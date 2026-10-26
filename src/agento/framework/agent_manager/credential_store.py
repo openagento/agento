@@ -10,6 +10,15 @@ import pymysql
 from .errors import CredentialLeasedError
 from .models import CredentialRecord, encrypt_credentials
 
+# Initial TTL of the lease taken when a refresh-imminent credential is claimed: by a job
+# (``Consumer._refresh_claimed_credential``) or by ``credential:limits`` for an expired one.
+# It covers only the out-of-band refresh that follows, which is not renewed, so waiters'
+# ``pool_retry_at`` stays near. Timing contract (a guard test pins it): each adapter's
+# refresh timeout (60 s) plus the runner client's 30 s slack < this < the consumer's
+# _DEFAULT_LEASE_TTL_SECONDS (300 s, the renewed fallback lease for a harness that cannot
+# refresh out of band).
+CLAIM_LEASE_TTL_SECONDS = 120
+
 
 @dataclass(frozen=True)
 class RefreshLease:
@@ -119,6 +128,47 @@ def register_credential(
     return CredentialRecord.from_row(row)
 
 
+def register_credential_and_dispatch(
+    conn: pymysql.Connection,
+    scope: str,
+    label: str,
+    credentials: dict,
+    token_limit: int = 0,
+    type: str = "oauth",
+    logger: logging.Logger | None = None,
+) -> CredentialRecord:
+    """``register_credential``, commit, then dispatch ``credential_register_after``.
+
+    The one path for every caller that registers a credential (EVT-2): ``credential:register``
+    and the panel re-login worker. A write the caller made on ``conn`` before this call
+    commits with the credential. On ``CredentialLeasedError`` it rolls back (that write too)
+    and raises.
+    """
+    from ..event_manager import get_event_manager
+    from ..events import CredentialRegisteredEvent
+
+    try:
+        credential = register_credential(
+            conn, scope=scope, label=label, credentials=credentials,
+            token_limit=token_limit, type=type, logger=logger,
+        )
+    except CredentialLeasedError:
+        conn.rollback()
+        raise
+    conn.commit()
+    get_event_manager().dispatch(
+        "credential_register_after",
+        CredentialRegisteredEvent(
+            scope=scope,
+            credential_id=credential.id,
+            label=credential.label,
+            credentials=credentials,
+            type=credential.type,
+        ),
+    )
+    return credential
+
+
 def update_refreshed_credentials(
     conn: pymysql.Connection,
     credential_id: int,
@@ -193,13 +243,27 @@ def deregister_credential(
     return found
 
 
+_NO_PAYLOAD_COLUMNS = (
+    "id, agent_type, scope, type, label, token_limit, enabled, status, priority, error_msg, "
+    "error_source, expires_at, throttled_until, lease_owner, leased_until, used_at, created_at, updated_at, "
+    "limits, limits_at"
+)
+
+
 def list_credentials(
     conn: pymysql.Connection,
     scope: str | None = None,
     enabled_only: bool = True,
+    *,
+    include_credentials: bool = True,
 ) -> list[CredentialRecord]:
-    """List credentials, optionally filtered by scope and enabled status."""
-    sql = "SELECT * FROM credential WHERE 1=1"
+    """List credentials, optionally filtered by scope and enabled status.
+
+    ``include_credentials=False`` never reads the encrypted payload, so nothing is
+    decrypted and ``credentials`` is ``None``: the form for a reader that shows a row's
+    status only (the admin screens: no secret goes to the browser, D-PANEL-ADMIN-1).
+    """
+    sql = f"SELECT {'*' if include_credentials else _NO_PAYLOAD_COLUMNS} FROM credential WHERE 1=1"
     params: list = []
     if scope is not None:
         sql += " AND scope = %s"
@@ -228,9 +292,14 @@ def select_credential(
     conn: pymysql.Connection,
     scope: str,
     lease: RefreshLease | None = None,
+    *,
+    credential_id: int | None = None,
 ) -> CredentialRecord | None:
     """Claim the least-recently-used healthy credential for ``scope`` and stamp
     ``used_at=UTC_TIMESTAMP(6)`` atomically.
+
+    ``credential_id`` pins the claim to that one row (a test run that must use a given
+    credential); every health and lease filter still applies to it.
 
     Filters: ``enabled=TRUE``, ``status='ok'``, ``expires_at`` either NULL or in
     the future (credential still valid), and ``throttled_until`` either NULL or in
@@ -269,12 +338,13 @@ def select_credential(
                AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
                AND (throttled_until IS NULL OR throttled_until <= UTC_TIMESTAMP())
                AND (leased_until IS NULL OR leased_until <= UTC_TIMESTAMP())
+               AND (%s IS NULL OR id = %s)
              ORDER BY priority ASC,
                       used_at IS NULL DESC, used_at ASC, id ASC
              LIMIT 1
              FOR UPDATE
             """,
-            (scope,),
+            (scope, credential_id, credential_id),
         )
         row = cur.fetchone()
         if row is None:
@@ -454,6 +524,30 @@ def release_credential_lease(
             f"released={released} woken_jobs={woken}"
         )
     return released
+
+
+def claim_credential_lease(
+    conn: pymysql.Connection,
+    credential_id: int,
+    lease_owner: str,
+    ttl_seconds: int,
+) -> bool:
+    """Take the refresh lease on one credential by id, outside a job. Returns True when held.
+
+    Refuses a row with an unexpired lease of any owner (a job may be refreshing it), and a
+    disabled or ``error`` row. Unlike ``select_credential`` it does not stamp ``used_at``:
+    this is not a run, so the pool's LRU order must not move. The caller commits, then
+    releases with ``release_credential_lease`` under the same owner.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE credential SET lease_owner = %s, "
+            "leased_until = UTC_TIMESTAMP() + INTERVAL %s SECOND "
+            "WHERE id = %s AND enabled = TRUE AND status = 'ok' "
+            "AND (leased_until IS NULL OR leased_until <= UTC_TIMESTAMP())",
+            (lease_owner, int(ttl_seconds), credential_id),
+        )
+        return cur.rowcount > 0
 
 
 def renew_credential_leases(

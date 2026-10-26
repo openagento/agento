@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agento.framework.cli._project import EXEC_SERVICE
 from agento.framework.cli.run import RunCommand, _load_stream_renderer
 
 _INTERACTIVE_CLAUDE = ["claude"]
@@ -25,6 +26,11 @@ _HEADLESS_CODEX = [
     "--skip-git-repo-check",
     "--model", "gpt-5.4",
 ]
+
+
+def test_agento_run_execs_into_the_first_runner():
+    """The sandbox service is gone; runner-1 has the same image, /workspace and no secret."""
+    assert EXEC_SERVICE == "runner-1"
 
 
 def _base_runtime(harness="claude", model="claude-opus-4-6", *, prompt=False):
@@ -167,7 +173,7 @@ class TestRunCommand:
         assert argv[:4] == ["docker", "compose", "-f", str(compose)]
         assert "exec" in argv
         assert "-it" in argv
-        assert "sandbox" in argv
+        assert EXEC_SERVICE in argv
         assert argv[-1] == "claude"
         assert "HOME=/workspace/artifacts/it/dev_01/run" in argv
         # cwd is the per-run artifacts dir (mirrors the consumer's job layout).
@@ -233,9 +239,9 @@ class TestRunCommand:
 
         argv = mock_run.call_args.args[0]
         assert "-T" in argv and "-it" not in argv
-        # After "sandbox" comes the ssh-prelude wrapper: bash -c <script> <arg0> <cmd...>
+        # After the service comes the ssh-prelude wrapper: bash -c <script> <arg0> <cmd...>
         # (bash, not sh: the key is delivered through a process substitution)
-        idx = argv.index("sandbox") + 1
+        idx = argv.index(EXEC_SERVICE) + 1
         assert argv[idx:idx + 2] == ["bash", "-c"]
         assert argv[idx + 3] == "agento-ssh-prelude"
         assert argv[idx + 4:] == _HEADLESS_CLAUDE
@@ -255,7 +261,7 @@ class TestRunCommand:
             RunCommand().execute(_make_prompt_args())
         assert exc.value.code == 0
         argv = mock_run.call_args.args[0]
-        idx = argv.index("sandbox") + 1
+        idx = argv.index(EXEC_SERVICE) + 1
         assert argv[idx:idx + 2] == ["bash", "-c"]
         assert argv[idx + 3] == "agento-ssh-prelude"
         assert argv[idx + 4:] == _HEADLESS_CODEX
@@ -272,7 +278,7 @@ class TestRunCommand:
         _, argv = mock_execvp.call_args.args
         u_idx = argv.index("-u")
         assert argv[u_idx + 1] == "agent"
-        assert argv.index("-u") < argv.index("sandbox")
+        assert argv.index("-u") < argv.index(EXEC_SERVICE)
 
     def test_headless_runs_as_agent_user(self, tmp_path):
         project_root, compose = _project_layout(tmp_path)
@@ -289,7 +295,7 @@ class TestRunCommand:
         argv = mock_run.call_args.args[0]
         u_idx = argv.index("-u")
         assert argv[u_idx + 1] == "agent"
-        assert argv.index("-u") < argv.index("sandbox")
+        assert argv.index("-u") < argv.index(EXEC_SERVICE)
 
     def test_headless_propagates_exit_code(self, tmp_path):
         project_root, compose = _project_layout(tmp_path)
@@ -434,7 +440,7 @@ class TestFetchRuntime:
         assert mock_run.call_args.args[0] == [
             "docker", "compose", "-f", "/x/docker-compose.yml",
             "exec", "-u", "root", "-T", "cron",
-            "/opt/cron-agent/launch.sh", "--store", "--",
+            "/opt/cron-agent/launch.sh", "--",
             "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
         ]
 
@@ -457,7 +463,7 @@ class TestFetchRuntime:
         assert mock_run.call_args.args[0] == [
             "docker", "compose", "-f", "/x/docker-compose.yml",
             "exec", "-u", "root", "-T", "cron",
-            "/opt/cron-agent/launch.sh", "--store", "--",
+            "/opt/cron-agent/launch.sh", "--",
             "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
             "--prompt", "hello", "--yolo",
         ]
@@ -787,3 +793,30 @@ class TestLoadStreamRenderer:
 
     def test_unimportable_path_degrades_to_none(self):
         assert _load_stream_renderer({"stream_renderer": "agento.nope:Missing"}) is None
+
+
+def test_pins_typed_after_the_code_leave_the_prompt():
+    """`agento run dev --harness pi --model m --credential=6 hi --model x` — only the
+    leading options are pins; the same words later belong to the prompt."""
+    from agento.framework.cli.run import _take_leading_options
+
+    pins = {"harness": None, "model": None, "credential": None}
+    rest = _take_leading_options(
+        ["--harness", "pi", "--model", "m", "--credential=6", "hi", "--model", "x"], pins,
+    )
+    assert pins == {"harness": "pi", "model": "m", "credential": "6"}
+    assert rest == ["hi", "--model", "x"]
+
+
+def test_pins_reach_prepare_run(monkeypatch):
+    from agento.framework.cli import run
+
+    seen = {}
+    monkeypatch.setattr(
+        run.subprocess, "run",
+        lambda cmd, **_: seen.setdefault("cmd", cmd) and argparse.Namespace(
+            returncode=0, stdout="{}", stderr="",
+        ),
+    )
+    run._fetch_runtime(["-f", "x"], "dev", pins={"harness": "pi", "model": None, "credential": 6})
+    assert seen["cmd"][-4:] == ["--harness", "pi", "--credential", "6"]

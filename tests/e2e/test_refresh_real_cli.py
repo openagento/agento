@@ -5,7 +5,7 @@ the running dev stack and moves its stored expiry INTO the refresh horizon (10 m
 now): Claude's ``claudeAiOauth.expiresAt``; for Codex the ``exp`` claim of the access-token
 JWT. It then takes the short claim lease and runs the consumer's own refresh step
 (``Consumer._refresh_claimed_credential``) in the cron container, where the real
-credential lives. It asserts what AG-65 promises: the CLI refreshed, the rotation was
+credential lives; the CLI itself starts in a runner. It asserts what AG-65 promises: the CLI refreshed, the rotation was
 persisted to the same row, the row is no longer refresh-imminent, and the lease is free.
 
 The selection by ``resolve()`` is not exercised here — the pool may prefer an API key —
@@ -17,20 +17,21 @@ the new token lands in the row the credential came from; every OTHER copy of tha
 registered only in this stack. A rotation is never undone. Only a run in which the CLI
 did NOT rotate restores the original payload (the stored expiry was the only change).
 
-Gated like the other stack e2e tests: ``AGENTO_E2E=1 bin/test``. Needs the dev stack up
-(``docker compose -f docker/docker-compose.dev.yml up -d``) with a running ``cron``.
+Gated like the other stack e2e tests: ``AGENTO_E2E=1 bin/test``. Needs the stack under test
+(``AGENTO_E2E_PROJECT_ROOT``, default this checkout's dev stack) up with a running ``cron``.
 """
 from __future__ import annotations
 
 import json
 import os
 import subprocess
-from pathlib import Path
 
 import pytest
 
-_PROJECT_ROOT = Path(__file__).parents[2]
-_COMPOSE = ["docker", "compose", "-f", str(_PROJECT_ROOT / "docker" / "docker-compose.dev.yml")]
+from agento.framework.cli._project import compose_file_flags
+from tests.e2e._stack import PROJECT_ROOT as _PROJECT_ROOT
+
+_COMPOSE = ["docker", "compose", *compose_file_flags(_PROJECT_ROOT)]
 _E2E_ENABLED = os.environ.get("AGENTO_E2E") == "1"
 
 
@@ -44,6 +45,9 @@ def _cron_running() -> bool:
 
 pytestmark = [
     pytest.mark.e2e,
+    # A rotation must not race a run that uses the same token: run alone, after the rest
+    # (`pytest -m rotates_credentials -n 0`).
+    pytest.mark.rotates_credentials,
     pytest.mark.skipif(
         not _E2E_ENABLED,
         reason="set AGENTO_E2E=1 to run (rotates a real OAuth refresh token)",
@@ -62,10 +66,10 @@ from types import SimpleNamespace
 
 from agento.framework.agent_manager.credential_resolver import CredentialResolver
 from agento.framework.agent_manager.credential_store import (
-    get_credential, release_credential_lease, update_refreshed_credentials,
+    CLAIM_LEASE_TTL_SECONDS, get_credential, release_credential_lease, update_refreshed_credentials,
 )
 from agento.framework.bootstrap import bootstrap
-from agento.framework.consumer import _CLAIM_LEASE_TTL_SECONDS, Consumer
+from agento.framework.consumer import Consumer
 from agento.framework.consumer_config import ConsumerConfig
 from agento.framework.database_config import DatabaseConfig
 from agento.framework.db import get_connection
@@ -126,7 +130,7 @@ old_access, old_refresh = tokens_of(original)
 
 update_refreshed_credentials(conn, cred_id, near_expiry(original))
 conn.commit()
-resolver = CredentialResolver(lease_ttl_seconds=_CLAIM_LEASE_TTL_SECONDS)
+resolver = CredentialResolver(lease_ttl_seconds=CLAIM_LEASE_TTL_SECONDS)
 out["imminent_before"] = resolver.refresh_imminent(get_credential(conn, cred_id))
 
 # The claim lease, exactly as select_credential takes it in its selecting UPDATE.
@@ -134,7 +138,7 @@ with conn.cursor() as cur:
     cur.execute(
         "UPDATE credential SET used_at = UTC_TIMESTAMP(6), lease_owner = %s, "
         "leased_until = UTC_TIMESTAMP() + INTERVAL %s SECOND WHERE id = %s",
-        (OWNER, _CLAIM_LEASE_TTL_SECONDS, cred_id),
+        (OWNER, CLAIM_LEASE_TTL_SECONDS, cred_id),
     )
 conn.commit()
 claimed = get_credential(conn, cred_id)

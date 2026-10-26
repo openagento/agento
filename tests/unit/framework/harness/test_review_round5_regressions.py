@@ -132,7 +132,6 @@ class TestPromptNeverEntersLogsAtAnyLevel:
 
     def _runner(self):
         runner = make_runner("claude", credential=None, credential_required=False)
-        runner._record_usage = MagicMock()
         runner.logger = logging.getLogger("round5-log-test")
         runner._execute_process = MagicMock(
             return_value=MagicMock(

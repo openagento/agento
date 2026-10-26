@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+from agento.framework.cli._project import EXEC_SERVICE
 from agento.framework.cli.doctor import (
     _check_binary,
     _check_docker_compose,
@@ -68,6 +69,8 @@ class TestCheckSandboxCliPin:
         assert ok is True
         assert "2.1.150" in info
         assert "~2.1.142" in info
+        # The runner runs the agent CLIs; there is no sandbox service to exec into.
+        assert mock_run.call_args.args[0][-3:] == [EXEC_SERVICE, "claude", "--version"]
 
     @patch("agento.framework.cli.doctor.subprocess.run")
     def test_below_floor_reports_drift(self, mock_run, tmp_path: Path):
@@ -81,6 +84,8 @@ class TestCheckSandboxCliPin:
         )
         assert ok is False
         assert "rebuild" in info.lower()
+        assert "agento upgrade" in info
+        assert "build sandbox" not in info
 
     @patch("agento.framework.cli.doctor.subprocess.run")
     def test_minor_jump_reports_drift(self, mock_run, tmp_path: Path):
@@ -96,7 +101,7 @@ class TestCheckSandboxCliPin:
         assert "2.2.0" in info
 
     @patch("agento.framework.cli.doctor.subprocess.run")
-    def test_sandbox_not_running_reports_ok(self, mock_run, tmp_path: Path):
+    def test_runner_not_running_reports_ok(self, mock_run, tmp_path: Path):
         proj = self._seed_project(tmp_path, "CLAUDE_CODE_VERSION=~2.1.142\n")
         # docker compose exec returns non-zero when the container is down.
         mock_run.return_value = type(

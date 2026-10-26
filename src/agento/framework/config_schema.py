@@ -6,6 +6,8 @@ flags default to True (backward compatible — field editable at any scope).
 """
 from __future__ import annotations
 
+import math
+
 from .scoped_config import Scope
 
 _SCOPE_TO_FLAG: dict[str, str] = {
@@ -48,6 +50,13 @@ def is_toolbox_only(field_schema: dict) -> bool:
     return field_schema.get("access") == "toolbox_only"
 
 
+def is_secret_field(field_schema) -> bool:
+    """True for a field that no reader outside the toolbox shows, and that ``web`` never writes:
+    a schema that is not an object (nothing proves it plain), ``obscure`` (a private-key field is
+    one too), or ``toolbox_only``."""
+    return not isinstance(field_schema, dict) or field_schema.get("type") == "obscure" or is_toolbox_only(field_schema)
+
+
 def env_allowed(field_schema: dict) -> bool:
     """True when a ``CONFIG__*`` environment variable may supply this field.
 
@@ -88,3 +97,37 @@ def restricted_schema(path: str) -> dict | None:
 def clear_restricted_fields() -> None:
     """Test-only: drop the remembered registry."""
     _RESTRICTED_FIELDS.clear()
+
+
+def numeric_bound_error(field_name: str, field_def: dict, value) -> str | None:
+    """The bound violation in ``value`` for this field, or None (PRD E3-E5 §3.3).
+
+    One rule, three callers: ``config:set``, ``module:validate`` (the
+    ``config.json`` default) and the resolver's ENV/DB substitution. A second copy of
+    the comparison is a second place for the two to disagree.
+    """
+    minimum = field_def.get("min")
+    maximum = field_def.get("max")
+    try:
+        number = int(str(value).strip()) if field_def.get("type") == "integer" else float(str(value).strip())
+    except (TypeError, ValueError):
+        # Only a field that declares a bound is refused for being unparseable: an
+        # unbounded numeric field has never been checked and is not this change's to break.
+        if minimum is None and maximum is None:
+            return None
+        return f"'{value}' is not a number for field '{field_name}'"
+    if (minimum is not None or maximum is not None) and not math.isfinite(number):
+        # NaN compares False against BOTH bounds, so a range check alone lets it through
+        # and the field ends up holding a value no comparison will ever refuse again;
+        # an infinity passes a one-sided bound the same way. A bound that cannot refuse
+        # is not a bound (SEC-9), so this is decided before the comparison, not by it.
+        # Gated on a declared bound for the same reason as the unparseable case above:
+        # an unbounded numeric field has never been checked here.
+        return f"'{value}' is not a finite number for field '{field_name}'"
+    if (minimum is not None and number < minimum) or (maximum is not None and number > maximum):
+        # Name the whole allowed range, not only the bound that was crossed: an operator
+        # correcting the value needs to know where the other end is.
+        low = "-inf" if minimum is None else minimum
+        high = "inf" if maximum is None else maximum
+        return f"{number} is outside the allowed range [{low}, {high}] for field '{field_name}'"
+    return None

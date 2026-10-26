@@ -1,0 +1,7 @@
+{
+  "name": "miniapps",
+  "version": "1.0.0",
+  "description": "Miniapps — artifact versions approved per agent view, launched from the panel, that call their approved toolbox tools",
+  "sequence": ["versioned_artifacts", "web"],
+  "order": 110
+}

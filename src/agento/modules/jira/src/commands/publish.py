@@ -16,7 +16,9 @@ from agento.modules.jira.src.toolbox_client import ToolboxClient
 def _todo_requester(builder, issue) -> JobRequester | None:
     change, complete = builder.get_status_change(issue.key, issue.status)  # change None -> no authoritative actor
     author = (change or {}).get("author") or {}
-    if change and author.get("accountId"):                        # `change and` keeps the type-checker happy
+    # the agent itself moves the issue back to To Do when it hands it back with a question
+    by_agent = bool(author.get("accountId")) and author.get("accountId") == builder.config.jira_assignee_account_id
+    if change and author.get("accountId") and not by_agent:       # `change and` keeps the type-checker happy
         return JobRequester(
             key=f"jira:{author['accountId']}",
             email=author.get("emailAddress"),                     # JobRequester normalizes (strip+lower)
@@ -26,10 +28,12 @@ def _todo_requester(builder, issue) -> JobRequester | None:
                   "changelog_id": change.get("id"), "changed_at": change.get("created")},
         )
     if issue.reporter_account_id:  # weaker attribution (reporter != status-changer) - flagged via basis
-        # honest audit: 3 distinct reasons we fell back to the reporter. We only reach this
+        # honest audit: 4 distinct reasons we fell back to the reporter. We only reach this
         # branch when the status_change actor was unusable, so `change` being truthy here means
         # a transition WAS found but its author had no accountId (unattributable actor).
-        if change:
+        if by_agent:
+            fallback_reason = "status_change_by_agent"
+        elif change:
             fallback_reason = "status_change_actor_unavailable"
         elif complete:                                            # full scan, no transition into current status
             fallback_reason = "no_status_transition"
@@ -181,7 +185,7 @@ class PublishCommand:
 
                 # One short-lived capability per view, minted and revoked around this
                 # view's calls — the toolbox derives the view from it.
-                with rest_capability(agent_view_id=av.id, db_config=db_config) as capability_token:
+                with rest_capability(agent_view_id=av.id, subject_id="service:jira", db_config=db_config) as capability_token:
                     if kind == "jira-todo":
                         self._publish_todo_for_agent_view(
                             args, db_config, jira_config, av.id, priority, logger,

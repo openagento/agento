@@ -8,7 +8,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -18,11 +17,15 @@ import pytest
 
 from agento.framework.agent_manager.errors import AuthenticationError, TransientAuthError
 from agento.framework.agent_manager.models import CredentialRecord, CredentialStatus
+from agento.framework.runner import client as runner_client
 from agento.modules.codex.src import config as codex_config
 from agento.modules.codex.src.config import CodexWorkspaceAdapter
 
 _FAKE_CLI = Path(__file__).resolve().parents[3] / "fixtures" / "fake_cli"
 _EPOCH = datetime(2000, 1, 1)
+
+# The CLI starts in a runner (in-process here), never in the consumer.
+pytestmark = pytest.mark.usefixtures("runner_server")
 
 
 def _jwt(exp: float) -> str:
@@ -57,9 +60,7 @@ def _credential(type_: str = "oauth", access: str = _ACC_OLD) -> CredentialRecor
 def run(monkeypatch, tmp_path):
     """Run refresh_credentials with the fake CLI in ``mode``; returns (result, persist mock)."""
     monkeypatch.setenv("PATH", f"{_FAKE_CLI}{os.pathsep}{os.environ['PATH']}")
-    tmp_root = tmp_path / "tmp"
-    tmp_root.mkdir()
-    monkeypatch.setattr(tempfile, "tempdir", str(tmp_root))
+    tmp_root = runner_client.shared_tmp()
     persist = MagicMock()
     monkeypatch.setattr(codex_config, "update_refreshed_credentials", persist)
 
@@ -92,6 +93,7 @@ def test_rotation_is_persisted(run):
 @pytest.mark.parametrize(
     ("mode", "access"),
     [("access_only", _ACC_OLD), ("last_refresh_only", "acc-OLD")],  # the marker is the opaque path's
+    ids=["access_only", "last_refresh_only"],  # _ACC_OLD holds time.time(): xdist workers need equal ids
 )
 def test_a_partial_rotation_is_persisted(run, mode, access):
     refreshed, persist = run(mode, _credential(access=access))
@@ -107,7 +109,7 @@ def test_cli_that_did_not_rotate_returns_false_and_persists_nothing(run):
 
 @pytest.mark.parametrize("mode", ["rotate_then_fail", "rotate_then_hang"])
 def test_rotation_is_persisted_even_when_the_call_then_fails(run, monkeypatch, mode):
-    monkeypatch.setattr(codex_config, "_REFRESH_TIMEOUT_SECONDS", 2)
+    monkeypatch.setattr(codex_config, "_REFRESH_TIMEOUT_SECONDS", 1)  # room for the fake CLI to rotate
     refreshed, persist = run(mode)
     assert refreshed is True
     assert _persisted_tokens(persist)["refresh_token"] == "rt-NEW"
@@ -163,7 +165,7 @@ def test_permanent_auth_error_is_classified(run):
 
 
 def test_hang_without_rotation_raises_runtime_error(run, monkeypatch):
-    monkeypatch.setattr(codex_config, "_REFRESH_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(codex_config, "_REFRESH_TIMEOUT_SECONDS", 0.1)
     with pytest.raises(RuntimeError, match="TimeoutExpired"):
         run("hang")
 
@@ -176,11 +178,11 @@ def test_api_key_credential_is_not_refreshed(run, monkeypatch, tmp_path):
     assert not dump.exists()  # nothing was spawned
 
 
-def test_spawned_cli_gets_no_credential_store_env(run, monkeypatch, tmp_path):
+def test_spawned_cli_gets_its_own_home(run, monkeypatch, tmp_path):
+    """The store never reaches the CLI because the runner holds none
+    (``runner/test_runner_boundary.py``); this pins the HOME it is given."""
     dump = tmp_path / "env"
     monkeypatch.setenv("FAKE_CLI_ENV_DUMP", str(dump))
-    monkeypatch.setenv("MYSQL_PASSWORD", "x")
     run("rotate")
     names = dump.read_text().split("\n")
-    assert "MYSQL_PASSWORD" not in names
     assert "HOME" in names

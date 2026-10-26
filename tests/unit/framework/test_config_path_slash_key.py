@@ -37,6 +37,8 @@ def modules_dir(tmp_path, monkeypatch):
     # agent_view-like module with slash-containing schema keys (system.json)
     av_dir = core_dir / "agent_view"
     av_dir.mkdir()
+    # A directory is a module only with a manifest — that is what the one discovery selects.
+    (av_dir / "module.json").write_text(json.dumps({"name": "agent_view"}))
     (av_dir / "system.json").write_text(json.dumps({
         "identity/ssh_private_key": {
             "type": "obscure",
@@ -75,44 +77,24 @@ def modules_dir(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # _parse_config_path
 # ---------------------------------------------------------------------------
-class TestParseConfigPath:
-    def test_two_part_module_field(self):
-        assert _parse_config_path("jira/jira_token") == ("jira", None, "jira_token")
-
-    def test_three_part_slash_key(self):
-        assert _parse_config_path("agent_view/identity/ssh_private_key") == (
-            "agent_view", None, "identity/ssh_private_key",
-        )
-
-    def test_four_part_tool_field(self):
-        assert _parse_config_path("my_app/tools/mysql/pass") == (
-            "my_app", "mysql", "pass",
-        )
-
-    def test_no_slash_returns_none(self):
-        assert _parse_config_path("agent_view") is None
-
-    def test_empty_returns_none(self):
-        assert _parse_config_path("") is None
-
-    def test_trailing_slash_returns_none(self):
-        assert _parse_config_path("agent_view/") is None
-        assert _parse_config_path("agent_view/identity/") is None
-
-    def test_three_part_with_literal_tools_is_malformed(self):
-        # "module/tools/x" is too short for tool form (needs 4 parts), and the
-        # literal `tools` prefix means it's not a normal slash-key. Reject.
-        assert _parse_config_path("my_app/tools/pass") is None
-
-    def test_tools_legacy_is_slash_key(self):
-        # Only exact `tools` triggers the tool form. `tools_legacy` is a slash-key.
-        assert _parse_config_path("my_app/tools_legacy/foo") == (
-            "my_app", None, "tools_legacy/foo",
-        )
-
-    def test_five_part_tool_field_rejected(self):
-        # Tool form is strictly 4-part; deeper nesting under tools/ is malformed.
-        assert _parse_config_path("my_app/tools/mysql/inner/field") is None
+@pytest.mark.parametrize(("path", "expected"), [
+    ("jira/jira_token", ("jira", None, "jira_token")),
+    ("agent_view/identity/ssh_private_key", ("agent_view", None, "identity/ssh_private_key")),
+    ("my_app/tools/mysql/pass", ("my_app", "mysql", "pass")),
+    # Only exact `tools` triggers the tool form. `tools_legacy` is a slash-key.
+    ("my_app/tools_legacy/foo", ("my_app", None, "tools_legacy/foo")),
+    ("agent_view", None),
+    ("", None),
+    ("agent_view/", None),
+    ("agent_view/identity/", None),
+    # "module/tools/x" is too short for tool form (needs 4 parts), and the
+    # literal `tools` prefix means it's not a normal slash-key. Reject.
+    ("my_app/tools/pass", None),
+    # Tool form is strictly 4-part; deeper nesting under tools/ is malformed.
+    ("my_app/tools/mysql/inner/field", None),
+])
+def test_parse_config_path(path, expected):
+    assert _parse_config_path(path) == expected
 
 
 # ---------------------------------------------------------------------------

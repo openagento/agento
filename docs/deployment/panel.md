@@ -1,0 +1,140 @@
+# Running the panel
+
+The panel is the HTTP API that the `web` service serves behind `proxy` (E2 ships no frontend yet;
+see [ROADMAP.md](../../ROADMAP.md)). This page is
+for the operator who deploys it. The design is in
+[../architecture/panel.md](../architecture/panel.md).
+
+## Restriction: agents share one UID (read this first)
+
+All agent runs use the same `agent` UID and the same workspace mount. A shell-capable agent can
+read another run's directory, including that run's live toolbox capability. RBAC controls what
+the panel **API** lets a user do. It does not control what a process can read from the shared
+mount.
+
+**Until per-run UID or container isolation exists, expose the panel only where every user is
+trusted with every agent_view that the agents can reach.** Do not use panel roles to separate
+users who must not see each other's agent data. This is an open item in
+[ROADMAP.md](../../ROADMAP.md).
+
+**This covers conversations too.** A thread is owned by a user and readable only by its owner or
+an admin, and the stream re-checks that on every tick — but the agent answering it runs as the same
+`agent` UID, on the same workspace mount, as every other agent_view's runs on the host. So the
+conversation ACL separates users in the **API**, not in the process. Two users' threads against
+agent_views on one host are not isolated from each other at the process level, whatever the ACL
+says, and a shell-capable agent in either thread can read what the other's run left on the mount.
+Deploy accordingly: the rule above is the whole rule.
+
+## Hosts and ports
+
+`proxy` publishes one port on the loopback interface, `127.0.0.1:${AGENTO_PROXY_PORT:-8443}`,
+and serves three origins on it:
+
+| Variable | Default | Origin |
+|---|---|---|
+| `AGENTO_PANEL_HOST` | `panel.localhost` | the panel: the built app, and the API at `/api/*`. `toolbox` reads it too: `versioned_artifact_create_draft` returns the panel origin as `panel_origin`, for the miniapp bridge |
+| `AGENTO_APPS_HOST` | `apps.localhost` | launched artifact files, `/a/<code>/v/<id>/…`, and the miniapp kit, `/_ui/<version>/` |
+| `AGENTO_SHARE_HOST` | `share.localhost` | Basic-auth shares, one origin per share: `<token>.<host>`. Set it to empty to turn shares off; an invalid value stops `proxy` from starting. `toolbox` reads it too, to print share URLs |
+| `AGENTO_PROXY_PORT` | `8443` | the host port; `443` gives origins with no port |
+
+Set the variables in `docker/.env`. The generated `docker-compose.yml` gives the same values
+to `proxy` and to `web` (and `AGENTO_SHARE_HOST` / `AGENTO_PANEL_HOST` / `AGENTO_PROXY_PORT` to `toolbox`). `web` needs them because it compares the `Origin` header of every
+write with the exact panel origin, and it builds the launch redeem URL on the apps origin. If you
+override one of them in `docker-compose.override.yml`, override it for both services.
+
+TLS is `tls internal` (Caddy's own CA). A browser does not trust that CA until you install it,
+or until you replace `tls internal` with a real certificate. The panel cookie has the `__Host-`
+prefix, so the panel works only over HTTPS.
+
+## First admin
+
+Create the first user at the CLI. The password comes from a prompt, or from stdin when stdin is
+not a terminal. It never comes from argv:
+
+```bash
+bin/agento user:create admin --role admin          # prompts twice for the password
+bin/agento user:create ci-admin --role admin < pw  # from a mode-0600 file
+```
+
+A password has 12 to 1024 characters. A client signs in with `POST /api/session` on
+`https://panel.localhost:8443`. See
+[../cli/user.md](../cli/user.md) and [../cli/grant.md](../cli/grant.md).
+
+## Giving a user role access
+
+A `user` sees nothing until you grant its role access in a scope. A scope is one workspace, or
+one agent_view:
+
+```bash
+bin/agento grant:add --role user --operation artifact.launch --agent-view dev_01
+```
+
+To open a miniapp, a role needs `artifact.launch` in the view, and an admin must approve the app
+for that view on the panel page **Apps** (`/apps/<code>`). The approval pins one version and its
+actions. A new version that the agent publishes waits for the next approval. See
+[../modules/miniapps.md](../modules/miniapps.md).
+
+## Giving a role admin screens
+
+A panel screen or action opens only for a role that holds its **leaf**. A leaf takes no scope:
+
+```bash
+bin/agento grant:add --role support --operation admin.jobs
+bin/agento grant:add --role support --operation versioned_artifacts      # the Artifacts screen
+```
+
+Miniapps have no leaf: each app has its own rights (DECISIONS.md D-MINIAPP-3). To give a user an
+app, add the user or the role as a member on the app settings page (`/apps/<code>`). A member sees
+the app; to run it in a view, the role also needs `artifact.launch` there and a tool grant for every
+action of the app's manifest:
+
+```bash
+bin/agento grant:add --role support --operation artifact.launch --agent-view <view>
+bin/agento grant:add --role support --tool <action> --agent-view <view>   # once per manifest action
+```
+
+`bin/agento grant:add --help` lists every leaf with its title, from the `acl.json` files of the
+framework and the enabled modules. The panel **Roles** screen shows the same tree. `admin` holds
+every leaf built in. A leaf of a disabled module is not shown and opens nothing; its grant stays
+and works again when the module is enabled. Each panel route names the leaf it needs
+([../architecture/panel.md](../architecture/panel.md#acl-resources-acljson)).
+
+## Launch limits
+
+`web/launch/max_concurrent` (default `5`, hard ceiling `20`) is how many live launches one user
+may hold. A new launch past the limit ends the oldest one. Set it per workspace:
+
+```bash
+bin/agento config:set web/launch/max_concurrent 3 --scope=workspace --scope-id=2
+```
+
+The launch lifetime is `core/auth/launch_max_ttl`, and the session lifetime is
+`core/auth/session_max_ttl` (see [../architecture/auth-context.md](../architecture/auth-context.md)).
+
+## What `web` holds
+
+`web` and `cron` are one trusted backend (DECISIONS.md D-BACKEND-1, D-BACKEND-2): the same
+`env_file` (`secrets.env`, with `AGENTO_ENCRYPTION_KEY`) and one DB user. `web` never runs
+`bootstrap()`. It reaches the artifact store only through the toolbox `/admin` endpoint, with a
+viewless `internal_rest` capability that it mints per call (subject `service:web:user:<id>`). It
+stores only SHA-256 hashes of session tokens, launch tokens and exchange codes. It mounts
+`app/code` and `app/etc` read-only, so it sees the same module list as `cron` when it checks a
+grant or a config write. The admin config form refuses every field that it cannot prove is not a
+secret: set those with `bin/agento config:set`.
+
+## The panel files
+
+The panel and the miniapp kit are static files inside the installed `agento-core` package
+(`agento/framework/web/panel` and `agento/framework/web/miniapp-ui`). `proxy` mounts both
+read-only, so `agento upgrade` brings the new panel with no extra step. A wheel built without
+them is refused at build time. In the dev stack, `cd frontend && npm run build` updates them live.
+
+## Checking a deployment
+
+```bash
+bash docker/smoke/proxy-smoke.sh
+```
+
+Step 7 of the smoke signs in, launches an artifact, and redeems it through the real proxy. It
+seeds a user named `e2-smoke-user` and an artifact named `e2-smoke` at `SMOKE_AGENT_VIEW`
+(default `dev_01`). Run it only on a development stack.

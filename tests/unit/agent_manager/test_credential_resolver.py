@@ -24,6 +24,23 @@ class TestCredentialResolver:
         mock_select.assert_called_once()
         assert mock_select.call_args[0][1] == "claude"
 
+    def test_a_pinned_credential_that_is_not_usable_fails_at_once(self):
+        """Healthy peers exist, but waiting on the pool cannot free the pinned row."""
+        with (
+            patch(
+                "agento.framework.agent_manager.credential_resolver.select_credential",
+                return_value=None,
+            ) as mock_select,
+            patch(
+                "agento.framework.agent_manager.credential_resolver.count_credentials_for_scope",
+                return_value=(3, 3),
+            ),pytest.raises(RuntimeError, match="id=7 is not usable")
+        ):
+            CredentialResolver().resolve(MagicMock(), "claude", credential_id=7)
+
+        mock_select.assert_called_once()
+        assert mock_select.call_args.kwargs["credential_id"] == 7
+
     def test_resolve_raises_when_no_tokens_registered(self):
         with (
             patch(
@@ -278,3 +295,33 @@ class TestCredentialResolver:
             resolver.resolve(MagicMock(), "codex")
 
         assert mock_select.call_args[0][1] == "codex"
+
+
+@pytest.mark.parametrize("counts", [(0, 0), (3, 0)])
+def test_an_empty_or_unhealthy_pool_is_an_auth_wait(counts):
+    """WI-6: no usable credential is a wait for the operator, not a failure. Both
+    sites raise the one marker class with the one retry time."""
+    from datetime import UTC, datetime
+
+    from agento.framework.agent_manager.errors import (
+        AUTH_WAIT_RETRY,
+        CredentialsUnavailableError,
+    )
+
+    with (
+        patch(
+            "agento.framework.agent_manager.credential_resolver.select_credential",
+            return_value=None,
+        ),
+        patch(
+            "agento.framework.agent_manager.credential_resolver.count_credentials_for_scope",
+            return_value=counts,
+        ),
+    ):
+        before = datetime.now(UTC).replace(tzinfo=None)
+        with pytest.raises(CredentialsUnavailableError) as exc_info:
+            CredentialResolver().resolve(MagicMock(), "claude")
+
+    retry_at = exc_info.value.pool_retry_at
+    assert retry_at.tzinfo is None
+    assert before + AUTH_WAIT_RETRY <= retry_at <= datetime.now(UTC).replace(tzinfo=None) + AUTH_WAIT_RETRY

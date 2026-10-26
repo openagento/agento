@@ -17,10 +17,15 @@ from agento.framework.migrate import migrate
 from agento.modules.claude.src.output_parser import ClaudeResult
 from agento.modules.jira.src.config import JiraConfig
 from agento.modules.jira_periodic_tasks.src.config import PeriodicTasksConfig
+from tests.registry_isolation import is_bootstrapped, mark_bootstrapped
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
-TEST_DB = "cron_agent_test"
+# One database per pytest-xdist worker (gw0, gw1, ...): workers run in parallel and every
+# test truncates the tables, so a shared database would let one worker wipe another's rows.
+TEST_DB = "cron_agent_test" + (
+    f"_{worker}" if (worker := os.environ.get("PYTEST_XDIST_WORKER")) else ""
+)
 
 # Concurrent-claimant fan-out shared by the token-pool / selection / materialization
 # stress tests — the general "does the system stay correct under a normal burst" load.
@@ -28,6 +33,16 @@ TEST_DB = "cron_agent_test"
 # in test_token_selection_concurrency.py, sized to the MySQL connection ceiling to force
 # saturation); it does not share this knob on purpose.
 CONCURRENT_WORKERS_STRESS_TEST = 100
+
+# Stress tests hold 100-200 MySQL connections each. Under pytest-xdist they share ONE group,
+# so they run one after another on a single worker and never stack past max_connections
+# (`--dist loadgroup` in pyproject.toml). Mark such a module `pytestmark = DB_STRESS`.
+DB_STRESS = pytest.mark.xdist_group("db_stress")
+
+# MySQL `GET_LOCK` names are server-wide, not per database, so the per-worker databases do
+# not keep them apart: two workers taking the artifact retention lock (`va_ret:<sha1(code)>`)
+# for the same code block each other. Mark such a module `pytestmark = NAMED_LOCKS`.
+NAMED_LOCKS = pytest.mark.xdist_group("named_locks")
 
 # Default to this checkout's own MySQL (docker/.env MYSQL_PORT), never a sibling's on 3306.
 # Set in os.environ so spawned node helpers (verify_capability.mjs) inherit it.
@@ -38,6 +53,7 @@ _ports = [
     if line.startswith("MYSQL_PORT=")
 ]
 os.environ.setdefault("TEST_MYSQL_PORT", _ports[-1] if _ports else "3306")
+os.environ["TEST_MYSQL_DATABASE"] = TEST_DB  # this worker's own database, for node helpers
 
 # Ensure encryption key is available for tests (used for credential.credentials and obscure configs)
 os.environ.setdefault("AGENTO_ENCRYPTION_KEY", "test-encryption-key-for-integration")
@@ -110,8 +126,10 @@ def _create_test_db():
 
     # Apply module SQL migrations (same as setup:upgrade does)
     from agento.framework.bootstrap import CORE_MODULES_DIR
+    from agento.framework.dependency_resolver import resolve_order
     from agento.framework.module_loader import scan_modules
-    all_modules = scan_modules(CORE_MODULES_DIR)
+    # Dependency order, as setup:upgrade: a module's FK may name a table of its `sequence`.
+    all_modules = resolve_order(scan_modules(CORE_MODULES_DIR))
     conn = _test_connection(autocommit=False)
     try:
         for m in all_modules:
@@ -183,9 +201,13 @@ def int_periodic_config() -> PeriodicTasksConfig:
     )
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _bootstrap_registries():
-    """Populate registries from core modules (once per session).
+def bootstrap_for_tests() -> None:
+    """Populate the registries the integration suite needs (see below).
+
+    A test that must exercise a real `bootstrap()` - a module reaching a registry
+    through its own manifest - calls THIS, not `bootstrap()`: a bare `bootstrap()`
+    resets the module-config registry this fills, and the next Jira test then runs
+    without its config.
 
     Stubs ``read_module_status`` so bootstrap ignores the developer's
     ``app/etc/modules.json``. Without this, locally-disabled modules
@@ -226,6 +248,71 @@ def _bootstrap_registries():
             "1x w tygodniu (Pon, 7:00)": "0 7 * * 1",
         },
     ))
+    mark_bootstrapped()
+
+
+@pytest.fixture(autouse=True)
+def _framework_registries():
+    """Populate registries from core modules.
+
+    Overrides the fixture of the same name in tests/conftest.py, which clears them again
+    for unit tests. Bootstraps only when needed: once per worker, and again after a unit
+    test ran on this worker (pytest-xdist mixes both in one process).
+    """
+    if not is_bootstrapped():
+        bootstrap_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _runner(start_runner):
+    """Every agent CLI starts in a runner (WS5): an in-process one per test, so a consumer
+    run here goes through the socket, as in a deployment."""
+    start_runner()
+
+
+@pytest.fixture(autouse=True)
+def _keep_bootstrapped_registries():
+    """`bootstrap_for_tests()` runs ONCE per session, so a test that clears a registry to
+    get a clean slate leaves every later test with an empty one. The observed bite: an empty
+    event manager means no workspace-build observer, which means a job run resolves its state
+    dir under the container's read-only `/workspace`. Every registry bootstrap fills gets the
+    same snapshot-and-restore, whatever the test did to it."""
+    from agento.framework import event_manager, execution_hooks, job_types
+    from agento.framework.workflows import _WORKFLOW_MAP
+
+    manager = event_manager._EVENT_MANAGER
+    seams = {name: (slot.get(), slot.module()) for name, slot in execution_hooks.SEAMS.items()}
+    workflows = dict(_WORKFLOW_MAP)
+    types = dict(job_types._REGISTRY)
+    yield
+    if event_manager._EVENT_MANAGER is not manager:
+        event_manager._EVENT_MANAGER = manager
+    for name, (impl, module) in seams.items():
+        slot = execution_hooks.SEAMS[name]
+        if slot.get() is not impl:
+            slot.clear()
+            if impl is not None:
+                slot.register(impl, module=module)
+    if workflows != _WORKFLOW_MAP:
+        _WORKFLOW_MAP.clear()
+        _WORKFLOW_MAP.update(workflows)
+    if types != job_types._REGISTRY:
+        job_types._REGISTRY.clear()
+        job_types._REGISTRY.update(types)
+
+
+@pytest.fixture(autouse=True)
+def _db_from_env(int_db_config):
+    """No integration test may reach the production database host.
+
+    Several paths a job takes open their OWN connection from `DatabaseConfig.from_env()` -
+    the workspace-build observer, the conversation workflow, `publish_job`. A test that did
+    not patch it passed only when an earlier test's fixture happened to leak the patch, so
+    the suite's result depended on file order. One autouse patch removes the whole class.
+    A test that needs the real classmethod stops this patch itself.
+    """
+    with patch.object(DatabaseConfig, "from_env", return_value=int_db_config):
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -243,6 +330,17 @@ def _no_real_cli_refresh():
         yield
 
 
+# Not here, on purpose: `workspace` / `agent_view` (tests reuse the scope rows by code),
+# `ingress_identity` (`int_agent_view` owns it), `role` (seeded) and the migration tables.
+_WIPED_TABLES = (
+    "execution", "execution_delta", "job_event_outbox", "tool_invocation",
+    "conversation", "conversation_event", "message", "conversation_prune_watermark",
+    "launch", "session", "role_grant", "`user`", "credential_login", "limit_bucket",
+    "outlook_poll_cursor", "miniapp", "miniapp_activation", "miniapp_member",
+    "versioned_artifact", "versioned_artifact_audit",
+)
+
+
 @pytest.fixture(autouse=True)
 def _truncate_tables():
     """Truncate all tables before each test for isolation."""
@@ -252,11 +350,22 @@ def _truncate_tables():
             cur.execute("SET FOREIGN_KEY_CHECKS = 0")
             cur.execute("TRUNCATE TABLE toolbox_capability")
             cur.execute("TRUNCATE TABLE job")
+            # Keyed by job id, which the TRUNCATE above recycles: a stretch a deferring test
+            # left open is closed by the next test's claim of job 1, as a `job.deferred` row.
+            cur.execute("TRUNCATE TABLE job_defer_stretch")
+            # Every other per-test table, so no test file wipes its own subset. An outbox or
+            # execution row a test left behind is read as the next test's job 1. DELETE, not
+            # TRUNCATE: the tables are almost always empty, and a TRUNCATE costs ~7 ms each.
+            for table in _WIPED_TABLES:
+                cur.execute(f"DELETE FROM {table}")
+            # The seeded roles stay; a test's own role goes.
+            cur.execute("DELETE FROM role WHERE code NOT IN ('admin', 'user')")
             cur.execute("TRUNCATE TABLE schedule")
             cur.execute("TRUNCATE TABLE usage_log")
             cur.execute("TRUNCATE TABLE credential")
             cur.execute("TRUNCATE TABLE skill_registry")
             cur.execute("TRUNCATE TABLE workspace_build")
+            cur.execute("TRUNCATE TABLE core_config_data")
             cur.execute("SET FOREIGN_KEY_CHECKS = 1")
     finally:
         conn.close()
@@ -321,15 +430,13 @@ def int_agent_view(tmp_path, int_db_config, monkeypatch):
     """
     # A view-scoped job also runs the workspace-build freshness observer, which builds under
     # BUILD_DIR and opens its OWN connection from env. Same redirection the other build-touching
-    # integration tests use (test_concurrent_materialization, test_app_monitor_e2e).
+    # integration tests use (test_orchestration_scale, test_app_monitor_e2e).
     build_root = str(tmp_path / "build")
     artifacts_root = str(tmp_path / "artifacts")
     patches = [
         patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", artifacts_root),
         patch("agento.framework.artifacts_dir.BUILD_DIR", build_root),
         patch("agento.modules.workspace_build.src.builder.BUILD_DIR", build_root),
-        patch("agento.modules.claude.src.transcript_reader.BUILD_DIR", build_root),
-        patch("agento.modules.codex.src.transcript_reader.BUILD_DIR", build_root),
         # ONE patch, on the class itself. Both observers import the SAME DatabaseConfig, so
         # patching two module paths would patch one attribute twice — and stopping them in start
         # order then restores the first mock instead of the real classmethod, leaking a localhost
@@ -370,9 +477,13 @@ def int_agent_view(tmp_path, int_db_config, monkeypatch):
 
             # Jira publishing routes through an ingress identity; with no binding
             # `_resolve_routing` returns (None, 50) and the job is published viewless.
+            # ON DUPLICATE KEY UPDATE, not INSERT IGNORE: the row caches an agent_view id,
+            # and a stale one points the router at a view that is gone - the publish then
+            # fails the foreign key and the jira flows fail with no explanation.
             cur.execute(
-                "INSERT IGNORE INTO ingress_identity "
-                "(identity_type, identity_value, agent_view_id) VALUES (%s, %s, %s)",
+                "INSERT INTO ingress_identity "
+                "(identity_type, identity_value, agent_view_id) VALUES (%s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE agent_view_id = VALUES(agent_view_id)",
                 ("jira", "jira", agent_view_id),
             )
     finally:
@@ -381,6 +492,16 @@ def int_agent_view(tmp_path, int_db_config, monkeypatch):
     try:
         yield agent_view_id
     finally:
+        # Remove the routing before the BUILD_DIR patches stop. The binding is global: a
+        # later test that publishes a jira job would otherwise resolve this view and run the
+        # workspace-build observer against the REAL build root, which is read-only here.
+        conn = _test_connection(autocommit=True)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM ingress_identity WHERE identity_type = 'jira' "
+                            "AND identity_value = 'jira'")
+        finally:
+            conn.close()
         for p_ in patches:
             p_.stop()
 
@@ -519,3 +640,111 @@ def update_job(job_id: int, **fields) -> None:
             )
     finally:
         conn.close()
+
+
+# --- the conversation world (PRD E3-E5) ------------------------------------
+#
+# These live here, not in a test module, so the fourteen conversation test files can take
+# them as arguments without importing them: an imported fixture is a module binding that
+# every test's parameter then shadows, which is 382 ruff F811 errors for one pattern. A test
+# file that defines its own `conn` still overrides this one.
+
+def _clean(c):
+    """The scopes: the autouse wipe keeps them, and a test that deactivates the view must not
+    hand the next test a deactivated one (INSERT IGNORE would keep it)."""
+    with c.cursor() as cur:
+        cur.execute("DELETE FROM agent_view WHERE code IN ('c-av', 'c-av2')")
+        cur.execute("DELETE FROM workspace WHERE code IN ('c-ws', 'c-ws2')")
+    c.commit()
+
+
+@pytest.fixture
+def conn(int_db_config, monkeypatch):
+    from agento.framework import publish_service
+    from agento.modules.conversation.src import service
+
+    # publish_job opens its own connection; point it at the test database.
+    real = publish_service.publish_job
+    monkeypatch.setattr(
+        publish_service, "publish_job",
+        lambda **kw: real(**{**kw, "config": int_db_config}),
+    )
+    monkeypatch.setattr(service, "publish_job", publish_service.publish_job)
+
+    c = _test_connection(autocommit=False)
+    _clean(c)
+    yield c
+    c.close()
+
+
+@pytest.fixture
+def world(conn):
+    """One workspace, one view, an owner who reaches it, and a stranger who does not."""
+    from agento.framework.access import accounts
+
+    ids = {}
+    with conn.cursor() as cur:
+        for ws, av, key in (("c-ws", "c-av", "view"), ("c-ws2", "c-av2", "other_view")):
+            cur.execute("INSERT IGNORE INTO workspace (code, label) VALUES (%s, %s)", (ws, ws))
+            cur.execute("SELECT id FROM workspace WHERE code = %s", (ws,))
+            ids[f"workspace{'' if key == 'view' else '2'}"] = cur.fetchone()["id"]
+            cur.execute("INSERT IGNORE INTO agent_view (workspace_id, code, label) VALUES (%s, %s, %s)",
+                        (ids[f"workspace{'' if key == 'view' else '2'}"], av, av))
+            cur.execute("SELECT id FROM agent_view WHERE code = %s", (av,))
+            ids[key] = cur.fetchone()["id"]
+    conn.commit()
+    owner = accounts.create_user(conn, "c-owner", "user", "pw-owner-123")
+    stranger = accounts.create_user(conn, "c-stranger", "user", "pw-stranger-123")
+    admin = accounts.create_user(conn, "c-admin", "admin", "pw-admin-1234")
+    accounts.add_grant(conn, "user", "operation", "artifact.launch", agent_view_id=ids["view"])
+    ids.update(owner=owner, stranger=stranger, admin=admin)
+    return ids
+
+
+@pytest.fixture
+def selects(monkeypatch) -> list[str]:
+    """Every SELECT any connection runs while this is installed."""
+    seen: list[str] = []
+    real = DictCursor.execute
+
+    def spy(self, query, args=None):
+        if query.lstrip().upper().startswith("SELECT"):
+            seen.append(query)
+        return real(self, query, args)
+
+    monkeypatch.setattr(DictCursor, "execute", spy)
+    return seen
+
+
+@pytest.fixture
+def thread(conn, world):
+    """One conversation of the owner's in the view. A test file that needs a turn in it
+    defines its own."""
+    from agento.modules.conversation.src import service
+
+    return service.create_conversation(
+        conn, user_id=world["owner"].id, agent_view_id=world["view"], title="t")
+
+
+def routed(module_name: str, handlers):
+    """``handlers`` (a module's ``src/routes.py``) behind web's route check: each name calls the
+    handler only when ``server.acl_allows`` passes for its ``di.json`` ``acl``, else 403, as
+    ``server._run`` does (D-ADMIN-ACL-2). A handler checks no panel leaf of its own."""
+    from types import SimpleNamespace
+
+    from agento.framework.bootstrap import CORE_MODULES_DIR
+    from agento.web import api, server
+
+    decls = json.loads((Path(CORE_MODULES_DIR) / module_name / "di.json").read_text())["routes"]
+
+    def guard(handler, acl):
+        def call(req):
+            if not server.acl_allows(req.conn, req.session.user, acl):
+                return api.error(403, "forbidden")
+            return handler(req)
+        return call
+
+    return SimpleNamespace(**{
+        d["handler"].rsplit(".", 1)[1]: guard(getattr(handlers, d["handler"].rsplit(".", 1)[1]),
+                                              d["acl"] if isinstance(d["acl"], str) else tuple(d["acl"]))
+        for d in decls})

@@ -5,6 +5,8 @@ import argparse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agento.modules.agent_view.src.commands.tool_disable import ToolDisableCommand
 from agento.modules.agent_view.src.commands.tool_enable import ToolEnableCommand
 from agento.modules.agent_view.src.commands.tool_list import ToolListCommand
@@ -27,6 +29,14 @@ def _make_manifest(name, tools):
     # key. Point it somewhere absent so the defaults read yields {}.
     m.path = Path("/nonexistent/module")
     return m
+
+
+@pytest.mark.parametrize("command", [ToolEnableCommand, ToolDisableCommand])
+@pytest.mark.parametrize("tool_name", ["jira search", "jira@search!", "JiraSearch", ""])
+def test_rejects_invalid_tool_name(command, tool_name):
+    args = argparse.Namespace(tool_name=tool_name, scope="default", scope_id=0, agent_view_code=None)
+    with pytest.raises(SystemExit, match="Invalid tool name"):
+        command().execute(args)
 
 
 class TestToolListCommand:
@@ -158,30 +168,6 @@ class TestToolEnableCommand:
         assert cmd.name == "tool:enable"
         assert cmd.shortcut == "tl:en"
 
-    def test_rejects_name_with_spaces(self):
-        import pytest
-        args = argparse.Namespace(tool_name="jira search", scope="default", scope_id=0, agent_view_code=None)
-        with pytest.raises(SystemExit, match="Invalid tool name"):
-            ToolEnableCommand().execute(args)
-
-    def test_rejects_name_with_special_chars(self):
-        import pytest
-        args = argparse.Namespace(tool_name="jira@search!", scope="default", scope_id=0, agent_view_code=None)
-        with pytest.raises(SystemExit, match="Invalid tool name"):
-            ToolEnableCommand().execute(args)
-
-    def test_rejects_name_with_uppercase(self):
-        import pytest
-        args = argparse.Namespace(tool_name="JiraSearch", scope="default", scope_id=0, agent_view_code=None)
-        with pytest.raises(SystemExit, match="Invalid tool name"):
-            ToolEnableCommand().execute(args)
-
-    def test_rejects_empty_name(self):
-        import pytest
-        args = argparse.Namespace(tool_name="", scope="default", scope_id=0, agent_view_code=None)
-        with pytest.raises(SystemExit, match="Invalid tool name"):
-            ToolEnableCommand().execute(args)
-
     @patch("agento.framework.scoped_config.scoped_config_set")
     @patch("agento.framework.db.get_connection")
     @patch("agento.framework.cli.runtime._load_framework_config")
@@ -230,30 +216,6 @@ class TestToolDisableCommand:
         cmd = ToolDisableCommand()
         assert cmd.name == "tool:disable"
         assert cmd.shortcut == "tl:di"
-
-    def test_rejects_name_with_spaces(self):
-        import pytest
-        args = argparse.Namespace(tool_name="jira search", scope="default", scope_id=0, agent_view_code=None)
-        with pytest.raises(SystemExit, match="Invalid tool name"):
-            ToolDisableCommand().execute(args)
-
-    def test_rejects_name_with_special_chars(self):
-        import pytest
-        args = argparse.Namespace(tool_name="jira@search!", scope="default", scope_id=0, agent_view_code=None)
-        with pytest.raises(SystemExit, match="Invalid tool name"):
-            ToolDisableCommand().execute(args)
-
-    def test_rejects_name_with_uppercase(self):
-        import pytest
-        args = argparse.Namespace(tool_name="JiraSearch", scope="default", scope_id=0, agent_view_code=None)
-        with pytest.raises(SystemExit, match="Invalid tool name"):
-            ToolDisableCommand().execute(args)
-
-    def test_rejects_empty_name(self):
-        import pytest
-        args = argparse.Namespace(tool_name="", scope="default", scope_id=0, agent_view_code=None)
-        with pytest.raises(SystemExit, match="Invalid tool name"):
-            ToolDisableCommand().execute(args)
 
     @patch("agento.framework.scoped_config.scoped_config_set")
     @patch("agento.framework.db.get_connection")

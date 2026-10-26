@@ -5,6 +5,7 @@ import { createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { createArtifactsServer } from '../../../modules/versioned_artifacts/server/artifacts-server.js';
 
 const V1 = 'v-20260101-120000-aaaa';
@@ -19,6 +20,16 @@ async function start(opts = {}) {
 }
 
 const get = (p) => fetch(`${base}${p}`);
+// fetch normalizes `..` itself; this sends the target byte for byte.
+const rawGet = (p) => new Promise((resolve, reject) => {
+  const req = http.request(`${base}/`, { path: p }, (res) => {
+    let body = '';
+    res.on('data', (c) => { body += c; });
+    res.on('end', () => resolve({ status: res.statusCode, body }));
+  });
+  req.on('error', reject);
+  req.end();
+});
 const gate = (body) => writeFile(path.join(etcDir, 'modules.json'), body);
 // Polls instead of sleeping a fixed span: the teardown must not race a cleanup that
 // has not happened yet, and a fixed sleep either flakes or costs every run.
@@ -50,47 +61,41 @@ afterEach(async () => {
 });
 
 describe('routing', () => {
-  it('serves the current version at /<code>/', async () => {
-    await start();
-    const res = await get('/site/');
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toMatch(/text\/html/);
-    expect(await res.text()).toBe(`<h1>${V2}</h1>`);
-  });
-
-  it('serves a non-current version at /<code>/v/<id>/', async () => {
+  it('serves a version at /<code>/v/<id>/', async () => {
     await start();
     const res = await get(`/site/v/${V1}/`);
     expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toMatch(/text\/html/);
     expect(await res.text()).toBe(`<h1>${V1}</h1>`);
+  });
+
+  it('has no current route: /<code>/ is 404 even though current exists (§6.2)', async () => {
+    await start();
+    expect((await get('/site/')).status).toBe(404);
+    expect((await get('/site/index.html')).status).toBe(404);
+    expect((await get('/site/current/')).status).toBe(404);
+  });
+
+  it('answers / with ok and lists nothing (no directory index, §6.3)', async () => {
+    await mkdir(path.join(root, 'other'), { recursive: true });
+    await start();
+    const res = await get('/');
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toBe('ok\n');
+    expect(body).not.toContain('site');
   });
 
   it('declares the content type as final on every body it serves', async () => {
     // The tree is agent-authored: an unknown extension is served as
     // application/octet-stream, and a sniffing browser would re-read that as HTML.
     await start();
-    for (const url of ['/', '/site/']) {
-      expect((await get(url)).headers.get('x-content-type-options')).toBe('nosniff');
-    }
-  });
-
-  it('lists the artifact codes at /', async () => {
-    await mkdir(path.join(root, 'other'), { recursive: true });
-    await start();
-    const body = await (await get('/')).text();
-    expect(body).toContain('href="/site/"');
-    expect(body).toContain('href="/other/"');
-  });
-
-  it('never lists the scratch directory', async () => {
-    await mkdir(path.join(root, '.tmp'), { recursive: true });
-    await start();
-    expect(await (await get('/')).text()).not.toContain('.tmp');
+    expect((await get(`/site/v/${V1}/`)).headers.get('x-content-type-options')).toBe('nosniff');
   });
 
   it('answers 404 for an unknown code and for a pruned version', async () => {
     await start();
-    expect((await get('/nope/')).status).toBe(404);
+    expect((await get(`/nope/v/${V1}/`)).status).toBe(404);
     expect((await get(`/site/v/v-20250101-000000-zzzz/`)).status).toBe(404);
   });
 
@@ -102,26 +107,28 @@ describe('routing', () => {
 
   it('answers 405 for a write method', async () => {
     await start();
-    expect((await fetch(`${base}/site/`, { method: 'POST' })).status).toBe(405);
+    expect((await fetch(`${base}/site/v/${V1}/`, { method: 'POST' })).status).toBe(405);
+  });
+
+  it('never applies Basic auth on the app path, even with a sidecar (§9)', async () => {
+    await writeFile(path.join(root, 'site', '.auth'), JSON.stringify({ user: 'x' }));
+    await start();
+    const res = await get(`/site/v/${V1}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('www-authenticate')).toBeNull();
   });
 });
 
 describe('directory urls', () => {
-  // Without the redirect a relative `app.js` under /site/sub resolves to /site/app.js.
+  // Without the redirect a relative `app.js` under /sub resolves one level up. The target
+  // is relative, so it is right behind the apps origin's `/a` and a share's `/s/<token>`.
   it('redirects a directory url that has no trailing slash, keeping the query', async () => {
     await mkdir(path.join(root, 'site', 'v', V2, 'sub'));
     await writeFile(path.join(root, 'site', 'v', V2, 'sub', 'index.html'), '<h1>sub</h1>');
     await start();
-    const res = await fetch(`${base}/site/sub?x=1`, { redirect: 'manual' });
+    const res = await fetch(`${base}/site/v/${V2}/sub?x=1`, { redirect: 'manual' });
     expect(res.status).toBe(301);
-    expect(res.headers.get('location')).toBe('/site/sub/?x=1');
-  });
-
-  it('redirects the bare code and the bare version directory too', async () => {
-    await start();
-    expect((await fetch(`${base}/site`, { redirect: 'manual' })).headers.get('location')).toBe('/site/');
-    expect((await fetch(`${base}/site/v/${V1}`, { redirect: 'manual' })).headers.get('location'))
-      .toBe(`/site/v/${V1}/`);
+    expect(res.headers.get('location')).toBe('sub/?x=1');
   });
 });
 
@@ -132,7 +139,7 @@ describe('containment', () => {
   it('refuses a symlink that points outside the published root', async () => {
     await symlink('/etc/passwd', path.join(root, 'site', 'v', V2, 'escape.txt'));
     await start();
-    const res = await get('/site/escape.txt');
+    const res = await get(`/site/v/${V2}/escape.txt`);
     expect(res.status).toBe(403);
     expect(await res.text()).not.toContain('root:');
   });
@@ -140,14 +147,26 @@ describe('containment', () => {
   it('never returns the content of a dotfile', async () => {
     await writeFile(path.join(root, 'site', 'v', V2, '.env'), 'SECRET=1');
     await start();
-    const res = await get('/site/.env');
+    const res = await get(`/site/v/${V2}/.env`);
     expect(res.status).toBe(404);
     expect(await res.text()).not.toContain('SECRET');
   });
 
   it('never escapes the root through a traversal segment', async () => {
     await start();
-    expect((await get('/site/..%2F..%2Fetc%2Fpasswd')).status).toBe(404);
+    expect((await get(`/site/v/${V1}/..%2F..%2Fetc%2Fpasswd`)).status).toBe(404);
+  });
+
+  it('routes on the raw target: `..` and %2e%2e never reach another artifact (§6.2)', async () => {
+    // WHATWG `new URL()` resolves both before a check could see them; the raw target does not.
+    await mkdir(path.join(root, 'other', 'v', V1), { recursive: true });
+    await writeFile(path.join(root, 'other', 'v', V1, 'index.html'), 'OTHER');
+    await start();
+    for (const p of [`/site/v/${V1}/../../../other/v/${V1}/`, `/site/v/${V1}/%2e%2e/%2e%2e/%2e%2e/other/v/${V1}/`]) {
+      const res = await rawGet(p);
+      expect(res.status).toBe(404);
+      expect(res.body).not.toContain('OTHER');
+    }
   });
 });
 
@@ -159,7 +178,7 @@ describe('transient filesystem errors', () => {
     const fs = {
       ...fsp,
       realpath: async (p) => {
-        if (thrown === 0 && String(p).includes('current')) {
+        if (thrown === 0 && String(p).includes(V2)) {
           thrown += 1;
           const err = new Error('einval'); err.code = 'EINVAL'; throw err;
         }
@@ -167,7 +186,7 @@ describe('transient filesystem errors', () => {
       },
     };
     await start({ fs });
-    const res = await get('/site/');
+    const res = await get(`/site/v/${V2}/`);
     expect(thrown).toBe(1);
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(`<h1>${V2}</h1>`);
@@ -179,7 +198,7 @@ describe('transient filesystem errors', () => {
       realpath: async () => { const e = new Error('estale'); e.code = 'ESTALE'; throw e; },
     };
     await start({ fs });
-    expect((await get('/site/')).status).toBe(404);
+    expect((await get(`/site/v/${V2}/`)).status).toBe(404);
   });
 });
 
@@ -200,8 +219,8 @@ describe('a read that fails after the response started', () => {
       return s;
     };
     await start({ openRead });
-    await get('/site/').then((r) => r.text()).catch(() => {});
-    expect((await get('/site/')).status).toBe(200);
+    await get(`/site/v/${V2}/`).then((r) => r.text()).catch(() => {});
+    expect((await get(`/site/v/${V2}/`)).status).toBe(200);
   });
 
   it('destroys the source read when the client goes away mid-stream', async () => {
@@ -218,7 +237,7 @@ describe('a read that fails after the response started', () => {
     };
     await start({ openRead });
     const ac = new AbortController();
-    const res = await fetch(`${base}/site/`, { signal: ac.signal });
+    const res = await fetch(`${base}/site/v/${V2}/`, { signal: ac.signal });
     const reader = res.body.getReader();
     expect((await reader.read()).value).toHaveLength(1);
     expect(streams).toHaveLength(1);
@@ -229,18 +248,11 @@ describe('a read that fails after the response started', () => {
   });
 
   it('never lets a filename forge a second log line', async () => {
-    // The name is attacker-chosen: an agent picks the filenames a version contains, and
-    // the URL decodes back to one. Unbounded, the `\n` splits the record and the rest is
-    // whatever the attacker wants an operator to read.
+    // The name is attacker-chosen: an agent picks the filenames a version contains. A name
+    // with a control character is refused before any read, so it cannot reach a log line.
     const evil = 'a\nartifacts: pruned everything, nothing to see';
     await writeFile(path.join(root, 'site', 'v', V2, evil), 'x');
-    const openRead = (p) => {
-      const s = createReadStream(p);
-      s.once('open', () => s.destroy(Object.assign(new Error('boom'), { code: 'EIO' })));
-      return s;
-    };
-    await start({ openRead });
-
+    await start();
     const lines = [];
     const real = process.stderr.write;
     process.stderr.write = (chunk, enc, cb) => {
@@ -249,16 +261,14 @@ describe('a read that fails after the response started', () => {
       if (done) done();
       return true;
     };
+    let status;
     try {
-      await get(`/site/${encodeURIComponent(evil)}`).then((r) => r.text()).catch(() => {});
+      status = (await get(`/site/v/${V2}/${encodeURIComponent(evil)}`)).status;
     } finally {
       process.stderr.write = real;
     }
-
-    const mine = lines.filter((l) => l.startsWith('artifacts: read failed'));
-    expect(mine).toHaveLength(1);
-    expect(mine[0].endsWith('\n')).toBe(true);
-    expect(mine[0].slice(0, -1)).not.toContain('\n');
+    expect(status).toBe(404);
+    expect(lines.filter((l) => l.startsWith('artifacts:'))).toEqual([]);
   });
 });
 
@@ -276,9 +286,9 @@ describe('module disablement gate', () => {
   it('serves again when the value flips back, with no restart', async () => {
     await gate(JSON.stringify({ versioned_artifacts: false }));
     await start();
-    expect((await get('/site/')).status).toBe(503);
+    expect((await get(`/site/v/${V1}/`)).status).toBe(503);
     await gate(JSON.stringify({ versioned_artifacts: true }));
-    expect((await get('/site/')).status).toBe(200);
+    expect((await get(`/site/v/${V1}/`)).status).toBe(200);
   });
 
   // `app/etc/modules.json` lists only explicitly toggled modules, so absence is
@@ -286,10 +296,10 @@ describe('module disablement gate', () => {
   // which is the one that fails closed.
   it('serves when the file is absent, the key is absent, or the file is unparseable', async () => {
     await start();
-    expect((await get('/site/')).status).toBe(200);
+    expect((await get(`/site/v/${V1}/`)).status).toBe(200);
     await gate(JSON.stringify({ jira: false }));
-    expect((await get('/site/')).status).toBe(200);
+    expect((await get(`/site/v/${V1}/`)).status).toBe(200);
     await gate('{"versioned_artifacts": fal');
-    expect((await get('/site/')).status).toBe(200);
+    expect((await get(`/site/v/${V1}/`)).status).toBe(200);
   });
 });

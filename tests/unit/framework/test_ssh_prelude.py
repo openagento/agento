@@ -3,7 +3,7 @@
 Split by host requirement. ``bin/test`` runs pytest on the HOST, and the supported dev
 host is macOS with bash 3.2.57 and no ``/proc`` — below the floor the wrapper is verified
 against, and the runtime never executes on the host anyway (the consumer spawns inside the
-cron container, ``agento run`` goes through ``docker compose exec … sandbox``). So the
+runner, ``agento run`` goes through ``docker compose exec … runner-1``). So the
 version-free cases — the generated text, the ORDER of its parts, and the three failure
 branches — always run, and only the pipe-backed happy path is ``skipif``-guarded. The
 floor itself is enforced in the image build, not by a host test.
@@ -96,7 +96,8 @@ def _run(cmd: list[str], tmp_path: Path, **env_extra):
     record = tmp_path / "record.txt"
     record.touch()
     env = {
-        **os.environ,
+        # The host's own AGENTO_SSH_* (e.g. AGENTO_SSH_TTL on a deployed box) must not leak in.
+        **{k: v for k, v in os.environ.items() if not k.startswith("AGENTO_SSH_")},
         "AGENTO_TEST_RECORD": str(record),
         "PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}",
         **env_extra,

@@ -13,7 +13,9 @@ GHCR pulls.
 from __future__ import annotations
 
 import importlib.resources as ires
+import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -23,9 +25,11 @@ from ..harness.descriptor import SandboxPackage
 from ..module_status import read_module_status, resolve_module_source
 from ._env import parse_env_file
 from ._output import log_error, log_info
+from ._project import update_dotenv_value
 from ._templates import get_package_version, get_template
 
-_AGENTO_REQUIRES_PYTHON = ">=3.12"
+# Capped: uv takes the newest CPython it may, and a new one has no wheels for native deps.
+_AGENTO_REQUIRES_PYTHON = ">=3.12,<3.15"
 
 
 # ``SandboxPackage`` is imported above purely to re-export it: existing CLI callers
@@ -72,23 +76,10 @@ def parse_semver_floor(value: str) -> tuple[int, int, int] | None:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
 
 
-def _iter_module_dirs(project_root: Path | None) -> list[Path]:
-    """Deprecated shim — module discovery is public now.
-
-    Kept so existing callers/tests keep working; the implementation moved to
-    ``framework/module_discovery.py`` so core contracts (``framework/harness/``) can
-    use it without depending on this private CLI helper.
-    """
-    from ..module_discovery import iter_module_dirs
-
-    return iter_module_dirs(project_root)
-
-
 def enumerate_sandbox_packages(project_root: Path | None = None) -> list[SandboxPackage]:
     """Enumerate agent CLI declarations across all reachable modules.
 
-    Reads ``agent_harnesses[].sandbox_package`` plus the deprecated top-level
-    ``sandbox_packages`` array (one more cycle). Scans core modules, local modules
+    Reads ``agent_harnesses[].sandbox_package``. Scans core modules, local modules
     (``<project>/app/code/``) and PyPI extensions; filters modules disabled via
     ``app/etc/modules.json``. Raises ``RuntimeError`` on a duplicate
     ``version_env_key`` so a copy-paste collision surfaces immediately instead of one
@@ -349,6 +340,9 @@ def localize_lockfile_for_container(
                 shutil.copy2(entry, local_dist / entry.name)
 
         text = text.replace(match.group(0), 'source = { registry = "_local_dist" }')
+        # An absolute registry makes uv write each wheel/sdist path in full; relative to
+        # the registry it is just the file name, which now resolves inside _local_dist.
+        text = text.replace(f'path = "{registry}/', 'path = "')
         rewrote = True
 
     if rewrote:
@@ -395,6 +389,7 @@ def materialize_docker_context(
     )
     _copy_tree(ctx / "cron", target / "cron")
     _copy_tree(ctx / "toolbox", target / "toolbox")
+    _copy_tree(ctx / "proxy", target / "proxy")
 
     # Cron context needs the project's lockfile + pyproject for `uv sync`
     # (deps only — agento itself comes from the bind-mounted host venv).
@@ -434,18 +429,17 @@ def render_compose(
     *,
     python_version: str,
     extensions: list[str],
-    sandbox_packages: list[SandboxPackage],
+    runner_count: int = 1,
 ) -> str:
     """Substitute placeholders in the docker-compose template.
 
     Template placeholders:
     - ``{{ python_version }}`` — replaced with ``"3.12"`` etc.
-    - line ``      # {{ extension_mounts_sandbox }}`` — replaced with mount
-      lines for each enabled PyPI extension (or removed when none).
-    - line ``      # {{ extension_mounts_cron }}`` — same, for the cron service.
-    - line ``        # {{ sandbox_package_args }}`` — replaced with one
-      ``<KEY>: ${<KEY>:-<default>}`` per ``sandbox_packages`` entry (or removed
-      when no agent module ships one).
+    - line ``      # {{ extension_mounts_cron }}`` — replaced with mount lines for
+      each enabled PyPI extension (or removed when none).
+    - the block from ``  # {{ runner }}`` to ``  # {{ /runner }}`` — one copy per
+      runner, ``{{ i }}`` = 1..``runner_count``; then every other line with ``{{ i }}``
+      (cron's socket mounts and depends_on, the socket volumes) — one copy per runner.
     """
     def mount_block(target_path: str) -> str:
         if not extensions:
@@ -456,29 +450,47 @@ def render_compose(
         ]
         return "\n".join(lines) + "\n"
 
-    def sandbox_args_block() -> str:
-        if not sandbox_packages:
-            return ""
-        lines = [
-            f"        {pkg.version_env_key}: ${{{pkg.version_env_key}:-{pkg.default_range}}}"
-            for pkg in sandbox_packages
-        ]
-        return "\n".join(lines) + "\n"
-
+    start, end = "  # {{ runner }}\n", "  # {{ /runner }}\n"
+    count = max(1, runner_count)
+    if start in template:
+        head, rest = template.split(start)
+        block, tail = rest.split(end)
+        template = head + "\n".join(block.replace("{{ i }}", str(i)) for i in range(1, count + 1)) + tail
+    template = re.sub(r"^.*\{\{ i \}\}.*\n", lambda m: "".join(
+        m[0].replace("{{ i }}", str(i)) for i in range(1, count + 1)), template, flags=re.M)
+    template = template.replace("{{ runner_count }}", str(count))
     rendered = template.replace(
-        "      # {{ extension_mounts_sandbox }}\n",
-        mount_block("/opt/agento-src"),
-    )
-    rendered = rendered.replace(
         "      # {{ extension_mounts_cron }}\n",
         mount_block("/opt/agento-src"),
     )
-    rendered = rendered.replace(
-        "        # {{ sandbox_package_args }}\n",
-        sandbox_args_block(),
-    )
     rendered = rendered.replace("{{ python_version }}", python_version)
     return rendered
+
+
+def build_sandbox_image(project_dir: Path, version: str | None = None) -> int:
+    """Build ``agento-sandbox:<version>`` with ``docker build``; return the exit code.
+
+    The image has no compose service: nothing runs it, and the cron image (so every
+    ``runner-<i>``) is ``FROM`` it. ``version`` defaults to ``AGENTO_VERSION`` in
+    ``docker/.env``, the tag the compose file's ``SANDBOX_IMAGE`` resolves to. The CLI
+    pins come from each agent module's ``sandbox_packages`` declaration, overridden by
+    ``docker/.env``.
+    """
+    env_path = project_dir / "docker" / ".env"
+    env = parse_env_file(env_path) if env_path.is_file() else {}
+    tag = f"agento-sandbox:{version or env.get('AGENTO_VERSION') or 'latest'}"
+    args = [
+        "--build-arg", f"HOST_UID={env.get('HOST_UID', '1000')}",
+        "--build-arg", f"HOST_GID={env.get('HOST_GID', '1000')}",
+    ]
+    for pkg in enumerate_sandbox_packages(project_dir):
+        args.extend([
+            "--build-arg",
+            f"{pkg.version_env_key}={env.get(pkg.version_env_key, pkg.default_range)}",
+        ])
+    log_info(f"Building base image {tag}...")
+    ctx = project_dir / ".agento" / "docker" / "sandbox"
+    return subprocess.run(["docker", "build", "-t", tag, *args, str(ctx)]).returncode
 
 
 def build_base_images(project_dir: Path, version: str) -> None:
@@ -493,30 +505,24 @@ def build_base_images(project_dir: Path, version: str) -> None:
     on Docker Hub.
 
     Call AFTER ``materialize_docker_context()`` and BEFORE any
-    ``docker compose build``. Build args mirror
+    ``docker compose build``. Toolbox and cron build args mirror
     ``src/agento/framework/cli/templates/docker-compose.yml`` — kept in sync by
     ``TestBuildBaseImagesTemplateDriftGuard``.
     """
+    # Order matters: sandbox before cron (cron's FROM resolves SANDBOX_IMAGE).
+    sandbox_tag = f"agento-sandbox:{version}"
+    if (code := build_sandbox_image(project_dir, version)) != 0:
+        log_error(f"Failed to build base image {sandbox_tag}.")
+        sys.exit(code)
+
     env_path = project_dir / "docker" / ".env"
     env = parse_env_file(env_path) if env_path.is_file() else {}
-    host_uid = env.get("HOST_UID", "1000")
-    host_gid = env.get("HOST_GID", "1000")
-    sandbox_tag = f"agento-sandbox:{version}"
     ctx_root = project_dir / ".agento" / "docker"
-
     host_ids = [
-        "--build-arg", f"HOST_UID={host_uid}",
-        "--build-arg", f"HOST_GID={host_gid}",
+        "--build-arg", f"HOST_UID={env.get('HOST_UID', '1000')}",
+        "--build-arg", f"HOST_GID={env.get('HOST_GID', '1000')}",
     ]
-    sandbox_args = list(host_ids)
-    for pkg in enumerate_sandbox_packages(project_dir):
-        sandbox_args.extend([
-            "--build-arg",
-            f"{pkg.version_env_key}={env.get(pkg.version_env_key, pkg.default_range)}",
-        ])
-    # Order matters: sandbox before cron (cron's FROM resolves SANDBOX_IMAGE).
     specs = [
-        ("sandbox", ctx_root / "sandbox", sandbox_args),
         ("toolbox", ctx_root / "toolbox", host_ids),
         ("cron", ctx_root / "cron",
             ["--build-arg", f"SANDBOX_IMAGE={sandbox_tag}"]),
@@ -538,20 +544,24 @@ def regenerate_compose(project_dir: Path) -> None:
 
     Reads enabled extensions from ``app/etc/modules.json``, detects the
     project venv's Python version, substitutes mount lines, writes the result.
-    Sandbox build args (CLI version pins) are sourced from each agent module's
-    ``sandbox_packages`` di.json declaration — adding a new agent requires no
-    framework edit here.
+    The sandbox image has no service here: :func:`build_sandbox_image` builds it.
     """
     py_ver = detect_python_version(project_dir / ".venv")
     extensions = enumerate_enabled_extensions(project_dir)
-    sandbox_packages = enumerate_sandbox_packages(project_dir)
     template = get_template("docker-compose.yml")
+    env_path = project_dir / "docker" / ".env"
+    dotenv = parse_env_file(env_path) if env_path.is_file() else {}
     rendered = render_compose(
         template,
         python_version=py_ver,
         extensions=extensions,
-        sandbox_packages=sandbox_packages,
+        # Lowering it: drain first, or jobs of a removed runner stay RUNNING (docker/README.md).
+        runner_count=int(os.environ.get("AGENTO_RUNNER_COUNT") or dotenv.get("AGENTO_RUNNER_COUNT") or 1),
     )
     out = project_dir / "docker" / "docker-compose.yml"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(rendered)
+    # The compose reads the runtime DB passwords from docker/.env (WS8): generate a missing one.
+    for key in ("MYSQL_BACKEND_PASSWORD", "MYSQL_TOOLBOX_PASSWORD"):
+        if env_path.is_file() and not dotenv.get(key):
+            update_dotenv_value(env_path, key, secrets.token_urlsafe(24))

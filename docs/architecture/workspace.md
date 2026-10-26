@@ -1,6 +1,6 @@
 # Workspace
 
-The workspace is where the agent **reads** from, **writes** to, and **runs**. It's the filesystem surface shared between cron (builder), sandbox (agent), and toolbox (MCP server).
+The workspace is where the agent **reads** from, **writes** to, and **runs**. It's the filesystem surface shared between cron (builder), the runners (agent), and toolbox (MCP server).
 
 Everything under `workspace/` on the host maps to `/workspace` inside the containers.
 
@@ -61,7 +61,7 @@ workspace/
 │               ├── .claude.json            #     Copied from build
 │               ├── .claude/                #     Copied from build (agent may write to it)
 │               ├── .codex/                 #     Copied from build
-│               ├── .mcp.json               #     Copied + ?cap=<capability> injected
+│               ├── .mcp.json               #     Copied + capability header injected
 │               ├── AGENTS.md               #     Copied from build
 │               ├── SOUL.md                 #     Copied from build
 │               ├── CLAUDE.md               #     Copied from build
@@ -86,7 +86,7 @@ workspace/
 
 ### What's shared with the agent's home directory
 
-Inside the containers, these symlinks are created by the cron/sandbox entrypoint:
+Inside the containers, these symlinks are created by the cron image entrypoint (the runners use the same image):
 
 ```
 /home/agent/.claude.json  →  /workspace/.claude.json
@@ -439,8 +439,11 @@ Before (in build):
   http://toolbox:3001/mcp
 
 After (in artifacts):
-  http://toolbox:3001/mcp?job_id=42&cap=<capability token>
+  http://toolbox:3001/mcp?job_id=42
+  headers: {"Authorization": "Bearer <capability token>"}
 ```
+
+An `/sse` entry cannot send headers, so it gets `?cap=<capability token>` in the URL instead.
 
 The toolbox hashes that token, finds its `toolbox_capability` row, and reads `agent_view_id` and
 `job_id` from **the row** — so the URL can no longer assert a scope, only present a credential. There is
@@ -484,7 +487,7 @@ drwxr-xr-x  ..
 drwxr-xr-x  .claude/     # copied from build
 -rw-r--r--  .claude.json # copied from build
 drwxr-xr-x  .codex/      # copied from build
--rw-r--r--  .mcp.json    # copied + ?cap=<capability> injected
+-rw-r--r--  .mcp.json    # copied + capability header injected
 -rw-r--r--  AGENTS.md
 -rw-r--r--  SOUL.md
 -rw-r--r--  CLAUDE.md
@@ -515,7 +518,7 @@ exception is the per-run git SSH identity, delivered as a signing socket rather 
 
 Today `~/.claude/` and `~/.codex/` point to a single workspace-wide dir. All agent_views share the same session transcript pool. Session IDs are UUIDs so there are no collisions, but if you want hard isolation between `dev_01` and `qa_01` conversations, you'd need per-agent_view mounts.
 
-Acceptable today because typical deployments run one agent_view at a time per cron container. This will need revisiting when cron and sandbox separate.
+Acceptable today because typical deployments run one agent_view at a time per cron container. This will need revisiting now that the agents run in the runners, not in cron.
 
 ---
 

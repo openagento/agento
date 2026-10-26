@@ -19,7 +19,6 @@ from agento.framework.harness import (
     RunRequest,
     clear,
     create_runner,
-    get_harness,
     parse_harness_declarations,
     register_harness,
     resolve_provider,
@@ -134,27 +133,12 @@ class TestCredentiallessProvider:
             lambda conn, **kw: recorded.append(kw) or 1,
         )
 
-        from agento.framework.harness import SubprocessRunner
+        from tests.harness_fixtures import usage_recording_runner
 
-        # Exercise the shipped recorder against a credential-less context: the fixture
-        # runner deliberately has no DB path of its own.
-        class _Recorder(SubprocessRunner):
-            def _parse_output(self, raw):  # pragma: no cover - unused here
-                raise NotImplementedError
+        runner = usage_recording_runner(monkeypatch, "fake", _ctx())
 
-            def _credential_env(self, credential):  # pragma: no cover - unused here
-                return {}
-
-        runner = _Recorder(
-            context=_ctx(),
-            command_builder=get_harness("fake").adapter.command_builder,
-            logger=MagicMock(),
-        )
-        monkeypatch.setattr(runner, "_get_db_connection", lambda: MagicMock())
-
-        from agento.framework.harness import RunResult
-
-        runner._record_usage(RunResult(raw_output="ok", input_tokens=3, output_tokens=2))
+        runner._record_usage({"input_tokens": 3, "output_tokens": 2, "duration_ms": None,
+                              "model": None})
 
         assert recorded[0]["credential_id"] is None
         assert (recorded[0]["harness"], recorded[0]["provider"]) == ("fake", "fake_local")

@@ -9,7 +9,7 @@ import {
 import { ScopeResolutionError } from '../config-loader.js';
 
 // The scope is the capability's, never the body's.
-const cap = (agentViewId = 7) => ({ kind: 'internal_rest', agentViewId, jobId: null });
+const cap = (agentViewId = 7) => ({ kind: 'internal_rest', agent_view_id: agentViewId, job_id: null });
 
 function mockRes() {
   return {

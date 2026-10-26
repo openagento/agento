@@ -90,8 +90,50 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 | `job_resume_after` | `JobResumedEvent` | `job` | After CLI `job:resume` re-queues a paused job (status → TODO) |
 | `job_finalize_before` | `JobFinalizeEvent` | `job, job_result, elapsed_ms, verdict` | After `rc=0`, **before** the SUCCESS UPDATE. The mutable `verdict` field lets an observer veto a "ghost success"; **no in-tree observer sets it** — `verdict` stays `None` by default |
 | `job_finalize_after` | `JobFinalizeEvent` | `job, job_result, elapsed_ms, verdict` | After the terminal status (`SUCCESS`/`TODO`/`FAILED`/`DEAD`) commits. `verdict=None` (the in-tree default) means SUCCESS; a populated `verdict` — if a future module sets one — means the run was vetoed |
+| `job_claim_before` | `JobClaimBeforeEvent` | `job_id, verdict, delay_ms` | Inside the claim transaction, **before** the row goes RUNNING. An observer may set `verdict = ClaimVerdict.DEFER` and a `delay_ms` to hold the job for another tick |
+| `job_defer_after` | `JobDeferAfterEvent` | `job_id, stretch_seq, defer_count, reason` | When a block ends — once per stretch, carrying the number of deferrals it collapsed |
+| `execution_start_after` | `ExecutionEvent` | `execution_id, job_id, attempt` | After the run's capabilities commit — the attempt has begun |
+| `execution_finish_after` | `ExecutionEvent` | `execution_id, job_id, attempt` | After a transition ends the attempt with a result (`succeeded` / `failed`) |
+| `execution_abandon_after` | `ExecutionEvent` | `execution_id, job_id, attempt` | After a transition ends the attempt without one — a pool wait, a pause, a stale recovery |
+| `conversation_create_after` | `ConversationCreatedEvent` | `conversation_id, agent_view_id, user_id` | After a new thread commits |
+| `conversation_message_after` | `ConversationMessageEvent` | `conversation_id, message_id, job_id` | After a user turn is accepted **and** its job published, so the `job_id` names a job that exists. Dispatched by the call that publishes — the submission, or §4.4's sweep finishing a `pending` message — so an idempotent replay, which publishes nothing, announces nothing |
+| `conversation_archive_after` | `ConversationArchivedEvent` | `conversation_id, actor_id, reason` | After a thread is archived. **One event for both paths** — the owner archiving by hand and §10.1 retiring an idle thread — because both go through one service function. `actor_id` is `None` exactly when no human did it; `reason` is `manual` or `idle` |
+| `conversation_reactivate_after` | `ConversationReactivatedEvent` | `conversation_id, actor_id` | After an archived thread is brought back |
+| `conversation_delete_after` | `ConversationDeletedEvent` | `conversation_id` | After the delete commits. Notification only: the row and everything cascading from it are gone, so an observer has nothing to read and nothing it does can change the outcome |
+| `conversation_unblock_after` | `ConversationUnblockedEvent` | `conversation_id, message_id, actor_id` | After an operator releases a thread blocked on a paused turn |
+
+The conversation events carry **ids only** — never a title, a message body or any other raw
+external input (EVT-3). An observer that needs the text reads the row it is told about.
+
+**No in-tree observer listens to any of them, and that is deliberate** (EVT-7). Every durable
+write in a conversation is elsewhere — the `conversation_event` row, written in the same
+transaction as the change, and the framework outbox relayed after it — so an observer here can
+only ever be an optional reaction. These events exist as the seam `app/code` and later epics
+extend. The `conversation` module ships exactly one observer, on `job_claim_before`, because a
+claim veto is a decision and not a reaction.
 
 `job_fail_after` fires on every failure, then one of `job_retry_after`, `job_blocked_after`, or `job_dead_after` also fires.
+
+`job_claim_before` is the **one dispatch in the framework that is not fail-open**: an observer that
+raises has not decided "yes", so the job is deferred, not claimed. It runs on the claim's own cursor
+inside the claim transaction, so the deferral, the new `scheduled_after` and the bookkeeping commit
+together — a deferred job was never RUNNING and its attempt count is untouched. The delay travels in
+the event, never in framework config: the framework clamps it to `[250 ms, 30 s]` and rounds it **up**
+to whole seconds, because `job.scheduled_after` is a second-precision `TIMESTAMP` and a sub-second
+delay would store as no delay at all. See `src/agento/framework/defer.py`.
+
+The three `execution_*` events carry **three ids and nothing else**. An observer that needs
+the outcome reads the module's own row; an event that carried the error would put agent
+output and exception text in front of every observer of every run (SEC-6). They fire only
+**after** the transaction that produced them commits — an observer must not see an attempt a
+rollback never started, or an execution a rollback un-ended. The seam that writes the module's
+row is `ExecutionFinalizer` (`framework/execution_hooks.py`); with none registered the events
+still fire and nothing is written. See [../modules/conversation.md](../modules/conversation.md).
+
+Deferrals are collapsed into a **stretch** (`job_defer_stretch`): one row opened at the first
+deferral, bumped at every later one, and announced **once, when the block ends**. A job refused
+every poll tick for a minute is one `job_defer_after`, not sixty. `outbox:prune` prunes closed
+stretches with the same retention as the outbox; an open stretch is never pruned, whatever its age.
 
 `job_finalize_before` fires after a `rc=0` run, before the SUCCESS commit. The framework's **verdict plumbing stays in place** for future modules: an observer may set `verdict` (a `Verdict` dataclass with `retryable`, `reason: VerifyReason`, `fresh_start`, `detail`, `blocked`); a non-`None` verdict converts the apparent success into a `JobVerificationFailed` exception that routes through the normal retry/blocked/dead path, and `verdict.fresh_start=True` additionally clears `job.session_id` so the next retry starts a fresh agent session. **No in-tree observer uses this today.** The `app_monitor` module ships `McpHealthTelemetryObserver` on this event for **telemetry only** — it records two nullable per-attempt signals (`toolbox_mcp_calls`, `toolbox_mcp_connected`) on the `job` row and optionally emails ops, but never sets a verdict and never disrupts job flow. See [src/agento/modules/app_monitor/README.md](../../src/agento/modules/app_monitor/README.md).
 
@@ -119,7 +161,7 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 
 | Event | Data Class | Fields | When |
 |-------|-----------|--------|------|
-| `config_save_after` | `ConfigSavedEvent` | `path, encrypted` | After CLI `config:set` commits a value |
+| `config_save_after` | `ConfigSavedEvent` | `path, encrypted` | After `config_write.write_config` commits a value (`config:set`, the admin TUI, the panel admin config) |
 | `setup_upgrade_before` | `SetupBeforeEvent` | `dry_run` | Before `setup:upgrade` begins work |
 | `setup_upgrade_after` | `SetupCompleteEvent` | `result, dry_run` | After `setup:upgrade` finishes all work |
 | `migration_apply_after` | `MigrationAppliedEvent` | `version, module, path` | After a SQL migration is applied |
@@ -135,6 +177,12 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 | `agent_view_run_finish_after` | `AgentViewRunFinishedEvent` | `job, agent_view_id, provider, model, elapsed_ms, success` | After CLI execution completes |
 
 `agent_view_run_start_before` fires after per-job config files are generated but before the CLI subprocess starts. The `agent_view` module observes this event to write `AGENTS.md` and `SOUL.md` into the artifacts directory.
+
+### Artifacts
+
+| Event | Data Class | Fields | When |
+|-------|-----------|--------|------|
+| `artifact_delete_after` | `ArtifactDeleteAfterEvent` | `artifact_code` | In `web`, after a panel delete removed the store and committed the `versioned_artifact` row delete. The `miniapps` observer deletes the artifact's approval rows. An observer error does not fail the delete |
 
 ### Routing
 
@@ -181,19 +229,16 @@ Examples: `job_claim_after`, `module_register_before`, `workspace_build_complete
 
 | Event | Data Class | Fields | When |
 |-------|-----------|--------|------|
-| `credential_register_after` | `CredentialRegisteredEvent` | `scope, credential_id, label, credentials, type` | A credential was registered via `credential:register` |
+| `credential_register_after` | `CredentialRegisteredEvent` | `scope, credential_id, label, credentials, type` | A credential was registered via `credential:register`, or re-logged from the panel by the `credential:web-login` worker (one shared function, `register_credential_and_dispatch`) |
 | `credential_refresh_after` | `CredentialRefreshedEvent` | `scope, credential_id, label, credentials, type` | A credential was re-authenticated via `credential:refresh` |
 | `credential_auth_failed_after` | `CredentialAuthFailedEvent` | `scope, credential_id, error_msg, job_id` | A runtime auth failure flips a credential to `status='error'` (permanent poison) |
 | `credential_usage_limited_after` | `CredentialUsageLimitedEvent` | `scope, credential_id, error_msg, reset_at, job_id` | A session/usage/rate limit throttles a credential via `throttled_until` (temporary cooldown; `status` stays `'ok'`) |
 | `credential_auth_throttled_after` | `CredentialAuthThrottledEvent` | `scope, credential_id, error_msg, throttled_until, job_id` | A **transient** auth failure (revoked/stale access token) throttles a credential via `throttled_until` (`status` stays `'ok'`; no poison) |
 
-**Deprecated aliases.** Each of the five is ALSO dispatched under its pre-0.15 name
-(`token_register_after`, `token_refresh_after`, `token_auth_failed_after`,
-`token_usage_limited_after`, `token_auth_throttled_after`) carrying the old `Token*Event`
-payload with `agent_type` / `token_id`. Both payloads are built from the same data in
-`dispatch_credential_event`, so an observer on either name sees consistent values. Existing
-third-party observers therefore keep working; removal is tracked in
-[ROADMAP.md](../../ROADMAP.md). New observers should bind the `credential_*` names.
+**Removed in v0.17:** the pre-0.15 names (`token_register_after`, `token_refresh_after`,
+`token_auth_failed_after`, `token_usage_limited_after`, `token_auth_throttled_after`) and their
+`Token*Event` payloads. An observer bound to a `token_*` name gets no event. Bind it to the
+`credential_*` name and read `scope` / `credential_id`.
 
 `credential_usage_limited_after` is distinct from `credential_auth_failed_after`: a usage limit is **temporary**, so the consumer sets `credential.throttled_until = reset_at` (a cooldown the pool skips until it passes — the credential auto-recovers) and the job fails over to another healthy credential, whereas an auth failure **poisons** it (`status='error'`) until an operator or credential-refresh clears it. Both are internal events (defined in `framework/events.py`, not re-exported from `framework/contracts/`).
 
@@ -211,7 +256,11 @@ No event contract changed — that is the point of the reclassification.
 
 ### Config & Setup Lifecycle
 
-`config_save_after` fires only from CLI `config:set`, not from internal bootstrap config resolution.
+`config_save_after` fires only from `config_write.write_config` (`config:set`, the admin TUI and the panel
+admin config), not from internal bootstrap config resolution. `web` never runs `bootstrap()`, but
+it loads the `events.json` observers of the enabled modules when it composes its routes
+(`routes_registry.load_module_observers`), so a panel save reaches the same observers as
+`config:set`. Panel sign-in and launches dispatch no event.
 
 ## Event Data Mutability
 

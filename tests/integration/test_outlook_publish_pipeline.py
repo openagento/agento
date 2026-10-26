@@ -48,19 +48,6 @@ TOOLBOX_URL = "http://toolbox:3001"
 DELTA_URL = f"{TOOLBOX_URL}/api/outlook/delta"
 
 
-@pytest.fixture(autouse=True)
-def _clean_cursors():
-    conn = _test_connection(autocommit=True)
-    try:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM outlook_poll_cursor")
-        yield
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM outlook_poll_cursor")
-    finally:
-        conn.close()
-
-
 @pytest.fixture
 def two_views():
     """Create one workspace + two active agent_views, each with scoped outlook config (enabled +

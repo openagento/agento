@@ -76,7 +76,7 @@ class HarnessRunContext:
 
     ``credential`` is ``None`` in exactly two cases: the provider does not require
     one, or the context is built for an explicitly interactive login flow (the
-    operator will run ``/login`` inside the sandbox). ``SubprocessRunner.execute()``
+    operator will run ``/login`` inside the runner). ``SubprocessRunner.execute()``
     is headless and rejects the second case; ``CommandBuilder.interactive()`` accepts it.
     """
 
@@ -94,6 +94,8 @@ class HarnessRunContext:
     # this context builds argv, and `resolve_all()` decrypts every module's
     # `obscure` values. Populated by `get_harness_config`.
     harness_config: dict[str, str] = field(default_factory=dict, repr=False)
+    # Names the run for the runner's alive/signal ops (``job:<id>``); None: not addressable.
+    tag: str | None = None
 
 
 @dataclass(frozen=True)

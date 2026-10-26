@@ -1,0 +1,12 @@
+{
+  "operations": [
+    {
+      "id": "conversation.run_details",
+      "title": "See run details: prompts, tool input and output, harness, credential, model, tokens, job links"
+    },
+    {
+      "id": "conversation.channel_write",
+      "title": "Write into a channel thread: post a reply that continues the external task (Jira, Outlook)"
+    }
+  ]
+}

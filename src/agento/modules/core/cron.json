@@ -1,0 +1,6 @@
+{
+  "jobs": [
+    {"name": "credential_limits", "schedule": "* * * * *", "command": "credential:limits"},
+    {"name": "credential_web_login", "schedule": "* * * * *", "command": "credential:web-login"}
+  ]
+}

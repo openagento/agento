@@ -82,6 +82,10 @@ class TestRunChecks:
         failed = {label for label, ok, _ in _run_checks(row, agent_view=True) if not ok}
         assert failed == {"toolbox_mcp_connected = 1", "toolbox_mcp_calls counted"}
 
+    def test_connected_not_required_from_a_harness_without_an_init_report(self):
+        row = {**_OK_ROW, "toolbox_mcp_connected": None, "toolbox_mcp_calls": 0}
+        assert all(ok for _, ok, _ in _run_checks(row, agent_view=True, mcp_init_report=False))
+
     def test_toolbox_telemetry_passes_with_zero_calls(self):
         row = {**_OK_ROW, "toolbox_mcp_connected": 1, "toolbox_mcp_calls": 0}
         assert all(ok for _, ok, _ in _run_checks(row, agent_view=True))
@@ -101,7 +105,24 @@ class TestInsertTestJob:
         assert e2e._insert_test_job(MagicMock(), "REF", 42) == 7
         sql, params = cur.execute.call_args.args
         assert "agent_view_id" in sql
+        assert "'2038-01-01 00:00:00'" in sql  # parked: a live consumer never claims it
         assert params[:2] == ("REF", 42)
+        assert params[-2:] == (None, None)  # no pin: the consumer resolves from config
+
+    def test_harness_and_model_pin_the_job_row(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from agento.framework import e2e
+
+        conn = MagicMock()
+        cur = conn.cursor.return_value.__enter__.return_value
+        cur.lastrowid = 7
+        monkeypatch.setattr(e2e, "get_connection", lambda _cfg: conn)
+
+        e2e._insert_test_job(MagicMock(), "REF", 42, harness="codex", model="gpt-x")
+        sql, params = cur.execute.call_args.args
+        assert "agent_type, model" in sql
+        assert params[-2:] == ("codex", "gpt-x")
 
 
 class TestPickCredential:
@@ -113,19 +134,27 @@ class TestPickCredential:
 
         from agento.framework import agent_view_runtime, e2e
         from agento.framework import harness as harness_pkg
+        from agento.framework.agent_view_runtime import AgentViewRuntime
 
         monkeypatch.setattr(
             agent_view_runtime, "resolve_agent_view_runtime",
-            lambda _c, _v: SimpleNamespace(harness=harness, provider="p"),
+            lambda _c, _v, **_k: AgentViewRuntime(harness=harness, provider="p"),
         )
         monkeypatch.setattr(
+            harness_pkg, "find_harness",
+            lambda h: SimpleNamespace(descriptor=SimpleNamespace(default_provider=f"{h}-default")),
+        )
+        resolved = []
+        monkeypatch.setattr(
             harness_pkg, "resolve_provider",
-            lambda _h, _p: SimpleNamespace(credential_required=required, credential_scope="codex"),
+            lambda h, p: resolved.append((h, p)) or SimpleNamespace(
+                credential_required=required, credential_scope=h,
+            ),
         )
         monkeypatch.setattr(e2e, "get_credential", lambda _c, _i: by_id)
         selected = []
         monkeypatch.setattr(e2e, "select_credential", lambda _c, s: selected.append(s) or pool)
-        return selected
+        return selected, resolved
 
     @staticmethod
     def _cred(scope):
@@ -136,9 +165,19 @@ class TestPickCredential:
     def test_selects_from_the_job_scope_only(self, monkeypatch):
         from agento.framework.e2e import _pick_credential
 
-        selected = self._patch(monkeypatch, pool=self._cred("codex"))
+        selected, _ = self._patch(monkeypatch, pool=self._cred("codex"))
         assert _pick_credential(None, 5, None).scope == "codex"
         assert selected == ["codex"]
+
+    def test_a_pinned_harness_selects_from_its_own_pool(self, monkeypatch):
+        """The view runs codex; a job pinned to claude takes claude's default provider
+        and claude's pool — exactly what the consumer resolves at claim."""
+        from agento.framework.e2e import _pick_credential
+
+        selected, resolved = self._patch(monkeypatch, pool=self._cred("claude"))
+        assert _pick_credential(None, 5, None, "claude").scope == "claude"
+        assert resolved == [("claude", "claude-default")]
+        assert selected == ["claude"]
 
     def test_explicit_credential_of_another_scope_is_rejected(self, monkeypatch):
         import pytest
@@ -169,3 +208,22 @@ class TestPickCredential:
         self._patch(monkeypatch, required=False)
         with pytest.raises(ValueError, match="needs no credential"):
             _pick_credential(None, None, None)
+
+
+def test_the_scenario_claims_only_the_credential_under_test(monkeypatch):
+    """Pinned on the consumer, not by disabling the scope's other credentials — a run
+    in parallel, or the stack's own consumer, keeps the whole pool."""
+    from unittest.mock import MagicMock
+
+    from agento.framework import e2e
+    from agento.framework.agent_manager.models import CredentialRecord
+
+    consumer_cls = MagicMock()
+    consumer_cls.return_value._try_dequeue.return_value = None
+    monkeypatch.setattr(e2e, "Consumer", consumer_cls)
+    monkeypatch.setattr(e2e, "_insert_test_job", lambda *a, **k: 1)
+    monkeypatch.setattr(e2e, "get_connection", MagicMock(side_effect=AssertionError("no DB write")))
+
+    cred = CredentialRecord(id=9, scope="claude", type="oauth", label="l")
+    assert e2e.run_scenario(cred, MagicMock(), MagicMock(), MagicMock()) is False
+    assert consumer_cls.call_args.kwargs["credential_id"] == 9

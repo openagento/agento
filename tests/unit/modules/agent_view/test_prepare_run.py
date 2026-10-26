@@ -1,6 +1,6 @@
 """Tests for ``agent_view:prepare-run`` — the cron-side command `agento run`
 calls to do the same credential claim + materialization the consumer does, then
-returns home/working_dir/env/command so the host can ``docker exec sandbox``.
+returns home/working_dir/env/command so the host can ``docker exec runner-1``.
 
 The critical security guarantee: any API-key value the command resolves
 appears in the JSON ``env`` field, never anywhere in ``command`` (so the
@@ -22,9 +22,19 @@ from agento.framework.toolbox_capability import (
 )
 
 
-def _make_args(agent_view_code="dev", prompt=None, model=None, yolo=False):
+def _view_conn():
+    """A connection that answers the issuer's agent_view -> workspace lookup."""
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = {"workspace_id": 3}
+    return conn
+
+
+def _make_args(
+    agent_view_code="dev", prompt=None, model=None, yolo=False, harness=None, credential=None,
+):
     return argparse.Namespace(
         agent_view_code=agent_view_code, prompt=prompt, model=model, yolo=yolo,
+        harness=harness, credential=credential,
     )
 
 
@@ -33,13 +43,12 @@ pytestmark = pytest.mark.usefixtures("builtin_harnesses")
 
 @pytest.fixture
 def runtime_stub():
-    rt = MagicMock()
-    rt.harness = "claude"
-    rt.provider = "anthropic"
-    rt.model = None
-    rt.workspace = MagicMock(id=3, code="acme")
-    rt.agent_view = MagicMock(id=7, code="dev")
-    return rt
+    from agento.framework.agent_view_runtime import AgentViewRuntime
+
+    return AgentViewRuntime(
+        harness="claude", provider="anthropic", model=None,
+        workspace=MagicMock(id=3, code="acme"), agent_view=MagicMock(id=7, code="dev"),
+    )
 
 
 @pytest.fixture
@@ -81,7 +90,7 @@ def writer_stub():
 
 def _run_command(
     args, runtime, token, builder, writer, home, working_dir, *,
-    return_mocks=False, harness=None,
+    return_mocks=False, harness=None, resolver_out=None,
 ):
     """Drive the command's ``execute`` with all heavy deps mocked."""
     from agento.modules.agent_view.src.commands.prepare_run import (
@@ -93,7 +102,7 @@ def _run_command(
         "agento.framework.cli.runtime._load_framework_config",
         return_value=(MagicMock(), MagicMock(), MagicMock()),
     ), patch(
-        "agento.framework.db.get_connection_or_exit", return_value=MagicMock(),
+        "agento.framework.db.get_connection_or_exit", return_value=_view_conn(),
     ), patch(
         "agento.framework.workspace.get_agent_view_by_code",
         return_value=MagicMock(id=runtime.agent_view.id, code=runtime.agent_view.code),
@@ -112,6 +121,8 @@ def _run_command(
         return_value=harness if harness is not None else _harness_with(builder),
     ):
         MockResolver.return_value.resolve.return_value = token
+        if resolver_out is not None:
+            resolver_out.append(MockResolver.return_value.resolve)
         buf = io.StringIO()
         with redirect_stdout(buf):
             cmd.execute(args)
@@ -122,6 +133,32 @@ def _run_command(
 
 
 class TestAgentViewPrepareRunCommand:
+    def test_a_pinned_harness_runs_with_its_default_provider(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        """`agento run --harness` behaves as a pinned job: the view's provider and model
+        describe the view's harness, so the pinned one takes its own defaults."""
+        runtime_stub.model = "opus"
+        payload, mock_materialize = _run_command(
+            _make_args(harness="codex", prompt="hi"),
+            runtime_stub, token_stub, builder_stub, writer_stub,
+            home=tmp_path / "a", working_dir=tmp_path / "a", return_mocks=True,
+        )
+        runtime = mock_materialize.call_args.args[0]
+        assert (runtime.harness, runtime.provider, runtime.model) == ("codex", "openai", None)
+        assert payload["harness"] == "codex"
+
+    def test_a_pinned_credential_is_claimed_by_id(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+    ):
+        resolve = []
+        _run_command(
+            _make_args(credential=5, prompt="hi"),
+            runtime_stub, token_stub, builder_stub, writer_stub,
+            home=tmp_path / "a", working_dir=tmp_path / "a", resolver_out=resolve,
+        )
+        assert resolve[0].call_args.kwargs["credential_id"] == 5
+
     def test_name_and_help(self):
         from agento.modules.agent_view.src.commands.prepare_run import (
             AgentViewPrepareRunCommand,
@@ -285,6 +322,7 @@ class TestAgentViewPrepareRunCommand:
         assert kwargs["kind"] == KIND_MCP_INTERACTIVE
         assert kwargs["agent_view_id"] == runtime_stub.agent_view.id
         assert kwargs["ttl_seconds"] == INTERACTIVE_CAPABILITY_TTL_SECONDS
+        assert kwargs["allowed_transports"] == ["http"]
         assert mock_materialize.call_args.kwargs["capability_token"] == "tok-interactive"
         # The payload reaches the host terminal and its shell history.
         assert "tok-interactive" not in json.dumps(payload)
@@ -305,7 +343,7 @@ class TestAgentViewPrepareRunCommand:
             "agento.framework.cli.runtime._load_framework_config",
             return_value=(MagicMock(), MagicMock(), MagicMock()),
         ), patch(
-            "agento.framework.db.get_connection_or_exit", return_value=MagicMock(),
+            "agento.framework.db.get_connection_or_exit", return_value=_view_conn(),
         ), patch(
             "agento.framework.workspace.get_agent_view_by_code",
             return_value=MagicMock(id=7, code="dev"),

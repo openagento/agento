@@ -8,6 +8,8 @@ import socket
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from agento.framework.cli.install import (
     InstallCommand,
     _detect_timezone,
@@ -20,36 +22,20 @@ from agento.framework.cli.install import (
 )
 
 
-class TestSanitizeComposeName:
-    def test_lowercase(self):
-        assert _sanitize_compose_name("MyProject") == "myproject"
-
-    def test_replaces_spaces(self):
-        assert _sanitize_compose_name("My Project") == "my-project"
-
-    def test_replaces_dots(self):
-        assert _sanitize_compose_name("project.v2") == "project-v2"
-
-    def test_replaces_underscores(self):
-        assert _sanitize_compose_name("my_project") == "my-project"
-
-    def test_strips_invalid_chars(self):
-        assert _sanitize_compose_name("proj@#$ect") == "project"
-
-    def test_collapses_hyphens(self):
-        assert _sanitize_compose_name("a--b---c") == "a-b-c"
-
-    def test_trims_leading_trailing_hyphens(self):
-        assert _sanitize_compose_name("-project-") == "project"
-
-    def test_fallback_to_agento(self):
-        assert _sanitize_compose_name("___") == "agento"
-
-    def test_empty_string(self):
-        assert _sanitize_compose_name("") == "agento"
-
-    def test_complex_example(self):
-        assert _sanitize_compose_name("My Project.v2") == "my-project-v2"
+@pytest.mark.parametrize(("name", "expected"), [
+    ("MyProject", "myproject"),
+    ("My Project", "my-project"),
+    ("project.v2", "project-v2"),
+    ("my_project", "my-project"),
+    ("proj@#$ect", "project"),
+    ("a--b---c", "a-b-c"),
+    ("-project-", "project"),
+    ("___", "agento"),
+    ("", "agento"),
+    ("My Project.v2", "my-project-v2"),
+])
+def test_sanitize_compose_name(name, expected):
+    assert _sanitize_compose_name(name) == expected
 
 
 class TestGeneratePassword:
@@ -183,7 +169,7 @@ class TestScaffold:
         pyproject = (tmp_path / "pyproject.toml").read_text()
         assert 'name = "myproj"' in pyproject
         assert 'agento-core==0.8.0' in pyproject
-        assert 'requires-python = ">=3.12"' in pyproject
+        assert 'requires-python = ">=3.12,<3.15"' in pyproject
 
     def test_scaffold_does_not_write_compose_yet(self, tmp_path: Path):
         # docker-compose.yml is rendered later by regenerate_compose() once
@@ -421,11 +407,10 @@ class TestRunPostInstall:
         self, mock_ver, mock_build_base, mock_run, tmp_path: Path
     ):
         self._seed_project(tmp_path)
-        # Make subprocess returns succeed on sandbox/toolbox/cron, then fail
+        # Make subprocess returns succeed on toolbox/cron, then fail
         # on `up -d` so _run_post_install exits before the setup-done wait
         # loop sleeps for 2 minutes in tests.
         outcomes = iter([
-            type("R", (), {"returncode": 0})(),  # compose build sandbox
             type("R", (), {"returncode": 0})(),  # compose build toolbox cron
             type("R", (), {"returncode": 1})(),  # compose up -d → bail out
         ])
@@ -439,3 +424,37 @@ class TestRunPostInstall:
         # Easiest assertion: build_base_images was called and at least one
         # compose subprocess.run also happened.
         assert mock_run.call_count >= 1
+        # The sandbox image has no compose service; build_base_images built it.
+        assert not any("sandbox" in call.args[0] for call in mock_run.call_args_list)
+
+    @patch("agento.framework.cli.install.grant_migrate_user", return_value=False)
+    @patch("agento.framework.cli.install.subprocess.run")
+    @patch("agento.framework.cli.install.build_base_images")
+    @patch("agento.framework.cli.install.get_package_version", return_value="0.9.4")
+    def test_an_existing_database_gets_the_root_grant_before_start(
+        self, mock_ver, mock_build_base, mock_run, mock_grant, tmp_path: Path
+    ):
+        # WS8: a reinstall keeps storage/mysql, whose cron_agent predates the migration-user
+        # grant. A failed grant stops before `up -d`; a fresh install gets it from initdb.
+        self._seed_project(tmp_path)
+        mock_run.return_value = type("R", (), {"returncode": 0})()
+
+        _run_post_install(tmp_path, existing_db=True)
+
+        mock_grant.assert_called_once()
+        assert not any("up" in call.args[0] for call in mock_run.call_args_list)
+
+    @patch("agento.framework.cli.install.grant_migrate_user")
+    @patch("agento.framework.cli.install.subprocess.run")
+    @patch("agento.framework.cli.install.build_base_images")
+    @patch("agento.framework.cli.install.get_package_version", return_value="0.9.4")
+    def test_a_fresh_install_needs_no_root_grant(
+        self, mock_ver, mock_build_base, mock_run, mock_grant, tmp_path: Path
+    ):
+        self._seed_project(tmp_path)
+        outcomes = iter([type("R", (), {"returncode": rc})() for rc in (0, 1)])
+        mock_run.side_effect = lambda *a, **kw: next(outcomes)
+
+        _run_post_install(tmp_path)
+
+        mock_grant.assert_not_called()

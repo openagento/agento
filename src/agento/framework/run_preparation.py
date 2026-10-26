@@ -19,7 +19,12 @@ from .artifacts_dir import (
 )
 from .event_manager import get_event_manager
 from .events import WorkspaceBuildCheckEvent
-from .persistent_home import ensure_state_dir, link_persistent_paths
+from .persistent_home import (
+    copy_back_persistent_paths,
+    copy_in_persistent_paths,
+    ensure_state_dir,
+    link_persistent_paths,
+)
 from .ssh_identity import (
     ResolvedSshIdentity,
     materialize_ssh_public_identity,
@@ -32,6 +37,8 @@ logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .agent_manager.models import CredentialRecord
     from .agent_view_runtime import AgentViewRuntime
 
@@ -45,6 +52,23 @@ def _build_root_for_current_build(
         if parent.name == agent_view_code and parent.parent.name == workspace_code:
             return parent.parent.parent
     return Path(BUILD_DIR)
+
+
+def save_persistent_state(runtime: AgentViewRuntime, home_dir: Path | str | None) -> None:
+    """After a run: the persistent HOME paths it changed go back to the agent_view's
+    ``state/`` (``copy_in_persistent_paths`` gave it a copy). Call it only once the runner
+    gave the HOME back to ``agent``."""
+    if home_dir is None or not runtime.harness or runtime.agent_view is None or runtime.workspace is None:
+        return
+    from .harness import persistent_home_paths_for
+    persistent_paths = persistent_home_paths_for(runtime.harness)
+    if not persistent_paths:
+        return
+    ws, av = runtime.workspace.code, runtime.agent_view.code
+    current_build = get_current_build_dir(ws, av)
+    build_root = _build_root_for_current_build(current_build, ws, av) if current_build else Path(BUILD_DIR)
+    state_root = ensure_state_dir(ws, av, persistent_paths, build_root=build_root)
+    copy_back_persistent_paths(Path(home_dir), state_root, persistent_paths)
 
 
 def _ensure_private_ssh_dir(artifacts_dir: Path | str) -> None:
@@ -61,6 +85,22 @@ def _ensure_private_ssh_dir(artifacts_dir: Path | str) -> None:
     ssh_dir.chmod(0o700)
 
 
+def _build_serves(build_dir: Path, harness: str) -> bool:
+    """Whether ``build_dir`` was made for ``harness``: it holds the harness's own files."""
+    from .harness import owned_paths_for
+    files, dirs = owned_paths_for(harness)
+    owned = files | dirs
+    return not owned or any((Path(build_dir) / p).exists() for p in owned)
+
+
+def check_workspace_build(em, agent_view_id: int) -> None:
+    """Dispatch ``workspace_build_check_before`` and re-raise ``event.error``."""
+    check_event = WorkspaceBuildCheckEvent(agent_view_id=agent_view_id)
+    em.dispatch("workspace_build_check_before", check_event)
+    if check_event.error is not None:
+        raise check_event.error
+
+
 def materialize_run_workspace(
     runtime: AgentViewRuntime,
     *,
@@ -73,6 +113,8 @@ def materialize_run_workspace(
     effective_model: str | None = None,
     capability_token: str | None = None,
     ssh_identity: ResolvedSshIdentity | None = None,
+    check_build: Callable[[object, int], None] | None = None,
+    link_state: bool = False,
 ) -> tuple[Path | None, Path | None]:
     """Prepare ``(home_dir, working_dir)`` for one run.
 
@@ -87,6 +129,9 @@ def materialize_run_workspace(
     ``ssh_identity`` is the run's already-resolved SSH identity (the spawn path resolves
     it once and also needs it for the env). Only the NON-SECRET parts are written; the
     private key is never a file. ``None`` resolves it here from ``agent_config_svc``.
+
+    ``check_build(em, agent_view_id)`` replaces the plain check; the consumer passes one
+    that remembers a passed check for one poll interval.
 
     ``run_id`` is the job id (``int``) for the consumer or a unique string for
     ``agento run``. An ``int`` id scopes the run to a job via
@@ -103,12 +148,8 @@ def materialize_run_workspace(
     if runtime.agent_view is None or runtime.workspace is None:
         return None, None
 
-    event_manager = em or get_event_manager()
-
-    check_event = WorkspaceBuildCheckEvent(agent_view_id=runtime.agent_view.id)
-    event_manager.dispatch("workspace_build_check_before", check_event)
-    if check_event.error is not None:
-        raise check_event.error
+    agent_view_id = runtime.agent_view.id
+    (check_build or check_workspace_build)(em or get_event_manager(), agent_view_id)
 
     artifacts_dir = build_artifacts_dir(
         runtime.workspace.code, runtime.agent_view.code, run_id,
@@ -123,8 +164,49 @@ def materialize_run_workspace(
     # `current_build` branch the no-build fallback never saw an override at all.
     effective_model = effective_model or getattr(runtime, "model", None)
 
+    def prepare_fresh() -> None:
+        """Materialize the harness's own files with no build to copy them from."""
+        from .harness import (
+            get_agent_config,
+            get_harness,
+            get_harness_config,
+            supply_harness_config,
+            workspace_adapter_for,
+        )
+        agent_config = get_agent_config(agent_config_svc) if agent_config_svc else {}
+        # The adapter materializes FROM this config, so the run's effective runtime has to
+        # be in it: a `--model` override, or a job pinned to another harness than the
+        # view's (whose configured provider/model describe the view's harness, not this
+        # one) would otherwise bake the wrong expectation and fail the run's own guard.
+        agent_config = {
+            **agent_config,
+            **{k: v for k, v in (
+                ("harness", runtime.harness),
+                ("provider", getattr(runtime, "provider", None)),
+                ("model", effective_model),
+            ) if v},
+        }
+        writer = workspace_adapter_for(runtime.harness)
+        # The harness's own allow-listed config too, or settings that depend on it are
+        # silently ignored on this path only.
+        harness_config = (
+            get_harness_config(agent_config_svc, get_harness(runtime.harness))
+            if agent_config_svc is not None else {}
+        )
+        kwargs = supply_harness_config(
+            writer,
+            {"agent_view_id": agent_view_id, "toolbox_url": toolbox_url},
+            harness_config,
+        )
+        writer.prepare_workspace(artifacts_dir, agent_config, **kwargs)
+
     state_build_root: Path | None = None
     if current_build is not None:
+        if runtime.harness and not _build_serves(current_build, runtime.harness):
+            # The build is made for the view's harness. A job pinned to another one gets
+            # its own files fresh; the copy below then injects into them and leaves the
+            # view harness's files (its credential among them) out of this run.
+            prepare_fresh()
         # int job ids scope the run to a job; a str run id (`agento run`) has no job
         # scope, so it scopes by its own run id instead — the same unique segment this
         # run's artifacts dir already ends with — and still needs the override applied.
@@ -146,38 +228,13 @@ def materialize_run_workspace(
             runtime.agent_view.code,
         )
     elif runtime.harness:
-        from .harness import (
-            get_agent_config,
-            get_harness,
-            get_harness_config,
-            supply_harness_config,
-            workspace_adapter_for,
-        )
-        agent_config = get_agent_config(agent_config_svc) if agent_config_svc else {}
-        # There is no build to inject into on this path, so the override has to reach the
-        # adapter through the config it materializes FROM — otherwise a `--model` run
-        # bakes the configured model as its expectation and the guard fails a legitimate
-        # override on the one path that has no second chance to correct it.
-        if effective_model:
-            agent_config = {**agent_config, "model": effective_model}
-        writer = workspace_adapter_for(runtime.harness)
-        # The no-build fallback must supply the harness's own allow-listed config too, or
-        # settings that depend on it are silently ignored on this path only.
-        harness_config = (
-            get_harness_config(agent_config_svc, get_harness(runtime.harness))
-            if agent_config_svc is not None else {}
-        )
-        kwargs = supply_harness_config(
-            writer,
-            {"agent_view_id": runtime.agent_view.id, "toolbox_url": toolbox_url},
-            harness_config,
-        )
-        writer.prepare_workspace(artifacts_dir, agent_config, **kwargs)
+        from .harness import workspace_adapter_for
+        prepare_fresh()
         if capability_token is not None:
             # The build-copy path injects via copy_build_to_artifacts_dir; a
             # freshly-prepared workspace must get the same treatment or the run
             # would reach the toolbox with no capability at all.
-            writer.inject_runtime_params(
+            workspace_adapter_for(runtime.harness).inject_runtime_params(
                 artifacts_dir,
                 job_id=run_id if isinstance(run_id, int) else None,
                 run_id=run_id if isinstance(run_id, str) else None,
@@ -223,7 +280,11 @@ def materialize_run_workspace(
                 persistent_paths,
                 build_root=state_build_root or BUILD_DIR,
             )
-            link_persistent_paths(artifacts_dir, state_root, persistent_paths)
+            # A run uid never gets state/, so it gets a copy (`save_persistent_state`). Only a
+            # run that is `agent`'s own (`agento run`) may link to it.
+            (link_persistent_paths if link_state else copy_in_persistent_paths)(
+                artifacts_dir, state_root, persistent_paths,
+            )
 
         if credential is not None:
             writer = workspace_adapter_for(runtime.harness)

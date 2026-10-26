@@ -1,8 +1,16 @@
 name: Release
 
+# `published` fires for a pre-release AND a full release. A DRAFT release sends no
+# event at all, so a draft is tested by hand: Actions -> Release -> Run workflow with
+# its tag (or a branch). A manual run tests and builds only; it never publishes.
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Tag or branch to test (drafts send no release event)
+        required: true
 
 permissions:
   contents: write
@@ -25,17 +33,18 @@ jobs:
           --health-retries=5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v4
       - run: uv sync --group dev
       - run: uv run ruff check src/ tests/
       # Service containers accept no command override, so raise the limit at
-      # runtime. Default is 151; the token-pool contention test drives 200
-      # concurrent claimants that each hold a connection (no pooling), and
-      # skips itself below 230.
+      # runtime to what the compose template sets (600; default is 151). The
+      # token-pool contention test skips itself when it is too low.
       - name: Raise MySQL max_connections
         run: >-
           mysql -h 127.0.0.1 -P 3306 -u root -pcronagent_root
-          -e "SET GLOBAL max_connections=300;"
+          -e "SET GLOBAL max_connections=600;"
       - run: uv run pytest -q
         env:
           TEST_MYSQL_HOST: 127.0.0.1
@@ -52,21 +61,100 @@ jobs:
       # non-root run here is the one the root container cannot give us.
       - run: sudo mkdir -p /workspace/artifacts && sudo chown -R "$(id -u):$(id -g)" /workspace
       - run: cd src/agento/toolbox && npm ci && npm test
+      # Panel, ui kit and miniapp kit: build, lint, types, unit tests and every story in Chromium.
+      - run: cd frontend && npm ci && npm test
 
   build:
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: astral-sh/setup-uv@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # The built panel and kit are gitignored; the wheel ships them (hatch_build.py refuses a wheel without).
+      - run: cd frontend && npm ci && npm run build
       - run: uv build --no-sources
+      - run: uv run python tests/check_wheel_frontend.py dist/*.whl
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
 
-  publish:
+  # Real LLM calls with real credentials, on the self-hosted runner next to the
+  # owner's long-lived test deployment (agento-mklauza on cyber1, a PyPI layout).
+  # The credentials live only in that stack's DB, never in GitHub secrets: OAuth
+  # refresh tokens are single-use and rotate on every refresh, so only a stack that
+  # keeps its DB between runs can hold them. The job installs the exact wheel that
+  # `publish` would upload, so e2e proves the artifact, not a source tree.
+  # A failed run leaves the stack on the candidate, on purpose: the owner inspects it
+  # there. See docs/deployment/release-e2e.md.
+  e2e:
     needs: build
+    runs-on: [self-hosted, agento-e2e]
+    environment: e2e
+    permissions:
+      contents: read
+    # An explicit `shell: bash` runs `bash -eo pipefail`, so `pytest | tee` keeps
+    # pytest's exit code. The default shell is `bash -e` and would keep tee's 0.
+    defaults:
+      run:
+        shell: bash
+    # One OAuth refresh token per credential: two runs at once would rotate it twice.
+    concurrency:
+      group: e2e-oauth
+      cancel-in-progress: false
+    env:
+      STACK: ${{ vars.E2E_STACK_DIR || '/home/mklauza/agento-mklauza' }}
+      # Unpinned, uv picks the newest managed CPython, and `regex` has no wheel for
+      # it yet, so `uv sync` would try to compile it.
+      UV_PYTHON: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      # Installs the wheel, rebuilds the images and recreates the containers
+      # (migrations run on container start). Exits non-zero on any failure.
+      - name: Install the candidate wheel into the stack
+        run: |
+          "$STACK/bin/upgrade.sh" "$PWD/$(ls dist/*.whl)"
+      # upgrade.sh returns as soon as cron is STARTED, not ready. The tests discover
+      # their agent_view at collection time and skip when the CLI cannot answer yet.
+      - name: Wait for the stack to answer
+        run: |
+          cd "$STACK"
+          for _ in $(seq 60); do
+            .venv/bin/agento workspace:build-status >/dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "::error::the stack did not answer workspace:build-status in 120s"; exit 1
+      # The e2e tests SKIP when the stack or a credential is missing. A skip here
+      # means an untested release, so it fails the job.
+      - name: Run e2e tests
+        env:
+          AGENTO_E2E: "1"
+          AGENTO_E2E_PROJECT_ROOT: ${{ vars.E2E_STACK_DIR || '/home/mklauza/agento-mklauza' }}
+        run: |
+          uv sync --group dev
+          # Parallel first; the token rotation runs alone after it (it must not race a run).
+          # `serial` tests are not for this stack: the proxy smoke stops a dev stack's `web`,
+          # and the orchestration benchmark needs a test MySQL and many CPUs. `bin/test` runs both.
+          uv run pytest -q -m "e2e and not rotates_credentials and not serial" -rs | tee "$RUNNER_TEMP/e2e.log"
+          uv run pytest -q -m "e2e and rotates_credentials" -n 0 -rs | tee -a "$RUNNER_TEMP/e2e.log"
+          if grep -q '^SKIPPED' "$RUNNER_TEMP/e2e.log"; then
+            echo "::error::e2e tests were skipped - the release is not proven"; exit 1
+          fi
+
+  publish:
+    needs: [build, e2e]
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     environment: release
     permissions:

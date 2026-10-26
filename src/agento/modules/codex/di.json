@@ -20,7 +20,7 @@
         "transcripts": true,
         "structured_events": true,
         "toolbox": true,
-        "mcp_init_report": true,
+        "mcp_init_report": false,
         "usage_reporting": true,
         "cost_reporting": false
       },

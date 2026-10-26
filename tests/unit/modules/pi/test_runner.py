@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from agento.framework.agent_manager.errors import ModelConfigError
 from agento.framework.harness import HarnessRunContext
 from agento.modules.pi.src.command_builder import PiCommandBuilder
 from agento.modules.pi.src.runner import PiSubprocessRunner
@@ -169,7 +170,7 @@ class TestCredentialSafety:
             '"model":"wanted","usage":{"input":1,"output":1},"stopReason":"stop"}}'
         )
         r._extract_raw(completed(stdout=raw))
-        with pytest.raises(RuntimeError, match="but 'wanted' was requested"):
+        with pytest.raises(ModelConfigError, match="but 'wanted' was requested"):
             r._parse_output(raw)
 
     def test_auth_phrases_in_tool_results_do_NOT_raise(self):
@@ -191,7 +192,7 @@ class TestModelEnforcement:
         absence of a warning proves nothing; only a positive comparison does."""
         r = runner(model="anthropic/claude-opus-4.5")
         r._extract_raw(completed(stdout=fixture("run_success")))
-        with pytest.raises(RuntimeError, match=re.escape("but 'anthropic/claude-opus-4.5' was requested")):
+        with pytest.raises(ModelConfigError, match=re.escape("but 'anthropic/claude-opus-4.5' was requested")):
             r._parse_output(fixture("run_success"))
 
     def test_the_requested_model_passes(self):
@@ -207,7 +208,7 @@ class TestModelEnforcement:
                 stderr='Model "typo" not found for provider "openrouter". Using custom model id.',
             )
         )
-        with pytest.raises(RuntimeError, match="exact catalogue id"):
+        with pytest.raises(ModelConfigError, match="exact catalogue id"):
             r._parse_output(fixture("run_success"))
 
     def test_a_model_mismatch_is_NOT_a_credential_failure(self):
@@ -221,7 +222,7 @@ class TestModelEnforcement:
 
         r = runner(model="wrong/model")
         r._extract_raw(completed(stdout=fixture("run_success")))
-        with pytest.raises(RuntimeError) as exc:
+        with pytest.raises(ModelConfigError) as exc:
             r._parse_output(fixture("run_success"))
         assert not isinstance(
             exc.value, AuthenticationError | UsageLimitError | TransientAuthError
@@ -260,7 +261,7 @@ class TestAliasMarkerFromLiveApi:
             '"stopReason":"stop"}}'
         )
         r._extract_raw(completed(stdout=raw))
-        with pytest.raises(RuntimeError, match="was requested"):
+        with pytest.raises(ModelConfigError, match="was requested"):
             r._parse_output(raw)
 
 
@@ -301,7 +302,7 @@ class TestRouterSubstitutionOptOut:
         monkeypatch.setattr(type(r), "_read_init_from_transcript", lambda self, sid: None)
         raw = self._stream(provider="somewhere-else")
         r._extract_raw(completed(stdout=raw))
-        with pytest.raises(RuntimeError, match="provider"):
+        with pytest.raises(ModelConfigError, match="provider"):
             r._parse_output(raw)
 
     def test_without_the_flag_the_dispatch_fails(self, monkeypatch):
@@ -309,5 +310,5 @@ class TestRouterSubstitutionOptOut:
         monkeypatch.setattr(type(r), "_read_init_from_transcript", lambda self, sid: None)
         raw = self._stream()
         r._extract_raw(completed(stdout=raw))
-        with pytest.raises(RuntimeError, match="was requested"):
+        with pytest.raises(ModelConfigError, match="was requested"):
             r._parse_output(raw)

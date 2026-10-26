@@ -41,7 +41,7 @@ vi.mock('../../../modules/versioned_artifacts/toolbox/git-exec.js', async (impor
 
 const { createService } = await import('../../../modules/versioned_artifacts/toolbox/service.js');
 const { createBackend } = await import('../../../modules/versioned_artifacts/toolbox/git-backend.js');
-const { readSource } = await import('./helpers.js');
+const { readSource, vaConfig } = await import('./helpers.js');
 
 let root, pub, src, svc, be;
 
@@ -56,10 +56,7 @@ beforeEach(async () => {
   await mkdir(path.join(src, 'css'));
   await writeFile(path.join(src, 'index.html'), '<h1>v1</h1>\n');
   svc = createService({
-    config: { storage_root: root, published_root: pub, allowed_artifacts: 'site',
-      'serving/keep_versions': 0, 'serving/public_base_url': 'http://localhost:8080', 'limits/max_files': 2000,
-      'limits/max_file_size': 5242880, 'limits/max_total_size': 104857600,
-      'limits/max_diff_bytes': 1048576, 'limits/max_agent_artifacts': 50, 'security/allow_symlinks': false },
+    config: vaConfig(root, pub),
     db: null, log: vi.fn(), actor: 'admin',
   });
   await svc.init('site', { files: await readSource(src) });

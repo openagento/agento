@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+from functools import partial
 from pathlib import Path
 
 import pytest
 
-from agento.framework.bootstrap import bootstrap
+from agento.framework.bootstrap import bootstrap as _bootstrap
 from agento.framework.channels import registry as channel_registry
 from agento.framework.commands import clear as clear_commands
 from agento.framework.commands import get_commands
@@ -16,6 +17,9 @@ from agento.framework.router_registry import clear as clear_routers
 from agento.framework.router_registry import get_routers
 from agento.framework.workflows import _WORKFLOW_MAP
 from agento.framework.workflows import clear as clear_workflows
+
+# The default user_dir is the real /app/code; on a deployed host it holds user modules.
+bootstrap = partial(_bootstrap, user_dir="/nonexistent")
 
 
 @pytest.fixture(autouse=True)

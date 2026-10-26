@@ -120,17 +120,6 @@ def test_a_stray_needs_store_field_changes_nothing(modules):
     assert a == b
 
 
-def test_the_store_flag_follows_the_executable_not_the_declaration(modules):
-    """``run.sh`` jobs get the store; ``logrotate`` (the framework raw_command) does not."""
-    out = _render([_module(modules, "alpha", [
-        {"name": "a", "schedule": "0 * * * *", "command": "a:b"},
-    ])])
-    module_line = next(ln for ln in out.splitlines() if "cron:run" in ln)
-    logrotate_line = next(ln for ln in out.splitlines() if "logrotate" in ln and ln[0].isdigit())
-    assert " --store -- " in module_line
-    assert "--store" not in logrotate_line
-
-
 # --- Discovery ------------------------------------------------------------------------
 
 def test_a_module_without_cron_json_contributes_nothing_and_is_not_an_error(modules):
@@ -252,11 +241,9 @@ def test_a_config_database_failure_leaves_the_crontab_untouched(modules):
     with patch.object(renderer, "iter_module_dirs", return_value=[m]), \
          patch.object(renderer, "resolve_module_root", return_value=None), \
          patch.object(renderer, "_schedule_jobs", return_value=[]), \
-         patch.object(renderer, "store_env") as store_env, \
          patch.object(Path, "read_bytes", return_value=b""), \
          patch.object(renderer, "_connect", side_effect=renderer.OperationalError("down")), \
          patch("subprocess.run") as run:
-        store_env.parse.return_value = {}
         assert renderer.main() == 0
     renderer._config_overrides.cache_clear()
     run.assert_not_called()
@@ -373,6 +360,14 @@ def test_only_mysql_fields_are_taken_from_the_env_file(tmp_path):
     assert "AGENTO_ENCRYPTION_KEY" not in settings
 
 
+@pytest.mark.parametrize("raw", [b"MYSQL_HOST\0", b"=x\0"])
+def test_a_malformed_env_file_fails_closed(tmp_path, raw):
+    env = tmp_path / "env"
+    env.write_bytes(raw)
+    with patch.object(renderer, "ENV_FILE", str(env)), pytest.raises(renderer.OperationalError):
+        renderer._mysql_settings()
+
+
 # --- The emitted line ------------------------------------------------------------------
 
 def test_the_installer_line_is_re_emitted_so_the_renderer_keeps_running():
@@ -401,7 +396,7 @@ def test_a_rendered_line_delivers_the_argv_the_renderer_built(tmp_path, modules)
     subprocess.run(["/bin/sh", "-c", command], check=True)
 
     assert out_file.read_text().splitlines() == [
-        "--store", "--", renderer.RUN_SH, "cron:run", "alpha", "a:b", "--msg", "two words",
+        "--", renderer.RUN_SH, "cron:run", "alpha", "a:b", "--msg", "two words",
     ]
 
 

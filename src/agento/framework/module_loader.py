@@ -38,50 +38,49 @@ def _read_json(path: Path) -> dict | list | None:
         return None
 
 
-def scan_modules(modules_dir: str = "/modules") -> list[ModuleManifest]:
-    """Scan modules directory and return parsed manifests.
+def parse_module_dir(entry: Path) -> ModuleManifest | None:
+    """Parse ONE module directory into a manifest, or None if it is not a module.
 
-    Skips directories starting with ``_`` (e.g. ``_example``).
+    The single parse: ``scan_modules`` and ``module_discovery.scan_all_modules`` both go
+    through it, so the manifest a directory yields never depends on which caller found it.
+    """
+    if not entry.is_dir() or entry.name.startswith("_"):
+        return None
+    manifest_path = entry / "module.json"
+    if not manifest_path.exists():
+        return None
+    data = json.loads(manifest_path.read_text())
+
+    # Magento-style: read companion JSON files for each concern.
+    # Falls back to module.json inline sections for backward compatibility.
+    return ModuleManifest(
+        name=data.get("name", entry.name),
+        version=data.get("version", "0.0.0"),
+        description=data.get("description", ""),
+        path=entry,
+        provides=_read_json(entry / "di.json") or data.get("provides", {}),
+        observers=_read_json(entry / "events.json") or data.get("observers", {}),
+        tools=data.get("tools", []),
+        log_servers=data.get("log_servers", []),
+        config=_read_json(entry / "system.json") or data.get("config", {}),
+        data_patches=_read_json(entry / "data_patch.json") or data.get("data_patches", {}),
+        cron=_read_json(entry / "cron.json") or data.get("cron", {}),
+        sequence=data.get("sequence", []),
+        order=data.get("order", 1000),
+    )
+
+
+def scan_modules(modules_dir: str = "/modules") -> list[ModuleManifest]:
+    """Scan ONE modules directory and return parsed manifests.
+
+    Skips directories starting with ``_`` (e.g. ``_example``). Callers that need the whole
+    module set (core + app/code + the container extension mount, with shadowing) use
+    ``module_discovery.scan_all_modules`` instead.
     """
     base = Path(modules_dir)
     if not base.is_dir():
         return []
-
-    manifests: list[ModuleManifest] = []
-    for entry in sorted(base.iterdir()):
-        if not entry.is_dir() or entry.name.startswith("_"):
-            continue
-        manifest_path = entry / "module.json"
-        if not manifest_path.exists():
-            continue
-        data = json.loads(manifest_path.read_text())
-
-        # Magento-style: read companion JSON files for each concern.
-        # Falls back to module.json inline sections for backward compatibility.
-        provides = _read_json(entry / "di.json") or data.get("provides", {})
-        observers = _read_json(entry / "events.json") or data.get("observers", {})
-        config = _read_json(entry / "system.json") or data.get("config", {})
-        data_patches = _read_json(entry / "data_patch.json") or data.get("data_patches", {})
-        cron = _read_json(entry / "cron.json") or data.get("cron", {})
-
-        manifests.append(
-            ModuleManifest(
-                name=data.get("name", entry.name),
-                version=data.get("version", "0.0.0"),
-                description=data.get("description", ""),
-                path=entry,
-                provides=provides,
-                observers=observers,
-                tools=data.get("tools", []),
-                log_servers=data.get("log_servers", []),
-                config=config,
-                data_patches=data_patches,
-                cron=cron,
-                sequence=data.get("sequence", []),
-                order=data.get("order", 1000),
-            )
-        )
-    return manifests
+    return [m for m in (parse_module_dir(e) for e in sorted(base.iterdir())) if m is not None]
 
 
 def _try_package_import(module_dir: Path, module_dotted: str, class_name: str) -> type | None:

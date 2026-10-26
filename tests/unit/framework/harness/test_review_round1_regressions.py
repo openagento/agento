@@ -24,6 +24,13 @@ FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "modules"
 SENTINEL = "SECRET-PROMPT-CONTENT-b7f3"
 
 
+def _view_conn():
+    """A connection that answers the issuer's agent_view -> workspace lookup."""
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = {"workspace_id": 3}
+    return conn
+
+
 def _register_fake() -> None:
     module_dir = FIXTURES / "fake_harness"
     for decl in parse_harness_declarations(module_dir / "di.json", "fake_harness"):
@@ -51,7 +58,6 @@ class TestPromptNeverReachesInfoLogs:
                 stderr="",
             ),
         )
-        runner._record_usage = MagicMock()
         runner.logger = logging.getLogger("harness-log-test")
         with caplog.at_level(level, logger="harness-log-test"):
             runner.execute(RunRequest(prompt=SENTINEL))
@@ -245,7 +251,7 @@ class TestInteractiveRunToleratesAnEmptyPool:
         with (
             patch("agento.framework.cli.runtime._load_framework_config",
                   return_value=(MagicMock(), MagicMock(), MagicMock())),
-            patch("agento.framework.db.get_connection_or_exit", return_value=MagicMock()),
+            patch("agento.framework.db.get_connection_or_exit", return_value=_view_conn()),
             patch("agento.framework.workspace.get_agent_view_by_code",
                   return_value=MagicMock(id=7, code="dev")),
             patch("agento.framework.agent_view_runtime.resolve_agent_view_runtime",
@@ -333,8 +339,8 @@ class TestCollisionsAreNotSurvivable:
         clear()
 
     def test_bootstrap_propagates_a_scope_collision(self):
-        from agento.framework.bootstrap import _load_agent_harnesses
         from agento.framework.harness import DuplicateCredentialScopeError
+        from agento.framework.harness.loader import load_harnesses
 
         register_builtin_harnesses()  # claims scope 'claude'
 
@@ -343,13 +349,13 @@ class TestCollisionsAreNotSurvivable:
         manifest.path = FIXTURES / "scope_collision"
 
         with pytest.raises(DuplicateCredentialScopeError):
-            _load_agent_harnesses(manifest)
+            load_harnesses([manifest])
 
     def test_bootstrap_still_tolerates_an_unimportable_adapter(self, tmp_path):
         """One broken third-party module must not take the consumer down."""
         import json
 
-        from agento.framework.bootstrap import _load_agent_harnesses
+        from agento.framework.harness.loader import load_harnesses
 
         mod = tmp_path / "broken"
         mod.mkdir()
@@ -363,7 +369,7 @@ class TestCollisionsAreNotSurvivable:
         manifest.name = "broken"
         manifest.path = mod
 
-        _load_agent_harnesses(manifest)  # must not raise
+        load_harnesses([manifest])  # must not raise
 
         from agento.framework.harness import find_harness
 
@@ -395,10 +401,10 @@ class TestCrossModuleValidation:
     def test_clean_module_set_has_no_cross_module_errors(self):
         """Round 6 replaced the dir-walking helper with the shared discovery path, so the
         collision check now sees exactly the modules the framework would load."""
-        from agento.framework.module_discovery import module_dirs_for_validation
+        from agento.framework.module_discovery import module_dirs_by_name
         from agento.framework.module_validator import _collision_errors
 
-        candidates = module_dirs_for_validation(
+        candidates = module_dirs_by_name(
             Path("src/agento/modules"), Path("app/code"),
         )
         assert _collision_errors(candidates) == []

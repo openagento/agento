@@ -13,7 +13,7 @@
 | `up` | Start Docker Compose runtime |
 | `down` | Stop Docker Compose runtime |
 | `logs [service]` | Show container logs |
-| `run <agent_view_code> [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one ([details](run.md)) |
+| `run <agent_view_code> [--harness H] [--model M] [--credential ID] [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one. The options pin this run only; no config is changed ([details](run.md)) |
 | **Setup** | |
 | `setup:upgrade [--dry-run] [--skip-onboarding]` | Apply migrations, data patches, run onboarding ([onboarding details](onboarding.md)) |
 | **Modules** | |
@@ -29,7 +29,7 @@
 | `config:list [prefix]` | List config values (all scopes) |
 | `config:remove <path> [--scope=S] [--scope-id=N]` | Remove config override from DB |
 | `config:test <path> \| --all [--agent-view CODE]` | Test a field's live credential or connection — four states, exit 1 on failure ([details](config.md#configtest)) |
-| **Credentials** (LRU pool per scope — no sticky primary; `token:*` are deprecated aliases) | |
+| **Credentials** (LRU pool per scope — no sticky primary) | |
 | `credential:register <scope> <label>` | Register OAuth credential interactively ([details](credentials.md)) |
 | `credential:register <scope> <label> --with-api-key` | Register API-key credential; secret read from stdin/getpass ([details](credentials.md)) |
 | `credential:register <scope> <label> --with-access-token` | Register access-token; JWT read from stdin/getpass ([details](credentials.md)) |
@@ -40,6 +40,8 @@
 | `credential:reset <id>` | Clear error status without re-auth |
 | `credential:deregister <id>` | Disable credential |
 | `credential:usage` | Show credential usage (incl. credential-less runs by `(harness, provider)`) |
+| `credential:limits` | Fetch each credential's vendor usage limits into `credential.limits` (cron, every minute) |
+| `credential:web-login` | Run panel re-logins in a PTY (cron, every minute) |
 | **Ingress** | |
 | `ingress:bind <type> <value> <agent_view> [--priority N]` | Bind inbound identity to agent_view. For regex identity types (e.g. `outlook_sender`), `<value>` is a case-insensitive `fullmatch` regex and `--priority` selects the winner (higher wins; ties between different views are ambiguous). |
 | `ingress:list [--type <type>] [--json]` | List all identity bindings |
@@ -61,25 +63,33 @@
 | `workspace:build-status [--agent-view <code>]` | Show workspace build history ([details](workspace-build.md)) |
 | `workspace:ssh-purge [--dry-run]` | **Deprecated (removal in v0.17+)** — delete SSH private keys left on disk by older versions ([details](workspace-build.md#workspacessh-purge)) |
 | **Versioned artifacts** | |
-| `artifact:init <artifact_code> [--source <dir>]` | Create a versioned artifact from a host directory; operator equivalent of `versioned_artifact_init` ([details](artifact-init.md)) |
-| `artifact:list` | List the artifacts the store holds ([details](artifact-list.md)) |
-| `artifact:delete <artifact_code>` | Remove an artifact, its versions and its served pages; asks first, and has no tool equivalent ([details](artifact-delete.md)) |
-| `artifact:publish <artifact_code> <version_id> --expected <version_id>` | Point an artifact's current at a version ([details](artifact-publish.md)) |
-| `artifact:auth <artifact_code> [--user <u>] [--pass <p>] [--disable] [--show]` | Set, rotate, show or disable an artifact's HTTP Basic auth; has no tool equivalent ([details](artifact-auth.md)) |
+| `artifact:auth <artifact_code> [--user <u>] [--pass-stdin] [--disable]` | Set, rotate or disable an artifact's HTTP Basic auth. The password goes to the terminal only. No tool equivalent. List, history, make current and delete are in the panel ([details](artifact-auth.md)) |
 | **Admin** | |
-| `admin` | Launch interactive TUI dashboard ([details](admin.md)) |
+| `admin` | Launch interactive TUI dashboard (deprecated: use the admin panel; [details](admin.md)) |
 | `config:schema [module] [--json]` | Show config field definitions from system.json |
 | `config:resolve <module> [--scope=S] [--scope-id=N] [--json]` | Resolve effective config values with source info |
+| **Panel users, roles and grants** | |
+| `user:create <username> [--role R]` | Create a panel user; password from a prompt or stdin, never argv ([details](user.md)) |
+| `user:list` / `user:set-role <u> <role>` / `user:activate <u>` / `user:deactivate <u>` / `user:password <u>` | Manage panel users; a role change or deactivation ends their sessions and launches ([details](user.md)) |
+| `role:list` / `role:create <code> --label L` / `role:delete <code>` | List, create or delete panel roles; `admin` and `user` are built in ([details](role.md)) |
+| `grant:add --role R (--tool T \| --operation O) (--workspace C \| --agent-view C)` | Grant a role a tool or `artifact.launch` in one scope ([details](grant.md)) |
+| `grant:list [--role R]` / `grant:remove <id>` | List or remove grants; removal ends that role's launches in the scope ([details](grant.md)) |
 | **Capabilities** | |
-| `capability:mint --kind K --agent-view C [--ttl N]` | Mint a toolbox capability token; prints it on stdout ([details](capability.md)) |
+| `capability:mint --kind K --agent-view C [--transport T] [--ttl N]` | Mint a toolbox capability token; prints it on stdout ([details](capability.md)) |
 | `capability:revoke` | Revoke a capability — reads the raw token from **stdin** ([details](capability.md)) |
 | **Jobs** | |
 | `job:list [--status S] [--source SRC] [--agent-view C] [--limit N]` | List recent jobs; surfaces failed/dead jobs with their error ([details](job-pause-resume.md)) |
 | `job:pause <job_id>` | Pause a running job (SIGTERM, keep session) ([details](job-pause-resume.md)) |
 | `job:resume <job_id>` | Resume a paused job (re-queue for consumer) ([details](job-pause-resume.md)) |
 | `job:set-runtime <job_id> [--harness H] [--model M] [--clear]` | Pin (or clear) a queued job's harness/model; TODO jobs only ([details](job-runtime.md)) |
+| **Conversations** (the `conversation` module; all three are cron passes an operator can also run by hand) | |
+| `conversation:sweep` (`co:sw`) | Finish stranded submissions and reconcile finished jobs ([details](../modules/conversation.md)) |
+| `conversation:relay` (`co:rel`) | Relay framework job events into conversation threads, and prune the relayed rows. One run passes every second for 55 s. ONE process by contract: a second would invert a thread's event order, so a run that finds the `conversation_relay` lock held exits at once ([details](../modules/conversation.md#the-outbox-relay)) |
+| `conversation:retention` (`co:ret`) | Prune conversation events, auto-archive idle threads, delete archived ones, sweep executions no thread owns — in that order ([details](../modules/conversation.md)) |
 | **Operations** | |
 | `consumer` | Start job consumer loop |
+| `limits:prune` (`li:pr`) | Delete expired rate-limit buckets |
+| `outbox:prune` (`ou:pr`) | Delete job-event outbox rows and closed defer stretches past `core/outbox/retention_days` |
 | `jira:periodic:sync` | Sync Jira recurring tasks to crontab |
 | `jira:periodic:configure [--check] [--project K]... [K ...]` | Create/verify the periodic status + Frequency field and sync its options from `frequency_map` across projects (setup command; uses the Jira admin token — `jira/jira_admin_token` paired with `jira/jira_admin_user`, falling back to `jira/jira_user`). Project keys may be given positionally or via `--project`. `--check` = read-only report, exit 1 on any inconsistency or if it could not be verified |
 | `publish <kind> [--agent-view C]` | Publish a job (jira-cron, jira-todo, jira-mention). Publishing is **per-view**: a deployment with no active agent_view fails with an actionable message instead of publishing on global config |
@@ -91,7 +101,7 @@
 | `replay <job_id>` | Replay a completed job. **Refuses** a job whose `agent_view_id` is NULL (pre-0.15 rows and stubs): the harness's own config — and therefore the exact command — cannot be resolved for it, and a replay that silently differs from the run it claims to reproduce is worse than none |
 | `exec:todo [key] [--agent-view C]` | Execute next TODO task. `--agent-view` names the acting view; it is **required** when more than one active view exists, and there is no global fallback ([details](../architecture/zero-trust.md)) |
 | `replay <job_id>` | Replay a completed job |
-| `e2e [--credential ID] [--model M] [--agent-view C] [--keep]` | Push one real test job through the consumer (real LLM call). With `--agent-view C` the job runs as that agent_view — its harness, workspace build and toolbox — and two more checks run: `toolbox_mcp_connected = 1` and `toolbox_mcp_calls` set. Those columns are written by the `app_monitor` module, so it must be enabled; without the option the job is a `blank` job with no toolbox and the extra checks do not run. The credential comes from the pool of the job's harness/provider (the agent_view's, else global config), as the consumer selects it; a `--credential` from another scope is rejected |
+| `e2e [--credential ID] [--harness H] [--model M] [--agent-view C] [--keep]` | Push one real test job through the consumer (real LLM call). `--harness`/`--model` pin the job's runtime ([job-runtime.md](job-runtime.md)); no config is changed. The command claims only the job it inserted, and the job is parked so a running consumer never takes it. The run claims only the credential under test; the rest of the pool is not touched. With `--agent-view C` the job runs as that agent_view — its harness, workspace build and toolbox — and two more checks run: `toolbox_mcp_connected = 1` and `toolbox_mcp_calls` set. Those columns are written by the `app_monitor` module, so it must be enabled; without the option the job is a `blank` job with no toolbox and the extra checks do not run. The credential comes from the pool of the job's effective harness/provider, as the consumer selects it; a `--credential` from another scope is rejected |
 
 ## How It Works
 
