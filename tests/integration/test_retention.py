@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import random
 import uuid
+from datetime import datetime
 
 import pytest
 
 from agento.framework.event_manager import ObserverEntry, clear, get_event_manager
 from agento.modules.conversation.src import retention, routes, service, stream
 
-from .conftest import _clean  # noqa: F401
+from .conftest import _clean, _test_connection  # noqa: F401
 from .test_conversation_submission import _Req
 
 
@@ -24,14 +25,16 @@ class _QReq(_Req):
         self.query = query or {}
 
 
-def _event(conn, conversation_id, *, age_days: float = 0, kind="assistant.message") -> int:
+def _event(conn, conversation_id, *, age_days: float = 0, kind="assistant.message",
+           at: datetime | None = None) -> int:
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO conversation_event "
             "(conversation_id, execution_id, kind, payload, source_kind, source_id, "
             " created_at) "
-            "VALUES (%s, NULL, %s, '{}', 'outbox', %s, NOW() - INTERVAL %s SECOND)",
-            (conversation_id, kind, random.getrandbits(48), int(age_days * 86400)))
+            "VALUES (%s, NULL, %s, '{}', 'outbox', %s, "
+            "        COALESCE(%s, NOW() - INTERVAL %s SECOND))",
+            (conversation_id, kind, random.getrandbits(48), at, int(age_days * 86400)))
         row_id = cur.lastrowid
     conn.commit()
     return row_id
@@ -55,6 +58,19 @@ def _watermark(conn, conversation_id) -> int | None:
     rows = _rows(conn, "SELECT last_pruned_event_id AS w FROM conversation_prune_watermark "
                        "WHERE conversation_id = %s", (conversation_id,))
     return int(rows[0]["w"]) if rows else None
+
+
+def _pair(conn, conversation_id) -> tuple[datetime, int]:
+    """The `(created_at, id)` of the last row the prune removed, in its own order."""
+    row = _rows(conn, "SELECT last_pruned_at, last_pruned_at_id FROM "
+                      "conversation_prune_watermark WHERE conversation_id = %s",
+                (conversation_id,))[0]
+    return row["last_pruned_at"], int(row["last_pruned_at_id"])
+
+
+def _at(conn, event_id) -> datetime:
+    return _rows(conn, "SELECT created_at FROM conversation_event WHERE id = %s",
+                 (event_id,))[0]["created_at"]
 
 
 # --- the age prune ---------------------------------------------------------
@@ -116,13 +132,123 @@ def test_the_prune_runs_in_a_live_conversation_not_only_a_deleted_one(conn, thre
     assert status[0]["status"] == "active"
 
 
-def test_the_window_has_a_floor_of_one_day(conn, thread):
-    """A zero or negative window would delete rows the stream has not sent yet."""
-    fresh = _event(conn, thread, age_days=0)
+def test_zero_days_keeps_events_runs_and_archived_threads_for_ever(conn, world, thread):
+    """`0` is the default: an imported history is not deleted on the night after the import.
+    All three readers of the two keys honour it (CLS-1)."""
+    old = _event(conn, thread, age_days=400)
+    run = _run(conn, started_days=400, finished_days=400, conversation_id=thread)
+    archived = service.create_conversation(conn, user_id=world["owner"].id,
+                                           agent_view_id=world["view"], title="old")
+    service.archive(conn, archived)
+    _age_archive(conn, archived, 400)
 
-    retention.prune_events(conn, event_days=0)
+    assert retention.prune_events(conn, event_days=0) == 0
+    assert retention.prune_old_executions(conn, event_days=0) == 0
+    assert retention.delete_archived(conn, archived_days=0) == 0
 
-    assert fresh in _event_ids(conn, thread)
+    assert _event_ids(conn, thread) == [old]
+    assert _alive(conn, run) == {run}
+    assert _status(conn, archived) == "archived"
+
+
+def test_the_oldest_rows_by_time_go_first(conn, thread):
+    """An imported event has a high id and an old time: the budget takes it first."""
+    native = _event(conn, thread, age_days=100)
+    _event(conn, thread, age_days=300)                  # imported: a higher id
+
+    assert retention.prune_events(conn, event_days=90, max_rows=1) == 1
+    assert _event_ids(conn, thread) == [native]
+
+
+def test_the_watermark_pair_rises_and_never_falls(conn, thread):
+    first = _event(conn, thread, age_days=100)
+    first_at = _at(conn, first)
+    retention.prune_events(conn, event_days=90)
+    assert _pair(conn, thread) == (first_at, first)
+
+    older = _event(conn, thread, age_days=200)          # imported after the first pass
+    retention.prune_events(conn, event_days=90)
+    assert _pair(conn, thread) == (first_at, first)     # an older row does not lower it
+    assert _watermark(conn, thread) == older             # the highest id removed
+
+    newer = _event(conn, thread, age_days=95)
+    newer_at = _at(conn, newer)
+    retention.prune_events(conn, event_days=90)
+    assert _pair(conn, thread) == (newer_at, newer)
+    assert _watermark(conn, thread) == newer
+
+
+def test_a_tie_bigger_than_the_budget_deletes_exactly_the_budget(conn, thread):
+    """Rows from before migration 008 tie inside one second. `(created_at, id)` is a total
+    order, so a tie cannot widen the delete; the next pass takes the rest."""
+    at = datetime(2025, 1, 5, 9, 0, 0)
+    ids = [_event(conn, thread, at=at) for _ in range(3)]
+
+    assert retention.prune_events(conn, event_days=90, max_rows=2) == 2
+    assert _event_ids(conn, thread) == ids[2:]
+    assert _pair(conn, thread) == (at, ids[1])
+
+    assert retention.prune_events(conn, event_days=90, max_rows=2) == 1
+    assert _event_ids(conn, thread) == []
+    assert _pair(conn, thread) == (at, ids[2])
+
+
+class _Interposed:
+    """The connection, with `hook` run once right after the prune reads its id list - the
+    window in which an import can commit a row the list does not name."""
+
+    def __init__(self, conn, hook):
+        self._conn, self._hook = conn, hook
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def cursor(self):
+        return _InterposedCursor(self._conn.cursor(), self)
+
+
+class _InterposedCursor:
+    def __init__(self, cur, owner):
+        self._cur, self._owner = cur, owner
+
+    def __getattr__(self, name):
+        return getattr(self._cur, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._cur.close()
+
+    def execute(self, sql, args=None):
+        result = self._cur.execute(sql, args)
+        if sql.startswith("SELECT id, created_at FROM conversation_event") and self._owner._hook:
+            hook, self._owner._hook = self._owner._hook, None
+            hook()
+        return result
+
+
+def test_a_row_written_between_the_id_list_and_the_delete_survives(conn, thread):
+    """The delete removes the list and nothing else, even a row older than the list's last
+    one. The count is the list, and every removed id is at or below the id watermark."""
+    first = _event(conn, thread, age_days=300)
+    last = _event(conn, thread, age_days=200)
+    last_at = _at(conn, last)
+    written: list[int] = []
+
+    def import_one():
+        other = _test_connection()
+        try:
+            written.append(_event(other, thread, age_days=250))
+        finally:
+            other.close()
+
+    removed = retention.prune_events(_Interposed(conn, import_one), event_days=90)
+
+    assert removed == 2
+    assert _event_ids(conn, thread) == written
+    assert max(first, last) <= _watermark(conn, thread) < written[0]
+    assert _pair(conn, thread) == (last_at, last)
 
 
 def test_two_conversations_keep_their_own_watermarks(conn, world, thread):
@@ -189,6 +315,55 @@ def test_interleaved_ids_across_two_conversations_do_not_cross_watermarks(conn, 
                                     cursor=new_theirs) is False
     assert retention.cursor_expired(conn, conversation_id=other,
                                     cursor=old_mine) is False
+
+
+def test_a_surviving_event_older_than_the_watermark_pair_is_expired(conn, thread):
+    """An event imported below the watermark after the prune: rows beside it in time are
+    gone, so a page from it would show a gap as complete history."""
+    _event(conn, thread, age_days=100)
+    retention.prune_events(conn, event_days=90)
+    imported = _event(conn, thread, age_days=200)
+
+    assert imported > _watermark(conn, thread)
+    assert retention.cursor_expired(conn, conversation_id=thread, cursor=imported) is True
+
+
+def test_a_pruned_imported_event_does_not_expire_a_newer_cursor(conn, thread):
+    """The pruned imported event has the highest id; the id rule would expire every cursor
+    of the thread, the time rule expires none of the survivors."""
+    survivor = _event(conn, thread, age_days=1)
+    _event(conn, thread, age_days=100)                  # imported: a higher id
+    retention.prune_events(conn, event_days=90)
+
+    assert survivor < _watermark(conn, thread)
+    assert retention.cursor_expired(conn, conversation_id=thread, cursor=survivor) is False
+
+
+def test_a_dropped_partial_above_the_id_watermark_is_not_expired(conn, thread):
+    """The stream's cursor is often a partial the finalizer drops. A gone row is expired only
+    at or below the highest pruned id, so a reconnect after such a run stays live."""
+    pruned = _event(conn, thread, age_days=100)
+    partial = _event(conn, thread, age_days=0)
+    retention.prune_events(conn, event_days=90)
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM conversation_event WHERE id = %s", (partial,))
+    conn.commit()
+
+    assert retention.cursor_expired(conn, conversation_id=thread, cursor=partial) is False
+    assert retention.cursor_expired(conn, conversation_id=thread, cursor=pruned) is True
+
+
+def test_a_watermark_from_before_the_pair_keeps_the_id_rule(conn, thread):
+    first, second = _event(conn, thread, age_days=1), _event(conn, thread, age_days=1)
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO conversation_prune_watermark (conversation_id, "
+                    "last_pruned_event_id) VALUES (%s, %s)", (thread, first))
+    conn.commit()
+
+    assert retention.cursor_expired(conn, conversation_id=thread, cursor=first) is True
+    assert retention.cursor_expired(conn, conversation_id=thread, cursor=second) is False
+    assert retention.cursor_expired(conn, conversation_id=thread, cursor=second,
+                                    at=datetime(2000, 1, 1)) is False
 
 
 # --- both cursor paths ask the same question -------------------------------
@@ -262,6 +437,38 @@ def test_a_stream_above_the_watermark_streams_normally(conn, world, thread, monk
     chunks = list(gen)
 
     assert any(f"id: {second}\n".encode() in c for c in chunks)
+
+
+def test_both_cursor_paths_keep_a_cursor_above_a_pruned_imported_event(conn, world, thread,
+                                                                       monkeypatch):
+    """Replay and the stream ask the same time rule: a survivor below the highest pruned id
+    is not answered `cursor_expired`."""
+    import datetime
+
+    from agento.framework.access import sessions
+
+    monkeypatch.setattr(sessions, "lookup_session", lambda c, t: sessions.Session(
+        id="sid", user=world["owner"],
+        expires_at=datetime.datetime.now() + datetime.timedelta(hours=1)))
+    survivor = _event(conn, thread, age_days=1)
+    _event(conn, thread, age_days=100)                  # imported: a higher id
+    retention.prune_events(conn, event_days=90)
+    newer = _event(conn, thread)
+
+    replay = routes.events(_QReq(conn, world["owner"], params={"id": str(thread)},
+                                 query={"after": str(survivor)}))
+    clock = {"t": 0.0}
+
+    def sleep(seconds):
+        clock["t"] += 1000
+
+    chunks = list(stream.frames(conn, conversation_id=thread, session_token="tok",
+                                cursor=survivor, user_id=world["owner"].id,
+                                now=lambda: clock["t"], sleep=sleep))
+
+    assert replay.status == 200
+    assert [e["id"] for e in replay.body] == [newer]
+    assert any(f"id: {newer}\n".encode() in c for c in chunks)
 
 
 def test_an_expired_stream_takes_no_slot(conn, world, thread, monkeypatch):

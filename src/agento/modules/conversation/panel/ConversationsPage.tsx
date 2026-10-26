@@ -395,7 +395,7 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["threads"] }); navigate("/conversations"); },
   });
   const older = useMutation({
-    mutationFn: () => fetchPage(threadId, store.oldestId()),
+    mutationFn: () => fetchPage(threadId, store.oldest()),
     onSuccess: (page) => {
       anchor.current = box.current?.scrollHeight ?? null;
       if (!store.merge("older", page.events, page.has_older)) anchor.current = null;

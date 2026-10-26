@@ -25,6 +25,7 @@ module that owned it would quietly drop it from the module-disabled guarantee.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 
 from agento.framework.outbox import write_outbox
 
@@ -59,17 +60,20 @@ class ConversationFinalizer:
     """Registered as the module's `execution_finalizer` in `di.json`."""
 
     def finalize(self, *, conn, job_id: int, attempt: int, execution_id: str | None,
-                 outcome: str, job_terminal: bool) -> None:
+                 outcome: str, job_terminal: bool, at: datetime | None = None,
+                 answer: str | None = None) -> None:
+        """`at` is the end of an imported run (`conversation:backfill`) and `answer` its
+        answer text; the consumer passes neither, so a live run ends now with `job.output`."""
         from . import service
 
         with conn.cursor() as cur:
-            resolved = self._close_execution(cur, job_id, attempt, execution_id, outcome)
+            resolved = self._close_execution(cur, job_id, attempt, execution_id, outcome, at)
             run = self._run(cur, resolved)
             if run is not None:
                 # Takes the thread's row lock first: the lock-order invariant (E9 §3.4).
                 service.append_event(
                     cur, run["conversation_id"], kind="run.finished", execution_id=resolved,
-                    source_kind="execution_end", source_id=run["id"],
+                    source_kind="execution_end", source_id=run["id"], created_at=at,
                     payload={"job_id": job_id, "attempt": attempt, "outcome": outcome})
             reference = self._conversation_reference(cur, job_id)
             if reference is None:
@@ -87,7 +91,7 @@ class ConversationFinalizer:
                 if run is not None:
                     if outcome == "succeeded":
                         self._write_answer(cur, run["conversation_id"], job_id, resolved,
-                                           channel=True)
+                                           channel=True, at=at, answer=answer)
                     self._drop_partials(cur, run["conversation_id"], resolved)
                 return
             conversation_id, message_id = reference
@@ -117,7 +121,8 @@ class ConversationFinalizer:
 
     # --- the execution row ------------------------------------------------
 
-    def _close_execution(self, cur, job_id, attempt, execution_id, outcome) -> str | None:
+    def _close_execution(self, cur, job_id, attempt, execution_id, outcome,
+                         at=None) -> str | None:
         """Move this attempt out of `running`. Returns the execution id it settled on.
 
         `execution_id` is None on the recovery paths: they see another process's run and
@@ -134,8 +139,8 @@ class ConversationFinalizer:
                 return None
             execution_id = row["execution_id"]
         cur.execute(
-            "UPDATE execution SET status = %s, finished_at = NOW() "
-            "WHERE execution_id = %s AND status = 'running'", (outcome, execution_id))
+            "UPDATE execution SET status = %s, finished_at = COALESCE(%s, NOW()) "
+            "WHERE execution_id = %s AND status = 'running'", (outcome, at, execution_id))
         return execution_id
 
     # --- the thread -------------------------------------------------------
@@ -176,7 +181,8 @@ class ConversationFinalizer:
     # --- the answer -------------------------------------------------------
 
     def _write_answer(self, cur, conversation_id: int, job_id: int,
-                      execution_id: str, *, channel: bool = False) -> None:
+                      execution_id: str, *, channel: bool = False,
+                      at: datetime | None = None, answer: str | None = None) -> None:
         """The assistant row and its event, or nothing.
 
         The two writes have DIFFERENT uniqueness: the message row is pinned by
@@ -187,9 +193,9 @@ class ConversationFinalizer:
         deliver the same answer to the thread twice. An idempotent write beside a
         non-idempotent one is not an idempotent transaction.
         """
-        cur.execute("SELECT output FROM job WHERE id = %s", (job_id,))
-        row = cur.fetchone()
-        answer = (row or {}).get("output")
+        if answer is None:
+            cur.execute("SELECT output FROM job WHERE id = %s", (job_id,))
+            answer = (cur.fetchone() or {}).get("output")
         if not answer:
             return
 
@@ -200,18 +206,21 @@ class ConversationFinalizer:
         cur.execute(
             # The assistant row carries NO `job_id` and NO `job_state`: the reply is not
             # itself a queued turn, and §4.4's non-terminal check reads `user` rows only.
-            "INSERT IGNORE INTO message (conversation_id, role, content, execution_id) "
-            "VALUES (%s, 'assistant', %s, %s)",
-            (conversation_id, answer, execution_id),
+            "INSERT IGNORE INTO message (conversation_id, role, content, execution_id, "
+            "                            created_at) "
+            "VALUES (%s, 'assistant', %s, %s, COALESCE(%s, CURRENT_TIMESTAMP(6)))",
+            (conversation_id, answer, execution_id, at),
         )
         if cur.rowcount != 1:
             return
         message_id = cur.lastrowid
         payload = {"message_id": message_id, "content": answer}
         if channel:
+            # An imported answer sorts before its `run.finished`, which is written first.
             service.append_event(cur, conversation_id, kind="assistant.message",
                                  execution_id=execution_id, source_kind="answer",
-                                 source_id=message_id, payload=payload)
+                                 source_id=message_id, payload=payload,
+                                 created_at=None if at is None else at - timedelta(milliseconds=1))
             return
         write_outbox(cur, job_id=job_id, execution_id=execution_id,
                      kind="assistant.message", payload=payload)

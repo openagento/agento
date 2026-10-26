@@ -26,6 +26,10 @@
     {
       "name": "conversation:retention",
       "class": "src.commands.ConversationRetentionCommand"
+    },
+    {
+      "name": "conversation:backfill",
+      "class": "src.commands.ConversationBackfillCommand"
     }
   ],
   "routes": [

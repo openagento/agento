@@ -30,7 +30,8 @@ Every job gets its thread when it is inserted (`publisher.insert_job`, and the N
 `schedule_followup` and `agent_run`). `insert_job` locks the thread row until the caller commits,
 so the jobs of one thread commit in id order. A depth-0 job may join only a thread of its own
 view (SEC-7). A row inserted by other code with no thread gets its default thread at claim
-(`place_claim`), so no job runs without one.
+(`place_claim`), so no job runs without one. `conversation:backfill` gives an old job with no thread its default
+thread the same way.
 
 ## Lines
 
@@ -62,6 +63,8 @@ forks. The claim writes `resume_job_id` on the row, so a FAILED or DEAD job reco
 - **A detach** (`JobClaimBeforeEvent.detach_thread`, set by the Outlook gate when thread read is
   revoked): the claim moves the job to its default thread and clears its session before the line
   rules run.
+- **A missing session file** (the harness's `session_file` finds no file of the target's
+  session in the run HOME): the job starts a fresh session, with one info log line.
 - The deprecated `resume_session_resolver` seam is asked only when the job has no target and was
   neither detached nor made fresh (removal: ROADMAP.md).
 

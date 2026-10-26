@@ -497,10 +497,10 @@ def test_a_finalization_between_the_batchs_first_read_and_its_lock_is_seen(
     real_lock = service.lock_conversations
     other = _test_connection()
 
-    def lock_after_a_finalization(cur, ids):
+    def lock_after_a_finalization(cur, ids, **kw):
         monkeypatch.setattr(service, "lock_conversations", real_lock)
         _finalize(other, run)                 # commits while the sink's batch is open
-        return real_lock(cur, ids)
+        return real_lock(cur, ids, **kw)
 
     try:
         monkeypatch.setattr(service, "lock_conversations", lock_after_a_finalization)

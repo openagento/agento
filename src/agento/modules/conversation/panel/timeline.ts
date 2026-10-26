@@ -1,5 +1,6 @@
 // The thread timeline (E9 §3.8): one store of events keyed by id, filled by the timeline pages,
-// the replay and the stream alike, so an event seen twice renders once. `buildItems` is the
+// the replay and the stream alike, so an event seen twice renders once. Events are held in time
+// order, `(created_at, id)`: an imported run has high ids and old times. `buildItems` is the
 // pure view of it.
 import type { StreamEvent } from "@agento/api";
 import type { TimelinePage } from "./model";
@@ -25,6 +26,8 @@ export class TimelineStore {
   unseen = 0;
   /** The highest id counted in `unseen`, so an event seen twice counts once. */
   private counted = 0;
+  /** The highest id held: the stream's order, which is not the time order. */
+  private maxId = 0;
 
   constructor(private readonly max = MAX_EVENTS) {}
 
@@ -38,7 +41,7 @@ export class TimelineStore {
     if (origin === "auto" && this.behind) {
       const unseen = this.unseen;
       for (const e of events) {
-        if (e.id <= Math.max(this.counted, this.ids.at(-1) ?? 0)) continue;
+        if (e.id <= Math.max(this.counted, this.maxId)) continue;
         this.counted = e.id;
         this.unseen += 1;
       }
@@ -50,10 +53,11 @@ export class TimelineStore {
       if (this.byId.has(e.id)) continue;
       this.byId.set(e.id, e);
       this.ids.push(e.id);
+      this.maxId = Math.max(this.maxId, e.id);
       added += 1;
     }
     if (!added) return 0;
-    this.ids.sort((a, b) => a - b);
+    this.ids.sort(this.byTime);
     if (origin === "auto") this.trim();
     this.changed();
     return added;
@@ -65,6 +69,7 @@ export class TimelineStore {
     const newer = this.ids.filter((id) => id > (page.newest_id ?? 0)).map((id) => this.byId.get(id)!);
     this.byId.clear();
     this.ids = [];
+    this.maxId = 0;
     this.behind = false;
     this.unseen = 0;
     this.counted = 0;
@@ -82,6 +87,13 @@ export class TimelineStore {
     this.behind = !on;
   }
 
+  /** Six fraction digits on every time (the API's `iso`), so a string compare is a time compare. */
+  private byTime = (a: number, b: number): number => {
+    const x = this.byId.get(a)!.created_at ?? "", y = this.byId.get(b)!.created_at ?? "";
+    return x < y ? -1 : x > y ? 1 : a - b;
+  };
+
+  /** Drops the oldest events by time. */
   private trim(): void {
     if (this.ids.length <= this.max) return;
     for (const id of this.ids.splice(0, this.ids.length - this.max)) this.byId.delete(id);
@@ -94,8 +106,10 @@ export class TimelineStore {
   }
 
   events(): StreamEvent[] { return this.ids.map((id) => this.byId.get(id)!); }
-  oldestId(): number | undefined { return this.ids[0]; }
-  newestId(): number | undefined { return this.ids.at(-1); }
+  /** The oldest event held: the cursor of "Load older". */
+  oldest(): StreamEvent | undefined { return this.byId.get(this.ids[0]); }
+  /** The highest id held, the stream's cursor order. */
+  newestId(): number | undefined { return this.ids.length ? this.maxId : undefined; }
 }
 
 export interface Run {

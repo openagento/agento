@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`conversation:backfill` (`co:ba`).** Imports the jobs that ended before the conversation module
+  ran into their conversations, with their own times; a Claude job gets its run events from its
+  session file. See docs/modules/conversation.md#backfill.
 - **Limits right after a re-login.** The `core` observer `core_refresh_credential_limits` reads a
   credential's limits on `credential_register_after` and `credential_refresh_after`, so the panel
   shows them at once, not on the next `credential:limits` tick. The re-login dialog shows an
@@ -141,6 +144,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CliInvoker.interactive_command()` gained a `yolo` keyword; each agent module decides its own flag.
 
 ### Changed
+- **Retention keeps everything by default.** `conversation/retention/event_days` and
+  `retention/archived_days` take `0` = keep for ever, and `0` is the new default. An install that
+  never set a value no longer prunes events or deletes archived threads; set a value to keep the
+  old behaviour (90 and 365 days).
+- **The timeline is in time order.** Migration `conversation/008` makes
+  `conversation_event.created_at` and `message.created_at` `TIMESTAMP(6)` and **rebuilds both tables** (it runs in
+  `setup:upgrade`, before the consumer). The timeline page takes `before_at` beside `before`.
+- **A resume whose session file is missing starts a fresh session**, with one info log line,
+  instead of failing the run.
 - **`credential:limits` renews an expired OAuth token.** An idle Claude or Codex credential no
   longer shows frozen limits: the cron takes the refresh lease a job takes, refreshes the token
   through the harness's `refresh_credentials` (AG-65), releases the lease, then reads the limits.
@@ -267,6 +279,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback (ROADMAP.md).
 
 ### Fixed
+- **The interactive Claude TUI no longer opens on the first-run theme picker.** A credential
+  logged in through the runner stores no `hasCompletedOnboarding`, so `agento run` stopped at
+  the theme choice. The run's own `.claude.json` now always sets it, beside the trust
+  pre-accept; it is no longer copied from, or stripped with, the credential identity.
 - **Large-result offload files no longer overwrite each other.** `large-result.js` named the file
   `result_YYYYMMDD_HHMMSS.{csv,txt}`, so two calls of the same tool that ended in the same second
   wrote the same path and the second result replaced the first. The name now has a random 8-hex

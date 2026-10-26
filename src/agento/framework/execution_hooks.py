@@ -17,6 +17,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Protocol, runtime_checkable
 
 
@@ -65,6 +66,9 @@ class DeltaRecord:
     text: str | None
     tool_name: str | None
     data: Mapping[str, str | bool] | None = None   # tool fields: call_id, input, output, is_error
+    # The original time of an imported fragment (naive UTC); None is now. The live path
+    # never sets it.
+    created_at: datetime | None = None
 
 
 @runtime_checkable

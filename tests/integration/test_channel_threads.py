@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -466,6 +467,9 @@ def test_tool_payloads_are_an_admins_only(conn, world):
 
 # --- the timeline route (P6) ----------------------------------------------------
 
+T0 = datetime(2026, 1, 5, 9, 0, 0)        # an imported thread's own past, not "now"
+
+
 def _events(conn, cid: int, n: int) -> list[int]:
     out = []
     with conn.cursor() as cur:
@@ -477,26 +481,129 @@ def _events(conn, cid: int, n: int) -> list[int]:
     return out
 
 
-def test_the_timeline_pages_back_with_no_gap_and_no_overlap(conn, world):
-    cid = service.create_conversation(conn, user_id=world["owner"].id,
-                                      agent_view_id=world["view"], title="t")
-    ids = _events(conn, cid, 7)
+def _timed(conn, cid: int, times: list[datetime]) -> list[int]:
+    """One event per time, written in list order: a later entry has a higher id, whatever
+    its time - what `conversation:backfill` does to a thread with native runs."""
+    out = []
+    with conn.cursor() as cur:
+        for at in times:
+            out.append(service.append_event(cur, cid, kind="assistant.text",
+                                             source_kind="delta", source_id=len(out) + 960000,
+                                             payload={}, created_at=at))
+    conn.commit()
+    return out
 
-    pages, before = [], None
-    while True:
-        query = {"limit": "3", **({"before": str(before)} if before else {})}
-        body = routes.timeline(_Req(conn, world["owner"], params={"id": cid},
-                                    query=query)).body
+
+def _by_time(ids: list[int], times: list[datetime]) -> list[int]:
+    return [i for _, i in sorted(zip(times, ids, strict=True))]
+
+
+def _page(conn, user, cid: int, **query) -> dict:
+    response = routes.timeline(_Req(conn, user, params={"id": cid}, query=query))
+    assert response.status == 200, response.body
+    return response.body
+
+
+def _walk(conn, user, cid: int, *, limit: int, pair: bool = True,
+          between=lambda oldest: None) -> list[list[int]]:
+    """Every page, newest first, as the panel loads them: the cursor is the oldest event the
+    client holds, from its own page. `between` runs after each page read."""
+    pages, query = [], {"limit": str(limit)}
+    for _ in range(20):                 # a cursor that does not move must fail, not hang
+        body = _page(conn, user, cid, **query)
         pages.append([e["id"] for e in body["events"]])
         if not body["has_older"]:
-            break
-        before = pages[-1][0]
+            return pages
+        oldest = body["events"][0]
+        between(oldest)
+        query = {"limit": str(limit), "before": str(oldest["id"]),
+                 **({"before_at": oldest["created_at"]} if pair else {})}
+    raise AssertionError(f"no last page after {pages}")
 
-    assert pages == [ids[4:], ids[1:4], ids[:1]]          # each page oldest first
-    assert pages[0][-1] == ids[-1]
+
+def _drop(conn, event_id: int) -> None:
+    """What the finalizer does to a run's partial events: the row goes, no watermark moves."""
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM conversation_event WHERE id = %s", (event_id,))
+    conn.commit()
+
+
+@pytest.mark.parametrize("pair", [True, False], ids=["before_at", "bare_before"])
+def test_the_timeline_pages_back_in_time_order_with_no_gap_and_no_overlap(conn, world, pair):
+    """An imported event (old time, high id) sits in its time place, on whichever page that
+    is. A bare `before` (the shipped form) pages the same as the pair while its event lives."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    times = [T0 + timedelta(seconds=s) for s in (1, 2, 3, 4, 5, 0.5, 2.5)]
+    ids = _timed(conn, cid, times)
+    order = _by_time(ids, times)
+
+    pages = _walk(conn, world["owner"], cid, limit=3, pair=pair)
+
+    assert pages == [order[4:], order[1:4], order[:1]]          # each page oldest first
+
+
+@pytest.mark.parametrize("at", [T0, T0 + timedelta(microseconds=123456)],
+                         ids=["whole_second", "microsecond"])
+def test_a_tie_in_time_is_ordered_by_id_across_a_page_edge(conn, world, at):
+    """Rows from before migration 008 tie inside one second (`.000000`); one run's events
+    can tie on a microsecond. The id breaks the tie, also in the page predicate."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    ids = _timed(conn, cid, [at] * 4)
+
+    assert _walk(conn, world["owner"], cid, limit=1) == [[i] for i in reversed(ids)]
+
+
+def test_a_dropped_anchor_does_not_move_the_page_edge(conn, world):
+    """The pair carries the time, so the route reads no anchor row: when the oldest event the
+    client holds is gone before the next page (a dropped partial), every event of the three
+    pages is still seen exactly once."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    times = [T0 + timedelta(seconds=s) for s in (3, 4, 5, 6, 7, 8, 0, 1, 2)]
+    ids = _timed(conn, cid, times)
+
+    pages = _walk(conn, world["owner"], cid, limit=3,
+                  between=lambda oldest: _drop(conn, oldest["id"]))
+
+    assert [i for page in reversed(pages) for i in page] == _by_time(ids, times)
+
+
+@pytest.mark.parametrize("query", [
+    {"before": "5", "before_at": "yesterday"},
+    {"before": "5", "before_at": "2026-01-05T09:00:00+02:00"},     # not UTC
+    {"before_at": "2026-01-05T09:00:00.000000Z"},                  # no id
+])
+def test_a_bad_before_at_is_400(conn, world, query):
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+
+    response = routes.timeline(_Req(conn, world["owner"], params={"id": cid}, query=query))
+
+    assert response.status == 400
+
+
+def test_a_bare_before_whose_event_is_gone_is_409_and_never_a_guess(conn, world):
+    """The bare form reads its event's time. With that row gone the time is not inferred: the
+    panel's "Older events were removed." is the honest answer, a skipped page is not."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    ids = _timed(conn, cid, [T0, T0 + timedelta(seconds=1), T0 + timedelta(seconds=2)])
+    held = _page(conn, world["owner"], cid, limit="2")["events"][0]
+    _drop(conn, held["id"])
+
+    bare = routes.timeline(_Req(conn, world["owner"], params={"id": cid},
+                                query={"before": str(held["id"])}))
+    pair = _page(conn, world["owner"], cid, before=str(held["id"]),
+                 before_at=held["created_at"])
+
+    assert (bare.status, bare.body) == (409, {"error": "cursor_expired"})
+    assert [e["id"] for e in pair["events"]] == ids[:1]
 
 
 def test_a_timeline_cursor_at_or_below_the_watermark_is_409(conn, world):
+    """A watermark from before migration 008 (no pair) keeps the id rule."""
     cid = service.create_conversation(conn, user_id=world["owner"].id,
                                       agent_view_id=world["view"], title="t")
     ids = _events(conn, cid, 3)
@@ -511,6 +618,103 @@ def test_a_timeline_cursor_at_or_below_the_watermark_is_409(conn, world):
 
     assert status(ids[0]) == 409
     assert status(ids[1]) == 200
+
+
+@pytest.mark.parametrize(("seconds", "event_id", "expected"), [
+    (2, 500, 409),                 # the watermark pair itself
+    (1, 10**9, 409),               # older in time, although its id is above every pruned id
+    (2, 501, 200),                 # same time, higher id
+    (3, 1, 200),                   # newer in time, although its id is low
+])
+def test_a_pair_is_compared_with_the_watermark_pair(conn, world, seconds, event_id, expected):
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO conversation_prune_watermark (conversation_id, "
+                    "last_pruned_event_id, last_pruned_at, last_pruned_at_id) "
+                    "VALUES (%s, 600, %s, 500)", (cid, T0 + timedelta(seconds=2)))
+    conn.commit()
+    before_at = service.iso(T0 + timedelta(seconds=seconds))
+
+    response = routes.timeline(_Req(conn, world["owner"], params={"id": cid}, query={
+        "before": str(event_id), "before_at": before_at}))
+
+    assert response.status == expected
+
+
+def test_the_newest_page_cursor_is_the_threads_highest_id(conn, world):
+    """Not the page's newest id: an imported event older than the page has a higher id, and
+    a stream started at the page's id would send it alone, out of its run."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    times = [T0 + timedelta(seconds=s) for s in (1, 2, 3, 0)]
+    ids = _timed(conn, cid, times)
+
+    body = _page(conn, world["owner"], cid, limit="2")
+    later = _events(conn, cid, 1)[0]
+
+    assert [e["id"] for e in body["events"]] == ids[1:3]
+    assert body["newest_id"] == ids[3] == max(ids)
+    assert later > body["newest_id"]                    # the stream sends it
+
+
+def test_the_stream_still_reads_in_id_order(conn, world):
+    """Replay and the stream stay on `id > cursor`: an imported event reaches a client that
+    holds the newest native one."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    ids = _timed(conn, cid, [T0 + timedelta(seconds=5), T0])
+
+    rows = service.list_events(conn, conversation_id=cid, after_id=ids[0], limit=10)
+
+    assert [r["id"] for r in rows] == [ids[1]]
+
+
+def test_an_event_time_always_has_six_fraction_digits(conn, world):
+    """The panel orders events by a string compare; `isoformat()` drops a zero fraction, and
+    "09:00:00Z" sorts after "09:00:00.5Z"."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    _timed(conn, cid, [T0, T0 + timedelta(microseconds=500000)])
+
+    times = [e["created_at"] for e in _page(conn, world["owner"], cid)["events"]]
+
+    assert times == ["2026-01-05T09:00:00.000000Z", "2026-01-05T09:00:00.500000Z"]
+    assert times == sorted(times)
+
+
+def test_runs_are_listed_by_start_time_newest_first(conn, world):
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    native, imported = str(uuid.uuid4()), str(uuid.uuid4())
+    with conn.cursor() as cur:
+        for execution_id, days in ((native, 1), (imported, 30)):     # imported: higher id
+            cur.execute(
+                "INSERT INTO execution (execution_id, job_id, attempt, status, started_at, "
+                "                       finished_at, conversation_id) "
+                "VALUES (%s, 999000001, 1, 'succeeded', NOW() - INTERVAL %s DAY, "
+                "        NOW() - INTERVAL %s DAY, %s)", (execution_id, days, days, cid))
+    conn.commit()
+
+    runs = service.list_runs(conn, conversation_id=cid)
+
+    assert [r["execution_id"] for r in runs] == [native, imported]
+
+
+def test_an_imported_answer_is_listed_before_a_newer_native_one(conn, world):
+    """`retained()` renders messages in the order it is given, after their events are pruned."""
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    with conn.cursor() as cur:
+        for content, at in (("native", T0 + timedelta(days=30)), ("imported", T0)):
+            cur.execute("INSERT INTO message (conversation_id, role, content, created_at) "
+                        "VALUES (%s, 'assistant', %s, %s)",
+                        (cid, content, at))
+    conn.commit()
+
+    rows = service.list_messages(conn, conversation_id=cid, limit=10)
+
+    assert [r["content"] for r in rows] == ["imported", "native"]
 
 
 # --- the append order (P4) ---------------------------------------------------------
@@ -570,7 +774,7 @@ def test_the_trigger_prompt_rides_on_run_finished_for_a_live_admin_only(conn, wo
                                      job_terminal=True)
     conn.commit()
     cid = _thread_of(conn, execution_id)["id"]
-    rows, _ = service.list_timeline(conn, conversation_id=cid, before_id=None, limit=10)
+    rows, _, _ = service.list_timeline(conn, conversation_id=cid, before=None, limit=10)
 
     thread = service.load_visible(conn, conversation_id=cid, user=world["admin"])
     shown = {e["kind"]: e["payload"].get("prompt")
@@ -603,7 +807,7 @@ def test_a_role_granted_run_details_sees_them_on_that_scope_only(conn, world):
     assert not service.can_see_run_details(conn, owner, thread)
 
     def errors(user):
-        rows, _ = service.list_timeline(conn, conversation_id=thread["id"], before_id=None,
+        rows, _, _ = service.list_timeline(conn, conversation_id=thread["id"], before=None,
                                         limit=10)
         return [e["payload"]["text"] for e in service.project_events(conn, rows, user, thread)
                 if e["kind"] == "error"]
@@ -617,7 +821,7 @@ def test_a_role_granted_run_details_sees_them_on_that_scope_only(conn, world):
                        workspace_id=thread["workspace_id"])
     assert service.can_see_run_details(conn, owner, thread)
     assert service.can_see_run_details(conn, world["admin"], thread)
-    rows, _ = service.list_timeline(conn, conversation_id=thread["id"], before_id=None, limit=10)
+    rows, _, _ = service.list_timeline(conn, conversation_id=thread["id"], before=None, limit=10)
     assert {e["payload"].get("prompt") for e in service.project_events(conn, rows, owner, thread)
             if e["kind"] == "run.started"} == {"Fix the login page"}
     assert errors(owner) == ["raw harness error"]
