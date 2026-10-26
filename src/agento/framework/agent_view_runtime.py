@@ -247,7 +247,6 @@ def resolve_job_runtime(
     *,
     pinned_harness: str | None,
     pinned_model: str | None,
-    model_override: str | None = None,
 ) -> AgentViewRuntime:
     """Return ``runtime`` with the EFFECTIVE harness/provider/model for one job.
 
@@ -273,5 +272,5 @@ def resolve_job_runtime(
     # the model would name a vendor model the pinned harness cannot serve.
     same_harness = harness == runtime.harness
     provider = runtime.provider if same_harness else _default_provider(harness)
-    model = pinned_model or model_override or (runtime.model if same_harness else None)
+    model = pinned_model or (runtime.model if same_harness else None)
     return replace(runtime, harness=harness, provider=provider, model=model)

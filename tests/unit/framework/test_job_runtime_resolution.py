@@ -56,19 +56,6 @@ def test_both_pinned_ignores_the_view_entirely():
     assert (eff.harness, eff.provider, eff.model) == (other, default_provider, "m")
 
 
-def test_pinned_model_beats_the_consumer_model_override():
-    eff = resolve_job_runtime(
-        _view(), pinned_harness=None, pinned_model="pinned", model_override="cli",
-    )
-    assert eff.model == "pinned"
-
-
-def test_model_override_beats_config():
-    eff = resolve_job_runtime(
-        _view(), pinned_harness=None, pinned_model=None, model_override="cli",
-    )
-    assert eff.model == "cli"
-
 
 def test_unknown_pinned_harness_raises():
     with pytest.raises(InvalidJobRuntime, match="nope"):
