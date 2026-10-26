@@ -71,8 +71,8 @@
   "retention/event_days": {
     "type": "integer",
     "label": "Event retention (days)",
-    "description": "A conversation_event older than this is pruned. Clock: created_at.",
-    "min": 1
+    "description": "A conversation_event older than this is pruned, with its run's execution row. Clock: created_at. 0 = keep for ever (default).",
+    "min": 0
   },
   "retention/outbox_days": {
     "type": "integer",
@@ -83,8 +83,8 @@
   "retention/archived_days": {
     "type": "integer",
     "label": "Archived conversation retention (days)",
-    "description": "An archived conversation is deleted this long after it was last updated. Clock: conversation.updated_at.",
-    "min": 30
+    "description": "An archived conversation is deleted this long after it was last updated. Clock: conversation.updated_at. 0 = keep for ever (default).",
+    "min": 0
   },
   "retention/idle_days": {
     "type": "integer",

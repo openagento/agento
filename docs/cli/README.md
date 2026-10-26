@@ -85,6 +85,7 @@
 | **Conversations** (the `conversation` module; all three are cron passes an operator can also run by hand) | |
 | `conversation:sweep` (`co:sw`) | Finish stranded submissions and reconcile finished jobs ([details](../modules/conversation.md)) |
 | `conversation:relay` (`co:rel`) | Relay framework job events into conversation threads, and prune the relayed rows. One run passes every second for 55 s. ONE process by contract: a second would invert a thread's event order, so a run that finds the `conversation_relay` lock held exits at once ([details](../modules/conversation.md#the-outbox-relay)) |
+| `conversation:backfill` (`co:ba`) | Import finished jobs that have no conversation run into their conversations: `--source`, `--agent-view`, `--since`, `--limit`, `--dry-run` ([details](../modules/conversation.md#backfill)) |
 | `conversation:retention` (`co:ret`) | Prune conversation events, auto-archive idle threads, delete archived ones, sweep executions no thread owns — in that order ([details](../modules/conversation.md)) |
 | **Operations** | |
 | `consumer` | Start job consumer loop |

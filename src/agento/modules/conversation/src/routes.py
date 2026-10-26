@@ -10,14 +10,13 @@ and the rule wins over the spelling.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 from agento.web.api import Request, Response, error
 
 from . import retention, service
 
-
-def _iso(value) -> str | None:
-    return None if value is None else value.isoformat() + "Z"
+_iso = service.iso
 
 
 def _conversation_json(row: dict) -> dict:
@@ -202,8 +201,10 @@ def events(req: Request) -> Response:
 def timeline(req: Request) -> Response:
     """One page of the thread's timeline, newest first in paging, oldest first in the body.
 
-    `before` is the oldest id the client holds; without it the page is the newest. A
-    `before` at or below the prune watermark is 409, like replay: the page under it is gone.
+    `before` and `before_at` are the id and time of the oldest event the client holds; without
+    them the page is the newest. A `before` at or below the prune watermark is 409, like
+    replay: the page under it is gone. A bare `before` (the form before time order) reads its
+    event's time, and is 409 when that event is gone: its time is never guessed.
     """
     row = _visible(req)
     if row is None:
@@ -211,16 +212,30 @@ def timeline(req: Request) -> Response:
     before, limit = req.query.get("before"), req.query.get("limit")
     if (before is not None and not before.isdigit()) or (limit is not None and not limit.isdigit()):
         return error(400, "before and limit must be non-negative integers")
-    if before is not None and retention.cursor_expired(
-            req.conn, conversation_id=row["id"], cursor=int(before)):
-        return error(409, "cursor_expired")
-    rows, has_older = service.list_timeline(
-        req.conn, conversation_id=row["id"],
-        before_id=None if before is None else int(before),
+    at = None
+    if (before_at := req.query.get("before_at")) is not None:
+        try:
+            at = datetime.fromisoformat(before_at.removesuffix("Z"))
+        except ValueError:
+            at = None
+        if before is None or at is None or at.tzinfo is not None:
+            return error(400, "before_at must be a UTC ISO time, sent with before")
+    cursor = None
+    if before is not None:
+        if retention.cursor_expired(req.conn, conversation_id=row["id"], cursor=int(before),
+                                    at=at):
+            return error(409, "cursor_expired")
+        cursor = ((at, int(before)) if at is not None else
+                  service.event_anchor(req.conn, conversation_id=row["id"], event_id=int(before)))
+        if cursor is None:
+            return error(409, "cursor_expired")
+    rows, has_older, newest_id = service.list_timeline(
+        req.conn, conversation_id=row["id"], before=cursor,
         limit=int(limit) if limit else service.config(req.conn, "history/page_size"))
     return Response(200, {"events": service.project_events(req.conn, rows, req.session.user, row),
                           "has_older": has_older,
-                          "newest_id": rows[-1]["id"] if rows else None})
+                          "newest_id": newest_id if cursor is None else
+                          (rows[-1]["id"] if rows else None)})
 
 
 def unblock(req: Request) -> Response:

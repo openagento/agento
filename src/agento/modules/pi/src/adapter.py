@@ -6,8 +6,10 @@ lives in ``di.json``; this class supplies only behaviour.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 
 from agento.framework.harness import (
+    SESSION_ID,
     CredentialAuthenticator,
     CredentialScope,
     HarnessRunContext,
@@ -53,6 +55,12 @@ class PiHarnessAdapter:
 
     def check_model(self, provider, model, credential, *, timeout_s):
         return check_model(provider, model, credential, timeout_s=timeout_s)
+
+    def session_file(self, root: Path, session_id: str) -> Path | None:
+        if not SESSION_ID.fullmatch(session_id):
+            return None
+        found = root.glob(f".pi/agent/sessions/*/*_{session_id}.jsonl")
+        return max(found, key=lambda p: p.stat().st_mtime, default=None)
 
     def create_runner(self, ctx: HarnessRunContext, **kwargs) -> PiSubprocessRunner:
         return PiSubprocessRunner(

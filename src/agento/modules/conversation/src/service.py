@@ -16,6 +16,7 @@ Two things carry the weight here:
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pymysql
@@ -45,6 +46,12 @@ MAX_TITLE = 255          # the `conversation.title` column
 # new thread. The cap, with the `+ MAX_PINNED` the list asks for, keeps a full page of
 # unpinned rows reachable whatever the pin count.
 MAX_PINNED = 50
+
+
+def iso(value: datetime | None) -> str | None:
+    """A UTC time for the client. Always six fraction digits, so the panel orders events by
+    a string compare (`isoformat()` drops the fraction when it is zero)."""
+    return None if value is None else value.isoformat(timespec="microseconds") + "Z"
 
 
 class SubmissionError(ValueError):
@@ -181,7 +188,7 @@ def list_runs(conn, *, conversation_id: int) -> list[dict]:
             "FROM execution e LEFT JOIN job j ON j.id = e.job_id "
             "LEFT JOIN credential c ON c.id = e.credential_id "
             "LEFT JOIN agent_view v ON v.id = j.agent_view_id "
-            "WHERE e.conversation_id = %s ORDER BY e.id DESC LIMIT %s",
+            "WHERE e.conversation_id = %s ORDER BY e.started_at DESC, e.id DESC LIMIT %s",
             (conversation_id, MAX_RUNS))
         return list(cur.fetchall())
 
@@ -203,21 +210,22 @@ def is_live(conn, *, conversation_id: int) -> bool:
         return cur.fetchone() is not None
 
 
-def list_messages(conn, *, conversation_id: int, limit: int, after_id: int = 0) -> list[dict]:
+def list_messages(conn, *, conversation_id: int, limit: int) -> list[dict]:
     """The thread's messages, each carrying whether its turn is blocked and why.
 
     The join is LEFT: an assistant row has no job, and a user row outlives its job (jobs are
     pruned on their own schedule). A reader must be able to tell "waiting" from "stuck",
     which is the whole point of §4.5 - a thread only a database edit could free would be
-    indistinguishable from a slow agent.
+    indistinguishable from a slow agent. Time order: an imported answer is older than a
+    native one with a lower id.
     """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT m.id, m.role, m.content, m.client_message_id, m.job_id, m.job_state, "
             "       m.created_at, j.status AS job_status, j.session_id "
             "FROM message m LEFT JOIN job j ON j.id = m.job_id "
-            "WHERE m.conversation_id = %s AND m.id > %s ORDER BY m.id LIMIT %s",
-            (conversation_id, after_id, limit),
+            "WHERE m.conversation_id = %s ORDER BY m.created_at, m.id LIMIT %s",
+            (conversation_id, limit),
         )
         return [dict(row, blocked_reason=blocked_reason(row)) for row in cur.fetchall()]
 
@@ -244,18 +252,45 @@ def list_events(conn, *, conversation_id: int, after_id: int, limit: int) -> lis
         return list(cur.fetchall())
 
 
-def list_timeline(conn, *, conversation_id: int, before_id: int | None,
-                  limit: int) -> tuple[list[dict], bool]:
-    """The newest page of events (or the page before `before_id`), oldest first, and
-    whether older events exist. Keyset on the global id: a page never overlaps the next."""
+def list_timeline(conn, *, conversation_id: int, before: tuple[datetime, int] | None,
+                  limit: int) -> tuple[list[dict], bool, int | None]:
+    """One page of events in time order, oldest first, whether older events exist, and the
+    stream cursor. Keyset on `(created_at, id)`: a page never overlaps the next.
+
+    `before` is the `(created_at, id)` of the oldest event the client holds; None is the
+    newest page. The newest page's cursor is the thread's highest id, not the page's: an
+    imported event has a high id and an old time, and every event at or below the cursor is
+    on this page or older than it, so the stream never sends one that is not in its place.
+    """
     limit = max(1, min(limit, MAX_EVENT_PAGE))
+    newest_id = None
     with conn.cursor() as cur:
+        if before is None:
+            cur.execute("SELECT MAX(id) AS newest FROM conversation_event "
+                        "WHERE conversation_id = %s", (conversation_id,))
+            newest_id = (cur.fetchone() or {}).get("newest")
+            if newest_id is None:
+                return [], False, None
+            where, args = "id <= %s", [newest_id]
+        else:
+            where, args = "(created_at < %s OR (created_at = %s AND id < %s))", \
+                [before[0], before[0], before[1]]
         cur.execute(
             "SELECT id, kind, payload, execution_id, created_at FROM conversation_event "
-            "WHERE conversation_id = %s AND id < %s ORDER BY id DESC LIMIT %s",
-            (conversation_id, before_id if before_id is not None else 2**63, limit + 1))
+            f"WHERE conversation_id = %s AND {where} "
+            "ORDER BY created_at DESC, id DESC LIMIT %s",
+            [conversation_id, *args, limit + 1])
         rows = list(cur.fetchall())
-    return rows[:limit][::-1], len(rows) > limit
+    return rows[:limit][::-1], len(rows) > limit, newest_id
+
+
+def event_anchor(conn, *, conversation_id: int, event_id: int) -> tuple[datetime, int] | None:
+    """The `(created_at, id)` of one event of the thread, or None when it is gone."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT created_at FROM conversation_event "
+                    "WHERE id = %s AND conversation_id = %s", (event_id, conversation_id))
+        row = cur.fetchone()
+    return None if row is None else (row["created_at"], event_id)
 
 
 # --- the client shape of an event (E9 §3.6) ----------------------------------
@@ -348,7 +383,7 @@ def project_events(conn, rows: list[dict], user: User, conversation: dict) -> li
         created = row.get("created_at")
         out.append({"id": row["id"], "kind": row["kind"], "execution_id": row["execution_id"],
                     "payload": payload,
-                    "created_at": None if created is None else created.isoformat() + "Z"})
+                    "created_at": iso(created)})
     return out
 
 
@@ -593,19 +628,29 @@ def delete_conversation(conn, conversation_id: int) -> bool:
     return True
 
 
-def lock_conversations(cur, conversation_ids) -> None:
+def lock_conversations(cur, conversation_ids, *, at: datetime | None = None) -> None:
     """Take the threads' row locks, in ascending id - the lock-order invariant (E9 §3.4) -
     and move their activity clock. One UPDATE does both: it locks the primary-key rows in
-    index order, and every caller is about to write the threads' timeline."""
+    index order, and every caller is about to write the threads' timeline.
+
+    `at` is the time of an imported write (`conversation:backfill`): the clock moves to it
+    only forward, so an old run does not mark its thread as active now."""
     ids = sorted(set(conversation_ids))
-    if ids:
-        cur.execute("UPDATE conversation SET last_activity_at = NOW() "
-                    f"WHERE id IN ({','.join(['%s'] * len(ids))})", ids)
+    if not ids:
+        return
+    marks = ",".join(["%s"] * len(ids))
+    if at is None:
+        cur.execute(f"UPDATE conversation SET last_activity_at = NOW() WHERE id IN ({marks})",
+                    ids)
+    else:
+        cur.execute("UPDATE conversation SET last_activity_at = "
+                    "GREATEST(COALESCE(last_activity_at, %s), %s) "
+                    f"WHERE id IN ({marks})", [at, at, *ids])
 
 
 def append_event(cur, conversation_id: int, *, kind: str, payload: dict, source_kind: str,
                  source_id: int, execution_id: str | None = None,
-                 locked: bool = False) -> int | None:
+                 locked: bool = False, created_at: datetime | None = None) -> int | None:
     """The ONE writer of `conversation_event`. Returns the new id, or None for a repeat.
 
     The cursor is a global AUTO_INCREMENT, so two writers of one thread could take ids 10
@@ -615,14 +660,16 @@ def append_event(cur, conversation_id: int, *, kind: str, payload: dict, source_
     threads locks them all first with `lock_conversations` and passes `locked=True`.
 
     INSERT IGNORE: `uq_source` is the idempotency, and a re-delivery costs nothing.
+    `created_at` is the original time of an imported event; None is now.
     """
     if not locked:
-        lock_conversations(cur, [conversation_id])
+        lock_conversations(cur, [conversation_id], at=created_at)
     cur.execute(
         "INSERT IGNORE INTO conversation_event "
-        "(conversation_id, execution_id, kind, payload, source_kind, source_id) "
-        "VALUES (%s, %s, %s, %s, %s, %s)",
-        (conversation_id, execution_id, kind, json.dumps(payload), source_kind, source_id),
+        "(conversation_id, execution_id, kind, payload, source_kind, source_id, created_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, COALESCE(%s, CURRENT_TIMESTAMP(6)))",
+        (conversation_id, execution_id, kind, json.dumps(payload), source_kind, source_id,
+         created_at),
     )
     return cur.lastrowid if cur.rowcount == 1 else None
 
@@ -630,7 +677,7 @@ def append_event(cur, conversation_id: int, *, kind: str, payload: dict, source_
 # --- channel threads (E9 §3.5) ------------------------------------------------
 
 def link_execution(cur, *, execution_row_id: int, execution_id: str, job_id: int,
-                   attempt: int) -> int | None:
+                   attempt: int, at: datetime | None = None) -> int | None:
     """Give a freshly minted run its conversation, and announce it there. Returns it.
 
     A conversation is 1:1 with a thread (framework/threads.py), so every job takes one
@@ -639,7 +686,7 @@ def link_execution(cur, *, execution_row_id: int, execution_id: str, job_id: int
     created or reactivated, so every turn on one Jira issue, mail conversation or PR - and
     a sub-agent placed in its parent's thread, in any view - lands in one conversation. The
     conversation's view is the thread's, not the job's: a child in another view is shown to
-    the readers of its parent's conversation.
+    the readers of its parent's conversation. `at` is the start of an imported run.
     """
     cur.execute(
         "SELECT j.type, j.source, j.reference_id, j.max_attempts, j.thread_id, "
@@ -673,10 +720,10 @@ def link_execution(cur, *, execution_row_id: int, execution_id: str, job_id: int
         cur.execute(
             "INSERT INTO conversation (user_id, agent_view_id, thread_id, title, channel, "
             "                          external_ref, last_activity_at) "
-            "VALUES (NULL, %s, %s, %s, %s, %s, NOW()) "
+            "VALUES (NULL, %s, %s, %s, %s, %s, COALESCE(%s, NOW())) "
             # Only a channel thread reaches here (a user's conversation is a panel thread).
             "ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), status = 'active'",
-            (job["thread_view"], job["thread_id"], title, job["source"], ref))
+            (job["thread_view"], job["thread_id"], title, job["source"], ref, at))
         conversation_id = cur.lastrowid
         if job["depth"] == 0 and ref:
             # A panel reply continues the item of the channel's latest run
@@ -688,7 +735,7 @@ def link_execution(cur, *, execution_row_id: int, execution_id: str, job_id: int
     cur.execute("UPDATE execution SET conversation_id = %s WHERE id = %s",
                 (conversation_id, execution_row_id))
     append_event(cur, conversation_id, kind="run.started", execution_id=execution_id,
-                 source_kind="execution", source_id=execution_row_id,
+                 source_kind="execution", source_id=execution_row_id, created_at=at,
                  payload={"job_id": job_id, "attempt": attempt,
                           "max_attempts": job["max_attempts"], "type": job["type"],
                           "source": job["source"], "reference_id": job["reference_id"],
@@ -938,7 +985,7 @@ def sweep_pending(conn, *, grace_seconds: int, limit: int = 500) -> int:
             "SELECT id FROM message WHERE job_state = 'pending' "
             # <=, so a zero grace period means "every pending row", not "none of the ones
             # written this second".
-            "AND created_at <= NOW() - INTERVAL %s SECOND ORDER BY id LIMIT %s",
+            "AND created_at <= NOW(6) - INTERVAL %s SECOND ORDER BY id LIMIT %s",
             (grace_seconds, limit),
         )
         ids = [r["id"] for r in cur.fetchall()]

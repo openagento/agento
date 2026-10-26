@@ -21,8 +21,12 @@ export const fetchThread = (threadId: number, signal?: AbortSignal) =>
   apiFetch<ThreadDetail>(`/api/conversation/threads/${threadId}`, { signal });
 
 /** The newest timeline page, or the page before event `before`. */
-export const fetchPage = (threadId: number, before?: number, signal?: AbortSignal) =>
-  apiFetch<TimelinePage>(`/api/conversation/threads/${threadId}/timeline${before === undefined ? "" : `?before=${before}`}`, { signal });
+/** `before`: the oldest event held, sent as its id and time (the timeline's keyset). */
+export function fetchPage(threadId: number, before?: StreamEvent, signal?: AbortSignal) {
+  const at = before?.created_at ? `&before_at=${encodeURIComponent(before.created_at)}` : "";
+  const query = before === undefined ? "" : `?before=${before.id}${at}`;
+  return apiFetch<TimelinePage>(`/api/conversation/threads/${threadId}/timeline${query}`, { signal });
+}
 
 /** Resets the store to the newest page and the replay cursor to its newest id: the first load,
  *  an expired cursor (409) and following again all start here. A page that arrives after the

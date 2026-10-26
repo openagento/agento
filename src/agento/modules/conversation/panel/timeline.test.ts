@@ -27,18 +27,18 @@ describe("TimelineStore", () => {
     const s = new TimelineStore();
     s.reset({ events: span(1001, MAX_EVENTS), has_older: true, newest_id: 1000 + MAX_EVENTS });
     s.merge("older", [text(999, "a"), text(1000, "b")], true);
-    expect(s.oldestId()).toBe(999);
+    expect(s.oldest()?.id).toBe(999);
     expect(s.events()).toHaveLength(MAX_EVENTS + 2);
     s.merge("auto", [text(1001 + MAX_EVENTS, "new")]);
     expect(s.events()).toHaveLength(MAX_EVENTS);
-    expect(s.oldestId()).toBe(1002);
+    expect(s.oldest()?.id).toBe(1002);
   });
 
   it("drops the oldest events past the cap and says there is more", () => {
     const s = new TimelineStore();
     s.merge("auto", span(1, MAX_EVENTS + 3));
     expect(s.events()).toHaveLength(MAX_EVENTS);
-    expect(s.oldestId()).toBe(4);
+    expect(s.oldest()?.id).toBe(4);
     expect(s.hasOlder).toBe(true);
   });
 
@@ -47,7 +47,7 @@ describe("TimelineStore", () => {
     s.merge("auto", span(1, MAX_EVENTS + 3));
     s.merge("auto", span(1, 3));
     expect(s.events()).toHaveLength(MAX_EVENTS);
-    expect(s.oldestId()).toBe(4);
+    expect(s.oldest()?.id).toBe(4);
   });
 
   it("scrolled up, live runs are counted, not held: the store size stays", () => {
@@ -59,6 +59,19 @@ describe("TimelineStore", () => {
     expect(ids(s)).toEqual(span(1, 10).map((e) => e.id));
     expect(s.unseen).toBe(3 * MAX_EVENTS);
     expect(s.behind).toBe(true);
+  });
+
+  it("holds events in time order: an imported run with high ids sorts before newer events", () => {
+    const at = (e: StreamEvent, t: string): StreamEvent => ({ ...e, created_at: `2026-01-0${t}T00:00:00.000000Z` });
+    const s = new TimelineStore();
+    s.merge("auto", [at(text(1, "a"), "3"), at(text(2, "b"), "4")]);
+    s.merge("older", [at(text(50, "old"), "1"), at(text(51, "old2"), "1")], false);
+    expect(ids(s)).toEqual([50, 51, 1, 2]);
+    expect(s.oldest()?.id).toBe(50);
+    expect(s.newestId()).toBe(51);
+    s.follow(false);
+    s.merge("auto", [at(text(51, "old2"), "1"), at(text(52, "live"), "5")]);
+    expect(s.unseen).toBe(1); // only the id above the highest held one counts
   });
 
   it("a reset holds the newest page and the held events newer than it, and follows again", () => {

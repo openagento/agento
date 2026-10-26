@@ -524,6 +524,19 @@ class AgentHarnessAdapter(Protocol):
     # ``stream_event_mapper`` (-> StreamEventMapper | None) is omitted here for exactly
     # the same reason as ``stream_renderer`` below, and read the same way.
 
+    # ``session_file(root: Path, session_id: str) -> Path | None`` and
+    # ``session_transcript(path: Path) -> list[list[dict]] | None`` are optional for the
+    # same reason, and read the same way. ``session_file`` finds the session's file under
+    # ``root``, a dir that holds the harness's persistent HOME paths at their HOME-relative
+    # place (a run HOME or a view's ``state/``). It checks ``session_id`` before it goes
+    # into a glob (SEC-5); a bad id or no file gives ``None``, several files the newest.
+    # ``session_transcript`` gives the file's ``StreamEventMapper`` fragments, one list per
+    # turn, oldest first; each fragment has the extra key ``at`` (the line's ISO time,
+    # absent when the line has none). ``None`` means the file cannot be read.
+    # ``stored_answer(output: str) -> str | None`` is optional too: the answer text in a
+    # stored ``job.output`` (an older run may have kept its raw stream there); ``None`` when
+    # it has none. Without the member the output is the answer.
+
     # ``stream_renderer`` (-> StreamRenderer | None) is deliberately NOT declared
     # here. ``AgentHarnessAdapter`` is ``runtime_checkable`` and ``register_harness``
     # isinstance-checks every adapter, so a member declared here is *required*: an

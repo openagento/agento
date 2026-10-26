@@ -45,15 +45,16 @@ config levels — see [the config README](../config/README.md#numeric-bounds-min
 | `conversation/history/page_size` | 100 | 1 – 500 |
 | `conversation/sweep/pending_grace_seconds` | 60 | 5 – 3600 |
 | `conversation/limits/max_message_bytes` | 32768 | 1024 – 49152 |
-| `conversation/retention/event_days` | 90 | 1 – |
+| `conversation/retention/event_days` | 0 (for ever) | 0 – |
 | `conversation/retention/outbox_days` | 7 | 1 – |
-| `conversation/retention/archived_days` | 365 | 30 – |
+| `conversation/retention/archived_days` | 0 (for ever) | 0 – |
 | `conversation/retention/idle_days` | 90 | 7 – |
 
 Each retention field reads a different clock: `event_days` and `outbox_days` from the row's
 `created_at`, `archived_days` from `conversation.updated_at`, and `idle_days` from the newest
 message's `created_at` (a channel thread: its `last_activity_at`). All four comparisons are
-strict. `stream/max_fragment_bytes` cuts each string field of one live fragment (its text, a
+strict. `0` in `event_days` or `archived_days` keeps the rows for ever (the default).
+`stream/max_fragment_bytes` cuts each string field of one live fragment (its text, a
 tool's input or output) before the per-run byte cap counts it.
 
 ## REST
@@ -63,7 +64,7 @@ tool's input or output) before the per-run byte cap counts it.
 | POST | `/api/conversation/threads` | `201 {id}` |
 | GET | `/api/conversation/threads` | the caller's active threads; `?scope=channels[&channel=<source>][&before=<cursor>]` lists the channel threads instead (admins only, a non-admin gets `[]`), newest activity first, each row with a `cursor` for the next page |
 | GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (harness, provider, credential label, model, tokens, job id, and a sub-agent's `parent_job_id`, `depth`, `resume_job_id` and `agent_view` only with `run_details`; the `run.started` event carries `parent_job_id` and `depth` for every reader, and `resume_job_id` and `agent_view` only with `run_details`), and its newest 50 sub-agent `jobs` (`id`, `parent_job_id`, `depth`, `status`, for every reader: the rail's tree) |
-| GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&limit=<n>`: one page of events, oldest first, `{events, has_older, newest_id}`; a `before` at or below the prune watermark is `409 cursor_expired` |
+| GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&before_at=<its created_at>&limit=<n>`: one page of events in time order `(created_at, id)`, oldest first, `{events, has_older, newest_id}`. On the newest page `newest_id` is the conversation's highest event id, the stream's cursor. A cursor at or below the prune watermark is `409 cursor_expired`; a bad `before_at` is `400`. A bare `before` (no `before_at`, deprecated, see ROADMAP.md) reads its event's time, and is `409 cursor_expired` when that event is gone |
 | PATCH | `/api/conversation/threads/{id}` | `{title?, pinned?}`: renames the thread, pins or unpins it — the refreshed thread; `400` on an empty body, a title past 255 characters or a non-boolean `pinned`, `404` on a thread this caller cannot see or that has no owner, `409` past `MAX_PINNED` (50) pinned threads |
 | DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path) |
 | GET | `/api/conversation/threads/{id}/messages` | its messages |
@@ -447,10 +448,10 @@ is not also deleted in the same run.
 
 | Pass | Config | What it does |
 |---|---|---|
-| Prune | `conversation/retention/event_days` (90) | Removes `conversation_event` rows past the window, per conversation, and raises that conversation's prune watermark. Floor: 1 day. |
+| Prune | `conversation/retention/event_days` (0 = off) | Removes `conversation_event` rows past the window, oldest by `(created_at, id)` first, per conversation, and raises that conversation's prune watermark. |
 | Auto-archive | `conversation/retention/idle_days` (90) | Skips a **pinned** thread: a pin is the user saying to keep it. Archives a panel thread whose newest message is older than the window (a thread with no messages falls back to its own `created_at`; `conversation.updated_at` does not vote), through `service.archive(..., reason="idle")`. Skips one whose newest **user** turn is not `terminal`. Re-checked per thread under the conversation row lock the posting path takes, so a post that lands mid-pass keeps the thread. A **channel** thread uses `COALESCE(last_activity_at, created_at)` instead (every timeline write moves it) and is skipped while one of its runs is `running`. |
-| Delete | `conversation/retention/archived_days` (365) | Deletes an archived thread and everything under it, one transaction each. |
-| Old runs | `conversation/retention/event_days` (90) | Deletes every `execution` row that is not `running` and **finished** past the window, with its `execution_delta` rows — oldest first, in batches. One age bound for every run, because an active channel thread lives as long as its issue keeps running (CODE-8). The clock is `finished_at`: a run's events age by `created_at`, so a run that started long ago and finished today keeps its row as long as its events. A run with a finished toolbox call that the relay has not projected yet is kept, because the relay finds the thread through the run's row. |
+| Delete | `conversation/retention/archived_days` (0 = off) | Deletes an archived thread and everything under it, one transaction each. |
+| Old runs | `conversation/retention/event_days` (0 = off) | Deletes every `execution` row that is not `running` and **finished** past the window, with its `execution_delta` rows — oldest first, in batches. One age bound for every run, because an active channel thread lives as long as its issue keeps running (CODE-8). The clock is `finished_at`: a run's events age by `created_at`, so a run that started long ago and finished today keeps its row as long as its events. A run with a finished toolbox call that the relay has not projected yet is kept, because the relay finds the thread through the run's row. |
 
 `conversation/retention/outbox_days` is the relay's own, faster cleanup and belongs to
 `conversation:relay`, not to this pass.
@@ -459,3 +460,31 @@ The prune is what makes a cursor expirable: see
 [docs/architecture/conversations.md](../architecture/conversations.md#retention) for the watermark,
 the `cursor_expired` answer on both cursor paths, and why the delete is ordered rather than a
 cascade.
+
+## Backfill
+
+`conversation:backfill` (`co:ba`) gives the jobs that ended before this module ran their run in
+their conversation, so a Jira issue or a mail shows its whole history. It runs in cron:
+
+```bash
+agento conversation:backfill [--source jira,outlook] [--agent-view CODE] [--since YYYY-MM-DD] [--limit N] [--dry-run]
+```
+
+- **Selection:** terminal jobs at depth 0 with no `execution` row, whose agent_view exists, from
+  every source but `conversation`, `subagent` and `e2e` (naming one of these is a usage error).
+  The default `--since` is now − `retention/event_days`; with `0` every job is taken.
+- **Per job, one transaction:** the job gets its thread (`default_ref`, as a new job does), an
+  `execution` row `backfill:<job id>`, `run.started` at the job's start, its run events, and
+  `run.finished` (with the answer from `job.output` on success, through the harness's
+  `stored_answer` when it has one: an older Claude job kept its raw stream there) at its end. The writers are the
+  live ones, with the job's own times, so the run sits in its time place on the timeline. A
+  second run finds the execution row and skips the job; `--dry-run` rolls every job back, so its
+  counts are real.
+- **Run events:** when the harness reads its session files (`session_file` and
+  `session_transcript`, today Claude only), the file is split into turns at the user prompts
+  and turn *k* goes to the *k*-th job of that session (by start time). A count that does not
+  match, no file, an unreadable file or one over 64 MiB gives the **fallback**: start, answer
+  and end only.
+- **Report:** per source — imported with a transcript, imported with the fallback, errors (by
+  exception class, with the job id in the log), and skipped (has a run, no view, outside the
+  window).
