@@ -327,6 +327,7 @@ class TestInjectRuntimeParams:
         data = json.loads((work_dir / ".claude.json").read_text())
         assert data == {
             "model": "opus",
+            "hasCompletedOnboarding": True,
             "projects": {str(work_dir): {"hasTrustDialogAccepted": True}},
         }
 
@@ -343,11 +344,13 @@ class TestInjectRuntimeParams:
         ({"api_key": "sk-ant-x"}, "anthropic_api_key"),
     ])
     def test_trust_entry_survives_the_credential_write(self, writer, work_dir, creds, type_):
-        """``write_credentials`` runs after the injection (run_preparation)."""
+        """``write_credentials`` runs after the injection (run_preparation). A runner
+        login stores no ``hasCompletedOnboarding``; the TUI must still skip its theme picker."""
         writer.inject_runtime_params(work_dir, run_id="run-1")
         writer.write_credentials(work_dir, _make_token(creds, type_))
         data = json.loads((work_dir / ".claude.json").read_text())
         assert data["projects"] == {str(work_dir): {"hasTrustDialogAccepted": True}}
+        assert data["hasCompletedOnboarding"] is True
 
     def test_noop_when_no_mcp_json(self, writer, work_dir):
         writer.inject_runtime_params(work_dir, capability_token="tok", toolbox_url=self.TOOLBOX)
@@ -758,6 +761,7 @@ class TestWriteCredentials:
         assert out == {
             "model": "opus-4-7",
             "permissions": {"allow": ["Read"]},
+            "hasCompletedOnboarding": True,
         }
 
     def test_api_key_deletes_claude_json_when_only_auth_state_remains(self, writer, work_dir):
