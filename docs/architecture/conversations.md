@@ -257,12 +257,19 @@ retire, then delete.
 
 **The prune is by age, per conversation, and it is what moves the watermark.**
 `conversation/retention/event_days` removes `conversation_event` rows by `created_at` in **live**
-threads, not only in ones being deleted. The predicate is strict `<`, so a row exactly on the cutoff
-is kept. `conversation_prune_watermark` is set to the **highest id just removed** — not the highest
-surviving one — in the same transaction, and it only ever rises, so a second pass is a no-op.
+threads, not only in ones being deleted; `0` (the default) keeps them for ever. The predicate is
+strict `<`, so a row exactly on the cutoff is kept. The timeline is in time order `(created_at, id)`,
+because an imported run (`conversation:backfill`) has high ids and old times, so the prune reads an
+exact id list oldest by `(created_at, id)` and deletes those ids only. In the same transaction
+`conversation_prune_watermark` gets the **last pair removed** (`last_pruned_at`, `last_pruned_at_id`)
+and `last_pruned_event_id` = the **highest id removed**; both only ever rise, so a second pass is a
+no-op.
 
-**That watermark is what makes a stale cursor answerable.** A cursor at or below it is expired, and
-both cursor paths ask the same helper: the replay route answers `409 {"error": "cursor_expired"}`,
+**That watermark is what makes a stale cursor answerable.** A cursor is expired when its pair is at
+or below the watermark pair (its time is read from its event when the caller sent only the id). When
+its event is gone, it is expired at or below `last_pruned_event_id`: a partial row dropped above it is
+not a prune. A watermark from before migration 008 (no pair) keeps the id rule. Both cursor paths ask
+the same helper: the replay route answers `409 {"error": "cursor_expired"}`,
 and the stream yields one `cursor_expired` frame **before any event frame** and ends. Checking only
 the route is the worse of the two failures — a browser reconnecting after a prune would be handed
 the survivors with the removed rows silently missing and nothing to tell it history is gone. No

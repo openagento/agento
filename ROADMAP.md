@@ -196,6 +196,11 @@ Known gaps, each deliberate:
   and as one `cursor_expired` SSE frame (before any event frame) on a reconnect. A client that sees
   it restarts from the newest page. History that has been pruned is gone, and saying so is the
   guarantee — silently serving the survivors as if they were the whole thread is not.
+- **Backfill follow-ups** (D-CONV-BACKFILL-1). A transcript reader (`session_transcript`) for
+  Codex and Pi: today their imported runs take the fallback (start, answer, end). The Outlook
+  mail-conversation thread for an imported job: it gets its default thread, as a job with thread
+  read off. The bare `before=<id>` timeline cursor (no `before_at`) is deprecated: remove it once
+  every panel sends the pair (CODE-5).
 - ~~**F14 — the Node job insert emits no event.**~~ — **done 2026-10-10.** `schedule.js` now wraps
   its dedupe, its `job` insert and a `job.queued` `job_event_outbox` row in one transaction, so a
   tool-scheduled follow-up is announced like every other turn. The thread itself was never missing:

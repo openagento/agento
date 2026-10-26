@@ -36,6 +36,8 @@ last `result` event (a background subagent makes the CLI print one per turn). `j
 The full event stream is not in `job.output`. It is in the conversation timeline and in the
 native transcript on disk. When the stream has no usable `result` (a timeout, a killed
 process), `job.output` keeps the raw stream so the operator can see what happened.
+Older runs kept the raw stream in every case; the adapter's `stored_answer` takes the answer
+out of such an output for `conversation:backfill`.
 
 ## Live timeline fragments
 
@@ -56,7 +58,9 @@ Each run gets its own run dir (HOME and cwd). Before the agent starts, Agento wr
 `projects["<run dir>"].hasTrustDialogAccepted = true` into the run's `.claude.json`. The
 interactive TUI (CLI 2.1.x) asks "trust this folder" once per cwd and its default answer
 exits, so without it `agento run <code>` stopped at the dialog. Only that one run dir is
-trusted — never the developer's `projects` map and never a parent path.
+trusted — never the developer's `projects` map and never a parent path. The same file gets
+`hasCompletedOnboarding = true`: a credential logged in through the runner does not carry it,
+and without it the TUI opened on the first-run theme picker.
 
 `agento run <code> --yolo` also passes `--settings '{"skipDangerousModePermissionPrompt":true}'`,
 because 2.1.x asks to confirm bypass mode on every start (default answer: exit).

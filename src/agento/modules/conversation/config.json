@@ -10,8 +10,8 @@
   "history/page_size": 100,
   "sweep/pending_grace_seconds": 60,
   "limits/max_message_bytes": 32768,
-  "retention/event_days": 90,
+  "retention/event_days": 0,
   "retention/outbox_days": 7,
-  "retention/archived_days": 365,
+  "retention/archived_days": 0,
   "retention/idle_days": 90
 }

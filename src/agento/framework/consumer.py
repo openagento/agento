@@ -12,6 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from . import db
 from .agent_manager.credential_resolver import (
@@ -138,9 +139,13 @@ _POOL_RETRY_JITTER_SECONDS = (60, 300)
 # DEAD once it is this old (``job.created_at``), so an abandoned pool cannot hold jobs forever.
 _AUTH_WAIT_MAX = timedelta(hours=24)
 
+# Only for a caller that passes no logger; the consumer passes its own.
+_log = logging.getLogger(__name__)
+
 
 def _should_resume(
-    *, attempt: int, session_id: str | None, pid_alive: bool, can_resume: bool
+    *, attempt: int, session_id: str | None, pid_alive: bool, can_resume: bool,
+    session_present: bool = True,
 ) -> bool:
     """Whether to resume the stored session instead of starting a fresh run.
 
@@ -148,9 +153,28 @@ def _should_resume(
     authoritative. A harness that cannot resume must start fresh rather than be
     handed a session id: the consumer resumes with an EMPTY prompt, so a CLI that
     merely re-opens the session would exit having done nothing and be recorded as
-    a success. Extracted from ``_run_job`` so the gate is directly testable.
+    a success. ``session_present`` is false when the session's file is not in the run
+    HOME (`_session_missing`): resuming it would do nothing, so the retry runs fresh.
+    Extracted from ``_run_job`` so the gate is directly testable.
     """
-    return attempt > 1 and session_id is not None and not pid_alive and can_resume
+    return (attempt > 1 and session_id is not None and not pid_alive and can_resume
+            and session_present)
+
+
+def _session_missing(harness_entry, home, session_id: str, logger: logging.Logger = _log) -> bool:
+    """True when the harness says ``session_id`` has no file under the run HOME ``home``.
+
+    ``session_file`` is optional and read with ``getattr`` (like ``stream_event_mapper``).
+    No member, no HOME, or a member that raises gives False: today's behaviour.
+    """
+    finder = getattr(getattr(harness_entry, "adapter", None), "session_file", None)
+    if finder is None or home is None:
+        return False
+    try:
+        return finder(Path(home), session_id) is None
+    except Exception as exc:
+        logger.debug(f"session_file failed for session {session_id}: {type(exc).__name__}")
+        return False
 
 
 _CAPABILITY_PURGE_INTERVAL_SECONDS = 3600
@@ -579,7 +603,8 @@ class Consumer:
         return "job_dead_after", JobDeadEvent(job=job, error=StaleJobRecovery(error_msg))
 
     @staticmethod
-    def _resume_session(conn, job: Job, harness: str | None) -> str | None:
+    def _resume_session(conn, job: Job, harness: str | None, *, harness_entry=None, home=None,
+                        logger: logging.Logger = _log) -> str | None:
         """The harness session this turn continues, or None for a fresh one.
 
         The target is `job.resume_job_id`, set at claim (`threads.resolve_resume`). A retry
@@ -589,20 +614,27 @@ class Consumer:
         gives a fresh session. With no target, a job that this claim did not detach or ask
         for a fresh session (`JobClaimBeforeEvent`) still asks the deprecated
         `resume_session_resolver` seam (CODE-5; removed in the next minor release,
-        ROADMAP.md).
+        ROADMAP.md). A session whose file is not in the run HOME ``home`` gives a fresh
+        session too: the CLI would start an empty one and lose the turn in silence.
         """
         if job.resume_job_id is None:
             if job.thread_detached or job.fresh_session:
                 return None
-            return resolve_resume_session(conn=conn, job_id=job.id, attempt=job.attempt)
-        if job.attempt > 1 and job.session_id is not None:
+            session_id = resolve_resume_session(conn=conn, job_id=job.id, attempt=job.attempt)
+        else:
+            if job.attempt > 1 and job.session_id is not None:
+                return None
+            with conn.cursor() as cur:
+                cur.execute("SELECT session_id, agent_type FROM job WHERE id = %s",
+                            (job.resume_job_id,))
+                row = cur.fetchone()
+            if row is None or row["agent_type"] != harness:
+                return None
+            session_id = row["session_id"]
+        if session_id and _session_missing(harness_entry, home, session_id, logger):
+            logger.info(f"Job {job.id}: session {session_id} has no file, starting a fresh session")
             return None
-        with conn.cursor() as cur:
-            cur.execute("SELECT session_id, agent_type FROM job WHERE id = %s", (job.resume_job_id,))
-            row = cur.fetchone()
-        if row is None or row["agent_type"] != harness:
-            return None
-        return row["session_id"]
+        return session_id
 
     def _save_session_id(self, job_id: int, session_id: str) -> None:
         """Best-effort: save session_id to job row."""
@@ -1156,6 +1188,8 @@ class Consumer:
                     pid_alive=job.pid is not None
                     and runner_client.alive(job.runner_ref, f"job:{job.id}") != "dead",
                     can_resume=harness_entry.descriptor.capabilities.resume,
+                    session_present=job.session_id is None or not _session_missing(
+                        harness_entry, home_dir, job.session_id, self.logger),
                 )
                 if should_resume:
                     self.logger.info(
@@ -1197,7 +1231,9 @@ class Consumer:
                 resume_session_id = None
                 if harness_entry.descriptor.capabilities.resume:
                     with self._db() as resume_conn:
-                        resume_session_id = self._resume_session(resume_conn, job, harness)
+                        resume_session_id = self._resume_session(
+                            resume_conn, job, harness, harness_entry=harness_entry,
+                            home=home_dir, logger=self.logger)
 
                 context = JobContext(
                     config=module_config,

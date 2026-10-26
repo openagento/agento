@@ -4,11 +4,12 @@ Three passes and one question.
 
 **The event prune is by age, per conversation, and it is what moves the watermark.**
 `retention/event_days` deletes `conversation_event` rows by `created_at` in **live**
-conversations, not only in ones being deleted. The predicate is strict `<`, so a row exactly
-on the cutoff is kept. The watermark is set to the **highest id just removed** - not the
-highest surviving one - in the same transaction, and it is **monotonic**: only ever raised, so
-a later pass that removes nothing leaves it alone and a second pass over the same rows changes
-nothing.
+conversations, not only in ones being deleted; `0` keeps them for ever. The predicate is strict
+`<`, so a row exactly on the cutoff is kept. Rows go in `(created_at, id)` order, the timeline's
+order. The watermark is two values, set in the same transaction: the `(created_at, id)` of the
+last row removed, and the **highest id** removed - not the highest surviving one. Both are
+**monotonic**: only ever raised, so a later pass that removes nothing leaves them alone and a
+second pass over the same rows changes nothing.
 
 **The delete is an explicit ordered delete, not a cascade.** One transaction per conversation:
 lock the `conversation` row `FOR UPDATE` and re-check under that lock that it is still
@@ -19,7 +20,9 @@ next run finishes, never an orphan.
 
 **`cursor_expired` is per conversation and is asked on BOTH cursor paths.** A cursor at or
 below that conversation's watermark is expired; above it with no rows is up to date; a
-conversation with no watermark row can have no expired cursor. Checking only the replay route
+conversation with no watermark row can have no expired cursor. A cursor whose event still
+exists is compared by time; one whose event is gone, by id - a finalizer drops a run's partial
+events, and a cursor on one of those is not expired unless a prune could have removed it. Checking only the replay route
 is the worse of the two failures: a browser reconnecting after a prune would be handed the
 surviving rows with the removed ones silently missing and no signal that anything is gone - a
 gap presented as complete history.
@@ -27,12 +30,11 @@ gap presented as complete history.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from . import service
 
 logger = logging.getLogger(__name__)
-
-MIN_EVENT_DAYS = 1
 
 # What ONE run may take on. Every pass loads its ids before it works on them, so an
 # unbounded SELECT is an unbounded list in memory, and one nightly run that never ends
@@ -45,15 +47,29 @@ MAX_PER_RUN = 500
 MAX_EVENT_ROWS_PER_RUN = 10_000
 
 
-def cursor_expired(conn, *, conversation_id: int, cursor: int | None) -> bool:
-    """The one question both cursor paths ask. `None` (no cursor) can never be expired."""
+def cursor_expired(conn, *, conversation_id: int, cursor: int | None,
+                   at: datetime | None = None) -> bool:
+    """The one question both cursor paths ask. `None` (no cursor) can never be expired.
+
+    `at` is the cursor event's time when the client sends it (the timeline's older page);
+    else the event's own row gives it, when the row still exists.
+    """
     if cursor is None:
         return False
     with conn.cursor() as cur:
-        cur.execute("SELECT last_pruned_event_id FROM conversation_prune_watermark "
-                    "WHERE conversation_id = %s", (conversation_id,))
+        cur.execute("SELECT w.last_pruned_event_id, w.last_pruned_at, w.last_pruned_at_id, "
+                    "       e.created_at "
+                    "FROM conversation_prune_watermark w "
+                    "LEFT JOIN conversation_event e ON e.id = %s "
+                    "  AND e.conversation_id = w.conversation_id "
+                    "WHERE w.conversation_id = %s", (cursor, conversation_id))
         row = cur.fetchone()
-    return row is not None and cursor <= int(row["last_pruned_event_id"])
+    if row is None:
+        return False
+    at = at or row["created_at"]
+    if at is None or row["last_pruned_at"] is None:
+        return cursor <= int(row["last_pruned_event_id"])
+    return (at, cursor) <= (row["last_pruned_at"], int(row["last_pruned_at_id"]))
 
 
 # --- the age prune ---------------------------------------------------------
@@ -64,53 +80,59 @@ def prune_events(conn, *, event_days: int, limit: int = MAX_PER_RUN,
 
     At most `limit` conversations per run: the ones with the oldest surviving event first,
     so a backlog drains in order instead of one run trying to hold every id at once.
+    `event_days` 0 keeps every event.
     """
-    days = max(MIN_EVENT_DAYS, event_days)
+    if event_days <= 0:
+        return 0
     removed = 0
     with conn.cursor() as cur:
         cur.execute(
             "SELECT conversation_id FROM conversation_event "
             "WHERE created_at < (NOW() - INTERVAL %s DAY) "
-            "GROUP BY conversation_id ORDER BY MIN(id) LIMIT %s", (days, limit))
+            "GROUP BY conversation_id ORDER BY MIN(created_at) LIMIT %s", (event_days, limit))
         ids = [row["conversation_id"] for row in cur.fetchall()]
     for conversation_id in ids:
         if removed >= max_rows:
             break                 # the rest is the next run's work, oldest first
-        removed += _prune_one(conn, conversation_id, days, budget=max_rows - removed)
+        removed += _prune_one(conn, conversation_id, event_days, budget=max_rows - removed)
     return removed
 
 
 def _prune_one(conn, conversation_id: int, days: int, *, budget: int) -> int:
     with conn.cursor() as cur:
-        # The highest id being removed, read in the same transaction as the delete: a row
-        # written between the two would otherwise be counted as pruned and never sent.
-        # `budget` bounds it from below - the OLDEST rows up to the budget - so one long
-        # thread cannot put its whole backlog into a single transaction, and the watermark
-        # still names exactly what went (it only ever rises).
+        # The OLDEST rows up to the budget, as an exact id list: one long thread cannot put
+        # its whole backlog into a single transaction, and the delete removes the list and
+        # nothing else - a row an import writes between the two statements, even an older
+        # one, is not removed and not counted; the next pass takes it.
         cur.execute(
-            "SELECT MAX(id) AS highest FROM "
-            "  (SELECT id FROM conversation_event "
-            "   WHERE conversation_id = %s AND created_at < (NOW() - INTERVAL %s DAY) "
-            "   ORDER BY id LIMIT %s) AS oldest",
+            "SELECT id, created_at FROM conversation_event "
+            "WHERE conversation_id = %s AND created_at < (NOW() - INTERVAL %s DAY) "
+            "ORDER BY created_at, id LIMIT %s",
             (conversation_id, days, budget))
-        highest = (cur.fetchone() or {}).get("highest")
-        if highest is None:
+        rows = list(cur.fetchall())
+        if not rows:
             conn.commit()
             return 0
-        cur.execute(
-            "DELETE FROM conversation_event WHERE conversation_id = %s AND id <= %s "
-            "AND created_at < (NOW() - INTERVAL %s DAY)",
-            (conversation_id, highest, days))
+        ids = [r["id"] for r in rows]
+        cur.execute("DELETE FROM conversation_event WHERE id IN "
+                    f"({','.join(['%s'] * len(ids))})", ids)
         count = cur.rowcount
+        last = rows[-1]
         cur.execute(
-            # GREATEST, not a plain assignment: the watermark only ever rises, so a pass
-            # that removes older rows after a later one cannot drag it backwards.
-            "INSERT INTO conversation_prune_watermark "
-            "(conversation_id, last_pruned_event_id) VALUES (%s, %s) "
+            # Only ever raised, so a pass that removes older rows after a later one cannot
+            # drag the watermark backwards. The `_id` assignment runs first: it compares
+            # with the stored time before the next assignment changes it.
+            "INSERT INTO conversation_prune_watermark (conversation_id, last_pruned_event_id, "
+            "  last_pruned_at, last_pruned_at_id) VALUES (%s, %s, %s, %s) "
             "ON DUPLICATE KEY UPDATE "
-            "last_pruned_event_id = GREATEST(last_pruned_event_id, VALUES(last_pruned_event_id)), "
+            "last_pruned_event_id = GREATEST(last_pruned_event_id, %s), "
+            "last_pruned_at_id = IF(last_pruned_at IS NULL OR %s > last_pruned_at "
+            "  OR (%s = last_pruned_at AND %s > last_pruned_at_id), %s, last_pruned_at_id), "
+            "last_pruned_at = GREATEST(COALESCE(last_pruned_at, %s), %s), "
             "pruned_at = NOW()",
-            (conversation_id, highest))
+            (conversation_id, max(ids), last["created_at"], last["id"], max(ids),
+             last["created_at"], last["created_at"], last["id"], last["id"],
+             last["created_at"], last["created_at"]))
     conn.commit()
     return count
 
@@ -203,9 +225,10 @@ def prune_old_executions(conn, *, event_days: int, limit: int = 100,
     its row while its events live. A running run is never pruned, nor one with a finished
     tool call the relay has not projected yet (the relay needs the row to find the thread;
     the predicate is `relay._TOOL_BATCH_SQL`'s). Oldest first, `limit` per pass, so one
-    sweep cannot lock the table behind a backlog.
+    sweep cannot lock the table behind a backlog. `event_days` 0 keeps every run.
     """
-    days = max(MIN_EVENT_DAYS, event_days)
+    if event_days <= 0:
+        return 0
     removed = 0
     while True:
         with conn.cursor() as cur:
@@ -216,7 +239,7 @@ def prune_old_executions(conn, *, event_days: int, limit: int = 100,
                 "AND NOT EXISTS (SELECT 1 FROM tool_invocation t "
                 "  WHERE t.run_execution_id = e.execution_id "
                 "    AND t.conversation_relayed_at IS NULL AND t.outcome <> 'pending') "
-                "ORDER BY e.id LIMIT %s", (days, min(limit, max_rows - removed)))
+                "ORDER BY e.id LIMIT %s", (event_days, min(limit, max_rows - removed)))
             ids = [row["execution_id"] for row in cur.fetchall()]
             if not ids:
                 conn.commit()
@@ -233,6 +256,9 @@ def prune_old_executions(conn, *, event_days: int, limit: int = 100,
 # --- the delete ------------------------------------------------------------
 
 def delete_archived(conn, *, archived_days: int, limit: int = MAX_PER_RUN) -> int:
+    """`archived_days` 0 keeps every archived thread."""
+    if archived_days <= 0:
+        return 0
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id FROM conversation WHERE status = 'archived' "

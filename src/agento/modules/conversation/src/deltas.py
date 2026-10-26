@@ -101,20 +101,11 @@ class ConversationDeltaSink:
         # every DB override and the module's system.json each time, and a batch is a burst
         # of streamed tokens (CODE-8). A batch is short, so a cap changed mid-stream takes
         # effect on the next one.
-        caps = (service.config(conn, "stream/max_deltas_per_execution"),
-                service.config(conn, "stream/max_delta_bytes_per_execution"),
-                service.config(conn, "stream/max_fragment_bytes"))
+        caps = _caps(conn)
         for attempt in range(1, _ATTEMPTS + 1):
             try:
                 with conn.cursor() as cur:
-                    # The lock-order invariant (E9 §3.4): every thread of the batch, in
-                    # ascending id, before the first write.
-                    service.lock_conversations(cur, [
-                        c for c in (self._budget(cur, r.execution_id).conversation
-                                    for r in batch) if c is not None])
-                    live = self._live(cur, {r.execution_id for r in batch})
-                    for record in batch:
-                        self._one(cur, record, caps, live)
+                    self._write_on(cur, batch, caps)
                 conn.commit()
                 return
             except pymysql.err.OperationalError as exc:
@@ -125,6 +116,23 @@ class ConversationDeltaSink:
                     self._budgets.pop(record.execution_id, None)
                 if exc.args[0] not in _RETRYABLE or attempt == _ATTEMPTS:
                     raise
+
+    def write_on(self, cur, batch: Sequence[DeltaRecord]) -> None:
+        """The same writes on the caller's cursor, with no commit: `conversation:backfill`
+        imports a run's fragments in its own transaction, under the same caps."""
+        self._write_on(cur, batch, _caps(cur.connection))
+
+    def _write_on(self, cur, batch: Sequence[DeltaRecord], caps: tuple[int, int, int]) -> None:
+        # The lock-order invariant (E9 §3.4): every thread of the batch, in ascending id,
+        # before the first write. `_event` appends with `locked=True`, so this lock is also
+        # what moves the activity clock: to the newest imported time, else to now.
+        service.lock_conversations(cur, [
+            c for c in (self._budget(cur, r.execution_id).conversation for r in batch)
+            if c is not None],
+            at=max((r.created_at for r in batch if r.created_at is not None), default=None))
+        live = self._live(cur, {r.execution_id for r in batch})
+        for record in batch:
+            self._one(cur, record, caps, live)
 
     # -- the connection ------------------------------------------------------
 
@@ -285,7 +293,13 @@ class ConversationDeltaSink:
             return
         service.append_event(cur, budget.conversation, kind=kind, payload=payload,
                              execution_id=record.execution_id, source_kind=SOURCE_KIND,
-                             source_id=ledger_id, locked=True)
+                             source_id=ledger_id, locked=True, created_at=record.created_at)
+
+
+def _caps(conn) -> tuple[int, int, int]:
+    return (service.config(conn, "stream/max_deltas_per_execution"),
+            service.config(conn, "stream/max_delta_bytes_per_execution"),
+            service.config(conn, "stream/max_fragment_bytes"))
 
 
 # The fields a fragment spends the byte budget with, in Python and in SQL alike.

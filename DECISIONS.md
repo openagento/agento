@@ -4,6 +4,24 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-26 — Imported runs: a timeline in time order (D-CONV-BACKFILL-1)
+
+PRD `prd_conversation_backfill.md` (D1–D14, approved by the owner 2026-10-26). `conversation:backfill`
+writes old jobs' runs with their own times, so their events get high ids and old times.
+
+- **The timeline is in time order `(created_at, id)`**, not id order. `created_at` keeps
+  microseconds (migration 008); a tie is broken by id. The newest page's `newest_id` is the
+  conversation's highest id, because the stream's cursor stays id order (`id > cursor`): a page
+  cursor and a stream cursor are different things.
+- **`last_pruned_event_id` is kept** beside the new pair `(last_pruned_at, last_pruned_at_id)`. A
+  cursor whose event is gone has no time to compare, and the highest id removed is the only safe
+  answer for it: a partial row dropped above it was not a prune.
+- **The importer calls the live writers** (`link_execution`, the delta sink's new `write_on`, the
+  finalizer) with an optional time, so no SQL for these tables is written twice. Its events keep
+  `source_kind='delta'`, the same caps and the same ledger as a live run.
+- **Retention `0` = keep for ever** and is the new default for `event_days` and `archived_days`:
+  an imported history that the next prune deletes is not worth importing.
+
 ## 2026-10-22 — A channel's thread is its workspace (D-THREAD-1)
 
 Plan §4, §6, §9 (AG-41). Status: every channel at once is the owner's (Marcin Klauza, 2026-10-22,
@@ -685,7 +703,9 @@ zaproponowane poprawki 1-5"); the design choices below are the implementer's, re
   own `.claude.json` and nothing else: not the developer's captured `projects` map (its
   `enabledMcpjsonServers: []` turns the toolbox off), not a parent path, and not
   `CLAUDE_CODE_SANDBOXED`, which turns off more gates than this one dialog. The run dir is HOME
-  and cwd and has the same path in cron and the sandbox, so the key matches.
+  and cwd and has the same path in cron and the sandbox, so the key matches. The same file also
+  gets `hasCompletedOnboarding = true` (the first-run theme picker): a credential logged in
+  through the runner does not carry it, so it is run state, not credential identity (2026-10-26).
 - **`claude/personality` removed.** It was written to `.claude.json` `systemPrompt`, which the CLI
   does not read: with the key set, 2/2 replies ignored it; the same text through
   `--append-system-prompt` was followed. It is not a declared `system.json` field. `SOUL.md` is

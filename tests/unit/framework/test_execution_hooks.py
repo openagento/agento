@@ -160,4 +160,4 @@ def test_a_delta_record_is_frozen_and_vendor_free():
     with pytest.raises(dataclasses.FrozenInstanceError):
         record.seq = 2  # type: ignore[misc]
     assert set(record.__dataclass_fields__) == {
-        "execution_id", "seq", "kind", "text", "tool_name", "data"}
+        "execution_id", "seq", "kind", "text", "tool_name", "data", "created_at"}

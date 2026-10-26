@@ -229,6 +229,27 @@ tokens from `text` and from every string in `data`, and cuts each string at 64 K
 none. The mapper names no other harness and does no I/O: it runs on the stdout drain thread, in
 the runner. The runner sends each fragment to the worker, and the worker does the rest below.
 
+### Reading session files (optional)
+
+Two more optional members, read with `getattr` like the mapper (they are not in the protocol, so a
+harness written before them still loads):
+
+```python
+def session_file(self, root: Path, session_id: str) -> Path | None: ...
+def session_transcript(self, path: Path) -> list[list[dict]] | None: ...
+```
+
+- `session_file` finds the harness's file of one session under a HOME (`root`), or `None`. It
+  refuses a session id that is not `[A-Za-z0-9_-]{1,128}`. Claude, Codex and Pi have it. The
+  consumer uses it at claim: a resume whose session file is missing starts a fresh session.
+- `session_transcript` reads that file as turns (a turn starts at a user prompt), each a list of
+  the mapper's fragments with `at` = the line's ISO time. Only Claude has it.
+  `conversation:backfill` uses both to give imported runs their events
+  ([conversation.md](../modules/conversation.md#backfill)).
+- `stored_answer(output: str) -> str | None` gives the answer text in a stored `job.output`, or
+  `None` when it has none. An older Claude run kept its whole stream-json there; the backfill
+  imports only the answer. Without the member the output is the answer. Only Claude has it.
+
 **Partials are coalesced, not written one per token.** The framework keeps one buffer per run and
 flushes it as one row every 250 ms or 4 KiB, and the delta writer commits at most 4 times a second
 (plus one per 200 rows), so 200 parallel streaming runs do not multiply the write rate by the token
