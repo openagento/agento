@@ -371,11 +371,9 @@ class Consumer:
         consumer_config: ConsumerConfig,
         logger: logging.Logger,
         *,
-        model_override: str | None = None,
         credential_id: int | None = None,
     ):
         self.logger = logger
-        self.model_override = model_override
         # Pins every claim to one credential. Only `agento e2e` sets it: its in-process
         # consumer runs one job that must use the credential under test.
         self.credential_id = credential_id
@@ -959,7 +957,6 @@ class Consumer:
             ),
             pinned_harness=job.agent_type,
             pinned_model=job.model,
-            model_override=self.model_override,
         )
         with conn.cursor() as cur:
             cur.execute(

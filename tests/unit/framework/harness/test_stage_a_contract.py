@@ -645,7 +645,6 @@ class TestProductionWiring:
 
         c = cons.Consumer.__new__(cons.Consumer)
         c.logger = MagicMock()
-        c.model_override = None
         c._db_config = MagicMock()
         c._consumer_config = SimpleNamespace(job_timeout_seconds=60, disable_llm=False)
         c._credential_resolver = MagicMock()

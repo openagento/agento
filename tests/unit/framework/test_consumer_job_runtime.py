@@ -14,11 +14,8 @@ from agento.framework.job_models import AgentType, Job
 pytestmark = pytest.mark.usefixtures("builtin_harnesses")
 
 
-def _consumer(model_override=None):
-    return Consumer(
-        MagicMock(), ConsumerConfig(), logging.getLogger("test"),
-        model_override=model_override,
-    )
+def _consumer():
+    return Consumer(MagicMock(), ConsumerConfig(), logging.getLogger("test"))
 
 
 def _job(**overrides) -> Job:
@@ -154,7 +151,7 @@ class TestRunPath:
     runner all see the EFFECTIVE values, not the agent_view's configured ones.
     """
 
-    def _drive(self, job, *, view=None, model_override=None, run_error=None):
+    def _drive(self, job, *, view=None, run_error=None):
         from pathlib import Path
         from types import SimpleNamespace
 
@@ -192,7 +189,7 @@ class TestRunPath:
         harness_entry = MagicMock()
         harness_entry.descriptor.capabilities.resume = True
 
-        consumer = _consumer(model_override)
+        consumer = _consumer()
         captured["order"] = []
         conn = MagicMock()
         conn.commit.side_effect = lambda: captured["order"].append("commit")
