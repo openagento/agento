@@ -11,6 +11,8 @@ Two modes are selected automatically by presence of a prompt argument:
 
 Shortcut: `ru`.
 
+`--yolo`, `--pretty` and `--dry-run` count only at the start or the end of the prompt. The same word in the middle stays in the prompt text.
+
 ### `--yolo` — skip interactive approval prompts
 
 By default an interactive session uses the agent CLI's normal in-session approval prompting. Pass `--yolo` to run in the same **bypass mode** headless jobs use by default — Claude with `--dangerously-skip-permissions`, Codex with `--dangerously-bypass-approvals-and-sandbox` — so the session never stops to ask for per-action approval:
@@ -63,6 +65,12 @@ agento run --dry-run eval_01        # interactive; the flag may precede the code
 ```
 
 A job runs dry with `job:set-runtime <id> --dry-run` ([job-runtime.md](job-runtime.md#dry-run)).
+Known limits:
+
+- The stub runs before the handler, so handler policy does not run in a dry run.
+- A dry run is one job and the jobs made from it. A later turn in the same thread is a normal job.
+- This `dry_run` is not `disable_llm` and not `setup:upgrade --dry-run`.
+
 Background: DECISIONS.md D-DRY-RUN-1.
 
 ### `--pretty` — human-readable event stream

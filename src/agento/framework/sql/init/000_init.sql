@@ -72,7 +72,6 @@ CREATE TABLE IF NOT EXISTS job (
     schedule_id     BIGINT UNSIGNED NULL,
     parent_job_id   BIGINT UNSIGNED NULL,
     depth           TINYINT UNSIGNED NOT NULL DEFAULT 0,
-    dry_run         TINYINT(1) NOT NULL DEFAULT 0,
     thread_id       BIGINT UNSIGNED NULL,
     resume_job_id   BIGINT UNSIGNED NULL,
     line_id         BIGINT UNSIGNED NULL,
@@ -110,6 +109,7 @@ CREATE TABLE IF NOT EXISTS job (
     toolbox_mcp_connected BOOLEAN DEFAULT NULL,
     created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    dry_run         TINYINT(1) NOT NULL DEFAULT 0,
 
     UNIQUE KEY uq_job_idempotency (idempotency_key),
     KEY idx_job_dequeue (status, scheduled_after),
@@ -281,11 +281,11 @@ CREATE TABLE tool_invocation (
     app_launch_id     VARCHAR(64)     NULL,
     -- pending until the dispatcher finalizes it; a row left pending is itself a signal.
     outcome           VARCHAR(24)     NOT NULL,
-    -- 055: 1 when the dry-run stub answered the call and the handler did not run.
-    dry_run           TINYINT(1)      NOT NULL DEFAULT 0,
     created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- 047: the projection's checkpoint, on the producer row (§6.4.2).
     conversation_relayed_at DATETIME  NULL,
+    -- 055: 1 when the dry-run stub answered the call and the handler did not run.
+    dry_run           TINYINT(1)      NOT NULL DEFAULT 0,
     UNIQUE KEY uk_tool_invocation_execution (execution_id),
     KEY idx_tool_invocation_capability (capability_id),
     KEY idx_tool_invocation_created (created_at),

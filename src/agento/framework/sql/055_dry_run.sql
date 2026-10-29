@@ -3,10 +3,10 @@
 -- toolbox_capability.dry_run: the toolbox answers a `sensitive` tool with a stub, without the handler.
 -- tool_invocation.dry_run: 1 when the stub answered that call.
 ALTER TABLE job
-  ADD COLUMN dry_run TINYINT(1) NOT NULL DEFAULT 0 AFTER depth;
+  ADD COLUMN dry_run TINYINT(1) NOT NULL DEFAULT 0;
 
 ALTER TABLE toolbox_capability
-  ADD COLUMN dry_run TINYINT(1) NOT NULL DEFAULT 0 AFTER consumed_at;
+  ADD COLUMN dry_run TINYINT(1) NOT NULL DEFAULT 0;
 
 ALTER TABLE tool_invocation
-  ADD COLUMN dry_run TINYINT(1) NOT NULL DEFAULT 0 AFTER outcome;
+  ADD COLUMN dry_run TINYINT(1) NOT NULL DEFAULT 0;

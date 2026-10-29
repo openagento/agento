@@ -106,6 +106,15 @@ class TestIssueRunCapabilities:
             consumer._issue_run_capabilities(conn, _job(dry_run=dry_run))
         assert mint.call_args.kwargs["dry_run"] is dry_run
 
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_a_resumed_turn_takes_dry_run_from_its_own_job(self, consumer, dry_run):
+        # The line's earlier job (resume_job_id) has the opposite flag; only this job counts.
+        conn, _ = _conn()
+        job = _job(dry_run=dry_run, resume_job_id=999)
+        with patch("agento.framework.consumer.issue_capability", return_value="mcp") as mint:
+            consumer._issue_run_capabilities(conn, job)
+        assert mint.call_args.kwargs["dry_run"] is dry_run
+
     def test_both_mints_land_in_one_transaction(self, consumer):
         conn, _ = _conn()
         with patch(

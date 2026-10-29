@@ -18,5 +18,9 @@
   "tools/jira_assign_issue/sensitive": "1",
   "tools/jira_attach_file/sensitive": "1",
   "tools/jira_create_issue/sensitive": "1",
-  "tools/jira_update_issue/sensitive": "1"
+  "tools/jira_update_issue/sensitive": "1",
+  "tools/jira/sensitive": "0",
+  "tools/jira_search/sensitive": "0",
+  "tools/jira_get_issue/sensitive": "0",
+  "tools/jira_get_attachment/sensitive": "0"
 }
