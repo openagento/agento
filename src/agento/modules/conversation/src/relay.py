@@ -167,7 +167,7 @@ TOOL_EVENT_KIND = "tool.called"
 # conversation event, and none may.
 _TOOL_BATCH_SQL = (
     "SELECT t.id, t.run_execution_id, t.tool_name, t.outcome, "
-    "       t.agent_view_id, t.workspace_id, e.conversation_id "
+    "       t.agent_view_id, t.workspace_id, t.dry_run, e.conversation_id "
     "FROM tool_invocation t "
     # `execution` is the only bridge from a run's execution id to its thread (E9 §3.5).
     # Joining through `toolbox_capability` instead would lose every call whose capability
@@ -210,17 +210,20 @@ def project_tool_calls(conn, *, limit: int = 500) -> int:
 
 
 def _write_tool_event(cur, row, conversation_id: int) -> None:
+    payload = {
+        "tool_name": row["tool_name"],
+        "outcome": row["outcome"],
+        "tool_invocation_id": row["id"],
+        "execution_id": row["run_execution_id"],
+        "agent_view_id": row["agent_view_id"],
+        "workspace_id": row["workspace_id"],
+    }
+    if row.get("dry_run"):
+        payload["dry_run"] = True  # the stub answered, the handler did not run
     service.append_event(
         cur, conversation_id, kind=TOOL_EVENT_KIND, execution_id=row["run_execution_id"],
         source_kind=TOOL_SOURCE_KIND, source_id=row["id"], locked=True,
         # The name, the scope and the outcome - never an argument or a result. The audit
         # itself only ever held a digest of the arguments, and this is one hop closer to a
         # browser than the audit is.
-        payload={
-            "tool_name": row["tool_name"],
-            "outcome": row["outcome"],
-            "tool_invocation_id": row["id"],
-            "execution_id": row["run_execution_id"],
-            "agent_view_id": row["agent_view_id"],
-            "workspace_id": row["workspace_id"],
-        })
+        payload=payload)

@@ -28,6 +28,9 @@ without side effects in the tools that act outside the system.
   readers of `tool_invocation` need no change. Arguments are still stored as a digest only.
 - **A job made from a dry-run job is a dry run** (`agent_run`, `schedule_followup`, the parent
   wake). Without this, a child would act for real.
+- **Known limits.** The stub runs before the handler, so handler policy does not run. A dry run
+  is one job and the jobs made from it, not a whole thread. This `dry_run` is not `disable_llm`
+  and not `setup:upgrade --dry-run`. A handler-level split is in ROADMAP.md.
 - **A dry run gets no SSH private key**, so it cannot push. It still has network and its harness
   credential: a dry run is a test aid, not a sandbox.
 

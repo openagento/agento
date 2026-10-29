@@ -1,4 +1,6 @@
 {
   "max_children_per_job": 10,
-  "wake_parent": 1
+  "wake_parent": 1,
+  "tools/agent_run/sensitive": "0",
+  "tools/agent_result/sensitive": "0"
 }

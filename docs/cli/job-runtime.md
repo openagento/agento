@@ -84,4 +84,4 @@ agento job:set-runtime <job_id> --no-dry-run    # off
 [`agento run --dry-run`](run.md#--dry-run--run-without-side-effects-in-sensitive-tools): each
 tool set as sensitive gets a stub answer, and the run gets no SSH private key. A job made from
 a dry-run job is a dry run too: an `agent_run` child, a `schedule_followup` job and the parent
-wake. `--clear` does not change it. Background: DECISIONS.md D-DRY-RUN-1.
+wake. A later turn in the same thread is a normal job. `--clear` does not change it. Background: DECISIONS.md D-DRY-RUN-1.

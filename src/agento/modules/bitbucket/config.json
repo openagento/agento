@@ -5,5 +5,9 @@
   "tools/bitbucket_add_comment/sensitive": "1",
   "tools/bitbucket_resolve_comment/sensitive": "1",
   "tools/bitbucket_set_review/sensitive": "1",
-  "tools/bitbucket_create_pr/sensitive": "1"
+  "tools/bitbucket_create_pr/sensitive": "1",
+  "tools/bitbucket_get_pr/sensitive": "0",
+  "tools/bitbucket_get_pr_diff/sensitive": "0",
+  "tools/bitbucket_get_pr_comments/sensitive": "0",
+  "tools/bitbucket_get_pr_activity/sensitive": "0"
 }

@@ -24,5 +24,14 @@
   "tools/versioned_artifact_publish/is_enabled": "0",
   "tools/versioned_artifact_discard_draft/is_enabled": "0",
   "tools/versioned_artifact_save_version/sensitive": "1",
-  "tools/versioned_artifact_publish/sensitive": "1"
+  "tools/versioned_artifact_publish/sensitive": "1",
+  "tools/versioned_artifact_init/sensitive": "1",
+  "tools/versioned_artifact_create_draft/sensitive": "1",
+  "tools/versioned_artifact_discard_draft/sensitive": "1",
+  "tools/versioned_artifact/sensitive": "0",
+  "tools/versioned_artifact_list/sensitive": "0",
+  "tools/versioned_artifact_get_current/sensitive": "0",
+  "tools/versioned_artifact_list_versions/sensitive": "0",
+  "tools/versioned_artifact_materialize/sensitive": "0",
+  "tools/versioned_artifact_diff/sensitive": "0"
 }

@@ -114,6 +114,21 @@ def test_the_payload_carries_the_name_scope_and_outcome_and_no_argument(conn, th
     assert "args" not in payload and "result" not in payload
 
 
+@pytest.mark.parametrize(("dry_run", "marked"), [(1, True), (0, False)])
+def test_a_stubbed_call_is_marked_in_the_payload(conn, thread, dry_run, marked):
+    execution_id = _execution(conn, thread["job_id"])
+    invocation = _invocation(conn, run_execution_id=execution_id,
+                             agent_view_id=thread["agent_view_id"])
+    with conn.cursor() as cur:
+        cur.execute("UPDATE tool_invocation SET dry_run = %s WHERE id = %s", (dry_run, invocation))
+    conn.commit()
+
+    relay.project_tool_calls(conn)
+
+    payload = json.loads(_events(conn, "tool.called")[0]["payload"])
+    assert payload.get("dry_run") is (True if marked else None)
+
+
 def test_a_purged_capability_still_projects(conn, thread):
     """The join is through `execution`, never `toolbox_capability`: capability rows are
     purged and the audit outlives them."""

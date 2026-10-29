@@ -474,6 +474,12 @@ def validate_tool_namespace(
     return results
 
 
+def _is_core_module(module_dir: Path) -> bool:
+    from .bootstrap import CORE_MODULES_DIR
+
+    return module_dir.resolve().parent == Path(CORE_MODULES_DIR).resolve()
+
+
 def _declared_tool_names(tools: list) -> set[str]:
     """Names declared in a manifest's ``tools[]`` (ignoring malformed entries)."""
     return {
@@ -873,6 +879,7 @@ def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> t
 
     # config.json
     config_path = module_dir / "config.json"
+    config = None
     if config_path.is_file():
         try:
             config = json.loads(config_path.read_text())
@@ -891,6 +898,17 @@ def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> t
                         f"config.json: '{key}' sets a default for a tool this module does not "
                         "declare in module.json tools[]"
                     )
+
+    # A core module states for each tool it declares whether a dry run stubs it. User and
+    # extension modules predate the key, so they keep validating without it (CODE-5).
+    if isinstance(tools, list) and _is_core_module(module_dir):
+        own = config if isinstance(config, dict) else {}
+        for tool_name in sorted(declared_names):
+            if f"tools/{tool_name}/sensitive" not in own:
+                errors.append(
+                    f"config.json: tool '{tool_name}' has no 'tools/{tool_name}/sensitive' default "
+                    '("1" = a dry run stubs it, "0" = a dry run calls it)'
+                )
 
     errors.extend(validate_config_defaults(module_dir))
 
