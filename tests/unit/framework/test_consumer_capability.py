@@ -99,6 +99,13 @@ class TestIssueRunCapabilities:
         assert [c.kwargs["allowed_transports"] for c in mint.call_args_list] == [["http"], ["http"]]
         assert mint.call_args_list[1].kwargs["subject_id"] == "service:consumer"
 
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_the_run_capability_carries_the_job_dry_run(self, consumer, dry_run):
+        conn, _ = _conn()
+        with patch("agento.framework.consumer.issue_capability", return_value="mcp") as mint:
+            consumer._issue_run_capabilities(conn, _job(dry_run=dry_run))
+        assert mint.call_args.kwargs["dry_run"] is dry_run
+
     def test_both_mints_land_in_one_transaction(self, consumer):
         conn, _ = _conn()
         with patch(

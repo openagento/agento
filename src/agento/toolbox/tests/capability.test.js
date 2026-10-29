@@ -42,7 +42,14 @@ describe('verifyCapability', () => {
 
   it('returns the auth context v1 derived from the row', async () => {
     expect(await createVerifier(fakeQuery([row]))('t', { endpoint: 'mcp' }))
-      .toEqual({ context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null });
+      .toEqual({ context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, dry_run: false });
+  });
+
+  it('carries the row\'s dry_run beside the context, never inside it', async () => {
+    const query = fakeQuery([capabilityRow('mcp_job', { dry_run: 1 })]);
+    expect(await createVerifier(query)('t', { endpoint: 'mcp' }))
+      .toEqual({ context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, dry_run: true });
+    expect(query.mock.calls[0][0]).toMatch(/c\.dry_run/);
   });
 
   it('selects ids as exact strings in SQL, not as rounded JS numbers', async () => {

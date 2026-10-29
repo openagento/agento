@@ -177,8 +177,9 @@ class TestConfigDefaultOwnership:
         d = _mk(tmp_path, tools=[_t("demo_ping")], config={"tools/demo_ping/is_enabled": "1"})
         assert validate_module(d) == []
 
-    def test_default_for_an_undeclared_tool_is_rejected(self, tmp_path):
-        d = _mk(tmp_path, tools=[_t("demo_ping")], config={"tools/other_tool/is_enabled": "1"})
+    @pytest.mark.parametrize("field", ["is_enabled", "sensitive"])
+    def test_default_for_an_undeclared_tool_is_rejected(self, tmp_path, field):
+        d = _mk(tmp_path, tools=[_t("demo_ping")], config={f"tools/other_tool/{field}": "1"})
         assert any("this module does not declare" in e for e in validate_module(d))
 
     def test_unrelated_config_keys_are_ignored(self, tmp_path):

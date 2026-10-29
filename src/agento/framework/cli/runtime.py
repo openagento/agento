@@ -467,7 +467,7 @@ class SetRuntimeCommand:
 
     @property
     def help(self) -> str:
-        return "Pin or clear the harness/model of a queued (TODO) job"
+        return "Pin or clear the harness/model, or set dry-run, of a queued (TODO) job"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("job_id", type=int, help="Job ID to change")
@@ -476,6 +476,11 @@ class SetRuntimeCommand:
         parser.add_argument(
             "--clear", action="store_true",
             help="Clear both, so the next claim resolves them from config",
+        )
+        parser.add_argument(
+            "--dry-run", action=argparse.BooleanOptionalAction, dest="dry_run", default=None,
+            help="Dry run for tests: each tool set as sensitive answers with a stub and does "
+                 "nothing; jobs it starts inherit it. --no-dry-run turns it off.",
         )
 
     def execute(self, args: argparse.Namespace) -> None:
@@ -486,8 +491,9 @@ class SetRuntimeCommand:
         if args.clear and (args.harness or args.model):
             print("Error: --clear cannot be combined with --harness/--model", file=sys.stderr)
             sys.exit(1)
-        if not args.clear and not args.harness and not args.model:
-            print("Error: give --harness and/or --model, or --clear", file=sys.stderr)
+        if not args.clear and not args.harness and not args.model and args.dry_run is None:
+            print("Error: give --harness, --model, --dry-run/--no-dry-run, or --clear",
+                  file=sys.stderr)
             sys.exit(1)
 
         db_config, _, _ = _load_framework_config()
@@ -496,6 +502,7 @@ class SetRuntimeCommand:
             job = set_job_runtime(
                 conn, args.job_id,
                 harness=args.harness, model=args.model, clear=args.clear,
+                dry_run=args.dry_run,
             )
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -506,6 +513,7 @@ class SetRuntimeCommand:
         print(f"Job #{job.id} runtime updated.")
         print(f"  harness: {job.agent_type or '(resolve from config)'}")
         print(f"  model:   {job.model or '(resolve from config)'}")
+        print(f"  dry-run: {'yes' if job.dry_run else 'no'}")
 
 
 class JobListCommand:

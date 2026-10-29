@@ -22,5 +22,7 @@
   "tools/versioned_artifact_save_version/is_enabled": "0",
   "tools/versioned_artifact_diff/is_enabled": "0",
   "tools/versioned_artifact_publish/is_enabled": "0",
-  "tools/versioned_artifact_discard_draft/is_enabled": "0"
+  "tools/versioned_artifact_discard_draft/is_enabled": "0",
+  "tools/versioned_artifact_save_version/sensitive": "1",
+  "tools/versioned_artifact_publish/sensitive": "1"
 }

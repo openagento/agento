@@ -13,7 +13,7 @@
 | `up` | Start Docker Compose runtime |
 | `down` | Stop Docker Compose runtime |
 | `logs [service]` | Show container logs |
-| `run <agent_view_code> [--harness H] [--model M] [--credential ID] [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one. The options pin this run only; no config is changed ([details](run.md)) |
+| `run <agent_view_code> [--harness H] [--model M] [--credential ID] [--dry-run] [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one. The options pin this run only; no config is changed. `--dry-run`: each sensitive tool gets a stub answer ([details](run.md)) |
 | **Setup** | |
 | `setup:upgrade [--dry-run] [--skip-onboarding]` | Apply migrations, data patches, run onboarding ([onboarding details](onboarding.md)) |
 | **Modules** | |
@@ -53,6 +53,7 @@
 | `tool:list [--agent-view <code>]` | List registered tools with enabled/disabled status ([details](tools.md)) |
 | `tool:enable <name> [--agent-view <code>]` | Enable a tool at given scope ([details](tools.md)) |
 | `tool:disable <name> [--agent-view <code>]` | Disable a tool at given scope ([details](tools.md)) |
+| `tool:sensitive <name> [--off] [--agent-view <code>]` | Mark a tool as sensitive: a dry run gets a stub answer ([details](tools.md#toolsensitive)) |
 | **Skills** | |
 | `skill:sync` | Scan skills from disk and sync to registry ([details](skills.md)) |
 | `skill:list [--agent-view <code>]` | List registered skills with status ([details](skills.md)) |
@@ -81,7 +82,7 @@
 | `job:list [--status S] [--source SRC] [--agent-view C] [--limit N]` | List recent jobs; surfaces failed/dead jobs with their error ([details](job-pause-resume.md)) |
 | `job:pause <job_id>` | Pause a running job (SIGTERM, keep session) ([details](job-pause-resume.md)) |
 | `job:resume <job_id>` | Resume a paused job (re-queue for consumer) ([details](job-pause-resume.md)) |
-| `job:set-runtime <job_id> [--harness H] [--model M] [--clear]` | Pin (or clear) a queued job's harness/model; TODO jobs only ([details](job-runtime.md)) |
+| `job:set-runtime <job_id> [--harness H] [--model M] [--clear] [--dry-run \| --no-dry-run]` | Pin (or clear) a queued job's harness/model, or set its dry-run mode; TODO jobs only ([details](job-runtime.md)) |
 | **Conversations** (the `conversation` module; all three are cron passes an operator can also run by hand) | |
 | `conversation:sweep` (`co:sw`) | Finish stranded submissions and reconcile finished jobs ([details](../modules/conversation.md)) |
 | `conversation:relay` (`co:rel`) | Relay framework job events into conversation threads, and prune the relayed rows. One run passes every second for 55 s. ONE process by contract: a second would invert a thread's event order, so a run that finds the `conversation_relay` lock held exits at once ([details](../modules/conversation.md#the-outbox-relay)) |

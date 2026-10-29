@@ -67,6 +67,25 @@ def test_issue_returns_raw_token_and_stores_only_the_hash():
     assert conn.commits == 1
 
 
+@pytest.mark.parametrize(("kind", "job_id"), [(KIND_MCP_JOB, 42), (KIND_MCP_INTERACTIVE, None)])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_issue_stores_dry_run_on_an_agent_run_capability(kind, job_id, dry_run):
+    conn = FakeConn()
+    issue_capability(conn, kind=kind, agent_view_id=7, job_id=job_id, ttl_seconds=60,
+                     allowed_transports=["http"], dry_run=dry_run)
+    sql, params = conn.statements[-1]
+    assert "source_id, dry_run)" in sql
+    assert params[-1] == int(dry_run)
+
+
+def test_issue_refuses_dry_run_on_a_service_capability():
+    conn = FakeConn()
+    with pytest.raises(ValueError, match="dry run"):
+        issue_capability(conn, kind=KIND_INTERNAL_REST, agent_view_id=7, ttl_seconds=60,
+                         allowed_transports=["http"], subject_id="service:test", dry_run=True)
+    assert not [s for s, _ in conn.statements if s.startswith("INSERT")]
+
+
 def test_issue_with_commit_false_leaves_the_transaction_to_the_caller():
     conn = FakeConn()
     issue_capability(conn, kind=KIND_MCP_JOB, agent_view_id=7, job_id=42, ttl_seconds=60, commit=False, allowed_transports=["http"])

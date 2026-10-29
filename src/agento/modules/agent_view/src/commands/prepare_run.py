@@ -98,6 +98,11 @@ class AgentViewPrepareRunCommand:
             help="Interactive bypass mode — build the interactive command with the "
                  "harness's skip-approvals flag (headless is always bypass).",
         )
+        parser.add_argument(
+            "--dry-run", action="store_true", dest="dry_run",
+            help="Dry run: each tool set as sensitive gets a stub answer and does nothing; "
+                 "no SSH private key.",
+        )
 
     def execute(self, args: argparse.Namespace) -> None:
         from agento.framework.agent_manager.credential_resolver import CredentialResolver
@@ -136,6 +141,7 @@ class AgentViewPrepareRunCommand:
                 sys.exit(1)
 
             harness_pin = getattr(args, "harness", None)
+            dry_run = bool(getattr(args, "dry_run", False))
             # A pinned harness makes the view's own harness/provider pair irrelevant, so
             # a broken pair there must not block the run.
             runtime = resolve_agent_view_runtime(
@@ -213,6 +219,7 @@ class AgentViewPrepareRunCommand:
                 job_id=None,
                 ttl_seconds=INTERACTIVE_CAPABILITY_TTL_SECONDS,
                 allowed_transports=["http"],
+                dry_run=dry_run,
             )
         finally:
             conn.close()
@@ -234,7 +241,7 @@ class AgentViewPrepareRunCommand:
                 resolve_ssh_identity,
                 ssh_run_env,
             )
-            ssh_identity = resolve_ssh_identity(agent_config_svc)
+            ssh_identity = resolve_ssh_identity(agent_config_svc, dry_run=dry_run)
 
             home, working_dir = materialize_run_workspace(
                 runtime,

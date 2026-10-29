@@ -101,6 +101,15 @@ describe('agent_run', () => {
     expect(calls.released).toBe(1);
   });
 
+  it.each([0, 1])('the child copies the parent dry_run %i', async (dryRun) => {
+    const { db, calls } = fakeDb({
+      parent: { id: 42, agent_view_id: 7, priority: 20, depth: 0, thread_id: 5, line_id: null, dry_run: dryRun },
+      views: [OWN] });
+    await tools(db).agent_run.handler({ agent_view: 'own', prompt: 'Do the thing.' });
+    expect(jobInsert(calls).sql).toMatch(/line_id, dry_run,/);
+    expect(jobInsert(calls).params[12]).toBe(dryRun);
+  });
+
   it('refuses at depth 3 with the exact text and inserts nothing', async () => {
     const { db, calls } = fakeDb({ parent: { id: 42, agent_view_id: 7, priority: 20, depth: 3 }, views: [OWN] });
     const res = await tools(db).agent_run.handler({ agent_view: 'own', prompt: 'x' });

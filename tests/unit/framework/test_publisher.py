@@ -226,8 +226,8 @@ class TestRequester:
         sql, params = _insert_call(mock_cursor)
         for col in ("requester_key", "requester_email", "requester_trust", "requester_meta"):
             assert col in sql
-        # the requester fields come before harness, model and the five thread columns
-        assert params[-10:-6] == (None, None, "claimed", None)
+        # the requester fields come before harness, model, the four thread columns and dry_run
+        assert params[-11:-7] == (None, None, "claimed", None)
 
     @patch("agento.framework.publisher.get_connection")
     def test_requester_values_persisted(self, mock_get_conn, sample_config):
@@ -245,7 +245,7 @@ class TestRequester:
         )
 
         _sql, params = _insert_call(mock_cursor)
-        r_key, r_email, r_trust, r_meta = params[-10:-6]
+        r_key, r_email, r_trust, r_meta = params[-11:-7]
         assert r_key == "jira:acct-1"
         assert r_email == "user@example.com"  # normalized
         assert r_trust == "account"
@@ -321,7 +321,7 @@ def test_publish_pins_harness_and_model(mock_get_conn, sample_config):
         c[0] for c in mock_cursor.execute.call_args_list if "INSERT INTO job" in c[0][0]
     )
     assert "agent_type" in insert_sql and "model" in insert_sql
-    assert params[-6:-4] == ("codex", "gpt-x")
+    assert params[-7:-5] == ("codex", "gpt-x")
 
 
 @patch("agento.framework.publisher.get_connection")
@@ -335,7 +335,7 @@ def test_publish_without_pins_writes_nulls(mock_get_conn, sample_config):
     params = next(
         c[0][1] for c in mock_cursor.execute.call_args_list if "INSERT" in c[0][0]
     )
-    assert params[-6:-4] == (None, None)
+    assert params[-7:-5] == (None, None)
 
 
 @patch("agento.framework.publisher.get_connection")
@@ -367,8 +367,14 @@ class TestInsertJobThread:
                        priority=50, idempotency_key="k", max_attempts=3, requester=None,
                        **{"reference_id": "AI-1", **kwargs})
         sql, params = next(c.args for c in cur.execute.call_args_list if "INSERT INTO job" in c.args[0])
-        assert "parent_job_id, depth, thread_id, line_id)" in sql
-        return ensure, cur, dict(zip(self._COLUMNS, params[-4:], strict=True))
+        assert "parent_job_id, depth, thread_id, line_id, dry_run)" in sql
+        self.dry_run = params[-1]
+        return ensure, cur, dict(zip(self._COLUMNS, params[-5:-1], strict=True))
+
+    @pytest.mark.parametrize(("kwargs", "stored"), [({}, 0), ({"dry_run": True}, 1)])
+    def test_dry_run_is_written_in_the_insert(self, kwargs, stored):
+        self._insert(**kwargs)
+        assert self.dry_run == stored
 
     @pytest.mark.parametrize(("kwargs", "ref"), [
         ({}, "jira:AI-1"),                                # the source item is the thread

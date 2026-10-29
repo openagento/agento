@@ -78,7 +78,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
           // Inherit the channel + reference + execution scope (agent_view_id, priority) from the
           // current job, so the follow-up runs in the same context as its parent.
           const [rows] = await conn.execute(
-            'SELECT source, reference_id, agent_view_id, priority, depth, thread_id FROM job WHERE id = ?',
+            'SELECT source, reference_id, agent_view_id, priority, depth, dry_run, thread_id FROM job WHERE id = ?',
             [jobId]
           );
           const job = rows[0];
@@ -113,6 +113,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
           const { duplicate } = await enqueueJob(conn, {
             type: 'followup', source, agentViewId: agent_view_id, priority, referenceId: reference_id,
             context: instructions, idempotencyKey, scheduledAfter: mysqlDatetime, threadId,
+            dryRun: Number(job.dry_run) === 1,
           });
           if (duplicate) {
             await conn.rollback();

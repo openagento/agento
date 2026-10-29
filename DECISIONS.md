@@ -4,6 +4,33 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-29 — Dry-run mode (D-DRY-RUN-1)
+
+AG-79. Owner: Piotr Grzywocz, 2026-10-29 (scope "run + jobs", unset = not sensitive, a plain
+success stub, an audit marker, no SSH private key). A dry run lets an evaluation run the agent
+without side effects in the tools that act outside the system.
+
+- **The mode is on the run's capability** (`toolbox_capability.dry_run`), set by the backend at
+  the mint: `agento run --dry-run` for an interactive or headless run, `job.dry_run` for a job.
+  The toolbox reads it from the row on every call, never from an argument (SEC-7). Only an
+  `mcp_job` or `mcp_interactive` capability may carry it.
+- **It sits beside the auth context v1, not in it.** It changes what a call does, not who may make
+  it, so `deriveAuthContext`, its Python twin and `auth_context_v1.json` do not change.
+- **A tool is stubbed only when `tools/<name>/sensitive` resolves `1`.** Unset is not sensitive:
+  the owner chose this over fail-closed. A new tool that changes something outside the system
+  must ship `tools/<name>/sensitive: "1"` in its `config.json`, or a dry run calls it for real.
+  This is not a security gate: `is_enabled` still decides whether a tool is callable (TBX-2),
+  and a dry run still checks it, the ceiling and the arguments before the stub.
+- **The stub is one fixed success** (`{"ok": true}`), with no sign that the call was not made,
+  so the agent acts as in a real run. A tool that returns data the agent needs next (an id)
+  gets nothing useful; the evaluation reads the audit instead.
+- **The audit row carries `dry_run = 1`** when the stub answered; `outcome` stays `ok`, so the
+  readers of `tool_invocation` need no change. Arguments are still stored as a digest only.
+- **A job made from a dry-run job is a dry run** (`agent_run`, `schedule_followup`, the parent
+  wake). Without this, a child would act for real.
+- **A dry run gets no SSH private key**, so it cannot push. It still has network and its harness
+  credential: a dry run is a test aid, not a sandbox.
+
 ## 2026-10-26 — Imported runs: a timeline in time order (D-CONV-BACKFILL-1)
 
 PRD `prd_conversation_backfill.md` (D1–D14, approved by the owner 2026-10-26). `conversation:backfill`
