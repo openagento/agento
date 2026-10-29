@@ -69,6 +69,15 @@ human-in-the-loop publication approval, an annotated tag object per version so a
 own label, and multiple toolbox instances per `storage_root` — which needs a real distributed lock,
 see DECISIONS.md.
 
+### ✅ Sub-agents
+
+The opt-in `subagent` module adds the `agent_run` and `agent_result` tools. A parent agent starts a
+child job on its own agent_view, or on a view the operator lists in `subagent/allowed_agent_views`.
+A child is a normal job row (`parent_job_id`, `depth`, max 3 levels), and the parent wakes when its
+children end. The caller's identity comes from the toolbox capability, never from arguments. See
+[docs/modules/subagent.md](docs/modules/subagent.md). Follow-ups are listed in
+[Nested sub-agents](#-nested-sub-agents--follow-ups).
+
 ### 🟡 Developer experience & open-source polish
 
 Getting a contributor from "I want to add a Slack integration" to a working module in under 30 minutes. The unified Python CLI, `doctor`, `init`, `make:module`, and `module:validate` are shipped; what remains is per-capability extension docs, architecture tests that enforce module boundaries in CI, and a log-safety audit before widening logging namespaces.
@@ -81,7 +90,7 @@ The `{subject}_{verb}_{before|after}` naming convention is established, with eve
 
 Makes composable workspaces production-ready. Shipped: builds detect config drift and rebuild themselves at job-claim time (a checksum freshness check that supersedes the original dirty-flag design), and old builds are garbage-collected under a retention policy. Still pending: runtime-directory GC and a periodic `skill:sync` + `workspace:build --all` cron so skill-content changes are picked up on a schedule.
 
-### ⚪ Panel, RBAC and miniapps (E0 contracts agreed)
+### ✅ Panel, RBAC and miniapps
 
 E0 is the contract round for the user-facing platform: logging in, talking to an agent, running a
 versioned miniapp, and letting that miniapp perform allowed toolbox operations — deterministically,
@@ -299,7 +308,7 @@ as the surrounding text is edited. Read the hits. At the time of writing they ar
 **current-state** prose is corrected in place; a **historical** decision entry is left standing and
 given a `Superseded by` line — a decision log that rewrites its own past stops being evidence.
 
-### ⚪ Admin API & Agent Studio
+### 🟡 Admin API & Agent Studio
 
 A minimal but real control plane so operators can create workspaces and agent_views, manage scoped config overrides, attach tools from the toolbox, and manage allowlists without hand-editing JSON or SQL. API-first and binding-based — the admin frontend is a client of the API, and the same DB source of truth backs API, CLI, and runtime.
 
@@ -320,7 +329,7 @@ language is the [Response locale policy](#-response-locale-policy) below.
 
 Per-workspace and per-agent_view control of the language agents reply in — `preserve_input_language` or `force_output_locale` — as part of effective agent configuration, without opaque pre-translation steps. Full admin and module i18n is explicitly a later nice-to-have, not part of this milestone.
 
-### ⚪ OAuth token pools
+### ✅ Credential pools
 
 Group multiple tokens from the same provider into pools with capacity-based rotation and per-agent_view pool assignment, replacing direct per-provider token selection. `TokenResolver` stays the single extension point, so pool-aware selection needs no consumer changes.
 
@@ -364,13 +373,16 @@ limits. Still open:
 
 ### ⚪ Observability, telemetry & evals
 
-Emit OpenTelemetry traces across the whole job flow — one `correlation_id`/`job_id` from ingress through runner execution, MCP tool calls, and HITL decisions — with Agento events mapped to spans. Telemetry ships as an optional module, not a hard core dependency, with any eval/observability backend (LangSmith, for example) as a pluggable exporter whose credentials stay in the cron/toolbox/collector and never reach the sandbox. On top of the traces: build eval datasets from historical production jobs and run offline/online evals as a regression gate for prompts, policies, and routing before a release.
+Emit OpenTelemetry traces across the whole job flow — one `correlation_id`/`job_id` from ingress through runner execution, MCP tool calls, and HITL decisions — with Agento events mapped to spans. Telemetry ships as an optional module, not a hard core dependency, with any eval/observability backend (LangSmith, for example) as a pluggable exporter whose credentials stay in the cron/toolbox/collector and never reach the sandbox. Shipped base for evals: `agento run <agent_view> "<prompt>" --harness H --model M` runs one headless
+prompt on any harness, model or credential without a config change, so the same prompt can run on many
+models in parallel (see [docs/cli/run.md](docs/cli/run.md)); the same pin exists per job (`job:set-runtime`).
+Next: an eval runner that loops over a dataset and a model matrix, and stores the scores. On top of the traces: build eval datasets from historical production jobs and run offline/online evals as a regression gate for prompts, policies, and routing before a release.
 
 ### ⚪ Dynamic harness/model/effort routing
 
 Today an agent_view is statically bound to a harness, model, and effort. This adds an optional pre-execution assessment step that picks harness/model/effort per job from an ordered rule set (`When → Harness → Model → Effort`, with a mandatory default row), so simple jobs run cheap and hard ones get a more capable model. Delivered as an independent `dynamic_routing` module behind a `static`/`dynamic` switch, leaving the existing static binding as the default.
 
-### ⚪ Job threads, handoffs & shared artifacts
+### 🟡 Job threads, handoffs & shared artifacts
 
 Group related jobs into a thread so agents can collaborate the way people do: an agent does work locally, publishes it, and hands off to another agent for review, decision, or continuation, escalating to a human when they can't agree. The core primitive is a **handoff package** — intent, origin, a work summary, and an artifact manifest — that travels between agent_views, giving a thread a shared workspace and shared, runnable artifacts instead of isolated per-job directories.
 

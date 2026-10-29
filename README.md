@@ -116,9 +116,20 @@ The installer offers **Basic** (recommended) and **Advanced** modes. Basic uses 
 agento doctor                         # Verify prerequisites
 ```
 
+## Admin panel
+
+Sign in, manage users and roles, edit config per scope, watch credential limits, and follow
+conversations with their sub-agent tree. See [docs/architecture/panel.md](docs/architecture/panel.md).
+
+| Users & roles | Config |
+|---|---|
+| ![Users](docs/images/panel-users.png) | ![Config](docs/images/panel-settings.png) |
+| **Credentials** | **Conversations & sub-agents** |
+| ![Credentials](docs/images/panel-credentials.png) | ![Conversations](docs/images/panel-conversations.png) |
+
 ## Admin TUI (deprecated)
 
-> **Deprecated:** use the admin panel. `agento admin` stays until v1.0.0; the CLI commands stay.
+> **Deprecated:** use the admin panel. `agento admin` stays in v1.0.0; the CLI commands stay.
 > See [docs/cli/admin.md](docs/cli/admin.md).
 
 `agento admin` launches an interactive terminal dashboard for operational visibility and configuration management.
@@ -174,17 +185,22 @@ One module = one integration = a complete package. The framework provides the me
 - ✅ Concurrent agent-view execution pool (parallel profiles, priority scheduling)
 - ✅ Ingress identities & agent resolution (deterministic, module-extensible routing)
 - ✅ Composable workspace, skills & tools (CLI-managed tool/skill control)
+- ✅ Versioned artifacts (drafts, immutable versions, atomic `current`, agent-owned lifecycle)
+- ✅ Admin panel, RBAC & miniapps (users, roles, per-screen grants, panel-launched apps)
+- ✅ Credential pools (OAuth/API-key pools, leases, live limits, panel re-login)
+- ✅ Sub-agents (`agent_run` / `agent_result` tools, nested child jobs up to 3 levels)
+- ✅ Per-run and per-job harness/model pin (`agento run --harness H --model M`, `job:set-runtime`)
+- 🟡 Conversations & chat (threads, live timeline, history backfill — Codex/Pi transcripts pending)
+- 🟡 Admin API & Agent Studio (agents, config, users, roles in the panel — secret writes and job replay pending)
+- 🟡 Job threads, handoffs & shared artifacts (shared thread directory shipped — handoff packages pending)
 - 🟡 Developer experience & open-source polish (docs, CI boundary tests)
 - 🟡 Event coverage & naming convention (`{subject}_{verb}_{before|after}`)
 - 🟡 Composable workspace automation (auto-rebuild, build GC — scheduled sync pending)
-- ⚪ Admin API & Agent Studio (control plane for workspaces & agent views)
+- ⚪ Observability, telemetry & evals (OpenTelemetry traces, eval runner over a model matrix — built on `agento run --model`)
+- ⚪ Dynamic harness/model/effort routing (rule-based pre-execution task assessment)
 - ⚪ Credential broker / key vault (broker-owned secrets, reference-based config)
 - ⚪ Response locale policy (per-scope output language)
-- ⚪ OAuth token pools (capacity-based rotation, per-agent-view assignment)
 - ⚪ Distribution & installation model (pre-built images, no local build)
-- ⚪ Observability, telemetry & evals (OpenTelemetry traces, eval datasets, regression gates)
-- ⚪ Dynamic harness/model/effort routing (rule-based pre-execution task assessment)
-- ⚪ Job threads, handoffs & shared artifacts (grouped jobs, agent-to-agent handoff packages)
 - ⚪ Areas / selective module loading (parked)
 - ⚪ Declarative schema `db_schema.json` (deferred)
 
