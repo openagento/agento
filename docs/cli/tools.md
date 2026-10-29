@@ -87,6 +87,30 @@ Same as `tool:enable`.
 
 Sets `tools/{name}/is_enabled = 0` in scoped config.
 
+## `tool:sensitive`
+
+### Usage
+
+```bash
+agento tool:sensitive jira_add_comment                 # a dry run gets a stub
+agento tool:sensitive jira_add_comment --off           # a dry run calls the tool
+agento tool:sensitive jira_add_comment --agent-view developer
+```
+
+Shortcut: `tl:se`
+
+### Options
+
+Same as `tool:enable`, plus `--off`.
+
+### What It Does
+
+Sets `tools/{name}/sensitive` to `1` (or `0` with `--off`) in scoped config. In a dry run
+([`agento run --dry-run`](run.md#--dry-run--run-without-side-effects-in-sensitive-tools),
+`job:set-runtime --dry-run`) a sensitive tool is not run: the agent gets `{"ok": true}`. Unset
+means not sensitive. A module ships the default for its own tools in `config.json`. It has no
+effect outside a dry run, and it never enables or disables a tool.
+
 ## How Tool Config Works
 
 ### Tool Registration

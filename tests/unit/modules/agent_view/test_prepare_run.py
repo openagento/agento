@@ -327,6 +327,27 @@ class TestAgentViewPrepareRunCommand:
         # The payload reaches the host terminal and its shell history.
         assert "tok-interactive" not in json.dumps(payload)
 
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_the_interactive_capability_carries_dry_run(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub, dry_run,
+    ):
+        from agento.framework import ssh_identity
+
+        args = _make_args()
+        args.dry_run = dry_run
+        with patch(
+            "agento.framework.toolbox_capability.issue_capability", return_value="tok",
+        ) as mock_issue, patch(
+            "agento.framework.ssh_identity.resolve_ssh_identity",
+            wraps=ssh_identity.resolve_ssh_identity,
+        ) as mock_ssh:
+            _run_command(
+                args, runtime_stub, token_stub, builder_stub, writer_stub,
+                home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+            )
+        assert mock_issue.call_args.kwargs["dry_run"] is dry_run
+        assert mock_ssh.call_args.kwargs == {"dry_run": dry_run}
+
     def test_unregistered_harness_returns_null_command(
         self, tmp_path, runtime_stub, token_stub, writer_stub,
     ):

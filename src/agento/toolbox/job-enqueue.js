@@ -59,7 +59,7 @@ async function checkThread(conn, { threadId, lineId, agentViewId, parentJobId, d
 export async function enqueueJob(conn, {
   type, source, agentViewId, priority, referenceId, context, idempotencyKey,
   maxAttempts = 3, scheduledAfter = null, parentJobId = null, depth = 0,
-  threadId = null, lineId = null,
+  threadId = null, lineId = null, dryRun = false,
 }) {
   // Dedupe with a SELECT before INSERT: an INSERT IGNORE rejected by the unique idempotency_key
   // still burns an auto_increment id, growing the job id counter on every duplicate (AG-22).
@@ -72,14 +72,14 @@ export async function enqueueJob(conn, {
     [result] = await conn.execute(
       `INSERT INTO job
          (source, agent_view_id, priority, reference_id, context, idempotency_key, type, max_attempts,
-          parent_job_id, depth, thread_id, line_id, status, attempt, scheduled_after)
+          parent_job_id, depth, thread_id, line_id, dry_run, status, attempt, scheduled_after)
        VALUES
-         (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'TODO', 0, COALESCE(?, CURRENT_TIMESTAMP))`,
+         (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'TODO', 0, COALESCE(?, CURRENT_TIMESTAMP))`,
       // The FK check on thread_id holds a shared lock on the thread row until commit, so a
       // claim in this thread (threads.lock_thread) waits for this job to commit: an earlier
       // turn is never still invisible when a later one is claimed.
       [source, agentViewId, priority, referenceId, context, idempotencyKey, type, maxAttempts,
-        parentJobId, depth, threadId, lineId, scheduledAfter]
+        parentJobId, depth, threadId, lineId, dryRun ? 1 : 0, scheduledAfter]
     );
   } catch (err) {
     // Race: another publisher inserted the same idempotency_key between the SELECT and this INSERT

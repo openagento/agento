@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS job (
     schedule_id     BIGINT UNSIGNED NULL,
     parent_job_id   BIGINT UNSIGNED NULL,
     depth           TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    dry_run         TINYINT(1) NOT NULL DEFAULT 0,
     thread_id       BIGINT UNSIGNED NULL,
     resume_job_id   BIGINT UNSIGNED NULL,
     line_id         BIGINT UNSIGNED NULL,
@@ -246,6 +247,7 @@ CREATE TABLE toolbox_capability (
     source_kind        VARCHAR(32)     NULL,
     source_id          VARCHAR(64)     NULL,
     consumed_at        DATETIME        NULL,
+    dry_run            TINYINT(1)      NOT NULL DEFAULT 0,
     UNIQUE KEY uk_toolbox_capability_hash (token_hash),
     KEY idx_toolbox_capability_job (job_id),
     KEY idx_toolbox_capability_expires (expires_at),
@@ -279,6 +281,8 @@ CREATE TABLE tool_invocation (
     app_launch_id     VARCHAR(64)     NULL,
     -- pending until the dispatcher finalizes it; a row left pending is itself a signal.
     outcome           VARCHAR(24)     NOT NULL,
+    -- 055: 1 when the dry-run stub answered the call and the handler did not run.
+    dry_run           TINYINT(1)      NOT NULL DEFAULT 0,
     created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- 047: the projection's checkpoint, on the producer row (§6.4.2).
     conversation_relayed_at DATETIME  NULL,
@@ -525,4 +529,5 @@ INSERT INTO schema_migration (version) VALUES
     ('051_job_runner_ref'),
     ('052_job_auth_wait_index'),
     ('053_job_parent_depth'),
-    ('054_thread');
+    ('054_thread'),
+    ('055_dry_run');

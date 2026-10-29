@@ -222,6 +222,15 @@ agento tool:disable mysql_acme_staging --agent-view developer
 
 The tool still exists but won't be registered for that agent_view's MCP sessions.
 
+## Dry runs: mark a tool that acts outside the system
+
+A tool that writes outside Agento (sends a mail, comments, changes an issue, opens a PR)
+ships `"tools/<name>/sensitive": "1"` in its module's `config.json`. In a dry run
+([`agento run --dry-run`](../cli/run.md#--dry-run--run-without-side-effects-in-sensitive-tools))
+the toolbox then answers it with `{"ok": true}` and does not call the handler. Unset means
+not sensitive: a dry run calls the tool for real. A read-only tool needs nothing. An operator
+changes it per scope with [`tool:sensitive`](../cli/tools.md#toolsensitive).
+
 ## Adding Knowledge
 
 Help the agent write better queries by documenting your database:
@@ -281,8 +290,8 @@ last line of defence for a computed name in a deployment's own module.
 
 Two further rules keep name-keyed enablement unambiguous, both enforced by
 `module:validate`: tool names must be **globally unique** across modules, and a
-`config.json` `tools/<name>/is_enabled` default must belong to a tool that same
-module declares (defaults from every module are merged by literal path, so an
+`config.json` `tools/<name>/is_enabled` or `tools/<name>/sensitive` default must belong to a
+tool that same module declares (defaults from every module are merged by literal path, so an
 unowned default would silently apply to somebody else's tool). A duplicate
 *inside* one manifest is caught by `agento module:validate <name>`; only a
 collision **between** modules needs the unscoped `agento module:validate` (or

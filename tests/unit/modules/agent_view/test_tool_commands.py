@@ -1,4 +1,4 @@
-"""Tests for tool:list, tool:enable, tool:disable CLI commands."""
+"""Tests for tool:list, tool:enable, tool:disable, tool:sensitive CLI commands."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,7 @@ import pytest
 from agento.modules.agent_view.src.commands.tool_disable import ToolDisableCommand
 from agento.modules.agent_view.src.commands.tool_enable import ToolEnableCommand
 from agento.modules.agent_view.src.commands.tool_list import ToolListCommand
+from agento.modules.agent_view.src.commands.tool_sensitive import ToolSensitiveCommand
 
 
 def _mock_conn():
@@ -31,10 +32,10 @@ def _make_manifest(name, tools):
     return m
 
 
-@pytest.mark.parametrize("command", [ToolEnableCommand, ToolDisableCommand])
+@pytest.mark.parametrize("command", [ToolEnableCommand, ToolDisableCommand, ToolSensitiveCommand])
 @pytest.mark.parametrize("tool_name", ["jira search", "jira@search!", "JiraSearch", ""])
 def test_rejects_invalid_tool_name(command, tool_name):
-    args = argparse.Namespace(tool_name=tool_name, scope="default", scope_id=0, agent_view_code=None)
+    args = argparse.Namespace(tool_name=tool_name, scope="default", scope_id=0, agent_view_code=None, off=False)
     with pytest.raises(SystemExit, match="Invalid tool name"):
         command().execute(args)
 
@@ -258,3 +259,29 @@ class TestToolDisableCommand:
             scope="workspace",
             scope_id=3,
         )
+
+
+class TestToolSensitiveCommand:
+    def test_properties(self):
+        cmd = ToolSensitiveCommand()
+        assert cmd.name == "tool:sensitive"
+        assert cmd.shortcut == "tl:se"
+
+    @pytest.mark.parametrize(("off", "value"), [(False, "1"), (True, "0")])
+    @patch("agento.framework.scoped_config.scoped_config_set")
+    @patch("agento.framework.db.get_connection")
+    @patch("agento.framework.cli.runtime._load_framework_config")
+    def test_sets_the_sensitive_key(self, mock_config, mock_conn_fn, mock_set, off, value, capsys):
+        mock_config.return_value = ({}, None, None)
+        conn, _ = _mock_conn()
+        mock_conn_fn.return_value = conn
+
+        args = argparse.Namespace(tool_name="jira_add_comment", scope="workspace", scope_id=3,
+                                  agent_view_code=None, off=off)
+        ToolSensitiveCommand().execute(args)
+
+        mock_set.assert_called_once_with(
+            conn, "tools/jira_add_comment/sensitive", value, scope="workspace", scope_id=3,
+        )
+        conn.commit.assert_called_once()
+        assert f"tools/jira_add_comment/sensitive = {value}" in capsys.readouterr().out

@@ -241,6 +241,15 @@ describe('registerTools: requires chain in the tool gate', () => {
     expect(isEnabled('undeclared_tool', { 'tools/undeclared_tool/is_enabled': { value: '1' } })).toBe(false);
   });
 
+  it('returns the per-call sensitive predicate: only an explicit 1 is sensitive', async () => {
+    const { isSensitive } = await runRegisterTools({
+      modules: [{ name: 'jira', tools: MASTERED, registers: ['jira_search'] }],
+    });
+    expect(isSensitive('jira_search', { 'tools/jira_search/sensitive': { value: '1' } })).toBe(true);
+    expect(isSensitive('jira_search', { 'tools/jira_search/sensitive': { value: '0' } })).toBe(false);
+    expect(isSensitive('jira_search', {})).toBe(false);
+  });
+
   it('reports the tools of a module whose register() threw as unavailable, not unknown', async () => {
     const { unavailableTools, tools } = await runRegisterTools({
       modules: [{ name: 'jira', tools: MASTERED, registers: ['jira_search'], throws: true }],

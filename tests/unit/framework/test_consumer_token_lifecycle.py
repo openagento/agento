@@ -105,7 +105,7 @@ def _drive_run_job(
         # The consumer now resolves the run's harness/provider/model from the row at
         # claim time, so a job double must carry those columns like a real row does.
         agent_type=None, provider=None, model=None,
-        resume_job_id=None, thread_detached=False, fresh_session=False, thread_key=None,
+        resume_job_id=None, thread_detached=False, fresh_session=False, thread_key=None, dry_run=False,
     )
     with (
         patch("agento.framework.consumer.get_channel"),
@@ -474,7 +474,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                 SimpleNamespace(
                     id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
                     priority=0, session_id=None, pid=None,
-                    agent_type=None, provider=None, model=None, thread_key=None,
+                    agent_type=None, provider=None, model=None, thread_key=None, dry_run=False,
                 )
             )
 
@@ -511,7 +511,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                 SimpleNamespace(
                     id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
                     priority=0, session_id=None, pid=None,
-                    agent_type=None, provider=None, model=None, thread_key=None,
+                    agent_type=None, provider=None, model=None, thread_key=None, dry_run=False,
                 )
             )
 
@@ -561,7 +561,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                 SimpleNamespace(
                     id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
                     priority=0, session_id=None, pid=None,
-                    agent_type=None, provider=None, model=None, thread_key=None,
+                    agent_type=None, provider=None, model=None, thread_key=None, dry_run=False,
                 )
             )
 
@@ -590,7 +590,7 @@ class TestResumedSessionPath:
         job = SimpleNamespace(
             id=42, attempt=2, agent_view_id=2, source="jira", type="todo",
             priority=0, session_id="sess-1", pid=None, reference_id="AI-1",
-            agent_type="claude", provider="anthropic", model=None, thread_key=None,
+            agent_type="claude", provider="anthropic", model=None, thread_key=None, dry_run=False,
         )
         with (
             patch("agento.framework.consumer.get_channel"),

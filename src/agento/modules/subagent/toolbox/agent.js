@@ -89,7 +89,7 @@ export function register(server, { log, db, isToolEnabled, jobId, agentViewId, m
           const fail = async (text) => { await conn.rollback(); return refuse(text); };
 
           const [parents] = await conn.execute(
-            'SELECT id, agent_view_id, priority, depth, thread_id, line_id FROM job WHERE id = ?', [jobId]);
+            'SELECT id, agent_view_id, priority, depth, thread_id, line_id, dry_run FROM job WHERE id = ?', [jobId]);
           const parent = parents[0];
           if (!parent || Number(parent.agent_view_id) !== Number(agentViewId)) return await fail(NO_JOB);
           if (parent.depth >= MAX_DEPTH) return await fail(`sorry, max ${MAX_DEPTH} nested subagents levels`);
@@ -140,7 +140,7 @@ export function register(server, { log, db, isToolEnabled, jobId, agentViewId, m
             type: 'subagent', source: 'subagent', agentViewId: target.id, priority: parent.priority,
             referenceId: String(parent.id), context: prompt,
             idempotencyKey: `subagent:${parent.id}:${randomUUID()}`, parentJobId: parent.id, depth,
-            threadId: parent.thread_id, lineId,
+            threadId: parent.thread_id, lineId, dryRun: Number(parent.dry_run) === 1,
           });
           await conn.commit();
           log('agent_run', 'OK', `job=${jobId} child=${childId} av=${target.code} depth=${depth} line=${lineId ?? childId}`);

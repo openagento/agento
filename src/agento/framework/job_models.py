@@ -111,6 +111,8 @@ class Job:
     # The job that ran agent_run for this one, and how deep it is (0 = a root job).
     parent_job_id: int | None = None
     depth: int = 0
+    # A dry run: the toolbox answers each `sensitive` tool with a stub (docs/cli/job-runtime.md).
+    dry_run: bool = False
     # The job's thread, the session it resumes (set at claim) and, for depth > 0, the
     # first job of the agent line it continues (framework/threads.py).
     thread_id: int | None = None
@@ -193,6 +195,7 @@ class Job:
             runner_ref=row.get("runner_ref"),
             parent_job_id=row.get("parent_job_id"),
             depth=row.get("depth") or 0,
+            dry_run=bool(row.get("dry_run")),
             thread_id=row.get("thread_id"),
             resume_job_id=row.get("resume_job_id"),
             line_id=row.get("line_id"),

@@ -49,7 +49,7 @@ VALID_ACCESS_VALUES = {"toolbox_only"}
 # Only string-literal names are statically knowable; names computed at runtime (upstream MCP
 # passthrough) are covered by the runtime drift WARN in registerTools.
 _TOOL_NAME_FORM = re.compile(r"[a-z][a-z0-9_]*")
-_TOOL_ENABLED_KEY = re.compile(r"tools/([a-z][a-z0-9_]*)/is_enabled")
+_TOOL_DEFAULT_KEY = re.compile(r"tools/([a-z][a-z0-9_]*)/(?:is_enabled|sensitive)")
 # Canonical identity-type form (fits ingress_identity.identity_type VARCHAR(32)); rejects
 # whitespace / control chars / wrong shape that a bare "non-empty ≤32" check would let through.
 _IDENTITY_TYPE_FORM = re.compile(r"[a-z][a-z0-9_]{0,31}")
@@ -881,10 +881,11 @@ def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> t
             config = None
 
         if isinstance(config, dict):
-            # `tools/<name>/is_enabled` is merged across every module by literal path, so a
-            # default here silently applies to whatever module owns <name>. Require ownership.
+            # `tools/<name>/is_enabled` and `tools/<name>/sensitive` are merged across every
+            # module by literal path, so a default here silently applies to whatever module owns
+            # <name>. Require ownership.
             for key in config:
-                m = _TOOL_ENABLED_KEY.fullmatch(str(key))
+                m = _TOOL_DEFAULT_KEY.fullmatch(str(key))
                 if m and m.group(1) not in declared_names:
                     errors.append(
                         f"config.json: '{key}' sets a default for a tool this module does not "

@@ -25,5 +25,6 @@
   "toolbox/result_offload/text_preview_chars": 200,
   "tools/email_send/is_enabled": "1",
   "tools/browser/is_enabled": "1",
-  "tools/schedule_followup/is_enabled": "1"
+  "tools/schedule_followup/is_enabled": "1",
+  "tools/email_send/sensitive": "1"
 }

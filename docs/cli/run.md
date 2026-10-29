@@ -45,6 +45,26 @@ agento run dev_01 --credential 6 "…"      # options may also follow the code
 - Typed after the code, only the options at the start of the prompt are taken; the same
   words later belong to the prompt.
 
+### `--dry-run` — run without side effects in sensitive tools
+
+For tests, mostly evaluations. The run's toolbox capability is minted in dry-run mode:
+
+- A tool whose `tools/<name>/sensitive` resolves `1` is not run. The agent gets `{"ok": true}`
+  and cannot see that the call did nothing. Set the flag with
+  [`tool:sensitive`](tools.md#toolsensitive); unset means the tool runs as usual.
+- The toolbox still checks `is_enabled` and the arguments first, and writes the audit row with
+  `tool_invocation.dry_run = 1` when the stub answered.
+- The run gets no SSH private key, so `git push` over SSH fails. Network and the harness
+  credential stay: a dry run is a test aid, not a sandbox.
+
+```bash
+agento run eval_01 --dry-run "close AG-1 and comment why"
+agento run --dry-run eval_01        # interactive; the flag may precede the code
+```
+
+A job runs dry with `job:set-runtime <id> --dry-run` ([job-runtime.md](job-runtime.md#dry-run)).
+Background: DECISIONS.md D-DRY-RUN-1.
+
 ### `--pretty` — human-readable event stream
 
 A headless run streams the agent CLI's own machine format — Claude Code `stream-json` JSONL, Codex `--json` NDJSON. That is right for parsing and unreadable for a person watching the run. `--pretty` renders each event as one line instead:

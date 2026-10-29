@@ -31,7 +31,7 @@ export function extractToken(req) {
 const ROW_SQL =
   'SELECT CAST(c.id AS CHAR) AS id, c.kind, c.actor, c.subject_id, c.on_behalf_of, c.agent_view_id, ' +
   'c.workspace_id, CAST(c.job_id AS CHAR) AS job_id, c.execution_id, c.app_artifact_code, ' +
-  'c.app_version_id, c.app_launch_id, c.tool_ceiling, c.allowed_transports, c.source_kind, c.source_id, ' +
+  'c.app_version_id, c.app_launch_id, c.tool_ceiling, c.allowed_transports, c.source_kind, c.source_id, c.dry_run, ' +
   'UNIX_TIMESTAMP(c.created_at) AS created_at, UNIX_TIMESTAMP(c.expires_at) AS expires_at, ' +
   'av.workspace_id AS agent_view_workspace_id ' +
   'FROM toolbox_capability c LEFT JOIN agent_view av ON av.id = c.agent_view_id ' +
@@ -121,13 +121,15 @@ export function createVerifier(query, { sourceCheckers = NO_AUTH_SOURCES, resolv
       if (!source) return null;
       ttlCaps = await ttls(normalized.workspace_id);
     }
-    return deriveAuthContext({
+    const derived = deriveAuthContext({
       row: normalized,
       agentViewWorkspaceId: intColumn(row.agent_view_workspace_id) ?? null,
       source,
       endpoint,
       ttlCaps,
     });
+    // Beside the auth context, not in it: dry-run changes what a call does, never who may make it.
+    return derived && { ...derived, dry_run: intColumn(row.dry_run) === 1 };
   }
 
   // `endpoint` names the route presenting the token; the per-kind table in auth-context.js

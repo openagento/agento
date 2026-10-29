@@ -43,7 +43,7 @@ CONFIG_PATH = "subagent/wake_parent"
 # a subtree has at most three levels below its top.
 MAX_DEPTH = 3
 _COLUMNS = ("j.id, j.parent_job_id, j.status, j.agent_view_id, j.line_id, j.source, "
-            "j.reference_id, j.priority, j.thread_id, j.depth, v.code AS view_code")
+            "j.reference_id, j.priority, j.thread_id, j.depth, j.dry_run, v.code AS view_code")
 
 
 def wake_key(job_id: int) -> str:
@@ -144,6 +144,7 @@ def maybe_wake(conn, parent_id: int, config: _WakeConfig | None = None) -> int |
         parent_job_id=parent["parent_job_id"], depth=depth,
         # At depth 0 the claim follows the thread's depth-0 line; deeper, P's own line.
         line_id=None if depth == 0 else (parent["line_id"] or parent["id"]),
+        dry_run=bool(parent["dry_run"]),
     )
 
 

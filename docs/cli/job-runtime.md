@@ -72,3 +72,16 @@ would record a job as successful having done nothing.
 
 A retry and `job:resume` reuse the values the first attempt resolved. An operator who
 wants a retry to pick up new config runs `job:set-runtime --clear` first.
+
+## Dry run
+
+```bash
+agento job:set-runtime <job_id> --dry-run       # on
+agento job:set-runtime <job_id> --no-dry-run    # off
+```
+
+`job.dry_run` is copied to the run's toolbox capability at claim, as for
+[`agento run --dry-run`](run.md#--dry-run--run-without-side-effects-in-sensitive-tools): each
+tool set as sensitive gets a stub answer, and the run gets no SSH private key. A job made from
+a dry-run job is a dry run too: an `agent_run` child, a `schedule_followup` job and the parent
+wake. `--clear` does not change it. Background: DECISIONS.md D-DRY-RUN-1.

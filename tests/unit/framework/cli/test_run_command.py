@@ -221,6 +221,26 @@ class TestRunCommand:
         assert mock_fetch.call_args.kwargs["yolo"] is True
         assert mock_fetch.call_args.kwargs["prompt"] == ""
 
+    @pytest.mark.parametrize(("args", "prompt"), [
+        (argparse.Namespace(agent_view_code="dev_01", prompt=["hi"], dry_run=True), "hi"),
+        (_make_args(prompt=["--dry-run", "hi"]), "hi"),   # typed after the code
+    ])
+    def test_dry_run_is_forwarded_to_prepare_run(self, tmp_path, args, prompt):
+        project_root, compose = _project_layout(tmp_path)
+        with (
+            patch("agento.framework.cli.run.find_project_root", return_value=project_root),
+            patch("agento.framework.cli.run.compose_file_flags", return_value=["-f", str(compose)]),
+            patch(
+                "agento.framework.cli.run._fetch_runtime", return_value=_base_runtime(prompt=True),
+            ) as mock_fetch,
+            patch("agento.framework.cli.run.subprocess.run",
+                  return_value=subprocess.CompletedProcess(args=[], returncode=0)),
+            pytest.raises(SystemExit),
+        ):
+            RunCommand().execute(args)
+        assert mock_fetch.call_args.kwargs["dry_run"] is True
+        assert mock_fetch.call_args.kwargs["prompt"] == prompt
+
     def test_headless_claude_uses_headless_command_from_runtime(self, tmp_path):
         project_root, compose = _project_layout(tmp_path)
         runtime = _base_runtime(prompt=True)
@@ -467,6 +487,18 @@ class TestFetchRuntime:
             "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
             "--prompt", "hello", "--yolo",
         ]
+
+    def test_appends_dry_run(self):
+        from agento.framework.cli.run import _fetch_runtime
+
+        fake_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(_base_runtime()) + "\n", stderr="",
+        )
+        with patch(
+            "agento.framework.cli.run.subprocess.run", return_value=fake_result,
+        ) as mock_run:
+            _fetch_runtime(["-f", "/x/docker-compose.yml"], "dev_01", dry_run=True)
+        assert mock_run.call_args.args[0][-1] == "--dry-run"
 
 
 # ---------------------------------------------------------------------------

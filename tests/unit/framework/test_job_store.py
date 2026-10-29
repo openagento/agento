@@ -208,6 +208,17 @@ class TestSetJobRuntime:
         with pytest.raises(ValueError, match="not found"):
             set_job_runtime(conn, 42, harness="codex")
 
+    @pytest.mark.parametrize(("stored", "dry_run", "written"), [
+        (0, True, 1), (1, False, 0), (1, None, 1), (0, None, 0),
+    ])
+    def test_dry_run_is_set_or_kept(self, stored, dry_run, written):
+        conn, cursor = _mock_conn(self._todo(dry_run=stored))
+        job = set_job_runtime(conn, 42, dry_run=dry_run)
+        sql, params = cursor.execute.call_args_list[-1][0]
+        assert "dry_run = %s" in sql
+        assert params[3] == written
+        assert job.dry_run is bool(written)
+
     def test_changing_the_harness_drops_the_session(self):
         conn, cursor = _mock_conn(self._todo(agent_type="claude", session_id="sess-1"))
         job = set_job_runtime(conn, 42, harness="codex")

@@ -67,6 +67,13 @@ class RunCommand:
                  "JSONL. Headless runs only (interactive is already readable).",
         )
         parser.add_argument(
+            "--dry-run",
+            action="store_true",
+            dest="dry_run",
+            help="Dry run for tests: each tool set as sensitive (tools/<name>/sensitive) "
+                 "answers with a stub and does nothing. No SSH private key.",
+        )
+        parser.add_argument(
             "--harness",
             help="Run this harness instead of agent_view/harness, with its default "
                  "provider. No config is changed.",
@@ -104,12 +111,14 @@ class RunCommand:
         prompt_tokens = list(args.prompt)
         yolo = bool(getattr(args, "yolo", False)) or "--yolo" in prompt_tokens
         pretty = bool(getattr(args, "pretty", False)) or "--pretty" in prompt_tokens
-        prompt_tokens = [t for t in prompt_tokens if t not in ("--yolo", "--pretty")]
+        dry_run = bool(getattr(args, "dry_run", False)) or "--dry-run" in prompt_tokens
+        prompt_tokens = [t for t in prompt_tokens if t not in ("--yolo", "--pretty", "--dry-run")]
         pins = {k: getattr(args, k, None) for k in _VALUE_OPTIONS}
         prompt_tokens = _take_leading_options(prompt_tokens, pins)
         prompt = " ".join(prompt_tokens).strip()
         runtime = _fetch_runtime(
             compose_flags, args.agent_view_code, prompt=prompt, yolo=yolo, pins=pins,
+            dry_run=dry_run,
         )
         harness = runtime.get("harness")
         if harness is None:
@@ -331,7 +340,7 @@ def _run_pretty(
 
 def _fetch_runtime(
     compose_flags: list[str], agent_view_code: str, *, prompt: str = "",
-    yolo: bool = False, pins: dict | None = None,
+    yolo: bool = False, pins: dict | None = None, dry_run: bool = False,
 ) -> dict:
     """Ask cron to prepare a run environment; return parsed JSON.
 
@@ -352,6 +361,8 @@ def _fetch_runtime(
         cmd.extend(["--prompt", prompt])
     if yolo:
         cmd.append("--yolo")
+    if dry_run:
+        cmd.append("--dry-run")
     for key, value in (pins or {}).items():
         if value is not None:
             cmd.extend([f"--{key}", str(value)])
