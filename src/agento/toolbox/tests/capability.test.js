@@ -42,14 +42,24 @@ describe('verifyCapability', () => {
 
   it('returns the auth context v1 derived from the row', async () => {
     expect(await createVerifier(fakeQuery([row]))('t', { endpoint: 'mcp' }))
-      .toEqual({ context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, dry_run: false });
+      .toEqual({ context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, test: null });
   });
 
-  it('carries the row\'s dry_run beside the context, never inside it', async () => {
-    const query = fakeQuery([capabilityRow('mcp_job', { dry_run: 1 })]);
-    expect(await createVerifier(query)('t', { endpoint: 'mcp' }))
-      .toEqual({ context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, dry_run: true });
-    expect(query.mock.calls[0][0]).toMatch(/c\.dry_run/);
+  it.each([
+    ['parsed', { stub: ['send'], real: [] }],
+    ['as text', '{"stub": ["send"], "real": []}'],
+  ])('carries the row\'s test config (%s) beside the context, never inside it', async (_name, stored) => {
+    const query = fakeQuery([capabilityRow('mcp_job', { test_config: stored })]);
+    expect(await createVerifier(query)('t', { endpoint: 'mcp' })).toEqual({
+      context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null,
+      test: { stub: ['send'], real: [] },
+    });
+    expect(query.mock.calls[0][0]).toMatch(/c\.test_config/);
+  });
+
+  it.each(['{not json', '[1]', '"text"'])('refuses a capability whose test config is %s', async (stored) => {
+    const query = fakeQuery([capabilityRow('mcp_job', { test_config: stored })]);
+    expect(await createVerifier(query)('t', { endpoint: 'mcp' })).toBeNull();
   });
 
   it('selects ids as exact strings in SQL, not as rounded JS numbers', async () => {

@@ -99,9 +99,8 @@ class AgentViewPrepareRunCommand:
                  "harness's skip-approvals flag (headless is always bypass).",
         )
         parser.add_argument(
-            "--dry-run", action="store_true", dest="dry_run",
-            help="Dry run: each tool set as sensitive gets a stub answer and does nothing; "
-                 "no SSH private key.",
+            "--test", metavar="JSON", default=None,
+            help="Test run: a JSON object with the tools to stub or run (docs/cli/run.md).",
         )
 
     def execute(self, args: argparse.Namespace) -> None:
@@ -141,7 +140,16 @@ class AgentViewPrepareRunCommand:
                 sys.exit(1)
 
             harness_pin = getattr(args, "harness", None)
-            dry_run = bool(getattr(args, "dry_run", False))
+            test_text = getattr(args, "test", None)
+            test_config = None
+            if test_text is not None:
+                from agento.framework.test_run import InvalidTestConfig, parse_test_config
+
+                try:
+                    test_config = parse_test_config(test_text)
+                except InvalidTestConfig as exc:
+                    print(f"Error: {exc}", file=sys.stderr)
+                    sys.exit(1)
             # A pinned harness makes the view's own harness/provider pair irrelevant, so
             # a broken pair there must not block the run.
             runtime = resolve_agent_view_runtime(
@@ -219,7 +227,7 @@ class AgentViewPrepareRunCommand:
                 job_id=None,
                 ttl_seconds=INTERACTIVE_CAPABILITY_TTL_SECONDS,
                 allowed_transports=["http"],
-                dry_run=dry_run,
+                test_config=test_config,
             )
         finally:
             conn.close()
@@ -241,7 +249,9 @@ class AgentViewPrepareRunCommand:
                 resolve_ssh_identity,
                 ssh_run_env,
             )
-            ssh_identity = resolve_ssh_identity(agent_config_svc, dry_run=dry_run)
+            ssh_identity = resolve_ssh_identity(
+                agent_config_svc, with_private_key=test_config is None,
+            )
 
             home, working_dir = materialize_run_workspace(
                 runtime,

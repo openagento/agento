@@ -38,7 +38,7 @@ function auditStore() {
   return {
     rows,
     insert: vi.fn(async (row) => { rows.set(row.execution_id, { ...row, outcome: 'pending' }); }),
-    finalize: vi.fn(async (id, outcome, dryRun = false) => { Object.assign(rows.get(id), { outcome, dry_run: dryRun }); }),
+    finalize: vi.fn(async (id, outcome, stubbed = false) => { Object.assign(rows.get(id), { outcome, stubbed }); }),
   };
 }
 
@@ -59,7 +59,7 @@ function registryWith(tools, { enabled = () => true, unavailable = [], sensitive
     tools: new Map(Object.entries(tools)),
     unavailableTools: new Set(unavailable),
     isEnabled: (name, overrides) => enabled(name, overrides),
-    isSensitive: (name, overrides) => sensitive(name, overrides),
+    isSensitive: name => sensitive(name),
   };
 }
 
@@ -302,15 +302,19 @@ describe('the SQL the dispatcher writes', () => {
     expect(query.mock.calls[1][1]).toEqual(['ok', 0, expect.any(String)]);
   });
 
+  const TEST = { stub: [], real: [] };
   it.each([
-    ['a sensitive tool in a dry run gets the stub; the handler does not run', true, true, true],
-    ['a tool that is not sensitive runs in a dry run', true, false, false],
-    ['a sensitive tool runs in a normal run', false, true, false],
-  ])('%s', async (_name, dryRun, sensitive, stubbed) => {
+    ['a sensitive tool in a test run gets the stub; the handler does not run', TEST, true, true],
+    ['a tool that is not sensitive runs in a test run', TEST, false, false],
+    ['a sensitive tool runs in a normal run', null, true, false],
+    ['`stub` stubs a tool that is not sensitive', { stub: ['send'], real: [] }, false, true],
+    ['`real` runs a sensitive tool for real', { stub: [], real: ['send'] }, true, false],
+    ['a list that is not an array is ignored', { stub: 'send', real: 'send' }, true, true],
+  ])('%s', async (_name, test, sensitive, stubbed) => {
     const handler = vi.fn(async () => ({ content: [{ type: 'text', text: 'real' }] }));
     const d = deps({
       reverify: vi.fn(async () => ({
-        context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, dry_run: dryRun,
+        context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, test,
       })),
       loadRegistry: async () => registryWith({ send: { schema: {}, handler } }, { sensitive: () => sensitive }),
     });
@@ -320,13 +324,13 @@ describe('the SQL the dispatcher writes', () => {
     expect(response.result.content[0].text).toBe(stubbed ? '{"ok": true}' : 'real');
     // The caller cannot tell a stub from a real call.
     expect(Object.keys(response).sort()).toEqual(['execution_id', 'ok', 'result']);
-    expect(row).toMatchObject({ outcome: 'ok', dry_run: stubbed });
+    expect(row).toMatchObject({ outcome: 'ok', stubbed });
   });
 
-  it('a dry run still refuses a disabled tool and invalid arguments', async () => {
+  it('a test run still refuses a disabled tool and invalid arguments', async () => {
     const d = deps({
       reverify: vi.fn(async () => ({
-        context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, dry_run: true,
+        context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, test: TEST,
       })),
       loadRegistry: async () => registryWith({ echo }, { enabled: name => name !== 'echo', sensitive: () => true }),
     });
@@ -334,7 +338,7 @@ describe('the SQL the dispatcher writes', () => {
     d.loadRegistry = async () => registryWith({ echo }, { sensitive: () => true });
     const { response, row } = await run(capabilityContext('mcp_job'), 'echo', { text: 1 }, d);
     expect(response.error.code).toBe('invalid_arguments');
-    expect(row.dry_run).toBe(false);
+    expect(row.stubbed).toBe(false);
   });
 
   it.each([

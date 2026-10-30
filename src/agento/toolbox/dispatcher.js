@@ -25,11 +25,20 @@ const INSERT_AUDIT_SQL =
   'INSERT INTO tool_invocation (execution_id, run_execution_id, capability_id, transport, actor, subject_id, ' +
   'on_behalf_of, tool_name, args_sha256, agent_view_id, workspace_id, app_artifact_code, app_version_id, ' +
   "app_launch_id, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')";
-const FINALIZE_AUDIT_SQL = 'UPDATE tool_invocation SET outcome = ?, dry_run = ? WHERE execution_id = ?';
+const FINALIZE_AUDIT_SQL = 'UPDATE tool_invocation SET outcome = ?, stubbed = ? WHERE execution_id = ?';
 
-// What a sensitive tool answers in a dry-run: a plain success, so the agent acts as it would
+// What a stubbed tool answers in a test run: a plain success, so the agent acts as it would
 // in a real run. Nothing in it says the call was not made.
-const DRY_RUN_RESULT = Object.freeze({ content: [{ type: 'text', text: '{"ok": true}' }] });
+const STUB_RESULT = Object.freeze({ content: [{ type: 'text', text: '{"ok": true}' }] });
+
+// Whether a test run stubs this tool (framework/test_run.py): `real` runs it, `stub` stubs
+// it, and a tool in neither list is stubbed when its module marks it sensitive.
+function stubbedInTest(test, toolName, registry) {
+  if (!test) return false;
+  const listed = key => Array.isArray(test[key]) && test[key].includes(toolName);
+  if (listed('real')) return false;
+  return listed('stub') || registry.isSensitive(toolName);
+}
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -54,8 +63,8 @@ export function createAuditStore(query) {
         row.app?.artifact_code ?? null, row.app?.version_id ?? null, row.app?.launch_id ?? null,
       ]);
     },
-    async finalize(executionId, outcome, dryRun = false) {
-      await query(FINALIZE_AUDIT_SQL, [outcome, dryRun ? 1 : 0, executionId]);
+    async finalize(executionId, outcome, stubbed = false) {
+      await query(FINALIZE_AUDIT_SQL, [outcome, stubbed ? 1 : 0, executionId]);
     },
   };
 }
@@ -125,8 +134,8 @@ async function authorizeAndRun(authContext, toolName, args, deps) {
     return failure('invalid_arguments', `invalid arguments: ${where}`);
   }
 
-  if (derived.dry_run && registry.isSensitive(toolName, overrides)) {
-    return { ok: true, result: DRY_RUN_RESULT, dryRun: true };
+  if (stubbedInTest(derived.test, toolName, registry)) {
+    return { ok: true, result: STUB_RESULT, stubbed: true };
   }
 
   let result;
@@ -174,15 +183,15 @@ export async function executeTool(authContext, toolName, args, deps) {
   }
 
   let response;
-  let dryRun = false;
+  let stubbed = false;
   try {
-    ({ dryRun = false, ...response } = await authorizeAndRun(authContext, toolName, args, deps));
+    ({ stubbed = false, ...response } = await authorizeAndRun(authContext, toolName, args, deps));
   } catch (err) {
     log('dispatch', 'ERROR', `tool ${toolName} dispatch failed: ${errorCategory(err)}`);
     response = failure('unavailable', 'service unavailable');
   }
   try {
-    await audit.finalize(executionId, response.ok ? 'ok' : response.error.code, dryRun);
+    await audit.finalize(executionId, response.ok ? 'ok' : response.error.code, stubbed);
   } catch (err) {
     // The row stays `pending`, which is itself the signal.
     log('audit', 'ERROR', `audit finalize failed: ${errorCategory(err)}`);

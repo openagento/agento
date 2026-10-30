@@ -11,7 +11,7 @@ Two modes are selected automatically by presence of a prompt argument:
 
 Shortcut: `ru`.
 
-`--yolo`, `--pretty` and `--dry-run` count only at the start or the end of the prompt. The same word in the middle stays in the prompt text.
+`--yolo` and `--pretty` count only at the start or the end of the prompt, and `--harness`, `--model`, `--credential` and `--test` only at the start. The same word in the middle stays in the prompt text.
 
 ### `--yolo` — skip interactive approval prompts
 
@@ -47,31 +47,43 @@ agento run dev_01 --credential 6 "…"      # options may also follow the code
 - Typed after the code, only the options at the start of the prompt are taken; the same
   words later belong to the prompt.
 
-### `--dry-run` — run without side effects in sensitive tools
+### `--test` — a test run
 
-For tests, mostly evaluations. The run's toolbox capability is minted in dry-run mode:
+For tests, mostly evaluations. Test runs work only where the cron container has
+`AGENTO_TEST_MODE_ENABLED=1` (set it in `docker/docker-compose.override.yml` of a test
+environment; never in production). Elsewhere `--test` is refused, and a job that carries a
+test config fails at its start without a retry, so it never runs for real.
 
-- A tool whose `tools/<name>/sensitive` resolves `1` is not run. The agent gets `{"ok": true}`
-  and cannot see that the call did nothing. Set the flag with
-  [`tool:sensitive`](tools.md#toolsensitive); unset means the tool runs as usual.
-- The toolbox still checks `is_enabled` and the arguments first, and writes the audit row with
-  `tool_invocation.dry_run = 1` when the stub answered.
-- The run gets no SSH private key, so `git push` over SSH fails. Network and the harness
-  credential stay: a dry run is a test aid, not a sandbox.
+The value is a JSON object with the tools to stub or to run; the test framework builds it and
+Agento validates it:
 
-```bash
-agento run eval_01 --dry-run "close AG-1 and comment why"
-agento run --dry-run eval_01        # interactive; the flag may precede the code
+```json
+{"stub": ["jira_search"], "real": ["jira_add_comment"]}
 ```
 
-A job runs dry with `job:set-runtime <id> --dry-run` ([job-runtime.md](job-runtime.md#dry-run)).
+- A tool in `stub` is not run: the agent gets `{"ok": true}` and cannot see that the call did
+  nothing. A tool in `real` runs. A tool in neither list is stubbed when its module marks it
+  `tools/<name>/sensitive: "1"`, else it runs. `{}` uses the module defaults only.
+- An unknown key, a tool no module declares, or a tool in both lists is an error, and nothing
+  runs.
+- The toolbox still checks `is_enabled` and the arguments first, and writes the audit row with
+  `tool_invocation.stubbed = 1` when the stub answered.
+- The run never gets the SSH private key, so `git push` over SSH fails. Network and the harness
+  credential stay: a test run is a test aid, not a sandbox.
+- The JSON travels in argv: never put a secret in it.
+
+```bash
+agento run eval_01 --test '{"stub": ["jira_search"]}' "close AG-1 and comment why"
+agento run --test '{}' eval_01        # interactive; module defaults only
+```
+
+A job is a test run with `job:set-runtime <id> --test '<json>'` ([job-runtime.md](job-runtime.md#test-run)).
 Known limits:
 
-- The stub runs before the handler, so handler policy does not run in a dry run.
-- A dry run is one job and the jobs made from it. A later turn in the same thread is a normal job.
-- This `dry_run` is not `disable_llm` and not `setup:upgrade --dry-run`.
+- The stub runs before the handler, so handler policy does not run in a test run.
+- A test run is one job and the jobs made from it. A later turn in the same thread is a normal job.
 
-Background: DECISIONS.md D-DRY-RUN-1.
+Background: DECISIONS.md D-TEST-RUN-1.
 
 ### `--pretty` — human-readable event stream
 

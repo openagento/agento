@@ -74,7 +74,7 @@ def _drive(*, refresh, reread=_REFRESHED, still_imminent=False):
     job = SimpleNamespace(
         id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
         priority=0, session_id=None, pid=None, reference_id="AI-1",
-        agent_type=None, provider=None, model=None, thread_key=None, dry_run=False,
+        agent_type=None, provider=None, model=None, thread_key=None, test_config=None,
     )
 
     def _mint(*_a, **_kw):

@@ -99,21 +99,21 @@ class TestIssueRunCapabilities:
         assert [c.kwargs["allowed_transports"] for c in mint.call_args_list] == [["http"], ["http"]]
         assert mint.call_args_list[1].kwargs["subject_id"] == "service:consumer"
 
-    @pytest.mark.parametrize("dry_run", [False, True])
-    def test_the_run_capability_carries_the_job_dry_run(self, consumer, dry_run):
+    @pytest.mark.parametrize("test_config", [None, {"stub": ["send"], "real": []}])
+    def test_the_run_capability_carries_the_job_test_config(self, consumer, test_config):
         conn, _ = _conn()
         with patch("agento.framework.consumer.issue_capability", return_value="mcp") as mint:
-            consumer._issue_run_capabilities(conn, _job(dry_run=dry_run))
-        assert mint.call_args.kwargs["dry_run"] is dry_run
+            consumer._issue_run_capabilities(conn, _job(test_config=test_config))
+        assert mint.call_args.kwargs["test_config"] == test_config
 
-    @pytest.mark.parametrize("dry_run", [False, True])
-    def test_a_resumed_turn_takes_dry_run_from_its_own_job(self, consumer, dry_run):
-        # The line's earlier job (resume_job_id) has the opposite flag; only this job counts.
+    @pytest.mark.parametrize("test_config", [None, {"stub": [], "real": []}])
+    def test_a_resumed_turn_takes_the_test_config_from_its_own_job(self, consumer, test_config):
+        # The line's earlier job (resume_job_id) may differ; only this job counts.
         conn, _ = _conn()
-        job = _job(dry_run=dry_run, resume_job_id=999)
+        job = _job(test_config=test_config, resume_job_id=999)
         with patch("agento.framework.consumer.issue_capability", return_value="mcp") as mint:
             consumer._issue_run_capabilities(conn, job)
-        assert mint.call_args.kwargs["dry_run"] is dry_run
+        assert mint.call_args.kwargs["test_config"] == test_config
 
     def test_both_mints_land_in_one_transaction(self, consumer):
         conn, _ = _conn()

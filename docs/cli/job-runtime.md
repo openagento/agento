@@ -73,15 +73,17 @@ would record a job as successful having done nothing.
 A retry and `job:resume` reuse the values the first attempt resolved. An operator who
 wants a retry to pick up new config runs `job:set-runtime --clear` first.
 
-## Dry run
+## Test run
 
 ```bash
-agento job:set-runtime <job_id> --dry-run       # on
-agento job:set-runtime <job_id> --no-dry-run    # off
+agento job:set-runtime <job_id> --test '{"stub": ["jira_search"], "real": ["jira_add_comment"]}'
+agento job:set-runtime <job_id> --no-test    # a normal job again
 ```
 
-`job.dry_run` is copied to the run's toolbox capability at claim, as for
-[`agento run --dry-run`](run.md#--dry-run--run-without-side-effects-in-sensitive-tools): each
-tool set as sensitive gets a stub answer, and the run gets no SSH private key. A job made from
-a dry-run job is a dry run too: an `agent_run` child, a `schedule_followup` job and the parent
-wake. A later turn in the same thread is a normal job. `--clear` does not change it. Background: DECISIONS.md D-DRY-RUN-1.
+`job.test_config` is copied to the run's toolbox capability at claim, as for
+[`agento run --test`](run.md#--test--a-test-run): the tools it stubs get a stub answer, and the
+run never gets the SSH private key. A job made from a test-run job is a test run with the same
+config: an `agent_run` child, a `schedule_followup` job and the parent wake. A later turn in the
+same thread is a normal job. `--clear` does not change it. Where `AGENTO_TEST_MODE_ENABLED` is
+not `1`, `--test` is refused and such a job fails at its start, without a retry.
+Background: DECISIONS.md D-TEST-RUN-1.

@@ -28,6 +28,7 @@ import secrets
 from .auth_context import LEGACY_REST_SUBJECT, derive_auth_context
 from .database_config import DatabaseConfig
 from .db import get_connection
+from .test_run import require_test_mode
 
 KIND_MCP_JOB = "mcp_job"
 KIND_MCP_INTERACTIVE = "mcp_interactive"
@@ -84,7 +85,7 @@ def issue_capability(
     app: dict | None = None,
     tool_ceiling: list[str] | None = None,
     source_id: str | None = None,
-    dry_run: bool = False,
+    test_config: dict | None = None,
     commit: bool = True,
 ) -> str:
     if kind not in _KINDS:
@@ -112,8 +113,12 @@ def issue_capability(
             raise ValueError("mcp_interactive must not carry a job_id")
     elif kind == KIND_INTERNAL_REST and job_id is not None and not _positive_id(job_id):
         raise ValueError("internal_rest job_id must be null or a positive integer")
-    if dry_run and kind not in (KIND_MCP_JOB, KIND_MCP_INTERACTIVE):
-        raise ValueError("only an agent's run capability may be a dry run")
+    if test_config is not None:
+        if kind not in (KIND_MCP_JOB, KIND_MCP_INTERACTIVE):
+            raise ValueError("only an agent's run capability may be a test run")
+        # The one mint both `agento run` and a job pass, so a test_config written straight
+        # into the DB is refused here too (D-TEST-RUN-1).
+        require_test_mode()
     if not isinstance(allowed_transports, list) or not allowed_transports:
         raise ValueError("allowed_transports must name at least one transport")
     if "sse" in allowed_transports:
@@ -167,7 +172,7 @@ def issue_capability(
             "INSERT INTO toolbox_capability "
             "(token_hash, kind, agent_view_id, job_id, expires_at, actor, subject_id, workspace_id, "
             "execution_id, app_artifact_code, app_version_id, app_launch_id, tool_ceiling, "
-            "allowed_transports, source_kind, source_id, dry_run) "
+            "allowed_transports, source_kind, source_id, test_config) "
             "VALUES (%s, %s, %s, %s, DATE_ADD(NOW(), INTERVAL %s SECOND), "
             "%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
@@ -175,7 +180,8 @@ def issue_capability(
                 row["actor"], subject_id, workspace_id, execution_id,
                 row["app_artifact_code"], row["app_version_id"], row["app_launch_id"],
                 None if tool_ceiling is None else json.dumps(tool_ceiling),
-                json.dumps(row["allowed_transports"]), row["source_kind"], source_id, int(dry_run),
+                json.dumps(row["allowed_transports"]), row["source_kind"], source_id,
+                None if test_config is None else json.dumps(test_config),
             ),
         )
     if commit:

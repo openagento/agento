@@ -1,4 +1,4 @@
-"""A follow-up turn is a normal job: no publish in `complete_pending` carries `dry_run`."""
+"""A follow-up turn is a normal job: no publish in `complete_pending` carries `test_config`."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -9,7 +9,7 @@ from agento.modules.conversation.src import service
 
 
 @pytest.mark.parametrize("channel", [service.PANEL_CHANNEL, "outlook"])
-def test_turn_jobs_are_published_without_dry_run(channel):
+def test_turn_jobs_are_published_without_a_test_config(channel):
     cur = MagicMock()
     cur.fetchone.side_effect = [
         {"job_id": None, "job_state": "pending", "conversation_id": 1, "id": 2,
@@ -25,4 +25,4 @@ def test_turn_jobs_are_published_without_dry_run(channel):
             patch.object(service, "resolve_job_type", return_value="t"):
         service.complete_pending(conn, 2)
     publish.assert_called_once()
-    assert "dry_run" not in publish.call_args.kwargs
+    assert "test_config" not in publish.call_args.kwargs

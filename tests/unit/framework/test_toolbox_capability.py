@@ -1,4 +1,5 @@
 import hashlib
+import json
 import traceback
 
 import pytest
@@ -68,21 +69,33 @@ def test_issue_returns_raw_token_and_stores_only_the_hash():
 
 
 @pytest.mark.parametrize(("kind", "job_id"), [(KIND_MCP_JOB, 42), (KIND_MCP_INTERACTIVE, None)])
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_issue_stores_dry_run_on_an_agent_run_capability(kind, job_id, dry_run):
+@pytest.mark.parametrize("test_config", [None, {"stub": ["send"], "real": []}])
+def test_issue_stores_the_test_config_on_an_agent_run_capability(kind, job_id, test_config, monkeypatch):
+    monkeypatch.setenv("AGENTO_TEST_MODE_ENABLED", "1")
     conn = FakeConn()
     issue_capability(conn, kind=kind, agent_view_id=7, job_id=job_id, ttl_seconds=60,
-                     allowed_transports=["http"], dry_run=dry_run)
+                     allowed_transports=["http"], test_config=test_config)
     sql, params = conn.statements[-1]
-    assert "source_id, dry_run)" in sql
-    assert params[-1] == int(dry_run)
+    assert "source_id, test_config)" in sql
+    assert params[-1] == (None if test_config is None else json.dumps(test_config))
 
 
-def test_issue_refuses_dry_run_on_a_service_capability():
+def test_issue_refuses_a_test_config_where_test_mode_is_off(monkeypatch):
+    monkeypatch.delenv("AGENTO_TEST_MODE_ENABLED", raising=False)
     conn = FakeConn()
-    with pytest.raises(ValueError, match="dry run"):
+    with pytest.raises(ValueError, match="test mode is off"):
+        issue_capability(conn, kind=KIND_MCP_JOB, agent_view_id=7, job_id=42, ttl_seconds=60,
+                         allowed_transports=["http"], test_config={"stub": [], "real": []})
+    assert not [s for s, _ in conn.statements if s.startswith("INSERT")]
+
+
+def test_issue_refuses_a_test_config_on_a_service_capability(monkeypatch):
+    monkeypatch.setenv("AGENTO_TEST_MODE_ENABLED", "1")
+    conn = FakeConn()
+    with pytest.raises(ValueError, match="test run"):
         issue_capability(conn, kind=KIND_INTERNAL_REST, agent_view_id=7, ttl_seconds=60,
-                         allowed_transports=["http"], subject_id="service:test", dry_run=True)
+                         allowed_transports=["http"], subject_id="service:test",
+                         test_config={"stub": [], "real": []})
     assert not [s for s, _ in conn.statements if s.startswith("INSERT")]
 
 

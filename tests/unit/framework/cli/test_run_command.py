@@ -222,10 +222,11 @@ class TestRunCommand:
         assert mock_fetch.call_args.kwargs["prompt"] == ""
 
     @pytest.mark.parametrize(("args", "prompt"), [
-        (argparse.Namespace(agent_view_code="dev_01", prompt=["hi"], dry_run=True), "hi"),
-        (_make_args(prompt=["--dry-run", "hi"]), "hi"),   # typed after the code
+        (argparse.Namespace(agent_view_code="dev_01", prompt=["hi"], test='{"stub": []}'), "hi"),
+        (_make_args(prompt=["--test", '{"stub": []}', "hi"]), "hi"),   # typed after the code
+        (_make_args(prompt=['--test={"stub": []}', "hi"]), "hi"),
     ])
-    def test_dry_run_is_forwarded_to_prepare_run(self, tmp_path, args, prompt):
+    def test_the_test_config_is_forwarded_to_prepare_run(self, tmp_path, args, prompt):
         project_root, compose = _project_layout(tmp_path)
         with (
             patch("agento.framework.cli.run.find_project_root", return_value=project_root),
@@ -238,11 +239,11 @@ class TestRunCommand:
             pytest.raises(SystemExit),
         ):
             RunCommand().execute(args)
-        assert mock_fetch.call_args.kwargs["dry_run"] is True
+        assert mock_fetch.call_args.kwargs["pins"]["test"] == '{"stub": []}'
         assert mock_fetch.call_args.kwargs["prompt"] == prompt
 
     @pytest.mark.parametrize(("flag", "kwarg"), [
-        ("--yolo", "yolo"), ("--pretty", "pretty"), ("--dry-run", "dry_run"),
+        ("--yolo", "yolo"), ("--pretty", "pretty"),
     ])
     @pytest.mark.parametrize(("position", "tokens", "prompt", "taken"), [
         ("leading", ["{f}", "fix", "it"], "fix it", True),
@@ -519,7 +520,7 @@ class TestFetchRuntime:
             "--prompt", "hello", "--yolo",
         ]
 
-    def test_appends_dry_run(self):
+    def test_appends_the_test_config_as_one_argument(self):
         from agento.framework.cli.run import _fetch_runtime
 
         fake_result = subprocess.CompletedProcess(
@@ -528,8 +529,8 @@ class TestFetchRuntime:
         with patch(
             "agento.framework.cli.run.subprocess.run", return_value=fake_result,
         ) as mock_run:
-            _fetch_runtime(["-f", "/x/docker-compose.yml"], "dev_01", dry_run=True)
-        assert mock_run.call_args.args[0][-1] == "--dry-run"
+            _fetch_runtime(["-f", "/x/docker-compose.yml"], "dev_01", pins={"test": '{"stub": []}'})
+        assert mock_run.call_args.args[0][-2:] == ["--test", '{"stub": []}']
 
 
 # ---------------------------------------------------------------------------

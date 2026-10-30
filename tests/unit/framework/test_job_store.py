@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import signal
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -166,6 +167,9 @@ class TestResumeJob:
             resume_job(conn, 42)
 
 
+_CFG = {"stub": ["send"], "real": []}
+
+
 class TestSetJobRuntime:
     """`job:set-runtime` — pin/clear a queued job's harness and model."""
 
@@ -208,16 +212,20 @@ class TestSetJobRuntime:
         with pytest.raises(ValueError, match="not found"):
             set_job_runtime(conn, 42, harness="codex")
 
-    @pytest.mark.parametrize(("stored", "dry_run", "written"), [
-        (0, True, 1), (1, False, 0), (1, None, 1), (0, None, 0),
+    @pytest.mark.parametrize(("stored", "kwargs", "written"), [
+        (None, {"test_config": _CFG}, _CFG),       # set
+        ('{"stub": [], "real": ["x"]}', {"test_config": _CFG}, _CFG),   # replace
+        ('{"stub": [], "real": ["x"]}', {}, {"stub": [], "real": ["x"]}),  # keep
+        ('{"stub": [], "real": ["x"]}', {"clear_test": True}, None),   # clear
+        ('{"stub": [], "real": ["x"]}', {"clear": True}, {"stub": [], "real": ["x"]}),  # --clear keeps it
     ])
-    def test_dry_run_is_set_or_kept(self, stored, dry_run, written):
-        conn, cursor = _mock_conn(self._todo(dry_run=stored))
-        job = set_job_runtime(conn, 42, dry_run=dry_run)
+    def test_the_test_config_is_set_kept_or_cleared(self, stored, kwargs, written):
+        conn, cursor = _mock_conn(self._todo(test_config=stored))
+        job = set_job_runtime(conn, 42, **kwargs)
         sql, params = cursor.execute.call_args_list[-1][0]
-        assert "dry_run = %s" in sql
-        assert params[3] == written
-        assert job.dry_run is bool(written)
+        assert "test_config = %s" in sql
+        assert params[3] == (None if written is None else json.dumps(written))
+        assert job.test_config == written
 
     def test_changing_the_harness_drops_the_session(self):
         conn, cursor = _mock_conn(self._todo(agent_type="claude", session_id="sess-1"))

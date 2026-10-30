@@ -45,7 +45,7 @@ def insert_job(
     parent_job_id: int | None = None,
     depth: int = 0,
     line_id: int | None = None,
-    dry_run: bool = False,
+    test_config: dict | None = None,
 ) -> int:
     """The single INSERT both entry points use. Returns the new job id.
 
@@ -85,7 +85,7 @@ def insert_job(
             (type, source, agent_view_id, priority, reference_id,
              idempotency_key, status, attempt, max_attempts, prompt, context,
              requester_key, requester_email, requester_trust, requester_meta,
-             agent_type, model, parent_job_id, depth, thread_id, line_id, dry_run)
+             agent_type, model, parent_job_id, depth, thread_id, line_id, test_config)
         VALUES
             (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s, %s, %s, %s,
              %s, %s, %s, %s, %s)
@@ -96,7 +96,8 @@ def insert_job(
          requester.email if requester else None,
          requester.trust.value if requester else "claimed",
          requester_meta, harness, model,
-         parent_job_id, depth, thread_id, line_id, int(dry_run)),
+         parent_job_id, depth, thread_id, line_id,
+         None if test_config is None else json.dumps(test_config)),
     )
     job_id = cur.lastrowid
     if thread_id is None:

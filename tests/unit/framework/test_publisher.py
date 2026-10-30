@@ -226,7 +226,7 @@ class TestRequester:
         sql, params = _insert_call(mock_cursor)
         for col in ("requester_key", "requester_email", "requester_trust", "requester_meta"):
             assert col in sql
-        # the requester fields come before harness, model, the four thread columns and dry_run
+        # the requester fields come before harness, model, the four thread columns and test_config
         assert params[-11:-7] == (None, None, "claimed", None)
 
     @patch("agento.framework.publisher.get_connection")
@@ -367,14 +367,16 @@ class TestInsertJobThread:
                        priority=50, idempotency_key="k", max_attempts=3, requester=None,
                        **{"reference_id": "AI-1", **kwargs})
         sql, params = next(c.args for c in cur.execute.call_args_list if "INSERT INTO job" in c.args[0])
-        assert "parent_job_id, depth, thread_id, line_id, dry_run)" in sql
-        self.dry_run = params[-1]
+        assert "parent_job_id, depth, thread_id, line_id, test_config)" in sql
+        self.test_config = params[-1]
         return ensure, cur, dict(zip(self._COLUMNS, params[-5:-1], strict=True))
 
-    @pytest.mark.parametrize(("kwargs", "stored"), [({}, 0), ({"dry_run": True}, 1)])
-    def test_dry_run_is_written_in_the_insert(self, kwargs, stored):
+    @pytest.mark.parametrize(("kwargs", "stored"), [
+        ({}, None), ({"test_config": {"stub": ["a"], "real": []}}, '{"stub": ["a"], "real": []}'),
+    ])
+    def test_the_test_config_is_written_in_the_insert(self, kwargs, stored):
         self._insert(**kwargs)
-        assert self.dry_run == stored
+        assert self.test_config == stored
 
     @pytest.mark.parametrize(("kwargs", "ref"), [
         ({}, "jira:AI-1"),                                # the source item is the thread

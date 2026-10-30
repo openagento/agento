@@ -327,14 +327,20 @@ class TestAgentViewPrepareRunCommand:
         # The payload reaches the host terminal and its shell history.
         assert "tok-interactive" not in json.dumps(payload)
 
-    @pytest.mark.parametrize("dry_run", [False, True])
-    def test_the_interactive_capability_carries_dry_run(
-        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub, dry_run,
+    @pytest.mark.parametrize(("test", "test_config", "with_key"), [
+        (None, None, True),
+        ('{}', {"stub": [], "real": []}, False),
+        ('{"real": ["jira_add_comment"]}', {"stub": [], "real": ["jira_add_comment"]}, False),
+    ])
+    def test_the_interactive_capability_carries_the_test_config(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
+        test, test_config, with_key, monkeypatch,
     ):
         from agento.framework import ssh_identity
 
+        monkeypatch.setenv("AGENTO_TEST_MODE_ENABLED", "1")
         args = _make_args()
-        args.dry_run = dry_run
+        args.test = test
         with patch(
             "agento.framework.toolbox_capability.issue_capability", return_value="tok",
         ) as mock_issue, patch(
@@ -345,8 +351,31 @@ class TestAgentViewPrepareRunCommand:
                 args, runtime_stub, token_stub, builder_stub, writer_stub,
                 home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
             )
-        assert mock_issue.call_args.kwargs["dry_run"] is dry_run
-        assert mock_ssh.call_args.kwargs == {"dry_run": dry_run}
+        assert mock_issue.call_args.kwargs["test_config"] == test_config
+        assert mock_ssh.call_args.kwargs == {"with_private_key": with_key}
+
+    @pytest.mark.parametrize(("mode", "test", "message"), [
+        ("1", '{"stub": ["no_such_tool"]}', "no module declares"),
+        (None, '{}', "test mode is off"),
+    ])
+    def test_a_refused_test_config_stops_before_any_mint(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub, capsys,
+        monkeypatch, mode, test, message,
+    ):
+        if mode is None:
+            monkeypatch.delenv("AGENTO_TEST_MODE_ENABLED", raising=False)
+        else:
+            monkeypatch.setenv("AGENTO_TEST_MODE_ENABLED", mode)
+        args = _make_args()
+        args.test = test
+        with patch("agento.framework.toolbox_capability.issue_capability") as mock_issue, \
+                pytest.raises(SystemExit):
+            _run_command(
+                args, runtime_stub, token_stub, builder_stub, writer_stub,
+                home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+            )
+        mock_issue.assert_not_called()
+        assert message in capsys.readouterr().err
 
     def test_unregistered_harness_returns_null_command(
         self, tmp_path, runtime_stub, token_stub, writer_stub,

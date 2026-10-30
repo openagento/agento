@@ -67,11 +67,10 @@ class RunCommand:
                  "JSONL. Headless runs only (interactive is already readable).",
         )
         parser.add_argument(
-            "--dry-run",
-            action="store_true",
-            dest="dry_run",
-            help="Dry run for tests: each tool set as sensitive (tools/<name>/sensitive) "
-                 "answers with a stub and does nothing. No SSH private key.",
+            "--test", metavar="JSON",
+            help="Test run: a JSON object with the tools to stub or run, e.g. "
+                 "'{\"stub\": [\"jira_search\"], \"real\": [\"jira_add_comment\"]}'. "
+                 "Sensitive tools are stubbed by default; no SSH private key (docs/cli/run.md).",
         )
         parser.add_argument(
             "--harness",
@@ -104,8 +103,8 @@ class RunCommand:
             sys.exit(1)
 
         # ``prompt`` is captured via argparse.REMAINDER, which greedily swallows
-        # everything after the agent_view_code — including a ``--yolo``/``--pretty``/
-        # ``--dry-run`` typed in the natural trailing position (`agento run dev --yolo`).
+        # everything after the agent_view_code — including a ``--yolo``/``--pretty``
+        # typed in the natural trailing position (`agento run dev --yolo`).
         # Recover them from the START and the END of the captured tokens so both orders
         # work; the same word inside the prompt text stays in the prompt.
         prompt_tokens = list(args.prompt)
@@ -116,11 +115,9 @@ class RunCommand:
             found.add(prompt_tokens.pop())
         yolo = bool(getattr(args, "yolo", False)) or "--yolo" in found
         pretty = bool(getattr(args, "pretty", False)) or "--pretty" in found
-        dry_run = bool(getattr(args, "dry_run", False)) or "--dry-run" in found
         prompt = " ".join(prompt_tokens).strip()
         runtime = _fetch_runtime(
             compose_flags, args.agent_view_code, prompt=prompt, yolo=yolo, pins=pins,
-            dry_run=dry_run,
         )
         harness = runtime.get("harness")
         if harness is None:
@@ -226,13 +223,13 @@ class RunCommand:
         os.execvp("docker", exec_args)
 
 
-_VALUE_OPTIONS = ("harness", "model", "credential")
-_FLAG_OPTIONS = ("--yolo", "--pretty", "--dry-run")
+_VALUE_OPTIONS = ("harness", "model", "credential", "test")
+_FLAG_OPTIONS = ("--yolo", "--pretty")
 
 
 def _take_leading_options(tokens: list[str], pins: dict, flags: set[str] | None = None) -> list[str]:
-    """Move ``--harness/--model/--credential`` typed after the agent_view code out of the
-    prompt into ``pins``, and the ``--yolo/--pretty/--dry-run`` flags into ``flags``; return
+    """Move ``--harness/--model/--credential/--test`` typed after the agent_view code out of
+    the prompt into ``pins``, and the ``--yolo/--pretty`` flags into ``flags``; return
     the rest. Only LEADING tokens: a prompt may contain the same words."""
     while tokens:
         if flags is not None and tokens[0] in _FLAG_OPTIONS:
@@ -347,7 +344,7 @@ def _run_pretty(
 
 def _fetch_runtime(
     compose_flags: list[str], agent_view_code: str, *, prompt: str = "",
-    yolo: bool = False, pins: dict | None = None, dry_run: bool = False,
+    yolo: bool = False, pins: dict | None = None,
 ) -> dict:
     """Ask cron to prepare a run environment; return parsed JSON.
 
@@ -368,8 +365,6 @@ def _fetch_runtime(
         cmd.extend(["--prompt", prompt])
     if yolo:
         cmd.append("--yolo")
-    if dry_run:
-        cmd.append("--dry-run")
     for key, value in (pins or {}).items():
         if value is not None:
             cmd.extend([f"--{key}", str(value)])
