@@ -71,6 +71,8 @@ Examples:
   ([runner.md](runner.md#the-owner-rule)).
 - `AGENTO_RUNNER_SOCKET_DIR` — where the worker finds `runner-<i>/runner-<i>.sock`
   (default `/run/agento-runner`).
+- `AGENTO_TEST_MODE_ENABLED` — `1` allows test runs (`--test`, [run.md](../cli/run.md#--test--a-test-run)).
+  Off unless set; never set it in production. The dev compose sets it.
 
 The runner services read `AGENTO_RUNNER_SOCKET`, `AGENTO_RUNNER_MAX_PROCS`,
 `AGENTO_RUNNER_MAX_CONTROL` and `AGENTO_RUNNER_ACCEPT_RATE` from their own `environment:`

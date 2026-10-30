@@ -1005,10 +1005,9 @@ export async function registerTools(server, context, agentViewId = null, preload
   const isEnabled = (toolName, overrides) => toolChainState(toolName, {
     declared: declaredToolNames, requiresByTool, dbOverrides: overrides, configDefaults,
   }) === 'enabled';
-  // `tools/{name}/sensitive` = '1': a dry-run call gets a stub and the handler does not run.
-  // Unset means not sensitive (DECISIONS.md D-DRY-RUN-1).
-  const isSensitive = (toolName, overrides) =>
-    resolveConfigValue(`tools/${toolName}/sensitive`, overrides, configDefaults) === '1';
+  // `tools/{name}/sensitive` = '1' in the module's config.json: a test run stubs the tool unless
+  // its test config says `real`. A property of the tool, so no scoped override (D-TEST-RUN-1).
+  const isSensitive = toolName => String(configDefaults[`tools/${toolName}/sensitive`] ?? '') === '1';
 
   return {
     toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames,

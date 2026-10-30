@@ -119,11 +119,13 @@ def test_the_walk_up_crosses_a_detach():
     assert [s for s in up.sql if "thread_id" in s] == []
 
 
-@pytest.mark.parametrize("dry_run", [0, 1])
-def test_the_wake_copies_the_parent_dry_run(dry_run):
-    parent = {**_job(1, None, 0), "dry_run": dry_run}
+@pytest.mark.parametrize(("stored", "copied"), [
+    (None, None), ('{"stub": ["a"], "real": []}', {"stub": ["a"], "real": []}),
+])
+def test_the_wake_copies_the_parent_test_config(stored, copied):
+    parent = {**_job(1, None, 0), "test_config": stored}
     cur = _Cursor([[parent], [_job(2, 1, 1)], []])
     with patch("agento.modules.subagent.src.observers.publish_job", return_value=77) as publish:
         assert maybe_wake(_Conn(cur), 1, _AllWake()) == 77  # type: ignore[arg-type]
-    assert "j.dry_run" in cur.sql[0]
-    assert publish.call_args.kwargs["dry_run"] is bool(dry_run)
+    assert "j.test_config" in cur.sql[0]
+    assert publish.call_args.kwargs["test_config"] == copied

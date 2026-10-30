@@ -3,7 +3,6 @@
     {"name": "tool:list", "class": "src.commands.tool_list.ToolListCommand"},
     {"name": "tool:enable", "class": "src.commands.tool_enable.ToolEnableCommand"},
     {"name": "tool:disable", "class": "src.commands.tool_disable.ToolDisableCommand"},
-    {"name": "tool:sensitive", "class": "src.commands.tool_sensitive.ToolSensitiveCommand"},
     {"name": "agent_view:identity:show", "class": "src.commands.identity_show.IdentityShowCommand"},
     {"name": "agent_view:identity:check", "class": "src.commands.identity_check.IdentityCheckCommand"},
     {"name": "agent_view:runtime", "class": "src.commands.runtime_show.AgentViewRuntimeCommand"},

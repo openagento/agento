@@ -368,19 +368,19 @@ describe('schedule_followup in a delegated job', () => {
   });
 });
 
-describe('schedule_followup dry run', () => {
-  it.each([0, 1])('the follow-up copies the current job dry_run %i', async (dryRun) => {
+describe('schedule_followup test run', () => {
+  it.each([null, { stub: ['send'], real: [] }])('the follow-up copies the current job test config %o', async (test) => {
     const register = await loadRegister();
     const server = fakeServer();
     const { db, calls } = fakeDb({
-      source: 'jira', reference_id: 'AG-1', agent_view_id: null, priority: 50, depth: 0, dry_run: dryRun });
+      source: 'jira', reference_id: 'AG-1', agent_view_id: null, priority: 50, depth: 0, test_config: test });
     register(server, baseCtx({ db }));
     await server.tools.schedule_followup.handler({
       user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
     });
     const insert = calls.executed.find((c) => /INSERT INTO job\b/i.test(c.sql) && !/outbox/i.test(c.sql));
-    expect(insert.sql).toMatch(/line_id, dry_run,/);
-    expect(insert.params[12]).toBe(dryRun);
+    expect(insert.sql).toMatch(/line_id, test_config,/);
+    expect(insert.params[12]).toBe(test === null ? null : JSON.stringify(test));
   });
 });
 
@@ -404,7 +404,7 @@ describe('schedule_followup continues the current job thread', () => {
     expect(thread.params).toEqual([5]);
     const insert = insertOf(calls);
     expect(insert.sql).toMatch(/thread_id, line_id/);
-    // [..., thread_id, line_id, dry_run, scheduled_after]
+    // [..., thread_id, line_id, test_config, scheduled_after]
     expect(insert.params.at(-4)).toBe(5);
     expect(insert.params.at(-3)).toBeNull();
   });
