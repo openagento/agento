@@ -417,6 +417,13 @@ class TestResolveSshIdentity:
     def test_none_service_is_all_empty(self):
         assert resolve_ssh_identity(None) == ResolvedSshIdentity()
 
+    def test_without_the_private_key_it_is_never_read(self):
+        svc = _Svc({SSH_PRIVATE_KEY_PATH: _PEM, SSH_PUBLIC_KEY_PATH: "pub"})
+        resolved = resolve_ssh_identity(svc, with_private_key=False)
+        assert resolved.private_key == ""
+        assert resolved.public_key == "pub"
+        assert SSH_PRIVATE_KEY_PATH not in svc.calls
+
     @pytest.mark.parametrize("size", [
         MAX_SSH_PRIVATE_KEY_BYTES - 1, MAX_SSH_PRIVATE_KEY_BYTES,
     ])

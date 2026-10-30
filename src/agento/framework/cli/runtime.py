@@ -467,7 +467,7 @@ class SetRuntimeCommand:
 
     @property
     def help(self) -> str:
-        return "Pin or clear the harness/model of a queued (TODO) job"
+        return "Pin or clear the harness/model, or set a test run, of a queued (TODO) job"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("job_id", type=int, help="Job ID to change")
@@ -476,6 +476,15 @@ class SetRuntimeCommand:
         parser.add_argument(
             "--clear", action="store_true",
             help="Clear both, so the next claim resolves them from config",
+        )
+        parser.add_argument(
+            "--test", metavar="JSON", default=None,
+            help="Make the job a test run: a JSON object with the tools to stub or run "
+                 "(docs/cli/run.md). Jobs it starts inherit it.",
+        )
+        parser.add_argument(
+            "--no-test", action="store_true", dest="no_test",
+            help="Make the job a normal job again.",
         )
 
     def execute(self, args: argparse.Namespace) -> None:
@@ -486,9 +495,21 @@ class SetRuntimeCommand:
         if args.clear and (args.harness or args.model):
             print("Error: --clear cannot be combined with --harness/--model", file=sys.stderr)
             sys.exit(1)
-        if not args.clear and not args.harness and not args.model:
-            print("Error: give --harness and/or --model, or --clear", file=sys.stderr)
+        if args.test is not None and args.no_test:
+            print("Error: --test cannot be combined with --no-test", file=sys.stderr)
             sys.exit(1)
+        if not (args.clear or args.harness or args.model or args.test is not None or args.no_test):
+            print("Error: give --harness, --model, --test, --no-test, or --clear", file=sys.stderr)
+            sys.exit(1)
+        test_config = None
+        if args.test is not None:
+            from ..test_run import InvalidTestConfig, parse_test_config
+
+            try:
+                test_config = parse_test_config(args.test)
+            except InvalidTestConfig as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
 
         db_config, _, _ = _load_framework_config()
         conn = get_connection_or_exit(db_config)
@@ -496,6 +517,7 @@ class SetRuntimeCommand:
             job = set_job_runtime(
                 conn, args.job_id,
                 harness=args.harness, model=args.model, clear=args.clear,
+                test_config=test_config, clear_test=args.no_test,
             )
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)
@@ -506,6 +528,7 @@ class SetRuntimeCommand:
         print(f"Job #{job.id} runtime updated.")
         print(f"  harness: {job.agent_type or '(resolve from config)'}")
         print(f"  model:   {job.model or '(resolve from config)'}")
+        print(f"  test:    {json.dumps(job.test_config) if job.test_config else 'no'}")
 
 
 class JobListCommand:

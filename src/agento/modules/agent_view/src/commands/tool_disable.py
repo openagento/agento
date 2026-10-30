@@ -5,6 +5,7 @@ import argparse
 import re
 
 from agento.framework.scoped_config import Scope
+from agento.framework.tool_enablement import require_declared_tool
 
 
 class ToolDisableCommand:
@@ -28,6 +29,7 @@ class ToolDisableCommand:
 
     def execute(self, args: argparse.Namespace) -> None:
         _validate_tool_name(args.tool_name)
+        require_declared_tool(args.tool_name)
 
         from agento.framework.cli.runtime import _load_framework_config
         from agento.framework.db import get_connection

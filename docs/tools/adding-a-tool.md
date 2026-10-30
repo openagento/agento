@@ -222,6 +222,22 @@ agento tool:disable mysql_acme_staging --agent-view developer
 
 The tool still exists but won't be registered for that agent_view's MCP sessions.
 
+## Test runs: mark a tool that acts outside the system
+
+A tool that writes outside Agento (sends a mail, comments, changes an issue, opens a PR)
+ships `"tools/<name>/sensitive": "1"` in its module's `config.json`. In a test run
+([`agento run --test`](../cli/run.md#--test--a-test-run)) the toolbox then answers it with
+`{"ok": true}` and does not call the handler, unless the test's JSON lists it in `real`.
+Unset means not sensitive: a test run calls the tool unless the JSON lists it in `stub`.
+It is a property of the tool: there is no per-scope override.
+
+A **core** module must state the key for every tool it declares: `"0"` for a read-only tool,
+`"1"` for one that acts outside the system. `module:validate` fails without it. User and
+extension modules are not checked, so an old module keeps validating.
+
+The stub runs before the handler, so a policy that lives in the handler does not run in a test
+run. A tool that needs a handler-level test mode is a follow-up (ROADMAP.md).
+
 ## Adding Knowledge
 
 Help the agent write better queries by documenting your database:
@@ -281,8 +297,8 @@ last line of defence for a computed name in a deployment's own module.
 
 Two further rules keep name-keyed enablement unambiguous, both enforced by
 `module:validate`: tool names must be **globally unique** across modules, and a
-`config.json` `tools/<name>/is_enabled` default must belong to a tool that same
-module declares (defaults from every module are merged by literal path, so an
+`config.json` `tools/<name>/is_enabled` or `tools/<name>/sensitive` default must belong to a
+tool that same module declares (defaults from every module are merged by literal path, so an
 unowned default would silently apply to somebody else's tool). A duplicate
 *inside* one manifest is caught by `agento module:validate <name>`; only a
 collision **between** modules needs the unscoped `agento module:validate` (or

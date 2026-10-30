@@ -31,6 +31,20 @@ def _make_manifest(name, tools):
     return m
 
 
+@pytest.fixture(autouse=True)
+def _declared_tools():
+    with patch("agento.framework.tool_enablement.declared_tool_names", return_value={"jira_search", "slack_post", "tool_a", "tool_b", "browser", "email_send", "jira_add_comment"}):
+        yield
+
+
+@pytest.mark.parametrize("command", [ToolEnableCommand, ToolDisableCommand])
+def test_rejects_undeclared_tool_and_writes_no_row(command):
+    args = argparse.Namespace(tool_name="no_such_tool", scope="default", scope_id=0, agent_view_code=None)
+    with patch("agento.framework.scoped_config.scoped_config_set") as mock_set, pytest.raises(SystemExit, match="Unknown tool"):
+        command().execute(args)
+    mock_set.assert_not_called()
+
+
 @pytest.mark.parametrize("command", [ToolEnableCommand, ToolDisableCommand])
 @pytest.mark.parametrize("tool_name", ["jira search", "jira@search!", "JiraSearch", ""])
 def test_rejects_invalid_tool_name(command, tool_name):
@@ -258,3 +272,4 @@ class TestToolDisableCommand:
             scope="workspace",
             scope_id=3,
         )
+

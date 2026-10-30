@@ -1,5 +1,13 @@
 {
   "enabled": false,
   "repo_allowlist": "",
-  "poll_top": 20
+  "poll_top": 20,
+  "tools/github_add_comment/sensitive": "1",
+  "tools/github_resolve_thread/sensitive": "1",
+  "tools/github_set_review/sensitive": "1",
+  "tools/github_create_pr/sensitive": "1",
+  "tools/github_get_pr/sensitive": "0",
+  "tools/github_get_pr_diff/sensitive": "0",
+  "tools/github_get_pr_comments/sensitive": "0",
+  "tools/github_get_pr_reviews/sensitive": "0"
 }

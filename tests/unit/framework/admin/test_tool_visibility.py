@@ -118,7 +118,7 @@ def test_browser_tools_ship_no_config_default():
     otherwise this change would GRANT every browser tool on upgrade."""
     config = json.loads((MODULES / "core/config.json").read_text())
     assert config["tools/browser/is_enabled"] == "1"      # unchanged master default
-    assert not [k for k in config if k.startswith("tools/browser_")]
+    assert not [k for k in config if k.startswith("tools/browser_") and k.endswith("/is_enabled")]
 
 
 def test_scan_tools_by_toolset_exposes_core_jira_and_browser_tools():

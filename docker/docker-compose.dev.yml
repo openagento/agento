@@ -102,6 +102,8 @@ services:
       - DISABLE_LLM=${DISABLE_LLM:-0}
       - PYTHONPATH=/opt/agento-src
       - AGENTO_RUNNER_COUNT=1
+      # Dev only: allow `--test` runs (docs/cli/run.md). Off unless set; never set it in production.
+      - AGENTO_TEST_MODE_ENABLED=${AGENTO_TEST_MODE_ENABLED:-1}
     volumes:
       - ../workspace:/workspace
       - ../app/code:/app/code:ro

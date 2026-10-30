@@ -35,6 +35,29 @@ def scan_tool_requires() -> dict[str, str]:
     return requires
 
 
+def declared_tool_names() -> set[str]:
+    """Tool names declared by ANY discovered module, enabled or not.
+
+    Filesystem only (no DB), so a CLI command can reject a typo before it writes a
+    config row. A disabled module's tool stays valid: an operator may set it up first.
+    """
+    from .bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
+    from .module_discovery import scan_all_modules
+
+    return {
+        tool["name"]
+        for manifest in scan_all_modules(CORE_MODULES_DIR, USER_MODULES_DIR)
+        for tool in manifest.tools
+        if tool.get("name")
+    }
+
+
+def require_declared_tool(name: str) -> None:
+    """Exit with a message when no module declares tool ``name``."""
+    if name not in declared_tool_names():
+        raise SystemExit(f"Unknown tool '{name}'. No module declares it (see tool:list).")
+
+
 def blocked_by(
     name: str, requires: dict[str, str], resolve: Callable[[str], bool]
 ) -> str | None:

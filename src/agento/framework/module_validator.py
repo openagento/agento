@@ -49,7 +49,7 @@ VALID_ACCESS_VALUES = {"toolbox_only"}
 # Only string-literal names are statically knowable; names computed at runtime (upstream MCP
 # passthrough) are covered by the runtime drift WARN in registerTools.
 _TOOL_NAME_FORM = re.compile(r"[a-z][a-z0-9_]*")
-_TOOL_ENABLED_KEY = re.compile(r"tools/([a-z][a-z0-9_]*)/is_enabled")
+_TOOL_DEFAULT_KEY = re.compile(r"tools/([a-z][a-z0-9_]*)/(?:is_enabled|sensitive)")
 # Canonical identity-type form (fits ingress_identity.identity_type VARCHAR(32)); rejects
 # whitespace / control chars / wrong shape that a bare "non-empty ≤32" check would let through.
 _IDENTITY_TYPE_FORM = re.compile(r"[a-z][a-z0-9_]{0,31}")
@@ -474,6 +474,12 @@ def validate_tool_namespace(
     return results
 
 
+def _is_core_module(module_dir: Path) -> bool:
+    from .bootstrap import CORE_MODULES_DIR
+
+    return module_dir.resolve().parent == Path(CORE_MODULES_DIR).resolve()
+
+
 def _declared_tool_names(tools: list) -> set[str]:
     """Names declared in a manifest's ``tools[]`` (ignoring malformed entries)."""
     return {
@@ -873,6 +879,7 @@ def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> t
 
     # config.json
     config_path = module_dir / "config.json"
+    config = None
     if config_path.is_file():
         try:
             config = json.loads(config_path.read_text())
@@ -881,15 +888,27 @@ def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> t
             config = None
 
         if isinstance(config, dict):
-            # `tools/<name>/is_enabled` is merged across every module by literal path, so a
-            # default here silently applies to whatever module owns <name>. Require ownership.
+            # `tools/<name>/is_enabled` and `tools/<name>/sensitive` are merged across every
+            # module by literal path, so a default here silently applies to whatever module owns
+            # <name>. Require ownership.
             for key in config:
-                m = _TOOL_ENABLED_KEY.fullmatch(str(key))
+                m = _TOOL_DEFAULT_KEY.fullmatch(str(key))
                 if m and m.group(1) not in declared_names:
                     errors.append(
                         f"config.json: '{key}' sets a default for a tool this module does not "
                         "declare in module.json tools[]"
                     )
+
+    # A core module states for each tool it declares whether a test run stubs it. User and
+    # extension modules predate the key, so they keep validating without it (CODE-5).
+    if isinstance(tools, list) and _is_core_module(module_dir):
+        own = config if isinstance(config, dict) else {}
+        for tool_name in sorted(declared_names):
+            if f"tools/{tool_name}/sensitive" not in own:
+                errors.append(
+                    f"config.json: tool '{tool_name}' has no 'tools/{tool_name}/sensitive' default "
+                    '("1" = a test run stubs it, "0" = a test run calls it)'
+                )
 
     errors.extend(validate_config_defaults(module_dir))
 

@@ -37,6 +37,7 @@ describe('registerTools: requires chain in the tool gate', () => {
       // (what drift detection exists for).
       writeModule(tmpDir, mod.name, {
         'module.json': { name: mod.name, version: '1.0.0', description: 'd', tools: mod.tools },
+        ...(mod.config ? { 'config.json': mod.config } : {}),
         'toolbox/tools.js':
         `export function register(server, { isToolEnabled }) {\n` +
         (mod.throws ? `  throw new Error('boom');\n` : '') +
@@ -239,6 +240,19 @@ describe('registerTools: requires chain in the tool gate', () => {
     expect(isEnabled('jira_search', on)).toBe(true);
     expect(isEnabled('jira_search', { ...on, 'tools/jira/is_enabled': { value: '0' } })).toBe(false);
     expect(isEnabled('undeclared_tool', { 'tools/undeclared_tool/is_enabled': { value: '1' } })).toBe(false);
+  });
+
+  it('reads sensitive from the module config.json only: an explicit 1, never a DB row', async () => {
+    const { isSensitive } = await runRegisterTools({
+      modules: [{
+        name: 'jira', tools: MASTERED, registers: ['jira_search'],
+        config: { 'tools/jira_search/sensitive': '1', 'tools/jira_get_issue/sensitive': '0' },
+      }],
+      dbValues: { 'tools/jira/sensitive': '1' },
+    });
+    expect(isSensitive('jira_search')).toBe(true);
+    expect(isSensitive('jira_get_issue')).toBe(false);
+    expect(isSensitive('jira')).toBe(false);
   });
 
   it('reports the tools of a module whose register() threw as unavailable, not unknown', async () => {

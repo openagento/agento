@@ -101,6 +101,15 @@ describe('agent_run', () => {
     expect(calls.released).toBe(1);
   });
 
+  it.each([null, { stub: ['send'], real: [] }])('the child copies the parent test config %o', async (test) => {
+    const { db, calls } = fakeDb({
+      parent: { id: 42, agent_view_id: 7, priority: 20, depth: 0, thread_id: 5, line_id: null, test_config: test },
+      views: [OWN] });
+    await tools(db).agent_run.handler({ agent_view: 'own', prompt: 'Do the thing.' });
+    expect(jobInsert(calls).sql).toMatch(/line_id, test_config,/);
+    expect(jobInsert(calls).params[12]).toBe(test === null ? null : JSON.stringify(test));
+  });
+
   it('refuses at depth 3 with the exact text and inserts nothing', async () => {
     const { db, calls } = fakeDb({ parent: { id: 42, agent_view_id: 7, priority: 20, depth: 3 }, views: [OWN] });
     const res = await tools(db).agent_run.handler({ agent_view: 'own', prompt: 'x' });

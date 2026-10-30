@@ -50,6 +50,7 @@ describe('enqueueJob', () => {
       type: 'subagent', source: 'subagent', agent_view_id: 4, priority: 30, reference_id: '42',
       context: 'do the thing', idempotency_key: 'subagent:42:abc', status: "'TODO'", attempt: '0',
       max_attempts: 3, scheduled_after: null, parent_job_id: 42, depth: 2, thread_id: null, line_id: null,
+      test_config: null,
     });
     expect(conn.executed[1].sql).toMatch(/COALESCE\(\?, CURRENT_TIMESTAMP\)/);
     expect(conn.executed[2].sql).toMatch(/job_event_outbox/i);
@@ -61,10 +62,14 @@ describe('enqueueJob', () => {
 
   it('defaults to a root job (parent NULL, depth 0) and passes scheduledAfter/maxAttempts', async () => {
     const conn = fakeConn();
-    await enqueueJob(conn, { ...JOB, agentViewId: null, maxAttempts: 5, scheduledAfter: '2099-01-01 08:00:00' });
+    await enqueueJob(conn, {
+      ...JOB, agentViewId: null, maxAttempts: 5, scheduledAfter: '2099-01-01 08:00:00',
+      testConfig: { stub: ['send'], real: [] },
+    });
     const row = columnValues(conn.executed[1]);
     expect(row).toMatchObject({
       parent_job_id: null, depth: 0, max_attempts: 5, scheduled_after: '2099-01-01 08:00:00', agent_view_id: null,
+      test_config: '{"stub":["send"],"real":[]}',
     });
     expect(JSON.parse(conn.executed[2].params[1]).agent_view_id).toBeNull();
   });

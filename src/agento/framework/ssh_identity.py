@@ -70,7 +70,7 @@ class ResolvedSshIdentity:
     known_hosts: str = ""
 
 
-def resolve_ssh_identity(agent_config_svc=None) -> ResolvedSshIdentity:
+def resolve_ssh_identity(agent_config_svc=None, *, with_private_key: bool = True) -> ResolvedSshIdentity:
     """Read the four config paths ONCE (``obscure`` values decrypt on ``.get()``).
 
     The single place that touches config: ``materialize_ssh_public_identity`` and
@@ -80,11 +80,14 @@ def resolve_ssh_identity(agent_config_svc=None) -> ResolvedSshIdentity:
 
     Raises ``ValueError`` when the configured key is over ``MAX_SSH_PRIVATE_KEY_BYTES`` —
     fail closed, rather than pushing an unbounded secret through the environment.
+
+    ``with_private_key=False`` (a test run, framework/test_run.py) gets no private key, so it
+    cannot push: the key is not even decrypted.
     """
     if agent_config_svc is None:
         return ResolvedSshIdentity()
 
-    private = agent_config_svc.get(SSH_PRIVATE_KEY_PATH) or ""
+    private = (agent_config_svc.get(SSH_PRIVATE_KEY_PATH) or "") if with_private_key else ""
     public = agent_config_svc.get(SSH_PUBLIC_KEY_PATH) or ""
     config = agent_config_svc.get(SSH_CONFIG_PATH) or ""
     known_hosts = agent_config_svc.get(SSH_KNOWN_HOSTS_PATH) or ""

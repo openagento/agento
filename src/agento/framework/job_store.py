@@ -1,6 +1,7 @@
 """Job store — DB helpers for job lifecycle transitions."""
 from __future__ import annotations
 
+import json
 import signal
 import time
 
@@ -131,8 +132,12 @@ def resume_job(conn, job_id: int) -> Job:
 def set_job_runtime(
     conn, job_id: int, *, harness: str | None = None,
     model: str | None = None, clear: bool = False,
+    test_config: dict | None = None, clear_test: bool = False,
 ) -> Job:
     """Pin (or clear) the harness/model of a job that has not been claimed yet.
+
+    ``test_config`` makes the job a test run (framework/test_run.py); ``clear_test`` makes it
+    a normal job again; neither keeps it. ``clear`` does not touch it.
 
     ``provider`` is never set here — it is derived at claim time and therefore marks a
     committed runtime snapshot, so EVERY edit nulls it to re-open resolution.
@@ -154,6 +159,7 @@ def set_job_runtime(
 
     new_harness = None if clear else (harness if harness is not None else job.agent_type)
     new_model = None if clear else (model if model is not None else job.model)
+    new_test_config = None if clear_test else (test_config if test_config is not None else job.test_config)
     # Drop the session when the harness it belongs to is replaced or removed. rowcount
     # is NOT consulted: PyMySQL reports CHANGED rows, so a repeated identical edit
     # legitimately changes nothing — the status check above is the error source.
@@ -164,16 +170,18 @@ def set_job_runtime(
             """
             UPDATE job
             SET agent_type = %s, model = %s, provider = NULL,
-                session_id = IF(%s, NULL, session_id), updated_at = NOW()
+                session_id = IF(%s, NULL, session_id), test_config = %s, updated_at = NOW()
             WHERE id = %s
             """,
-            (new_harness, new_model, drop_session, job_id),
+            (new_harness, new_model, drop_session,
+             None if new_test_config is None else json.dumps(new_test_config), job_id),
         )
     conn.commit()
 
     job.agent_type = new_harness
     job.model = new_model
     job.provider = None
+    job.test_config = new_test_config
     if drop_session:
         job.session_id = None
     return job

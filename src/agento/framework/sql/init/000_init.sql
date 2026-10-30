@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS job (
     toolbox_mcp_connected BOOLEAN DEFAULT NULL,
     created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    test_config     JSON NULL,
 
     UNIQUE KEY uq_job_idempotency (idempotency_key),
     KEY idx_job_dequeue (status, scheduled_after),
@@ -246,6 +247,7 @@ CREATE TABLE toolbox_capability (
     source_kind        VARCHAR(32)     NULL,
     source_id          VARCHAR(64)     NULL,
     consumed_at        DATETIME        NULL,
+    test_config        JSON            NULL,
     UNIQUE KEY uk_toolbox_capability_hash (token_hash),
     KEY idx_toolbox_capability_job (job_id),
     KEY idx_toolbox_capability_expires (expires_at),
@@ -282,6 +284,8 @@ CREATE TABLE tool_invocation (
     created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     -- 047: the projection's checkpoint, on the producer row (§6.4.2).
     conversation_relayed_at DATETIME  NULL,
+    -- 055: 1 when the test-run stub answered the call and the handler did not run.
+    stubbed           TINYINT(1)      NOT NULL DEFAULT 0,
     UNIQUE KEY uk_tool_invocation_execution (execution_id),
     KEY idx_tool_invocation_capability (capability_id),
     KEY idx_tool_invocation_created (created_at),
@@ -525,4 +529,5 @@ INSERT INTO schema_migration (version) VALUES
     ('051_job_runner_ref'),
     ('052_job_auth_wait_index'),
     ('053_job_parent_depth'),
-    ('054_thread');
+    ('054_thread'),
+    ('055_test_run');

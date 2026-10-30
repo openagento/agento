@@ -11,6 +11,8 @@ Two modes are selected automatically by presence of a prompt argument:
 
 Shortcut: `ru`.
 
+`--yolo` and `--pretty` count only at the start or the end of the prompt, and `--harness`, `--model`, `--credential` and `--test` only at the start. The same word in the middle stays in the prompt text.
+
 ### `--yolo` — skip interactive approval prompts
 
 By default an interactive session uses the agent CLI's normal in-session approval prompting. Pass `--yolo` to run in the same **bypass mode** headless jobs use by default — Claude with `--dangerously-skip-permissions`, Codex with `--dangerously-bypass-approvals-and-sandbox` — so the session never stops to ask for per-action approval:
@@ -44,6 +46,44 @@ agento run dev_01 --credential 6 "…"      # options may also follow the code
   not throttled or leased); otherwise the run stops at once.
 - Typed after the code, only the options at the start of the prompt are taken; the same
   words later belong to the prompt.
+
+### `--test` — a test run
+
+For tests, mostly evaluations. Test runs work only where the cron container has
+`AGENTO_TEST_MODE_ENABLED=1` (set it in `docker/docker-compose.override.yml` of a test
+environment; never in production). Elsewhere `--test` is refused, and a job that carries a
+test config fails at its start without a retry, so it never runs for real.
+
+The value is a JSON object with the tools to stub or to run; the test framework builds it and
+Agento validates it:
+
+```json
+{"stub": ["jira_search"], "real": ["jira_add_comment"]}
+```
+
+- A tool in `stub` is not run: the agent gets `{"ok": true}` and cannot see that the call did
+  nothing. A tool in `real` runs. A tool in neither list is stubbed when its module marks it
+  `tools/<name>/sensitive: "1"`, else it runs. `{}` uses the module defaults only.
+- An unknown key, a tool no module declares, or a tool in both lists is an error, and nothing
+  runs.
+- The toolbox still checks `is_enabled` and the arguments first, and writes the audit row with
+  `tool_invocation.stubbed = 1` when the stub answered.
+- The run never gets the SSH private key, so `git push` over SSH fails. Network and the harness
+  credential stay: a test run is a test aid, not a sandbox.
+- The JSON travels in argv: never put a secret in it.
+
+```bash
+agento run eval_01 --test '{"stub": ["jira_search"]}' "close AG-1 and comment why"
+agento run --test '{}' eval_01        # interactive; module defaults only
+```
+
+A job is a test run with `job:set-runtime <id> --test '<json>'` ([job-runtime.md](job-runtime.md#test-run)).
+Known limits:
+
+- The stub runs before the handler, so handler policy does not run in a test run.
+- A test run is one job and the jobs made from it. A later turn in the same thread is a normal job.
+
+Background: DECISIONS.md D-TEST-RUN-1.
 
 ### `--pretty` — human-readable event stream
 

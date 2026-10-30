@@ -906,6 +906,7 @@ class Consumer:
             execution_id=job.execution_id,
             ttl_seconds=MCP_CAPABILITY_TTL_SECONDS,
             allowed_transports=["http"],
+            test_config=job.test_config,
             commit=False,
         )
         rest_token = None
@@ -1071,7 +1072,9 @@ class Consumer:
             # the private key must come from the same config snapshot (a rotation between
             # two reads would pair the old id_rsa.pub with the new key).
             from .ssh_identity import resolve_ssh_identity, ssh_run_env
-            ssh_identity = resolve_ssh_identity(agent_config_svc)
+            ssh_identity = resolve_ssh_identity(
+                agent_config_svc, with_private_key=job.test_config is None,
+            )
 
             # The redaction barrier starts HERE, at the mint — not at the run. Everything
             # between the mint and the run handles the raw token (materialization writes it

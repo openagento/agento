@@ -9,5 +9,11 @@
   "mailbox_aliases": "",
   "allow_bot_collaboration": false,
   "reply_policy": "remove",
-  "thread_read_max_messages": 50
+  "thread_read_max_messages": 50,
+  "tools/outlook_reply/sensitive": "1",
+  "tools/outlook_mark_processed/sensitive": "1",
+  "tools/outlook_send_mail/sensitive": "1",
+  "tools/outlook_list_thread/sensitive": "0",
+  "tools/outlook_get_message/sensitive": "0",
+  "tools/outlook_get_attachment/sensitive": "0"
 }

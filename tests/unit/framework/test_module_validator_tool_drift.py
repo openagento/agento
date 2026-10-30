@@ -177,8 +177,9 @@ class TestConfigDefaultOwnership:
         d = _mk(tmp_path, tools=[_t("demo_ping")], config={"tools/demo_ping/is_enabled": "1"})
         assert validate_module(d) == []
 
-    def test_default_for_an_undeclared_tool_is_rejected(self, tmp_path):
-        d = _mk(tmp_path, tools=[_t("demo_ping")], config={"tools/other_tool/is_enabled": "1"})
+    @pytest.mark.parametrize("field", ["is_enabled", "sensitive"])
+    def test_default_for_an_undeclared_tool_is_rejected(self, tmp_path, field):
+        d = _mk(tmp_path, tools=[_t("demo_ping")], config={f"tools/other_tool/{field}": "1"})
         assert any("this module does not declare" in e for e in validate_module(d))
 
     def test_unrelated_config_keys_are_ignored(self, tmp_path):
@@ -312,3 +313,42 @@ def test_shipped_core_modules_are_clean():
         if errs := validate_module(entry):
             offenders[entry.name] = errs
     assert offenders == {}
+
+
+# --- sensitive key: required for core modules only (CODE-5) ---------------
+
+def _sens(errors):
+    return [e for e in errors if "/sensitive' default" in e and "has no" in e]
+
+
+def _as_core(monkeypatch, tmp_path):
+    monkeypatch.setattr("agento.framework.bootstrap.CORE_MODULES_DIR", tmp_path)
+
+
+@pytest.mark.parametrize(("config", "is_core", "flagged"), [
+    ({}, True, True),
+    ({"tools/t1/sensitive": "0"}, True, False),
+    ({"tools/t1/sensitive": "1"}, True, False),
+    ({}, False, False),
+])
+def test_core_module_must_state_sensitive_for_each_tool(monkeypatch, tmp_path, config, is_core, flagged):
+    if is_core:
+        _as_core(monkeypatch, tmp_path)
+    d = _mk(tmp_path, tools=[_t("t1")], config=config)
+    assert bool(_sens(validate_module(d))) is flagged
+
+
+@pytest.mark.parametrize("tool", [
+    "email_send", "versioned_artifact_init", "versioned_artifact_create_draft",
+    "versioned_artifact_discard_draft", "versioned_artifact_save_version",
+    "versioned_artifact_publish", "browser_evaluate", "browser_run_code", "browser_click",
+    "browser_type", "browser_fill_form", "browser_select_option", "browser_press_key",
+    "browser_drag", "browser_file_upload", "browser_handle_dialog",
+])
+def test_known_mutating_tools_ship_sensitive(tool):
+    from agento.framework.bootstrap import CORE_MODULES_DIR
+
+    merged: dict = {}
+    for cfg in Path(CORE_MODULES_DIR).glob("*/config.json"):
+        merged.update(json.loads(cfg.read_text()))
+    assert merged[f"tools/{tool}/sensitive"] == "1"

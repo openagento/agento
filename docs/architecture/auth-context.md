@@ -114,7 +114,10 @@ Migration `036_toolbox_capability_auth_context` backfills the rows that existed 
 4. finds the tool, then reads its `is_enabled` chain again for the caller's scope;
 5. checks the launch `tool_ceiling` and the user's `permitted_tools`;
 6. validates the arguments strictly (an unknown key is an error);
-7. runs the handler, then writes the final outcome to the audit row.
+7. runs the handler, then writes the final outcome to the audit row. In a test run (the
+   capability row's `test_config`, beside the context, not in it) a tool the config stubs is
+   not run: the answer is `{"ok": true}`, and the audit row gets `outcome = ok` and
+   `stubbed = 1` (DECISIONS.md D-TEST-RUN-1).
 
 | outcome             | invoke status |
 |---------------------|---------------|

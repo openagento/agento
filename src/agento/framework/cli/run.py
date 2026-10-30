@@ -67,6 +67,12 @@ class RunCommand:
                  "JSONL. Headless runs only (interactive is already readable).",
         )
         parser.add_argument(
+            "--test", metavar="JSON",
+            help="Test run: a JSON object with the tools to stub or run, e.g. "
+                 "'{\"stub\": [\"jira_search\"], \"real\": [\"jira_add_comment\"]}'. "
+                 "Sensitive tools are stubbed by default; no SSH private key (docs/cli/run.md).",
+        )
+        parser.add_argument(
             "--harness",
             help="Run this harness instead of agent_view/harness, with its default "
                  "provider. No config is changed.",
@@ -98,15 +104,17 @@ class RunCommand:
 
         # ``prompt`` is captured via argparse.REMAINDER, which greedily swallows
         # everything after the agent_view_code — including a ``--yolo``/``--pretty``
-        # typed in the natural trailing position (`agento run dev --yolo`). Recover
-        # them from the captured tokens so both orders work. Cost of the recovery:
-        # a literal flag token inside the prompt text is stripped from the prompt.
+        # typed in the natural trailing position (`agento run dev --yolo`).
+        # Recover them from the START and the END of the captured tokens so both orders
+        # work; the same word inside the prompt text stays in the prompt.
         prompt_tokens = list(args.prompt)
-        yolo = bool(getattr(args, "yolo", False)) or "--yolo" in prompt_tokens
-        pretty = bool(getattr(args, "pretty", False)) or "--pretty" in prompt_tokens
-        prompt_tokens = [t for t in prompt_tokens if t not in ("--yolo", "--pretty")]
         pins = {k: getattr(args, k, None) for k in _VALUE_OPTIONS}
-        prompt_tokens = _take_leading_options(prompt_tokens, pins)
+        found: set[str] = set()
+        prompt_tokens = _take_leading_options(prompt_tokens, pins, found)
+        while prompt_tokens and prompt_tokens[-1] in _FLAG_OPTIONS:
+            found.add(prompt_tokens.pop())
+        yolo = bool(getattr(args, "yolo", False)) or "--yolo" in found
+        pretty = bool(getattr(args, "pretty", False)) or "--pretty" in found
         prompt = " ".join(prompt_tokens).strip()
         runtime = _fetch_runtime(
             compose_flags, args.agent_view_code, prompt=prompt, yolo=yolo, pins=pins,
@@ -215,14 +223,19 @@ class RunCommand:
         os.execvp("docker", exec_args)
 
 
-_VALUE_OPTIONS = ("harness", "model", "credential")
+_VALUE_OPTIONS = ("harness", "model", "credential", "test")
+_FLAG_OPTIONS = ("--yolo", "--pretty")
 
 
-def _take_leading_options(tokens: list[str], pins: dict) -> list[str]:
-    """Move ``--harness/--model/--credential`` typed after the agent_view code out of the
-    prompt into ``pins``; return the rest. Only LEADING tokens: a prompt may contain the
-    same words."""
+def _take_leading_options(tokens: list[str], pins: dict, flags: set[str] | None = None) -> list[str]:
+    """Move ``--harness/--model/--credential/--test`` typed after the agent_view code out of
+    the prompt into ``pins``, and the ``--yolo/--pretty`` flags into ``flags``; return
+    the rest. Only LEADING tokens: a prompt may contain the same words."""
     while tokens:
+        if flags is not None and tokens[0] in _FLAG_OPTIONS:
+            flags.add(tokens[0])
+            tokens = tokens[1:]
+            continue
         name, eq, value = tokens[0].partition("=")
         key = name[2:] if name.startswith("--") else None
         if key not in _VALUE_OPTIONS:

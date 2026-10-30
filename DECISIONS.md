@@ -4,6 +4,50 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-10-29 — Test runs (D-TEST-RUN-1)
+
+AG-79. Owner: Piotr Grzywocz, 2026-10-30 (`--test` with a JSON of the tools to stub or run, per
+job; the test framework owns the configuration; `sensitive` stays as the module default, with no
+scoped override; a plain success stub; an audit marker; never the SSH private key; off unless
+`AGENTO_TEST_MODE_ENABLED=1`, and a refused test job fails). A test run
+lets an evaluation run the agent without side effects in the tools that act outside the system.
+
+- **The test framework owns the configuration.** Agento gets the result for one job as JSON,
+  `{"stub": [...], "real": [...]}` (`agento run --test`, `job:set-runtime --test`), validated by
+  `framework/test_run.py`. An unknown key, an undeclared tool or a tool in both lists is an
+  error, so a newer option never silently does nothing. The JSON travels in argv, so it must
+  never carry a secret.
+- **It travels on the run's capability** (`toolbox_capability.test_config`), copied from
+  `job.test_config` (or the `--test` value) by the backend at the mint. The toolbox reads it
+  from the row on every call, never from an argument (SEC-7). Only an `mcp_job` or
+  `mcp_interactive` capability may carry it. A stored value that does not parse refuses the
+  capability.
+- **Test mode is off unless the deployment sets `AGENTO_TEST_MODE_ENABLED=1`** in the cron
+  container (the dev compose does; production must not). `issue_capability`, the one mint both
+  `agento run` and a job pass, refuses a test config otherwise, so a `test_config` written
+  straight into the DB is refused too; the job fails at its start with a plain `ValueError`
+  (non-retryable), so it never runs for real. The CLI refuses `--test` early. An env var, not
+  `core_config_data`: a panel admin can change config, only a deploy can change the env.
+- **It sits beside the auth context v1, not in it.** It changes what a call does, not who may make
+  it, so `deriveAuthContext`, its Python twin and `auth_context_v1.json` do not change.
+- **Which tools are stubbed.** A tool in `real` runs; a tool in `stub` is stubbed; a tool in
+  neither is stubbed when its module marks it `tools/<name>/sensitive: "1"` in `config.json`.
+  `sensitive` is a property of the tool, so there is no scoped (DB or CLI) override; a core
+  module must state it for every tool (`module:validate`). This is not a security gate:
+  `is_enabled` still decides whether a tool is callable (TBX-2), and a test run still checks it,
+  the ceiling and the arguments before the stub.
+- **The stub is one fixed success** (`{"ok": true}`), with no sign that the call was not made,
+  so the agent acts as in a real run. A tool that returns data the agent needs next (an id)
+  gets nothing useful; the evaluation reads the audit instead.
+- **The audit row carries `stubbed = 1`** when the stub answered; `outcome` stays `ok`, so the
+  readers of `tool_invocation` need no change. Arguments are still stored as a digest only.
+- **A job made from a test-run job is a test run** with the same config (`agent_run`,
+  `schedule_followup`, the parent wake). Without this, a child would act for real.
+- **Known limits.** The stub runs before the handler, so handler policy does not run (ROADMAP.md).
+  A test run is one job and the jobs made from it, not a whole thread.
+- **A test run never gets the SSH private key**, so it cannot push. It still has network and its
+  harness credential: a test run is a test aid, not a sandbox.
+
 ## 2026-10-26 — Imported runs: a timeline in time order (D-CONV-BACKFILL-1)
 
 PRD `prd_conversation_backfill.md` (D1–D14, approved by the owner 2026-10-26). `conversation:backfill`

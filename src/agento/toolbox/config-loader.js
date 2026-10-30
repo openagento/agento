@@ -1005,9 +1005,12 @@ export async function registerTools(server, context, agentViewId = null, preload
   const isEnabled = (toolName, overrides) => toolChainState(toolName, {
     declared: declaredToolNames, requiresByTool, dbOverrides: overrides, configDefaults,
   }) === 'enabled';
+  // `tools/{name}/sensitive` = '1' in the module's config.json: a test run stubs the tool unless
+  // its test config says `real`. A property of the tool, so no scoped override (D-TEST-RUN-1).
+  const isSensitive = toolName => String(configDefaults[`tools/${toolName}/sensitive`] ?? '') === '1';
 
   return {
     toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames,
-    tools, unavailableTools, isEnabled,
+    tools, unavailableTools, isEnabled, isSensitive,
   };
 }

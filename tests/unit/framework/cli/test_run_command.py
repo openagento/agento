@@ -221,6 +221,58 @@ class TestRunCommand:
         assert mock_fetch.call_args.kwargs["yolo"] is True
         assert mock_fetch.call_args.kwargs["prompt"] == ""
 
+    @pytest.mark.parametrize(("args", "prompt"), [
+        (argparse.Namespace(agent_view_code="dev_01", prompt=["hi"], test='{"stub": []}'), "hi"),
+        (_make_args(prompt=["--test", '{"stub": []}', "hi"]), "hi"),   # typed after the code
+        (_make_args(prompt=['--test={"stub": []}', "hi"]), "hi"),
+    ])
+    def test_the_test_config_is_forwarded_to_prepare_run(self, tmp_path, args, prompt):
+        project_root, compose = _project_layout(tmp_path)
+        with (
+            patch("agento.framework.cli.run.find_project_root", return_value=project_root),
+            patch("agento.framework.cli.run.compose_file_flags", return_value=["-f", str(compose)]),
+            patch(
+                "agento.framework.cli.run._fetch_runtime", return_value=_base_runtime(prompt=True),
+            ) as mock_fetch,
+            patch("agento.framework.cli.run.subprocess.run",
+                  return_value=subprocess.CompletedProcess(args=[], returncode=0)),
+            pytest.raises(SystemExit),
+        ):
+            RunCommand().execute(args)
+        assert mock_fetch.call_args.kwargs["pins"]["test"] == '{"stub": []}'
+        assert mock_fetch.call_args.kwargs["prompt"] == prompt
+
+    @pytest.mark.parametrize(("flag", "kwarg"), [
+        ("--yolo", "yolo"), ("--pretty", "pretty"),
+    ])
+    @pytest.mark.parametrize(("position", "tokens", "prompt", "taken"), [
+        ("leading", ["{f}", "fix", "it"], "fix it", True),
+        ("trailing", ["fix", "it", "{f}"], "fix it", True),
+        ("middle", ["explain", "{f}", "now"], "explain {f} now", False),
+    ])
+    def test_prompt_flags_are_taken_only_at_the_ends(
+        self, tmp_path, flag, kwarg, position, tokens, prompt, taken,
+    ):
+        project_root, compose = _project_layout(tmp_path)
+        with (
+            patch("agento.framework.cli.run.find_project_root", return_value=project_root),
+            patch("agento.framework.cli.run.compose_file_flags", return_value=["-f", str(compose)]),
+            patch(
+                "agento.framework.cli.run._fetch_runtime", return_value=_base_runtime(prompt=True),
+            ) as mock_fetch,
+            patch("agento.framework.cli.run._load_stream_renderer", return_value=None) as mock_render,
+            patch("agento.framework.cli.run.subprocess.run",
+                  return_value=subprocess.CompletedProcess(args=[], returncode=0)),
+            pytest.raises(SystemExit),
+        ):
+            RunCommand().execute(_make_args(prompt=[t.format(f=flag) for t in tokens]))
+        kwargs = mock_fetch.call_args.kwargs
+        assert kwargs["prompt"] == prompt.format(f=flag)
+        if kwarg == "pretty":
+            assert mock_render.called is taken
+        else:
+            assert kwargs[kwarg] is taken
+
     def test_headless_claude_uses_headless_command_from_runtime(self, tmp_path):
         project_root, compose = _project_layout(tmp_path)
         runtime = _base_runtime(prompt=True)
@@ -467,6 +519,18 @@ class TestFetchRuntime:
             "/opt/cron-agent/run.sh", "agent_view:prepare-run", "dev_01",
             "--prompt", "hello", "--yolo",
         ]
+
+    def test_appends_the_test_config_as_one_argument(self):
+        from agento.framework.cli.run import _fetch_runtime
+
+        fake_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(_base_runtime()) + "\n", stderr="",
+        )
+        with patch(
+            "agento.framework.cli.run.subprocess.run", return_value=fake_result,
+        ) as mock_run:
+            _fetch_runtime(["-f", "/x/docker-compose.yml"], "dev_01", pins={"test": '{"stub": []}'})
+        assert mock_run.call_args.args[0][-2:] == ["--test", '{"stub": []}']
 
 
 # ---------------------------------------------------------------------------

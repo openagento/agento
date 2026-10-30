@@ -12,5 +12,15 @@
   "tools/jira_attach_file/is_enabled": "1",
   "tools/jira_create_issue/is_enabled": "1",
   "tools/jira_update_issue/is_enabled": "1",
-  "resume_session": true
+  "resume_session": true,
+  "tools/jira_add_comment/sensitive": "1",
+  "tools/jira_transition_issue/sensitive": "1",
+  "tools/jira_assign_issue/sensitive": "1",
+  "tools/jira_attach_file/sensitive": "1",
+  "tools/jira_create_issue/sensitive": "1",
+  "tools/jira_update_issue/sensitive": "1",
+  "tools/jira/sensitive": "0",
+  "tools/jira_search/sensitive": "0",
+  "tools/jira_get_issue/sensitive": "0",
+  "tools/jira_get_attachment/sensitive": "0"
 }

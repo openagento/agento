@@ -368,6 +368,22 @@ describe('schedule_followup in a delegated job', () => {
   });
 });
 
+describe('schedule_followup test run', () => {
+  it.each([null, { stub: ['send'], real: [] }])('the follow-up copies the current job test config %o', async (test) => {
+    const register = await loadRegister();
+    const server = fakeServer();
+    const { db, calls } = fakeDb({
+      source: 'jira', reference_id: 'AG-1', agent_view_id: null, priority: 50, depth: 0, test_config: test });
+    register(server, baseCtx({ db }));
+    await server.tools.schedule_followup.handler({
+      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+    });
+    const insert = calls.executed.find((c) => /INSERT INTO job\b/i.test(c.sql) && !/outbox/i.test(c.sql));
+    expect(insert.sql).toMatch(/line_id, test_config,/);
+    expect(insert.params[12]).toBe(test === null ? null : JSON.stringify(test));
+  });
+});
+
 describe('schedule_followup continues the current job thread', () => {
   const ARGS = { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' };
   const insertOf = (calls) => calls.executed.find((c) => /INSERT INTO job/i.test(c.sql) && !/outbox/i.test(c.sql));
@@ -388,8 +404,9 @@ describe('schedule_followup continues the current job thread', () => {
     expect(thread.params).toEqual([5]);
     const insert = insertOf(calls);
     expect(insert.sql).toMatch(/thread_id, line_id/);
-    expect(insert.params.at(-3)).toBe(5);
-    expect(insert.params.at(-2)).toBeNull();
+    // [..., thread_id, line_id, test_config, scheduled_after]
+    expect(insert.params.at(-4)).toBe(5);
+    expect(insert.params.at(-3)).toBeNull();
   });
 
   it('a job with no view passes no thread: the follow-up gets its own at claim', async () => {
@@ -403,7 +420,7 @@ describe('schedule_followup continues the current job thread', () => {
 
     expect(res.isError).toBeFalsy();
     expect(calls.executed.some((c) => /FROM thread/i.test(c.sql))).toBe(false);
-    expect(insertOf(calls).params.at(-3)).toBeNull();
+    expect(insertOf(calls).params.at(-4)).toBeNull();
   });
 
   it('a thread of another view is refused and nothing is written', async () => {
