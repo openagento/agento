@@ -162,7 +162,7 @@ def _usage_limit_failover(
     (cooldown, not poison) and fail the job over to the healthy priority-1 token,
     which then succeeds. Verified against real MySQL for one provider.
 
-    ``cheap_model`` is threaded through as ``model_override`` (a cheap model per the
+    ``cheap_model`` is pinned on the job (a cheap model per the
     task's cost intent); the runner is mocked so no real API call is made."""
     logger = logging.getLogger("test")
     _bind_harness(harness)
@@ -173,6 +173,7 @@ def _usage_limit_failover(
         idempotency_key=f"limit-pool:{harness}:1",
         max_attempts=3,
     )
+    update_job(job_id, model=cheap_model)
 
     def _limited(self, *args, **kwargs):
         # No token_id → consumer attributes it to the token it resolved (token A).
@@ -180,7 +181,7 @@ def _usage_limit_failover(
 
     # Attempt 1: token A selected (priority 0) -> usage limit -> throttled -> requeue (B healthy).
     with patch.object(runner_cls, "execute", new=_limited):
-        consumer = Consumer(db_config, consumer_config, logger, model_override=cheap_model)
+        consumer = Consumer(db_config, consumer_config, logger)
         job = consumer._try_dequeue()
         assert job is not None
         consumer._execute_job(job)
@@ -201,7 +202,7 @@ def _usage_limit_failover(
 
     # Attempt 2: token A still throttled -> token B selected -> run succeeds -> SUCCESS.
     with patch.object(runner_cls, "execute", return_value=success_result):
-        consumer2 = Consumer(db_config, consumer_config, logger, model_override=cheap_model)
+        consumer2 = Consumer(db_config, consumer_config, logger)
         job2 = consumer2._try_dequeue()
         assert job2 is not None
         assert job2.id == job_id
