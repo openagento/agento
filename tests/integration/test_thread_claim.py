@@ -175,6 +175,9 @@ def test_a_later_turn_waits_for_the_earlier_one_whatever_its_priority(conn, cons
     second = _publish(int_db_config, view, priority=90)
 
     assert consumer._try_dequeue() is None                 # the higher-priority later turn waits
+    # Its backoff is one second, and `scheduled_after` has second precision: a claim that lands
+    # past a clock tick finds it due again, and first in line. Park it, as the tests below do.
+    _sql(conn, "UPDATE job SET scheduled_after = NOW() + INTERVAL 1 HOUR WHERE id = %s", (second,))
     assert consumer._try_dequeue().id == first
     _release(conn)
     assert consumer._try_dequeue() is None                 # still: the first turn is RUNNING
