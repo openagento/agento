@@ -27,23 +27,27 @@ has `.venv/` with agento-core installed, `docker/docker-compose.yml` + override,
 
 1. `build` makes the wheel and uploads it as the `dist` artifact.
 2. `e2e` checks out the same ref (for the tests) and downloads `dist`.
-3. `"$STACK/bin/upgrade.sh" <wheel>` installs **that exact wheel** into the stack. It backs up the
+3. `docker image prune --all --force` removes the images no container uses. Each release builds
+   new images (about 5 GB), and a full disk stops the runner: the job then waits for a runner
+   that never starts. The images of the running containers stay, so the rollback in the next
+   step still has its own.
+4. `"$STACK/bin/upgrade.sh" <wheel>` installs **that exact wheel** into the stack. It backs up the
    config, installs the wheel from `~/agento-candidates/<version>/`, runs
    `agento upgrade --version <v> --no-restart` (the old containers keep serving while the images
    build), recreates every container except mysql (migrations run on start), and checks the
    images, toolbox health and venv version. On a failed build it restores the previous version.
    It exits non-zero on any failure. A wheel equal to the installed version is allowed, so the
    same candidate can be re-tested.
-4. The job waits (up to 120 s) until `.venv/bin/agento workspace:build-status` answers.
+5. The job waits (up to 120 s) until `.venv/bin/agento workspace:build-status` answers.
    `upgrade.sh` returns when cron is started, not ready, and the tests discover their
    agent_view at collection time — without the wait they skip.
-5. `uv sync --group dev`, then, with `AGENTO_E2E=1 AGENTO_E2E_PROJECT_ROOT=$STACK`:
+6. `uv sync --group dev`, then, with `AGENTO_E2E=1 AGENTO_E2E_PROJECT_ROOT=$STACK`:
    `pytest -m "e2e and not rotates_credentials and not serial"` in parallel (one worker per CPU), then
    `pytest -m "e2e and rotates_credentials" -n 0` on its own. The tests read modules from the
    installed package and call the stack's `.venv/bin/agento`.
    The `serial` tests do not run here: the proxy smoke needs a dev checkout's stack, and the
    orchestration benchmark needs a test MySQL and many CPUs. `bin/test` runs both.
-6. `publish` runs only when `e2e` is green.
+7. `publish` runs only when `e2e` is green.
 
 A failed e2e leaves the stack on the candidate. This is intended: inspect it there.
 

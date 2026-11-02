@@ -120,6 +120,10 @@ jobs:
         with:
           name: dist
           path: dist/
+      # Each release builds new images (about 5 GB). Old ones fill the disk, and a full disk
+      # stops the runner itself. Images a container uses stay, so the rollback keeps its own.
+      - name: Remove unused Docker images
+        run: docker image prune --all --force
       # Installs the wheel, rebuilds the images and recreates the containers
       # (migrations run on container start). Exits non-zero on any failure.
       - name: Install the candidate wheel into the stack
