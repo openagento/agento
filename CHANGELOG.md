@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Breaking: no tool takes a `user` argument (AG-83).** The 22 shipped tools that asked the model
+  for its email (`jira_*`, `mysql`/`mssql`/`opensearch` adapter tools, `browser_*`,
+  `email_send`, `schedule_followup`) no longer have it. The toolbox already knows the caller from
+  the capability, and the model sometimes passed a different person's email. A call that still
+  sends `user` now gets `invalid_arguments`. **Upgrade note:** remove `user` from prompts, skills
+  and miniapp pages; a miniapp version that sends it must be rebuilt and approved again. A user
+  module in `app/code/` should drop its own identity `user` argument.
+- **`toolbox_mcp.log` names the verified caller.** Every tool line starts with
+  `[<agent_view label> (id: N)] [actor=<agent|user|service> subject=<id> job=<id|->]`, from the
+  capability, the same values as the `tool_invocation` row. Lines no longer have `user=…`.
+
 ### Added
+- **`core/smtp_reply_to`.** The `Reply-To` of `email_send` mail now comes from this setting
+  (empty: no header). Before, it was the email the model passed.
 - **`artifacts:prune` (`ar:pr`) and nightly retention of run and thread dirs.** Cron job
   `core_artifacts_retention` (03:23) removes run dirs of jobs that ended more than
   `core/artifacts/retention_days` (default 30, `0` keeps all) ago and thread dirs whose last

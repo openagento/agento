@@ -26,18 +26,17 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
       '  scheduled_at: "2026-02-25T08:00:00", instructions: "Sprawdź czy klient odpowiedział na pytanie."',
     ].join('\n'),
     {
-      user:          z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       scheduled_at:  z.string().describe('When to execute, ISO 8601 datetime in local timezone (e.g. "2026-02-24T16:30:00")'),
       instructions:  z.string().min(10).max(2000).describe('Detailed instructions for what to do when the follow-up fires'),
     },
-    async ({ user, scheduled_at, instructions }) => {
+    async ({ scheduled_at, instructions }) => {
       // NOTE: source/reference_id are NOT agent inputs — they are inherited from the current job
       // (looked up by the MCP session's job_id). A stray `source`/`reference_id` from an older agent
       // is rejected by the dispatcher's strict argument schema. See plan schedule-followup-inherit-source.
       try {
         const scheduledDate = new Date(scheduled_at);
         if (isNaN(scheduledDate.getTime())) {
-          log('schedule_followup', 'ERROR', `user=${user} invalid date: ${scheduled_at}`);
+          log('schedule_followup', 'ERROR', `invalid date: ${scheduled_at}`);
           return {
             content: [{ type: 'text', text: `Error: Invalid datetime format "${scheduled_at}". Use ISO 8601 (e.g. "2026-02-24T16:30:00").` }],
             isError: true,
@@ -45,7 +44,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
         }
 
         if (scheduledDate.getTime() <= Date.now()) {
-          log('schedule_followup', 'ERROR', `user=${user} scheduled_at is in the past: ${scheduled_at}`);
+          log('schedule_followup', 'ERROR', `scheduled_at is in the past: ${scheduled_at}`);
           return {
             content: [{ type: 'text', text: `Error: scheduled_at must be in the future. Got: ${scheduled_at}` }],
             isError: true,
@@ -55,7 +54,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
         // The follow-up continues the CURRENT job — identified by the MCP session's job_id.
         // No active job (e.g. interactive `agento run`) => there is no task to continue.
         if (!jobId) {
-          log('schedule_followup', 'ERROR', `user=${user} no active job context (interactive run?)`);
+          log('schedule_followup', 'ERROR', `no active job context (interactive run?)`);
           return {
             content: [{ type: 'text', text:
               'Error: schedule_followup needs an active task context (a running job). ' +
@@ -84,7 +83,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
           const job = rows[0];
           if (!job || !job.source || !job.reference_id) {
             await conn.rollback();
-            log('schedule_followup', 'ERROR', `user=${user} job=${jobId} could not resolve current job`);
+            log('schedule_followup', 'ERROR', `job=${jobId} could not resolve current job`);
             return {
               content: [{ type: 'text', text: `Error: could not resolve the current job (id=${jobId}); follow-up not scheduled.` }],
               isError: true,
@@ -94,7 +93,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
           // would be a root that delegates again, or an uncounted extra child of the parent.
           if (job.depth > 0) {
             await conn.rollback();
-            log('schedule_followup', 'ERROR', `user=${user} job=${jobId} refused in a delegated job (depth=${job.depth})`);
+            log('schedule_followup', 'ERROR', `job=${jobId} refused in a delegated job (depth=${job.depth})`);
             return {
               content: [{ type: 'text', text: 'schedule_followup is not available in a delegated job' }],
               isError: true,
@@ -117,7 +116,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
           });
           if (duplicate) {
             await conn.rollback();
-            log('schedule_followup', 'DUP', `user=${user} source=${source} ref=${reference_id} key=${idempotencyKey}`);
+            log('schedule_followup', 'DUP', `source=${source} ref=${reference_id} key=${idempotencyKey}`);
             return {
               content: [{ type: 'text', text:
                 `Follow-up already scheduled for ${reference_id} at that time (duplicate prevented).` }],
@@ -125,7 +124,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
           }
           await conn.commit();
 
-          log('schedule_followup', 'OK', `user=${user} source=${source} ref=${reference_id} av=${agent_view_id} at=${mysqlDatetime} key=${idempotencyKey}`);
+          log('schedule_followup', 'OK', `source=${source} ref=${reference_id} av=${agent_view_id} at=${mysqlDatetime} key=${idempotencyKey}`);
           return {
             content: [{ type: 'text', text:
               `Follow-up scheduled for ${reference_id} (${source}) at ${mysqlDatetime}.\n` +
@@ -139,7 +138,7 @@ export function register(server, { log, db, isToolEnabled, jobId, enqueueJob }) 
           conn.release();
         }
       } catch (err) {
-        log('schedule_followup', 'ERROR', `user=${user} job=${jobId} ${err.message}`);
+        log('schedule_followup', 'ERROR', `job=${jobId} ${err.message}`);
         return {
           content: [{ type: 'text', text: `Schedule error: ${err.message}` }],
           isError: true,

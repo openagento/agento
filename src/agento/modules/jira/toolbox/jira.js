@@ -115,10 +115,9 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         '  search_term: "94916"',
       ].join('\n'),
       {
-        user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
         search_term: z.string().describe('Text to search in issue summaries'),
       },
-      async ({ user, search_term }) => {
+      async ({ search_term }) => {
         const auth = Buffer.from(`${config.user}:${config.token}`).toString('base64');
 
         try {
@@ -144,10 +143,10 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
             Description: issue.fields.description,
           }));
 
-          log('jira_search', 'OK', `user=${user} "${search_term}" -> ${issues.length} results`);
+          log('jira_search', 'OK', `"${search_term}" -> ${issues.length} results`);
           return { content: [{ type: 'text', text: JSON.stringify(issues, null, 2) }] };
         } catch (err) {
-          log('jira_search', 'ERROR', `user=${user} ${err.message}`);
+          log('jira_search', 'ERROR', `${err.message}`);
           return {
             content: [{ type: 'text', text: `Jira search error: ${err.message}` }],
             isError: true,
@@ -175,10 +174,9 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         '  issue_key: "DEV-542"',
       ].join('\n'),
       {
-        user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
         issue_key: z.string().describe('Jira issue key, e.g. "AI-1"'),
       },
-      async ({ user, issue_key }) => {
+      async ({ issue_key }) => {
         const auth = Buffer.from(`${config.user}:${config.token}`).toString('base64');
         const authHeader = { 'Authorization': `Basic ${auth}`, 'Accept': 'application/json' };
 
@@ -299,10 +297,10 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
           };
 
           const fileCount = fileMap.size;
-          log('jira_get_issue', 'OK', `user=${user} ${issue_key} "${issue.Summary}" ${issue.Comments.length} comments ${fileCount} attachments`);
+          log('jira_get_issue', 'OK', `${issue_key} "${issue.Summary}" ${issue.Comments.length} comments ${fileCount} attachments`);
           return { content: [{ type: 'text', text: JSON.stringify(issue, null, 2) }] };
         } catch (err) {
-          log('jira_get_issue', 'ERROR', `user=${user} ${issue_key} ${err.message}`);
+          log('jira_get_issue', 'ERROR', `${issue_key} ${err.message}`);
           return {
             content: [{ type: 'text', text: `Jira get issue error: ${err.message}` }],
             isError: true,
@@ -324,12 +322,11 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         '  issue_key: "AI-1", body: "Zgadzam się z propozycją.", reply_to_comment_id: "10042"',
       ].join('\n'),
       {
-        user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
         issue_key: z.string().describe('Jira issue key, e.g. "AI-1"'),
         body: z.string().describe('Comment text (Jira wiki markup)'),
         reply_to_comment_id: z.string().optional().describe('ID of existing comment to reply to — will quote original and mention author'),
       },
-      async ({ user, issue_key, body, reply_to_comment_id }) => {
+      async ({ issue_key, body, reply_to_comment_id }) => {
         const auth = Buffer.from(`${config.user}:${config.token}`).toString('base64');
         const headers = {
           'Authorization': `Basic ${auth}`,
@@ -370,12 +367,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
 
           const data = await response.json();
           const detail = reply_to_comment_id ? ` (reply to ${reply_to_comment_id})` : '';
-          log('jira_add_comment', 'OK', `user=${user} ${issue_key} commentId=${data.id}${detail}`);
+          log('jira_add_comment', 'OK', `${issue_key} commentId=${data.id}${detail}`);
           return {
             content: [{ type: 'text', text: `Comment added to ${issue_key} (id: ${data.id})${detail}` }],
           };
         } catch (err) {
-          log('jira_add_comment', 'ERROR', `user=${user} ${issue_key} ${err.message}`);
+          log('jira_add_comment', 'ERROR', `${issue_key} ${err.message}`);
           return {
             content: [{ type: 'text', text: `Jira comment error: ${err.message}` }],
             isError: true,
@@ -398,11 +395,10 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         '  issue_key: "K3-542", status_name: "Review"',
       ].join('\n'),
       {
-        user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
         issue_key: z.string().describe('Jira issue key, e.g. "AI-1"'),
         status_name: z.string().describe('Target status name, e.g. "In Progress", "Review", "Done"'),
       },
-      async ({ user, issue_key, status_name }) => {
+      async ({ issue_key, status_name }) => {
         const auth = Buffer.from(`${config.user}:${config.token}`).toString('base64');
         const headers = {
           'Authorization': `Basic ${auth}`,
@@ -450,12 +446,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
             throw new Error(`HTTP ${response.status}: ${text}`);
           }
 
-          log('jira_transition_issue', 'OK', `user=${user} ${issue_key} -> "${target.to?.name || status_name}" (transition: "${target.name}", id: ${target.id})`);
+          log('jira_transition_issue', 'OK', `${issue_key} -> "${target.to?.name || status_name}" (transition: "${target.name}", id: ${target.id})`);
           return {
             content: [{ type: 'text', text: `Issue ${issue_key} transitioned to "${target.to?.name || status_name}" via "${target.name}"` }],
           };
         } catch (err) {
-          log('jira_transition_issue', 'ERROR', `user=${user} ${issue_key} ${err.message}`);
+          log('jira_transition_issue', 'ERROR', `${issue_key} ${err.message}`);
           return {
             content: [{ type: 'text', text: `Jira transition error: ${err.message}` }],
             isError: true,
@@ -481,11 +477,10 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         '  issue_key: "AI-1", assignee: "60d1f2e3a4b5c6d7e8f90123"',
       ].join('\n'),
       {
-        user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
         issue_key: z.string().describe('Jira issue key, e.g. "AI-1"'),
         assignee: z.string().describe('accountId, or "reporter" to assign to reporter, or "unassigned" to clear'),
       },
-      async ({ user, issue_key, assignee }) => {
+      async ({ issue_key, assignee }) => {
         const auth = Buffer.from(`${config.user}:${config.token}`).toString('base64');
         const headers = {
           'Authorization': `Basic ${auth}`,
@@ -536,12 +531,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
               ? 'unassigned'
               : accountId;
 
-          log('jira_assign_issue', 'OK', `user=${user} ${issue_key} assignee=${detail}`);
+          log('jira_assign_issue', 'OK', `${issue_key} assignee=${detail}`);
           return {
             content: [{ type: 'text', text: `Issue ${issue_key} assigned to ${detail}` }],
           };
         } catch (err) {
-          log('jira_assign_issue', 'ERROR', `user=${user} ${issue_key} ${err.message}`);
+          log('jira_assign_issue', 'ERROR', `${issue_key} ${err.message}`);
           return {
             content: [{ type: 'text', text: `Jira assign error: ${err.message}` }],
             isError: true,
@@ -563,12 +558,11 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         '  issue_key: "AI-1", file_path: "/workspace/artifacts/{ws}/{av}/{job_id}/screenshots/123-AI-1/1740000000000.png"',
       ].join('\n'),
       {
-        user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
         issue_key: z.string().describe('Jira issue key, e.g. "AI-1"'),
         file_path: z.string().describe('Absolute local path to the file to attach (must be inside /workspace/)'),
         filename: z.string().optional().describe('Override filename shown in Jira. Defaults to basename of file_path.'),
       },
-      async ({ user, issue_key, file_path, filename }) => {
+      async ({ issue_key, file_path, filename }) => {
         if (!file_path.startsWith('/workspace/')) {
           return {
             content: [{ type: 'text', text: 'Error: file_path must be inside /workspace/' }],
@@ -604,12 +598,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
 
           const data = await response.json();
           const att = Array.isArray(data) ? data[0] : data;
-          log('jira_attach_file', 'OK', `user=${user} ${issue_key} filename=${att.filename} id=${att.id}`);
+          log('jira_attach_file', 'OK', `${issue_key} filename=${att.filename} id=${att.id}`);
           return {
             content: [{ type: 'text', text: `Attached "${att.filename}" to ${issue_key} (attachment id: ${att.id})` }],
           };
         } catch (err) {
-          log('jira_attach_file', 'ERROR', `user=${user} ${issue_key} ${err.message}`);
+          log('jira_attach_file', 'ERROR', `${issue_key} ${err.message}`);
           return {
             content: [{ type: 'text', text: `Jira attach error: ${err.message}` }],
             isError: true,
@@ -651,7 +645,6 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         '  project_key: "K3", issue_type: "Bug", summary: "Błąd cen", description: "...", priority: "High"',
       ].join('\n'),
       {
-        user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
         project_key: z.string().describe('Jira project key, e.g. "AI", "K3"'),
         issue_type: z.string().describe('Issue type name, e.g. "Task", "Bug", "Story", "Subtask"'),
         summary: z.string().describe('Issue summary (title)'),
@@ -662,7 +655,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         due_date: z.string().optional().describe('Due date in YYYY-MM-DD format, e.g. "2025-06-30"'),
         reporter_account_id: z.string().optional().describe('Reporter accountId (from jira_get_issue ReporterAccountId)'),
       },
-      async ({ user, project_key, issue_type, summary, description, assignee_account_id, priority, parent_key, due_date, reporter_account_id }) => {
+      async ({ project_key, issue_type, summary, description, assignee_account_id, priority, parent_key, due_date, reporter_account_id }) => {
         const auth = Buffer.from(`${config.user}:${config.token}`).toString('base64');
         const headers = {
           'Authorization': `Basic ${auth}`,
@@ -696,12 +689,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
           }
 
           const data = await response.json();
-          log('jira_create_issue', 'OK', `user=${user} created ${data.key} in ${project_key} type=${issue_type} "${summary}"`);
+          log('jira_create_issue', 'OK', `created ${data.key} in ${project_key} type=${issue_type} "${summary}"`);
           return {
             content: [{ type: 'text', text: JSON.stringify({ key: data.key, id: data.id, url: `${config.host}/browse/${data.key}` }, null, 2) }],
           };
         } catch (err) {
-          log('jira_create_issue', 'ERROR', `user=${user} ${project_key} ${err.message}`);
+          log('jira_create_issue', 'ERROR', `${project_key} ${err.message}`);
           return {
             content: [{ type: 'text', text: `Jira create issue error: ${err.message}` }],
             isError: true,
@@ -726,7 +719,6 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         '  issue_key: "AI-5", parent_key: "AI-1"  (make subtask of AI-1)',
       ].join('\n'),
       {
-        user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
         issue_key: z.string().describe('Jira issue key, e.g. "AI-1"'),
         summary: z.string().optional().describe('New summary (title)'),
         description: z.string().optional().describe('New description (Jira wiki markup)'),
@@ -737,7 +729,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         due_date: z.string().optional().describe('Due date in YYYY-MM-DD format, e.g. "2025-06-30"'),
         parent_key: z.string().optional().describe('Parent issue key, e.g. "AI-10" (make this a subtask)'),
       },
-      async ({ user, issue_key, summary, description, priority, assignee_account_id, reporter_account_id, labels, due_date, parent_key }) => {
+      async ({ issue_key, summary, description, priority, assignee_account_id, reporter_account_id, labels, due_date, parent_key }) => {
         const auth = Buffer.from(`${config.user}:${config.token}`).toString('base64');
         const headers = {
           'Authorization': `Basic ${auth}`,
@@ -776,12 +768,12 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
           }
 
           const updated = Object.keys(fields).join(', ');
-          log('jira_update_issue', 'OK', `user=${user} ${issue_key} updated: ${updated}`);
+          log('jira_update_issue', 'OK', `${issue_key} updated: ${updated}`);
           return {
             content: [{ type: 'text', text: `Issue ${issue_key} updated: ${updated}` }],
           };
         } catch (err) {
-          log('jira_update_issue', 'ERROR', `user=${user} ${issue_key} ${err.message}`);
+          log('jira_update_issue', 'ERROR', `${issue_key} ${err.message}`);
           return {
             content: [{ type: 'text', text: `Jira update issue error: ${err.message}` }],
             isError: true,
@@ -804,16 +796,15 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
         '  issue_key: "AI-1", attachment_id: "10500"',
       ].join('\n'),
       {
-        user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
         issue_key: z.string().regex(JIRA_KEY_RE, 'must be a Jira issue key like "AI-1"').describe('Jira issue key the attachment belongs to, e.g. "AI-1" — determines the artifacts subfolder'),
         attachment_id: z.string().describe('Jira attachment ID (from jira_get_issue Attachments[].id)'),
       },
-      async ({ user, issue_key, attachment_id }) => {
+      async ({ issue_key, attachment_id }) => {
         // Defense-in-depth: issue_key flows into a filesystem path (join below). Reject anything that is
         // not a clean Jira key so a value like "../../x" can never escape the artifacts subtree — even
         // from a non-validating MCP client that bypasses the Zod regex above.
         if (!JIRA_KEY_RE.test(issue_key)) {
-          log('jira_get_attachment', 'ERROR', `user=${user} rejected invalid issue_key="${issue_key}"`);
+          log('jira_get_attachment', 'ERROR', `rejected invalid issue_key="${issue_key}"`);
           return {
             content: [{ type: 'text', text: `Jira get attachment error: invalid issue_key "${issue_key}" (expected a Jira key like "AI-1")` }],
             isError: true,
@@ -843,7 +834,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
           const result = await fileManager.download(meta.content, meta.filename, options);
 
           if (result.skipped) {
-            log('jira_get_attachment', 'WARN', `user=${user} ${issue_key} att=${attachment_id} skipped: ${result.skipReason}`);
+            log('jira_get_attachment', 'WARN', `${issue_key} att=${attachment_id} skipped: ${result.skipReason}`);
             return {
               content: [{ type: 'text', text: `Jira get attachment error: ${result.skipReason}` }],
               isError: true,
@@ -859,10 +850,10 @@ export function register(server, { log, moduleConfigs, isToolEnabled, artifactsD
             convertedPath: result.convertedPath || null,
             error: result.conversionError || null,
           };
-          log('jira_get_attachment', 'OK', `user=${user} ${issue_key} att=${attachment_id} -> ${result.localPath}`);
+          log('jira_get_attachment', 'OK', `${issue_key} att=${attachment_id} -> ${result.localPath}`);
           return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
         } catch (err) {
-          log('jira_get_attachment', 'ERROR', `user=${user} ${issue_key} att=${attachment_id} ${err.message}`);
+          log('jira_get_attachment', 'ERROR', `${issue_key} att=${attachment_id} ${err.message}`);
           return {
             content: [{ type: 'text', text: `Jira get attachment error: ${err.message}` }],
             isError: true,

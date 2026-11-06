@@ -100,7 +100,7 @@ describe('browser tools', () => {
         const handlers = {};
         const server = { tool: vi.fn((name, _d, _s, handler) => { handlers[name] = handler; }) };
         register(server, buildContext(['browser_navigate']));
-        await handlers.browser_navigate({ user: 'a@b.com', url: 'https://example.com/page' });
+        await handlers.browser_navigate({ url: 'https://example.com/page' });
         return mockClient.callTool.mock.calls.map(c => c[0]);
       };
 
@@ -130,7 +130,6 @@ describe('browser tools', () => {
       const { handlers } = await importAndRegister(['browser_start_video']);
 
       await handlers.browser_start_video({
-        user: 'a@b.com',
         width: 1280,
         height: 720,
       });
@@ -144,7 +143,7 @@ describe('browser tools', () => {
     it('defaults the recording size to the browser viewport when width/height are omitted', async () => {
       const { handlers } = await importAndRegister(['browser_start_video']);
 
-      await handlers.browser_start_video({ user: 'a@b.com' });
+      await handlers.browser_start_video({});
 
       expect(mockClient.callTool).toHaveBeenCalledWith({
         name: 'browser_start_video',
@@ -155,7 +154,7 @@ describe('browser tools', () => {
     it('fills the missing dimension from the viewport when only one is provided', async () => {
       const { handlers } = await importAndRegister(['browser_start_video']);
 
-      await handlers.browser_start_video({ user: 'a@b.com', width: 1920 });
+      await handlers.browser_start_video({ width: 1920 });
 
       expect(mockClient.callTool).toHaveBeenCalledWith({
         name: 'browser_start_video',
@@ -173,7 +172,6 @@ describe('browser tools', () => {
       const { handlers } = await importAndRegister(['browser_stop_video']);
 
       const result = await handlers.browser_stop_video({
-        user: 'a@b.com',
         job_id: '42',
       });
 
@@ -194,7 +192,6 @@ describe('browser tools', () => {
       const { handlers } = await importAndRegister(['browser_stop_video']);
 
       const result = await handlers.browser_stop_video({
-        user: 'a@b.com',
         job_id: '42',
         filename: 'demo.webm',
       });
@@ -214,7 +211,6 @@ describe('browser tools', () => {
       const { handlers } = await importAndRegister(['browser_stop_video']);
 
       const result = await handlers.browser_stop_video({
-        user: 'a@b.com',
         filename: 'out.webm',
       });
 
@@ -230,7 +226,6 @@ describe('browser tools', () => {
       const { handlers } = await importAndRegister(['browser_stop_video']);
 
       const result = await handlers.browser_stop_video({
-        user: 'a@b.com',
         job_id: '42',
       });
 
@@ -272,7 +267,7 @@ describe('browser tools', () => {
 
     it('returns "starting up" error when state=starting', async () => {
       const handlers = await registerWithState({ state: 'starting', attempt: 0, maxAttempts: 5, lastError: null });
-      const result = await handlers.browser_snapshot({ user: 'a@b.com' });
+      const result = await handlers.browser_snapshot({});
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('starting up');
       expect(result.content[0].text).not.toContain('permanently failed');
@@ -280,7 +275,7 @@ describe('browser tools', () => {
 
     it('returns "restarting" error with attempt N of M when state=restarting', async () => {
       const handlers = await registerWithState({ state: 'restarting', attempt: 2, maxAttempts: 5, lastError: 'EPIPE' });
-      const result = await handlers.browser_snapshot({ user: 'a@b.com' });
+      const result = await handlers.browser_snapshot({});
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('restarting (attempt 2 of 5)');
       expect(result.content[0].text).not.toContain('starting up');
@@ -288,7 +283,7 @@ describe('browser tools', () => {
 
     it('returns "permanently failed" error with lastError when state=failed', async () => {
       const handlers = await registerWithState({ state: 'failed', attempt: 5, maxAttempts: 5, lastError: 'Chromium SIGSEGV' });
-      const result = await handlers.browser_snapshot({ user: 'a@b.com' });
+      const result = await handlers.browser_snapshot({});
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('failed permanently after 5');
       expect(result.content[0].text).toContain('Chromium SIGSEGV');

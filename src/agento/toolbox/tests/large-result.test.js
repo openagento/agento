@@ -469,7 +469,7 @@ describe('MySQL tool large result integration', () => {
 
   it('returns raw JSON (wrapper handles offload)', async () => {
     const { handler } = await buildMysqlTool(3);
-    const result = await handler({ user: 'test@example.com', query: 'SELECT id, name FROM t' });
+    const result = await handler({ query: 'SELECT id, name FROM t' });
 
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed).toHaveLength(3);
@@ -484,17 +484,17 @@ describe('MySQL tool large result integration', () => {
   it('logs QUERY with full SQL before execution', async () => {
     const fullQuery = 'SELECT id, name FROM very_long_table WHERE status = "active" ORDER BY created_at DESC LIMIT 1000';
     const { handler, logCalls } = await buildMysqlTool(3);
-    await handler({ user: 'test@example.com', query: fullQuery });
+    await handler({ query: fullQuery });
 
     const queryLog = logCalls.find(c => c.status === 'QUERY');
     expect(queryLog).toBeDefined();
     expect(queryLog.details).toContain(fullQuery);
-    expect(queryLog.details).toContain('user=test@example.com');
+    expect(queryLog.details).not.toContain('user=');
   });
 
   it('logs OK with execution time after query', async () => {
     const { handler, logCalls } = await buildMysqlTool(3);
-    await handler({ user: 'test@example.com', query: 'SELECT 1' });
+    await handler({ query: 'SELECT 1' });
 
     const okLog = logCalls.find(c => c.status === 'OK');
     expect(okLog).toBeDefined();
@@ -504,7 +504,7 @@ describe('MySQL tool large result integration', () => {
 
   it('OK log does not contain offload info (moved to wrapper)', async () => {
     const { handler, logCalls } = await buildMysqlTool(3);
-    await handler({ user: 'test@example.com', query: 'SELECT 1' });
+    await handler({ query: 'SELECT 1' });
 
     const okLog = logCalls.find(c => c.status === 'OK');
     expect(okLog.details).not.toContain('offload=');
@@ -512,7 +512,7 @@ describe('MySQL tool large result integration', () => {
 
   it('QUERY log comes before OK log', async () => {
     const { handler, logCalls } = await buildMysqlTool(3);
-    await handler({ user: 'test@example.com', query: 'SELECT 1' });
+    await handler({ query: 'SELECT 1' });
 
     const queryIdx = logCalls.findIndex(c => c.status === 'QUERY');
     const okIdx = logCalls.findIndex(c => c.status === 'OK');
@@ -562,7 +562,7 @@ describe('MSSQL tool large result integration', () => {
 
   it('returns raw JSON (wrapper handles offload)', async () => {
     const { handler } = await buildMssqlTool(3);
-    const result = await handler({ user: 'test@example.com', query: 'SELECT 1' });
+    const result = await handler({ query: 'SELECT 1' });
 
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed).toHaveLength(3);
@@ -575,7 +575,7 @@ describe('MSSQL tool large result integration', () => {
 
   it('logs QUERY before and OK with time after', async () => {
     const { handler, logCalls } = await buildMssqlTool(50);
-    await handler({ user: 'test@example.com', query: 'SELECT TOP 50 * FROM Items' });
+    await handler({ query: 'SELECT TOP 50 * FROM Items' });
 
     const queryLog = logCalls.find(c => c.status === 'QUERY');
     expect(queryLog).toBeDefined();
@@ -631,7 +631,7 @@ describe('OpenSearch tool large result integration', () => {
 
   it('returns metadata and rows as separate content items', async () => {
     const { handler } = await buildOpenSearchTool(50);
-    const result = await handler({ user: 'test@example.com', index: 'test_index', query: '{"query":{"match_all":{}}}' });
+    const result = await handler({ index: 'test_index', query: '{"query":{"match_all":{}}}' });
 
     expect(result.content).toHaveLength(2);
     expect(result.content[0].text).toContain('OpenSearch: total=50');
@@ -660,7 +660,7 @@ describe('OpenSearch tool large result integration', () => {
     const tools = [{ name: 'os_test', description: 'test', config: { host: 'https://localhost:9200', pass: 'pass', user: 'admin' } }];
     registerOpensearchTools(fakeServer, tools, {});
 
-    const result = await handler({ user: 'test@example.com', index: 'test_index' });
+    const result = await handler({ index: 'test_index' });
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed).toHaveProperty('test_index');
   });
@@ -673,7 +673,7 @@ describe('OpenSearch tool large result integration', () => {
   it('logs QUERY before and OK with time after', async () => {
     const queryBody = '{"query":{"match_all":{}},"size":100}';
     const { handler, logCalls } = await buildOpenSearchTool(50);
-    await handler({ user: 'test@example.com', index: 'k3-prod_product_1_v*', query: queryBody });
+    await handler({ index: 'k3-prod_product_1_v*', query: queryBody });
 
     const queryLog = logCalls.find(c => c.status === 'QUERY');
     expect(queryLog).toBeDefined();

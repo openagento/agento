@@ -99,12 +99,12 @@ describe('schedule_followup tool surface', () => {
     expect(desc).not.toMatch(/communication channel/i);
   });
 
-  it('schema is slimmed to { user, scheduled_at, instructions } — no source/reference_id', async () => {
+  it('schema is slimmed to { scheduled_at, instructions } — no user/source/reference_id', async () => {
     const register = await loadRegister();
     const server = fakeServer();
     register(server, baseCtx());
     const keys = Object.keys(server.tools.schedule_followup.schema).sort();
-    expect(keys).toEqual(['instructions', 'scheduled_at', 'user']);
+    expect(keys).toEqual(['instructions', 'scheduled_at']);
     expect(keys).not.toContain('source');
     expect(keys).not.toContain('reference_id');
   });
@@ -118,7 +118,7 @@ describe('schedule_followup inherits identity from the current job', () => {
     register(server, baseCtx({ db, jobId: 42 }));
 
     const res = await server.tools.schedule_followup.handler(
-      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' }
+      { scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' }
     );
 
     expect(res.isError).toBeFalsy();
@@ -147,7 +147,7 @@ describe('schedule_followup inherits identity from the current job', () => {
     register(server, baseCtx({ db }));
 
     const res = await server.tools.schedule_followup.handler(
-      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Sprawdz odpowiedz klienta.' }
+      { scheduled_at: FUTURE, instructions: 'Sprawdz odpowiedz klienta.' }
     );
 
     expect(res.isError).toBeFalsy();
@@ -162,7 +162,7 @@ describe('schedule_followup inherits identity from the current job', () => {
     register(server, baseCtx({ db }));
 
     const res = await server.tools.schedule_followup.handler(
-      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Kontynuuj zadanie.' }
+      { scheduled_at: FUTURE, instructions: 'Kontynuuj zadanie.' }
     );
 
     expect(res.isError).toBeFalsy();
@@ -180,7 +180,7 @@ describe('schedule_followup inherits identity from the current job', () => {
     register(server, baseCtx({ db, jobId: 42 }));
 
     const res = await server.tools.schedule_followup.handler(
-      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' }
+      { scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' }
     );
 
     expect(res.isError).toBeFalsy();
@@ -203,7 +203,7 @@ describe('schedule_followup inherits identity from the current job', () => {
     register(server, baseCtx({ db, jobId: 42 }));
 
     const res = await server.tools.schedule_followup.handler(
-      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' }
+      { scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' }
     );
 
     expect(res.isError).toBeFalsy();
@@ -223,7 +223,7 @@ describe('schedule_followup rejects when it has no job to continue', () => {
     register(server, baseCtx({ db, jobId: null }));
 
     const res = await server.tools.schedule_followup.handler(
-      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Nie powinno sie wykonac.' }
+      { scheduled_at: FUTURE, instructions: 'Nie powinno sie wykonac.' }
     );
 
     expect(res.isError).toBe(true);
@@ -238,7 +238,7 @@ describe('schedule_followup rejects when it has no job to continue', () => {
     register(server, baseCtx({ db, jobId: 99 }));
 
     const res = await server.tools.schedule_followup.handler(
-      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Brak zadania w bazie.' }
+      { scheduled_at: FUTURE, instructions: 'Brak zadania w bazie.' }
     );
 
     expect(res.isError).toBe(true);
@@ -254,7 +254,7 @@ describe('schedule_followup rejects when it has no job to continue', () => {
     register(server, baseCtx({ db, jobId: 42 }));
 
     const res = await server.tools.schedule_followup.handler(
-      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Niekompletny wiersz zadania.' }
+      { scheduled_at: FUTURE, instructions: 'Niekompletny wiersz zadania.' }
     );
 
     expect(res.isError).toBe(true);
@@ -270,7 +270,7 @@ describe('schedule_followup rejects when it has no job to continue', () => {
     register(server, baseCtx({ db, jobId: 42, log }));
 
     const res = await server.tools.schedule_followup.handler(
-      { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Wywola blad bazy.' }
+      { scheduled_at: FUTURE, instructions: 'Wywola blad bazy.' }
     );
 
     expect(res.isError).toBe(true);
@@ -290,7 +290,7 @@ describe('schedule_followup announces the job (ROADMAP F14)', () => {
     const { db, calls } = fakeDb(JOB);
     register(server, baseCtx({ db }));
     await server.tools.schedule_followup.handler({
-      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+      scheduled_at: FUTURE, instructions: 'check the reindex later',
     });
     const outbox = calls.executed.filter((c) => /job_event_outbox/i.test(c.sql));
     expect(outbox).toHaveLength(1);
@@ -309,7 +309,7 @@ describe('schedule_followup announces the job (ROADMAP F14)', () => {
     const { db, calls } = fakeDb(JOB, { dupRow: { id: 9 } });
     register(server, baseCtx({ db }));
     await server.tools.schedule_followup.handler({
-      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+      scheduled_at: FUTURE, instructions: 'check the reindex later',
     });
     expect(calls.executed.some((c) => /job_event_outbox/i.test(c.sql))).toBe(false);
     expect(calls.commit).toBe(0);
@@ -322,7 +322,7 @@ describe('schedule_followup announces the job (ROADMAP F14)', () => {
     const { db, calls } = fakeDb(JOB, { failOutbox: true });
     register(server, baseCtx({ db }));
     const res = await server.tools.schedule_followup.handler({
-      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+      scheduled_at: FUTURE, instructions: 'check the reindex later',
     });
     expect(res.isError).toBe(true);
     expect(calls.commit).toBe(0);
@@ -338,7 +338,7 @@ describe('schedule_followup in a delegated job', () => {
     const { db, calls } = fakeDb({ source: 'subagent', reference_id: '41', agent_view_id: 3, priority: 50, depth: 1 });
     register(server, baseCtx({ db }));
     const res = await server.tools.schedule_followup.handler({
-      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+      scheduled_at: FUTURE, instructions: 'check the reindex later',
     });
     expect(res).toEqual({
       content: [{ type: 'text', text: 'schedule_followup is not available in a delegated job' }],
@@ -357,7 +357,7 @@ describe('schedule_followup in a delegated job', () => {
     const { db, calls } = fakeDb({ source: 'jira', reference_id: 'AG-1', agent_view_id: 3, priority: 50, depth: 0 });
     register(server, baseCtx({ db }));
     const res = await server.tools.schedule_followup.handler({
-      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+      scheduled_at: FUTURE, instructions: 'check the reindex later',
     });
     expect(res.isError).toBeFalsy();
     const insert = calls.executed.find((c) => /INSERT INTO job\b/i.test(c.sql) && !/outbox/i.test(c.sql));
@@ -376,7 +376,7 @@ describe('schedule_followup test run', () => {
       source: 'jira', reference_id: 'AG-1', agent_view_id: null, priority: 50, depth: 0, test_config: test });
     register(server, baseCtx({ db }));
     await server.tools.schedule_followup.handler({
-      user: 'a@b.c', scheduled_at: FUTURE, instructions: 'check the reindex later',
+      scheduled_at: FUTURE, instructions: 'check the reindex later',
     });
     const insert = calls.executed.find((c) => /INSERT INTO job\b/i.test(c.sql) && !/outbox/i.test(c.sql));
     expect(insert.sql).toMatch(/line_id, test_config,/);
@@ -385,7 +385,7 @@ describe('schedule_followup test run', () => {
 });
 
 describe('schedule_followup continues the current job thread', () => {
-  const ARGS = { user: 'agent@example.com', scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' };
+  const ARGS = { scheduled_at: FUTURE, instructions: 'Sprawdz status zadania.' };
   const insertOf = (calls) => calls.executed.find((c) => /INSERT INTO job/i.test(c.sql) && !/outbox/i.test(c.sql));
 
   it('copies thread_id from the current job, checked against its view', async () => {

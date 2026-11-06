@@ -4,7 +4,7 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express from 'express';
 import {
-  registerTools, registerModuleRestApis, loadScopedDbOverridesStrict, loadWorkspaceOverridesStrict,
+  registerModuleRestApis, loadScopedDbOverridesStrict, loadWorkspaceOverridesStrict,
   discoverAuthSources, ScopeResolutionError,
 } from './config-loader.js';
 import {
@@ -17,13 +17,13 @@ import { runHealthchecks } from './health-run.js';
 import { SqlPoolRegistry } from './adapters/sql-pool-registry.js';
 import { createHealthRegistration } from './health-registration.js';
 import { McpSessionRegistry, DEFAULT_IDLE_MS, DEFAULT_SWEEP_MS } from './mcp-sessions.js';
-import { logToolboxMcp, logToolboxRest, logPublisher, createScopedLogger, createPhasedLogger, errorCategory } from './log.js';
+import { logToolboxRest, logPublisher, errorCategory } from './log.js';
+import { buildRegistration } from './tool-registration.js';
 import {
   ProbeLimiter, parseConfigTestRequest, registerConfigTests, runConfigTest,
 } from './config-tests.js';
 import * as db from './db.js';
 import * as playwright from './playwright-client.js';
-import { buildArtifactsDir, FALLBACK_ARTIFACTS_DIR, loadDownloadsDir } from './artifacts-dir.js';
 import { createRateLimits } from './rate-limit.js';
 
 const PORT = process.env.PORT || 3001;
@@ -54,46 +54,6 @@ const context = {
   },
 };
 
-// Registers the tools a capability's scope enables on `server` and returns the dispatcher's
-// registry. Shared by MCP sessions and invoke, so both run the same handlers with the same
-// offload path.
-async function buildRegistration(server, authContext, runId = null) {
-  const { agent_view_id: agentViewId, job_id: jobId } = authContext;
-  let artifactsDir = FALLBACK_ARTIFACTS_DIR;
-  // jobId (from the capability row, null for interactive runs / tool-list) flows to every tool's
-  // register() via registerTools -> enrichedContext; schedule_followup uses it to inherit the
-  // current job's channel/reference/scope.
-  // invocationLog is the MCP tool-invocation logger for this session: logToolboxMcp for
-  // interactive/tool-list runs, or the agent_view-scoped variant when an agent_view is known.
-  let invocationLog = logToolboxMcp;
-  // The job's thread dir for downloads two turns of one thread share (Jira attachments),
-  // null without a job: every caller keeps artifactsDir then.
-  const downloadsDir = await loadDownloadsDir(dbQuery, jobId);
-  let sessionContext = { ...context, artifactsDir, downloadsDir, jobId };
-  let preloadedOverrides;
-  if (agentViewId) {
-    const { overrides, agentViewMeta } = await loadScopedDbOverridesStrict(agentViewId);
-    preloadedOverrides = overrides;
-    if (agentViewMeta) {
-      artifactsDir = buildArtifactsDir(agentViewMeta, jobId, runId);
-      invocationLog = createScopedLogger(agentViewMeta);
-      sessionContext = { ...sessionContext, artifactsDir };
-    }
-  } else {
-    preloadedOverrides = await loadWorkspaceOverridesStrict(authContext.workspace_id);
-  }
-
-  // Registration-time diagnostics that modules emit from register() (e.g. browser SESSION/INIT)
-  // are lifecycle noise and must stay out of toolbox_mcp.log. The phased logger routes them to
-  // toolbox_rest.log, then flips to invocationLog once registration completes — before any tool
-  // handler can run — so only real invocations reach toolbox_mcp.log.
-  const sessionLog = createPhasedLogger(invocationLog);
-  sessionContext = { ...sessionContext, log: sessionLog };
-  const registration = await registerTools(server, sessionContext, agentViewId, preloadedOverrides);
-  sessionLog.toInvocationPhase();
-  return registration;
-}
-
 const dbQuery = (sql, params) => db.getCronPool().query(sql, params);
 const dispatchDeps = {
   audit: createAuditStore(dbQuery),
@@ -113,7 +73,7 @@ async function createServer(authContext, endpoint, runId = null) {
     name: 'toolbox',
     version: '1.0.0',
   });
-  const registration = await buildRegistration(server, authContext, runId);
+  const registration = await buildRegistration(server, authContext, { context, dbQuery, runId });
   installToolDispatch(server, registration, authContext, { ...dispatchDeps, endpoint });
   return { server, healthchecks: registration.healthchecks };
 }
@@ -262,7 +222,7 @@ app.all('/mcp', requireCapability({ endpoint: 'mcp' }, logToolboxRest), async (r
 installInvokeRoute(app, {
   guard: requireCapability({ endpoint: 'invoke' }, logToolboxRest),
   deps: dispatchDeps,
-  loadRegistryFor: authContext => () => buildRegistration({ tool: () => {} }, authContext),
+  loadRegistryFor: authContext => () => buildRegistration({ tool: () => {} }, authContext, { context, dbQuery }),
   log: logToolboxRest,
 });
 

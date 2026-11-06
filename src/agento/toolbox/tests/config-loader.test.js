@@ -820,8 +820,8 @@ describe('registerTools integration', () => {
     expect(calledTools).toHaveLength(1);
     expect(calledTools[0].config.host).toBe('scoped-db.internal');
     expect(calledTools[0].config.pass).toBe('secret');
-    // The session's agent_view-scoped logger must reach the adapters, so adapter tool
-    // invocations are attributed to the agent_view and not just the LLM-supplied `user`.
+    // The session logger must reach the adapters, so adapter tool invocations name the
+    // verified caller.
     expect(registerAdapterTools.mock.calls[0][4]).toEqual({ sqlPoolRegistry, log: mockContext.log });
   });
 

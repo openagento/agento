@@ -73,7 +73,7 @@ function ctx(overrides = {}) {
 async function getIssue(c) {
   const s = makeServer();
   register(s, c);
-  const res = await s.tools.jira_get_issue.handler({ user: 'u@example.com', issue_key: 'AI-1' });
+  const res = await s.tools.jira_get_issue.handler({ issue_key: 'AI-1' });
   return JSON.parse(res.content[0].text);
 }
 
@@ -110,7 +110,7 @@ describe('jira attachments in the thread downloads dir', () => {
     const issue = await getIssue(c);
     const s = makeServer();
     register(s, c);
-    const res = await s.tools.jira_get_attachment.handler({ user: 'u@example.com', issue_key: 'AI-1', attachment_id: '21' });
+    const res = await s.tools.jira_get_attachment.handler({ issue_key: 'AI-1', attachment_id: '21' });
     expect(JSON.parse(res.content[0].text).localPath).toBe(issue.Attachments[0].localPath);
     expect(contentFetches(fetchMock)).toHaveLength(1);
   });
@@ -123,7 +123,7 @@ describe('jira attachments in the thread downloads dir', () => {
     vi.stubGlobal('fetch', fetchMock);
     const s = makeServer();
     register(s, ctx({ downloadsDir: downloadsRoot() }));
-    const res = await s.tools.jira_get_attachment.handler({ user: 'u@example.com', issue_key: 'AI-1', attachment_id: '22' });
+    const res = await s.tools.jira_get_attachment.handler({ issue_key: 'AI-1', attachment_id: '22' });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('Jira gave no attachment id');
     expect(contentFetches(fetchMock)).toHaveLength(0);

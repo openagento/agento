@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { withConnections } from './fixtures/mysql-pool.js';
 
 const CONFIG = { host: 'db.test', port: '3306', user: 'sandbox', pass: 'secret', database: 'sandbox' };
-const AGENT = 'agent@example.com';
 const RO_BLOCK_MESSAGE = 'Error: Only SELECT, SHOW, DESCRIBE, and EXPLAIN queries are allowed.';
 
 // The read-only corpus is a regression fixture: `type: "mysql"` must keep making
@@ -143,7 +142,7 @@ async function buildTiers(driverOptions = {}) {
 describe('mysql tier (type: "mysql") — read-only regression corpus', () => {
   it.each(RO_ALLOWED)('allows and executes: %s', async query => {
     const { ro, driver, logCalls } = await buildTiers();
-    const result = await ro.handler({ user: AGENT, query });
+    const result = await ro.handler({ query });
 
     expect(result.isError).toBeUndefined();
     expect(driver.executed).toEqual([query]);
@@ -152,13 +151,13 @@ describe('mysql tier (type: "mysql") — read-only regression corpus', () => {
 
   it.each(RO_BLOCKED)('blocks without touching the driver: %s', async query => {
     const { ro, driver, logCalls } = await buildTiers();
-    const result = await ro.handler({ user: AGENT, query });
+    const result = await ro.handler({ query });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe(RO_BLOCK_MESSAGE);
     expect(driver.executed).toEqual([]);
     const blocked = logCalls.find(c => c.status === 'BLOCKED');
-    expect(blocked.details).toContain(`user=${AGENT}`);
+    expect(blocked.details).not.toContain('user=');
     expect(blocked.details).toContain('type=mysql');
   });
 
@@ -170,13 +169,13 @@ describe('mysql tier (type: "mysql") — read-only regression corpus', () => {
     expect(ro.options).toEqual({ resultStrategy: 'rows' });
   });
 
-  it('logs the tier alongside the agent identity', async () => {
+  it('logs the tier, and no identity (the session logger adds the verified caller)', async () => {
     const { ro, logCalls } = await buildTiers();
-    await ro.handler({ user: AGENT, query: 'SELECT 1' });
+    await ro.handler({ query: 'SELECT 1' });
 
     const query = logCalls.find(c => c.status === 'QUERY');
     const ok = logCalls.find(c => c.status === 'OK');
-    expect(query.details).toContain(`user=${AGENT}`);
+    expect(query.details).not.toContain('user=');
     expect(query.details).toContain('type=mysql |');
     expect(query.details).toContain('SELECT 1');
     expect(ok.details).toContain('type=mysql');
@@ -185,7 +184,7 @@ describe('mysql tier (type: "mysql") — read-only regression corpus', () => {
 
   it('uses the "mysql" pool adapter label', async () => {
     const { ro } = await buildTiers();
-    await ro.handler({ user: AGENT, query: 'SELECT 1' });
+    await ro.handler({ query: 'SELECT 1' });
 
     expect([...registry.allEntries].map(e => e.adapter)).toEqual(['mysql']);
   });
@@ -194,7 +193,7 @@ describe('mysql tier (type: "mysql") — read-only regression corpus', () => {
 describe('mysql_root tier (type: "mysql_root") — full read/write', () => {
   it.each(ROOT_WRITES)('executes write statement as-is: %s', async query => {
     const { rw, driver, logCalls } = await buildTiers();
-    const result = await rw.handler({ user: AGENT, query });
+    const result = await rw.handler({ query });
 
     expect(result.isError).toBeUndefined();
     expect(driver.executed).toEqual([query]);
@@ -203,7 +202,7 @@ describe('mysql_root tier (type: "mysql_root") — full read/write', () => {
 
   it('still executes ordinary reads', async () => {
     const { rw, driver } = await buildTiers();
-    const result = await rw.handler({ user: AGENT, query: 'SELECT * FROM orders' });
+    const result = await rw.handler({ query: 'SELECT * FROM orders' });
 
     expect(result.isError).toBeUndefined();
     expect(JSON.parse(result.content[0].text)).toEqual([{ affectedRows: 1 }]);
@@ -212,7 +211,7 @@ describe('mysql_root tier (type: "mysql_root") — full read/write', () => {
 
   it('never emits the read-only block message', async () => {
     const { rw } = await buildTiers();
-    const result = await rw.handler({ user: AGENT, query: 'DROP TABLE orders' });
+    const result = await rw.handler({ query: 'DROP TABLE orders' });
 
     expect(result.content[0].text).not.toContain(RO_BLOCK_MESSAGE);
   });
@@ -232,11 +231,11 @@ describe('mysql_root tier (type: "mysql_root") — full read/write', () => {
 
   it('logs the root tier on QUERY and OK lines', async () => {
     const { rw, logCalls } = await buildTiers();
-    await rw.handler({ user: AGENT, query: 'DELETE FROM orders' });
+    await rw.handler({ query: 'DELETE FROM orders' });
 
     const query = logCalls.find(c => c.status === 'QUERY');
     const ok = logCalls.find(c => c.status === 'OK');
-    expect(query.details).toContain(`user=${AGENT}`);
+    expect(query.details).not.toContain('user=');
     expect(query.details).toContain('type=mysql_root');
     expect(query.details).toContain('DELETE FROM orders');
     expect(ok.details).toContain('type=mysql_root');
@@ -244,7 +243,7 @@ describe('mysql_root tier (type: "mysql_root") — full read/write', () => {
 
   it('logs the root tier on ERROR lines and surfaces driver failures', async () => {
     const { rw, logCalls } = await buildTiers({ queryError: 'Table \'orders\' doesn\'t exist' });
-    const result = await rw.handler({ user: AGENT, query: 'DELETE FROM orders' });
+    const result = await rw.handler({ query: 'DELETE FROM orders' });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('Query error:');
@@ -254,8 +253,8 @@ describe('mysql_root tier (type: "mysql_root") — full read/write', () => {
 
   it('uses a distinct "mysql_root" pool adapter label', async () => {
     const { ro, rw } = await buildTiers();
-    await ro.handler({ user: AGENT, query: 'SELECT 1' });
-    await rw.handler({ user: AGENT, query: 'DELETE FROM orders' });
+    await ro.handler({ query: 'SELECT 1' });
+    await rw.handler({ query: 'DELETE FROM orders' });
 
     expect([...registry.allEntries].map(e => e.adapter).sort()).toEqual(['mysql', 'mysql_root']);
   });
@@ -273,7 +272,7 @@ describe('mysql_root tier (type: "mysql_root") — full read/write', () => {
       { sqlPoolRegistry: registry }
     );
 
-    const result = await server.tools.get('mysql_sandbox_root').handler({ user: AGENT, query: 'DROP TABLE orders' });
+    const result = await server.tools.get('mysql_sandbox_root').handler({ query: 'DROP TABLE orders' });
 
     expect(names).toEqual(['mysql_sandbox_root']);
     expect(result.isError).toBe(true);
@@ -317,7 +316,7 @@ describe('agent_view-scoped audit logging', () => {
 
   it('sends mysql_root QUERY/OK to the injected session logger, not the process logger', async () => {
     const { tool, processLogCalls, scopedCalls } = await buildWithScopedLog('root');
-    await tool.handler({ user: AGENT, query: 'DELETE FROM orders' });
+    await tool.handler({ query: 'DELETE FROM orders' });
 
     expect(scopedCalls.map(c => c.status)).toEqual(['QUERY', 'OK']);
     expect(scopedCalls[0].details).toContain('type=mysql_root');
@@ -338,7 +337,7 @@ describe('agent_view-scoped audit logging', () => {
       log: (tool, status, details) => { scopedCalls.push({ tool, status, details }); },
     });
 
-    await server.tools.get('mysql_tool_root').handler({ user: AGENT, query: 'DELETE FROM orders' });
+    await server.tools.get('mysql_tool_root').handler({ query: 'DELETE FROM orders' });
 
     expect(scopedCalls.find(c => c.status === 'ERROR').details).toContain('type=mysql_root');
     expect(processLogCalls).toEqual([]);
@@ -347,7 +346,7 @@ describe('agent_view-scoped audit logging', () => {
 
   it('sends read-only BLOCKED decisions to the injected session logger', async () => {
     const { tool, processLogCalls, scopedCalls } = await buildWithScopedLog('read-only');
-    await tool.handler({ user: AGENT, query: 'DELETE FROM orders' });
+    await tool.handler({ query: 'DELETE FROM orders' });
 
     expect(scopedCalls.map(c => c.status)).toEqual(['BLOCKED']);
     expect(processLogCalls).toEqual([]);
@@ -355,7 +354,7 @@ describe('agent_view-scoped audit logging', () => {
 
   it('falls back to the process logger when no session logger is injected', async () => {
     const { rw, logCalls } = await buildTiers();
-    await rw.handler({ user: AGENT, query: 'DELETE FROM orders' });
+    await rw.handler({ query: 'DELETE FROM orders' });
 
     expect(logCalls.map(c => c.status)).toEqual(['QUERY', 'OK']);
   });
@@ -429,8 +428,8 @@ describe('mysql_root name marker (capability visible in the tool name)', () => {
 describe('mysql_root multi-statement stacking', () => {
   it('does not enable multipleStatements on either tier pool', async () => {
     const { ro, rw, driver } = await buildTiers();
-    await ro.handler({ user: AGENT, query: 'SELECT 1' });
-    await rw.handler({ user: AGENT, query: 'SELECT 1' });
+    await ro.handler({ query: 'SELECT 1' });
+    await rw.handler({ query: 'SELECT 1' });
 
     expect(driver.created).toHaveLength(2);
     for (const config of driver.created) {
@@ -441,7 +440,7 @@ describe('mysql_root multi-statement stacking', () => {
   it('hands a stacked batch to the driver as ONE statement and surfaces its rejection', async () => {
     const stacked = "INSERT INTO orders (id) VALUES (1); DROP TABLE orders";
     const { rw, driver } = await buildTiers({ rejectStacked: true });
-    const result = await rw.handler({ user: AGENT, query: stacked });
+    const result = await rw.handler({ query: stacked });
 
     expect(driver.executed).toEqual([stacked]);
     expect(result.isError).toBe(true);
@@ -475,11 +474,11 @@ describe('registerAdapterTools tier dispatch', () => {
 
     expect(names).toEqual(expect.arrayContaining(['mysql_reporting', 'mysql_sandbox_root']));
 
-    const blocked = await server.tools.get('mysql_reporting').handler({ user: AGENT, query: 'INSERT INTO orders (id) VALUES (1)' });
+    const blocked = await server.tools.get('mysql_reporting').handler({ query: 'INSERT INTO orders (id) VALUES (1)' });
     expect(blocked.isError).toBe(true);
     expect(blocked.content[0].text).toBe(RO_BLOCK_MESSAGE);
 
-    const allowed = await server.tools.get('mysql_sandbox_root').handler({ user: AGENT, query: 'INSERT INTO orders (id) VALUES (1)' });
+    const allowed = await server.tools.get('mysql_sandbox_root').handler({ query: 'INSERT INTO orders (id) VALUES (1)' });
     expect(allowed.isError).toBeUndefined();
     expect(driver.executed).toEqual(['INSERT INTO orders (id) VALUES (1)']);
 
@@ -504,7 +503,7 @@ describe('registerAdapterTools tier dispatch', () => {
       { sqlPoolRegistry: registry, log: (tool, status, details) => { scopedCalls.push({ tool, status, details }); } }
     );
 
-    await server.tools.get('mysql_sandbox_root').handler({ user: AGENT, query: 'DELETE FROM orders' });
+    await server.tools.get('mysql_sandbox_root').handler({ query: 'DELETE FROM orders' });
 
     expect(scopedCalls.map(c => c.status)).toEqual(['QUERY', 'OK']);
     expect(processLogCalls).toEqual([]);

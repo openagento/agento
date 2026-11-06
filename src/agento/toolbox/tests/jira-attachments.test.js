@@ -57,7 +57,7 @@ function ctx(overrides = {}) {
 async function callGetIssue(c) {
   const s = makeServer();
   register(s, c);
-  const res = await s.tools.jira_get_issue.handler({ user: 'u@example.com', issue_key: 'AI-1' });
+  const res = await s.tools.jira_get_issue.handler({ issue_key: 'AI-1' });
   return { res, issue: JSON.parse(res.content[0].text) };
 }
 
@@ -201,10 +201,10 @@ describe('jira_get_attachment tool', () => {
     expect(sOn.tools.jira_get_attachment).toBeDefined();
   });
 
-  it('D1: schema exposes user, issue_key, attachment_id', () => {
+  it('D1: schema exposes issue_key, attachment_id', () => {
     const s = makeServer();
     register(s, ctx({ isToolEnabled: () => true }));
-    expect(Object.keys(s.tools.jira_get_attachment.schema).sort()).toEqual(['attachment_id', 'issue_key', 'user']);
+    expect(Object.keys(s.tools.jira_get_attachment.schema).sort()).toEqual(['attachment_id', 'issue_key']);
   });
 
   it('D2: downloads the requested attachment to artifacts/jira/<KEY>/ (file exists on disk)', async () => {
@@ -216,7 +216,7 @@ describe('jira_get_attachment tool', () => {
 
     const s = makeServer();
     register(s, ctx({ isToolEnabled: () => true, artifactsDir: tmp, fileManager: realFileManager() }));
-    const res = await s.tools.jira_get_attachment.handler({ user: 'u@example.com', issue_key: 'AI-1', attachment_id: '900' });
+    const res = await s.tools.jira_get_attachment.handler({ issue_key: 'AI-1', attachment_id: '900' });
     const out = JSON.parse(res.content[0].text);
 
     expect(res.isError).toBeUndefined();
@@ -231,7 +231,7 @@ describe('jira_get_attachment tool', () => {
     vi.stubGlobal('fetch', fetchMock);
     const s = makeServer();
     register(s, ctx({ isToolEnabled: () => true }));
-    const res = await s.tools.jira_get_attachment.handler({ user: 'u@example.com', issue_key: 'AI-1', attachment_id: 'nope' });
+    const res = await s.tools.jira_get_attachment.handler({ issue_key: 'AI-1', attachment_id: 'nope' });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/404/);
   });
@@ -242,7 +242,7 @@ describe('jira_get_attachment tool', () => {
     const fm = { download: vi.fn() };
     const s = makeServer();
     register(s, ctx({ isToolEnabled: () => true, fileManager: fm }));
-    const res = await s.tools.jira_get_attachment.handler({ user: 'u@example.com', issue_key: '../../etc/passwd', attachment_id: '900' });
+    const res = await s.tools.jira_get_attachment.handler({ issue_key: '../../etc/passwd', attachment_id: '900' });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/invalid issue_key/);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -264,7 +264,7 @@ describe('jira_get_attachment tool', () => {
     vi.stubGlobal('fetch', fetchMock);
     const s = makeServer();
     register(s, ctx({ isToolEnabled: () => true, artifactsDir: tmp, fileManager: realFileManager() }));
-    const res = await s.tools.jira_get_attachment.handler({ user: 'u@example.com', issue_key: 'AI-1', attachment_id: '901' });
+    const res = await s.tools.jira_get_attachment.handler({ issue_key: 'AI-1', attachment_id: '901' });
     const text = res.content[0].text;
     expect(text).not.toContain('tok');
     expect(text).not.toContain('Basic ');

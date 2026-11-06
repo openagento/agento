@@ -78,6 +78,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, matchesWhi
     user: cfg.smtp_user || null,
     pass: cfg.smtp_pass || null,
     from: cfg.smtp_from || null,
+    replyTo: cfg.smtp_reply_to,
   };
 
   const whitelist = (cfg.email_whitelist || '')
@@ -100,7 +101,6 @@ export function register(server, { log, moduleConfigs, isToolEnabled, matchesWhi
       '  attachments: ["/workspace/artifacts/ws/av/123/report.pdf"]',
     ].join('\n'),
     {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       to: z.array(z.string().email()).min(1).describe('Recipient email addresses (To). All must be in the whitelist.'),
       cc: z.array(z.string().email()).optional().describe('Carbon-copy recipients. All must be in the whitelist.'),
       bcc: z.array(z.string().email()).optional().describe('Blind carbon-copy recipients. All must be in the whitelist.'),
@@ -108,7 +108,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, matchesWhi
       subject: z.string().describe('Email subject'),
       body_html: z.string().describe('Email body as HTML. Use tags like <p>, <br>, <ul>, <a href>, <b>; wrap plain text in <pre>.'),
     },
-    async ({ user, to, cc, bcc, attachments, subject, body_html }) => {
+    async ({ to, cc, bcc, attachments, subject, body_html }) => {
       const rejected = findRejectedRecipient(
         // FAIL-CLOSED: with no matcher wired, no recipient is on the allow list.
         matchesWhitelist || (() => false),
@@ -118,7 +118,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, matchesWhi
         { field: 'bcc', list: bcc },
       );
       if (rejected) {
-        log('email_send', 'BLOCKED', `user=${user} ${rejected.field}="${rejected.addr}" - not in whitelist`);
+        log('email_send', 'BLOCKED', `${rejected.field}="${rejected.addr}" - not in whitelist`);
         return {
           content: [{ type: 'text', text: `Error: Recipient "${rejected.addr}" (${rejected.field}) is not in the allowed recipients whitelist.` }],
           isError: true,
@@ -126,9 +126,17 @@ export function register(server, { log, moduleConfigs, isToolEnabled, matchesWhi
       }
 
       if (!smtpConfig.host) {
-        log('email_send', 'ERROR', `user=${user} - SMTP not configured`);
+        log('email_send', 'ERROR', 'SMTP not configured');
         return {
           content: [{ type: 'text', text: 'Error: SMTP not configured. Set CONFIG__CORE__SMTP_HOST (or bin/agento config:set core/smtp_host).' }],
+          isError: true,
+        };
+      }
+
+      if (smtpConfig.replyTo && !z.string().email().safeParse(smtpConfig.replyTo).success) {
+        log('email_send', 'ERROR', 'invalid core/smtp_reply_to');
+        return {
+          content: [{ type: 'text', text: 'Error: core/smtp_reply_to is not one valid email address.' }],
           isError: true,
         };
       }
@@ -137,7 +145,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, matchesWhi
       if (attachments && attachments.length > 0) {
         const err = await validateAttachments(attachments);
         if (err) {
-          log('email_send', 'ERROR', `user=${user} ${err}`);
+          log('email_send', 'ERROR', `${err}`);
           return { content: [{ type: 'text', text: err }], isError: true };
         }
         attachmentsList = attachments.map(p => ({ filename: basename(p), path: p }));
@@ -153,7 +161,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, matchesWhi
 
         const info = await transporter.sendMail({
           from: smtpConfig.from || smtpConfig.user,
-          replyTo: user,
+          ...(smtpConfig.replyTo ? { replyTo: smtpConfig.replyTo } : {}),
           to: to.join(', '),
           cc: cc?.length ? cc.join(', ') : undefined,
           bcc: bcc?.length ? bcc.join(', ') : undefined,
@@ -163,7 +171,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, matchesWhi
         });
 
         const counts = `to=${to.length} cc=${cc?.length || 0} bcc=${bcc?.length || 0} attachments=${attachmentsList?.length || 0}`;
-        log('email_send', 'OK', `user=${user} ${counts} subject="${subject}" msgId=${info.messageId}`);
+        log('email_send', 'OK', `${counts} subject="${subject}" msgId=${info.messageId}`);
         const summary = attachmentsList?.length
           ? `Email sent (${to.length} to, ${cc?.length || 0} cc, ${bcc?.length || 0} bcc, ${attachmentsList.length} attachment${attachmentsList.length === 1 ? '' : 's'}). Message ID: ${info.messageId}`
           : `Email sent (${to.length} to, ${cc?.length || 0} cc, ${bcc?.length || 0} bcc). Message ID: ${info.messageId}`;
@@ -171,7 +179,7 @@ export function register(server, { log, moduleConfigs, isToolEnabled, matchesWhi
           content: [{ type: 'text', text: summary }],
         };
       } catch (err) {
-        log('email_send', 'ERROR', `user=${user} ${err.message}`);
+        log('email_send', 'ERROR', `${err.message}`);
         return {
           content: [{ type: 'text', text: `Email error: ${err.message}` }],
           isError: true,

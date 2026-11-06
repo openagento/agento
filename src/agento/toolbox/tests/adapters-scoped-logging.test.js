@@ -1,11 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-// Every adapter must log through the session's agent_view-scoped logger when one is injected,
-// so toolbox_mcp.log attributes tool invocations to a scope — not only to the `user` argument
-// the LLM supplies. Without an injected logger they fall back to the process-wide MCP logger
-// (interactive runs and tool-list sessions have no agent_view).
+// Every adapter must log through the session logger when one is injected: it names the verified
+// caller, so toolbox_mcp.log attributes each tool invocation. Without an injected logger they
+// fall back to the process-wide MCP logger.
 
-const AGENT = 'agent@example.com';
 
 let registry = null;
 
@@ -65,17 +63,17 @@ describe('mssql adapter scoped logging', () => {
   it('routes QUERY/OK to the injected session logger', async () => {
     const scoped = collector();
     const { tool, processLogCalls } = await build({ log: scoped.log });
-    await tool.handler({ user: AGENT, query: 'SELECT 1' });
+    await tool.handler({ query: 'SELECT 1' });
 
     expect(scoped.calls.map(c => c.status)).toEqual(['QUERY', 'OK']);
-    expect(scoped.calls[0].details).toContain(`user=${AGENT}`);
+    expect(scoped.calls[0].details).not.toContain('user=');
     expect(processLogCalls).toEqual([]);
   });
 
   it('routes BLOCKED to the injected session logger', async () => {
     const scoped = collector();
     const { tool, processLogCalls } = await build({ log: scoped.log });
-    const result = await tool.handler({ user: AGENT, query: 'DELETE FROM report' });
+    const result = await tool.handler({ query: 'DELETE FROM report' });
 
     expect(result.isError).toBe(true);
     expect(scoped.calls.map(c => c.status)).toEqual(['BLOCKED']);
@@ -84,7 +82,7 @@ describe('mssql adapter scoped logging', () => {
 
   it('falls back to the process logger when no session logger is injected', async () => {
     const { tool, processLogCalls } = await build();
-    await tool.handler({ user: AGENT, query: 'SELECT 1' });
+    await tool.handler({ query: 'SELECT 1' });
 
     expect(processLogCalls.map(c => c.status)).toEqual(['QUERY', 'OK']);
   });
@@ -113,10 +111,10 @@ describe('opensearch adapter scoped logging', () => {
     });
     try {
       const { tool, processLogCalls } = await build({ log: scoped.log });
-      await tool.handler({ user: AGENT, index: 'products', query: '{"query":{"match_all":{}}}' });
+      await tool.handler({ index: 'products', query: '{"query":{"match_all":{}}}' });
 
       expect(scoped.calls.map(c => c.status)).toContain('QUERY');
-      expect(scoped.calls[0].details).toContain(`user=${AGENT}`);
+      expect(scoped.calls[0].details).not.toContain('user=');
       expect(processLogCalls).toEqual([]);
     } finally {
       globalThis.fetch = originalFetch;
@@ -132,7 +130,7 @@ describe('opensearch adapter scoped logging', () => {
     });
     try {
       const { tool, processLogCalls } = await build();
-      await tool.handler({ user: AGENT, index: 'products', query: '{"query":{"match_all":{}}}' });
+      await tool.handler({ index: 'products', query: '{"query":{"match_all":{}}}' });
 
       expect(processLogCalls.map(c => c.status)).toContain('QUERY');
     } finally {

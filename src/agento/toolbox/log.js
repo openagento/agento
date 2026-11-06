@@ -61,13 +61,14 @@ export function createPhasedLogger(invocationLog) {
   return log;
 }
 
-// Agent_view-scoped MCP tool logger -> toolbox_mcp.log.
-export function createScopedLogger(agentViewMeta) {
+// Session MCP tool logger -> toolbox_mcp.log. `caller` is the verified capability context
+// (actor, subject_id, job_id): every line names who called, so no tool logs an identity itself.
+export function createScopedLogger(agentViewMeta, caller) {
+  const view = agentViewMeta ? `[${agentViewMeta.label} (id: ${agentViewMeta.id})] ` : '';
+  const who = `[actor=${caller.actor} subject=${caller.subject_id} job=${caller.job_id ?? '-'}] `;
+  const prefix = boundedDetails(view + who) + ' ';
   return function scopedLogToolbox(tool, status, details = '') {
     const ts = new Date().toISOString();
-    const prefix = agentViewMeta
-      ? `[${agentViewMeta.label} (id: ${agentViewMeta.id})] `
-      : '';
     const line = `[${ts}] ${prefix}[${tool}] ${status} ${boundedDetails(details)}`;
     console.log(line);
     try {

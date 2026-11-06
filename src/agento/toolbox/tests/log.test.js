@@ -6,6 +6,9 @@ vi.mock('node:fs', () => ({
 
 import { appendFileSync } from 'node:fs';
 import { createScopedLogger, createPhasedLogger, logToolboxMcp, logToolboxRest } from '../log.js';
+import { capabilityContext } from './capability-rows.js';
+
+const CALLER = { actor: 'agent', subject_id: '1', job_id: 587452 };
 
 describe('log sinks', () => {
   beforeEach(() => {
@@ -24,7 +27,7 @@ describe('log sinks', () => {
   });
 
   it('createScopedLogger writes to the MCP log file', () => {
-    const log = createScopedLogger({ id: 1, label: 'Dev' });
+    const log = createScopedLogger({ id: 1, label: 'Dev' }, CALLER);
     log('mysql_prod', 'QUERY', 'select 1');
     expect(appendFileSync).toHaveBeenCalledWith('/app/logs/toolbox_mcp.log', expect.any(String));
   });
@@ -70,7 +73,7 @@ describe('createScopedLogger', () => {
   });
 
   it('includes agent_view prefix when meta provided', () => {
-    const log = createScopedLogger({ id: 42, label: 'Developer' });
+    const log = createScopedLogger({ id: 42, label: 'Developer' }, CALLER);
     log('mysql_prod', 'OK', 'rows=1');
     const output = console.log.mock.calls[0][0];
     expect(output).toContain('[Developer (id: 42)]');
@@ -79,16 +82,47 @@ describe('createScopedLogger', () => {
     expect(output).toContain('rows=1');
   });
 
-  it('omits prefix when no meta', () => {
-    const log = createScopedLogger(null);
+  it('omits the agent_view part, not the caller, when no meta', () => {
+    const log = createScopedLogger(null, CALLER);
     log('mysql_prod', 'OK', 'rows=1');
     const output = console.log.mock.calls[0][0];
     expect(output).not.toContain('(id:');
-    expect(output).toContain('[mysql_prod]');
+    expect(output).toContain('] [actor=agent subject=1 job=587452] [mysql_prod] OK rows=1');
+  });
+
+  // The identity on a line comes from the verified capability, never from a tool argument.
+  it('writes the verified caller after the agent_view part', () => {
+    const log = createScopedLogger({ id: 1, label: 'Mieszko' }, CALLER);
+    log('jira_add_comment', 'OK', 'PROJ-12');
+    expect(console.log.mock.calls[0][0]).toContain(
+      '[Mieszko (id: 1)] [actor=agent subject=1 job=587452] [jira_add_comment] OK PROJ-12');
+  });
+
+  it('writes job=- for a caller with no job (panel, miniapp, interactive)', () => {
+    const log = createScopedLogger({ id: 1, label: 'Mieszko' }, { actor: 'user', subject_id: '42', job_id: null });
+    log('jira_add_comment', 'OK', 'PROJ-12');
+    expect(console.log.mock.calls[0][0]).toContain('[Mieszko (id: 1)] [actor=user subject=42 job=-] [jira_add_comment]');
+  });
+
+  // The verified contexts as the guard attaches them: a job run, a miniapp click (a panel
+  // user acting in the view) and a viewless backend call.
+  it.each([
+    ['mcp_job', capabilityContext('mcp_job', { agent_view_id: 1 }), { id: 1, label: 'Mieszko' }, '[Mieszko (id: 1)] [actor=agent subject=1 job=42] [t]'],
+    ['miniapp', capabilityContext('miniapp', { agent_view_id: 1, actor: 'user', subject_id: '42', job_id: null }), { id: 1, label: 'Mieszko' }, '[Mieszko (id: 1)] [actor=user subject=42 job=-] [t]'],
+    ['viewless internal_rest', capabilityContext('internal_rest', { agent_view_id: null }), null, '] [actor=service subject=service:test job=-] [t]'],
+  ])('names the caller of a %s capability', (_kind, ctx, meta, expected) => {
+    createScopedLogger(meta, ctx)('t', 'OK', 'x');
+    expect(console.log.mock.calls[0][0]).toContain(expected);
+  });
+
+  it('keeps one line when a prefix value holds a newline', () => {
+    const log = createScopedLogger({ id: 1, label: 'Dev\n[x] OK forged' }, { actor: 'service', subject_id: 'service:a\nb', job_id: null });
+    log('tool', 'OK', 'done');
+    expect(console.log.mock.calls[0][0].split('\n')).toHaveLength(1);
   });
 
   it('includes ISO timestamp', () => {
-    const log = createScopedLogger({ id: 1, label: 'Test' });
+    const log = createScopedLogger({ id: 1, label: 'Test' }, CALLER);
     log('tool', 'OK');
     const output = console.log.mock.calls[0][0];
     // ISO timestamp pattern: [2026-03-29T...]
@@ -96,7 +130,7 @@ describe('createScopedLogger', () => {
   });
 
   it('handles empty details', () => {
-    const log = createScopedLogger({ id: 1, label: 'Test' });
+    const log = createScopedLogger({ id: 1, label: 'Test' }, CALLER);
     log('tool', 'OK');
     const output = console.log.mock.calls[0][0];
     expect(output).toContain('[tool] OK ');
@@ -121,7 +155,7 @@ describe('a caller cannot forge a log record', () => {
   it.each([
     ['logToolboxRest', (d) => logToolboxRest('api/jira/request', 'ERROR', d)],
     ['logToolboxMcp', (d) => logToolboxMcp('some_tool', 'ERROR', d)],
-    ['createScopedLogger', (d) => createScopedLogger({ id: 1, label: 'Dev' })('some_tool', 'ERROR', d)],
+    ['createScopedLogger', (d) => createScopedLogger({ id: 1, label: 'Dev' }, CALLER)('some_tool', 'ERROR', d)],
   ])('%s writes exactly one line for details containing a newline', (_name, emit) => {
     emit(FORGERY);
 

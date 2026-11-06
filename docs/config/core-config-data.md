@@ -95,6 +95,7 @@ The `core` module provides these framework-level config paths:
 | `core/client_connection_pool_max_per_tool` | integer | `10` | Maximum client connections in one MySQL/MSSQL tool pool |
 | `core/server_concurrency_budget` | integer | `10` | Process-wide maximum active SQL operations per adapter/host/port; default scope only |
 | `core/email_whitelist` | string | — | Allowed email recipients (comma-separated) |
+| `core/smtp_reply_to` | string | `""` | `Reply-To` of `email_send` mail. Empty: no header, replies go to the from address. A value that is not one email address makes `email_send` refuse to send. The agent cannot set it. |
 | `core/allowed_domains` | string | — | Allowed browser domains (comma-separated) |
 | `core/toolbox/url` | string | `"http://toolbox:3001"` | Toolbox base URL. Each harness's `WorkspaceAdapter` appends its transport path (`/mcp` for both Claude and Codex). Jira also reads this for REST calls. |
 

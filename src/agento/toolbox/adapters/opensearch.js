@@ -3,19 +3,18 @@ import { logToolboxMcp as processLog } from '../log.js';
 import { sanitizeHealthError } from '../health-run.js';
 
 function createOpensearchTool(server, toolName, description, config, options = {}) {
-  // See the mssql adapter: prefer the injected agent_view-scoped session logger.
+  // See the mssql adapter: prefer the injected session logger.
   const log = options.log || processLog;
   server.tool(
     toolName,
     description,
     {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       index: z.string().describe('Index pattern, e.g. "my-index-*"'),
       query: z.string().optional().describe('JSON query body for _search. Omit to get index info.'),
     },
-    async ({ user: agentUser, index, query }) => {
+    async ({ index, query }) => {
       if (!config.host || !config.pass) {
-        log(toolName, 'ERROR', `user=${agentUser} - not configured (missing host or pass)`);
+        log(toolName, 'ERROR', `not configured (missing host or pass)`);
         return {
           content: [{ type: 'text', text: `Error: ${toolName} not configured. Set host and pass via bin/agento config:set or ENV vars.` }],
           isError: true,
@@ -33,7 +32,7 @@ function createOpensearchTool(server, toolName, description, config, options = {
         if (query) {
           url = `${config.host}/${index}/_search`;
           options = { method: 'POST', headers, body: query };
-          log(toolName, 'QUERY', `user=${agentUser} index=${index} | ${query}`);
+          log(toolName, 'QUERY', `index=${index} | ${query}`);
         } else {
           url = `${config.host}/${index}`;
           options = { method: 'GET', headers };
@@ -50,7 +49,7 @@ function createOpensearchTool(server, toolName, description, config, options = {
           const took = data.took;
           const hitCount = flatRows.length;
 
-          log(toolName, 'OK', `user=${agentUser} time=${elapsed}ms hits=${hitCount}`);
+          log(toolName, 'OK', `time=${elapsed}ms hits=${hitCount}`);
 
           return {
             content: [
@@ -62,13 +61,13 @@ function createOpensearchTool(server, toolName, description, config, options = {
 
         const hitCount = data.hits?.hits?.length;
         if (query) {
-          log(toolName, 'OK', `user=${agentUser} time=${elapsed}ms hits=${hitCount ?? '?'}`);
+          log(toolName, 'OK', `time=${elapsed}ms hits=${hitCount ?? '?'}`);
         } else {
-          log(toolName, 'OK', `user=${agentUser} index=${index} search=false`);
+          log(toolName, 'OK', `index=${index} search=false`);
         }
         return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
       } catch (err) {
-        log(toolName, 'ERROR', `user=${agentUser} ${err.message}`);
+        log(toolName, 'ERROR', `${err.message}`);
         return {
           content: [{ type: 'text', text: `OpenSearch error: ${err.message}` }],
           isError: true,

@@ -39,12 +39,11 @@ function createPostgresTool(server, toolName, description, config, options) {
     toolName,
     description,
     {
-      user: z.string().email().describe('Agent email from SOUL.md'),
       query: z.string().describe('SQL query (SELECT only)'),
     },
-    async ({ user, query }) => {
+    async ({ query }) => {
       if (!isReadOnlySql(query, ['SELECT', 'WITH'], { dialect: 'postgresql' })) {
-        log(toolName, 'BLOCKED', `user=${user} non-readonly query`);
+        log(toolName, 'BLOCKED', 'non-readonly query');
         return {
           content: [{ type: 'text', text: 'Error: Only read-only SELECT queries are allowed.' }],
           isError: true,
@@ -174,7 +173,7 @@ A full-access tier must also:
 - Require a capability marker in the tool NAME, registered in `module_validator.FULL_ACCESS_TOOL_NAME_SUFFIXES` so `module:add` and `module:validate` enforce it too. Tool enablement is keyed by name and records nothing about capability, so without a marker an in-place `type` edit would inherit an existing read-only grant. The suffix must be enforced in BOTH directions — required on the full-access type, and reserved from every other type — or a tool can simply squat the name before being escalated. Reuse the existing `_root` suffix rather than inventing a per-adapter one.
 - Document that the database user's `GRANT`s are the real boundary.
 
-Every adapter should log through `options.log` when present (the session's agent_view-scoped logger), falling back to the process-wide MCP logger — otherwise destructive invocations are attributed only to the LLM-supplied `user` argument.
+Every adapter should log through `options.log` when present (the session logger, which names the verified caller on every line), falling back to the process-wide MCP logger — otherwise an invocation has no caller in `toolbox_mcp.log`.
 
 The shared validator deliberately rejects backslashes inside PostgreSQL string literals. PostgreSQL `E'...'` strings always interpret backslash escapes, while plain strings depend on server settings; rejecting the ambiguous form prevents the validator and server from disagreeing about where a statement ends.
 

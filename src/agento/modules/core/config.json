@@ -5,6 +5,7 @@
   "client_connection_pool_max_per_tool": 10,
   "server_concurrency_budget": 10,
   "smtp_port": 587,
+  "smtp_reply_to": "",
   "allow_subdomains": true,
   "allow_http": false,
   "auth/session_max_ttl": 43200,

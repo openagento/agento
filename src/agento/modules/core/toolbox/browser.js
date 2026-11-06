@@ -59,9 +59,7 @@ function jsonSchemaPropertyToZod(prop) {
 }
 
 function jsonSchemaToZodShape(inputSchema) {
-  const shape = {
-    user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
-  };
+  const shape = {};
   const props = inputSchema?.properties || {};
   const required = new Set(inputSchema?.required || []);
   for (const [key, prop] of Object.entries(props)) {
@@ -84,7 +82,6 @@ const BROWSER_TOOLS = {
       'Returns an accessibility snapshot of the page.',
     ].join('\n'),
     schema: {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       url: z.string().url().describe('URL to navigate to'),
     },
     urlParam: 'url',
@@ -93,7 +90,6 @@ const BROWSER_TOOLS = {
   browser_wait_for: {
     description: 'Wait for a specified amount of time.',
     schema: {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       time: z.number().int().positive().describe('Time to wait in milliseconds'),
     },
     urlParam: null,
@@ -106,7 +102,6 @@ const BROWSER_TOOLS = {
       'Pass job_id from your execution context (SOUL.md) to organise the file correctly.',
     ].join('\n'),
     schema: {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       job_id: z.string().optional().describe('Job ID from SOUL.md — used to organise the screenshot folder'),
       filename: z.string().optional().describe('PNG filename. Defaults to {timestamp}.png. Use a fixed name to overwrite on each run.'),
     },
@@ -118,7 +113,6 @@ const BROWSER_TOOLS = {
       'Returns the page structure as text. Navigate to a page first.',
     ].join('\n'),
     schema: {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
     },
     urlParam: null,
   },
@@ -128,7 +122,6 @@ const BROWSER_TOOLS = {
       'The function parameter must be an arrow function, e.g. "() => document.title".',
     ].join('\n'),
     schema: {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       function: z.string().describe('Arrow function to evaluate, e.g. "() => document.title"'),
     },
     urlParam: null,
@@ -140,7 +133,6 @@ const BROWSER_TOOLS = {
       'Stop recording with browser_stop_video when done.',
     ].join('\n'),
     schema: {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       width: z.number().int().positive().optional().describe('Video width in pixels'),
       height: z.number().int().positive().optional().describe('Video height in pixels'),
     },
@@ -153,7 +145,6 @@ const BROWSER_TOOLS = {
       'Pass job_id from your execution context (SOUL.md) to organise the file correctly.',
     ].join('\n'),
     schema: {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       job_id: z.string().optional().describe('Job ID from SOUL.md — used to organise the video folder'),
       filename: z.string().optional().describe('WebM filename. Defaults to {timestamp}.webm.'),
     },
@@ -262,13 +253,13 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
       def.schema,
       async (args) => {
         // Strip our params — they're not Playwright MCP's
-        const { user, job_id, filename, width, height, ...toolArgs } = args;
+        const { job_id, filename, width, height, ...toolArgs } = args;
 
         // Domain validation for URL-bearing tools
         if (def.urlParam && args[def.urlParam]) {
           const result = validateDomain(args[def.urlParam]);
           if (!result.allowed) {
-            log(name, 'BLOCKED', `user=${user} url="${args[def.urlParam]}" — ${result.reason}`);
+            log(name, 'BLOCKED', `url="${args[def.urlParam]}" — ${result.reason}`);
             return {
               content: [{ type: 'text', text: `Error: ${result.reason} Allowed domains: ${allowedDomains.join(', ')}` }],
               isError: true,
@@ -279,7 +270,7 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
         const client = playwright.getClient();
         if (!client) {
           const { error } = describePlaywrightState(playwright.getState);
-          log(name, 'ERROR', `user=${user} — ${error}`);
+          log(name, 'ERROR', error);
           return {
             content: [{ type: 'text', text: `Error: ${error}` }],
             isError: true,
@@ -296,12 +287,12 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
               injectedDomains.add(preHostname);
               const parsed = new URL(toolArgs.url);
               const lightUrl = `${parsed.protocol}//${parsed.host}/robots.txt`;
-              log(name, 'PRE-NAV', `user=${user} navigating to ${lightUrl} for cookie setup`);
+              log(name, 'PRE-NAV', `navigating to ${lightUrl} for cookie setup`);
               await client.callTool({ name: 'browser_navigate', arguments: { url: lightUrl } });
               const cookieJs = buildCookieJs(preCookies);
               await client.callTool({ name: 'browser_evaluate', arguments: { function: `() => { ${cookieJs} }` } });
               const ck = await client.callTool({ name: 'browser_evaluate', arguments: { function: '() => document.cookie' } });
-              log(name, 'COOKIES', `user=${user} injected ${preCookies.length} cookie(s) for ${preHostname}: ${(ck?.content?.[0]?.text || '').substring(0, 200)}`);
+              log(name, 'COOKIES', `injected ${preCookies.length} cookie(s) for ${preHostname}: ${(ck?.content?.[0]?.text || '').substring(0, 200)}`);
             }
           }
 
@@ -309,7 +300,7 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
           if (name === 'browser_wait_for') {
             const ms = Math.min(toolArgs.time ?? 1000, 30000);
             await new Promise(r => setTimeout(r, ms));
-            log(name, 'OK', `user=${user} waited ${ms}ms`);
+            log(name, 'OK', `waited ${ms}ms`);
             return { content: [{ type: 'text', text: `Waited ${ms}ms` }] };
           }
 
@@ -324,22 +315,22 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
             const vw = width || viewport.width;
             const vh = height || viewport.height;
             const videoArgs = (vw && vh) ? { size: { width: vw, height: vh } } : {};
-            log(name, 'FORWARD', `user=${user} args=${JSON.stringify(videoArgs)}`);
+            log(name, 'FORWARD', `args=${JSON.stringify(videoArgs)}`);
             const result = await client.callTool({ name: 'browser_start_video', arguments: videoArgs });
             if (result.isError) {
-              log(name, 'PW-ERROR', `user=${user} ${(result.content?.[0]?.text || '').substring(0, 200)}`);
+              log(name, 'PW-ERROR', `${(result.content?.[0]?.text || '').substring(0, 200)}`);
             } else {
-              log(name, 'OK', `user=${user} recording started`);
+              log(name, 'OK', `recording started`);
             }
             return result;
           }
 
           // browser_stop_video: stop recording, find saved file(s), move to organized path
           if (name === 'browser_stop_video') {
-            log(name, 'FORWARD', `user=${user} stopping video recording`);
+            log(name, 'FORWARD', `stopping video recording`);
             const result = await client.callTool({ name: 'browser_stop_video', arguments: {} });
             if (result.isError) {
-              log(name, 'PW-ERROR', `user=${user} ${(result.content?.[0]?.text || '').substring(0, 200)}`);
+              log(name, 'PW-ERROR', `${(result.content?.[0]?.text || '').substring(0, 200)}`);
               return result;
             }
 
@@ -347,7 +338,7 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
             const pathMatches = [...text.matchAll(/\[Video[^\]]*\]\(([^)]+\.webm)\)/g)];
 
             if (pathMatches.length === 0) {
-              log(name, 'OK', `user=${user} no video files found in response`);
+              log(name, 'OK', `no video files found in response`);
               return result;
             }
 
@@ -368,14 +359,14 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
                 await copyFile(srcPath, destPath);
                 await unlink(srcPath).catch(() => {});
                 savedPaths.push(destPath);
-                log(name, 'SAVED', `user=${user} ${srcPath} → ${destPath}`);
+                log(name, 'SAVED', `${srcPath} → ${destPath}`);
               } catch (moveErr) {
-                log(name, 'WARN', `user=${user} failed to move video: ${moveErr.message}`);
+                log(name, 'WARN', `failed to move video: ${moveErr.message}`);
                 savedPaths.push(srcPath);
               }
             }
 
-            log(name, 'OK', `user=${user} ${savedPaths.length} video(s) saved`);
+            log(name, 'OK', `${savedPaths.length} video(s) saved`);
             return {
               content: [
                 { type: 'text', text: savedPaths.map(p => `Video saved to: ${p}`).join('\n') },
@@ -383,13 +374,13 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
             };
           }
 
-          log(name, 'FORWARD', `user=${user} args=${JSON.stringify(toolArgs)}`);
+          log(name, 'FORWARD', `args=${JSON.stringify(toolArgs)}`);
           let result = await client.callTool({ name: def.playwrightName || name, arguments: toolArgs });
           if (result.isError) {
             const errText = result.content?.[0]?.text || 'unknown error';
-            log(name, 'PW-ERROR', `user=${user} ${errText.substring(0, 200)}`);
+            log(name, 'PW-ERROR', `${errText.substring(0, 200)}`);
           } else {
-            log(name, 'OK', `user=${user} contentItems=${result.content?.length || 0}`);
+            log(name, 'OK', `contentItems=${result.content?.length || 0}`);
           }
 
           // For browser_take_screenshot: save PNG to disk and append the path as a text content item
@@ -404,20 +395,20 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
               try {
                 await mkdir(folder, { recursive: true });
                 await writeFile(filePath, Buffer.from(imageItem.data, 'base64'));
-                log(name, 'SAVED', `user=${user} path=${filePath}`);
+                log(name, 'SAVED', `path=${filePath}`);
                 result.content = [
                   ...result.content,
                   { type: 'text', text: `Screenshot saved to: ${filePath}` },
                 ];
               } catch (saveErr) {
-                log(name, 'WARN', `user=${user} failed to save screenshot: ${saveErr.message}`);
+                log(name, 'WARN', `failed to save screenshot: ${saveErr.message}`);
               }
             }
           }
 
           return result;
         } catch (err) {
-          log(name, 'ERROR', `user=${user} ${err.message}`);
+          log(name, 'ERROR', `${err.message}`);
           return {
             content: [{ type: 'text', text: `Browser error: ${err.message}` }],
             isError: true,
@@ -443,28 +434,27 @@ export function register(server, { log, playwright, moduleConfigs, isToolEnabled
       continue;
     }
 
-    server.tool(tool.name, tool.description || '', zodShape, async (args) => {
-      const { user, ...toolArgs } = args;
+    server.tool(tool.name, tool.description || '', zodShape, async (toolArgs) => {
       const client = playwright.getClient();
       if (!client) {
         const { error } = describePlaywrightState(playwright.getState);
-        log(tool.name, 'ERROR', `user=${user} — ${error}`);
+        log(tool.name, 'ERROR', error);
         return {
           content: [{ type: 'text', text: `Error: ${error}` }],
           isError: true,
         };
       }
       try {
-        log(tool.name, 'FORWARD', `user=${user} args=${JSON.stringify(toolArgs)}`);
+        log(tool.name, 'FORWARD', `args=${JSON.stringify(toolArgs)}`);
         const result = await client.callTool({ name: tool.name, arguments: toolArgs });
         if (result.isError) {
-          log(tool.name, 'PW-ERROR', `user=${user} ${(result.content?.[0]?.text || '').substring(0, 200)}`);
+          log(tool.name, 'PW-ERROR', `${(result.content?.[0]?.text || '').substring(0, 200)}`);
         } else {
-          log(tool.name, 'OK', `user=${user} contentItems=${result.content?.length || 0}`);
+          log(tool.name, 'OK', `contentItems=${result.content?.length || 0}`);
         }
         return result;
       } catch (err) {
-        log(tool.name, 'ERROR', `user=${user} ${err.message}`);
+        log(tool.name, 'ERROR', `${err.message}`);
         return {
           content: [{ type: 'text', text: `Browser error: ${err.message}` }],
           isError: true,
