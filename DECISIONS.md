@@ -4,6 +4,36 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-11-06 — Persistent HOME: copy only the resumed session; retention of run and thread dirs (D-PHOME-1)
+
+Since 1.0 every run dir got a full copy of `state/<persistent path>`: about 870 MB per run and
+33 GB a day on one deployment, and run dirs were never removed.
+
+- **Copy-in takes only the sessions the run may resume**: the line's last session and, on a
+  retry, the job's own, each with its sidecar dir of the same stem. The consumer resolves them
+  before it builds the run dir. A harness with no `session_file` keeps the full copy: the
+  framework cannot tell its sessions apart.
+- **Copy-back writes a moved session to its original path** in `state/`, not to the run's cwd
+  bucket, so two turns keep one copy of a session. Writes are atomic (temp file + `os.replace`)
+  and never go through a link. Then the copied paths are dropped from the run dir, but only when
+  copy-back had no conflict: a run dir is never the only copy of a session.
+- **`state/` is the session store of record and is never pruned.** An old thread still resumes;
+  only the temporary files its session refers to may be gone. Retention of `state/` is a
+  ROADMAP item.
+- **`artifacts:prune` (nightly, `core/artifacts/retention_days`, default 30)** removes a run dir
+  whose job ended N days ago (copy-back first; a dir `state/` cannot take is kept) and a thread
+  dir whose thread has no open job and whose last job ended N days ago. The thread dir goes
+  under the thread row `FOR UPDATE` lock on a READ COMMITTED connection, so a job that a
+  publisher committed during the lock wait is seen. A run dir of a job goes under that job's
+  row lock (`FOR UPDATE OF j`, one row at a time), with the status read again under it, so a
+  retry that reopened the job keeps its dir. A run dir with no row takes no lock: a job id is
+  never reused.
+- **A run dir with no job row** (e2e, a deleted row) has no known session id: a file whose
+  name `state/` already holds is saved only as an exact copy of one such file, else the dir is
+  kept for an operator. Candidates are read in batches of 500, so memory does not grow with the
+  number of run dirs.
+- **No data patch cleans the old copies**: the first `artifacts:prune` after the upgrade does it.
+
 ## 2026-10-29 — Test runs (D-TEST-RUN-1)
 
 AG-79. Owner: Piotr Grzywocz, 2026-10-30 (`--test` with a JSON of the tools to stub or run, per

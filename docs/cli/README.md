@@ -89,6 +89,7 @@
 | `conversation:retention` (`co:ret`) | Prune conversation events, auto-archive idle threads, delete archived ones, sweep executions no thread owns — in that order ([details](../modules/conversation.md)) |
 | **Operations** | |
 | `consumer` | Start job consumer loop |
+| `artifacts:prune` (`ar:pr`) | Remove run dirs and thread dirs of jobs that ended more than `core/artifacts/retention_days` ago; `--dry-run`, `--print`, `--days` ([details](artifacts-prune.md)) |
 | `limits:prune` (`li:pr`) | Delete expired rate-limit buckets |
 | `outbox:prune` (`ou:pr`) | Delete job-event outbox rows and closed defer stretches past `core/outbox/retention_days` |
 | `jira:periodic:sync` | Sync Jira recurring tasks to crontab |

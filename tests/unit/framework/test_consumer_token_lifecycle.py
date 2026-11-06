@@ -475,6 +475,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                     id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
                     priority=0, session_id=None, pid=None,
                     agent_type=None, provider=None, model=None, thread_key=None, test_config=None,
+                    resume_job_id=None, thread_detached=False, fresh_session=False,
                 )
             )
 
@@ -512,6 +513,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                     id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
                     priority=0, session_id=None, pid=None,
                     agent_type=None, provider=None, model=None, thread_key=None, test_config=None,
+                    resume_job_id=None, thread_detached=False, fresh_session=False,
                 )
             )
 
@@ -562,6 +564,7 @@ class TestLeaseIsNotLeakedOnSetupFailures:
                     id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
                     priority=0, session_id=None, pid=None,
                     agent_type=None, provider=None, model=None, thread_key=None, test_config=None,
+                    resume_job_id=None, thread_detached=False, fresh_session=False,
                 )
             )
 
@@ -591,6 +594,7 @@ class TestResumedSessionPath:
             id=42, attempt=2, agent_view_id=2, source="jira", type="todo",
             priority=0, session_id="sess-1", pid=None, reference_id="AI-1",
             agent_type="claude", provider="anthropic", model=None, thread_key=None, test_config=None,
+            resume_job_id=None, thread_detached=False, fresh_session=False,
         )
         with (
             patch("agento.framework.consumer.get_channel"),

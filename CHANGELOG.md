@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`artifacts:prune` (`ar:pr`) and nightly retention of run and thread dirs.** Cron job
+  `core_artifacts_retention` (03:23) removes run dirs of jobs that ended more than
+  `core/artifacts/retention_days` (default 30, `0` keeps all) ago and thread dirs whose last
+  job ended that long ago. Sessions in `state/` are kept. `--dry-run`, `--print`, `--days` and `--before YYYY-MM-DD`.
+  **Upgrade note:** the first run after the upgrade may free a large amount of disk; run
+  `artifacts:prune --dry-run` first to see the size. Gotchas for a hand-written cleanup: a run
+  dir made before 1.0 links `.claude/projects` to `state/` (never `rm -rf` through it), and a
+  resumed run may have appended to a session copy other than its own. See
+  docs/cli/artifacts-prune.md.
 - **`conversation:backfill` (`co:ba`).** Imports the jobs that ended before the conversation module
   ran into their conversations, with their own times; a Claude job gets its run events from its
   session file. See docs/modules/conversation.md#backfill.
@@ -279,6 +288,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback (ROADMAP.md).
 
 ### Fixed
+- **A run dir no longer holds a copy of every session (D-PHOME-1).** Since 1.0 each run HOME got
+  a full copy of the view's `state/` session store (about 870 MB per run dir). Now it gets only
+  the sessions the run may resume, with their sidecar dirs. After the run, the consumer copies
+  a moved session back to its original path in `state/` and drops the copied paths from the run
+  dir. A harness without `session_file` still gets a full copy.
 - **Cron image builds again with CPython 3.15 released (AG-73).** The cron Dockerfile ran `uv venv`
   with no Python pin, so uv took the newest managed CPython (3.15). `regex`, `pydantic-core` and
   `cffi` have no cp315 wheels, and the build failed with `No such file or directory: 'cc'`. The

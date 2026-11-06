@@ -268,33 +268,17 @@ class TestResumeSession:
             return root / f"{session_id}.jsonl" if found else None
         return SimpleNamespace(adapter=SimpleNamespace(session_file=session_file))
 
-    @pytest.mark.parametrize(("entry", "home", "expected"), [
-        ("present", "/h", "s-9"),
-        ("missing", "/h", None),
-        ("no member", "/h", "s-9"),   # a harness without `session_file`: today's result
-        ("raises", "/h", "s-9"),
-        ("missing", None, "s-9"),     # no run HOME to look in
+    @pytest.mark.parametrize(("entry", "home", "missing"), [
+        ("present", "/h", False),
+        ("missing", "/h", True),
+        ("no member", "/h", False),   # a harness without `session_file`: today's result
+        ("raises", "/h", False),
+        ("missing", None, False),     # no run HOME to look in
     ])
-    def test_a_target_session_with_no_file_gives_a_fresh_session(self, entry, home, expected, caplog):
+    def test_a_session_with_no_file_is_missing(self, entry, home, missing):
         entries = {"present": self._entry(True), "missing": self._entry(False),
                    "no member": SimpleNamespace(adapter=object()), "raises": self._entry("raise")}
-        conn = self._conn({"session_id": "s-9", "agent_type": "h1"})
-        with caplog.at_level(logging.INFO):
-            got = Consumer._resume_session(conn, self._job(resume_job_id=9), "h1",
-                                           harness_entry=entries[entry], home=home)
-        assert got == expected
-        logged = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
-        assert logged == (["Job 10: session s-9 has no file, starting a fresh session"]
-                          if expected is None else [])
-
-    def test_the_deprecated_resolver_session_with_no_file_gives_a_fresh_session(self):
-        class Resolver:
-            def resolve(self, *, conn, job_id: int, attempt: int) -> str | None:
-                return "legacy"
-
-        register_resume_session_resolver(Resolver(), module="m")
-        assert Consumer._resume_session(MagicMock(), self._job(), "h1",
-                                        harness_entry=self._entry(False), home="/h") is None
+        assert _session_missing(entries[entry], home, "s-9") is missing
 
     @pytest.mark.parametrize(("found", "resumes"), [(True, True), (False, False)])
     def test_a_retry_resumes_its_own_session_only_when_its_file_is_there(self, found, resumes):

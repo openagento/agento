@@ -389,8 +389,10 @@ Group related jobs into a thread so agents can collaborate the way people do: an
 The thread directory is in (DECISIONS.md D-THREAD-2: `_threads/<key>/shared` and `downloads/`).
 Left out:
 
-- **Retention of `_threads/`**, with the run-dir retention item: a thread dir is kept for good,
-  and a toolbox crash can leave a `.part-*` dir in `downloads/`.
+- **A `.part-*` dir in `downloads/`** that a toolbox crash leaves stays until `artifacts:prune`
+  removes the thread dir.
+- **Retention of `state/`**: the sessions of a view are kept for good (`artifacts:prune`
+  never touches them), so `state/` grows with every session.
 - **A "Shared files" panel tab** for a thread's `shared/` and `downloads/`.
 
 ### ⚪ Nested sub-agents — follow-ups

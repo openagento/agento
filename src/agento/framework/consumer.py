@@ -603,8 +603,7 @@ class Consumer:
         return "job_dead_after", JobDeadEvent(job=job, error=StaleJobRecovery(error_msg))
 
     @staticmethod
-    def _resume_session(conn, job: Job, harness: str | None, *, harness_entry=None, home=None,
-                        logger: logging.Logger = _log) -> str | None:
+    def _resume_session(conn, job: Job, harness: str | None) -> str | None:
         """The harness session this turn continues, or None for a fresh one.
 
         The target is `job.resume_job_id`, set at claim (`threads.resolve_resume`). A retry
@@ -614,8 +613,8 @@ class Consumer:
         gives a fresh session. With no target, a job that this claim did not detach or ask
         for a fresh session (`JobClaimBeforeEvent`) still asks the deprecated
         `resume_session_resolver` seam (CODE-5; removed in the next minor release,
-        ROADMAP.md). A session whose file is not in the run HOME ``home`` gives a fresh
-        session too: the CLI would start an empty one and lose the turn in silence.
+        ROADMAP.md). Called before the run dir is built; ``_run_job`` then drops a session
+        that copy-in did not find in ``state/`` (`_session_missing`).
         """
         if job.resume_job_id is None:
             if job.thread_detached or job.fresh_session:
@@ -631,9 +630,6 @@ class Consumer:
             if row is None or row["agent_type"] != harness:
                 return None
             session_id = row["session_id"]
-        if session_id and _session_missing(harness_entry, home, session_id, logger):
-            logger.info(f"Job {job.id}: session {session_id} has no file, starting a fresh session")
-            return None
         return session_id
 
     def _save_session_id(self, job_id: int, session_id: str) -> None:
@@ -988,6 +984,7 @@ class Consumer:
         home_dir = credential = harness = lease_owner = temp_home = None
         runtime = None
         capability_token = rest_capability_token = None
+        resume_session_ids: tuple[str, ...] = ()
         # Whether the lease was actually ACQUIRED, which is not the same as having issued an
         # owner: only a refresh-imminent credential is leased. The detector below depends on
         # the difference, so the two must not be conflated.
@@ -1080,6 +1077,16 @@ class Consumer:
             # between the mint and the run handles the raw token (materialization writes it
             # into the harness MCP config), so a failure in that window raises an exception
             # whose message can carry it, and `_execute_job` persists that message verbatim.
+            # The sessions this run may resume, BEFORE the run dir is built: copy-in gives
+            # the run HOME only these (`copy_in_persistent_paths`). The retry path resumes
+            # the job's own session; a turn continues its line's (`_resume_session`).
+            line_sid = None
+            if harness_entry.descriptor.capabilities.resume:
+                with self._db() as resume_conn:
+                    line_sid = self._resume_session(resume_conn, job, harness)
+            retry_sid = job.session_id if job.attempt > 1 else None
+            resume_session_ids = tuple(s for s in (retry_sid, line_sid) if s)
+
             try:
                 # Per-job artifacts directory (only when agent_view is set) — extracted
                 # so `agento run` exercises the same pipeline (see run_preparation.py).
@@ -1099,6 +1106,7 @@ class Consumer:
                     ssh_identity=ssh_identity,
                     check_build=self._check_build,
                     thread_key=job.thread_key,
+                    resume_session_ids=resume_session_ids,
                 )
             except Exception as exc:
                 redact_exception(exc, capability_token, rest_capability_token)
@@ -1231,12 +1239,13 @@ class Consumer:
                 # The session this turn continues is honoured ONLY when the harness
                 # declares `resume`: handing a session id to a CLI that cannot take one
                 # would drop the turn. None: the workflow starts a fresh session.
-                resume_session_id = None
-                if harness_entry.descriptor.capabilities.resume:
-                    with self._db() as resume_conn:
-                        resume_session_id = self._resume_session(
-                            resume_conn, job, harness, harness_entry=harness_entry,
-                            home=home_dir, logger=self.logger)
+                # Copy-in gave the run HOME the session only when `state/` has it; a session
+                # with no file would start an empty one and lose the turn in silence.
+                resume_session_id = line_sid
+                if line_sid and _session_missing(harness_entry, home_dir, line_sid, self.logger):
+                    self.logger.info(f"Job {job.id}: session {line_sid} has no file, "
+                                     f"starting a fresh session")
+                    resume_session_id = None
 
                 context = JobContext(
                     config=module_config,
@@ -1298,7 +1307,8 @@ class Consumer:
                 shutil.rmtree(temp_home, ignore_errors=True)
             if home_dir is not None and runtime is not None:
                 try:
-                    save_persistent_state(runtime, home_dir)
+                    save_persistent_state(runtime, home_dir,
+                                          session_ids=(*resume_session_ids, job.session_id))
                 except Exception:
                     # A lost session costs a resume, never the job's outcome.
                     self.logger.warning("persistent state save failed for job_id=%s", job.id,

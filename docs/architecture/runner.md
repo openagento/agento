@@ -197,9 +197,14 @@ credential.
   job of a thread then fails at run preparation with "not in the thread group".
 - **Persistent HOME paths.** A harness's `persistent_home_paths()` (session stores) live in the
   agent_view's `state/`, which every run of the view shares, so a run never gets it. The
-  run HOME gets a copy of them, and after the run the consumer copies back each file the run
-  added or changed (newer mtime; links skipped). `agento run` runs its CLI as `agent`, so its HOME
-  links to `state/` instead.
+  run HOME gets a copy of only the sessions the run may resume (the line's last session and,
+  on a retry, the job's own), each with its sidecar dir of the same stem; a harness with no
+  `session_file` gets a full copy. After the run the consumer copies back each file the run
+  added or changed (newer mtime, atomic replace; links skipped), a session the harness moved
+  into the run's cwd bucket back to its original path, and then drops the copied paths from
+  the run dir. When `state/` cannot take a file (a conflict), the run dir keeps its copy and a
+  warning is logged. `agento run` runs its CLI as `agent`, so its HOME links to `state/`
+  instead. Old run dirs go with `artifacts:prune` ([threads.md](threads.md#retention)).
 - **The run dir.** For `execute` it is the context's `home_dir` (a job with no agent_view gets a temp
   HOME under `/workspace/.tmp` from the consumer); for
   `run` the `HOME` it is given (else `cwd`); for `pty` its `home`. Its path must be a

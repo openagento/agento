@@ -1,6 +1,7 @@
 {
   "jobs": [
     {"name": "credential_limits", "schedule": "* * * * *", "command": "credential:limits"},
-    {"name": "credential_web_login", "schedule": "* * * * *", "command": "credential:web-login"}
+    {"name": "credential_web_login", "schedule": "* * * * *", "command": "credential:web-login"},
+    {"name": "core_artifacts_retention", "schedule": "23 3 * * *", "command": "artifacts:prune"}
   ]
 }

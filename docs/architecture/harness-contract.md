@@ -241,7 +241,10 @@ def session_transcript(self, path: Path) -> list[list[dict]] | None: ...
 
 - `session_file` finds the harness's file of one session under a HOME (`root`), or `None`. It
   refuses a session id that is not `[A-Za-z0-9_-]{1,128}`. Claude, Codex and Pi have it. The
-  consumer uses it at claim: a resume whose session file is missing starts a fresh session.
+  consumer uses it to copy into the run HOME only the sessions the run may resume (with the
+  sidecar dir of the same stem), and to copy a session moved into the run's cwd bucket back to
+  its original path in `state/`. A resume whose session file is missing starts a fresh session.
+  A harness without it gets a full copy of its persistent paths.
 - `session_transcript` reads that file as turns (a turn starts at a user prompt), each a list of
   the mapper's fragments with `at` = the line's ISO time. Only Claude has it.
   `conversation:backfill` uses both to give imported runs their events

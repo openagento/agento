@@ -75,6 +75,7 @@ def _drive(*, refresh, reread=_REFRESHED, still_imminent=False):
         id=42, attempt=1, agent_view_id=2, source="jira", type="todo",
         priority=0, session_id=None, pid=None, reference_id="AI-1",
         agent_type=None, provider=None, model=None, thread_key=None, test_config=None,
+        resume_job_id=None, thread_detached=False, fresh_session=False,
     )
 
     def _mint(*_a, **_kw):

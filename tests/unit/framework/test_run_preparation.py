@@ -7,6 +7,8 @@ extraction is behavior-preserving.
 from __future__ import annotations
 
 import json
+import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from unittest.mock import MagicMock, patch
@@ -217,9 +219,10 @@ class TestMaterializeRunWorkspace:
         assert home == working == tmp_path / "artifacts" / ws / av / "99"
         assert (home / ".selected-token").read_text() == "run-token"
         assert not (actual_build / ".selected-token").exists()
-        # A real dir, not a link into state/: the runner gives a run uid its run dir only.
+        # No link into state/ (the runner gives a run uid its run dir only), and no copy of
+        # the store: the run resumes no session, so it gets none.
         sessions = home / ".agent" / "sessions"
-        assert sessions.is_dir() and not sessions.is_symlink()
+        assert not sessions.exists() and not sessions.is_symlink()
         assert (build_root / ws / av / "state" / ".agent" / "sessions").is_dir()
         assert (actual_build / ".agent" / "sessions").is_dir()
         assert not (actual_build / ".agent" / "sessions").is_symlink()
@@ -281,7 +284,7 @@ class TestMaterializeRunWorkspace:
             assert home is not None
             assert home == tmp_path / "artifacts" / ws / av / str(i)
             assert home.is_dir()
-            assert (home / ".claude" / "projects").is_dir()
+            assert not (home / ".claude" / "projects").exists()
             assert not (home / ".claude" / "todos").is_symlink()
             claude_json = json.loads((home / ".claude.json").read_text())
             assert claude_json["model"] == "sonnet"
@@ -588,47 +591,112 @@ def test_a_job_pinned_to_another_harness_gets_its_own_files_and_not_the_views(tm
     assert not (run_dir / ".claude.json").exists()
 
 
-def test_persistent_state_round_trips_through_the_run_home(tmp_path):
-    """The run gets a copy of state/ and, after it, only what it changed goes back: an
-    untouched file never overwrites a concurrent run's newer write, and a link is never followed."""
-    import os
+def _agent_finder(root, sid):
+    return max(root.glob(f".agent/sessions/*/{sid}.jsonl"), key=lambda p: p.stat().st_mtime,
+               default=None)
 
-    from agento.framework.run_preparation import materialize_run_workspace, save_persistent_state
 
+@pytest.fixture
+def persistent_view(tmp_path):
+    """A view whose harness keeps `.agent/sessions` in state/, with three saved sessions."""
     ws, av = "acme", "dev"
     build_root = tmp_path / "build"
     actual_build = build_root / ws / av / "builds" / "1"
     actual_build.mkdir(parents=True)
     (build_root / ws / av / "current").symlink_to(actual_build)
     sessions = build_root / ws / av / "state" / ".agent" / "sessions"
-    sessions.mkdir(parents=True)
-    (sessions / "old.jsonl").write_text("old")
-    (sessions / "kept.jsonl").write_text("kept")
+    for name in ("old", "kept", "other"):
+        (sessions / "b0").mkdir(parents=True, exist_ok=True)
+        (sessions / "b0" / f"{name}.jsonl").write_text(name)
+    (sessions / "b0" / "old" / "subagents").mkdir(parents=True)
+    (sessions / "b0" / "old" / "subagents" / "a.jsonl").write_text("a")
     writer = MagicMock()
     writer.owned_paths.return_value = (set(), {".agent"})
     writer.persistent_home_paths.return_value = [".agent/sessions"]
     runtime = _Runtime(agent_view=_AV(code=av, id=7), workspace=_WS(code=ws, id=3), harness="claude")
-
     with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "artifacts")), \
          patch("agento.framework.artifacts_dir.BUILD_DIR", str(build_root)), \
          stub_workspace_adapters(claude=writer):
-        home, _ = materialize_run_workspace(runtime, run_id=99, em=MagicMock())
+        yield runtime, sessions
+
+
+def _files(root):
+    return {str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()} if root.exists() else set()
+
+
+class TestPersistentState:
+    def _materialize(self, runtime, finder=_agent_finder, **kw):
+        from agento.framework.run_preparation import materialize_run_workspace
+        with patch("agento.framework.run_preparation.session_finder", return_value=finder):
+            return materialize_run_workspace(runtime, run_id=99, em=MagicMock(), **kw)[0]
+
+    def _save(self, runtime, home, finder=_agent_finder, **kw):
+        from agento.framework.run_preparation import save_persistent_state
+        with patch("agento.framework.run_preparation.session_finder", return_value=finder):
+            save_persistent_state(runtime, home, **kw)
+
+    def test_materialize_copies_only_resumed_session(self, persistent_view):
+        runtime, _ = persistent_view
+        home = self._materialize(runtime, resume_session_ids=("old",))
+        assert _files(home / ".agent" / "sessions") == {"b0/old.jsonl", "b0/old/subagents/a.jsonl"}
+
+    def test_materialize_without_resume_has_no_session_store(self, persistent_view):
+        runtime, _ = persistent_view
+        home = self._materialize(runtime)
+        assert not (home / ".agent" / "sessions").exists()
+
+    def test_materialize_adapter_without_session_file_copies_all(self, persistent_view):
+        """A harness that predates `session_file` still gets its whole store (CODE-5)."""
+        runtime, sessions = persistent_view
+        home = self._materialize(runtime, finder=None, resume_session_ids=("old",))
+        assert _files(home / ".agent" / "sessions") == _files(sessions)
+
+    def test_round_trip_saves_moved_session_to_its_state_path_and_drops(self, persistent_view, tmp_path):
+        """Only what the run changed goes back; a moved session goes back to its own path; an
+        untouched file never overwrites a concurrent run's newer write; a link is never
+        followed; once saved, the persistent paths leave the run dir."""
+        runtime, sessions = persistent_view
+        home = self._materialize(runtime, resume_session_ids=("old", "kept"))
         run_sessions = home / ".agent" / "sessions"
-        assert (run_sessions / "old.jsonl").read_text() == "old"
-        (run_sessions / "bucket").mkdir()
-        (run_sessions / "bucket" / "new.jsonl").write_text("new")
-        (run_sessions / "old.jsonl").write_text("old+turn")
-        os.utime(run_sessions / "old.jsonl", (2_000_000_000, 2_000_000_000))
-        (sessions / "kept.jsonl").write_text("newer write of another run")
-        os.utime(sessions / "kept.jsonl", (2_000_000_000, 2_000_000_000))
+        (run_sessions / "b1").mkdir()
+        (run_sessions / "b0" / "old.jsonl").rename(run_sessions / "b1" / "old.jsonl")
+        (run_sessions / "b0" / "old").rename(run_sessions / "b1" / "old")
+        (run_sessions / "b1" / "old.jsonl").write_text("old+turn")
+        os.utime(run_sessions / "b1" / "old.jsonl", (2_000_000_000, 2_000_000_000))
+        (run_sessions / "b1" / "new.jsonl").write_text("new")
+        (sessions / "b0" / "kept.jsonl").write_text("newer write of another run")
+        os.utime(sessions / "b0" / "kept.jsonl", (2_000_000_000, 2_000_000_000))
         (tmp_path / "secret").write_text("secret")
         (run_sessions / "leak").symlink_to(tmp_path / "secret")
-        save_persistent_state(runtime, home)
 
-    assert (sessions / "bucket" / "new.jsonl").read_text() == "new"
-    assert (sessions / "old.jsonl").read_text() == "old+turn"
-    assert (sessions / "kept.jsonl").read_text() == "newer write of another run"
-    assert not (sessions / "leak").exists()
+        self._save(runtime, home, session_ids=("old", "kept", "new"))
+
+        assert (sessions / "b0" / "old.jsonl").read_text() == "old+turn"
+        assert not (sessions / "b1" / "old.jsonl").exists()
+        assert not (sessions / "b1" / "old").exists()
+        assert (sessions / "b1" / "new.jsonl").read_text() == "new"
+        assert (sessions / "b0" / "kept.jsonl").read_text() == "newer write of another run"
+        assert not (sessions / "leak").exists()
+        assert not os.path.lexists(run_sessions)
+
+    def test_save_persistent_state_keeps_paths_on_conflict(self, persistent_view):
+        runtime, sessions = persistent_view
+        home = self._materialize(runtime)
+        (sessions / "b0" / "x.jsonl").mkdir()
+        (sessions / "b0" / "x.jsonl" / "odd").write_text("odd")
+        (home / ".agent" / "sessions" / "b0").mkdir(parents=True)
+        (home / ".agent" / "sessions" / "b0" / "x.jsonl").write_text("x")
+        self._save(runtime, home)
+        assert (home / ".agent" / "sessions" / "b0" / "x.jsonl").read_text() == "x"
+
+    def test_save_persistent_state_keeps_on_copy_back_error(self, persistent_view):
+        runtime, _ = persistent_view
+        home = self._materialize(runtime, resume_session_ids=("old",))
+        with patch("agento.framework.run_preparation.copy_back_persistent_paths",
+                   side_effect=OSError(28, "No space left on device")), \
+             pytest.raises(OSError):
+            self._save(runtime, home)
+        assert (home / ".agent" / "sessions" / "b0" / "old.jsonl").read_text() == "old"
 
 
 def test_link_state_links_the_persistent_paths_for_an_agent_run(tmp_path):
@@ -652,3 +720,46 @@ def test_link_state_links_the_persistent_paths_for_an_agent_run(tmp_path):
     assert (home / ".agent" / "sessions").resolve() == (
         build_root / "acme" / "dev" / "state" / ".agent" / "sessions"
     ).resolve()
+
+
+def test_two_claude_turns_keep_one_session_copy_in_state(tmp_path):
+    """Turn 2 resumes turn 1's session in another run dir (another cwd bucket). After it,
+    state/ holds exactly one copy of the session and no run dir keeps a persistent path.
+    Real claude adapter, `session_file` and `prepare_resume`."""
+    from agento.framework.harness import HarnessRunContext
+    from agento.framework.run_preparation import materialize_run_workspace, save_persistent_state
+    from agento.modules.claude.src.runner import ClaudeSubprocessRunner
+
+    ws, av, sid = "acme", "dev", "a8390dba-a29e-4f18-9498-79b7ccc4bbdc"
+    build_root = tmp_path / "build"
+    actual_build = build_root / ws / av / "builds" / "1"
+    actual_build.mkdir(parents=True)
+    (build_root / ws / av / "current").symlink_to(actual_build)
+    state = build_root / ws / av / "state"
+    runtime = _Runtime(agent_view=_AV(code=av, id=7), workspace=_WS(code=ws, id=3), harness="claude")
+
+    with patch("agento.framework.artifacts_dir.ARTIFACTS_DIR", str(tmp_path / "artifacts")), \
+         patch("agento.framework.artifacts_dir.BUILD_DIR", str(build_root)), \
+         stub_workspace_adapters(claude=ClaudeWorkspaceAdapter()):
+        homes = []
+        for turn, resume in ((1, ()), (2, (sid,))):
+            home, _ = materialize_run_workspace(runtime, run_id=turn, em=MagicMock(),
+                                                resume_session_ids=resume)
+            cwd = f"/workspace/artifacts/{ws}/{av}/{turn}"
+            ctx = HarnessRunContext(harness="claude", provider="p", working_dir=cwd,
+                                    home_dir=str(home))
+            if resume:
+                assert ClaudeSubprocessRunner(context=ctx, command_builder=None).prepare_resume(sid)
+            bucket = home / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", cwd)
+            bucket.mkdir(parents=True, exist_ok=True)
+            with (bucket / f"{sid}.jsonl").open("a") as f:
+                f.write(f"turn {turn}\n")
+            save_persistent_state(runtime, home, session_ids=(*resume, sid))
+            homes.append(home)
+
+    copies = list(state.glob(f".claude/projects/*/{sid}.jsonl"))
+    assert len(copies) == 1
+    assert copies[0].read_text() == "turn 1\nturn 2\n"
+    for home in homes:
+        assert not (home / ".claude" / "projects").exists()
+        assert not (home / ".claude" / "todos").exists()

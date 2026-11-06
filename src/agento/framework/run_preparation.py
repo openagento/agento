@@ -21,10 +21,13 @@ from .artifacts_dir import (
 from .event_manager import get_event_manager
 from .events import WorkspaceBuildCheckEvent
 from .persistent_home import (
+    SessionFinder,
     copy_back_persistent_paths,
     copy_in_persistent_paths,
+    drop_persistent_paths,
     ensure_state_dir,
     link_persistent_paths,
+    session_relocations,
 )
 from .ssh_identity import (
     ResolvedSshIdentity,
@@ -38,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable, Sequence
 
     from .agent_manager.models import CredentialRecord
     from .agent_view_runtime import AgentViewRuntime
@@ -55,21 +58,59 @@ def _build_root_for_current_build(
     return Path(BUILD_DIR)
 
 
-def save_persistent_state(runtime: AgentViewRuntime, home_dir: Path | str | None) -> None:
+def state_root_for_codes(workspace_code: str, agent_view_code: str, persistent_paths: list[str]) -> Path:
+    """The agent_view's ``state/`` dir, next to its current build (created when missing)."""
+    current_build = get_current_build_dir(workspace_code, agent_view_code)
+    build_root = (
+        _build_root_for_current_build(current_build, workspace_code, agent_view_code)
+        if current_build else Path(BUILD_DIR)
+    )
+    return ensure_state_dir(workspace_code, agent_view_code, persistent_paths, build_root=build_root)
+
+
+def session_finder(harness: str | None) -> SessionFinder | None:
+    """The harness adapter's optional ``session_file``, read with ``getattr`` (an adapter
+    that predates it has none: its runs get the whole persistent store, as before)."""
+    from .harness import find_harness
+    entry = find_harness(harness) if harness else None
+    return getattr(getattr(entry, "adapter", None), "session_file", None)
+
+
+def _find_session(finder: SessionFinder, root: Path, session_id: str) -> Path | None:
+    """``finder(root, session_id)``; a finder that raises finds nothing."""
+    try:
+        return finder(root, session_id)
+    except Exception as exc:
+        logger.debug("session_file failed for session %s: %s", session_id, type(exc).__name__)
+        return None
+
+
+def save_persistent_state(
+    runtime: AgentViewRuntime,
+    home_dir: Path | str | None,
+    *,
+    session_ids: Iterable[str | None] = (),
+) -> None:
     """After a run: the persistent HOME paths it changed go back to the agent_view's
-    ``state/`` (``copy_in_persistent_paths`` gave it a copy). Call it only once the runner
-    gave the HOME back to ``agent``."""
+    ``state/`` (``copy_in_persistent_paths`` gave it a copy), a resumed session to the path
+    it has there (``session_ids``: the sessions the run resumed or made). Once all is saved,
+    the persistent paths leave the run dir. Call it only once the runner gave the HOME back
+    to ``agent``."""
     if home_dir is None or not runtime.harness or runtime.agent_view is None or runtime.workspace is None:
         return
     from .harness import persistent_home_paths_for
     persistent_paths = persistent_home_paths_for(runtime.harness)
     if not persistent_paths:
         return
-    ws, av = runtime.workspace.code, runtime.agent_view.code
-    current_build = get_current_build_dir(ws, av)
-    build_root = _build_root_for_current_build(current_build, ws, av) if current_build else Path(BUILD_DIR)
-    state_root = ensure_state_dir(ws, av, persistent_paths, build_root=build_root)
-    copy_back_persistent_paths(Path(home_dir), state_root, persistent_paths)
+    home = Path(home_dir)
+    state_root = state_root_for_codes(runtime.workspace.code, runtime.agent_view.code, persistent_paths)
+    relocate = session_relocations(session_finder(runtime.harness), home, state_root, session_ids)
+    conflicts = copy_back_persistent_paths(home, state_root, persistent_paths, relocate=relocate)
+    if conflicts:
+        logger.warning("Run HOME %s kept: state/ cannot take %s", home,
+                       ", ".join(str(p.relative_to(home)) for p in conflicts))
+        return
+    drop_persistent_paths(home, persistent_paths)
 
 
 def _ensure_private_ssh_dir(artifacts_dir: Path | str) -> None:
@@ -117,6 +158,7 @@ def materialize_run_workspace(
     check_build: Callable[[object, int], None] | None = None,
     link_state: bool = False,
     thread_key: str | None = None,
+    resume_session_ids: Sequence[str] = (),
 ) -> tuple[Path | None, Path | None]:
     """Prepare ``(home_dir, working_dir)`` for one run.
 
@@ -147,6 +189,9 @@ def materialize_run_workspace(
     ``thread_key`` is the random key of the job's thread (``Job.thread_key``): the run dir
     gets ``./shared``, a link to the thread's ``shared/`` dir (``prepare_thread_dir``).
     ``agento run`` has no job, so no thread and no link.
+
+    ``resume_session_ids`` are the sessions the run may resume: only they are copied from
+    the agent_view's ``state/`` into the run HOME (``copy_in_persistent_paths``).
 
     Returns ``(None, None)`` when ``runtime`` carries no agent_view/workspace
     (blank jobs), mirroring the consumer guard.
@@ -292,9 +337,16 @@ def materialize_run_workspace(
             )
             # A run uid never gets state/, so it gets a copy (`save_persistent_state`). Only a
             # run that is `agent`'s own (`agento run`) may link to it.
-            (link_persistent_paths if link_state else copy_in_persistent_paths)(
-                artifacts_dir, state_root, persistent_paths,
-            )
+            if link_state:
+                link_persistent_paths(artifacts_dir, state_root, persistent_paths)
+            else:
+                finder = session_finder(runtime.harness)
+                sessions = None if finder is None else [
+                    p for sid in resume_session_ids
+                    if (p := _find_session(finder, state_root, sid)) is not None
+                ]
+                copy_in_persistent_paths(artifacts_dir, state_root, persistent_paths,
+                                         sessions=sessions)
 
         if credential is not None:
             writer = workspace_adapter_for(runtime.harness)

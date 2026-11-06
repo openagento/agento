@@ -64,7 +64,8 @@ forks. The claim writes `resume_job_id` on the row, so a FAILED or DEAD job reco
   revoked): the claim moves the job to its default thread and clears its session before the line
   rules run.
 - **A missing session file** (the harness's `session_file` finds no file of the target's
-  session in the run HOME): the job starts a fresh session, with one info log line.
+  session in the view's `state/`, so copy-in gave the run HOME none): the job starts a fresh
+  session, with one info log line.
 - The deprecated `resume_session_resolver` seam is asked only when the job has no target and was
   neither detached nor made fresh (removal: ROADMAP.md).
 
@@ -116,6 +117,22 @@ in its parent's turn ([conversation.md](../modules/conversation.md#turns-and-sub
 `jira/resume_session`, `jira_periodic_tasks/resume_session` and `subagent/wake_parent`
 ([config](../config/README.md#thread-and-session-settings)).
 
+## Retention
+
+The nightly `artifacts:prune` ([docs/cli/artifacts-prune.md](../cli/artifacts-prune.md),
+`core/artifacts/retention_days`, default 30, `0` keeps all) removes:
+
+- **a run dir** whose job ended (a terminal status) more than N days ago, or, with no job row,
+  whose mtime is older. It holds the job row lock and reads the status again, so a retry that
+  reopened the job keeps its dir. First it copies back into `state/` what the run left in its
+  persistent HOME paths; a dir whose content `state/` cannot take is kept and logged.
+- **a thread dir** `_threads/<key>` whose thread has no open job and whose last job ended more
+  than N days ago. It takes the thread row lock (`FOR UPDATE`) and re-reads the jobs under it, so
+  no job joins the thread while its dir goes. A later job of the thread gets a new, empty dir.
+
+Sessions live in `state/` and are never pruned, so an old thread still resumes. What its
+session refers to in `./shared` may be gone.
+
 ## Left out
 
-`_threads/` retention, a "Shared files" panel tab and a sweep for a missed wake: ROADMAP.md.
+A "Shared files" panel tab and a sweep for a missed wake: ROADMAP.md.

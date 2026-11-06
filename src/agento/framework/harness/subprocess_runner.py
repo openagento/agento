@@ -93,7 +93,8 @@ SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def move_session_into(store: Path, bucket: str, name_glob: str) -> bool:
-    """Move the newest ``<store>/*/<name_glob>`` into ``<store>/<bucket>``.
+    """Move the newest ``<store>/*/<name_glob>`` into ``<store>/<bucket>``, with its sibling
+    dir of the same stem (where a CLI keeps the session's sub-agents and tool results).
 
     For a CLI that files sessions under a slug of its cwd. Moved, not copied: one file per
     session, so a transcript reader finds one match. ``False`` when no such file exists.
@@ -105,7 +106,11 @@ def move_session_into(store: Path, bucket: str, name_glob: str) -> bool:
     if not found:
         return False
     target.mkdir(parents=True, exist_ok=True)
-    found[-1].rename(target / found[-1].name)
+    session = found[-1]
+    session.rename(target / session.name)
+    sidecar = session.parent / session.stem
+    if sidecar.is_dir() and not sidecar.is_symlink() and not os.path.lexists(target / sidecar.name):
+        sidecar.rename(target / sidecar.name)
     return True
 
 

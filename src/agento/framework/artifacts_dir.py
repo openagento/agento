@@ -5,7 +5,8 @@ It contains the copied config files + symlinks to build assets, and holds
 any per-job outputs the agent or toolbox drops (screenshots, videos, session
 scratch). Directories are created at job start and are **retained** afterwards —
 they hold the run's artifacts for review. `prepare_artifacts_dir` wipes a dir
-before reusing it; periodic cleanup of old run dirs is a ROADMAP item.
+before reusing it; the nightly `artifacts:prune` removes old run and thread dirs
+(`artifacts_retention.py`).
 `cleanup_artifacts_dir` below is the retired removal path, kept for callers that
 want it explicitly; nothing in the framework calls it.
 """
@@ -156,7 +157,8 @@ def cleanup_artifacts_dir(artifacts_dir: Path) -> None:
     """Remove the artifacts directory. NOT called by the framework any more.
 
     Run dirs are retained for review; a run dir is wiped by
-    ``prepare_artifacts_dir`` when the same run number is reused.
+    ``prepare_artifacts_dir`` when the same run number is reused, and removed by
+    ``artifacts:prune`` (``artifacts_retention.prune_run_dirs``) once its job ended long ago.
     """
     try:
         if artifacts_dir.exists():

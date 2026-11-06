@@ -202,6 +202,10 @@ not**. Relayed-only would be unbounded — with the consuming module disabled no
 relayed. A module's own shorter retention over relayed rows is a faster cleanup inside this
 backstop, never a replacement for it.
 
+`core/artifacts/retention_days` (default 30, `0` keeps all) is how long `artifacts:prune` (cron,
+nightly) keeps a run dir after its job ended, and a thread dir after its last job ended. The
+sessions in `state/` are never pruned ([artifacts-prune.md](../cli/artifacts-prune.md)).
+
 ## Testing a stored value
 
 A field may declare a **tester** — a probe that answers "does this credential actually work?",
