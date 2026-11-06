@@ -22,12 +22,17 @@ mail go, and the `to`/`cc`/`bcc` whitelist does not check it.
 
 ## Decisions
 
-1. **Remove `user` now from every shipped tool schema.** No deprecation release. The MCP SDK
-   (1.27.1) builds a plain `z.object(shape)`, which strips unknown keys, so a caller that still
-   sends `user` (an old prompt, a skill, a saved miniapp page) keeps working.
+1. **Remove `user` now from every shipped tool schema.** No deprecation release, no
+   compatibility layer, no leftover code. The dispatcher checks arguments with `.strict()`
+   (`toolbox/dispatcher.js` `argumentSchema`), so after this change a caller that still sends
+   `user` gets `invalid_arguments` and the tool does not run. This is accepted: the owner makes
+   sure that child projects (prompts, skills, miniapp pages) stop sending it. The dispatcher does
+   not change.
    Files: `toolbox/adapters/{mysql,mssql,opensearch}.js`,
    `modules/core/toolbox/{browser,schedule,email}.js`, `modules/jira/toolbox/jira.js`.
-   Each handler stops writing `user=…` in its log details.
+   Each handler stops writing `user=…` in its log details. In `browser.js` this includes the
+   `user` that `jsonSchemaToZodShape` adds to every forwarded Playwright tool, and the
+   destructuring that removes `user` from the forwarded arguments.
 
 2. **The logger writes the verified identity, once.** `createScopedLogger` (`toolbox/log.js`)
    takes the verified identity from the `authContext` that `buildRegistration`
@@ -66,15 +71,18 @@ mail go, and the `to`/`cc`/`bcc` whitelist does not check it.
    In `modules/miniapps/skills/miniapp-build/SKILL.md` remove `AGENT_EMAIL`, the `user` argument
    in the `callAction` example and the "Many tools (all Jira tools) require `user`" bullet.
    Document `core/smtp_reply_to` where the email tool / core config is documented. Add a release
-   note (CHANGELOG): user modules in `app/code/` should drop their own identity `user`
-   argument; the logger now writes the verified caller. No validator bans a parameter named
-   `user` (it can be a real business argument).
+   note (CHANGELOG, breaking): the shipped tools no longer take `user`, and a call that sends it
+   gets `invalid_arguments`; prompts, skills and miniapp pages must stop sending it (a miniapp
+   version that sends it must be rebuilt and approved again); user modules in `app/code/` should
+   drop their own identity `user` argument, because the logger now writes the verified caller.
+   No validator bans a parameter named `user` (it can be a real business argument).
 
 ## Tests
 
-1. A Jira tool, a mysql tool and `email_send` called with an extra
-   `user: "human@corp.com"`: the call succeeds, the log line has
-   `actor=agent subject=<view id> job=<id>`, and `human@corp.com` appears nowhere in the log.
+1. A Jira tool, a mysql tool and `email_send` called through the session logger: the log line
+   has `actor=agent subject=<view id> job=<id>` and no `user=`. Through the dispatcher, a call
+   that sends `user: "human@corp.com"` is refused with `invalid_arguments`, the handler does not
+   run, and `human@corp.com` appears nowhere in the log.
 2. The same kind of call through the invoke route with a `miniapp` (or `user_session`)
    capability logs `actor=user subject=<user id>`.
 3. A call with no agent_view logs `[actor=… subject=… job=…]` without the label part.
@@ -92,7 +100,7 @@ mail go, and the `to`/`cc`/`bcc` whitelist does not check it.
 ## Acceptance
 
 - No tool handler logs an LLM-supplied argument as identity.
-- `toolbox_mcp.log` lines show the verified agent_view, actor, subject and job even when the
-  model passes a different `user`.
+- `toolbox_mcp.log` lines show the verified agent_view, actor, subject and job. A model cannot
+  pass a `user` to a shipped tool (`invalid_arguments`).
 - `email_send` Reply-To comes only from config.
 - `bin/test` passes.
