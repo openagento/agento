@@ -88,7 +88,6 @@ Load the bridge from the kit, at the kit version the `miniapp-ui` skill names:
 ```js
 import { createAgentoSdk } from "/_ui/<kit version>/agento-bridge.js";
 const PANEL_ORIGIN = "https://panel.example.com"; // panel_origin from create_draft; never location.origin
-const AGENT_EMAIL = "agent@example.com"; // your own email from SOUL.md, as when you call the tool
 let sdk;
 try { sdk = createAgentoSdk({ panelOrigin: PANEL_ORIGIN }); }
 catch { status.textContent = "Open this app from the Agento panel."; }
@@ -106,15 +105,14 @@ function errorText(code, body) { // why an action failed, in words a user can re
 
 async function approve(row) { // a button click calls this
   await sdk.ready;
-  const { status: code, body } = await sdk.callAction("jira_add_comment", { user: AGENT_EMAIL, issue_key: row.key, body: row.text });
+  const { status: code, body } = await sdk.callAction("jira_add_comment", { issue_key: row.key, body: row.text });
   const why = errorText(code, body);
   if (why !== null) { /* mark the row failed; show `why` on the row with textContent; keep it editable */ }
 }
 ```
 
 - The arguments are the same as when you call that tool yourself. Give every required argument.
-  Many tools (all Jira tools) require `user`: your own email from SOUL.md. Write it into the page
-  as in the snippet. It is an identity for the log, not a secret.
+  Do not pass a `user` or any identity: the toolbox knows who calls, and refuses an unknown argument.
 - `status` other than 200, or `isError`, is a failure. Show the reason from `errorText` on that row,
   not only "Error": a failed body is always `{ok: false, error: {code, message}}`, and an `isError`
   result carries the tool's text. Do not retry a write by itself: let the user click again.

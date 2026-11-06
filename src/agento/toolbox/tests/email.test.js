@@ -30,6 +30,7 @@ async function buildHandler(coreOverrides = {}) {
       smtp_user: 'user@test.com',
       smtp_pass: 'pw',
       smtp_from: 'from@test.com',
+      smtp_reply_to: '',
       email_whitelist: '*@allowed.com,boss@other.com',
       ...coreOverrides,
     },
@@ -54,7 +55,6 @@ describe('email_send tool', () => {
   it('sends to a single-element to array (joined for nodemailer)', async () => {
     const { handler } = await buildHandler();
     const res = await handler({
-      user: 'agent@allowed.com',
       to: ['a@allowed.com'],
       subject: 'hi',
       body_html: '<p>hello</p>',
@@ -66,7 +66,6 @@ describe('email_send tool', () => {
       to: 'a@allowed.com',
       subject: 'hi',
       html: '<p>hello</p>',
-      replyTo: 'agent@allowed.com',
     });
     expect(sendMailMock.mock.calls[0][0].text).toBeUndefined();
   });
@@ -74,7 +73,6 @@ describe('email_send tool', () => {
   it('sends to multiple to recipients comma-joined', async () => {
     const { handler } = await buildHandler();
     await handler({
-      user: 'agent@allowed.com',
       to: ['a@allowed.com', 'b@allowed.com'],
       subject: 'group',
       body_html: '<p>team</p>',
@@ -87,7 +85,6 @@ describe('email_send tool', () => {
   it('populates cc and bcc when provided; omits them when absent', async () => {
     const { handler } = await buildHandler();
     await handler({
-      user: 'agent@allowed.com',
       to: ['a@allowed.com'],
       cc: ['boss@other.com'],
       bcc: ['c@allowed.com'],
@@ -100,7 +97,6 @@ describe('email_send tool', () => {
 
     sendMailMock.mockClear();
     await handler({
-      user: 'agent@allowed.com',
       to: ['a@allowed.com'],
       subject: 's',
       body_html: '<p>b</p>',
@@ -113,7 +109,6 @@ describe('email_send tool', () => {
   it('rejects the entire send if any recipient (to/cc/bcc) is not whitelisted', async () => {
     const { handler } = await buildHandler();
     const res = await handler({
-      user: 'agent@allowed.com',
       to: ['a@allowed.com'],
       cc: ['stranger@evil.com'],
       subject: 's',
@@ -129,7 +124,6 @@ describe('email_send tool', () => {
   it('rejects attachments whose path is not inside /workspace/', async () => {
     const { handler } = await buildHandler();
     const res = await handler({
-      user: 'agent@allowed.com',
       to: ['a@allowed.com'],
       subject: 's',
       body_html: '<p>b</p>',
@@ -145,7 +139,6 @@ describe('email_send tool', () => {
     statMock.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     const { handler } = await buildHandler();
     const res = await handler({
-      user: 'agent@allowed.com',
       to: ['a@allowed.com'],
       subject: 's',
       body_html: '<p>b</p>',
@@ -161,7 +154,6 @@ describe('email_send tool', () => {
     statMock.mockResolvedValueOnce({ isFile: () => true, size: 26 * 1024 * 1024 });
     const { handler } = await buildHandler();
     const res = await handler({
-      user: 'agent@allowed.com',
       to: ['a@allowed.com'],
       subject: 's',
       body_html: '<p>b</p>',
@@ -177,7 +169,6 @@ describe('email_send tool', () => {
   it('sends with attachments wired through to nodemailer (filename = basename, path = absolute)', async () => {
     const { handler } = await buildHandler();
     const res = await handler({
-      user: 'agent@allowed.com',
       to: ['a@allowed.com'],
       subject: 's',
       body_html: '<p>b</p>',
@@ -199,7 +190,6 @@ describe('email_send tool', () => {
   it('reports SMTP-not-configured error without calling sendMail', async () => {
     const { handler } = await buildHandler({ smtp_host: null });
     const res = await handler({
-      user: 'agent@allowed.com',
       to: ['a@allowed.com'],
       subject: 's',
       body_html: '<p>b</p>',
@@ -208,5 +198,32 @@ describe('email_send tool', () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/SMTP not configured/i);
     expect(sendMailMock).not.toHaveBeenCalled();
+  });
+
+  // Reply-To decides where a recipient's answer goes, so it comes from config only.
+  it('takes no user argument', async () => {
+    const { schema } = await buildHandler();
+    expect(Object.keys(schema)).not.toContain('user');
+  });
+
+  it('sends no Reply-To when core/smtp_reply_to is empty', async () => {
+    const { handler } = await buildHandler();
+    await handler({ to: ['a@allowed.com'], subject: 's', body_html: '<p>b</p>' });
+    expect(sendMailMock.mock.calls[0][0]).not.toHaveProperty('replyTo');
+  });
+
+  it('sets Reply-To from core/smtp_reply_to', async () => {
+    const { handler } = await buildHandler({ smtp_reply_to: 'support@test.com' });
+    await handler({ to: ['a@allowed.com'], subject: 's', body_html: '<p>b</p>' });
+    expect(sendMailMock.mock.calls[0][0].replyTo).toBe('support@test.com');
+  });
+
+  it('refuses to send when core/smtp_reply_to is not one valid email', async () => {
+    const { handler, log } = await buildHandler({ smtp_reply_to: 'a@test.com, b@test.com' });
+    const res = await handler({ to: ['a@allowed.com'], subject: 's', body_html: '<p>b</p>' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/smtp_reply_to/);
+    expect(sendMailMock).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith('email_send', 'ERROR', 'invalid core/smtp_reply_to');
   });
 });

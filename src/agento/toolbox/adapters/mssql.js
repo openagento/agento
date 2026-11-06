@@ -10,9 +10,8 @@ import { sanitizeHealthError } from '../health-run.js';
 const ALLOWED_KEYWORDS = ['SELECT', 'WITH'];
 
 function createMssqlTool(server, toolName, description, config, options) {
-  // The session logger carries the agent_view label/id, so tool invocations are attributable to
-  // a scope — not only to the LLM-supplied `user`. Falls back to the process-wide MCP logger for
-  // interactive runs and tool-list sessions with no agent_view.
+  // The session logger names the verified caller (and the agent_view), so tool invocations are
+  // attributable. Falls back to the process-wide MCP logger outside a session.
   const log = options.log || processLog;
   const port = parseInt(config.port || '1433');
   const configuredPoolMax = Number.parseInt(config.client_connection_pool_max_per_tool, 10);
@@ -54,12 +53,11 @@ function createMssqlTool(server, toolName, description, config, options) {
     toolName,
     description,
     {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       query: z.string().describe('SQL query to execute (SELECT only)'),
     },
-    async ({ user, query }) => {
+    async ({ query }) => {
       if (!config.host || !config.pass) {
-        log(toolName, 'ERROR', `user=${user} - not configured (missing host or pass)`);
+        log(toolName, 'ERROR', `not configured (missing host or pass)`);
         return {
           content: [{ type: 'text', text: `Error: ${toolName} not configured. Set host and pass via bin/agento config:set or ENV vars.` }],
           isError: true,
@@ -67,14 +65,14 @@ function createMssqlTool(server, toolName, description, config, options) {
       }
 
       if (!isReadOnlySql(query, ALLOWED_KEYWORDS, { dialect: 'mssql' })) {
-        log(toolName, 'BLOCKED', `user=${user} non-readonly query: ${query.substring(0, 80)}`);
+        log(toolName, 'BLOCKED', `non-readonly query: ${query.substring(0, 80)}`);
         return {
           content: [{ type: 'text', text: 'Error: Only SELECT and WITH queries are allowed.' }],
           isError: true,
         };
       }
 
-      log(toolName, 'QUERY', `user=${user} | ${query}`);
+      log(toolName, 'QUERY', `| ${query}`);
       const start = Date.now();
       let pool;
 
@@ -88,13 +86,13 @@ function createMssqlTool(server, toolName, description, config, options) {
         const elapsed = Date.now() - start;
         const rows = result.recordset;
 
-        log(toolName, 'OK', `user=${user} time=${elapsed}ms rows=${rows.length}`);
+        log(toolName, 'OK', `time=${elapsed}ms rows=${rows.length}`);
 
         const text = JSON.stringify(rows, null, 2);
         return { content: [{ type: 'text', text }] };
       } catch (err) {
         if (pool?.healthy === false) poolHandle.invalidate();
-        log(toolName, 'ERROR', `user=${user} ${err.message}`);
+        log(toolName, 'ERROR', `${err.message}`);
         const message = describeMssqlError(err, { clientTimeoutMs: options.sqlTimeoutMs });
         return {
           content: [{ type: 'text', text: message || `Query error: ${err.message}` }],

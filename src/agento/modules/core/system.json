@@ -10,6 +10,7 @@
   "smtp_user": {"type": "string", "label": "SMTP user", "tester": {"kind": "smtp", "host": "{core/smtp_host}", "port": "{core/smtp_port}", "user": "{core/smtp_user}", "pass": "{core/smtp_pass}"}},
   "smtp_pass": {"type": "obscure", "label": "SMTP password", "tester": {"kind": "smtp", "host": "{core/smtp_host}", "port": "{core/smtp_port}", "user": "{core/smtp_user}", "pass": "{core/smtp_pass}"}},
   "smtp_from": {"type": "string", "label": "SMTP from address"},
+  "smtp_reply_to": {"type": "string", "label": "SMTP reply-to address (empty: replies go to the from address)"},
   "allowed_domains": {"type": "string", "label": "Allowed browser domains (comma-separated)"},
   "allow_subdomains": {"type": "boolean", "label": "Allow subdomains for browser"},
   "allow_http": {"type": "boolean", "label": "Allow HTTP (not just HTTPS) for browser"},

@@ -117,9 +117,8 @@ async function runQuery(pool, sql, { connectionConfig, clientTimeoutMs, limits, 
 
 function createMysqlTool(server, toolName, description, config, options) {
   const tier = TIERS[options.tier] || TIERS['read-only'];
-  // The session logger carries the agent_view label/id, so every decision this tool logs is
-  // attributable to a scope — not only to the LLM-supplied `user`. Falls back to the
-  // process-wide MCP logger for interactive runs and tool-list sessions with no agent_view.
+  // The session logger names the verified caller (and the agent_view), so every decision this
+  // tool logs is attributable. Falls back to the process-wide MCP logger outside a session.
   const log = options.log || processLog;
   const port = parseInt(config.port || '3306');
   const configuredPoolMax = Number.parseInt(config.client_connection_pool_max_per_tool, 10);
@@ -157,12 +156,11 @@ function createMysqlTool(server, toolName, description, config, options) {
     toolName,
     tier.describeTool(description),
     {
-      user: z.string().email().describe('Your (the LLM agent) email address from SOUL.md — identity credential'),
       query: z.string().describe(tier.queryDescription),
     },
-    async ({ user, query }) => {
+    async ({ query }) => {
       if (!config.host || !config.pass) {
-        log(toolName, 'ERROR', `user=${user} type=${tier.type} - not configured (missing host or pass)`);
+        log(toolName, 'ERROR', `type=${tier.type} not configured (missing host or pass)`);
         return {
           content: [{ type: 'text', text: `Error: ${toolName} not configured. Set host and pass via bin/agento config:set or ENV vars.` }],
           isError: true,
@@ -170,14 +168,14 @@ function createMysqlTool(server, toolName, description, config, options) {
       }
 
       if (tier.guard && !tier.guard(query)) {
-        log(toolName, 'BLOCKED', `user=${user} type=${tier.type} non-readonly query: ${query.substring(0, 80)}`);
+        log(toolName, 'BLOCKED', `type=${tier.type} non-readonly query: ${query.substring(0, 80)}`);
         return {
           content: [{ type: 'text', text: tier.blockMessage }],
           isError: true,
         };
       }
 
-      log(toolName, 'QUERY', `user=${user} type=${tier.type} | ${query}`);
+      log(toolName, 'QUERY', `type=${tier.type} | ${query}`);
       const start = Date.now();
 
       try {
@@ -185,18 +183,18 @@ function createMysqlTool(server, toolName, description, config, options) {
           connectionConfig,
           clientTimeoutMs: options.sqlTimeoutMs,
           limits,
-          warn: message => log(toolName, 'WARN', `user=${user} type=${tier.type} ${message}`),
+          warn: message => log(toolName, 'WARN', `type=${tier.type} ${message}`),
         }));
         const elapsed = Date.now() - start;
         const rowCount = Array.isArray(rows) ? rows.length : '?';
 
-        log(toolName, 'OK', `user=${user} type=${tier.type} time=${elapsed}ms rows=${rowCount}`);
+        log(toolName, 'OK', `type=${tier.type} time=${elapsed}ms rows=${rowCount}`);
 
         const text = JSON.stringify(rows, null, 2);
         return { content: [{ type: 'text', text }] };
       } catch (err) {
         const cancelled = err.cancelled === undefined ? '' : ` server_cancelled=${err.cancelled}`;
-        log(toolName, 'ERROR', `user=${user} type=${tier.type} ${err.message}${cancelled}`);
+        log(toolName, 'ERROR', `type=${tier.type} ${err.message}${cancelled}`);
         const message = describeMysqlError(err, {
           clientTimeoutMs: options.sqlTimeoutMs,
           statementTimeoutMs: limits.statementTimeoutMs,

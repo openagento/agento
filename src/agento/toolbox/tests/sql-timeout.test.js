@@ -60,13 +60,13 @@ describe('MySQL tool timeout', () => {
 
   it('passes default timeout to pool.query when not configured', async () => {
     const { handler, mockQuery } = await buildMysqlTool(undefined);
-    await handler({ user: 'test@example.com', query: 'SELECT 1' });
+    await handler({ query: 'SELECT 1' });
     expect(mockQuery).toHaveBeenCalledWith({ sql: 'SELECT 1', timeout: 300_000 });
   });
 
   it('passes the timeout captured during tool registration', async () => {
     const { handler, mockQuery } = await buildMysqlTool(5);
-    await handler({ user: 'test@example.com', query: 'SELECT 1' });
+    await handler({ query: 'SELECT 1' });
     expect(mockQuery).toHaveBeenCalledWith({ sql: 'SELECT 1', timeout: 5_000 });
   });
 });
@@ -98,13 +98,13 @@ describe('MSSQL tool timeout', () => {
 
   it('passes default requestTimeout to the connection pool when not configured', async () => {
     const { handler, ConnectionPool } = await buildMssqlTool(undefined);
-    await handler({ user: 'test@example.com', query: 'SELECT 1' });
+    await handler({ query: 'SELECT 1' });
     expect(ConnectionPool).toHaveBeenCalledWith(expect.objectContaining({ requestTimeout: 300_000 }));
   });
 
   it('passes the configured timeout as requestTimeout to the connection pool', async () => {
     const { handler, ConnectionPool } = await buildMssqlTool(5);
-    await handler({ user: 'test@example.com', query: 'SELECT 1' });
+    await handler({ query: 'SELECT 1' });
     expect(ConnectionPool).toHaveBeenCalledWith(expect.objectContaining({ requestTimeout: 5_000 }));
   });
 
@@ -145,8 +145,8 @@ describe('MSSQL tool timeout', () => {
       sqlPoolRegistry: registry,
     });
 
-    await handlers[0]({ user: 'test@example.com', query: 'SELECT 1' });
-    await handlers[1]({ user: 'test@example.com', query: 'SELECT 1' });
+    await handlers[0]({ query: 'SELECT 1' });
+    await handlers[1]({ query: 'SELECT 1' });
     expect(requests).toHaveLength(2);
     expect(ConnectionPool.mock.calls.map(([cfg]) => cfg.requestTimeout)).toEqual([5_000, 300_000]);
   });
@@ -200,7 +200,7 @@ describe('MySQL server-side limits and cancellation', () => {
       config: { host: 'localhost', port: 3306, user: 'user', pass: 'secret', database: 'testdb', ...config },
     }], { sqlTimeoutSeconds: 300, sqlPoolRegistry: await newRegistry() });
 
-    const run = () => handler({ user: 'test@example.com', query: 'SELECT 1' });
+    const run = () => handler({ query: 'SELECT 1' });
     return { run, connection: mockPool.connection, createConnection, killer };
   }
 
@@ -306,7 +306,7 @@ describe('MSSQL lock timeout and error text', () => {
       config: { host: 'localhost', port: 1433, user: 'user', pass: 'secret', database: 'testdb', ...config },
     }], { sqlTimeoutSeconds: 300, sqlPoolRegistry: await newRegistry() });
 
-    const run = () => handler({ user: 'test@example.com', query: 'SELECT 1' });
+    const run = () => handler({ query: 'SELECT 1' });
     return { run, requests };
   }
 

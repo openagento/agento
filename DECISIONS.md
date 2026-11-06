@@ -4,6 +4,29 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-11-06 — Remove the tool `user` argument at once (AG-83)
+
+22 tools took `user`, an email the model typed, logged it as the caller and (in `email_send`)
+used it as `Reply-To`. The capability already gives the verified caller (`actor`, `subject_id`,
+`agent_view_id`, `job_id`), and `tool_invocation` stores it.
+
+- **The logger writes the caller, not the tools.** `createScopedLogger(agentViewMeta, caller)`
+  puts `[actor=… subject=… job=…]` on every `toolbox_mcp.log` line, from the session's
+  `authContext`. A tool cannot log a wrong identity, and a third-party tool gets it free.
+- **No compatibility form (CODE-5 waived).** The old form is an identity that the agent supplies
+  and a `Reply-To` that the agent controls, against SEC-7 (scope from a trusted source). The
+  dispatcher checks arguments strictly, so a caller that still sends `user` gets
+  `invalid_arguments`. Owner, 2026-11-06: "i want the most clear solution. i dont want any
+  wastes, or dead code or leaftover bc sb may be still using it. we will make sure in our child
+  projects that nobody is sending this user parameter to tool call."
+- **`Reply-To` from `core/smtp_reply_to`**, empty by default. A value that is not one email
+  refuses the send (fail closed).
+- **No email identity in the log.** The Outlook mailbox is a module field, is shared in routed
+  mode, and many views have none; the agent_view id and the capability subject identify the
+  caller exactly.
+
+---
+
 ## 2026-11-06 — Persistent HOME: copy only the resumed session; retention of run and thread dirs (D-PHOME-1)
 
 Since 1.0 every run dir got a full copy of `state/<persistent path>`: about 870 MB per run and

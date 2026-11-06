@@ -54,8 +54,8 @@ describe('SQL pool registry', () => {
     ], { sqlPoolRegistry: registry });
 
     const [bi, nav] = await Promise.all([
-      server.handlers.get('mssql_analytics')({ user: 'agent@example.com', query: 'SELECT DB_NAME()' }),
-      server.handlers.get('mssql_erp')({ user: 'agent@example.com', query: 'SELECT DB_NAME()' }),
+      server.handlers.get('mssql_analytics')({ query: 'SELECT DB_NAME()' }),
+      server.handlers.get('mssql_erp')({ query: 'SELECT DB_NAME()' }),
     ]);
 
     expect(ConnectionPool).toHaveBeenCalledTimes(2);
@@ -88,8 +88,8 @@ describe('SQL pool registry', () => {
     registerMssqlTools(firstServer, [tool], { sqlPoolRegistry: registry });
     registerMssqlTools(secondServer, [tool], { sqlPoolRegistry: registry });
 
-    const first = firstServer.handlers.get('mssql_bi')({ user: 'agent@example.com', query: 'SELECT 1' });
-    const second = secondServer.handlers.get('mssql_bi')({ user: 'agent@example.com', query: 'SELECT 1' });
+    const first = firstServer.handlers.get('mssql_bi')({ query: 'SELECT 1' });
+    const second = secondServer.handlers.get('mssql_bi')({ query: 'SELECT 1' });
     await vi.waitFor(() => expect(ConnectionPool).toHaveBeenCalledTimes(1));
     resolveConnect();
     await Promise.all([first, second]);
@@ -130,9 +130,9 @@ describe('SQL pool registry', () => {
     registerMysqlTools(secondServer, [{ ...base, config: { ...base.config } }], { sqlPoolRegistry: registry });
     registerMysqlTools(changedConfigServer, [{ ...base, config: { ...base.config, database: 'reporting_archive' } }], { sqlPoolRegistry: registry });
 
-    await firstServer.handlers.get('mysql_reporting')({ user: 'agent@example.com', query: 'SELECT 1' });
-    await secondServer.handlers.get('mysql_reporting')({ user: 'agent@example.com', query: 'SELECT 1' });
-    await changedConfigServer.handlers.get('mysql_reporting')({ user: 'agent@example.com', query: 'SELECT 1' });
+    await firstServer.handlers.get('mysql_reporting')({ query: 'SELECT 1' });
+    await secondServer.handlers.get('mysql_reporting')({ query: 'SELECT 1' });
+    await changedConfigServer.handlers.get('mysql_reporting')({ query: 'SELECT 1' });
 
     expect(createPool).toHaveBeenCalledTimes(2);
     expect(pools.map(pool => pool.config.database)).toEqual(['reporting', 'reporting_archive']);
