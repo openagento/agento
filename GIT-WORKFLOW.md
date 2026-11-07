@@ -11,3 +11,4 @@ For github interactions use gh cli tool or github mcp tools if available.
 5. Language - always English for communicating in public repo.
 6. Merge - always `--ff-only`, no merge commits. Never merge automatically: merge only when a human asks.
 7. Stage - stage explicit paths. Never `git add -A` or `git add .`.
+8. Before commit - remove `docs/superpowers/` (specs and plans from the superpowers skills). It never goes into the repo: `git rm -r --cached --ignore-unmatch docs/superpowers && rm -rf docs/superpowers`.

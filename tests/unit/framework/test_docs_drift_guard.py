@@ -9,8 +9,8 @@ legal and is allowlisted rather than banned:
 
 The ``token:*`` command aliases were removed in v0.17, so a doc that names one is drift.
 
-``docs/migrations/**`` and ``docs/superpowers/plans/**`` are explicitly historical
-records of what the system *used to be*, so they are exempt entirely.
+``docs/migrations/**`` is an explicitly historical record of what the system *used to
+be*, so it is exempt entirely.
 
 This test exists because the first documentation pass silently left five `token:*` rows
 and a "Tokens" heading in ``docs/cli/README.md`` — exactly the failure mode it catches.
@@ -25,7 +25,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 
 # Directories whose whole point is to record superseded state.
-EXEMPT_PREFIXES = ("docs/migrations/", "docs/superpowers/")
+EXEMPT_PREFIXES = ("docs/migrations/",)
 
 # Phrase → files where an occurrence is EXPECTED (relative paths, prefix match).
 # A phrase with an empty allowlist is banned everywhere.
