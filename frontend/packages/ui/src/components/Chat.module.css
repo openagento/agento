@@ -14,7 +14,8 @@
   padding-right: var(--mantine-spacing-xs); border-right: 1px solid var(--mantine-color-default-border);
 }
 /* The grip over the rail's border: a wider hit area than the hairline it sits on. */
-.railResizer { position: absolute; inset-block: 0; right: calc(-1 * var(--mantine-spacing-xs) / 2); width: 7px; cursor: col-resize; }
+/* Doubled class: UnstyledButton sets `cursor: pointer` in a rule of equal weight that wins on order. */
+.railResizer.railResizer { position: absolute; inset-block: 0; right: calc(-1 * var(--mantine-spacing-xs) / 2); width: 7px; cursor: col-resize; }
 .railResizer:hover, .railResizer:focus-visible { background-color: var(--mantine-color-default-border); }
 /* While dragging, the pointer must not select the text it passes over. */
 .resizing { user-select: none; cursor: col-resize; }
