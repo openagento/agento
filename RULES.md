@@ -495,6 +495,11 @@ Use a scoped text search with an allow-list only where no structural check is po
 **TST-3 Honest doubles (P1).** A test double for an external API or process fails where the real one
 fails (DECISIONS.md D2h).
 
+**TST-5 No data-patch tests (P1).** A data patch runs once per deployment and is then frozen in the
+`data_patch` table, so a test for it guards nothing and slows every CI run forever. Do not write
+tests for a module's `src/patches/*` classes; verify a patch by running `setup:upgrade` once. The
+patch *engine* (`framework/data_patch.py`) keeps its tests — it runs on every upgrade.
+
 **TST-4 One behaviour, one test (P2).** Cases that differ only in input data use
 `@pytest.mark.parametrize` / `it.each`. A test that duplicates the body of another test, or a fixture
 copied across modules, is a finding. A unit test does not wait on a real clock: inject the timeout,
