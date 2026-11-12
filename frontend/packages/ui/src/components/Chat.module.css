@@ -6,14 +6,23 @@
   height: calc(100dvh - var(--app-shell-header-height, 0px) - 2 * var(--app-shell-padding, 0px));
   min-height: 0;
 }
-.split { display: grid; grid-template-columns: 272px minmax(0, 1fr); gap: var(--mantine-spacing-md); }
+/* The rail width is dragged (SplitView writes --rail-width) and kept in local storage. */
+.split { display: grid; grid-template-columns: var(--rail-width, 272px) minmax(0, 1fr); gap: var(--mantine-spacing-md); }
 .narrow { display: flex; flex-direction: column; gap: var(--mantine-spacing-xs); }
 .nav {
-  min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr);
+  position: relative; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr);
   padding-right: var(--mantine-spacing-xs); border-right: 1px solid var(--mantine-color-default-border);
 }
+/* The grip over the rail's border: a wider hit area than the hairline it sits on. */
+/* Doubled class: UnstyledButton sets `cursor: pointer` in a rule of equal weight that wins on order. */
+.railResizer.railResizer { position: absolute; inset-block: 0; right: calc(-1 * var(--mantine-spacing-xs) / 2); width: 7px; cursor: col-resize; }
+.railResizer:hover, .railResizer:focus-visible { background-color: var(--mantine-color-default-border); }
+/* While dragging, the pointer must not select the text it passes over. */
+.resizing { user-select: none; cursor: col-resize; }
 /* The rail's own scroll region: the top block (new, search, scope) stays put. */
-.railList { min-height: 0; overflow-y: auto; }
+.railList { min-height: 0; }
+/* Mantine lays the viewport content out as a table, which sizes to the untruncated titles. */
+.railList :global([data-scrollarea-viewport]) > * { display: block; }
 .railTop { display: flex; flex-direction: column; gap: calc(var(--mantine-spacing-xs) / 2); padding-bottom: var(--mantine-spacing-xs); }
 /* The rail is narrow: a wrapping row would drop the search toggle onto its own line. */
 .railTop :global(.ag-row) { flex-wrap: nowrap; }

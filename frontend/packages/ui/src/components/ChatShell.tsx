@@ -1,14 +1,51 @@
 // The chat screen frame: threads on the left, the open thread on the right. Below the `sm`
 // breakpoint the thread list moves into a Drawer behind a Burger (U9).
-import { Box, Burger, Button, Drawer, Menu, Text, Tooltip, UnstyledButton } from "@mantine/core";
-import { useDisclosure, useMediaQuery } from "@mantine/hooks";
+import { Box, Burger, Button, Drawer, Menu, ScrollArea, Text, Tooltip, UnstyledButton } from "@mantine/core";
+import { useDisclosure, useLocalStorage, useMediaQuery } from "@mantine/hooks";
 import { ChevronDown, ChevronRight, PinOff, Search, SquarePen, X } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import classes from "./Chat.module.css";
 import { EditableTitle } from "./Headers";
 import { IconAction } from "./IconAction";
 import { RowMenu, type RowAction } from "./RowMenu";
 import type { BadgeTone } from "./StatusBadge";
+
+/** The rail is dragged between these, and the width is kept per browser. */
+const RAIL_MIN = 220, RAIL_MAX = 480, RAIL_DEFAULT = 272, RAIL_STEP = 16;
+export const clampRail = (w: number) => Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(w)));
+
+/** The grip on the rail's border. The drag writes the width straight onto the page element (a
+ *  `style` prop is not allowed here, UI-1) and commits it to storage on release. */
+function RailResizer({ width, onWidth, pageRef }: {
+  width: number; onWidth: (w: number) => void; pageRef: RefObject<HTMLDivElement | null>;
+}) {
+  const widthAt = (clientX: number) => clampRail(clientX - (pageRef.current?.getBoundingClientRect().left ?? 0));
+  const onPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const move = (ev: PointerEvent) => pageRef.current?.style.setProperty("--rail-width", `${widthAt(ev.clientX)}px`);
+    const up = (ev: PointerEvent) => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", up);
+      document.body.classList.remove(classes.resizing);
+      onWidth(widthAt(ev.clientX));
+    };
+    document.body.classList.add(classes.resizing);
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", up);
+  };
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const step = e.key === "ArrowLeft" ? -RAIL_STEP : e.key === "ArrowRight" ? RAIL_STEP : 0;
+    if (!step) return;
+    e.preventDefault();
+    onWidth(clampRail(width + step));
+  };
+  return (
+    /* A slider, not a `separator`: it is focusable and the arrow keys resize it. */
+    <UnstyledButton className={classes.railResizer} role="slider"
+      aria-label="Resize the conversation list" aria-valuenow={width} aria-valuemin={RAIL_MIN}
+      aria-valuemax={RAIL_MAX} onPointerDown={onPointerDown} onKeyDown={onKeyDown} />
+  );
+}
 
 /** `nav` gets `close` so a pick in the narrow Drawer also shuts it. It is called, never
  *  rendered as a component (UI-6). */
@@ -17,6 +54,10 @@ export function SplitView({ navLabel, nav, children }: {
 }) {
   const narrow = useMediaQuery("(max-width: 48em)");
   const [opened, { toggle, close }] = useDisclosure(false);
+  const [stored, setWidth] = useLocalStorage({ key: "agento-rail-width", defaultValue: RAIL_DEFAULT, getInitialValueInEffect: false });
+  const width = clampRail(stored);
+  const pageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { pageRef.current?.style.setProperty("--rail-width", `${width}px`); }, [width, narrow]);
   if (narrow) {
     return (
       <div className={`${classes.page} ${classes.narrow}`}>
@@ -27,8 +68,11 @@ export function SplitView({ navLabel, nav, children }: {
     );
   }
   return (
-    <div className={`${classes.page} ${classes.split}`}>
-      <nav aria-label={navLabel} className={classes.nav}>{nav(() => {})}</nav>
+    <div className={`${classes.page} ${classes.split}`} ref={pageRef}>
+      <nav aria-label={navLabel} className={classes.nav}>
+        {nav(() => {})}
+        <RailResizer width={width} onWidth={setWidth} pageRef={pageRef} />
+      </nav>
       <div className={classes.main}>{children}</div>
     </div>
   );
@@ -39,7 +83,7 @@ export function Rail({ top, children }: { top: ReactNode; children: ReactNode })
   return (
     <>
         <div className={classes.railTop}>{top}</div>
-        <div className={classes.railList}>{children}</div>
+        <ScrollArea className={classes.railList} type="auto" scrollbars="y" scrollbarSize={8}>{children}</ScrollArea>
     </>
   );
 }
@@ -108,9 +152,11 @@ function ThreadRow({ thread, depth = 0 }: { thread: ThreadLink; depth?: number }
           </UnstyledButton>
         </Tooltip>
       )}
+      {/* A running conversation is always marked, not only on hover: the dot sits outside
+          `.threadActions`, and pulses through the same halo a running job row uses. */}
+      {thread.live && <span className={classes.statusDot} data-tone="running" aria-label="running" role="img" />}
       {/* While the menu is open its target keeps focus, so `:focus-within` holds the row open. */}
       <div className={classes.threadActions}>
-        {thread.live && <Text size="xs" c="green" aria-label="running">●</Text>}
         {thread.pinned && thread.onPin && (
           <IconAction label="Unpin" icon={<PinOff size={14} />} onClick={() => thread.onPin!(false)} />
         )}

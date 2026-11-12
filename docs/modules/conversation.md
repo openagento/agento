@@ -128,6 +128,10 @@ In a channel thread, a follow-up turn
 (`schedule_followup`, or a sub-agent's wake) is labelled "Follow-up", with "resumes #id" when
 it continues a session.
 
+A running conversation keeps a pulsing green dot on its row, visible without hover. The rail
+itself is dragged by the grip on its right border (220-480 px, arrow keys too) and the width is
+kept in the browser (`agento-rail-width` in local storage).
+
 The rail shows the same nesting as a tree under the open conversation: one row per sub-agent
 job, under its parent job's row, built from the thread's `jobs` (a queued job has a row too).
 Between the chevron and the name a dot shows the job's status in the Jobs page tones (TODO

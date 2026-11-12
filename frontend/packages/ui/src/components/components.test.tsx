@@ -7,7 +7,7 @@ import { Markdown } from "./Markdown";
 import { ChatComposer, ChatError, ToolCall } from "./Chat";
 import { ArchiveAction, DeleteAction, EndAction, MakeCurrentAction, OpenAction, RegenerateAction } from "./IconAction";
 import { CopyButton } from "./CopyButton";
-import { MenuButton, ThreadList } from "./ChatShell";
+import { clampRail, MenuButton, ThreadList } from "./ChatShell";
 import { MemoryRouter } from "react-router";
 import { AppTile, TileGrid, ViewToggle } from "./Tiles";
 import { AppLink } from "./Link";
@@ -268,5 +268,25 @@ describe("RowMenu", () => {
   it("renders nothing when the row has no action", () => {
     render(<RowMenu actions={[]} />, { wrapper: AgentoUiProvider });
     expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+describe("ThreadList running dot", () => {
+  it("marks a running conversation outside the hover-only actions", () => {
+    render(<ThreadList groups={[{ label: "Today", threads: [
+      { id: 1, title: "Live one", live: true, onSelect: () => {} },
+      { id: 2, title: "Quiet one", onSelect: () => {} }] }]} />, { wrapper: AgentoUiProvider });
+    const dot = screen.getByLabelText("running");
+    expect(dot.className).toContain("statusDot");
+    expect(dot.dataset.tone).toBe("running");
+    expect(dot.closest("[class*=threadActions]")).toBeNull();
+  });
+});
+
+describe("clampRail", () => {
+  it("keeps the rail width between its bounds", () => {
+    expect(clampRail(10)).toBe(220);
+    expect(clampRail(9000)).toBe(480);
+    expect(clampRail(300.4)).toBe(300);
   });
 });
