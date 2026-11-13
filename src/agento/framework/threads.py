@@ -57,7 +57,7 @@ def ensure_thread(cur, *, agent_view_id: int | None, ref: str, lock: bool = Fals
     """
     if len(ref) > MAX_REF_LENGTH:
         raise ValueError(f"thread ref longer than {MAX_REF_LENGTH} characters")
-    ref_hash = hashlib.sha1(ref.encode()).hexdigest()
+    ref_hash = hashlib.sha1(ref.encode(), usedforsecurity=False).hexdigest()  # a lookup key, not a secret
     if agent_view_id is not None:
         cur.execute("SELECT id FROM thread WHERE agent_view_id = %s AND ref_hash = %s",
                     (agent_view_id, ref_hash))
