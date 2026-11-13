@@ -66,7 +66,7 @@ Docker Compose `env_file` strips double quotes from values, which breaks JSON sy
 
 ```bash
 bin/agento config:set jira/jira_projects '["AI", "K3"]'
-bin/agento config:set jira/frequency_map '{"Daily":"0 8 * * *"}'
+bin/agento config:set jira_periodic_tasks/frequency_map '{"Daily":"FREQ=DAILY;BYHOUR=8;BYMINUTE=0"}'
 ```
 
 Only scalar values (strings, integers, booleans) work reliably in env files.

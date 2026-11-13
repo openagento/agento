@@ -46,7 +46,7 @@ def _make_entry(issue_key: str, agent_view_code: str = "") -> CronEntry:
         issue_key=issue_key,
         summary="t",
         frequency_label="Co 5min",
-        cron_expression="*/5 * * * *",
+        rrule="FREQ=HOURLY;BYMINUTE=0,5,10,15,20,25,30,35,40,45,50,55",
         agent_view_code=agent_view_code,
     )
 

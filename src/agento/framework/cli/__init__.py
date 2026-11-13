@@ -149,6 +149,7 @@ def _register_framework_commands() -> None:
         SetRuntimeCommand,
         SetupUpgradeCommand,
     )
+    from .schedule import SchedulerTickCommand
     from .upgrade import UpgradeCommand
 
     for cmd_cls in [
@@ -166,7 +167,7 @@ def _register_framework_commands() -> None:
         CredentialSetPriorityCommand, CredentialUsageCommand,
         CredentialLimitsCommand, CredentialWebLoginCommand,
         CapabilityMintCommand, CapabilityRevokeCommand,
-        LimitsPruneCommand, OutboxPruneCommand,
+        LimitsPruneCommand, OutboxPruneCommand, SchedulerTickCommand,
         *ACCESS_COMMANDS,
     ]:
         register_command(cmd_cls())

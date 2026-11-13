@@ -364,7 +364,8 @@ def test_a_plain_user_cannot_reply(conn, world):
     assert _reply(conn, world["owner"], cid).status == 404
     assert service.can_write_channel(
         conn, world["owner"],
-        {"agent_view_id": world["view"], "workspace_id": world["workspace"]}) is False
+        {"id": cid, "channel": "jira", "agent_view_id": world["view"],
+         "workspace_id": world["workspace"]}) is False
 
 
 def test_a_reply_is_refused_when_the_thread_has_nothing_to_reply_to(conn, world):

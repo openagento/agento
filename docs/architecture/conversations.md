@@ -186,7 +186,8 @@ unique; see [threads.md](threads.md)). At claim,
 `ConversationExecutionIds.mint` gives the new `execution` row the `conversation_id` of its job's
 thread (`service.link_execution`), one path for every job. A panel conversation gets its thread
 (`conversation:<id>`) when it is created. Any other thread (a Jira issue, a mail conversation, a
-PR, a cron) gets its **channel conversation** at its first run: `user_id` NULL, `channel` =
+PR, a cron) gets its **channel conversation** at its first run: `user_id` NULL (or the owner the
+channel names, [conversation-access.md](conversation-access.md)), `channel` =
 `job.source`, `external_ref` = the `reference_id` of the latest depth-0 run of that source (in
 a mail conversation usually the newest mail; a requeued older job moves it back). Every round on one issue, a follow-up, a panel reply and a
 sub-agent placed in its parent's thread land in that one conversation; an archived channel
@@ -200,11 +201,12 @@ and not a sub-agent of a detached reply, which go by the thread). A run left in 
 the data patch `AssignConversationThreads` gave each older conversation its thread and moved its
 open jobs into it. Each run adds `run.started`, and the finalizer adds `run.finished`
 and, on success, the answer (`assistant.message`). Channel threads are an admin's only
-(DECISIONS.md D-E9-3). An admin **may** post into one: the reply is a `followup` job on the
+(DECISIONS.md D-E9-3), unless their channel owns or shares them through the
+[access seam](conversation-access.md). An admin **may** post into one: the reply is a `followup` job on the
 thread's own `source` and `external_ref`, in the channel's thread (`thread_id`), with the
 operator's text as the job's `context`, gated
-by `conversation.channel_write` and refused with 409 when the thread has no `external_ref`. Every
-other reader still sees 404.
+by `conversation.channel_write` (or the channel's own grant through the access seam) and refused
+with 409 when the thread has no `external_ref`. Every other reader still sees 404.
 
 **Regeneration.** `POST /api/conversation/threads/{id}/regenerate` re-asks a named `role='user'`
 message as a NEW turn: same content, a new `message` row, a new job. It passes the same write

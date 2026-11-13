@@ -53,6 +53,9 @@ class TestToolboxAllowList:
             "versioned_artifact_audit": "INSERT",
             "tool_invocation": "SELECT, INSERT, UPDATE",
             "toolbox_capability": "SELECT, UPDATE",
+            "schedule": "SELECT, INSERT, UPDATE",
+            "schedule_member": "SELECT",
+            "schedule_audit": "INSERT",
         }
 
 

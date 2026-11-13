@@ -80,8 +80,8 @@ PERSIST='^(AGENTO_|MYSQL_|CONFIG__|(TZ|PYTHONPATH|PROVIDER|DISABLE_LLM|DISABLE_A
 chmod 0600 /opt/cron-agent/env
 
 # Root's crontab carries exactly one line: the renderer. It rebuilds the rest every minute
-# from the installed module catalog and the `schedule` table — neither of which uid `agent`
-# can write. Kept byte-identical to INSTALLER_LINE in install-crontab.py (guard test).
+# from the installed module catalog, which uid `agent` cannot write (`schedule` rows are fired
+# by `scheduler:tick`, not by a crontab line). Kept byte-identical to INSTALLER_LINE in install-crontab.py (guard test).
 # The agent has no crontab at all.
 crontab -u agent -r 2>/dev/null || true
 cat <<'CRONTAB' | crontab -

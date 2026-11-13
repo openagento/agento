@@ -367,6 +367,16 @@ limits. Still open:
   Codex OAuth, OpenRouter). A finished re-login is not: check that Claude writes its credentials
   into the temp `HOME` after a pasted code.
 
+### ⚪ Editable schedules — follow-ups (AG-67)
+
+- Drop `schedule.cron_expr` one release after AG-67.
+- The toolbox does not dispatch `schedule_save_before`/`schedule_save_after` (Node has no
+  events, EVT-2 gap): a tool create or update skips veto observers. A delete is not a gap; the
+  tick dispatches `schedule_delete_after` when it finalizes the row.
+- D-E9-3 generic sharing: `schedule_member` is scheduler-specific today.
+- The toolbox `schedule_member: SELECT` grant is unused by the tools (OP-1 does not use
+  members): use it or drop it.
+
 ### ⚪ Distribution & installation model
 
 `agento install && agento up` should start a working system from pre-built, versioned images with no local Docker build. This decouples the lean cron image from the full agent sandbox, makes builds reproducible via lockfiles and digest-pinned base images, and separates the dev compose (bind-mounts, local builds) from the customer compose (GHCR images, data-only mounts). Independent of the other milestones — it can land in parallel with any of them.

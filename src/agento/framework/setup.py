@@ -1,6 +1,7 @@
 """setup:upgrade orchestrator — Magento's ``bin/magento setup:upgrade`` equivalent.
 
 Runs the full setup sequence in order:
+0. Manifest validation and the modules' read-only ``upgrade_checks`` (abort before any change)
 1. Framework SQL migrations
 2. Module SQL migrations (dependency order)
 3. Data patches (topological order by ``require()``)
@@ -25,6 +26,7 @@ from .event_manager import get_event_manager
 from .events import SetupBeforeEvent, SetupCompleteEvent
 from .migrate import get_pending, migrate
 from .module_discovery import scan_all_modules
+from .module_loader import ModuleManifest, import_class
 from .module_status import filter_enabled
 from .module_validator import (
     cross_module_errors,
@@ -89,6 +91,30 @@ def _validate_manifests(enabled, logger: logging.Logger) -> None:
     )
 
 
+class UpgradeCheckError(Exception):
+    """Raised when an enabled module's upgrade check refuses the upgrade."""
+
+
+def run_upgrade_checks(manifests: list[ModuleManifest], conn, logger: logging.Logger) -> None:
+    """Run each enabled module's di.json ``upgrade_checks``; any message aborts the upgrade.
+
+    A check is ``check(conn) -> list[str]`` and may only read: it runs before any migration,
+    so its refusal leaves the database as it was. A check that cannot load or raises aborts
+    too: a check that did not run never reports clean (SEC-9).
+    """
+    messages = []
+    for m in manifests:
+        for decl in m.provides.get("upgrade_checks", []):
+            check = import_class(m.path, decl["class"])()
+            messages += [f"{m.name}: {msg}" for msg in check.check(conn)]
+    conn.rollback()  # end the checks' read transaction before the migrations
+    if not messages:
+        return
+    for msg in messages:
+        logger.error("upgrade check: %s", msg)
+    raise UpgradeCheckError("upgrade refused, nothing was changed:\n  " + "\n  ".join(messages))
+
+
 def setup_upgrade(
     conn: pymysql.Connection,
     logger: logging.Logger,
@@ -115,6 +141,7 @@ def setup_upgrade(
     _validate_manifests(enabled, logger)
     validate_dependencies(enabled, all_scanned)
     manifests = resolve_order(enabled)
+    run_upgrade_checks(manifests, conn, logger)
 
     # 1. Framework SQL migrations
     if dry_run:

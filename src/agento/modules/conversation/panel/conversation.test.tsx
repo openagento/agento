@@ -906,14 +906,55 @@ describe("the rail", () => {
     expect(screen.getByRole("button", { name: "Sub-agent #11" })).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("a channel thread offers neither pin nor rename (it has no owner)", async () => {
+  it("an admin sees no pin or rename on a channel thread of All channels (not its owner)", async () => {
     await stubApi({
       ...views,
       "GET /api/conversation/threads?scope=channels": () => [row(3, "PROJ-1", { channel: "jira" })],
-      "/api/conversation/threads": () => [row(3, "PROJ-1", { channel: "jira" })],
+      "/api/conversation/threads": () => [],
     });
     render(<Rail current={null} close={() => {}} />, { wrapper });
+    fireEvent.click(screen.getByLabelText("Show", { selector: "input" }));
+    fireEvent.click(await screen.findByRole("option", { name: "All channels" }));
     expect(await screen.findByText("PROJ-1")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Conversation actions" })).toBeNull();
+  });
+
+  it("the owner of a schedule conversation manages it in Mine; a reader in Shared with me does not", async () => {
+    const api = await stubApi({
+      ...views, "/api/conversation/threads": () => [row(1, "My digest", { channel: "scheduler" })],
+      "PATCH /api/conversation/threads/1": () => row(1, "My digest", { channel: "scheduler" }),
+      "GET /api/conversation/threads?scope=shared": () => ({ conversations: [row(8, "Bob digest", { channel: "scheduler" })], next: null }),
+    }, []);
+    render(<Rail current={null} close={() => {}} />, { wrapper });
+    expect(await screen.findByText("My digest")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
+    expect(await screen.findByRole("menuitem", { name: "Rename" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Archive" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Pin" }));
+    await vi.waitFor(() => expect(api.calls("PATCH", "/api/conversation/threads/1")[0]?.body).toEqual({ pinned: true }));
+    fireEvent.click(screen.getByLabelText("Show", { selector: "input" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Shared with me" }));
+    expect(await screen.findByText("Bob digest")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Conversation actions" })).toBeNull();
+  });
+
+  it("a plain user picks Shared with me; Load more reads the next keyset page", async () => {
+    const api = await stubApi({
+      ...views, "/api/conversation/threads": () => [row(1, "Mine")],
+      "GET /api/conversation/threads?scope=shared": () => ({ conversations: [row(8, "Shared digest", { channel: "scheduler" })], next: 8 }),
+      "GET /api/conversation/threads?scope=shared&before=8": () => ({ conversations: [row(3, "Older share", { channel: "scheduler" })], next: null }),
+    }, []);
+    render(<Rail current={null} close={() => {}} />, { wrapper });
+    expect(await screen.findByText("Mine")).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "All channels" })).toBeNull();
+    fireEvent.click(screen.getByLabelText("Show", { selector: "input" }));
+    expect(screen.queryByRole("option", { name: "All channels" })).toBeNull();
+    fireEvent.click(await screen.findByRole("option", { name: "Shared with me" }));
+    expect(await screen.findByText("Shared digest")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    expect(await screen.findByText("Older share")).toBeInTheDocument();
+    expect(screen.getByText("Shared digest")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    expect(api.calls("GET", "/api/conversation/threads").map((c) => c.url.search)).toContain("?scope=shared&before=8");
   });
 });

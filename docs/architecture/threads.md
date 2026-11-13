@@ -21,6 +21,7 @@ cannot join it.
 | Outlook | `outlook:conversation:<conversationId>` only while `outlook_list_thread` is effective for the view; else one thread per message ([outlook.md](../modules/outlook.md#reads-and-thread-actions-are-bound-to-the-triggering-message)) |
 | GitHub, Bitbucket | `github:<ref>`, `bitbucket:<ref>`: both lanes of one PR |
 | Panel conversation | `conversation:<id>`: the conversation is 1:1 with its thread ([conversations.md](conversations.md)) |
+| Scheduler schedule | `schedule:<id>`: every run of one schedule, Run now included, and the replies posted in its conversation |
 | `schedule_followup`, a wake | the thread of the job that made it (`thread_id` is copied) |
 | `agent_run` | the parent's thread, also for a child in another view |
 

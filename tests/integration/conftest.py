@@ -189,14 +189,14 @@ def int_periodic_config() -> PeriodicTasksConfig:
         jira_status="Cykliczne",
         jira_frequency_field="customfield_10709",
         frequency_map={
-            "Co 5min": "*/5 * * * *",
-            "Co 30min": "*/30 * * * *",
-            "Co 1h": "0 * * * *",
-            "Co 4h": "0 */4 * * *",
-            "1x dziennie o 8:00": "0 8 * * *",
-            "1x dziennie o 1:00 w nocy": "0 1 * * *",
-            "2x dziennie o 6:00 i 18:00": "0 6,18 * * *",
-            "1x w tygodniu (Pon, 7:00)": "0 7 * * 1",
+            "Co 5min": "FREQ=HOURLY;BYMINUTE=0,5,10,15,20,25,30,35,40,45,50,55",
+            "Co 30min": "FREQ=HOURLY;BYMINUTE=0,30",
+            "Co 1h": "FREQ=HOURLY;BYMINUTE=0",
+            "Co 4h": "FREQ=DAILY;BYHOUR=0,4,8,12,16,20;BYMINUTE=0",
+            "1x dziennie o 8:00": "FREQ=DAILY;BYHOUR=8;BYMINUTE=0",
+            "1x dziennie o 1:00 w nocy": "FREQ=DAILY;BYHOUR=1;BYMINUTE=0",
+            "2x dziennie o 6:00 i 18:00": "FREQ=DAILY;BYHOUR=6,18;BYMINUTE=0",
+            "1x w tygodniu (Pon, 7:00)": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=7;BYMINUTE=0",
         },
     )
 
@@ -238,14 +238,14 @@ def bootstrap_for_tests() -> None:
         jira_status="Cykliczne",
         jira_frequency_field="customfield_10709",
         frequency_map={
-            "Co 5min": "*/5 * * * *",
-            "Co 30min": "*/30 * * * *",
-            "Co 1h": "0 * * * *",
-            "Co 4h": "0 */4 * * *",
-            "1x dziennie o 8:00": "0 8 * * *",
-            "1x dziennie o 1:00 w nocy": "0 1 * * *",
-            "2x dziennie o 6:00 i 18:00": "0 6,18 * * *",
-            "1x w tygodniu (Pon, 7:00)": "0 7 * * 1",
+            "Co 5min": "FREQ=HOURLY;BYMINUTE=0,5,10,15,20,25,30,35,40,45,50,55",
+            "Co 30min": "FREQ=HOURLY;BYMINUTE=0,30",
+            "Co 1h": "FREQ=HOURLY;BYMINUTE=0",
+            "Co 4h": "FREQ=DAILY;BYHOUR=0,4,8,12,16,20;BYMINUTE=0",
+            "1x dziennie o 8:00": "FREQ=DAILY;BYHOUR=8;BYMINUTE=0",
+            "1x dziennie o 1:00 w nocy": "FREQ=DAILY;BYHOUR=1;BYMINUTE=0",
+            "2x dziennie o 6:00 i 18:00": "FREQ=DAILY;BYHOUR=6,18;BYMINUTE=0",
+            "1x w tygodniu (Pon, 7:00)": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=7;BYMINUTE=0",
         },
     ))
     mark_bootstrapped()
@@ -350,7 +350,7 @@ _WIPED_TABLES = (
     "conversation", "conversation_event", "message", "conversation_prune_watermark",
     "launch", "session", "role_grant", "`user`", "credential_login", "limit_bucket",
     "outlook_poll_cursor", "miniapp", "miniapp_activation", "miniapp_member",
-    "versioned_artifact", "versioned_artifact_audit", "thread",
+    "versioned_artifact", "versioned_artifact_audit", "thread", "schedule_member", "schedule_audit",
 )
 
 

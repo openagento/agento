@@ -1,0 +1,18 @@
+{
+  "screens": [
+    {
+      "title": "Schedules",
+      "leaves": [
+        {"id": "scheduler.own", "title": "See my schedules, and create one"},
+        {"id": "scheduler.own.write", "title": "Edit and run my schedules"},
+        {"id": "scheduler.own.share", "title": "Share and delete my schedules"},
+        {"id": "scheduler.agent", "title": "See agent schedules in my agent views"},
+        {"id": "scheduler.agent.write", "title": "Edit and run agent schedules in my agent views"},
+        {"id": "scheduler.agent.share", "title": "Share and delete agent schedules in my agent views"},
+        {"id": "scheduler.user", "title": "See other users' schedules in my agent views"},
+        {"id": "scheduler.user.write", "title": "Edit and run other users' schedules in my agent views"},
+        {"id": "scheduler.user.share", "title": "Share and delete other users' schedules in my agent views"}
+      ]
+    }
+  ]
+}

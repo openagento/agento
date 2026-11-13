@@ -100,7 +100,10 @@ No container uses the migration user `cron_agent` at run time: only `setup:upgra
 `cron` and `web` run as `agento_backend` (DML, no DDL). The toolbox runs as `agento_toolbox`,
 with a grant on each table its SQL uses and no grant on `credential`, `execution*` or
 `conversation_*`. On `job_event_outbox` it has INSERT only: `enqueueJob` announces each job it
-inserts (`schedule_followup`, `agent_run`). `setup:upgrade` makes these grants again on each run
+inserts (`schedule_followup`, `agent_run`). For the `schedule_*` tools it has SELECT, INSERT and
+UPDATE on `schedule` (no DELETE: a tool delete is a soft delete that `scheduler:tick` finalizes),
+SELECT on `schedule_member` (the reach check) and INSERT on `schedule_audit`
+([schedules.md](schedules.md)). `setup:upgrade` makes these grants again on each run
 (`framework/db_grants.py`). MySQL publishes its port on host loopback only. See
 [upgrade.md](../cli/upgrade.md#database-users).
 

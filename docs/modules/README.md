@@ -109,6 +109,7 @@ bin/agento config:set my_system/tools/mysql_my_prod/pass
 - [Admin](admin.md) — panel display settings: date format and time zone
 - [Conversation](conversation.md) — chat threads, message history, executions and the event log
 - [Subagent](subagent.md) — delegate a task to an agent_view as a child job (`agent_run` / `agent_result`, opt-in)
+- [Scheduler](scheduler.md) — editable RRULE schedules: per-schedule rights, shares, Run now, a conversation per schedule, `schedule_*` tools (opt-in)
 
 ### Bundled harness modules
 

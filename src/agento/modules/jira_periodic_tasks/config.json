@@ -1,13 +1,13 @@
 {
   "frequency_map": {
-    "Every 5min": "*/5 * * * *",
-    "Every 30min": "*/30 * * * *",
-    "Every 1h": "0 * * * *",
-    "Every 4h": "0 */4 * * *",
-    "Daily at 8:00": "0 8 * * *",
-    "Daily at 1:00": "0 1 * * *",
-    "Twice daily at 6:00 and 18:00": "0 6,18 * * *",
-    "Weekly (Mon, 7:00)": "0 7 * * 1"
+    "Every 5min": "FREQ=HOURLY;BYMINUTE=0,5,10,15,20,25,30,35,40,45,50,55",
+    "Every 30min": "FREQ=HOURLY;BYMINUTE=0,30",
+    "Every 1h": "FREQ=HOURLY;BYMINUTE=0",
+    "Every 4h": "FREQ=DAILY;BYHOUR=0,4,8,12,16,20;BYMINUTE=0",
+    "Daily at 8:00": "FREQ=DAILY;BYHOUR=8;BYMINUTE=0",
+    "Daily at 1:00": "FREQ=DAILY;BYHOUR=1;BYMINUTE=0",
+    "Twice daily at 6:00 and 18:00": "FREQ=DAILY;BYHOUR=6,18;BYMINUTE=0",
+    "Weekly (Mon, 7:00)": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=7;BYMINUTE=0"
   },
   "resume_session": true
 }

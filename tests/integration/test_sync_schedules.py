@@ -17,7 +17,7 @@ class TestSyncScheduleLifecycle:
 
     @respx.mock
     def test_sync_upserts_and_disables_removed_schedules(
-        self, int_config, int_periodic_config, int_db_config, jira_cykliczne_fixture
+        self, int_config, int_periodic_config, int_db_config, jira_cykliczne_fixture, int_agent_view
     ):
         """First sync: 2 issues enabled. Second sync: 1 removed → disabled."""
         logger = logging.getLogger("test")
@@ -30,12 +30,13 @@ class TestSyncScheduleLifecycle:
 
         syncer = JiraCronSync(
             int_config, int_periodic_config, toolbox, logger, db_config=int_db_config,
+            agent_view_id=int_agent_view,
         )
         syncer.sync_view()
 
         schedules = fetch_all_schedules()
         assert len(schedules) == 2
-        by_key = {s["issue_key"]: s for s in schedules}
+        by_key = {s["source_ref"]: s for s in schedules}
         assert by_key["AI-2"]["enabled"] == 1
         assert by_key["AI-3"]["enabled"] == 1
 
@@ -51,17 +52,20 @@ class TestSyncScheduleLifecycle:
 
         syncer2 = JiraCronSync(
             int_config, int_periodic_config, toolbox, logger, db_config=int_db_config,
+            agent_view_id=int_agent_view,
         )
         syncer2.sync_view()
 
         schedules = fetch_all_schedules()
-        by_key = {s["issue_key"]: s for s in schedules}
+        by_key = {s["source_ref"]: s for s in schedules}
         assert by_key["AI-2"]["enabled"] == 1
         assert by_key["AI-3"]["enabled"] == 0  # Disabled
 
     @respx.mock
-    def test_sync_updates_existing_schedule_summary(self, int_config, int_periodic_config, int_db_config):
-        """ON DUPLICATE KEY UPDATE: summary changes are reflected."""
+    def test_sync_updates_existing_schedule_title(
+        self, int_config, int_periodic_config, int_db_config, int_agent_view
+    ):
+        """ON DUPLICATE KEY UPDATE: a changed Jira summary becomes the new title."""
         logger = logging.getLogger("test")
         toolbox = ToolboxClient(int_config.toolbox_url, capability_token="test-cap")
 
@@ -81,12 +85,13 @@ class TestSyncScheduleLifecycle:
 
         syncer = JiraCronSync(
             int_config, int_periodic_config, toolbox, logger, db_config=int_db_config,
+            agent_view_id=int_agent_view,
         )
         syncer.sync_view()
 
         schedules = fetch_all_schedules()
         assert len(schedules) == 1
-        assert schedules[0]["summary"] == "Old summary"
+        assert schedules[0]["title"] == "Old summary"
 
         # Update summary
         fixture_v2 = copy.deepcopy(fixture_v1)
@@ -98,9 +103,10 @@ class TestSyncScheduleLifecycle:
 
         syncer2 = JiraCronSync(
             int_config, int_periodic_config, toolbox, logger, db_config=int_db_config,
+            agent_view_id=int_agent_view,
         )
         syncer2.sync_view()
 
         schedules = fetch_all_schedules()
         assert len(schedules) == 1
-        assert schedules[0]["summary"] == "New summary"
+        assert schedules[0]["title"] == "New summary"

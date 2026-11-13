@@ -18,7 +18,7 @@ the four identifiers and the event contract. This page is the module's operation
 | Table | Holds |
 | --- | --- |
 | `conversation` | One thread: its owner, its agent_view, `active` or `archived`, `pinned_at` (NULL = not pinned), and `thread_id` — the framework thread it shows, one conversation per thread (migration 007). |
-| `message` | One turn. A `user` row carries the job bookkeeping (`job_id`, `execution_id`, `job_state`); a CHECK keeps that off an `assistant` row. |
+| `message` | One turn. A `user` row carries its poster (`author_user_id`, migration 009: the job is published as that user, never as the owner) and the job bookkeeping (`job_id`, `execution_id`, `job_state`); a CHECK keeps that off an `assistant` row. |
 | `execution` | One attempt at answering a turn. `execution_id` is unique; `(job_id, attempt)` is **not** — the pool-wait path refunds an attempt, so two real attempts can carry one number. The mint writes the attempt's harness, provider, model and `credential_id` (an id; the label is read through a join). |
 | `conversation_event` | The append-only log a stream replays. Its `id` is the cursor, and it is global, not per-thread. `UNIQUE (source_kind, source_id)` makes the relay idempotent. |
 | `execution_delta` | Per-execution streamed output, bounded by the `stream/max_delta*` limits. |
@@ -62,11 +62,11 @@ tool's input or output) before the per-run byte cap counts it.
 | Method | Path | Answers |
 | --- | --- | --- |
 | POST | `/api/conversation/threads` | `201 {id}` |
-| GET | `/api/conversation/threads` | the caller's active threads; `?scope=channels[&channel=<source>][&before=<cursor>]` lists the channel threads instead (admins only, a non-admin gets `[]`), newest activity first, each row with a `cursor` for the next page |
+| GET | `/api/conversation/threads` | the caller's active threads; `?scope=channels[&channel=<source>][&before=<cursor>]` lists the channel threads instead (admins only, a non-admin gets `[]`), newest activity first, each row with a `cursor` for the next page; `?scope=shared[&before=<thread id>]` lists the threads a channel shares with the caller, `{conversations, next}` ([conversation-access.md](../architecture/conversation-access.md#the-shared-list)) |
 | GET | `/api/conversation/threads/{id}` | one thread, with `live`, `run_details` and its newest 50 `runs` (harness, provider, credential label, model, tokens, job id, and a sub-agent's `parent_job_id`, `depth`, `resume_job_id` and `agent_view` only with `run_details`; the `run.started` event carries `parent_job_id` and `depth` for every reader, and `resume_job_id` and `agent_view` only with `run_details`), and its newest 50 sub-agent `jobs` (`id`, `parent_job_id`, `depth`, `status`, for every reader: the rail's tree) |
 | GET | `/api/conversation/threads/{id}/timeline` | `?before=<event id>&before_at=<its created_at>&limit=<n>`: one page of events in time order `(created_at, id)`, oldest first, `{events, has_older, newest_id}`. On the newest page `newest_id` is the conversation's highest event id, the stream's cursor. A cursor at or below the prune watermark is `409 cursor_expired`; a bad `before_at` is `400`. A bare `before` (no `before_at`, deprecated, see ROADMAP.md) reads its event's time, and is `409 cursor_expired` when that event is gone |
-| PATCH | `/api/conversation/threads/{id}` | `{title?, pinned?}`: renames the thread, pins or unpins it — the refreshed thread; `400` on an empty body, a title past 255 characters or a non-boolean `pinned`, `404` on a thread this caller cannot see or that has no owner, `409` past `MAX_PINNED` (50) pinned threads |
-| DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path) |
+| PATCH | `/api/conversation/threads/{id}` | `{title?, pinned?}`: renames the thread, pins or unpins it — the refreshed thread; `400` on an empty body, a title past 255 characters or a non-boolean `pinned`, `404` on a thread this caller cannot see, `403` on a channel thread the caller does not own, `409` past `MAX_PINNED` (50) pinned threads |
+| DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path); `403` on a channel thread for a caller who is neither its owner nor an admin |
 | GET | `/api/conversation/threads/{id}/messages` | its messages |
 | POST | `/api/conversation/threads/{id}/messages` | `201` on the first submission, `200` on a repeat; in a **channel** thread it posts an operator reply — `403` without `conversation.channel_write`, `409 read_only` when the thread has no `external_ref` |
 | POST | `/api/conversation/threads/{id}/regenerate` | `{message_id, client_message_id}`: asks that user message again as a new turn — `201`, `200` on a repeat of the same `client_message_id`, `404` when the id is not a user message of this thread |
@@ -97,7 +97,8 @@ path — a manifest cannot opt out of any of them.
 ### One reach gate
 
 `service.load_visible()` is the single place a read resolves a thread. It returns the row
-only when the caller owns it (or is `admin`), **and** `can_reach()` covers its
+only when the caller owns it (or is `admin`, or the thread's channel grants the read through the
+[access seam](../architecture/conversation-access.md)), **and** `can_reach()` covers its
 `agent_view_id`, **and** `scope_is_active()` says that scope is still live. Otherwise it
 returns `None`, which every route renders as **404, never 403** — a 403 would confirm the
 thread exists. Reach is therefore re-evaluated on every request: deactivating the view, or
@@ -147,17 +148,21 @@ the newest 50 jobs hangs from the conversation. A job whose events are on an old
 A **channel** thread mirrors a Jira issue or a mailbox, so a post into it speaks to whoever is on
 the other side. The module declares `conversation.channel_write` for exactly that.
 
-**Today this means an admin.** Reading a channel thread is an admin's only (D-E9-3), and a route
-refuses what the reader cannot see with 404 before it ever consults the grant — so a `user` with
-`conversation.channel_write` still gets 404, and the grant decides nothing until channel **reads**
-open to a role (ROADMAP E9). The resource exists now because the write gate belongs beside the
-write, not because a non-admin can use it yet. Once reads open, the grant is the gate:
+**Today this means an admin**, except for a conversation whose channel shares it (below). Reading
+a channel thread is otherwise an admin's only (D-E9-3), and a route refuses what the reader
+cannot see with 404 before it ever consults the grant — so a `user` with
+`conversation.channel_write` still gets 404 on such a thread. Once reads open to a role (ROADMAP
+E9), the grant is the gate:
 `bin/agento grant:add --role user --operation conversation.channel_write --workspace <code>`.
 The reply is published by `complete_pending` as a **`followup` job on the thread's own source and
 `external_ref`**, in the channel's own thread (`conversation.thread_id`), with the operator's text as the job's `context` — so it continues the external
 task instead of starting a panel conversation. Everything else is the panel path unchanged: the
 message row and its `message.created` event commit first, the publish follows, and `sweep_pending`
 recovers a crash between them through the same one publisher.
+
+A channel may also grant the write for its own conversations (`conversation_access(..., "write")`,
+[conversation-access.md](../architecture/conversation-access.md)): a schedule's owner and the users
+it is shared with post into its conversation without the grant.
 
 `GET /api/conversation/threads/{id}` carries `channel_write` on a channel thread, so the panel
 hides a composer the reader could not use; the route checks the grant regardless.
@@ -454,7 +459,7 @@ is not also deleted in the same run.
 |---|---|---|
 | Prune | `conversation/retention/event_days` (0 = off) | Removes `conversation_event` rows past the window, oldest by `(created_at, id)` first, per conversation, and raises that conversation's prune watermark. |
 | Auto-archive | `conversation/retention/idle_days` (90) | Skips a **pinned** thread: a pin is the user saying to keep it. Archives a panel thread whose newest message is older than the window (a thread with no messages falls back to its own `created_at`; `conversation.updated_at` does not vote), through `service.archive(..., reason="idle")`. Skips one whose newest **user** turn is not `terminal`. Re-checked per thread under the conversation row lock the posting path takes, so a post that lands mid-pass keeps the thread. A **channel** thread uses `COALESCE(last_activity_at, created_at)` instead (every timeline write moves it) and is skipped while one of its runs is `running`. |
-| Delete | `conversation/retention/archived_days` (0 = off) | Deletes an archived thread and everything under it, one transaction each. |
+| Delete | `conversation/retention/archived_days` (0 = off) | Deletes an archived thread and everything under it, one transaction each. A thread whose channel refuses the delete (or whose channel is unknown) is kept and moved to the back of the queue ([conversation-access.md](../architecture/conversation-access.md)). |
 | Old runs | `conversation/retention/event_days` (0 = off) | Deletes every `execution` row that is not `running` and **finished** past the window, with its `execution_delta` rows — oldest first, in batches. One age bound for every run, because an active channel thread lives as long as its issue keeps running (CODE-8). The clock is `finished_at`: a run's events age by `created_at`, so a run that started long ago and finished today keeps its row as long as its events. A run with a finished toolbox call that the relay has not projected yet is kept, because the relay finds the thread through the run's row. |
 
 `conversation/retention/outbox_days` is the relay's own, faster cleanup and belongs to

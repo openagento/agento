@@ -26,6 +26,8 @@ ALLOWED = {
     # Framework CLI in cron (run.sh), which itself goes through the runner.
     "framework/admin/screens/agents.py": "run.sh workspace:build",
     "framework/admin/screens/jobs.py": "run.sh replay",
+    # RRULE evaluation under a time limit: `python -P -m …engine`, only PATH/PYTHONPATH in its env.
+    "framework/schedule/engine.py": "validate() child, killed at the deadline",
     # Root crontab renderer.
     "framework/docker/cron/install-crontab.py": "crontab",
     # Host side: docker / docker compose, never in a container.

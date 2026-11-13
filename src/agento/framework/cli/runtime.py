@@ -188,7 +188,7 @@ class SetupUpgradeCommand:
 
         from .. import db_grants
         from ..dependency_resolver import DisabledDependencyError
-        from ..setup import ModuleValidationError, setup_upgrade
+        from ..setup import ModuleValidationError, UpgradeCheckError, setup_upgrade
 
         db_config, _, _ = _load_framework_config()
         # The migration user (WS8, SEC-1), when the install has one; else (dev, CI) one user.
@@ -204,7 +204,7 @@ class SetupUpgradeCommand:
                 result = setup_upgrade(
                     conn, logger, dry_run=args.dry_run, skip_onboarding=skip_onboarding,
                 )
-            except (DisabledDependencyError, ModuleValidationError) as e:
+            except (DisabledDependencyError, ModuleValidationError, UpgradeCheckError) as e:
                 print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
             if migrate_password and not args.dry_run:

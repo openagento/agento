@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Render root's crontab from sources uid ``agent`` cannot write.
 
-Runs as **root**, every minute, from one fixed line in root's own crontab. It reads two
-authoritative inputs — every *installed* module's ``cron.json`` and the ``schedule`` table —
-and emits one launcher line per job. Neither input is agent-writable: ``app/etc/modules.json``
-is deliberately NOT read here (it lives on a writable mount and ``mo:en``/``mo:di`` edit it as
-``agent``), and enablement is enforced *after* the privilege drop by ``cron:run``.
+Runs as **root**, every minute, from one fixed line in root's own crontab. It reads one
+authoritative input — every *installed* module's ``cron.json`` (plus the config values a
+``{module/path}`` schedule directive names) — and emits one launcher line per job. It is not
+agent-writable: ``app/etc/modules.json`` is deliberately NOT read here (it lives on a writable
+mount and ``mo:en``/``mo:di`` edit it as ``agent``), and enablement is enforced *after* the
+privilege drop by ``cron:run``. ``schedule`` rows are fired by ``scheduler:tick``, never by a
+crontab line (AG-67).
 
 Two failure policies. A **validation** failure (malformed ``cron.json``, bad schedule, rejected
-argv) omits only the offending module or row. An **operational** failure (env file unreadable,
-DB unreachable) leaves the current crontab byte-identical and renders nothing — otherwise a
-transient outage would silently delete every schedule.
+argv) omits only the offending module. An **operational** failure (env file unreadable, DB
+unreachable while a directive is resolved) leaves the current crontab byte-identical and
+renders nothing — otherwise a transient outage would silently delete every job.
 
 See docs/architecture/cron-privileges.md.
 """
@@ -135,7 +137,7 @@ def _validate_argv(argv: list[str]) -> tuple[str, ...]:
 
 
 def _comment(text: str) -> str:
-    """Untrusted text (a jira summary) reaches a ``#`` comment and nothing else."""
+    """A job name reaches a ``#`` comment and nothing else."""
     return text.replace("\r", " ").replace("\n", " ")
 
 
@@ -303,66 +305,6 @@ def _resolve_schedule(schedule: str) -> str:
     return _PLACEHOLDER_RE.sub(_sub, schedule)
 
 
-def _schedule_jobs() -> list[Job]:
-    """Recurring jira rows, scoped exactly like ``jira:periodic:sync`` writes them."""
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT av.id FROM agent_view av
-                JOIN workspace w ON w.id = av.workspace_id
-                WHERE av.is_active = 1 AND w.is_active = 1
-                ORDER BY av.id
-                """
-            )
-            active_ids = [row["id"] for row in cur.fetchall()]
-            if active_ids:
-                placeholders = ",".join(["%s"] * len(active_ids))
-                cur.execute(
-                    f"""
-                    SELECT s.issue_key, s.summary, s.cron_expr, av.code AS agent_view_code
-                    FROM schedule s
-                    JOIN agent_view av ON av.id = s.agent_view_id
-                    WHERE s.agent_type = 'cron' AND s.enabled = TRUE
-                      AND s.agent_view_id IN ({placeholders})
-                    ORDER BY s.agent_view_id, s.issue_key
-                    """,
-                    active_ids,
-                )
-            else:
-                cur.execute(
-                    """
-                    SELECT s.issue_key, s.summary, s.cron_expr, '' AS agent_view_code
-                    FROM schedule s
-                    WHERE s.agent_type = 'cron' AND s.enabled = TRUE
-                      AND s.agent_view_id IS NULL
-                    ORDER BY s.issue_key
-                    """
-                )
-            rows = cur.fetchall()
-    except Exception as exc:
-        raise OperationalError(f"schedule query failed: {exc}") from exc
-    finally:
-        conn.close()
-
-    jobs: list[Job] = []
-    for row in rows:
-        view_code = row["agent_view_code"] or ""
-        command = ["publish", "jira-cron", row["issue_key"]]
-        if view_code:
-            command += ["--agent-view", view_code]
-        try:
-            jobs.append(Job(
-                comment=_comment(f"{row['issue_key']}: {row['summary'] or ''}"),
-                schedule=_validate_schedule(row["cron_expr"] or ""),
-                argv=_validate_argv([RUN_SH, "cron:run", "jira_periodic_tasks", *command]),
-            ))
-        except ValidationError as exc:
-            print(f"install-crontab: skipping row {row['issue_key']}: {exc}", file=sys.stderr)
-    return jobs
-
-
 def collect_jobs() -> list[Job]:
     """Every renderable job. Validation failures drop one source; they never abort."""
     jobs: list[Job] = []
@@ -378,7 +320,6 @@ def collect_jobs() -> list[Job]:
         except (ValidationError, OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
             print(f"install-crontab: skipping {module_dir.name}: {exc}", file=sys.stderr)
 
-    jobs += _schedule_jobs()  # OperationalError propagates — see render()
     return jobs
 
 

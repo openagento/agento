@@ -35,21 +35,41 @@ CREATE TABLE IF NOT EXISTS agent_view (
         FOREIGN KEY (workspace_id) REFERENCES workspace(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Schedule
+-- Schedule (056: the generic table of every schedule source, docs/architecture/schedules.md)
 CREATE TABLE IF NOT EXISTS schedule (
-    id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    issue_key     VARCHAR(20)  NOT NULL,
-    agent_view_id INT UNSIGNED NULL,
-    summary       VARCHAR(500) NOT NULL DEFAULT '',
-    agent_type    ENUM('cron', 'todo') NOT NULL,
-    cron_expr     VARCHAR(100) NOT NULL DEFAULT '',
-    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_schedule_agent_view_issue (agent_view_id, issue_key),
+    id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    source_ref          VARCHAR(255) NULL,
+    agent_view_id       INT UNSIGNED NULL,
+    title               VARCHAR(500) NOT NULL DEFAULT '',
+    source              VARCHAR(32)  NOT NULL DEFAULT 'scheduler',
+    cron_expr           VARCHAR(100) NULL,
+    enabled             BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    owner_user_id       INT UNSIGNED NULL,
+    owner_agent_view_id INT UNSIGNED NULL,
+    prompt              MEDIUMTEXT NULL,
+    rrule               VARCHAR(1024) NULL,
+    starts_at           DATETIME NULL,
+    timezone            VARCHAR(64) NULL,
+    harness             VARCHAR(64) NULL,
+    model               VARCHAR(128) NULL,
+    next_fire_at        DATETIME NULL,
+    last_fire_at        DATETIME NULL,
+    anchor_local        DATETIME NULL,
+    last_error          VARCHAR(255) NULL,
+    deleted_at          DATETIME NULL,
+    created_job_id      BIGINT UNSIGNED NULL,
+    UNIQUE KEY uq_schedule_agent_view_issue (agent_view_id, source_ref),
     KEY idx_schedule_agent_view (agent_view_id),
+    KEY idx_schedule_due (enabled, next_fire_at),
+    KEY idx_schedule_deleted (deleted_at),
+    KEY idx_schedule_owner_user (owner_user_id),
+    KEY idx_schedule_owner_view (owner_agent_view_id),
     CONSTRAINT fk_schedule_agent_view
-        FOREIGN KEY (agent_view_id) REFERENCES agent_view(id) ON DELETE SET NULL
+        FOREIGN KEY (agent_view_id) REFERENCES agent_view(id) ON DELETE SET NULL,
+    CONSTRAINT fk_schedule_owner_view
+        FOREIGN KEY (owner_agent_view_id) REFERENCES agent_view(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- Thread (054): the jobs of one conversation of work; `key` names its directory.
@@ -320,6 +340,10 @@ CREATE TABLE IF NOT EXISTS `user` (
     CONSTRAINT fk_user_role FOREIGN KEY (role) REFERENCES role (code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 056: declared here because `user` is created after `schedule`.
+ALTER TABLE schedule ADD CONSTRAINT fk_schedule_owner_user
+    FOREIGN KEY (owner_user_id) REFERENCES `user`(id) ON DELETE CASCADE;
+
 -- Panel sessions behind the __Host- cookie (E1.5, PRD E2 §4.2). Hashes only.
 CREATE TABLE IF NOT EXISTS session (
     id          VARCHAR(64)  NOT NULL PRIMARY KEY,
@@ -530,4 +554,5 @@ INSERT INTO schema_migration (version) VALUES
     ('052_job_auth_wait_index'),
     ('053_job_parent_depth'),
     ('054_thread'),
-    ('055_test_run');
+    ('055_test_run'),
+    ('056_generic_schedule');

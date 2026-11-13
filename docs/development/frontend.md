@@ -16,7 +16,7 @@ a panel button and a miniapp button look the same.
 | `frontend/lookbook/` | The ui.mantine.dev patterns, copied as a Storybook catalogue (see [Lookbook](#lookbook)) |
 | `frontend/packages/api/` (`@agento/api`) | `apiFetch`, the session, the query client, the stream hub, the panel module contract |
 | `frontend/panel/` | The app: shell, router, login, users and roles, miniapp launches, the admin screens (`src/routes/admin/`) |
-| `src/agento/modules/<core module>/panel/` | A core module's screens (today: `conversation`, `miniapps`, `versioned_artifacts`) |
+| `src/agento/modules/<core module>/panel/` | A core module's screens (today: `conversation`, `miniapps`, `scheduler`, `versioned_artifacts`) |
 | `frontend/miniapps/examples/` | Hand-written example miniapps |
 
 Built output (gitignored, shipped in the wheel):
@@ -128,9 +128,10 @@ npm test            # build, lint, then every unit test and every story in headl
   thread list is a `Drawer`. Each rendered timeline item is exactly one `li` of `ChatList`.
   A sub-agent's job is a `SubagentRun` card (collapsed, with its state badge) nested in its
   parent's turn; open, it holds its own `ChatList` ([conversation.md](../modules/conversation.md#turns-and-sub-agents-in-the-panel)).
-  `Rail` is the thread column: a fixed top block (new conversation, the `SearchToggle`, and — when
-  search is open or the reader is an admin — the search box beside the scope picker) over a
-  scrolling `ThreadList`. A `ThreadLink` with `onPin` / `onRename` / `actions` shows a `RowMenu` on
+  `Rail` is the thread column: a fixed top block (new conversation, the `SearchToggle`, the search
+  box while search is open, and the scope picker: Mine and Shared with me for every reader, the
+  channels for an admin) over a scrolling `ThreadList`. Shared with me is keyset paged: "Load more"
+  reads the next page, and the poll refreshes every page loaded. A `ThreadLink` with `onPin` / `onRename` / `actions` shows a `RowMenu` on
   hover (always on touch); `ThreadList` groups the pinned threads above the day groups.
 - **The app tiles are panel-only.** `ViewToggle` (Mantine `SegmentedControl`, "Tiles" / "List"),
   `TileGrid` (`SimpleGrid`, a `list`) and `AppTile` (`listitem`; icon name, title, `disabled`, badge,
@@ -265,6 +266,7 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 | Stream reconnect, refused stream, `cursor_expired`, backoff, `?after=` | `packages/api/src/hub.test.ts` |
 | Popup blocked, API refusal closes the window, bridge before POST, code in no URL or cache, a preview never reuses an approved launch | `packages/api/src/launch.test.ts` |
 | Apps catalogue, approval page (approve CAS, revoke, preview) | `modules/miniapps/panel/miniapps.test.tsx` |
+| Schedules list groups, form create/edit (only the changed fields), preset and Custom recurrence, preview, Run now disabled while dirty, Jira row read-only, share, owner change, delete, a message for every refusal code | `modules/scheduler/panel/scheduler.test.tsx` |
 | Artifacts list, versions, make current CAS, delete after the code is typed | `modules/versioned_artifacts/panel/artifacts.test.tsx` |
 | Roles list, Delete kept for a built-in or used role, Add role; the role tree saves one PUT, locked leaves are never sent, a search keeps hidden checks, a scope switch asks before it discards, the global scope shows the Admin leaves | `panel/src/routes/Roles.test.tsx`, `panel/src/routes/RoleEdit.test.tsx`, `panel/src/routes/roleTree.test.ts` |
 | Probe 404 / 2xx / network error → nav and NotAvailable | `panel/src/registry.test.tsx` |
@@ -272,6 +274,7 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 | Dialog focus trap and focus return | `packages/ui/src/components/Forms.stories.tsx` (`DialogFocus`) |
 | Stream opens after the page's newest id, persisted events refetch and never write the cache, 10 s / 30 s reconcile polls, follow-live and "N new events", reset to the newest page on resume, older-page anchor, read-only channel thread | `modules/conversation/panel/conversation.test.tsx` |
 | Dedupe by id, tool pairing, runs grouped by execution, the final-answer rule over split pages, partial segments, tool groups, attempts folded into one turn | `modules/conversation/panel/timeline.test.ts` |
+| The rail's Shared with me list and its "Load more" keyset page | `modules/conversation/panel/conversation.test.tsx` |
 | Queued / Running status line, live partial text, one failure with Retry, typing while busy | `modules/conversation/panel/conversation.test.tsx` |
 | Tool summary per tool and without input, durations; thread day groups | `modules/conversation/panel/tools.test.ts`, `modules/conversation/panel/model.test.ts` |
 | `Markdown` renders a code fence and a table; raw HTML stays text; opt-in highlight; composer keys, tool row, Retry, thread list, menu button | `packages/ui/src/components/components.test.tsx` |

@@ -82,6 +82,7 @@
 | `job:pause <job_id>` | Pause a running job (SIGTERM, keep session) ([details](job-pause-resume.md)) |
 | `job:resume <job_id>` | Resume a paused job (re-queue for consumer) ([details](job-pause-resume.md)) |
 | `job:set-runtime <job_id> [--harness H] [--model M] [--clear] [--test JSON \| --no-test]` | Pin (or clear) a queued job's harness/model, or make it a test run; TODO jobs only ([details](job-runtime.md)) |
+| `scheduler:tick` (`sc:ti`) | Fire due schedules and finalize deleted ones. Framework cron, every minute; safe to run by hand — a second tick that finds one running does nothing ([details](../architecture/schedules.md#the-tick)) |
 | **Conversations** (the `conversation` module; all three are cron passes an operator can also run by hand) | |
 | `conversation:sweep` (`co:sw`) | Finish stranded submissions and reconcile finished jobs ([details](../modules/conversation.md)) |
 | `conversation:relay` (`co:rel`) | Relay framework job events into conversation threads, and prune the relayed rows. One run passes every second for 55 s. ONE process by contract: a second would invert a thread's event order, so a run that finds the `conversation_relay` lock held exits at once ([details](../modules/conversation.md#the-outbox-relay)) |
@@ -92,7 +93,7 @@
 | `artifacts:prune` (`ar:pr`) | Remove run dirs and thread dirs of jobs that ended more than `core/artifacts/retention_days` ago; `--dry-run`, `--print`, `--days` ([details](artifacts-prune.md)) |
 | `limits:prune` (`li:pr`) | Delete expired rate-limit buckets |
 | `outbox:prune` (`ou:pr`) | Delete job-event outbox rows and closed defer stretches past `core/outbox/retention_days` |
-| `jira:periodic:sync` | Sync Jira recurring tasks to crontab |
+| `jira:periodic:sync` | Sync Jira recurring tasks into the `schedule` table (`jira_periodic` rows; `scheduler:tick` fires them) |
 | `jira:periodic:configure [--check] [--project K]... [K ...]` | Create/verify the periodic status + Frequency field and sync its options from `frequency_map` across projects (setup command; uses the Jira admin token — `jira/jira_admin_token` paired with `jira/jira_admin_user`, falling back to `jira/jira_user`). Project keys may be given positionally or via `--project`. `--check` = read-only report, exit 1 on any inconsistency or if it could not be verified |
 | `publish <kind> [--agent-view C]` | Publish a job (jira-cron, jira-todo, jira-mention). Publishing is **per-view**: a deployment with no active agent_view fails with an actionable message instead of publishing on global config |
 | `bitbucket:publish-comments [--agent-view C] [--top N]` | Sweep open PRs for unanswered reviewer feedback ([details](../modules/bitbucket.md)) |

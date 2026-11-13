@@ -1,0 +1,13 @@
+{
+  "name": "scheduler",
+  "version": "1.0.0",
+  "description": "Editable agent schedules: RRULE recurrences owned by a user or an agent_view, shared, run by the framework tick",
+  "sequence": ["conversation", "agent_view", "web"],
+  "order": 70,
+  "tools": [
+    {"type": "mcp", "name": "schedule_create", "description": "Create a recurring schedule that runs a prompt in this agent_view", "toolset": "scheduler"},
+    {"type": "mcp", "name": "schedule_update", "description": "Change a schedule this agent may reach", "toolset": "scheduler"},
+    {"type": "mcp", "name": "schedule_list", "description": "List the schedules this agent may reach, with their next fire time", "toolset": "scheduler"},
+    {"type": "mcp", "name": "schedule_delete", "description": "Delete a schedule this agent may reach", "toolset": "scheduler"}
+  ]
+}

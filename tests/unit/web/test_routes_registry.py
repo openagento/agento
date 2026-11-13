@@ -21,8 +21,14 @@ from agento.web.routes_registry import RouteDeclarationError, load_module_routes
 
 @pytest.fixture(autouse=True)
 def _job_types(monkeypatch):
-    """Loading the real core modules registers their job types: keep that in this test."""
+    """Loading the real core modules registers their job types, channels and schedule
+    sources: keep that in this test."""
+    from agento.framework.channels import registry
+    from agento.framework.schedule import sources
+
     monkeypatch.setattr(job_types, "_REGISTRY", dict(job_types._REGISTRY))
+    monkeypatch.setattr(registry, "_CHANNELS", dict(registry._CHANNELS))
+    monkeypatch.setattr(sources, "_REGISTERED", dict(sources._REGISTERED))
 
 
 def _dirs(root: Path) -> list[tuple[str, Path]]:
@@ -274,6 +280,21 @@ def test_the_shipped_conversation_module_registers_its_job_type(etc):
     (etc / "modules.json").write_text(json.dumps({"conversation": True}))
     load_module_routes(etc, _dirs(Path(CORE_MODULES_DIR)))
     assert resolve_job_type("conversation").module == "conversation"
+
+
+def test_web_registers_the_enabled_modules_channels(etc):
+    """The conversation routes ask a channel about its conversations (AG-67 §8), and `web`
+    never bootstraps: without this the seam would fail closed for every request."""
+    from agento.framework.bootstrap import CORE_MODULES_DIR
+    from agento.framework.channels import registry
+
+    registry.clear()
+    (etc / "modules.json").write_text(json.dumps({"subagent": False}))
+    load_module_routes(etc, _dirs(Path(CORE_MODULES_DIR)))
+
+    assert registry.get_channel("conversation").name == "conversation"
+    with pytest.raises(ValueError):
+        registry.get_channel("subagent")
 
 
 def test_a_disabled_conversation_module_serves_nothing(etc):

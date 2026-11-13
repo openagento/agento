@@ -41,10 +41,12 @@ def test_the_queue_publishes_and_consumes_a_blank_job_without_the_module(
     """With `conversation` never loaded, a blank job still goes through the queue."""
     import agento.framework.bootstrap as bootstrap_module
 
+    # `module:disable conversation` also disables its dependents (scheduler, ...).
+    gone = {"conversation", *get_transitive_dependents("conversation", scan_modules(CORE_MODULES_DIR))}
     monkeypatch.setattr(
         bootstrap_module,
         "filter_enabled",
-        lambda manifests: [m for m in manifests if m.name != "conversation"],
+        lambda manifests: [m for m in manifests if m.name not in gone],
     )
     bootstrap_for_tests()
     job_id = insert_queued_job(job_type="blank", idempotency_key="conv-disabled:1",

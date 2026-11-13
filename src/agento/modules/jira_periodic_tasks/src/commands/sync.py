@@ -49,6 +49,7 @@ class SyncCommand:
                 lock = FileLock()
                 with lock:
                     all_entries: list[CronEntry] = []
+                    rules: dict[tuple, str | None] = {}  # one validation per map value per run
 
                     if not agent_views:
                         # No global fallback: a viewless sync has no scope to mint a
@@ -87,6 +88,7 @@ class SyncCommand:
                                         jira_config, periodic_config, toolbox,
                                         logger, db_config=db_config,
                                         agent_view_id=av.id, agent_view_code=av.code,
+                                        rules=rules,
                                     )
                                     all_entries.extend(
                                         syncer.sync_view(dry_run=args.dry_run)
@@ -99,7 +101,7 @@ class SyncCommand:
 
                     logger.info(
                         "Schedules synced (%d total entries across %d view(s)); "
-                        "the root crontab renderer picks them up within a minute",
+                        "scheduler:tick fires them",
                         len(all_entries),
                         max(len(agent_views), 1),
                     )

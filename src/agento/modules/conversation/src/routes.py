@@ -88,17 +88,27 @@ def create(req: Request) -> Response:
 
 
 def index(req: Request) -> Response:
-    """`?scope=mine` (default) or `?scope=channels[&channel=<source>]` - admins only."""
+    """`?scope=mine` (default), `?scope=channels[&channel=<source>]` - admins only, or
+    `?scope=shared[&before=<thread id>]` - `{conversations, next}`, keyset by thread id."""
     scope = req.query.get("scope", "mine")
-    if scope not in ("mine", "channels"):
-        return error(400, "scope must be mine or channels")
+    if scope not in ("mine", "channels", "shared"):
+        return error(400, "scope must be mine, channels or shared")
+    limit = service.config(req.conn, "history/page_size")
+    if scope == "shared":
+        cursor = req.query.get("before")
+        if cursor is not None and not re.fullmatch(r"[0-9]{1,19}", cursor):
+            return error(400, "before must be a cursor from a shared page")
+        rows, next_cursor = service.list_shared(
+            req.conn, user=req.session.user, limit=limit,
+            before=int(cursor) if cursor is not None else None)
+        return Response(200, {"conversations": [_conversation_json(r) for r in rows],
+                              "next": next_cursor})
     before = None
     if req.query.get("before"):
         if scope != "channels" or not re.fullmatch(r"[0-9]{1,12}:[0-9]{1,19}", req.query["before"]):
             return error(400, "before must be a cursor from a channels page")
         ts, _, rid = req.query["before"].partition(":")
         before = (int(ts), int(rid))
-    limit = service.config(req.conn, "history/page_size")
     rows = service.list_visible(req.conn, user=req.session.user, limit=limit,
                                 channels=scope == "channels",
                                 channel=req.query.get("channel") or None, before=before)
@@ -119,7 +129,7 @@ def show(req: Request) -> Response:
     body["run_details"] = details
     # The panel shows its channel composer only for a reader who may post (the route
     # checks the same grant anyway; this keeps a control the reader cannot use off screen).
-    if row["user_id"] is None:
+    if row["channel"] != service.PANEL_CHANNEL:
         body["channel_write"] = service.can_write_channel(req.conn, req.session.user, row)
     body["runs"] = [_run_json(r, details)
                     for r in service.list_runs(req.conn, conversation_id=row["id"])]
@@ -132,12 +142,14 @@ def show(req: Request) -> Response:
 def update(req: Request) -> Response:
     """Rename (`title`) and pin (`pinned`) - the two things a user may change on a thread.
 
-    Both are the owner's own view of the thread, so neither is offered on a channel thread,
-    which has no owner (`user_id IS NULL`, E9 3.5).
+    Both are the owner's own view of the thread. On a channel thread only its owner has
+    one (a schedule's conversation, D-32); a reader the channel shares it with does not.
     """
     row = _visible(req)
-    if row is None or row["user_id"] is None:
+    if row is None:
         return error(404, "not found")
+    if not _may_manage(req, row, admin=False):
+        return error(403, "forbidden")
     body = req.json if isinstance(req.json, dict) else {}
     if "title" not in body and "pinned" not in body:
         return error(400, "title or pinned is required")
@@ -155,12 +167,29 @@ def update(req: Request) -> Response:
         dict(_visible(req) or row, live=service.is_live(req.conn, conversation_id=row["id"]))))
 
 
+def _may_manage(req: Request, row: dict, *, admin: bool) -> bool:
+    """Rename, pin and archive: a panel thread to whoever reads it (its owner or an admin);
+    a channel thread to its owner, and for archive an admin - never to a reader by share."""
+    user = req.session.user
+    return (row["channel"] == service.PANEL_CHANNEL or row["user_id"] == user.id
+            or (admin and user.role == "admin"))
+
+
 def destroy(req: Request) -> Response:
     """Archive, not delete: §10.1's deletion is an operator path with its own ordering."""
     row = _visible(req)
     if row is None:
         return error(404, "not found")
-    service.archive(req.conn, row["id"], actor_id=req.session.user.id, reason="manual")
+    if not _may_manage(req, row, admin=True):
+        return error(403, "forbidden")
+    assert req.session is not None  # auth='session'
+    user = req.session.user
+    owned = row["channel"] != service.PANEL_CHANNEL and user.role != "admin"
+    try:
+        service.archive(req.conn, row["id"], actor_id=user.id, reason="manual",
+                        owner_id=row["user_id"] if owned else None)
+    except service.SubmissionError as exc:
+        return error(exc.status, str(exc))
     return Response(200, {"id": row["id"], "status": "archived"})
 
 
@@ -259,21 +288,10 @@ def unblock(req: Request) -> Response:
 
 
 def _write_refusal(req: Request, row: dict) -> Response | None:
-    """What refuses a write into this thread, for EVERY write route (CLS-1).
-
-    A channel thread mirrors a Jira issue or a mailbox. A post into it continues that
-    external task as a follow-up (`complete_pending` picks the contract), so it needs the
-    grant that speaks for the operator - and something to reply to. A view that is gone
-    leaves readable history with nothing left to run the turn on.
-    """
-    if row["user_id"] is None:
-        if not service.can_write_channel(req.conn, req.session.user, row):
-            return error(403, "forbidden")
-        if not row["external_ref"]:
-            return error(409, "read_only")
-    if row["agent_view_id"] is None:
-        return error(404, "not found")
-    return None
+    """`service.write_refusal`, for EVERY write route (CLS-1). The submission asks it again
+    under the locks (SEC-7)."""
+    refusal = service.write_refusal(req.conn, req.session.user, row)
+    return None if refusal is None else error(refusal.status, str(refusal))
 
 
 def regenerate(req: Request) -> Response:
@@ -292,7 +310,8 @@ def regenerate(req: Request) -> Response:
             raise service.SubmissionError(400, "message_id must be a positive integer")
         new_id, job_id, created = service.regenerate(
             req.conn, conversation_id=row["id"], message_id=message_id,
-            user_id=req.session.user.id, client_message_id=client_message_id)
+            user_id=req.session.user.id, client_message_id=client_message_id,
+            writer=req.session.user, seen=row)
     except service.SubmissionError as exc:
         return error(exc.status, str(exc))
     return Response(201 if created else 200, {"message_id": new_id, "job_id": job_id})
@@ -316,7 +335,7 @@ def send(req: Request) -> Response:
         message_id, job_id, created = service.submit_message(
             req.conn, conversation_id=row["id"], user_id=req.session.user.id,
             client_message_id=client_message_id, content=content,
-            reactivate_actor_id=req.session.user.id)
+            reactivate_actor_id=req.session.user.id, writer=req.session.user, seen=row)
     except service.SubmissionError as exc:
         return error(exc.status, str(exc))
     return Response(201 if created else 200,

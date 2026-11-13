@@ -817,7 +817,7 @@ def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> t
         if isinstance(di, dict):
             if "agent_harnesses" in di:
                 errors.extend(_validate_agent_harnesses(module_dir, di["agent_harnesses"]))
-            for section in ("channels", "workflows", "commands"):
+            for section in ("channels", "workflows", "commands", "upgrade_checks", "schedule_sources"):
                 if section not in di:
                     continue
                 entries = di[section]

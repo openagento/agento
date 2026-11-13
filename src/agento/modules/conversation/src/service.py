@@ -16,12 +16,14 @@ Two things carry the weight here:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 
 import pymysql
 
-from agento.framework.access.accounts import User, can_reach, has_operation, scope_is_active
+from agento.framework.access.accounts import User, can_reach, get_user, has_operation, scope_is_active
+from agento.framework.channels.registry import get_channel
 from agento.framework.events import (
     ConversationArchivedEvent,
     ConversationCreatedEvent,
@@ -35,6 +37,7 @@ from agento.framework.job_types import resolve_job_type
 from agento.framework.publish_service import publish_job
 from agento.framework.threads import ensure_thread
 
+logger = logging.getLogger(__name__)
 MODULE_DIR = Path(__file__).resolve().parent.parent
 JOB_TYPE = "conversation"
 FOLLOWUP_JOB_TYPE = "followup"
@@ -75,6 +78,66 @@ def config(conn, path: str) -> int:
                              read_config_defaults(MODULE_DIR), load_db_overrides(conn)).value)
 
 
+# --- the channel seam (framework/channels/base.py, docs/architecture/conversation-access.md)
+
+def _seam(channel_name: str, member: str):
+    """The channel's optional seam member, None when it has none, or False when the channel
+    is unknown (its module is disabled or gone): the caller then grants nothing (SEC-9)."""
+    try:
+        channel = get_channel(channel_name)
+    except ValueError:
+        return False
+    # Optional members, not Protocol members, so an out-of-tree channel without them keeps
+    # loading (CODE-3): a channel without one has no opinion.
+    return getattr(channel, member, None)
+
+
+def channel_known(name: str) -> bool:
+    """Is the channel registered in this process (its module enabled)?"""
+    return _seam(name, "name") is not False
+
+
+def channel_access(conn, user: User | None, conversation: dict, mode: str) -> bool | None:
+    """The channel's answer for one conversation: True, False, or None ("no opinion").
+
+    An unknown channel, or a member that raises, is False: it grants no read or write and
+    allows no delete (SEC-9). `user` is None for a system delete (retention)."""
+    member = _seam(conversation["channel"], "conversation_access")
+    if member is None or member is False:
+        return member
+    try:
+        return member(conn, user, conversation, mode)
+    except Exception as exc:
+        logger.warning("conversation_access failed: channel=%s conversation=%s mode=%s %s",
+                       conversation["channel"], conversation["id"], mode,
+                       type(exc).__name__)
+        return False
+
+
+def _conversation_owner(cur, channel_name: str, reference_id: str | None
+                        ) -> tuple[int | None, str] | None:
+    """`(user_id, title)` the channel gives a new conversation, or None (ownerless). A
+    failing channel must not break the run's mint: it gets an ownerless conversation."""
+    member = _seam(channel_name, "conversation_owner") if reference_id else None
+    if not member:
+        return None
+    try:
+        answer = member(cur, reference_id)
+        if answer is None:
+            return None
+        owner_id, title = answer
+        if owner_id is not None:
+            # A gone user would fail the insert's FK and with it the run's mint.
+            cur.execute("SELECT 1 FROM `user` WHERE id = %s", (owner_id,))
+            if cur.fetchone() is None:
+                return None
+        return owner_id, str(title)
+    except Exception as exc:
+        logger.warning("conversation_owner failed: channel=%s %s", channel_name,
+                       type(exc).__name__)
+        return None
+
+
 # --- reads -----------------------------------------------------------------
 
 _FROM = "FROM conversation c LEFT JOIN agent_view v ON v.id = c.agent_view_id "
@@ -82,7 +145,12 @@ _SELECT = "SELECT c.*, v.workspace_id " + _FROM
 
 
 def _reachable(conn, row: dict, user: User, *, scopes: dict | None = None) -> bool:
-    """Owner (or admin), reach over the row's scope, and that scope still active.
+    """Owner (or admin, or a reader the channel grants), reach over the row's scope, and
+    that scope still active.
+
+    A channel conversation may be shared: its channel answers `conversation_access(...,
+    "read")` for a caller who is neither the owner nor an admin. Only True passes, and only
+    with a view to check reach on; the panel channel is never asked.
 
     A conversation whose `agent_view_id` is NULL lost its view to a delete (§3.2's
     `ON DELETE SET NULL`). There is no scope left to reach or to deactivate, so it stays
@@ -92,7 +160,9 @@ def _reachable(conn, row: dict, user: User, *, scopes: dict | None = None) -> bo
     agent_view alone, and a page of one user's threads is a handful of distinct views. It
     keeps this the ONE gate while a list costs a query per view instead of per row (CODE-8).
     """
-    if row["user_id"] != user.id and user.role != "admin":
+    if row["user_id"] != user.id and user.role != "admin" and (
+            row["channel"] == PANEL_CHANNEL or row["agent_view_id"] is None
+            or channel_access(conn, user, row, "read") is not True):
         return False
     if row["agent_view_id"] is None:
         return True
@@ -130,9 +200,10 @@ def list_visible(conn, *, user: User, limit: int, channels: bool = False,
                  channel: str | None = None, before: tuple[int, int] | None = None) -> list[dict]:
     """The caller's conversations, newest first, filtered by the same gate.
 
-    `channels` lists the channel threads (`user_id IS NULL`) instead, newest activity
-    first. They are admin-only (E9 §3.6): `_reachable` already refuses a row with no owner
-    to a non-admin, and a non-admin is answered an empty list before any query. `before`
+    `channels` lists the channel threads (`channel` not the panel's) instead, newest
+    activity first. They are admin-only (E9 §3.6): a non-admin is answered an empty list
+    before any query; an owned or shared channel thread reaches its user through "mine" or
+    `list_shared`. `before`
     is the `(activity_ts, id)` of the last row of the previous page (keyset, E9 §3.7).
 
     ponytail: the reach check is per row (up to `history/page_size` rows), not folded into
@@ -146,7 +217,7 @@ def list_visible(conn, *, user: User, limit: int, channels: bool = False,
             return []
         select = ("SELECT c.*, v.workspace_id, UNIX_TIMESTAMP(COALESCE(c.last_activity_at, "
                   "c.created_at)) AS activity_ts, " + _LIVE + _FROM)
-        where, params = "WHERE c.user_id IS NULL AND c.status = 'active' ", []
+        where, params = "WHERE c.channel <> %s AND c.status = 'active' ", [PANEL_CHANNEL]
         if channel:
             where += "AND c.channel = %s "
             params.append(channel)
@@ -167,6 +238,44 @@ def list_visible(conn, *, user: User, limit: int, channels: bool = False,
         rows = list(cur.fetchall())
     scopes: dict[int, bool] = {}
     return [r for r in rows if _reachable(conn, r, user, scopes=scopes)]
+
+
+def list_shared(conn, *, user: User, limit: int, before: int | None
+                ) -> tuple[list[dict], int | None]:
+    """The conversations shared with the caller (D-30), newest thread first, and the cursor
+    of the next page (a thread id) or None.
+
+    Keyset by thread id: each channel that shares (`shared_thread_ids`) gives at most
+    `limit` ids below `before`; the merge keeps the newest `limit`, so a page is bounded
+    whatever the number of shares (CODE-8). The cursor comes from the merged ids, before
+    the reach gate drops a row, so a page of dropped rows does not end the list. The
+    channels asked are the ones that own a conversation: a share with none shows nothing.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT channel FROM conversation WHERE channel <> %s",
+                    (PANEL_CHANNEL,))
+        names = [r["channel"] for r in cur.fetchall()]
+    ids: set[int] = set()
+    for name in names:
+        member = _seam(name, "shared_thread_ids")
+        if not member:
+            continue
+        try:
+            ids.update(i for i in member(conn, user, before=before, limit=limit)
+                       if before is None or i < before)
+        except Exception as exc:
+            logger.warning("shared_thread_ids failed: channel=%s %s", name, type(exc).__name__)
+    page = sorted(ids, reverse=True)[:limit]
+    if not page:
+        return [], None
+    with conn.cursor() as cur:
+        cur.execute("SELECT c.*, v.workspace_id, " + _LIVE + _FROM
+                    + f"WHERE c.thread_id IN ({','.join(['%s'] * len(page))}) "
+                    "AND c.status = 'active' ORDER BY c.thread_id DESC", page)
+        rows = list(cur.fetchall())
+    scopes: dict[int, bool] = {}
+    return ([r for r in rows if _reachable(conn, r, user, scopes=scopes)],
+            page[-1] if len(page) == limit else None)
 
 
 MAX_RUNS = 50
@@ -322,13 +431,64 @@ def can_see_run_details(conn, user: User, conversation: dict) -> bool:
 def can_write_channel(conn, user: User, conversation: dict) -> bool:
     """Admin always; another role only with the `conversation.channel_write` grant on the
     thread's workspace or view. A channel thread mirrors an external system, so posting
-    into it speaks to a customer - a plain `user` does not get that by reading the thread."""
-    if user.role == "admin":
+    into it speaks to a customer - a plain `user` does not get that by reading the thread.
+    The channel may also grant it (`conversation_access(..., "write")`, D-29)."""
+    if user.role == "admin" or channel_access(conn, user, conversation, "write") is True:
         return True
     if conversation["agent_view_id"] is None:
         return False
     return has_operation(conn, user.role, CHANNEL_WRITE, conversation["workspace_id"],
                          conversation["agent_view_id"])
+
+
+def write_refusal(conn, user: User, conversation: dict) -> SubmissionError | None:
+    """What refuses a post or a regenerate into this thread, or None (CLS-1: one gate).
+
+    A channel thread mirrors an external task: a post continues it as a follow-up, so it
+    needs the channel write right and something to reply to. A view that is gone leaves
+    readable history with nothing left to run the turn on. The route asks first, and
+    `submit_message` asks again under the locks (SEC-7)."""
+    if conversation["channel"] != PANEL_CHANNEL:
+        if not can_write_channel(conn, user, conversation):
+            return SubmissionError(403, "forbidden")
+        if not conversation["external_ref"]:
+            return SubmissionError(409, "read_only")
+    if conversation["agent_view_id"] is None:
+        return SubmissionError(404, "not found")
+    return None
+
+
+def _recheck_writer(conn, cur, writer: User, seen: dict) -> None:
+    """The route's read and write checks, again, on fresh rows (SEC-7). They ran before any
+    lock, and a share, an owner, a role or a grant can change between the two.
+
+    The rollback ends the route's REPEATABLE READ snapshot. The channel's lock comes next,
+    before any plain read, so the reads after it see every commit made before it: a channel
+    that grants a write from its own rows (a schedule's share or owner) locks them, and its
+    writes that take the right away serialize with this post. Lock order (SCL-1): the
+    channel's rows, then the poster's user row (shared), then the conversation row (the
+    caller takes it after this). The message's author key locks the user row at the INSERT
+    anyway; taking it here, before the conversation, keeps the order a pin uses (user, then
+    conversation), so a post and a pin of one owner cannot close a cycle."""
+    conn.rollback()
+    if seen["channel"] != PANEL_CHANNEL:
+        lock = _seam(seen["channel"], "conversation_lock")
+        if lock:  # False (unknown channel): `write_refusal` below refuses
+            try:
+                lock(cur, seen)
+            except Exception as exc:  # a member that raises grants nothing (SEC-9)
+                logger.warning("conversation_lock failed: channel=%s conversation=%s %s",
+                               seen["channel"], seen["id"], type(exc).__name__)
+                raise SubmissionError(403, "forbidden") from None
+    cur.execute("SELECT id FROM `user` WHERE id = %s FOR SHARE", (writer.id,))
+    fresh = get_user(conn, writer.id)
+    row = (load_visible(conn, conversation_id=seen["id"], user=fresh)
+           if fresh is not None and fresh.is_active else None)
+    if row is None:
+        raise SubmissionError(404, "not found")
+    refusal = write_refusal(conn, fresh, row)
+    if refusal is not None:
+        raise refusal
 
 
 def project_events(conn, rows: list[dict], user: User, conversation: dict) -> list[dict]:
@@ -452,8 +612,9 @@ def update_thread(conn, conversation_id: int, *, user_id: int,
     The cap is an aggregate over the user's rows, so the thread's own row lock cannot hold it:
     two pins of DIFFERENT threads lock different rows and both commit from 49. The `user` row
     is the one row every pin of this user contends on. Lock order (SCL-1): the user row, then
-    the conversation rows. No other path takes the user row lock, so there is no cycle with
-    the posting path, which takes the conversation row alone.
+    the conversation rows. The posting path keeps the same order: the channel's rows
+    (`conversation_lock`), then the poster's user row (shared, which the message's author
+    key needs at the INSERT anyway), then the conversation row, so there is no cycle.
 
     The count must be a LOCKING read. The caller's transaction already read the thread (the
     reach gate), so under REPEATABLE READ a plain `SELECT COUNT(*)` answers from that older
@@ -468,6 +629,12 @@ def update_thread(conn, conversation_id: int, *, user_id: int,
             if len(cur.fetchall()) >= MAX_PINNED:
                 conn.rollback()
                 raise SubmissionError(409, f"at most {MAX_PINNED} pinned conversations")
+        # SEC-7: the route checked the owner before any lock; an owner change since refuses.
+        cur.execute("SELECT user_id FROM conversation WHERE id = %s FOR UPDATE", (conversation_id,))
+        locked = cur.fetchone()
+        if locked is None or locked["user_id"] != user_id:
+            conn.rollback()
+            raise SubmissionError(403, "forbidden")
         sets, params = [], []
         if title is not KEEP:
             sets.append("title = %s")
@@ -482,15 +649,24 @@ def update_thread(conn, conversation_id: int, *, user_id: int,
 
 
 def archive(conn, conversation_id: int, *, actor_id: int | None = None,
-            reason: str = "manual") -> bool:
+            reason: str = "manual", owner_id: int | None = None) -> bool:
     """The ONE archive path. §10.1 retires an idle thread through this same function, so
     there is one event and not two that can drift (`reason` is what tells them apart).
 
     Returns True when it changed something. The UPDATE decides, not the caller: an event
     is an announcement that a transition HAPPENED, so a second archive of an already
     archived thread - or of one that is gone - announces nothing.
+
+    ``owner_id``: the right came from owning the thread (a channel thread's owner), so the
+    owner is checked again under the row lock (SEC-7); a change since refuses with 403.
     """
     with conn.cursor() as cur:
+        if owner_id is not None:
+            cur.execute("SELECT user_id FROM conversation WHERE id = %s FOR UPDATE", (conversation_id,))
+            locked = cur.fetchone()
+            if locked is None or locked["user_id"] != owner_id:
+                conn.rollback()
+                raise SubmissionError(403, "forbidden")
         cur.execute("UPDATE conversation SET status = 'archived' WHERE id = %s "
                     "AND status <> 'archived'", (conversation_id,))
         changed = cur.rowcount == 1
@@ -615,7 +791,8 @@ def delete_conversation(conn, conversation_id: int) -> bool:
     """Delete a thread and everything under it (§10.1's operator path).
 
     The event is notification only and is dispatched after the commit: by then the row is
-    gone, so there is nothing for an observer to read and nothing it can change.
+    gone, so there is nothing for an observer to read and nothing it can change. A channel
+    may refuse the delete (`conversation_access(..., "delete")`); False is then returned.
     """
     from .retention import delete_tree
 
@@ -676,6 +853,33 @@ def append_event(cur, conversation_id: int, *, kind: str, payload: dict, source_
 
 # --- channel threads (E9 §3.5) ------------------------------------------------
 
+def ensure_channel_conversation(cur, *, thread_id: int, agent_view_id: int | None,
+                                channel: str, external_ref: str | None, user_id: int | None,
+                                title: str, at: datetime | None = None) -> int:
+    """The channel conversation of a thread: created, or reactivated when it exists. An
+    existing one keeps its owner, title and reference (F16). Returns its id."""
+    cur.execute(
+        "INSERT INTO conversation (user_id, agent_view_id, thread_id, title, channel, "
+        "                          external_ref, last_activity_at) "
+        "VALUES (%s, %s, %s, %s, %s, %s, COALESCE(%s, NOW())) "
+        "ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), status = 'active'",
+        (user_id, agent_view_id, thread_id, title[:MAX_TITLE], channel, external_ref, at))
+    return cur.lastrowid
+
+
+def retitle(cur, thread_id: int, title: str) -> None:
+    """Rename the thread's conversation, in the caller's transaction."""
+    cur.execute("UPDATE conversation SET title = %s WHERE thread_id = %s",
+                (title[:MAX_TITLE], thread_id))
+
+
+def set_channel_owner(cur, thread_id: int, user_id: int | None) -> None:
+    """Give the thread's channel conversation a new owner, in the caller's transaction. The
+    pin was the old owner's, so it goes. A panel conversation never changes owner."""
+    cur.execute("UPDATE conversation SET user_id = %s, pinned_at = NULL "
+                "WHERE thread_id = %s AND channel <> %s", (user_id, thread_id, PANEL_CHANNEL))
+
+
 def link_execution(cur, *, execution_row_id: int, execution_id: str, job_id: int,
                    attempt: int, at: datetime | None = None) -> int | None:
     """Give a freshly minted run its conversation, and announce it there. Returns it.
@@ -716,15 +920,13 @@ def link_execution(cur, *, execution_row_id: int, execution_id: str, job_id: int
         conversation_id = row["id"]
     else:
         ref = job["reference_id"]
-        title = f"{job['source']} {ref or f'job {job_id}'}"[:MAX_TITLE]
-        cur.execute(
-            "INSERT INTO conversation (user_id, agent_view_id, thread_id, title, channel, "
-            "                          external_ref, last_activity_at) "
-            "VALUES (NULL, %s, %s, %s, %s, %s, COALESCE(%s, NOW())) "
-            # Only a channel thread reaches here (a user's conversation is a panel thread).
-            "ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id), status = 'active'",
-            (job["thread_view"], job["thread_id"], title, job["source"], ref, at))
-        conversation_id = cur.lastrowid
+        # The channel may name the owner and title of its conversation (a schedule's); a
+        # conversation that exists keeps both.
+        owner_id, title = _conversation_owner(cur, job["source"], ref) or (None, None)
+        conversation_id = ensure_channel_conversation(
+            cur, thread_id=job["thread_id"], agent_view_id=job["thread_view"],
+            channel=job["source"], external_ref=ref, user_id=owner_id,
+            title=title or f"{job['source']} {ref or f'job {job_id}'}", at=at)
         if job["depth"] == 0 and ref:
             # A panel reply continues the item of the channel's latest run
             # (`complete_pending`): in a mail conversation that is usually the newest mail,
@@ -788,18 +990,28 @@ def check_title(value: object) -> str | None:
 
 
 def submit_message(conn, *, conversation_id: int, user_id: int, client_message_id: str,
-                   content: str, reactivate_actor_id: int | None = None
+                   content: str, reactivate_actor_id: int | None = None,
+                   writer: User | None = None, seen: dict | None = None
                    ) -> tuple[int, int, bool]:
     """(message_id, job_id, created). §4.1's three steps, of which this is 1 and 3.
+
+    `user_id` is the poster: the message stores it, and it is the requester of the job.
 
     `reactivate_actor_id` makes the post into an archived thread (§3.2) part of THIS
     transaction: the revival and the pending message commit together, so the retention
     pass cannot archive the thread in between and leave the new turn in an archived one.
+
+    `writer` and `seen` (the conversation row the route checked): a route's post. The read
+    and write gates are asked again in this transaction, before the insert (SEC-7).
     """
     created = True
     revived = False
     try:
         with conn.cursor() as cur:
+            if writer is not None:
+                if seen is None or seen["id"] != conversation_id:
+                    raise ValueError("seen must be the conversation the route checked")
+                _recheck_writer(conn, cur, writer, seen)
             # The thread's row lock BEFORE the message insert (E9 §3.4). The insert's FK
             # check takes a shared lock on the same row, so two posts that each hold one
             # and then ask `append_event` for the exclusive lock would deadlock.
@@ -808,9 +1020,10 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
             else:
                 lock_conversations(cur, [conversation_id])
             cur.execute(
-                "INSERT INTO message (conversation_id, role, content, client_message_id, job_state) "
-                "VALUES (%s, 'user', %s, %s, 'pending')",
-                (conversation_id, content, client_message_id),
+                "INSERT INTO message (conversation_id, role, author_user_id, content, "
+                "                     client_message_id, job_state) "
+                "VALUES (%s, 'user', %s, %s, %s, 'pending')",
+                (conversation_id, user_id, content, client_message_id),
             )
             message_id = cur.lastrowid
             # An untitled thread is named by its first message (E9 chat UX, U9); a thread
@@ -825,6 +1038,9 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
                          source_kind="message", source_id=message_id,
                          locked=reactivate_actor_id is None)
         conn.commit()
+    except SubmissionError:
+        conn.rollback()                 # release the locks; nothing was written
+        raise
     except pymysql.err.IntegrityError:
         conn.rollback()                 # the revival rolls back with it
         created = False
@@ -857,7 +1073,8 @@ TITLE_CHARS = 60
 
 
 def regenerate(conn, *, conversation_id: int, message_id: int, user_id: int,
-               client_message_id: str) -> tuple[int, int, bool]:
+               client_message_id: str, writer: User | None = None, seen: dict | None = None
+               ) -> tuple[int, int, bool]:
     """Ask the same question again, as a NEW turn. Same return as `submit_message`.
 
     The caller names the user message to re-ask: "the newest one" stops being a stable
@@ -881,7 +1098,7 @@ def regenerate(conn, *, conversation_id: int, message_id: int, user_id: int,
         raise SubmissionError(404, "message not found")
     return submit_message(conn, conversation_id=conversation_id, user_id=user_id,
                           client_message_id=client_message_id, content=row["content"],
-                          reactivate_actor_id=user_id)
+                          reactivate_actor_id=user_id, writer=writer, seen=seen)
 
 
 def derive_title(content: str) -> str:
@@ -898,11 +1115,15 @@ def complete_pending(conn, message_id: int) -> int:
 
     The idempotency key is derived from the message id, so a crash between the publish and
     the update re-publishes into the same job instead of a second one.
+
+    The requester is the message's poster and nobody else (F19). A NULL author - deleted
+    before publication, a legacy channel message, no row - publishes with no requester, never
+    as the conversation's owner (SEC-7, SEC-9).
     """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT m.id, m.content, m.job_id, m.job_state, m.conversation_id, "
-            "       c.agent_view_id, c.user_id, c.channel, c.external_ref, c.thread_id "
+            "       m.author_user_id, c.agent_view_id, c.channel, c.external_ref, c.thread_id "
             "FROM message m JOIN conversation c ON c.id = m.conversation_id "
             "WHERE m.id = %s",
             (message_id,),
@@ -914,7 +1135,8 @@ def complete_pending(conn, message_id: int) -> int:
     if row["job_state"] != "pending":
         return row["job_id"]              # already published: nothing happened here
 
-    requester = JobRequester(key=f"user:{row['user_id']}", trust=RequesterTrust.ACCOUNT)
+    requester = (None if row["author_user_id"] is None else
+                 JobRequester(key=f"user:{row['author_user_id']}", trust=RequesterTrust.ACCOUNT))
     if row["channel"] == PANEL_CHANNEL:
         job_id = publish_job(
             source=SOURCE,

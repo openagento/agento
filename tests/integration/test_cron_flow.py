@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from unittest.mock import patch
 
 import httpx
@@ -19,12 +20,12 @@ class TestCronSync:
 
     @respx.mock
     def test_cron_sync_upserts_schedules(
-        self, int_config, int_periodic_config, int_db_config, jira_cykliczne_fixture
+        self, int_config, int_periodic_config, int_db_config, jira_cykliczne_fixture, int_agent_view
     ):
         """Sync fetches Cykliczne issues into the ``schedule`` table and touches no crontab.
 
-        The crontab is rendered by root from this table — a sync that wrote one would be
-        writing a file uid ``agent`` must not control.
+        ``scheduler:tick`` fires the rows; a sync that wrote a crontab would be writing a file
+        uid ``agent`` must not control.
         """
         respx.post("http://toolbox:3001/api/jira/search").mock(
             return_value=httpx.Response(200, json=jira_cykliczne_fixture)
@@ -33,9 +34,10 @@ class TestCronSync:
         toolbox = ToolboxClient(int_config.toolbox_url, capability_token="test-cap")
         logger = logging.getLogger("test")
 
-        with patch("subprocess.run") as run:
+        with patch("subprocess.run", wraps=subprocess.run) as run:  # the rule validator runs a child
             syncer = JiraCronSync(
                 int_config, int_periodic_config, toolbox, logger, db_config=int_db_config,
+                agent_view_id=int_agent_view,
             )
             syncer.sync_view()
         assert not any("crontab" in str(c) for c in run.call_args_list)
@@ -43,10 +45,11 @@ class TestCronSync:
         schedules = fetch_all_schedules()
         assert len(schedules) == 2
 
-        by_key = {s["issue_key"]: s for s in schedules}
-        assert by_key["AI-2"]["cron_expr"] == "*/5 * * * *"
+        by_key = {s["source_ref"]: s for s in schedules}
+        assert by_key["AI-2"]["source"] == "jira_periodic"
+        assert by_key["AI-2"]["rrule"] == "FREQ=HOURLY;BYMINUTE=0,5,10,15,20,25,30,35,40,45,50,55"
         assert by_key["AI-2"]["enabled"] == 1
-        assert by_key["AI-3"]["cron_expr"] == "0 8 * * *"
+        assert by_key["AI-3"]["rrule"] == "FREQ=DAILY;BYHOUR=8;BYMINUTE=0"
         assert by_key["AI-3"]["enabled"] == 1
         # AI-4 (null frequency) and AI-5 (unknown frequency) never become schedules.
         assert "AI-4" not in by_key

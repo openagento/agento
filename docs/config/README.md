@@ -202,6 +202,13 @@ not**. Relayed-only would be unbounded — with the consuming module disabled no
 relayed. A module's own shorter retention over relayed rows is a faster cleanup inside this
 backstop, never a replacement for it.
 
+`core/scheduler/min_interval_minutes` (default 5, range 1 – 1440, default scope only) is the
+shortest gap between two fires of one schedule. A save refuses a rule with a shorter gap
+(`too_frequent`), and `scheduler:tick` skips a fire that comes sooner than this after the last one.
+`core/scheduler/default_timezone` (default empty, default scope only) is the IANA zone a new
+schedule gets when it names none. Empty means the container's `TZ`, then `UTC`; an invalid zone
+logs a warning and gives `UTC`. See [schedules.md](../architecture/schedules.md).
+
 `core/artifacts/retention_days` (default 30, `0` keeps all) is how long `artifacts:prune` (cron,
 nightly) keeps a run dir after its job ended, and a thread dir after its last job ended. The
 sessions in `state/` are never pruned ([artifacts-prune.md](../cli/artifacts-prune.md)).
@@ -274,6 +281,18 @@ boolean, default `1`, set at default, workspace or agent_view scope:
 agento config:set jira/resume_session 0 --scope=agent_view --scope-id=<id>
 agento config:set subagent/wake_parent 0 --scope=workspace --scope-id=<id>
 ```
+
+## Scheduler settings
+
+| Path | Default | Scope | Meaning |
+|---|---|---|---|
+| `scheduler/limits/max_per_user` | 10 | default, workspace, agent_view (target view) | schedules one user owns; admin has no limit |
+| `scheduler/limits/max_per_agent_view` | 20 | default, workspace, agent_view | schedules one agent_view owns (made by a `schedule_create` tool) |
+| `scheduler/presets` | 5 presets | default | the panel recurrence list, a JSON object `{label: rrule}` |
+| `scheduler/tools/schedule_{create,update,list,delete}/is_enabled` | `0` | any | the tool gates |
+
+The core paths `core/scheduler/min_interval_minutes` and `core/scheduler/default_timezone` are
+above. See [scheduler.md](../modules/scheduler.md).
 
 ## Further Reading
 

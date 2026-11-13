@@ -19,12 +19,14 @@ Two things this deliberately does NOT do:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Sequence
 from pathlib import Path
 
 from agento.framework.access import acl
 from agento.framework.bootstrap import _load_observers
+from agento.framework.channels.registry import register_channel
 from agento.framework.job_types import register_job_type
 from agento.framework.module_loader import import_class, parse_module_dir
 from agento.framework.module_status import is_enabled, read_module_status
@@ -34,8 +36,11 @@ from agento.framework.route_rules import (
     declaration_error,
     route_key,
 )
+from agento.framework.schedule.sources import register_module_sources
 
 from .api import ROUTES, Route
+
+logger = logging.getLogger(__name__)
 
 
 def _check(condition: bool, message: str) -> None:
@@ -75,9 +80,10 @@ def load_module_routes(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]) -
     Listing roots here instead is how an installed PyPI extension could be enabled, loaded,
     and still have every route it declares answer 404.
 
-    It also registers each enabled module's `job_types`: a route that publishes a job
-    resolves its type in this process, and `web` never runs `bootstrap()`, which is the
-    only other place they are registered.
+    It also registers each enabled module's `job_types`, `channels` and `schedule_sources`: a route that
+    publishes a job resolves its type in this process, a conversation route asks a channel
+    about its conversations (docs/architecture/conversation-access.md), and `web` never runs
+    `bootstrap()`, which is the only other place they are registered.
     """
     # A built-in path is taken before any module is read: a module cannot shadow sign-in.
     taken = {f"{r.method} {r.pattern.pattern.strip('^$')}": "web" for r in ROUTES}
@@ -97,9 +103,21 @@ def load_module_routes(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]) -
             raise RouteDeclarationError(f"module {name}: unreadable di.json: {exc}") from None
         for value in manifest.get("job_types", []):
             register_job_type(value, module=name)
+        _register_channels(name, module_dir, manifest.get("channels", []))
+        register_module_sources(name, module_dir, manifest.get("schedule_sources", []))
         ids = acl.route_ids(registry, name, _sequence(module_dir))
         routes += [_route(name, module_dir, d, taken, ids) for d in manifest.get("routes", [])]
     return routes
+
+
+def _register_channels(name: str, module_dir: Path, declarations: list) -> None:
+    """As `bootstrap._load_channels`: a channel that will not load is logged and stays
+    unknown, which every caller of the conversation seam treats as no access (SEC-9)."""
+    for decl in declarations:
+        try:
+            register_channel(import_class(module_dir, decl["class"])())
+        except Exception:
+            logger.exception("Failed to load channel %r from module %s", decl.get("name"), name)
 
 
 def load_module_observers(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]) -> None:

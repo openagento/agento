@@ -26,6 +26,10 @@ TOOLBOX_GRANTS = {
     "versioned_artifact_audit": "INSERT",
     "tool_invocation": "SELECT, INSERT, UPDATE",
     "toolbox_capability": "SELECT, UPDATE",
+    # The schedule_* tools (AG-67). No DELETE: a tool delete is a soft delete the tick finalizes.
+    "schedule": "SELECT, INSERT, UPDATE",
+    "schedule_member": "SELECT",  # the tools' reach check
+    "schedule_audit": "INSERT",
 }
 
 

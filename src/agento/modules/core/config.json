@@ -13,6 +13,8 @@
   "auth/capability_ttl": 30,
   "outbox/retention_days": 30,
   "artifacts/retention_days": 30,
+  "scheduler/min_interval_minutes": 5,
+  "scheduler/default_timezone": "",
   "limits/window_seconds": 60,
   "limits/max_requests_per_user": 120,
   "limits/max_requests_per_address": 60,

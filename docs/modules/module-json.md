@@ -149,6 +149,8 @@ Each section is optional — include only what your module provides. The `onboar
 | `commands` | `name`, `class` | CLI command registry — adds `bin/agento <name>` subcommand |
 | `onboarding` | (single class path string) | Onboarding registry — interactive setup during `setup:upgrade` |
 | `regex_identity_types` | (array of identity-type strings) | Regex-identity-type registry — `is_regex_identity_type(type)` |
+| `schedule_sources` | `name`, `class` | Schedule source registry — `get_source(name)`. See [schedules.md](../architecture/schedules.md#sources) |
+| `upgrade_checks` | `name`, `class` | Read-only checks that `setup:upgrade` runs before any schema change; a message stops the upgrade. See [schedules.md](../architecture/schedules.md#upgrade-checks) |
 
 #### `regex_identity_types`
 
@@ -299,7 +301,7 @@ class SeedDefaults:
 
 ### cron.json
 
-Declares scheduled CLI commands. Collected by the root-owned renderer `/opt/cron-agent/install-crontab.py`, which rebuilds the whole crontab every minute from the installed module catalog and the `schedule` table. Every module line runs `cron:run <module> <command>`, which no-ops when the module is disabled. See [cron-privileges.md](../architecture/cron-privileges.md).
+Declares scheduled CLI commands. Collected by the root-owned renderer `/opt/cron-agent/install-crontab.py`, which rebuilds the whole crontab every minute from the installed module catalog (`schedule` rows are fired by `scheduler:tick`, see [schedules.md](../architecture/schedules.md)). Every module line runs `cron:run <module> <command>`, which no-ops when the module is disabled. See [cron-privileges.md](../architecture/cron-privileges.md).
 
 ```json
 {
@@ -339,7 +341,7 @@ class SyncCommand:
 
     @property
     def help(self) -> str:
-        return "Sync recurring tasks to crontab"
+        return "Sync recurring tasks into the schedule table"
 
     def configure(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--dry-run", action="store_true")

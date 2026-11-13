@@ -679,3 +679,91 @@ class CredentialAuthThrottledEvent:
     error_msg: str
     throttled_until: datetime | None = None
     job_id: int | None = None
+
+
+# --- Schedule events (AG-67, docs/architecture/schedules.md) ---
+# No payload carries the prompt, the title or the rule (EVT-3): an observer re-reads the row.
+
+
+@dataclass
+class ScheduleSaveBeforeEvent:
+    """Dispatched with ``dispatch_with_result`` before a schedule row is written (``_before``
+    case 1). An observer sets ``veto = True`` to refuse the save; a failed observer refuses
+    it too (fail closed). ``schedule_id`` is None for a new row."""
+
+    schedule_id: int | None
+    source: str
+    agent_view_id: int | None
+    owner_user_id: int | None
+    owner_agent_view_id: int | None
+    actor: str
+    veto: bool = False
+
+
+@dataclass
+class ScheduleSavedEvent:
+    """``schedule_save_after``: dispatched after a schedule save commits."""
+
+    schedule_id: int
+    source: str
+    agent_view_id: int | None
+    actor: str
+    created: bool
+
+
+@dataclass
+class ScheduleDeletedEvent:
+    """``schedule_delete_after``: dispatched after the commit that removed the row."""
+
+    schedule_id: int
+    source: str
+    agent_view_id: int | None
+    actor: str
+
+
+@dataclass
+class ScheduleRunBeforeEvent:
+    """``schedule_run_before``: dispatched with ``dispatch_with_result`` inside the row-locked
+    transaction, after every check passed and just before the job is published (``_before``
+    case 1). ``veto = True`` or a failed observer ends the attempt with no run. An observer
+    must not commit, and must not write the schedule row. ``fire_at`` is naive UTC."""
+
+    schedule_id: int
+    source: str
+    agent_view_id: int | None
+    fire_at: datetime
+    actor: str
+    veto: bool = False
+
+
+@dataclass
+class ScheduleRunEvent:
+    """``schedule_run_after``: dispatched after the commit that published the job, and only then."""
+
+    schedule_id: int
+    job_id: int
+    source: str
+    agent_view_id: int | None
+    fire_at: datetime
+    actor: str
+
+
+@dataclass
+class ScheduleShareEvent:
+    """``schedule_share_after``: a user was added to (``added``) or removed from a schedule."""
+
+    schedule_id: int
+    user_id: int
+    added: bool
+    actor: str
+
+
+@dataclass
+class ScheduleOwnerChangedEvent:
+    """``schedule_owner_change_after``: dispatched after an owner change commits."""
+
+    schedule_id: int
+    old_owner_user_id: int | None
+    old_owner_agent_view_id: int | None
+    new_owner_user_id: int
+    actor: str

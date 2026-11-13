@@ -60,6 +60,7 @@ dependencies = [
     "regex>=2024.0",
     "fastapi>=0.143.0",
     "uvicorn>=0.54.0",
+    "python-dateutil>=2.9",
 ]
 authors = [{name = "Marcin Klauza"}]
 license = {text = "MIT"}

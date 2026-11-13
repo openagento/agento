@@ -141,3 +141,45 @@ def test_publish_still_returns_bool_and_writes_no_outbox_row(int_db_config):
     assert publish(int_db_config, AgentType.BLANK, "jira", "jira:1") is True
     assert publish(int_db_config, AgentType.BLANK, "jira", "jira:1") is False
     assert _rows("job_event_outbox") == []
+
+
+def _schedule_id() -> int:
+    conn = _test_connection(autocommit=True)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO schedule (source, title) VALUES ('scheduler', 't')")
+            return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def test_harness_model_and_schedule_are_written(int_db_config):
+    schedule_id = _schedule_id()
+    _publish(int_db_config, harness="h1", model="m1", schedule_id=schedule_id)
+
+    job = _rows("job")[0]
+    assert (job["agent_type"], job["model"], job["schedule_id"]) == ("h1", "m1", schedule_id)
+
+
+def test_publish_job_on_stays_in_the_callers_transaction():
+    """No commit, no rollback: a caller's row lock outlives the publication (AG-67 §5.3)."""
+    from agento.framework.publish_service import publish_job_on
+
+    schedule_id = _schedule_id()
+    conn = _test_connection()
+    args = dict(source="scheduler", agent_type=AgentType.BLANK, agent_view_id=None, reference_id="1",
+                idempotency_key="schedule:1:x", requester=None, priority=50, schedule_id=schedule_id)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM schedule WHERE id = %s FOR UPDATE", (schedule_id,))
+            job_id, event = publish_job_on(cur, **args)
+            assert event is not None and event.job_id == job_id
+            assert publish_job_on(cur, **args) == (job_id, None)  # the key already holds a job
+            assert _rows("job") == []  # not committed
+            cur.execute("SELECT COUNT(*) AS n FROM performance_schema.data_locks "
+                        "WHERE object_schema = DATABASE() AND object_name = 'schedule' AND lock_mode LIKE 'X%%'")
+            assert cur.fetchone()["n"] >= 1  # the row lock is still held
+        conn.rollback()
+    finally:
+        conn.close()
+    assert _rows("job") == [] and _rows("job_event_outbox") == []

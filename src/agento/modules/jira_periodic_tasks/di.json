@@ -7,5 +7,11 @@
   "commands": [
     {"name": "jira:periodic:sync", "class": "src.commands.sync.SyncCommand"},
     {"name": "jira:periodic:configure", "class": "src.commands.configure.ConfigureCommand"}
+  ],
+  "schedule_sources": [
+    {"name": "jira_periodic", "class": "src.schedule_source.JiraPeriodicSource"}
+  ],
+  "upgrade_checks": [
+    {"name": "frequency_map_rrule", "class": "src.upgrade_check.FrequencyMapCheck"}
   ]
 }

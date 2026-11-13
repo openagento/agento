@@ -50,15 +50,19 @@ module data-patch classes, including from `app/code/` and PyPI extensions (**P2*
 ## How the crontab is built
 
 The managed crontab belongs to **root**, so an unwrapped line would run as root. Root therefore
-constructs every line itself, from two inputs uid `agent` cannot write:
+constructs every line itself, from one input uid `agent` cannot write: **every *installed*
+module's `cron.json`**, discovered with `module_discovery.iter_module_dirs()` — core modules,
+`app/code` (which shadows) and PyPI extensions bind-mounted at `/opt/agento-src/<ext>`. Each file
+is read with `json.load`, as data: no module class is imported (**P2**). A `{module/path}`
+schedule directive reads that config value (ENV, then default-scope DB row, then `config.json`;
+nothing is decrypted).
 
-1. **Every *installed* module's `cron.json`**, discovered with
-   `module_discovery.iter_module_dirs()` — core modules, `app/code` (which shadows) and PyPI
-   extensions bind-mounted at `/opt/agento-src/<ext>`. Each file is read with `json.load`, as
-   data: no module class is imported (**P2**).
-2. **The `schedule` table**, which `jira:periodic:sync` keeps current. The agent runs in the
-   runner, which has no database credential, so it cannot write the table except through the
-   toolbox's own job flow.
+**The `schedule` table is not an input.** Its rows (Jira periodic tasks, user schedules) are
+fired by the framework's `scheduler:tick`, a fixed line of the framework `cron.json` that runs
+every minute as `agent` through the launcher ([schedules.md](schedules.md)). No row becomes a root crontab
+line, so nothing a schedule row holds — an issue key, a title — reaches root. A guard test
+(`test_the_renderer_never_reads_the_schedule_table`) fails when the renderer queries the table
+again.
 
 **It is `iter_module_dirs()`, never `iter_enabled_module_dirs()`.** The latter reads
 `app/etc/modules.json`, which lives on a writable mount and which `mo:en`/`mo:di` edit as
@@ -82,16 +86,17 @@ Every rendered line is argv the renderer built: `shlex.split` the declared comma
 `shlex.quote` each item. A schedule must match a strict 5-field cron expression or an
 `@hourly`-style keyword. An argv item containing CR, LF, NUL — or **`%`** — is rejected rather
 than escaped: cron turns `%` into a newline and feeds it to the command on stdin *before* any
-shell quoting applies, so it cannot be escaped. Untrusted text (a jira `summary`) is stripped of
-CR/LF and reaches only a `#` comment.
+shell quoting applies, so it cannot be escaped. A job name is stripped of CR/LF and reaches only
+a `#` comment.
 
 | Failure | Policy |
 |---------|--------|
-| **Validation** — malformed `cron.json`, bad schedule, rejected argv | omit only that module or that row; everything else still renders |
-| **Operational** — env file unreadable, database unreachable, query error | leave the current crontab **byte-identical**; render nothing |
+| **Validation** — malformed `cron.json`, bad schedule, rejected argv | omit only that module; everything else still renders |
+| **Operational** — while a `{module/path}` directive is resolved: env file unreadable, database unreachable, query error | leave the current crontab **byte-identical**; render nothing |
 
 The second is the one that matters: under a single per-source rule a transient database outage
-would silently delete every jira schedule.
+would silently delete every job whose schedule is a directive. Without a directive the renderer
+opens no database connection.
 
 ## The host CLI's exec proxies
 

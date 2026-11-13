@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from agento.framework import execution_hooks
-from agento.framework.bootstrap import _load_execution_hooks
+from agento.framework.bootstrap import CORE_MODULES_DIR, _load_execution_hooks
 from agento.framework.execution_hooks import SEAMS, clear
 from agento.framework.module_loader import ModuleManifest
 from agento.modules.conversation.src.deltas import ConversationDeltaSink
@@ -58,11 +58,15 @@ def test_a_second_bootstrap_leaves_one_not_two():
 
 def test_with_the_module_disabled_every_seam_is_empty(monkeypatch):
     from agento.framework import bootstrap as bootstrap_module
+    from agento.framework.dependency_resolver import get_transitive_dependents
+    from agento.framework.module_loader import scan_modules
 
     clear()
+    # `module:disable conversation` also disables its dependents (scheduler, ...).
+    gone = {"conversation", *get_transitive_dependents("conversation", scan_modules(CORE_MODULES_DIR))}
     monkeypatch.setattr(
         "agento.framework.module_status.read_module_status",
-        lambda *a, **k: {"conversation": False},
+        lambda *a, **k: dict.fromkeys(gone, False),
     )
     bootstrap_module.bootstrap(quiet=True)
 
@@ -124,7 +128,6 @@ def test_module_validate_allows_different_seams_in_different_modules():
 
 def test_the_shipped_manifest_declares_its_hooks():
     """Through the file bootstrap reads, so a deleted di.json entry fails here."""
-    from agento.framework.bootstrap import CORE_MODULES_DIR
 
     di = json.loads((Path(CORE_MODULES_DIR) / "conversation" / "di.json").read_text())
 

@@ -68,6 +68,17 @@ Discovered by convention from `<module>/toolbox/*.js` files. Each file exports a
 
 See [subagent.md](../modules/subagent.md).
 
+**Scheduler module** (`src/agento/modules/scheduler/toolbox/`):
+
+| Tool | Description |
+|------|-------------|
+| `schedule_create` (opt-in) | Create a recurring schedule (`title, prompt, rrule, starts_at?, timezone?, enabled?`) in the caller's view. Owner: the job's `account` user (checked: active, `scheduler.own`, reaches the view, under `scheduler/limits/max_per_user`), else the caller view (under `scheduler/limits/max_per_agent_view`). |
+| `schedule_update` (opt-in) | Change a schedule the caller reaches; a timing change leaves the next fire to `scheduler:tick`. |
+| `schedule_list` (opt-in) | The schedules of the caller's view that the view or the job's user owns; `editable: false` for another module's rows. |
+| `schedule_delete` (opt-in) | Soft-delete a schedule the caller reaches; the tick removes it and retitles its conversation. |
+
+See [scheduler.md](../modules/scheduler.md).
+
 **User modules** (`app/code/<name>/toolbox/`):
 
 Custom JS tools for your deployment — same convention.

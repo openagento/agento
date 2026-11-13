@@ -46,6 +46,7 @@ def insert_job(
     depth: int = 0,
     line_id: int | None = None,
     test_config: dict | None = None,
+    schedule_id: int | None = None,
 ) -> int:
     """The single INSERT both entry points use. Returns the new job id.
 
@@ -83,15 +84,15 @@ def insert_job(
         """
         INSERT INTO job
             (type, source, agent_view_id, priority, reference_id,
-             idempotency_key, status, attempt, max_attempts, prompt, context,
+             idempotency_key, status, attempt, max_attempts, prompt, context, schedule_id,
              requester_key, requester_email, requester_trust, requester_meta,
              agent_type, model, parent_job_id, depth, thread_id, line_id, test_config)
         VALUES
             (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-             %s, %s, %s, %s, %s)
+             %s, %s, %s, %s, %s, %s)
         """,
         (agent_type.value, source, agent_view_id, priority, reference_id,
-         idempotency_key, max_attempts, prompt, context,
+         idempotency_key, max_attempts, prompt, context, schedule_id,
          requester.key if requester else None,
          requester.email if requester else None,
          requester.trust.value if requester else "claimed",

@@ -1,0 +1,5 @@
+{
+    "patches": [
+        {"name": "ConvertFrequencyMapToRrule", "class": "src.patches.convert_frequency_map_to_rrule.ConvertFrequencyMapToRrule"}
+    ]
+}

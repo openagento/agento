@@ -148,7 +148,8 @@ def _prune_one(conn, conversation_id: int, days: int, *, budget: int) -> int:
 # never idle whatever either clock says: it is waiting for an answer. Nor is a PINNED
 # thread, whatever its clock: the pin is the user saying they still want it.
 #
-# A CHANNEL thread (`user_id IS NULL`, E9 §3.5) has no user turns: its clock is the newest
+# A CHANNEL thread (`channel` not the panel's, E9 §3.5; it may have an owner, a schedule's)
+# runs on its channel's triggers: its clock is the newest
 # event (`last_activity_at`), so a later run's events keep it alive past an old answer, and
 # it is never idle while one of its runs is still running.
 _IDLE = (
@@ -156,7 +157,7 @@ _IDLE = (
     # A pinned thread is never idle: the user asked for it to stay, and archiving it
     # anyway would retire a thread they still point at (E9 pin, plan 2026-10-15).
     "AND c.pinned_at IS NULL "
-    "AND ((c.user_id IS NOT NULL "
+    "AND ((c.channel = 'panel' "
     "  AND COALESCE("
     "        (SELECT MAX(m.created_at) FROM message m WHERE m.conversation_id = c.id), "
     "        c.created_at"
@@ -164,7 +165,7 @@ _IDLE = (
     "  AND NOT EXISTS ("
     "        SELECT 1 FROM message m WHERE m.conversation_id = c.id "
     "          AND m.role = 'user' AND m.job_state <> 'terminal')) "
-    "OR (c.user_id IS NULL "
+    "OR (c.channel <> 'panel' "
     "  AND COALESCE(c.last_activity_at, c.created_at) < (NOW() - INTERVAL %s DAY) "
     "  AND NOT EXISTS ("
     "        SELECT 1 FROM execution e WHERE e.conversation_id = c.id "
@@ -260,10 +261,19 @@ def delete_archived(conn, *, archived_days: int, limit: int = MAX_PER_RUN) -> in
     if archived_days <= 0:
         return 0
     with conn.cursor() as cur:
+        # Only the channels registered now: a disabled module's conversations stay as they
+        # are (an unknown channel refuses the delete) and take no slot in the batch.
+        cur.execute("SELECT DISTINCT channel FROM conversation WHERE status = 'archived'")
+        channels = [r["channel"] for r in cur.fetchall()
+                    if r["channel"] == service.PANEL_CHANNEL or service.channel_known(r["channel"])]
+        if not channels:
+            conn.commit()
+            return 0
         cur.execute(
             "SELECT id FROM conversation WHERE status = 'archived' "
+            f"AND channel IN ({','.join(['%s'] * len(channels))}) "
             "AND updated_at < (NOW() - INTERVAL %s DAY) ORDER BY updated_at LIMIT %s",
-            (archived_days, limit))
+            (*channels, archived_days, limit))
         ids = [row["id"] for row in cur.fetchall()]
     conn.commit()
     return sum(1 for cid in ids if delete_tree(conn, cid, require_archived_days=archived_days))
@@ -274,10 +284,14 @@ def delete_tree(conn, conversation_id: int, *, require_archived_days: int | None
 
     `require_archived_days` is the retention pass's re-check **under the lock**; the operator
     path passes None and deletes what it was told to.
+
+    The channel may refuse (`conversation_access(..., "delete")` False; an unknown channel
+    refuses too, SEC-9): a schedule's conversation lives while its schedule does (D-32). A
+    refusal in the retention pass moves the row to the back of the queue (`updated_at`), so
+    refused rows cannot fill every batch and starve the others (CODE-8).
     """
     with conn.cursor() as cur:
-        cur.execute("SELECT id, status, updated_at FROM conversation WHERE id = %s "
-                    "FOR UPDATE", (conversation_id,))
+        cur.execute("SELECT * FROM conversation WHERE id = %s FOR UPDATE", (conversation_id,))
         row = cur.fetchone()
         if row is None:
             conn.commit()
@@ -292,6 +306,13 @@ def delete_tree(conn, conversation_id: int, *, require_archived_days: int | None
                 # survives whole, and this pass simply skips it.
                 conn.commit()
                 return False
+        if row["channel"] != service.PANEL_CHANNEL \
+                and service.channel_access(conn, None, row, "delete") is False:
+            if require_archived_days is not None:
+                cur.execute("UPDATE conversation SET updated_at = NOW() WHERE id = %s",
+                            (conversation_id,))
+            conn.commit()
+            return False
 
         cur.execute("DELETE FROM conversation_event WHERE conversation_id = %s",
                     (conversation_id,))

@@ -4,6 +4,63 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-11-12 — Editable agent schedules: RRULE, a framework tick, schedule = channel (AG-67)
+
+- **RRULE (python-dateutil) over cron and APScheduler.** A schedule needs a start, an end, a
+  count, a time zone and DST rules that a user can edit in the panel. Cron has no start,
+  end or zone. APScheduler would add a second job store beside the `job` queue.
+- **The generic `schedule` table, the engine and the `scheduler:tick` are framework
+  mechanism** (`framework/schedule/`, migration 056). Modules give meaning through di.json
+  `schedule_sources` (PLC-1). The migration is vendor-free: legacy rows keep `cron`/`todo`
+  until `jira_periodic_tasks` converts them.
+- **Evaluation is bounded.** dateutil checks `UNTIL` only on a candidate, so a rule with no
+  occurrence scans to year 9999 (1.5–5.5 s measured). `validate()` therefore runs in a child
+  process with a 2 s deadline (`too_complex`). A validated rule repeats within one 400-year
+  cycle, so the tick evaluates it in-process. The tick keeps an `anchor_local` cursor (the
+  last scheduled occurrence, naive local time); any write that changes the timing clears it.
+- **A schedule is a channel.** Its runs share one conversation (`schedule:<id>`), which the
+  owner and the members of the schedule may read through the optional conversation seam
+  (`conversation_owner`, `conversation_access`, `shared_thread_ids`;
+  docs/architecture/conversation-access.md).
+- **Owner (D-11, OP-1, OP-2).** A tool's schedule belongs to the calling job's checked
+  `account` user, else to the caller view. Tool reach is own view AND (own view owns it OR
+  the job's user owns it), with `=`, never `<=>`. There is no admin limit.
+- **Rights are per row**, so every scheduler route is `acl: self`. `scheduler/src/rights.py`
+  is the only module file that reads panel leaves, and the leaf guard exempts it by path:
+  the leaf depends on the row's group (mine, agent, user), which a route `acl` cannot express.
+- **The Node tools check RRULE syntax only (S-3).** They write `next_fire_at = NULL`; the
+  Python engine in the tick is the only evaluator. Shared vectors
+  (`tests/fixtures/scheduler/rrule_vectors.json`) prove Node never refuses what Python accepts.
+  A tool delete is soft (`deleted_at`); the tick finalizes it, so the toolbox has no DELETE grant.
+- **`cron_expr` stays for one release** (ROADMAP).
+
+## 2026-11-12 — No cron compat for Jira periodic tasks (AG-67)
+
+Owner, PRD §10.5 "No compat path (as in AG-83)", settled S-6. A waiver of CODE-5.
+`jira_periodic_tasks/frequency_map` accepts only RRULE.
+
+- **Migrates:** the data patch `ConvertFrequencyMapToRrule` converts the stored map values in
+  every scope and the legacy schedule rows (`source='jira_periodic'`, `owner_agent_view_id`,
+  an RRULE, `starts_at` = the creation date, the default zone). A row with no view, or one it
+  cannot convert, is disabled with `last_error`.
+- **Stops the upgrade:** the check `frequency_map_rrule` stops `setup:upgrade` before any
+  change while a value, or an enabled row that has a view, has no RRULE twin.
+- **Does not migrate:** a cron value in `CONFIG__JIRA_PERIODIC_TASKS__FREQUENCY_MAP`. Sync
+  skips it with the ERROR line "…is not an RRULE; cron is no longer accepted (AG-67)".
+- **Stays:** `publish jira-cron` for a manual run. The crontab renderer no longer reads
+  `schedule`; `scheduler:tick` fires the rows.
+
+## 2026-11-12 — The message author is the requester (AG-67)
+
+A turn's job is published with `user:<message.author_user_id>` (ACCOUNT trust), never with
+the conversation's owner. A NULL author (the poster was deleted before publication, a legacy
+channel message, no row) publishes with no requester; there is no fallback to the owner
+(SEC-7, SEC-9). Migration `conversation/009_message_author.sql` adds the column (FK SET NULL)
+and backfills the user rows of panel conversations from their owner, who was the only poster
+the old code recorded. Behaviour change: a reply in a Jira or Outlook thread carries
+`user:<poster>` instead of `user:None`, and an admin's post in another user's panel
+conversation carries the admin, not the owner.
+
 ## 2026-11-06 — Remove the tool `user` argument at once (AG-83)
 
 22 tools took `user`, an email the model typed, logged it as the caller and (in `email_send`)

@@ -114,9 +114,14 @@ def test_the_shipped_files_load():
 
 def test_no_module_handler_checks_a_panel_leaf():
     """Class guard: a module route names its leaf in di.json `acl`, and web checks it before the
-    handler. A handler that calls `accounts.may` or `held_admin` is a second, forgettable gate."""
+    handler. A handler that calls `accounts.may` or `held_admin` is a second, forgettable gate.
+
+    One exemption, by path: the scheduler's per-row rights matrix (AG-67 plan §7) picks the
+    leaf from the row (mine / agent / user), which a route's `acl` cannot express, so its
+    routes are `self` (§9) and only `rights.py` reads the leaves."""
+    exempt = {Path(CORE_MODULES_DIR) / "scheduler/src/rights.py"}
     found = []
-    for path in Path(CORE_MODULES_DIR).glob("*/src/**/*.py"):
+    for path in set(Path(CORE_MODULES_DIR).glob("*/src/**/*.py")) - exempt:
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.Attribute) and node.attr in ("may", "held_admin") \
                     and isinstance(node.value, ast.Name) and node.value.id == "accounts":

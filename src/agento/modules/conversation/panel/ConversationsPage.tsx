@@ -20,6 +20,22 @@ const FOLLOW_PX = 80;
 const threadsUrl = (scope: string) => (scope === "mine" ? "/api/conversation/threads"
   : `/api/conversation/threads?scope=channels${scope === "channels" ? "" : `&channel=${encodeURIComponent(scope.slice("channel:".length))}`}`);
 
+/** The rail's rows. "shared" is keyset paged (`{conversations, next}`): `pages` pages are read,
+ *  each from the previous `next`, so a poll refreshes every page the user loaded. */
+interface Rows { rows: Thread[]; more: boolean }
+async function fetchThreads(scope: string, pages: number, signal: AbortSignal): Promise<Rows> {
+  if (scope !== "shared") return { rows: await apiFetch<Thread[]>(threadsUrl(scope), { signal }), more: false };
+  let rows: Thread[] = [];
+  let next: number | null = null;
+  for (let i = 0; i < pages && (i === 0 || next !== null); i++) {
+    const page: { conversations: Thread[]; next: number | null } = await apiFetch(
+      `/api/conversation/threads?scope=shared${next !== null ? `&before=${next}` : ""}`, { signal });
+    rows = [...rows, ...page.conversations];
+    next = page.next;
+  }
+  return { rows, more: next !== null };
+}
+
 const useViews = () => useQuery({ queryKey: ["agent-views"], queryFn: ({ signal }) => apiFetch<AgentView[]>("/api/agent-views", { signal }) });
 
 /** `job`: the sub-agent job open in the main panel, or null for the whole conversation. */
@@ -27,13 +43,16 @@ export function Rail({ current, job = null, close }: { current: number | null; j
   const qc = useQueryClient();
   const navigate = useNavigate();
   const admin = useSession()?.role === "admin";
-  // "mine", "channels" (every channel thread) or "channel:<source>".
+  // "mine", "shared" (channel threads shared with me), "channels" (every channel thread) or "channel:<source>".
   const [scope, setScope] = useState("mine");
+  const [pages, setPages] = useState(1);
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
-  const threads = useQuery({
-    queryKey: ["threads", scope], refetchInterval: LIVE_REFETCH_MS,
-    queryFn: ({ signal }) => apiFetch<Thread[]>(threadsUrl(scope), { signal }),
+  const threads = useQuery<Rows>({
+    queryKey: ["threads", scope, pages], refetchInterval: LIVE_REFETCH_MS,
+    // Keep the loaded pages while the next one loads, never another scope's rows.
+    placeholderData: (prev, last) => (last?.queryKey[1] === scope ? prev : undefined),
+    queryFn: ({ signal }) => fetchThreads(scope, pages, signal),
   });
   // The channels an admin can filter by: the ones seen in the unfiltered channel list.
   const all = useQuery({
@@ -93,8 +112,10 @@ export function Rail({ current, job = null, close }: { current: number | null; j
     onSelect: t.id === current && job === null && tree.length ? () => fold(`c${t.id}`)
       : () => { close(); navigate(`/conversations/${t.id}`); },
     ...(t.id === current && tree.length ? { children: tree.map(jobLink), collapsed: folded.has(`c${t.id}`) } : {}),
-    // A channel thread has no owner, so it has neither pin nor rename (the route answers 404).
-    ...(t.channel === "panel" ? {
+    // A channel thread: only its owner may pin, rename or archive it (the route checks). The list
+    // carries no owner, but "Mine" lists only the caller's own (`c.user_id = me`); a reader by share
+    // and an admin in "All channels" get no actions.
+    ...(t.channel === "panel" || scope === "mine" ? {
       onPin: (pinned: boolean) => patch.mutate({ id: t.id, pinned }),
       onRename: (title: string) => patch.mutate({ id: t.id, title: title || null as unknown as string }),
       actions: t.status === "archived" ? [] : [{ label: "Archive", icon: "archive" as const, onClick: () => archive.mutate(t.id) }],
@@ -103,7 +124,7 @@ export function Rail({ current, job = null, close }: { current: number | null; j
   // ponytail: the search filters the loaded page only (`history/page_size` rows). Add a
   // server-side `?q=` LIKE on the title when a user keeps more threads than one page.
   const needle = query.trim().toLowerCase();
-  const list = (threads.data ?? []).filter((t) => needle === ""
+  const list = (threads.data?.rows ?? []).filter((t) => needle === ""
     || (t.title || `Conversation ${t.id}`).toLowerCase().includes(needle));
   const groups = [
     { label: "Pinned", threads: list.filter((t) => t.pinned).map(link) },
@@ -126,19 +147,20 @@ export function Rail({ current, job = null, close }: { current: number | null; j
         <TextField label="Search conversations" hideLabel name="thread-search" value={query}
           onChange={(e) => setQuery(e.currentTarget.value)} placeholder="Search conversations" />
       )}
-      {admin && (
-        <SelectField label="Show" hideLabel name="thread-scope" value={scope} onChange={setScope}
-          options={[{ value: "mine", label: "Mine" }, { value: "channels", label: "All channels" },
-            ...seen.map((c) => ({ value: `channel:${c}`, label: c }))]} />
-      )}
+      <SelectField label="Show" hideLabel name="thread-scope" value={scope} onChange={(v) => { setScope(v); setPages(1); }}
+        options={[{ value: "mine", label: "Mine" }, { value: "shared", label: "Shared with me" },
+          ...(admin ? [{ value: "channels", label: "All channels" }, ...seen.map((c) => ({ value: `channel:${c}`, label: c }))] : [])]} />
       {create.error && <p className="ag-field__error" role="alert">{message(create.error)}</p>}
       {(patch.error || archive.error) && (
         <p className="ag-field__error" role="alert">{message(patch.error ?? archive.error)}</p>
       )}
     </>}>
       {threads.isPending ? <LoadingState /> : threads.error ? <ErrorState message={message(threads.error)} /> : (
-        <ThreadList groups={groups}
-          empty={needle === "" ? "No conversations yet." : "No conversation matches that."} />
+        <>
+          <ThreadList groups={groups}
+            empty={needle === "" ? "No conversations yet." : "No conversation matches that."} />
+          {threads.data?.more && <Button onClick={() => setPages(pages + 1)} disabled={threads.isFetching}>Load more</Button>}
+        </>
       )}
     </RailFrame>
   );

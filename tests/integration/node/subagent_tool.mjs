@@ -1,4 +1,4 @@
-// Runs the real `agent_run` / `agent_result` / `schedule_followup` handlers, with the real
+// Runs the real `agent_run` / `agent_result` / `schedule_followup` / `schedule_*` handlers, with the real
 // `enqueueJob`, against the integration test database. Input on stdin: one call
 // {"tool", "args", "jobId", "agentViewId", "moduleConfigs"} or a batch {"calls": [...]}, which runs
 // concurrently (Promise.all) on one pool of 20 connections. Prints [{text, isError}] in call order.
@@ -26,7 +26,8 @@ const calls = input.calls ?? [input];
 
 const { enqueueJob } = await load('toolbox/job-enqueue.js');
 const { errorCategory } = await load('toolbox/log.js');
-const modules = [await load('modules/subagent/toolbox/agent.js'), await load('modules/core/toolbox/schedule.js')];
+const modules = [await load('modules/subagent/toolbox/agent.js'), await load('modules/core/toolbox/schedule.js'),
+  await load('modules/scheduler/toolbox/schedule-tools.js')];
 
 const pool = mysql.createPool({
   host: process.env.TEST_MYSQL_HOST || 'localhost', port: Number(process.env.TEST_MYSQL_PORT || 3306),

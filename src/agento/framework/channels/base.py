@@ -45,7 +45,38 @@ class WorkItem:
 
 @runtime_checkable
 class Channel(Protocol):
-    """Protocol that every communication channel must satisfy."""
+    """Protocol that every communication channel must satisfy.
+
+    **Optional conversation members** (docs/architecture/conversation-access.md). They are
+    not Protocol members, so a channel without them keeps loading (CODE-3, PLC-3); callers
+    read them with ``getattr(channel, name, None)``. ``None`` from a member is "no opinion":
+    the existing gate applies. An unknown channel, or a member that raises, grants nothing
+    (SEC-9). ``user`` is ``agento.framework.access.accounts.User``.
+
+    - ``conversation_owner(cur, reference_id) -> tuple[int | None, str] | None`` —
+      ``(user_id, title)`` of the conversation that the first run of a thread creates.
+      A conversation that exists already keeps its owner and title.
+    - ``conversation_access(conn, user, conversation, mode) -> bool | None`` — ``mode`` is
+      ``"read"``, ``"write"`` or ``"delete"``. ``conversation`` is the conversation row.
+      True grants read or write to a caller who is not the owner or an admin; reach over
+      the view and an active view are still checked. False refuses a delete. ``user`` is
+      None for a system delete (retention).
+    - ``shared_thread_ids(conn, user, *, before, limit) -> list[int]`` — the ids of the
+      threads shared with ``user``, below ``before`` (None: from the top), newest first, at
+      most ``limit``.
+    - ``conversation_lock(cur, conversation) -> None`` — lock (``FOR UPDATE``) the
+      channel's own rows that grant a write into this conversation, in the caller's
+      transaction. A post calls it first, before any other read and before the conversation
+      row lock, then asks ``write`` again; the channel's writes that take a write right away
+      lock the same rows, so the two serialize (SEC-7). A channel that grants no write from
+      its own rows needs none.
+
+    Every other member only reads, with plain reads (no ``FOR UPDATE``), and never commits:
+    ``conversation_owner`` runs inside the run's claim transaction, and the ``delete`` answer
+    under the conversation's row lock. ``read`` runs once per row of a list page, so it must
+    be cheap. ``write`` False is not a veto: the ``conversation.channel_write`` grant still
+    passes.
+    """
 
     @property
     def name(self) -> str: ...

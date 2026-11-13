@@ -1,0 +1,19 @@
+{
+  "limits/max_per_user": 10,
+  "limits/max_per_agent_view": 20,
+  "presets": {
+    "Every hour": "FREQ=HOURLY;BYMINUTE=0",
+    "Every day at 9:00": "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+    "Every weekday at 9:00": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=9;BYMINUTE=0",
+    "Every Monday at 9:00": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0",
+    "First day of the month at 9:00": "FREQ=MONTHLY;BYMONTHDAY=1;BYHOUR=9;BYMINUTE=0"
+  },
+  "tools/schedule_create/is_enabled": "0",
+  "tools/schedule_update/is_enabled": "0",
+  "tools/schedule_list/is_enabled": "0",
+  "tools/schedule_delete/is_enabled": "0",
+  "tools/schedule_create/sensitive": "0",
+  "tools/schedule_update/sensitive": "0",
+  "tools/schedule_list/sensitive": "0",
+  "tools/schedule_delete/sensitive": "0"
+}

@@ -184,6 +184,23 @@ stretches with the same retention as the outbox; an open stretch is never pruned
 |-------|-----------|--------|------|
 | `artifact_delete_after` | `ArtifactDeleteAfterEvent` | `artifact_code` | In `web`, after a panel delete removed the store and committed the `versioned_artifact` row delete. The `miniapps` observer deletes the artifact's approval rows. An observer error does not fail the delete |
 
+### Schedules
+
+| Event | Data Class | Fields | When |
+|-------|-----------|--------|------|
+| `schedule_save_before` | `ScheduleSaveBeforeEvent` | `schedule_id, source, agent_view_id, owner_user_id, owner_agent_view_id, actor, veto` | Before a schedule is created or changed (`schedule_id` is `None` on create). An observer sets `veto = True` to refuse the save; a failed observer also refuses it (fail closed) |
+| `schedule_save_after` | `ScheduleSavedEvent` | `schedule_id, source, agent_view_id, actor, created` | After the save commits |
+| `schedule_delete_after` | `ScheduleDeletedEvent` | `schedule_id, source, agent_view_id, actor` | After `scheduler:tick` finalizes a soft-deleted row and commits |
+| `schedule_run_before` | `ScheduleRunBeforeEvent` | `schedule_id, source, agent_view_id, fire_at, actor, veto` | Inside the row-locked fire transaction, after the reach, overlap and too-soon checks and just before the job is published. `veto = True` or a failed observer ends the attempt with no run. An observer must not commit or write the schedule row |
+| `schedule_run_after` | `ScheduleRunEvent` | `schedule_id, job_id, source, agent_view_id, fire_at, actor` | After the fire commits, right after that job's `job_publish_after` |
+| `schedule_share_after` | `ScheduleShareEvent` | `schedule_id, user_id, added, actor` | After a user is added to (`added`) or removed from a schedule's members |
+| `schedule_owner_change_after` | `ScheduleOwnerChangedEvent` | `schedule_id, old_owner_user_id, old_owner_agent_view_id, new_owner_user_id, actor` | After the owner of a schedule changes |
+
+No payload carries the prompt, the title or the RRULE (EVT-3). `actor` is `service:cron:scheduler`
+for the tick, else the caller's subject. The tick sends **no event** when it disables a row (an
+invalid rule, or a rule that has no more fires): it writes `schedule.last_error` and a log line.
+See [schedules.md](schedules.md).
+
 ### Routing
 
 | Event | Data Class | Fields | When |

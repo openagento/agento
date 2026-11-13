@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 import textwrap
@@ -60,10 +61,9 @@ def _module(root: Path, name: str, jobs: list[dict] | str) -> Path:
     return d
 
 
-def _render(module_dirs: list[Path], schedule_jobs=None):
+def _render(module_dirs: list[Path]):
     with patch.object(renderer, "iter_module_dirs", return_value=module_dirs), \
-         patch.object(renderer, "resolve_module_root", return_value=None), \
-         patch.object(renderer, "_schedule_jobs", return_value=schedule_jobs or []):
+         patch.object(renderer, "resolve_module_root", return_value=None):
         return renderer.render()
 
 
@@ -159,12 +159,9 @@ def test_a_malformed_cron_json_removes_only_that_modules_lines(modules):
     good = _module(modules, "alpha", [
         {"name": "a", "schedule": "0 * * * *", "command": "a:b"},
     ])
-    out = _render([bad, good], schedule_jobs=[
-        renderer.Job("AG-1: x", "5 * * * *", (renderer.RUN_SH, "cron:run", "m", "publish")),
-    ])
+    out = _render([bad, good])
     assert "broken" not in out
     assert "cron:run alpha a:b" in out
-    assert "AG-1" in out
     assert "logrotate" in out  # framework source unaffected
 
 
@@ -240,7 +237,6 @@ def test_a_config_database_failure_leaves_the_crontab_untouched(modules):
     m = _module(modules, "crm", [{"name": "sync", "schedule": "{crm/sync_schedule}", "command": "sync"}])
     with patch.object(renderer, "iter_module_dirs", return_value=[m]), \
          patch.object(renderer, "resolve_module_root", return_value=None), \
-         patch.object(renderer, "_schedule_jobs", return_value=[]), \
          patch.object(Path, "read_bytes", return_value=b""), \
          patch.object(renderer, "_connect", side_effect=renderer.OperationalError("down")), \
          patch("subprocess.run") as run:
@@ -249,16 +245,26 @@ def test_a_config_database_failure_leaves_the_crontab_untouched(modules):
     run.assert_not_called()
 
 
-# --- Dynamic rows ---------------------------------------------------------------------
+# --- Enablement and the schedule table --------------------------------------------------
 
-def test_a_schedule_row_renders_through_the_dispatcher(modules):
-    job = renderer.Job(
-        "AG-7: nightly", "0 3 * * *",
-        (renderer.RUN_SH, "cron:run", "jira_periodic_tasks", "publish", "jira-cron", "AG-7"),
-    )
-    out = _render([], schedule_jobs=[job])
-    line = next(ln for ln in out.splitlines() if "AG-7" in ln and ln[0].isdigit())
-    assert "cron:run jira_periodic_tasks publish jira-cron AG-7" in line
+def test_the_renderer_never_reads_the_schedule_table():
+    """``scheduler:tick`` fires schedule rows (AG-67): no row may become a root crontab line."""
+    tree = ast.parse(RENDERER_PATH.read_text())
+    sql = re.compile(r"\b(FROM|JOIN|INTO|UPDATE)\s+`?schedules?\b", re.IGNORECASE)
+    literals = {
+        n.value for n in ast.walk(tree)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    } | {
+        "".join(p.value for p in n.values if isinstance(p, ast.Constant) and isinstance(p.value, str))
+        for n in ast.walk(tree) if isinstance(n, ast.JoinedStr)
+    }
+    assert not [lit for lit in literals - _docstrings(tree) if sql.search(lit)]
+
+
+def test_without_a_directive_the_renderer_opens_no_database_connection(modules):
+    with patch("pymysql.connect", side_effect=AssertionError("connected")):
+        out = _render([_module(modules, "alpha", [{"name": "a", "schedule": "0 * * * *", "command": "a:b"}])])
+    assert "cron:run alpha a:b" in out
 
 
 def test_a_disabled_module_is_still_rendered_through_the_dispatcher(modules):
@@ -276,14 +282,10 @@ def test_a_newline_in_a_summary_reaches_only_a_comment():
     assert "\n" not in job_comment
 
 
-def test_an_injected_summary_creates_no_line(modules):
-    summary = "x\n0 * * * * /bin/sh -c evil"
-    job = renderer.Job(
-        renderer._comment(f"AG-1: {summary}"),
-        "0 4 * * *",
-        renderer._validate_argv([renderer.RUN_SH, "cron:run", "m", "publish", "AG-1"]),
-    )
-    out = _render([], schedule_jobs=[job])
+def test_an_injected_job_name_creates_no_line(modules):
+    out = _render([_module(modules, "alpha", [
+        {"name": "x\n0 * * * * /bin/sh -c evil", "schedule": "0 4 * * *", "command": "a:b"},
+    ])])
     assert "/bin/sh -c evil" in out              # it survives, but only inside the comment
     for line in out.splitlines():
         if "/bin/sh -c evil" in line:
@@ -301,33 +303,27 @@ def test_a_percent_in_an_argv_item_is_rejected():
         renderer._validate_argv([renderer.RUN_SH, "publish", "a%b"])
 
 
-def test_an_invalid_schedule_row_omits_only_that_row(modules):
-    good = renderer.Job("AG-2: ok", "0 5 * * *", (renderer.RUN_SH, "cron:run", "m", "p"))
+def test_an_invalid_schedule_omits_only_that_module(modules):
     out = _render([_module(modules, "alpha", [
         {"name": "a", "schedule": "not a schedule", "command": "a:b"},
-    ])], schedule_jobs=[good])
+    ]), _module(modules, "beta", [{"name": "b", "schedule": "0 5 * * *", "command": "b:c"}])])
     assert "alpha" not in out
-    assert "AG-2" in out
+    assert "cron:run beta b:c" in out
 
 
 # --- Failure policy -------------------------------------------------------------------
 
-def test_a_database_failure_leaves_the_crontab_untouched():
-    with patch.object(renderer, "_mysql_settings", return_value={"MYSQL_HOST": "nope"}), \
-         patch("pymysql.connect", side_effect=OSError("connection refused")), \
-         patch.object(renderer, "current_crontab", return_value="KEEP ME\n") as current, \
-         patch("subprocess.run") as run:
-        assert renderer.main() == 0
-    current.assert_not_called()
-    run.assert_not_called()
-
-
-def test_an_unreadable_env_file_leaves_the_crontab_untouched(tmp_path):
+def test_an_unreadable_env_file_leaves_the_crontab_untouched(tmp_path, modules):
+    renderer._config_overrides.cache_clear()
+    m = _module(modules, "crm", [{"name": "sync", "schedule": "{crm/sync_schedule}", "command": "sync"}])
     with patch.object(renderer, "ENV_FILE", str(tmp_path / "absent")), \
+         patch.object(renderer, "iter_module_dirs", return_value=[m]), \
+         patch.object(renderer, "resolve_module_root", return_value=None), \
          patch("subprocess.run") as run:
         with pytest.raises(renderer.OperationalError):
             renderer._mysql_settings()
         assert renderer.main() == 0
+    renderer._config_overrides.cache_clear()
     run.assert_not_called()
 
 
@@ -341,7 +337,6 @@ def test_a_validation_failure_still_writes_the_crontab(modules):
 
     with patch.object(renderer, "iter_module_dirs", return_value=[_module(modules, "broken", "{bad")]), \
          patch.object(renderer, "resolve_module_root", return_value=None), \
-         patch.object(renderer, "_schedule_jobs", return_value=[]), \
          patch.object(renderer.subprocess, "run", side_effect=fake_run):
         assert renderer.main() == 0
     assert written and "logrotate" in written[0]

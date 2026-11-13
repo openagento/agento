@@ -3,8 +3,13 @@ from __future__ import annotations
 import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agento.modules.jira.src.config import JiraConfig
+from agento.modules.jira_periodic_tasks.src.config import PeriodicTasksConfig
 from agento.modules.jira_periodic_tasks.src.sync import CronEntry, JiraCronSync
+
+SYNC = "agento.modules.jira_periodic_tasks.src.sync"
 
 
 def test_build_jql_without_assignee(sample_config, sample_periodic_config):
@@ -59,9 +64,9 @@ def test_parse_issues_valid(sample_config, sample_periodic_config, jira_cykliczn
     # AI-4 (null frequency) and AI-5 (unknown frequency) should be skipped
     assert len(entries) == 2
     assert entries[0].issue_key == "AI-2"
-    assert entries[0].cron_expression == "*/5 * * * *"
+    assert entries[0].rrule == "FREQ=HOURLY;BYMINUTE=0,5,10,15,20,25,30,35,40,45,50,55"
     assert entries[1].issue_key == "AI-3"
-    assert entries[1].cron_expression == "0 8 * * *"
+    assert entries[1].rrule == "FREQ=DAILY;BYHOUR=8;BYMINUTE=0"
 
 
 def test_parse_issues_skip_null_frequency(sample_config, sample_periodic_config, jira_cykliczne, caplog):
@@ -89,6 +94,13 @@ def test_parse_issues_empty(sample_config, sample_periodic_config, jira_empty):
 # ---- Schedules upsert tests ----
 
 
+@pytest.fixture(autouse=True)
+def _core_settings():
+    """The core scheduler settings the upsert reads from its connection."""
+    with patch(f"{SYNC}.min_interval_minutes", return_value=5), patch(f"{SYNC}.default_timezone", return_value="UTC"):
+        yield
+
+
 def _mock_connection():
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
@@ -99,148 +111,132 @@ def _mock_connection():
 
 def _sample_entries():
     return [
-        CronEntry(issue_key="AI-2", summary="Task 2", frequency_label="Co 5min", cron_expression="*/5 * * * *"),
-        CronEntry(issue_key="AI-3", summary="Task 3", frequency_label="1x dziennie o 8:00", cron_expression="0 8 * * *"),
+        CronEntry(issue_key="AI-2", summary="Task 2", frequency_label="Co 5min",
+                  rrule="FREQ=HOURLY;BYMINUTE=0,5,10,15,20,25,30,35,40,45,50,55"),
+        CronEntry(issue_key="AI-3", summary="Task 3", frequency_label="1x dziennie o 8:00",
+                  rrule="FREQ=DAILY;BYHOUR=8;BYMINUTE=0"),
     ]
 
 
-@patch("agento.modules.jira_periodic_tasks.src.sync.get_connection")
-def test_upsert_schedules_inserts(mock_get_conn, sample_config, sample_periodic_config, jira_cykliczne):
+def _syncer(sample_config, periodic_config, view=7):
+    return JiraCronSync(sample_config, periodic_config, MagicMock(), logging.getLogger("test"),
+                        agent_view_id=view, agent_view_code="mieszko")
+
+
+@patch(f"{SYNC}.get_connection")
+def test_upsert_writes_a_jira_periodic_row_owned_by_the_view(mock_get_conn, sample_config, sample_periodic_config):
     mock_conn, mock_cursor = _mock_connection()
     mock_get_conn.return_value = mock_conn
 
-    entries = _sample_entries()
+    _syncer(sample_config, sample_periodic_config, view=42)._upsert_schedules(_sample_entries())
 
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
-    syncer._upsert_schedules(entries)
-
-    # One INSERT per entry + one UPDATE for removed entries
+    # One INSERT per entry + one disable sweep
     assert mock_cursor.execute.call_count == 3
-    first_sql = mock_cursor.execute.call_args_list[0][0][0]
-    assert "INSERT INTO schedule" in first_sql
-    assert "ON DUPLICATE KEY UPDATE" in first_sql
+    sql, params = mock_cursor.execute.call_args_list[0][0]
+    assert "INSERT INTO schedule" in sql
+    assert params[:5] == ("jira_periodic", "AI-2", "Task 2", 42, 42)
+    assert params[5] == "FREQ=HOURLY;BYMINUTE=0,5,10,15,20,25,30,35,40,45,50,55"
     mock_conn.commit.assert_called_once()
 
 
-@patch("agento.modules.jira_periodic_tasks.src.sync.get_connection")
-def test_upsert_schedules_disables_removed(mock_get_conn, sample_config, sample_periodic_config):
+@pytest.mark.parametrize("entries, not_in", [(_sample_entries(), True), ([], False)])
+@patch(f"{SYNC}.get_connection")
+def test_the_disable_sweep_touches_only_this_views_jira_rows(mock_get_conn, entries, not_in, sample_config,
+                                                              sample_periodic_config):
+    """mieszko's sync never disables zyga's rows, nor a row of another source in its own view."""
     mock_conn, mock_cursor = _mock_connection()
     mock_get_conn.return_value = mock_conn
 
-    entries = _sample_entries()
+    _syncer(sample_config, sample_periodic_config)._upsert_schedules(entries)
 
+    sql, params = mock_cursor.execute.call_args_list[-1][0]
+    assert "enabled = 0" in sql
+    assert "agent_view_id = %s AND source = %s" in sql
+    assert params[:2] == (7, "jira_periodic")
+    assert ("NOT IN" in sql) is not_in
+
+
+@patch(f"{SYNC}.get_connection")
+def test_a_sync_without_a_view_writes_nothing(mock_get_conn, sample_config, sample_periodic_config):
     syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
-    syncer._upsert_schedules(entries)
-
-    # Last call should be the UPDATE for non-listed keys
-    last_call = mock_cursor.execute.call_args_list[-1]
-    sql = last_call[0][0]
-    assert "enabled = FALSE" in sql
-    assert "NOT IN" in sql
+    assert syncer._upsert_schedules(_sample_entries()) == 0
+    mock_get_conn.assert_not_called()
 
 
-@patch("agento.modules.jira_periodic_tasks.src.sync.get_connection")
-def test_upsert_schedules_empty_disables_all(mock_get_conn, sample_config, sample_periodic_config):
+@patch(f"{SYNC}.get_connection")
+def test_a_cron_map_value_is_refused_and_its_rows_are_disabled(mock_get_conn, sample_config, caplog):
+    """Only an ENV override can still hold cron after the upgrade patch (AG-67 No cron compat)."""
+    mock_conn, mock_cursor = _mock_connection()
+    mock_get_conn.return_value = mock_conn
+    periodic = PeriodicTasksConfig(frequency_map={"Co 5min": "*/5 * * * *"})
+    entry = CronEntry(issue_key="AI-2", summary="t", frequency_label="Co 5min", rrule="*/5 * * * *")
+
+    with caplog.at_level(logging.ERROR):
+        assert _syncer(sample_config, periodic)._upsert_schedules([entry]) == 0
+
+    assert "frequency_map entry 'Co 5min' is not an RRULE; cron is no longer accepted (AG-67)" in caplog.text
+    assert mock_cursor.execute.call_count == 1  # the sweep only: AI-2 is disabled
+    assert "NOT IN" not in mock_cursor.execute.call_args[0][0]
+
+
+@patch(f"{SYNC}.get_connection")
+def test_a_rule_the_engine_refuses_is_not_written(mock_get_conn, sample_config, caplog):
+    mock_conn, _ = _mock_connection()
+    mock_get_conn.return_value = mock_conn
+    periodic = PeriodicTasksConfig(frequency_map={"Fast": "FREQ=MINUTELY;INTERVAL=1"})
+    entry = CronEntry(issue_key="AI-2", summary="t", frequency_label="Fast", rrule="FREQ=MINUTELY;INTERVAL=1")
+
+    with caplog.at_level(logging.ERROR):
+        assert _syncer(sample_config, periodic)._upsert_schedules([entry]) == 0
+    assert "frequency_map entry 'Fast' is refused: too_frequent" in caplog.text
+
+
+@patch(f"{SYNC}.engine.validate")
+@patch(f"{SYNC}.get_connection")
+def test_each_map_value_is_validated_once_per_shared_cache(mock_get_conn, validate, sample_config,
+                                                           sample_periodic_config):
+    mock_get_conn.side_effect = lambda *_: _mock_connection()[0]
+    rules: dict = {}
+    for view in (1, 2):
+        JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"),
+                     agent_view_id=view, rules=rules)._upsert_schedules(_sample_entries())
+    assert validate.call_count == 2  # two labels, two views
+
+
+@patch(f"{SYNC}.min_interval_minutes", return_value=5)
+@patch(f"{SYNC}.engine.validate")
+def test_a_shared_cache_keeps_each_views_own_rule_for_one_label(_validate, _min, sample_config):
+    """Scoped maps may give one label different rules: the cache is keyed by the rule (CFG-1)."""
+    from datetime import datetime
+
+    rules: dict = {}
+    got = [JiraCronSync(sample_config, PeriodicTasksConfig(frequency_map={"Daily": value}), MagicMock(),
+                        logging.getLogger("test"), agent_view_id=view, rules=rules)
+           ._checked_rule(MagicMock(), "Daily", datetime(2027, 1, 1), "UTC")
+           for view, value in ((1, "FREQ=DAILY;BYHOUR=9"), (2, "FREQ=DAILY;BYHOUR=17"))]
+    assert got == ["FREQ=DAILY;BYHOUR=9", "FREQ=DAILY;BYHOUR=17"]
+
+
+@patch(f"{SYNC}.engine.validate", side_effect=RuntimeError("schedule validator failed"))
+@patch(f"{SYNC}.get_connection")
+def test_a_validator_crash_writes_nothing_and_disables_nothing(mock_get_conn, _validate, sample_config,
+                                                               sample_periodic_config):
     mock_conn, mock_cursor = _mock_connection()
     mock_get_conn.return_value = mock_conn
 
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
-    syncer._upsert_schedules([])
-
-    # With empty entries, should disable all schedules
-    mock_cursor.execute.assert_called_once()
-    sql = mock_cursor.execute.call_args[0][0]
-    assert "enabled = FALSE" in sql
-    assert "NOT IN" not in sql
+    assert _syncer(sample_config, sample_periodic_config)._upsert_schedules(_sample_entries()) == 0
+    mock_cursor.execute.assert_not_called()
+    mock_conn.rollback.assert_called_once()
 
 
-@patch("agento.modules.jira_periodic_tasks.src.sync.get_connection")
-def test_upsert_schedules_writes_agent_view_id(mock_get_conn, sample_config, sample_periodic_config):
-    mock_conn, mock_cursor = _mock_connection()
-    mock_get_conn.return_value = mock_conn
-
-    syncer = JiraCronSync(
-        sample_config, sample_periodic_config, MagicMock(),
-        logging.getLogger("test"), agent_view_id=42, agent_view_code="mieszko",
-    )
-    syncer._upsert_schedules([_sample_entries()[0]])
-
-    insert_call = mock_cursor.execute.call_args_list[0]
-    sql = insert_call[0][0]
-    params = insert_call[0][1]
-    assert "agent_view_id" in sql
-    assert params[0] == 42
-
-
-@patch("agento.modules.jira_periodic_tasks.src.sync.get_connection")
-def test_upsert_schedules_scoped_disable_sweep_per_agent_view(
-    mock_get_conn, sample_config, sample_periodic_config
-):
-    """mieszko's sync must never disable zyga's rows."""
-    mock_conn, mock_cursor = _mock_connection()
-    mock_get_conn.return_value = mock_conn
-
-    syncer = JiraCronSync(
-        sample_config, sample_periodic_config, MagicMock(),
-        logging.getLogger("test"), agent_view_id=7, agent_view_code="mieszko",
-    )
-    syncer._upsert_schedules(_sample_entries())
-
-    disable_sql = mock_cursor.execute.call_args_list[-1][0][0]
-    disable_params = mock_cursor.execute.call_args_list[-1][0][1]
-    assert "agent_view_id = %s" in disable_sql
-    assert "NOT IN" in disable_sql
-    assert disable_params[0] == 7
-
-
-@patch("agento.modules.jira_periodic_tasks.src.sync.get_connection")
-def test_upsert_schedules_scoped_disable_when_empty_per_agent_view(
-    mock_get_conn, sample_config, sample_periodic_config
-):
-    mock_conn, mock_cursor = _mock_connection()
-    mock_get_conn.return_value = mock_conn
-
-    syncer = JiraCronSync(
-        sample_config, sample_periodic_config, MagicMock(),
-        logging.getLogger("test"), agent_view_id=9, agent_view_code="zyga",
-    )
-    syncer._upsert_schedules([])
-
-    sql = mock_cursor.execute.call_args[0][0]
-    params = mock_cursor.execute.call_args[0][1]
-    assert "agent_view_id = %s" in sql
-    assert "NOT IN" not in sql
-    assert params == (9,)
-
-
-@patch("agento.modules.jira_periodic_tasks.src.sync.get_connection")
-def test_upsert_schedules_null_agent_view_uses_is_null_predicate(
-    mock_get_conn, sample_config, sample_periodic_config
-):
-    """Fallback path (no agent_views configured) must scope to IS NULL rows only."""
-    mock_conn, mock_cursor = _mock_connection()
-    mock_get_conn.return_value = mock_conn
-
-    syncer = JiraCronSync(
-        sample_config, sample_periodic_config, MagicMock(),
-        logging.getLogger("test"),
-    )
-    syncer._upsert_schedules(_sample_entries())
-
-    disable_sql = mock_cursor.execute.call_args_list[-1][0][0]
-    assert "agent_view_id IS NULL" in disable_sql
-
-
-@patch("agento.modules.jira_periodic_tasks.src.sync.get_connection")
+@patch(f"{SYNC}.get_connection")
 def test_upsert_schedules_db_error_logged(mock_get_conn, sample_config, sample_periodic_config, caplog):
     mock_conn, mock_cursor = _mock_connection()
     mock_cursor.execute.side_effect = RuntimeError("DB error")
     mock_get_conn.return_value = mock_conn
 
-    syncer = JiraCronSync(sample_config, sample_periodic_config, MagicMock(), logging.getLogger("test"))
-
     with caplog.at_level(logging.WARNING):
-        syncer._upsert_schedules(_sample_entries())
+        _syncer(sample_config, sample_periodic_config)._upsert_schedules(_sample_entries())
 
     mock_conn.rollback.assert_called_once()
 
@@ -261,7 +257,7 @@ def test_sync_view_emits_summary_line(sample_config, sample_periodic_config, jir
     assert "2 entries" in info_records[0].message
 
 
-@patch("agento.modules.jira_periodic_tasks.src.sync.get_connection")
+@patch(f"{SYNC}.get_connection")
 def test_upsert_schedules_skipped_in_dry_run(mock_get_conn, sample_config, sample_periodic_config, jira_cykliczne):
     toolbox = MagicMock()
     toolbox.jira_search.return_value = jira_cykliczne

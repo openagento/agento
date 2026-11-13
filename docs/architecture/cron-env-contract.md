@@ -71,6 +71,8 @@ Examples:
   ([runner.md](runner.md#the-owner-rule)).
 - `AGENTO_RUNNER_SOCKET_DIR` — where the worker finds `runner-<i>/runner-<i>.sock`
   (default `/run/agento-runner`).
+- `AGENTO_SCHEDULER_TICK_BATCH` — rows per phase that one `scheduler:tick` handles (default
+  500, minimum 1). Rows past the bound wait for the next tick ([schedules.md](schedules.md#the-tick)).
 - `AGENTO_TEST_MODE_ENABLED` — `1` allows test runs (`--test`, [run.md](../cli/run.md#--test--a-test-run)).
   Off unless set; never set it in production. The dev compose sets it.
 
