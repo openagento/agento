@@ -75,7 +75,7 @@ def _resolve_harness_config(job: Job, registered) -> dict[str, str]:
     if job.agent_view_id is None:
         raise ValueError(
             f"Job {job.id} has no agent_view_id, so the harness's own config "
-            f"(e.g. codex sandbox_mode) cannot be resolved. Refusing to build a replay "
+            f"(a harness config field) cannot be resolved. Refusing to build a replay "
             f"command that may differ from the run it claims to reproduce."
         )
     from .config_resolver import ScopedConfigService

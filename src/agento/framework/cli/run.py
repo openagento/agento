@@ -55,10 +55,8 @@ class RunCommand:
         parser.add_argument(
             "--yolo",
             action="store_true",
-            help="Interactive bypass mode — skip the agent's per-action approval prompts "
-                 "(claude --dangerously-skip-permissions / codex "
-                 "--dangerously-bypass-approvals-and-sandbox). Headless bypasses by "
-                 "default, unless the harness's own config asks otherwise.",
+            help="Interactive bypass mode — skip the agent's per-action approval prompts. "
+                 "Headless bypasses by default, unless the harness's own config asks otherwise.",
         )
         parser.add_argument(
             "--pretty",

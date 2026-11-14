@@ -279,7 +279,7 @@ class ReplayCommand:
                           type=int, dest="credential_id", default=None,
                           help="Override credential id (default: least-recently-used healthy credential)")
         parser.add_argument("--harness", type=str, default=None,
-                          help="Pin the test job's harness (e.g. codex) instead of the "
+                          help="Pin the test job's harness instead of the "
                                "agent_view's — no config is changed")
         parser.add_argument("--model", type=str, default=None,
                           help="Pin the test job's model (e.g. haiku)")
@@ -627,7 +627,7 @@ class E2eCommand:
         parser.add_argument("--keep", action="store_true",
                           help="Keep test jobs in DB (don't clean up)")
         parser.add_argument("--harness", type=str, default=None,
-                          help="Pin the test job's harness (e.g. codex) instead of the "
+                          help="Pin the test job's harness instead of the "
                                "agent_view's — no config is changed")
         parser.add_argument("--model", type=str, default=None,
                           help="Pin the test job's model (e.g. haiku)")
