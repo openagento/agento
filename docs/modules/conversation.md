@@ -448,6 +448,23 @@ leave them with a thread that is stuck for no stated cause. An unreachable threa
 audit path** — see DECISIONS.md for why the `admin_audit` row belongs in this transaction rather
 than in an observer.
 
+## Stop
+
+`POST /api/conversation/threads/{id}/stop` stops the thread's running turn (the **Stop** button
+under the status line). It has the write gate of a post (`write_refusal`), and the job comes
+from the thread — the newest user message still `published` — never from the caller.
+
+It calls `pause_job` (SIGTERM through the owning runner, capabilities revoked, session kept).
+A `PAUSED` job with a session would hold the thread's line for ever, so once the runner says
+the process is `dead` the job becomes `DEAD` with `error_class = 'Stopped'` and the message
+`terminal`. The next message is then an ordinary turn, and it resumes the stopped turn's
+session (`threads.resolve_resume`): type "continue" to go on. There is no Resume button.
+
+While the process is still alive the answer is `409` and the job stays `PAUSED`: freeing the
+line then would start the next turn beside it. Stop again to finish. No running turn is `409`.
+A stopped message reads `stopped: true`; the panel shows "Stopped. Write a message to
+continue." instead of an error, and the run's open tools stop spinning on `run.finished`.
+
 ## Retention
 
 `conversation:retention` (`co:ret`, cron `17 3 * * *`) runs four passes in one order that

@@ -669,6 +669,25 @@ describe("the chat turn", () => {
     await vi.waitFor(() => expect(api.calls("POST", "/api/conversation/threads/5/messages")).toHaveLength(1));
     expect(api.calls("POST", "/api/conversation/threads/5/messages")[0].body).toMatchObject({ content: "why?" });
   });
+
+  it("Stop ends a running turn; a stopped turn asks for the next message, with no error", async () => {
+    captureHub();
+    let state: Message["job_state"] = "published";
+    let stopped = false;
+    const api = await stubApi({
+      ...routes([
+        ev("message.created", null, { message_id: 1, content: "long task" }, 1),
+        ev("run.started", "x", { job_id: 7, attempt: 1, max_attempts: 3 }, 2),
+      ], () => [{ ...msg(1, "long task", state), stopped }]),
+      "POST /api/conversation/threads/5/stop": () => { state = "terminal"; stopped = true; return { job_id: 7, status: "DEAD" }; },
+    });
+    render(<View threadId={5} />, { wrapper });
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await vi.waitFor(() => expect(api.calls("POST", "/api/conversation/threads/5/stop")).toHaveLength(1));
+    expect(await screen.findByText("Stopped. Write a message to continue.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+    expect(screen.queryByText("The agent could not answer.")).not.toBeInTheDocument();
+  });
 });
 
 describe("Composer", () => {

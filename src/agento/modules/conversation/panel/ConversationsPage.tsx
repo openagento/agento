@@ -358,8 +358,9 @@ function statusText(rows: Message[], turn: Turn | null): string | null {
   const state = last === -1 ? null : turnState(rows, last, false);
   if (state === "blocked") {
     return rows[last].blocked_reason === "paused_unrecoverable" ? "This turn cannot resume by itself."
-      : "This turn is paused and resumes by itself.";
+      : "This turn is paused.";
   }
+  if (state === "failed" && rows[last].stopped) return "Stopped. Write a message to continue.";
   if (state === "succeeded" || state === "failed") return null;
   if (turn?.failure?.retrying) return `Retrying (attempt ${(turn.attempt ?? 1) + 1} of ${turn.maxAttempts})…`;
   if (turn?.started && !turn.finished) {
@@ -389,6 +390,11 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
   const unblock = useMutation({
     mutationFn: (id: number) => apiFetch(`/api/conversation/threads/${threadId}/messages/${id}/unblock`, { method: "POST" }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: messagesKey(threadId) }),
+  });
+  // Stop ends the running turn; the next message continues its session.
+  const stop = useMutation({
+    mutationFn: () => apiFetch(`/api/conversation/threads/${threadId}/stop`, { method: "POST" }),
+    onSettled: () => void qc.invalidateQueries({ queryKey: messagesKey(threadId) }),
   });
   // Retry re-sends the failed turn's text as a new message: no new route (U4).
   const resendRequest = useRequestId();
@@ -469,7 +475,9 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
   const blocked = rows.filter((m) => m.blocked_reason === "paused_unrecoverable");
   const lastUser = rows.map((m) => m.role).lastIndexOf("user");
   // A terminal turn with no answer and no loaded failure still gets its error and Retry.
-  const unanswered = !channel && lastUser !== -1 && turnState(rows, lastUser, false) === "failed" && !newest?.failure?.failed;
+  const unanswered = !channel && lastUser !== -1 && turnState(rows, lastUser, false) === "failed"
+    && !newest?.failure?.failed && !rows[lastUser].stopped;
+  const stoppable = lastUser !== -1 && rows[lastUser].job_state === "published";
 
   // Regenerate hangs off the newest answer's own hover row, as the chat apps do (U9), not
   // under the whole timeline. It is offered on the same condition as before.
@@ -577,8 +585,14 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
       )}
       {regenerate.error && <p className="ag-field__error" role="alert">{message(regenerate.error)}</p>}
       {status && (
-        <ChatStatus busy={!status.startsWith("This turn")}>{status}</ChatStatus>
+        <ChatStatus busy={!status.startsWith("This turn") && !status.startsWith("Stopped")}>{status}</ChatStatus>
       )}
+      {stoppable && (
+        <div className="ag-row">
+          <Button onClick={() => stop.mutate()} disabled={stop.isPending}>Stop</Button>
+        </div>
+      )}
+      {stop.error && <p className="ag-field__error" role="alert">{message(stop.error)}</p>}
       {blocked.map((m) => (
         <div key={m.id} className="ag-row">
           <Button onClick={() => unblock.mutate(m.id)} disabled={unblock.isPending}>Unblock the conversation</Button>

@@ -331,7 +331,7 @@ def list_messages(conn, *, conversation_id: int, limit: int) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT m.id, m.role, m.content, m.client_message_id, m.job_id, m.job_state, "
-            "       m.created_at, j.status AS job_status, j.session_id "
+            "       m.created_at, j.status AS job_status, j.session_id, j.error_class "
             "FROM message m LEFT JOIN job j ON j.id = m.job_id "
             "WHERE m.conversation_id = %s ORDER BY m.created_at, m.id LIMIT %s",
             (conversation_id, limit),
@@ -785,6 +785,50 @@ def unblock(conn, *, conversation_id: int, message_id: int, actor_id: int) -> bo
         _dispatch("conversation_unblock_after", ConversationUnblockedEvent(
             conversation_id=conversation_id, message_id=message_id, actor_id=actor_id))
     return changed
+
+
+STOPPED = "Stopped"   # job.error_class of a turn the panel stopped
+
+
+def stop(conn, *, conversation_id: int) -> int:
+    """End the thread's open turn so the thread is free again. Returns its job id.
+
+    `pause_job` stops the run (SIGTERM, capabilities revoked, session kept). A `PAUSED` job
+    with a session would hold the thread's line for ever (§4.4), so once the process is gone
+    the job becomes `DEAD` and the message terminal: the next message is the next turn, and
+    it resumes this turn's session (`threads.resolve_resume`). While the process is still
+    alive the job stays `PAUSED` and the caller may stop again: freeing the line then would
+    start the next turn beside it. The job comes from the thread, never from the caller.
+    """
+    from agento.framework.job_store import fetch_job, pause_job
+    from agento.framework.runner import client as runner_client
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT j.id, j.status FROM message m JOIN job j ON j.id = m.job_id "
+            "WHERE m.conversation_id = %s AND m.role = 'user' AND m.job_state = 'published' "
+            "ORDER BY m.id DESC LIMIT 1", (conversation_id,))
+        turn = cur.fetchone()
+    conn.commit()
+    if turn is None or turn["status"] not in ("RUNNING", "PAUSED"):
+        raise SubmissionError(409, "no turn of this thread is running")
+    if turn["status"] == "RUNNING":
+        try:
+            pause_job(conn, turn["id"])
+        except ValueError as exc:
+            raise SubmissionError(409, str(exc)) from exc
+    job = fetch_job(conn, turn["id"])
+    conn.commit()
+    if runner_client.alive(job.runner_ref, f"job:{job.id}") != "dead":
+        raise SubmissionError(409, "the run is still stopping; try again shortly")
+    with conn.cursor() as cur:
+        cur.execute("UPDATE job SET status = 'DEAD', error_message = %s, error_class = %s, "
+                    "updated_at = NOW() WHERE id = %s AND status = 'PAUSED'",
+                    ("Stopped from the panel", STOPPED, job.id))
+        cur.execute("UPDATE message SET job_state = 'terminal' WHERE job_id = %s "
+                    "AND job_state = 'published'", (job.id,))
+    conn.commit()
+    return job.id
 
 
 def delete_conversation(conn, conversation_id: int) -> bool:

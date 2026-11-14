@@ -51,7 +51,8 @@ def _message_json(row: dict) -> dict:
             "client_message_id": row["client_message_id"], "job_id": row["job_id"],
             "job_state": row["job_state"], "created_at": _iso(row["created_at"]),
             # A reader must be able to tell "waiting" from "stuck" (§4.5).
-            "blocked": reason is not None, "blocked_reason": reason}
+            "blocked": reason is not None, "blocked_reason": reason,
+            "stopped": row.get("error_class") == service.STOPPED}
 
 
 def _visible(req: Request) -> dict | None:
@@ -285,6 +286,23 @@ def unblock(req: Request) -> Response:
         return error(exc.status, str(exc))
     return Response(200, {"message_id": int(req.params["message_id"]),
                           "job_state": "terminal", "changed": changed})
+
+
+def stop(req: Request) -> Response:
+    """Stop the thread's running turn. The next message continues its session (`service.stop`).
+
+    A stop is a write, so it has the write gate of a post."""
+    row = _visible(req)
+    if row is None:
+        return error(404, "not found")
+    refusal = _write_refusal(req, row)
+    if refusal is not None:
+        return refusal
+    try:
+        job_id = service.stop(req.conn, conversation_id=row["id"])
+    except service.SubmissionError as exc:
+        return error(exc.status, str(exc))
+    return Response(200, {"job_id": job_id, "status": "DEAD"})
 
 
 def _write_refusal(req: Request, row: dict) -> Response | None:

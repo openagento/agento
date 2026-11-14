@@ -185,6 +185,12 @@ describe("partial segments (B1)", () => {
     const left = items([part(1, "cut", "reasoning.partial"), part(2, "cut off"), ev(3, "run.finished", "e", { outcome: "failed" })]);
     expect(left).toMatchObject([{ type: "reasoning", live: false }, { type: "text", text: "cut off", live: false }]);
   });
+
+  it("a tool of a stopped run stops spinning", () => {
+    const left = items([ev(1, "tool.started", "e", { tool_name: "bash", data: { call_id: "c1" } }),
+      ev(2, "run.finished", "e", { outcome: "abandoned" })]);
+    expect(left).toMatchObject([{ type: "tool", done: true }]);
+  });
 });
 
 describe("foldTools and turns", () => {

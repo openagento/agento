@@ -86,6 +86,12 @@
     },
     {
       "method": "POST",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/stop",
+      "handler": "src.routes.stop",
+      "acl": "self"
+    },
+    {
+      "method": "POST",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/regenerate",
       "handler": "src.routes.regenerate",
       "json_body": true,

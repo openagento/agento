@@ -51,6 +51,8 @@ export interface Message {
   id: number; role: "user" | "assistant"; content: string; client_message_id: string | null;
   job_id: number | null; job_state: "pending" | "published" | "terminal" | null; created_at: string | null;
   blocked: boolean; blocked_reason: "paused" | "paused_unrecoverable" | null;
+  /** The turn was stopped from the panel: it ended without an answer, on purpose. */
+  stopped?: boolean;
 }
 
 export const RUN_POLL_MS = 10_000;

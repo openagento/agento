@@ -2,6 +2,9 @@
 
 Pause a running job and resume it later without losing the agent's conversation context.
 
+In a panel conversation the **Stop** button does a pause and then ends the turn, so the next
+message continues the session — see [Stop](../modules/conversation.md#stop).
+
 ## Usage
 
 ```bash

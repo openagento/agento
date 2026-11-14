@@ -243,10 +243,14 @@ export function buildItems(events: StreamEvent[]): Item[] {
       // tool.called is a toolbox audit row; job.* states come from the messages.
     }
   }
-  // A run that ended leaves no segment open: what is left is its text (B1).
+  // A run that ended leaves no segment open: what is left is its text (B1). A tool with no
+  // `tool.completed` (a stopped run) is over too: it no longer spins.
   for (const run of runs.values()) {
     if (!run.finished) continue;
-    for (const i of run.items) if (i.type === "text" || i.type === "reasoning") i.live = false;
+    for (const i of run.items) {
+      if (i.type === "text" || i.type === "reasoning") i.live = false;
+      else if (i.type === "tool") i.done = true;
+    }
   }
   return nest(top);
 }
