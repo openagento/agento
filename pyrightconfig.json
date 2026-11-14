@@ -1,7 +1,7 @@
 {
   "include": ["src/agento/framework"],
   "exclude": ["tests", "src/agento/toolbox"],
-  "pythonVersion": "3.11",
+  "pythonVersion": "3.12",
   "typeCheckingMode": "standard",
   "reportMissingImports": true,
   "reportMissingTypeStubs": false,

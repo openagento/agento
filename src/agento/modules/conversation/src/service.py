@@ -442,7 +442,7 @@ KEEP = object()
 
 
 def update_thread(conn, conversation_id: int, *, user_id: int,
-                  title: str | None | object = KEEP, pinned: bool | None = None) -> None:
+                  title: str | object | None = KEEP, pinned: bool | None = None) -> None:
     """The ONE write behind `PATCH`: the title and the pin land in ONE transaction.
 
     Two writes meant a refused pin (409) could leave a renamed thread behind: the rename had
