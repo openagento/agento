@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { apiFetch, useMutation, useQueryClient } from "@agento/api";
 import {
-  AppLink, Button, DataTable, EmptyState, PageHeader, RowMenu, SectionHeader, StatusBadge, Timestamp, jobTone, type Column,
+  AppLink, Button, DataTable, EmptyState, PageHeader, RowMenu, SectionHeader, StatusBadge, SwitchField, Timestamp, jobTone, type Column,
 } from "@agento/ui";
 import { explain, message, scheduleUrl, useOptions, useSchedules, type Group, type Schedule } from "./api";
 
@@ -35,11 +35,12 @@ export default function SchedulesPage() {
     { id: "owner", header: "Owner", cell: (s) => s.owner_username ?? "agent" },
     { id: "recurrence", header: "Recurrence", cell: recurrence },
     { id: "next", header: "Next run", cell: (s) => (s.last_error ? <span className="ag-field__error">{explain(s.last_error)}</span>
-      : s.enabled && s.next_fire_at ? <Timestamp value={s.next_fire_at} /> : "none") },
-    { id: "last", header: "Last run", cell: (s) => (s.last_run_status
-      ? <StatusBadge tone={jobTone(s.last_run_status)}>{s.last_run_status}</StatusBadge> : "never") },
+      : !s.enabled ? <span className="ag-muted">Paused</span>
+        : s.next_fire_at ? <Timestamp value={s.next_fire_at} /> : <span className="ag-muted">None</span>) },
+    { id: "last", header: "Last run", nowrap: true, cell: (s) => (s.last_run_status
+      ? <StatusBadge tone={jobTone(s.last_run_status)}>{s.last_run_status}</StatusBadge> : <span className="ag-muted">Never</span>) },
     { id: "enabled", header: "Enabled", cell: (s) => (
-      <input type="checkbox" aria-label={`Enabled: ${s.title}`} checked={s.enabled}
+      <SwitchField hideLabel label={`Enabled: ${s.title}`} checked={toggle.isPending && toggle.variables.id === s.id ? !s.enabled : s.enabled}
         disabled={!s.can.write || toggle.isPending} onChange={() => toggle.mutate(s)} />
     ) },
     { id: "actions", header: "Actions", cell: (s) => <RowMenu actions={[

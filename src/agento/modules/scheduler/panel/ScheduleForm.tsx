@@ -5,11 +5,12 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { apiFetch, LIVE_REFETCH_MS, useMutation, useQuery, useQueryClient } from "@agento/api";
 import {
-  Button, ConfirmDialog, DeleteAction, ErrorState, LoadingState, PageHeader, RowMenu, SectionHeader, SelectField, TextField,
-  Timestamp, type RowAction,
+  Button, ConfirmDialog, DataTable, DeleteAction, ErrorState, FieldRow, LoadingState, PageColumn, PageHeader, RowMenu, Section, SectionHeader,
+  Sections, SelectField, SwitchField, TextAreaField, TextField, Timestamp, type RowAction,
 } from "@agento/ui";
-import { BASE, explain, message, scheduleUrl, useOptions, type Fire, type Options, type Schedule } from "./api";
+import { BASE, codeOf, explain, message, scheduleUrl, useOptions, type Fire, type Options, type Schedule } from "./api";
 import { RecurrenceDialog } from "./RecurrenceDialog";
+import { LastRuns } from "./Runs";
 
 interface Form {
   title: string; prompt: string; agent_view_id: string; rrule: string; starts_at: string; timezone: string;
@@ -44,6 +45,30 @@ const changes = (f: Form, base: Form) => {
 };
 
 const timing = (f: Form): Timing => ({ rrule: f.rrule, starts_at: f.starts_at, timezone: f.timezone });
+
+/** The field a refusal code is about, and the section that holds each field. */
+const FIELD_OF: Record<string, keyof Form> = {
+  bad_title: "title", bad_prompt: "prompt", bad_harness: "harness", bad_model: "model", bad_start: "starts_at",
+  too_far_back: "starts_at", bad_timezone: "timezone", bad_rule: "rrule", too_frequent: "rrule", no_occurrence: "rrule",
+  too_complex: "rrule", ended: "rrule",
+};
+const SECTION_OF: Record<keyof Form, string> = {
+  title: "task", prompt: "task", agent_view_id: "task", starts_at: "when", timezone: "when", enabled: "when",
+  harness: "runtime", model: "runtime", rrule: "advanced",
+};
+
+/** The browser's IANA zones, with the row's own zone kept when the browser does not list it (UTC). */
+const ZONES = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
+const zones = (current: string) => [...new Set([current, "UTC", ...ZONES])].filter(Boolean).map((z) => ({ value: z, label: z }));
+
+const RELATIVE = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+/** "in 25 minutes", "in 3 hours", "tomorrow". */
+function fromNow(at: string, now = Date.now()): string {
+  const minutes = Math.round((Date.parse(at) - now) / 60_000);
+  if (Math.abs(minutes) < 60) return RELATIVE.format(minutes, "minute");
+  const hours = Math.round(minutes / 60);
+  return Math.abs(hours) < 36 ? RELATIVE.format(hours, "hour") : RELATIVE.format(Math.round(hours / 24), "day");
+}
 
 export default function SchedulePage() {
   const id = useParams().id ?? "new";
@@ -81,7 +106,17 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
     setBase(next);
     if ((["rrule", "starts_at", "timezone"] as const).every((k) => form[k] === base[k])) setChecked(timing(next));
   }
-  const [failure, setFailure] = useState<string | null>(null);
+  const preset = options.presets.find((p) => p.rrule === form.rrule);
+  // Advanced opens by itself for a rule no preset names: the RRULE is then the only place it shows.
+  const [open, setOpen] = useState(() => ["task", "when", ...(base.rrule && !preset ? ["advanced"] : [])]);
+  const [failure, setFailure] = useState<{ field: keyof Form | null; text: string } | null>(null);
+  const fail = (e: unknown) => {
+    const field = FIELD_OF[codeOf(e) ?? ""] ?? null;
+    setFailure({ field, text: message(e) });
+    // A refusal names a field: open its section, or the error would hide in a closed one.
+    if (field && !open.includes(SECTION_OF[field])) setOpen([...open, SECTION_OF[field]]);
+  };
+  const errorOf = (field: keyof Form) => (failure?.field === field ? failure.text : null);
   const [dialog, setDialog] = useState<null | "custom" | "share" | "owner" | "delete">(null);
   const readOnly = row !== null && !row.can.write;
   const diff = changes(form, base);
@@ -103,18 +138,25 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
       if (row) setBase(f);
       else navigate(`/schedules/${(r as { id: number }).id}`);
     },
-    onError: (e) => setFailure(message(e)),
+    onError: fail,
+  });
+  // On an existing schedule the switch applies at once, as a switch does; on a new one it is a field.
+  const toggle = useMutation({
+    mutationFn: (enabled: boolean) => apiFetch(scheduleUrl(row!.id), { method: "PATCH", json: { enabled } }),
+    onSuccess: () => setFailure(null),
+    onError: fail,
+    onSettled: () => refresh(),
   });
   const run = useMutation({
     mutationFn: (id: number) => apiFetch<{ job_id: number; conversation_id: number }>(`${scheduleUrl(id)}/run`, { method: "POST" }),
     onSuccess: (r) => { void refresh(); navigate(`/conversations/${r.conversation_id}`); },
-    onError: (e) => setFailure(message(e)),
+    onError: fail,
   });
   const remove = useMutation({
     mutationFn: (id: number) => apiFetch(scheduleUrl(id), { method: "DELETE" }),
     // Away first: a refetch of the deleted row would answer 404.
     onSuccess: () => { navigate("/schedules"); void refresh(); },
-    onError: (e) => { setDialog(null); setFailure(message(e)); },
+    onError: (e) => { setDialog(null); fail(e); },
   });
 
   const actions: RowAction[] = row ? [
@@ -134,15 +176,20 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
     setForm(f);
     commit(f);
   };
+  const enabled = row ? (toggle.isPending ? toggle.variables : row.enabled) : form.enabled;
+  const harnessLabel = options.harnesses.find((h) => h.value === form.harness)?.label ?? form.harness;
 
   return (
-    <div className="ag-stack">
-      <PageHeader title={row ? row.title : "New schedule"} actions={<RowMenu actions={actions} />}
+    <PageColumn>
+      <PageHeader title={row ? row.title : "New schedule"}
+        actions={<>
+          <SwitchField label="Enabled" checked={enabled} disabled={readOnly || toggle.isPending}
+            onChange={(on) => (row ? toggle.mutate(on) : set({ enabled: on }))} />
+          <RowMenu actions={actions} />
+        </>}
         description={row ? <>
-          Owner {row.owner_username ?? `agent ${row.agent_view_code ?? ""}`} · Next run{" "}
-          {row.enabled && row.next_fire_at ? <Timestamp value={row.next_fire_at} /> : "none"} · Last run{" "}
-          {row.last_fire_at ? <Timestamp value={row.last_fire_at} /> : "never"}
-          {row.last_run_status && ` (${row.last_run_status})`}
+          {row.owner_username ? `Owned by ${row.owner_username}` : `Owned by agent ${row.agent_view_code ?? ""}`}
+          {" · "}{!row.enabled ? "Paused" : row.next_fire_at ? <>Next run <Timestamp value={row.next_fire_at} /></> : "No next run"}
         </> : "A prompt that runs an agent on a recurrence."} />
       {row?.last_error && <p className="ag-field__error" role="alert">{explain(row.last_error)}</p>}
       {readOnly && (
@@ -152,55 +199,74 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
       )}
       <form className="ag-stack" onSubmit={(e) => { e.preventDefault(); save.mutate(form); }}>
         <fieldset className="ag-stack" disabled={readOnly}>
-          <TextField label="Title" maxLength={500} value={form.title} hint="Also the title of its conversation."
-            onChange={(e) => set({ title: e.target.value })} />
-          <SelectField label="Agent view" name="agent_view" value={form.agent_view_id} options={views} disabled={row !== null}
-            hint={row ? "Set at create. To move, delete and create again." : undefined}
-            onChange={(v) => set({ agent_view_id: v })} />
-          <div className="ag-field">
-            <label className="ag-field__label" htmlFor="schedule-prompt">Prompt</label>
-            <textarea id="schedule-prompt" className="ag-field__input" rows={6} value={form.prompt}
-              onChange={(e) => set({ prompt: e.target.value })} />
-          </div>
-          <SelectField label="Recurrence" name="recurrence" placeholder="Custom" disabled={readOnly}
-            value={options.presets.find((p) => p.rrule === form.rrule)?.rrule ?? ""} onChange={pickRecurrence}
-            options={[...options.presets.map((p) => ({ value: p.rrule, label: p.label })), { value: CUSTOM, label: "Custom…" }]} />
-          <TextField label="RRULE" value={form.rrule} onBlur={() => commit()} onChange={(e) => set({ rrule: e.target.value })}
-            hint={`The recurrence as an RRULE (RFC 5545). At least ${options.min_interval_minutes} minutes between runs.`} />
-          <div className="ag-row">
-            <TextField label="Starts at" type="datetime-local" value={form.starts_at} hint="Local time in the time zone. Empty: now."
-              onChange={(e) => { const f = { ...form, starts_at: e.target.value }; setForm(f); commit(f); }} />
-            <TextField label="Time zone" value={form.timezone} onBlur={() => commit()} hint="An IANA name, such as Europe/Warsaw."
-              onChange={(e) => set({ timezone: e.target.value })} />
-          </div>
-          <label className="ag-row">
-            <input type="checkbox" checked={form.enabled} onChange={(e) => set({ enabled: e.target.checked })} /> Enabled
-          </label>
-          <div className="ag-row">
-            <SelectField label="Harness" name="harness" placeholder="Agent view default" value={form.harness} disabled={readOnly}
-              options={[{ value: DEFAULT, label: "Agent view default" }, ...options.harnesses]}
-              onChange={(v) => set({ harness: v === DEFAULT ? "" : v })} />
-            <TextField label="Model" value={form.model} hint="Empty: the agent view's model." maxLength={128}
-              onChange={(e) => set({ model: e.target.value })} />
-          </div>
+          <Sections value={open} onChange={setOpen}>
+            <Section value="task" title="Task" description="What the agent does"
+              summary={views.find((v) => v.value === form.agent_view_id)?.label}>
+              <TextField label="Title" maxLength={500} value={form.title} hint="Also the title of its conversation."
+                error={errorOf("title")} onChange={(e) => set({ title: e.target.value })} />
+              <SelectField label="Agent view" name="agent_view" value={form.agent_view_id} options={views} disabled={row !== null}
+                hint={row ? "Set at create. To move, delete and create again." : "The agent that runs the prompt."}
+                onChange={(v) => set({ agent_view_id: v })} />
+              <TextAreaField label="Prompt" value={form.prompt} error={errorOf("prompt")} minRows={5}
+                hint="Each run starts from this prompt, in the same conversation." onChange={(e) => set({ prompt: e.target.value })} />
+            </Section>
+            <Section value="when" title="Schedule" description="When it runs"
+              summary={`${preset?.label ?? (form.rrule ? "Custom" : "Not set")} · ${form.timezone}`}>
+              <SelectField label="Repeats" name="recurrence" placeholder="Pick a recurrence" disabled={readOnly} value={form.rrule}
+                onChange={pickRecurrence} hint={preset || !form.rrule ? undefined : "A custom rule. See it under Advanced."}
+                options={[...options.presets.map((p) => ({ value: p.rrule, label: p.label })),
+                  ...(form.rrule && !preset ? [{ value: form.rrule, label: "Custom rule" }] : []), { value: CUSTOM, label: "Custom…" }]} />
+              <FieldRow>
+                <TextField label="Starts" type="datetime-local" value={form.starts_at} hint="In the time zone. Empty: now."
+                  error={errorOf("starts_at")}
+                  onChange={(e) => { const f = { ...form, starts_at: e.target.value }; setForm(f); commit(f); }} />
+                <SelectField label="Time zone" name="timezone" searchable value={form.timezone} options={zones(form.timezone)}
+                  disabled={readOnly} error={errorOf("timezone")}
+                  onChange={(v) => { const f = { ...form, timezone: v }; setForm(f); commit(f); }} />
+              </FieldRow>
+            </Section>
+            <Section value="runtime" title="Agent runtime" description="The harness and model that run it"
+              summary={[form.harness ? harnessLabel : "Default harness", form.model.trim() || "default model"].join(" · ")}>
+              <FieldRow>
+                <SelectField label="Harness" name="harness" value={form.harness || DEFAULT} disabled={readOnly}
+                  hint="Default: the agent view's harness." error={errorOf("harness")}
+                  options={[{ value: DEFAULT, label: "Agent view default" }, ...options.harnesses]}
+                  onChange={(v) => set({ harness: v === DEFAULT ? "" : v })} />
+                <TextField label="Model" value={form.model} placeholder="Agent view default" maxLength={128}
+                  hint="Empty: the agent view's model." error={errorOf("model")} onChange={(e) => set({ model: e.target.value })} />
+              </FieldRow>
+            </Section>
+            <Section value="advanced" title="Advanced" description="The recurrence as an RRULE" summary={form.rrule || undefined}>
+              <TextField label="RRULE" value={form.rrule} onBlur={() => commit()} error={errorOf("rrule")}
+                onChange={(e) => set({ rrule: e.target.value })} placeholder="FREQ=WEEKLY;BYDAY=MO;BYHOUR=9;BYMINUTE=0"
+                hint={`RFC 5545. Any rule the presets do not offer. At least ${options.min_interval_minutes} minutes between runs.`} />
+            </Section>
+          </Sections>
         </fieldset>
-        <SectionHeader>Next runs</SectionHeader>
-        {!checked.rrule.trim() ? <p className="ag-muted">Pick a recurrence to see its next runs.</p>
-          : preview.error ? <p className="ag-field__error" role="alert">{message(preview.error)}</p>
-            : !preview.data ? <LoadingState />
-              : preview.data.fires.length === 0 ? <p className="ag-muted">It does not fire again.</p>
-                : <ul className="ag-stack">{preview.data.fires.map((f) => (
-                  <li key={f.at}><Timestamp value={f.at} /> ({f.local.replace("T", " ").slice(0, 16)} {checked.timezone})</li>
-                ))}</ul>}
-        {failure && <p className="ag-field__error" role="alert">{failure}</p>}
+        {failure && !failure.field && <p className="ag-field__error" role="alert">{failure.text}</p>}
         {!readOnly && (
           <div className="ag-row">
             <Button type="submit" variant="primary" disabled={save.isPending || (row !== null && !dirty)}>
-              {row ? "Save" : "Create schedule"}
+              {row ? "Save changes" : "Create schedule"}
             </Button>
+            {row && dirty && (
+              <Button variant="subtle" onClick={() => { setForm(base); commit(base); setFailure(null); }}>Discard changes</Button>
+            )}
           </div>
         )}
       </form>
+      {row && <><SectionHeader>Last runs</SectionHeader><LastRuns row={row} /></>}
+      <SectionHeader>Next runs</SectionHeader>
+      {!enabled && row ? <p className="ag-muted">Paused. Turn it on to run again; these are the times it would run.</p> : null}
+      {!checked.rrule.trim() ? <p className="ag-muted">Pick when it repeats to see its next runs.</p>
+        : preview.error ? <p className="ag-field__error" role="alert">{message(preview.error)}</p>
+          : !preview.data ? <LoadingState />
+            : preview.data.fires.length === 0 ? <p className="ag-muted">It does not run again.</p>
+              : <DataTable caption="Next runs" rows={preview.data.fires} rowKey={(f) => f.at} columns={[
+                { id: "at", header: "When", cell: (f) => <Timestamp value={f.at} /> },
+                { id: "in", header: "In", nowrap: true, cell: (f) => fromNow(f.at) },
+                { id: "local", header: `Local time (${checked.timezone})`, cell: (f) => f.local.replace("T", " ").slice(0, 16) },
+              ]} />}
       <RecurrenceDialog opened={dialog === "custom"} onCancel={() => setDialog(null)}
         onDone={(rrule) => { setDialog(null); pickRecurrence(rrule); }} />
       {row && dialog === "share" && <ShareDialog row={row} onClose={() => setDialog(null)} />}
@@ -209,7 +275,7 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
         onCancel={() => setDialog(null)} onConfirm={() => row && remove.mutate(row.id)}>
         <p>The schedule stops and is gone. Its conversation stays.</p>
       </ConfirmDialog>
-    </div>
+    </PageColumn>
   );
 }
 
@@ -233,20 +299,20 @@ function ShareDialog({ row, onClose }: { row: Schedule; onClose: () => void }) {
   const members = row.members ?? [];
   const taken = new Set(members.map((m) => m.username));
   return (
-    <ConfirmDialog opened title="Share" confirmLabel="Done" onConfirm={onClose} onCancel={onClose}>
+    <ConfirmDialog opened title="Share" confirmLabel="Done" cancelLabel={null} onConfirm={onClose} onCancel={onClose}>
       <p className="ag-muted">A member may see, edit and run this schedule, and read its conversation.</p>
-      {members.length === 0 ? <p className="ag-muted">Not shared.</p> : (
-        <ul className="ag-stack">{members.map((m) => (
-          <li key={m.user_id} className="ag-row">{m.username}
+      <DataTable caption="Members" rows={members} rowKey={(m) => String(m.user_id)} emptyTitle="Not shared yet"
+        emptyText="Add a user below." columns={[
+          { id: "user", header: "Member", cell: (m) => m.username },
+          { id: "remove", header: "Actions", cell: (m) => (
             <DeleteAction label={`Remove ${m.username}`} disabled={drop.isPending} onClick={() => drop.mutate(m.user_id)} />
-          </li>
-        ))}</ul>
-      )}
-      <div className="ag-row">
-        <SelectField label="Add a user" name="member" searchable placeholder="Search" value={pick} onChange={setPick}
+          ) },
+        ]} />
+      <FieldRow align="end">
+        <SelectField label="Add a user" name="member" searchable placeholder="Search users" value={pick} onChange={setPick}
           options={(users.data ?? []).filter((u) => !taken.has(u.username)).map((u) => ({ value: u.username, label: u.username }))} />
-        <Button disabled={!pick || add.isPending} onClick={() => { add.mutate(pick); setPick(""); }}>Add</Button>
-      </div>
+        <Button variant="primary" disabled={!pick || add.isPending} onClick={() => { add.mutate(pick); setPick(""); }}>Add</Button>
+      </FieldRow>
       {failure && <p className="ag-field__error" role="alert">{failure}</p>}
     </ConfirmDialog>
   );

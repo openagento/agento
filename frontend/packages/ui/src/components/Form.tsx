@@ -1,5 +1,5 @@
-import { Select, TextInput } from "@mantine/core";
-import type { InputHTMLAttributes, ReactNode } from "react";
+import { Select, Textarea, TextInput } from "@mantine/core";
+import type { InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from "react";
 import contained from "./Contained.module.css";
 
 export function FormSection({ title, children, onSubmit, error }: {
@@ -27,6 +27,14 @@ const ORDER = ["label", "input", "description", "error"] as ("label" | "input" |
 export function TextField({ label, hint, error, contained: inside, hideLabel, ...input }: FieldProps & Omit<InputHTMLAttributes<HTMLInputElement>, "size">) {
   return <TextInput label={hideLabel ? undefined : label} aria-label={hideLabel ? label : undefined} description={hint} error={error}
     inputWrapperOrder={ORDER} classNames={inside ? contained : undefined} {...input} />;
+}
+
+/** A text area that grows with its text, from `minRows` up to `maxRows`. Panel-only: a miniapp
+ *  writes a plain `<textarea class="ag-field__input">`. */
+export function TextAreaField({ label, hint, error, minRows = 4, maxRows = 16, ...input }: FieldProps
+  & Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "size"> & { minRows?: number; maxRows?: number }) {
+  return <Textarea label={label} description={hint} error={error} inputWrapperOrder={ORDER} autosize minRows={minRows}
+    maxRows={maxRows} {...input} />;
 }
 
 // A Mantine combobox, so the open list has the theme's look (a native list is drawn by the OS).

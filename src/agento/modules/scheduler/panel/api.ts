@@ -23,6 +23,12 @@ export interface Options {
   agent_views: { id: number; code: string; label: string; workspace_id: number }[];
 }
 export interface Fire { at: string; local: string }
+/** One job of the schedule (`GET …/runs`, newest first). `answer`: what its last attempt wrote into
+ *  the conversation; null while it runs, or when it wrote none. */
+export interface Run {
+  id: number; status: string; created_at: string | null; started_at: string | null; finished_at: string | null;
+  answer: string | null;
+}
 
 export const BASE = "/api/scheduler";
 export const scheduleUrl = (id: number | string) => `${BASE}/schedules/${id}`;
@@ -65,16 +71,28 @@ export const CODES = Object.keys(MESSAGES);
 /** A `last_error` value as a sentence; an unknown value as is. */
 export const explain = (code: string) => (MESSAGES as Record<string, string>)[code] ?? code;
 
+/** The refusal code of a failed request, or null. */
+export function codeOf(e: unknown): string | null {
+  const code = e instanceof ApiError ? (e.body as { code?: unknown } | undefined)?.code : undefined;
+  return typeof code === "string" ? code : null;
+}
+
 export function message(e: unknown): string {
   if (!(e instanceof ApiError)) return "The request failed.";
-  const code = (e.body as { code?: unknown } | undefined)?.code;
-  return typeof code === "string" && code in MESSAGES ? explain(code) : e.message;
+  const code = codeOf(e);
+  return code !== null && code in MESSAGES ? explain(code) : e.message;
 }
 
 /** The list polls: the tick, a run and other users change it (UI-8). */
 export const useSchedules = () => useQuery({
   queryKey: ["scheduler", "list"], refetchInterval: LIVE_REFETCH_MS,
   queryFn: ({ signal }) => apiFetch<{ groups: Record<Group, Schedule[]> }>(`${BASE}/schedules`, { signal }),
+});
+
+/** A run ends and a new one starts without the user: poll (UI-8). */
+export const useRuns = (id: number) => useQuery({
+  queryKey: ["scheduler", "runs", id], refetchInterval: LIVE_REFETCH_MS,
+  queryFn: ({ signal }) => apiFetch<Run[]>(`${scheduleUrl(id)}/runs`, { signal }),
 });
 
 export const useOptions = () => useQuery({

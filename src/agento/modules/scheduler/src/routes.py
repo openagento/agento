@@ -150,6 +150,31 @@ def get_schedule(req: Request) -> Response:
     return Response(200, body)
 
 
+RUNS_SHOWN = 10
+
+
+def runs(req: Request) -> Response:
+    """GET /api/scheduler/schedules/<id>/runs: the newest jobs of the schedule, each with the
+    answer its last attempt wrote into the conversation (null before the end, or none). A reader
+    of the schedule reads its conversation too, so the answer discloses nothing new; the job's
+    prompt, model and tokens stay behind the admin job route."""
+    loaded = _load(req, "read")
+    if isinstance(loaded, Response):
+        return loaded
+    with req.conn.cursor() as cur:
+        cur.execute(
+            "SELECT j.id, j.status, j.created_at, j.started_at, j.finished_at,"
+            " (SELECT m.content FROM execution e JOIN message m ON m.conversation_id = e.conversation_id"
+            "   AND m.execution_id = e.execution_id AND m.role = 'assistant'"
+            "  WHERE e.job_id = j.id ORDER BY e.id DESC LIMIT 1) AS answer"
+            " FROM job j WHERE j.schedule_id = %s ORDER BY j.id DESC LIMIT %s",
+            (loaded[0]["id"], RUNS_SHOWN))
+        rows = cur.fetchall()
+    return Response(200, [{"id": r["id"], "status": r["status"], "created_at": _iso(r["created_at"]),
+                           "started_at": _iso(r["started_at"]), "finished_at": _iso(r["finished_at"]),
+                           "answer": r["answer"]} for r in rows])
+
+
 def _members(conn, schedule_id: int) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute("SELECT u.id AS user_id, u.username FROM schedule_member m JOIN `user` u ON u.id = m.user_id"

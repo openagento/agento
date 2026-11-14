@@ -1,0 +1,8 @@
+.nowrap {
+  min-width: max-content;
+  white-space: nowrap;
+}
+
+.prose {
+  min-width: 14rem;
+}

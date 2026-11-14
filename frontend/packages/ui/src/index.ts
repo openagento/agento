@@ -12,8 +12,8 @@ export { CodeBlock, JsonViewer } from "./components/CodeBlock";
 export { Markdown } from "./components/Markdown";
 export { CopyButton } from "./components/CopyButton";
 export {
-  ArchiveAction, DeleteAction, EndAction, IconAction, MakeCurrentAction, OpenAction, OpenMenuAction, RegenerateAction,
-  SettingsAction,
+  ArchiveAction, DeleteAction, DetailsAction, EndAction, IconAction, MakeCurrentAction, OpenAction, OpenMenuAction,
+  PreviewAction, RegenerateAction, SettingsAction,
 } from "./components/IconAction";
 export {
   APP_ICON_NAMES, AppIcon, AppTile, IconPicker, TILE_DISABLED, TileGrid, ViewToggle, type TileMode,
@@ -22,7 +22,9 @@ export { DataTable, type Column } from "./components/DataTable";
 export { AppLink } from "./components/Link";
 export { RowMenu, type RowAction, type RowDetail } from "./components/RowMenu";
 export { ConfirmDialog } from "./components/ConfirmDialog";
-export { FormSection, TextField, SelectField } from "./components/Form";
+export { FormSection, TextAreaField, TextField, SelectField } from "./components/Form";
+export { FieldRow, PageColumn, Section, Sections, SideDrawer, SwitchField } from "./components/Panel";
+export { durationOf, formatDuration, JobDetail, type JobDetailData } from "./components/JobDetail";
 export { ConnectionStatus, type ConnectionState } from "./components/ConnectionStatus";
 export {
   ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, SubagentRun, ToolCall, ToolGroup,

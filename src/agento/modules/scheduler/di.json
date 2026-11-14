@@ -26,6 +26,8 @@
      "acl": "self"},
     {"method": "POST", "path": "/api/scheduler/schedules/(?P<id>[0-9]{1,18})/run", "handler": "src.routes.run_now",
      "acl": "self"},
+    {"method": "GET", "path": "/api/scheduler/schedules/(?P<id>[0-9]{1,18})/runs", "handler": "src.routes.runs",
+     "acl": "self"},
     {"method": "GET", "path": "/api/scheduler/schedules/(?P<id>[0-9]{1,18})/member-options",
      "handler": "src.routes.member_options", "acl": "self"},
     {"method": "PUT", "path": "/api/scheduler/schedules/(?P<id>[0-9]{1,18})/members", "handler": "src.routes.put_member",

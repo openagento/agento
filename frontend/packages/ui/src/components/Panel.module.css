@@ -1,0 +1,42 @@
+/* Doubled class: it outranks Mantine's separated item, which fills a closed item gray and
+   draws a border only on the open one. Every section is one card, open or closed. */
+.section.section {
+  background-color: var(--mantine-color-body);
+  border: 1px solid var(--mantine-color-default-border);
+}
+
+/* The open section shows its fields; its summary would only repeat them. */
+.section[data-active] .summary {
+  display: none;
+}
+
+.column {
+  max-width: 60rem;
+}
+
+.summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 50%;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mantine-spacing-md);
+  align-items: flex-start;
+}
+
+.row > * {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.end {
+  align-items: flex-end;
+}
+
+.end > :last-child {
+  flex: 0 0 auto;
+}

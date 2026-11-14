@@ -1,23 +1,20 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { Eye } from "lucide-react";
-import { Drawer, Group, SegmentedControl, Stack, Table, Text, TextInput } from "@mantine/core";
+import { Group, SegmentedControl, Text, TextInput } from "@mantine/core";
 import { useSearchParams } from "react-router";
 import { apiFetch, LIVE_REFETCH_MS, useQuery } from "@agento/api";
 import {
-  CodeBlock, IconAction, DataTable, ErrorState, jobTone, LoadingState, PageHeader, SectionHeader, StatusBadge, Timestamp, type Column,
+  DataTable, durationOf, ErrorState, formatDuration, IconAction, JobDetail, jobTone, LoadingState, PageHeader, SideDrawer,
+  StatusBadge, Timestamp, type Column, type JobDetailData,
 } from "@agento/ui";
-import { durationOf, message, whole, type JobHead, type JobRow } from "./shared";
-
-interface JobDetail extends JobRow {
-  model: string | null; error_message: string | null; result_summary: string | null; prompt: string | null; output: string | null;
-}
+import { message, whole, type JobHead, type JobRow } from "./shared";
 
 const STATUSES = ["All", "TODO", "RUNNING", "SUCCESS", "FAILED", "DEAD"];
 // The same fields the TUI search reads (framework/admin/screens/jobs.py).
 const SEARCHED = ["id", "type", "status", "agent_view_code", "reference_id"] as const;
 const when = (v: string | null | undefined) => (v ? <Timestamp value={v} /> : "—");
 
-const seconds = (j: JobHead) => { const d = durationOf(j); return d === null ? "—" : `${d}s`; };
+const seconds = (j: JobHead) => formatDuration(durationOf(j));
 
 export const jobColumns = (open?: (j: JobHead) => void): Column<JobHead>[] => [
   { id: "id", header: "ID", cell: (j) => j.id, sortValue: (j) => j.id },
@@ -33,37 +30,13 @@ export const jobColumns = (open?: (j: JobHead) => void): Column<JobHead>[] => [
 function JobDrawer({ id, onClose }: { id: number | null; onClose: () => void }) {
   const job = useQuery({
     queryKey: ["admin-job", id], enabled: id !== null,
-    queryFn: ({ signal }) => apiFetch<JobDetail>(`/api/admin/jobs/${id}`, { signal }),
+    queryFn: ({ signal }) => apiFetch<JobDetailData>(`/api/admin/jobs/${id}`, { signal }),
     refetchInterval: LIVE_REFETCH_MS,
   });
-  const j = job.data;
-  const facts: [string, ReactNode][] = j ? [
-    ["Status", <StatusBadge key="s" tone={jobTone(j.status)}>{j.status}</StatusBadge>], ["Type", j.type], ["Source", j.source],
-    ["Agent view", j.agent_view_code ?? "—"], ["Reference", j.reference_id ?? "—"], ["Agent", j.agent_type ?? "—"],
-    ["Model", j.model ?? "—"], ["Tokens in / out", `${j.input_tokens ?? 0} / ${j.output_tokens ?? 0}`],
-    ["Created", when(j.created_at)], ["Started", when(j.started_at)], ["Finished", when(j.finished_at)],
-    ["Duration", seconds(j)], ...(j.error_class ? [["Error class", j.error_class] as [string, ReactNode]] : []),
-  ] : [];
   return (
-    <Drawer opened={id !== null} onClose={onClose} position="right" size="lg" title={`Job ${id ?? ""}`}
-      closeButtonProps={{ "aria-label": "Close" }}>
-      {job.isPending ? <LoadingState /> : job.error ? <ErrorState message={message(job.error)} /> : j && (
-        <Stack gap="md">
-          <Table>
-            <Table.Tbody>
-              {facts.map(([k, v]) => <Table.Tr key={k}><Table.Th scope="row">{k}</Table.Th><Table.Td>{v}</Table.Td></Table.Tr>)}
-            </Table.Tbody>
-          </Table>
-          {j.error_message && <><SectionHeader>Error</SectionHeader><CodeBlock code={j.error_message} /></>}
-          {j.result_summary && <><SectionHeader>Result</SectionHeader><Text size="sm">{j.result_summary}</Text></>}
-          <SectionHeader>Prompt</SectionHeader><CodeBlock code={j.prompt || "—"} />
-          <SectionHeader>Output</SectionHeader><CodeBlock code={j.output || "—"} />
-          <SectionHeader>Replay</SectionHeader>
-          <Text size="sm" c="dimmed">Runs in the cron container. Use the TUI or the CLI.</Text>
-          <CodeBlock code={`bin/agento replay ${j.id}`} copy />
-        </Stack>
-      )}
-    </Drawer>
+    <SideDrawer opened={id !== null} onClose={onClose} title={`Job ${id ?? ""}`}>
+      {job.isPending ? <LoadingState /> : job.error ? <ErrorState message={message(job.error)} /> : job.data && <JobDetail job={job.data} />}
+    </SideDrawer>
   );
 }
 

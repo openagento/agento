@@ -2,7 +2,7 @@
 // day, on weekdays (week) or a day of the month / the Nth weekday (month), until never / a date /
 // N runs. It only writes an RRULE; the server checks it and the form previews it.
 import { useState } from "react";
-import { ConfirmDialog, SelectField, TextField } from "@agento/ui";
+import { ConfirmDialog, FieldRow, SelectField, TextField } from "@agento/ui";
 
 export interface Spec {
   freq: "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY"; interval: number; time: string; days: string[];
@@ -44,11 +44,11 @@ export function RecurrenceDialog({ opened, onDone, onCancel }: { opened: boolean
   return (
     <ConfirmDialog opened={opened} title="Custom recurrence" confirmLabel="Done" busy={!valid(s)}
       onCancel={onCancel} onConfirm={() => onDone(buildRrule(s))}>
-      <div className="ag-row">
+      <FieldRow>
         <TextField label="Every" type="number" min={1} value={String(s.interval)} onChange={(e) => set({ interval: Number(e.target.value) })} />
         <SelectField label="Repeat" name="freq" value={s.freq} options={FREQS} onChange={(v) => set({ freq: v as Spec["freq"] })} />
         <TextField label="Time" type="time" value={s.time} onChange={(e) => set({ time: e.target.value })} />
-      </div>
+      </FieldRow>
       {s.freq === "WEEKLY" && (
         <fieldset className="ag-row">
           <legend className="ag-field__label">On</legend>
@@ -70,22 +70,22 @@ export function RecurrenceDialog({ opened, onDone, onCancel }: { opened: boolean
             <input type="radio" name="monthly" checked={s.monthly === "nth"} onChange={() => set({ monthly: "nth" })} /> A weekday of the month
           </label>
           {s.monthly === "nth" && (
-            <div className="ag-row">
+            <FieldRow>
               <SelectField label="Which" name="nth" value={String(s.nth)} options={NTH} onChange={(v) => set({ nth: Number(v) })} />
               <SelectField label="Weekday" name="nth-day" value={s.nthDay} options={WEEKDAYS.map(([value, label]) => ({ value, label }))}
                 onChange={(v) => set({ nthDay: v })} />
-            </div>
+            </FieldRow>
           )}
         </fieldset>
       )}
-      <div className="ag-row">
+      <FieldRow>
         <SelectField label="Ends" name="ends" value={s.ends} onChange={(v) => set({ ends: v as Spec["ends"] })}
           options={[{ value: "never", label: "Never" }, { value: "on", label: "On a date" }, { value: "after", label: "After a number of runs" }]} />
         {s.ends === "on" && <TextField label="Last day" type="date" value={s.until} onChange={(e) => set({ until: e.target.value })} />}
         {s.ends === "after" && (
           <TextField label="Runs" type="number" min={1} value={String(s.count)} onChange={(e) => set({ count: Number(e.target.value) })} />
         )}
-      </div>
+      </FieldRow>
     </ConfirmDialog>
   );
 }

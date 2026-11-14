@@ -124,6 +124,7 @@ All routes need a session; times are `starts_at` naive local in the row's `timez
 | `PATCH /api/scheduler/schedules/<id>` | write | any create field, none required → 204. A different `agent_view_id` → 400 `view_fixed` (the same value does nothing) |
 | `DELETE /api/scheduler/schedules/<id>` | delete | 204 |
 | `POST /api/scheduler/schedules/<id>/run` | write | 201 `{job_id, conversation_id}` or 409 |
+| `GET /api/scheduler/schedules/<id>/runs` | read | the newest 10 jobs: `[{id, status, created_at, started_at, finished_at, answer}]`; `answer` is what the last attempt wrote into the conversation (null while it runs, or none). The job's prompt, model and tokens stay behind `GET /api/admin/jobs/<id>` (`admin.jobs`) |
 | `GET /api/scheduler/schedules/<id>/member-options` | share | `[{id, username}]` active users except the owner |
 | `PUT /api/scheduler/schedules/<id>/members` | share | body `{username}` → 204 |
 | `DELETE /api/scheduler/schedules/<id>/members/<user_id>` | share | 204, or 404 when no such share |
@@ -138,10 +139,16 @@ can: {read, write, share, delete, change_owner}`.
 
 `scheduler/panel/` adds **Schedules** (`/schedules`), shown when the probe `GET /api/scheduler/schedules`
 answers 2xx. The list shows the groups that have rows (My schedules also when the user may create
-one), polls every 10 s, and has an Enabled box per row (write right). A schedule opens at
-`/schedules/<id>` (`/schedules/new` creates one): title, agent view, prompt, recurrence (a preset,
-"Custom…" — a dialog that writes the RRULE — or the RRULE text itself), start, time zone, enabled and
-an optional harness and model pin. The next 5 runs come from `POST …/preview` when a timing field is
+one), polls every 10 s, and has an Enabled switch per row (write right). A schedule opens at
+`/schedules/<id>` (`/schedules/new` creates one). The header holds the Enabled switch (on an existing
+schedule it saves at once) and the actions menu. The fields are in four sections that open and close;
+a closed section shows a one-line summary: **Task** (title, agent view, prompt), **Schedule** (a
+preset, or "Custom…" — a dialog that writes the RRULE; start; time zone from the browser's IANA
+list), **Agent runtime** (an optional harness and model pin) and **Advanced** (the RRULE text, open by
+itself when no preset names the rule). A refusal that names a field shows under that field and opens
+its section. Below the form, **Last runs** lists the newest 10 jobs (`GET …/runs`, polled every
+10 s): the eye opens the run's answer in a drawer, with a link to the conversation; the details icon
+opens the job, as the admin Jobs page shows it, and shows only to a user with `admin.jobs`. The next 5 runs come from `POST …/preview` when a timing field is
 committed (blur or pick), not on every key: each check runs the engine in a child process. A save
 sends only the changed fields. The agent view is set at create; on an existing schedule its field is
 disabled (to move a schedule, delete it and create it again). The open schedule polls every 10 s: a

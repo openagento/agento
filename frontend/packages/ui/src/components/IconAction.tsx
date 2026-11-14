@@ -1,5 +1,5 @@
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
-import { Archive, CircleCheck, CircleStop, ExternalLink, RefreshCw, Settings, Trash2 } from "lucide-react";
+import { Archive, CircleCheck, CircleStop, ExternalLink, Eye, FileText, RefreshCw, Settings, Trash2 } from "lucide-react";
 import type { ComponentPropsWithRef, ReactNode } from "react";
 
 /** An action as an icon. `label` is its hover title and its accessible name (RULES.md UI-7).
@@ -25,6 +25,16 @@ type Named = Omit<ComponentPropsWithRef<"button">, "children" | "color"> & { lab
 
 export function OpenAction({ label = "Open", ...p }: Named) {
   return <IconAction label={label} icon={<ExternalLink size={16} />} {...p} />;
+}
+
+/** A quick look, in a drawer, that keeps the page. */
+export function PreviewAction({ label = "Preview", ...p }: Named) {
+  return <IconAction label={label} icon={<Eye size={16} />} {...p} />;
+}
+
+/** The full record behind a row. */
+export function DetailsAction({ label = "Details", ...p }: Named) {
+  return <IconAction label={label} icon={<FileText size={16} />} {...p} />;
 }
 
 export function MakeCurrentAction({ label = "Make current", ...p }: Named) {

@@ -28,6 +28,16 @@ const OPTIONS = {
   agent_views: [{ id: 3, code: "dev", label: "Dev", workspace_id: 1 }],
 };
 const FIRES = { fires: [{ at: "2026-11-14T08:00:00Z", local: "2026-11-14T09:00:00" }, { at: "2026-11-15T08:00:00Z", local: "2026-11-15T09:00:00" }] };
+const RUNS = [
+  { id: 78, status: "RUNNING", created_at: "2026-11-13T10:00:00Z", started_at: "2026-11-13T10:00:01Z", finished_at: null, answer: null },
+  { id: 77, status: "SUCCESS", created_at: "2026-11-13T09:00:00Z", started_at: "2026-11-13T09:00:01Z",
+    finished_at: "2026-11-13T09:01:13Z", answer: "All **green**: 3 checks passed." },
+];
+const JOB = {
+  id: 77, type: "scheduler", status: "SUCCESS", source: "scheduler", reference_id: "1", agent_view_code: "dev", agent_type: "claude",
+  model: "sonnet", input_tokens: 10, output_tokens: 20, created_at: null, started_at: null, finished_at: null, error_class: null,
+  error_message: null, result_summary: null, prompt: "the built prompt", output: "the output",
+};
 const refuse = (status: number, code: string) => new Response(JSON.stringify({ error: code, code }), { status });
 
 afterEach(teardown);
@@ -79,18 +89,18 @@ describe("the schedules list", () => {
     expect(screen.queryByRole("table", { name: "Shared with me" })).toBeNull();
     const jira = screen.getByRole("link", { name: "PROJ-7 weekly" }).closest("tr")!;
     expect(within(jira).getByText("Custom")).toBeInTheDocument();
-    expect(within(jira).getByRole("checkbox", { name: "Enabled: PROJ-7 weekly" })).toBeDisabled();
+    expect(within(jira).getByRole("switch", { name: "Enabled: PROJ-7 weekly" })).toBeDisabled();
     expect(screen.getByText(/has ended/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New schedule" })).toBeInTheDocument();
   });
 
-  it("the Enabled box sends a PATCH and refreshes", async () => {
+  it("the Enabled switch sends a PATCH and refreshes", async () => {
     const api = await stubApi({
       [`${B}/schedules`]: { groups: { mine: [row(1, "Daily digest")], shared: [], agent: [], user: [] } },
       [`${B}/options`]: OPTIONS, [`PATCH ${B}/schedules/1`]: null,
     });
     at("/schedules");
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Enabled: Daily digest" }));
+    fireEvent.click(await screen.findByRole("switch", { name: "Enabled: Daily digest" }));
     await waitFor(() => expect(api.calls("PATCH", `${B}/schedules/1`)[0]?.body).toEqual({ enabled: false }));
     await waitFor(() => expect(api.calls("GET", `${B}/schedules`).length).toBeGreaterThan(1));
   });
@@ -103,11 +113,11 @@ describe("the schedule form", () => {
     at("/schedules/new");
     fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Digest" } });
     fireEvent.change(screen.getByLabelText("Prompt"), { target: { value: "Summarize" } });
-    fireEvent.click(screen.getByLabelText("Recurrence", { selector: "input" }));
+    fireEvent.click(screen.getByLabelText("Repeats", { selector: "input" }));
     fireEvent.click(await screen.findByRole("option", { name: "Every hour" }));
     expect(screen.getByLabelText("RRULE")).toHaveValue("FREQ=HOURLY;BYMINUTE=0");
     await waitFor(() => expect(api.calls("POST", `${B}/preview`)[0]?.body).toEqual({ rrule: "FREQ=HOURLY;BYMINUTE=0", timezone: "Europe/Warsaw" }));
-    expect(await screen.findAllByRole("listitem")).toHaveLength(2);
+    expect(within(await screen.findByRole("table", { name: "Next runs" })).getAllByRole("row")).toHaveLength(3);
     fireEvent.click(screen.getByRole("button", { name: "Create schedule" }));
     await waitFor(() => expect(api.calls("POST", `${B}/schedules`)[0]?.body).toEqual({
       title: "Digest", prompt: "Summarize", agent_view_id: 3, rrule: "FREQ=HOURLY;BYMINUTE=0", timezone: "Europe/Warsaw",
@@ -130,7 +140,7 @@ describe("the schedule form", () => {
   it("the Custom dialog writes the RRULE", async () => {
     await stubApi({ [`${B}/options`]: OPTIONS, [`POST ${B}/preview`]: FIRES });
     at("/schedules/new");
-    fireEvent.click(await screen.findByLabelText("Recurrence", { selector: "input" }));
+    fireEvent.click(await screen.findByLabelText("Repeats", { selector: "input" }));
     fireEvent.click(await screen.findByRole("option", { name: "Custom…" }));
     const dialog = await screen.findByRole("dialog", { name: "Custom recurrence" });
     fireEvent.click(within(dialog).getByLabelText("Repeat", { selector: "input" }));
@@ -155,7 +165,7 @@ describe("the schedule form", () => {
     expect(await runNow()).not.toBeDisabled();
     fireEvent.change(title, { target: { value: "Digest 2" } });
     expect(await runNow()).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(api.calls("PATCH", `${B}/schedules/1`)[0]?.body).toEqual({ title: "Digest 2" }));
     fireEvent.click(await waitFor(async () => {
       const item = await runNow();
@@ -178,12 +188,12 @@ describe("the schedule form", () => {
     };
     await poll(row(1, "Digest", { prompt: "Say bye", enabled: false }));
     await waitFor(() => expect(screen.getByLabelText("Prompt")).toHaveValue("Say bye"));
-    expect(screen.getByRole("checkbox", { name: "Enabled" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Enabled" })).not.toBeChecked();
     fireEvent.change(title, { target: { value: "My title" } });
     await poll(row(1, "Server title", { prompt: "Say ciao", enabled: false }));
     await waitFor(() => expect(screen.getByLabelText("Prompt")).toHaveValue("Say ciao"));
     expect(title).toHaveValue("My title");
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(api.calls("PATCH", `${B}/schedules/1`)[0]?.body).toEqual({ title: "My title" }));
   });
 
@@ -214,7 +224,7 @@ describe("the schedule form", () => {
     at("/schedules/5");
     expect(await screen.findByLabelText("Title")).toBeDisabled();
     expect(screen.getByText(/read-only/)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Actions" })).toBeNull();
   });
 
@@ -258,5 +268,57 @@ describe("the schedule form", () => {
     fireEvent.click(within(await screen.findByRole("dialog", { name: "Delete schedule" })).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(api.calls("DELETE", `${B}/schedules/1`)).toHaveLength(1));
     expect(await screen.findByRole("button", { name: "New schedule" })).toBeInTheDocument();
+  });
+
+  it("a refusal about a field opens its section and shows under that field", async () => {
+    await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/1`]: row(1, "Digest"), [`POST ${B}/preview`]: FIRES,
+      [`${B}/schedules/1/runs`]: [], [`PATCH ${B}/schedules/1`]: refuse(400, "bad_model") });
+    at("/schedules/1");
+    const runtime = await screen.findByRole("button", { name: /Agent runtime/ });
+    expect(runtime).toHaveAttribute("aria-expanded", "false");
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "x" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(runtime).toHaveAttribute("aria-expanded", "true"));
+    expect(screen.getByLabelText("Model")).toHaveAccessibleDescription(/model name is not valid/);
+  });
+
+  it("Advanced opens by itself for a rule no preset names", async () => {
+    await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/5`]: JIRA, [`POST ${B}/preview`]: FIRES, [`${B}/schedules/5/runs`]: [] });
+    at("/schedules/5");
+    expect(await screen.findByRole("button", { name: /Advanced/ })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("on an existing schedule the switch applies at once", async () => {
+    const api = await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/1`]: row(1, "Digest"), [`POST ${B}/preview`]: FIRES,
+      [`${B}/schedules/1/runs`]: [], [`PATCH ${B}/schedules/1`]: null });
+    at("/schedules/1");
+    fireEvent.click(await screen.findByRole("switch", { name: "Enabled" }));
+    await waitFor(() => expect(api.calls("PATCH", `${B}/schedules/1`)[0]?.body).toEqual({ enabled: false }));
+  });
+
+  it("last runs: the eye previews the answer and links the conversation; job details need admin.jobs", async () => {
+    await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/1`]: row(1, "Digest"), [`POST ${B}/preview`]: FIRES,
+      [`${B}/schedules/1/runs`]: RUNS, "/api/admin/jobs/77": JOB });
+    at("/schedules/1");
+    const runs = await screen.findByRole("table", { name: "Last runs" });
+    expect(await within(runs).findByText("All green: 3 checks passed.")).toBeInTheDocument();
+    expect(within(runs).getByText("Running…")).toBeInTheDocument();
+    fireEvent.click(within(runs).getByRole("button", { name: "Job 77 details" }));
+    expect(await screen.findByText("the built prompt")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(within(runs).getByRole("button", { name: "Preview run 77" }));
+    const drawer = await screen.findByRole("dialog", { name: /Run 77/ });
+    expect(await within(drawer).findByText("green")).toBeInTheDocument();
+    fireEvent.click(within(drawer).getByRole("button", { name: "Open conversation" }));
+    expect(await screen.findByText("conversation page")).toBeInTheDocument();
+  });
+
+  it("last runs: no job details icon without admin.jobs", async () => {
+    await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/1`]: row(1, "Digest"), [`POST ${B}/preview`]: FIRES,
+      [`${B}/schedules/1/runs`]: RUNS }, []);
+    at("/schedules/1");
+    const runs = await screen.findByRole("table", { name: "Last runs" });
+    expect(await within(runs).findByRole("button", { name: "Preview run 77" })).toBeInTheDocument();
+    expect(within(runs).queryByRole("button", { name: /details/ })).toBeNull();
   });
 });

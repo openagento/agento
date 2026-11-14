@@ -70,13 +70,6 @@ export interface JobRow extends JobHead {
   input_tokens: number | null; output_tokens: number | null; error_class: string | null;
 }
 
-/** Seconds from start to finish; the API sends no duration. */
-export const durationOf = (j: JobHead): number | null => {
-  const ms = j.started_at && j.finished_at ? Date.parse(j.finished_at) - Date.parse(j.started_at) : NaN;
-  return Number.isFinite(ms) ? Math.round(ms / 1000) : null;
-};
-
-
 /** `credential.error_msg` never reaches the browser (SEC-6): the panel names where to read it. */
 export const CREDENTIAL_ERROR_HINT = "See the message with bin/agento credential:list.";
 

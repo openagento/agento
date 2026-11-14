@@ -6,6 +6,7 @@ import {
   createColumnHelper, createSortedRowModel, rowSortingFeature, tableFeatures, useTable, type RowData,
 } from "@tanstack/react-table";
 import { EmptyState, ErrorState, LoadingState } from "./States";
+import css from "./DataTable.module.css";
 
 export interface Column<T extends RowData> {
   id: string;
@@ -13,6 +14,11 @@ export interface Column<T extends RowData> {
   cell: (row: T) => ReactNode;
   /** Present → the column sorts by this value. */
   sortValue?: (row: T) => string | number;
+  /** Keep the cell on one line, whole: a badge, a time. Auto layout would cut a badge to "S…". */
+  nowrap?: boolean;
+  /** Long text that wraps: it keeps a readable width, and a narrow screen scrolls the table
+   *  instead of squeezing it to one letter beside the `nowrap` columns. */
+  prose?: boolean;
 }
 
 const features = tableFeatures({ rowSortingFeature, sortedRowModel: createSortedRowModel() });
@@ -35,6 +41,7 @@ export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, e
   // Called, not rendered through FlexRender: a cell function made here is a new component type on
   // every render, so React would remount every cell (an open select closes when a row takes focus).
   const cellOf = new Map(columns.map((c) => [c.id, c.cell]));
+  const wrapOf = new Map(columns.map((c) => [c.id, c.nowrap ? css.nowrap : c.prose ? css.prose : undefined]));
   const table = useTable({ features, columns: defs, data, getRowId: (r: T) => rowKey(r) });
 
   if (loading) return <LoadingState />;
@@ -81,7 +88,11 @@ export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, e
           {tableRows.map((r, i) => (
             <Table.Tr key={r.id} tabIndex={i === Math.min(active, tableRows.length - 1) ? 0 : -1}
               onKeyDown={(e) => onKey(e, i, r.original)} onFocus={() => setActive(i)}>
-              {r.getAllCells().map((c) => <Table.Td key={c.id}>{cellOf.get(c.column.id)?.(r.original)}</Table.Td>)}
+              {r.getAllCells().map((c) => {
+                const content = cellOf.get(c.column.id)?.(r.original);
+                const wrap = wrapOf.get(c.column.id);
+                return <Table.Td key={c.id}>{wrap ? <div className={wrap}>{content}</div> : content}</Table.Td>;
+              })}
             </Table.Tr>
           ))}
         </Table.Tbody>

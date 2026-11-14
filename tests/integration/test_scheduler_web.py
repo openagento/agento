@@ -59,3 +59,25 @@ def test_a_panel_delete_in_web_retitles_the_conversation(conn, world, web, monke
     with conn.cursor() as cur:
         cur.execute("SELECT title FROM conversation WHERE id = %s", (conv_id,))
         assert cur.fetchone()["title"] == "t" + DELETED_SUFFIX
+
+
+def test_runs_lists_the_jobs_with_their_answer_and_hides_the_schedule_from_a_stranger(conn, world, web):
+    accounts.add_grant(conn, "user", "operation", "scheduler.own")
+    accounts.add_grant(conn, "user", "operation", "scheduler.own.write")
+    sid = routes.create(_Req(conn, world["owner"], json={
+        "title": "t", "prompt": "p", "agent_view_id": world["view"], "rrule": "FREQ=HOURLY;BYMINUTE=0"})).body["id"]
+    ran = routes.run_now(_Req(conn, world["owner"], params={"id": str(sid)})).body
+    with conn.cursor() as cur:
+        for attempt, answer in ((1, "old"), (2, "the answer")):  # the last attempt's answer wins
+            cur.execute("INSERT INTO execution (execution_id, job_id, attempt, status, conversation_id)"
+                        " VALUES (%s, %s, %s, 'succeeded', %s)", (f"x-{sid}-{attempt}", ran["job_id"], attempt,
+                                                                  ran["conversation_id"]))
+            cur.execute("INSERT INTO message (conversation_id, role, content, execution_id) VALUES (%s, 'assistant', %s, %s)",
+                        (ran["conversation_id"], answer, f"x-{sid}-{attempt}"))
+    conn.commit()
+
+    listed = routes.runs(_Req(conn, world["owner"], params={"id": str(sid)}))
+    assert listed.status == 200
+    assert [(r["id"], r["answer"]) for r in listed.body] == [(ran["job_id"], "the answer")]
+    assert set(listed.body[0]) == {"id", "status", "created_at", "started_at", "finished_at", "answer"}
+    assert routes.runs(_Req(conn, world["stranger"], params={"id": str(sid)})).status == 404

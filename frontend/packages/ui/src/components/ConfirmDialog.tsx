@@ -3,9 +3,11 @@ import { Modal } from "@mantine/core";
 import type { ReactNode } from "react";
 import { Button } from "./Button";
 
-export function ConfirmDialog({ opened, title, children, confirmLabel = "Confirm", danger = false, busy = false,
-  onConfirm, onCancel }: {
-  opened: boolean; title: string; children?: ReactNode; confirmLabel?: string; danger?: boolean; busy?: boolean;
+/** `cancelLabel={null}`: one closing button, for a dialog whose changes apply as made (Share). */
+export function ConfirmDialog({ opened, title, children, confirmLabel = "Confirm", cancelLabel = "Cancel", danger = false,
+  busy = false, onConfirm, onCancel }: {
+  opened: boolean; title: string; children?: ReactNode; confirmLabel?: string; cancelLabel?: string | null; danger?: boolean;
+  busy?: boolean;
   onConfirm: () => void; onCancel: () => void;
 }) {
   return (
@@ -13,7 +15,7 @@ export function ConfirmDialog({ opened, title, children, confirmLabel = "Confirm
       <div className="ag-stack">
         {children}
         <div className="ag-row">
-          <Button onClick={onCancel}>Cancel</Button>
+          {cancelLabel !== null && <Button onClick={onCancel}>{cancelLabel}</Button>}
           <Button variant={danger ? "danger" : "primary"} onClick={onConfirm} disabled={busy}>{confirmLabel}</Button>
         </div>
       </div>
