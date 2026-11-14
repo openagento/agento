@@ -106,7 +106,9 @@ describe("the schedules list", () => {
   });
 });
 
-describe("the schedule form", () => {
+// A form test renders the whole page and walks Mantine selects: on a loaded CI host it takes
+// longer than the 5 s default (one test waits 5 s itself for the page after a create).
+describe("the schedule form", { timeout: 20_000 }, () => {
   it("creates a schedule: a preset sets the RRULE, the preview shows the next fires", async () => {
     const api = await stubApi({ [`${B}/options`]: OPTIONS, [`POST ${B}/preview`]: FIRES, [`POST ${B}/schedules`]: { id: 42 },
       [`${B}/schedules/42`]: row(42, "Digest") });

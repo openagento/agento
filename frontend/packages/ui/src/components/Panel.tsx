@@ -5,12 +5,15 @@ import type { ReactNode } from "react";
 import css from "./Panel.module.css";
 
 /** Grouped form sections that open and close. `value` is the open ones (controlled), so a
- *  caller can open the section that holds an error. */
+ *  caller can open the section that holds an error. A closed section keeps its fields in the DOM
+ *  (`display-none`): Mantine's default `activity` mode renders hidden content at low priority, so
+ *  a field of a closed section may be missing for a moment. */
 export function Sections({ value, onChange, children }: {
   value: string[]; onChange: (value: string[]) => void; children: ReactNode;
 }) {
   return (
-    <Accordion multiple variant="separated" radius="lg" value={value} onChange={onChange} classNames={{ item: css.section }}>
+    <Accordion multiple variant="separated" radius="lg" value={value} onChange={onChange} classNames={{ item: css.section }}
+      keepMounted keepMountedMode="display-none">
       {children}
     </Accordion>
   );
