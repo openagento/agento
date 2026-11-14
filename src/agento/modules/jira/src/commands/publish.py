@@ -50,21 +50,6 @@ def _todo_requester(builder, issue) -> JobRequester | None:
     return None
 
 
-def _load_configs():
-    """Load framework + jira module config via bootstrap."""
-    from agento.framework.bootstrap import bootstrap, get_module_config
-    from agento.framework.cli.runtime import _load_framework_config
-    from agento.framework.db import get_connection
-
-    db_config, _, _ = _load_framework_config()
-    conn = get_connection(db_config)
-    try:
-        bootstrap(db_conn=conn)
-    finally:
-        conn.close()
-    return db_config, get_module_config("jira")
-
-
 def _get_connection_and_bootstrap():
     """Bootstrap and return (db_config, conn). Caller must close conn."""
     from agento.framework.bootstrap import bootstrap

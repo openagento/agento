@@ -688,15 +688,6 @@ def do_reset_credential_error(conn, credential_id: int) -> bool:
     return result
 
 
-def do_mark_credential_error(conn, credential_id: int, message: str) -> bool:
-    from ..agent_manager.credential_store import mark_credential_error
-
-    _ensure_conn(conn)
-    result = mark_credential_error(conn, credential_id, message)
-    conn.commit()
-    return result
-
-
 def do_deregister_credential(conn, credential_id: int) -> bool:
     from ..agent_manager.credential_store import deregister_credential
 
