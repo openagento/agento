@@ -17,7 +17,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from .config_schema import (
     ToolboxOnlyConfigError,
@@ -353,17 +352,6 @@ def resolve_tool_field(
         return ResolvedValue(value=cfg_val, source="config.json")
 
     return ResolvedValue(value=None, source="none")
-
-
-def get_timezone(
-    db_overrides: dict[str, tuple[str, bool]],
-    config_defaults: dict,
-) -> ZoneInfo:
-    """Resolve the timezone from core/timezone config path."""
-    schema = {"type": "string"}
-    rv = resolve_field("core", "timezone", schema, config_defaults, db_overrides)
-    tz_name = rv.value if rv.value else "UTC"
-    return ZoneInfo(tz_name)
 
 
 def resolve_module_config(
