@@ -1124,9 +1124,11 @@ class TestPlatformFoundationServices:
         assert "urllib.request" in block
         assert "curl" not in block
 
-    def test_mysql_allows_600_connections(self, load):
-        # Sized for 200 parallel jobs (RULES.md SCL-1).
-        assert "    command: --max-connections=600" in _service_block(load(), "mysql").splitlines()
+    def test_mysql_command(self, load):
+        # 600 connections for 200 parallel jobs (RULES.md SCL-1); binlog kept 3 days, not 30.
+        assert ("    command: --max-connections=600"
+                " --binlog-expire-logs-seconds=${MYSQL_BINLOG_EXPIRE_SECONDS:-259200}"
+                in _service_block(load(), "mysql").splitlines())
 
 
 def test_no_doc_or_source_names_the_retired_agento_net():

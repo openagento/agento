@@ -38,13 +38,14 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - run: uv sync --group dev
       - run: uv run ruff check src/ tests/
-      # Service containers accept no command override, so raise the limit at
-      # runtime to what the compose template sets (600; default is 151). The
-      # token-pool contention test skips itself when it is too low.
-      - name: Raise MySQL max_connections
+      # Service containers accept no command override, so set at runtime what
+      # the compose template sets: max_connections 600 (default is 151) and a
+      # 3-day binlog window. The token-pool contention test skips itself when
+      # max_connections is too low.
+      - name: Set MySQL max_connections and binlog retention
         run: >-
           mysql -h 127.0.0.1 -P 3306 -u root -pcronagent_root
-          -e "SET GLOBAL max_connections=600;"
+          -e "SET GLOBAL max_connections=600, binlog_expire_logs_seconds=259200;"
       - run: uv run pytest -q
         env:
           TEST_MYSQL_HOST: 127.0.0.1

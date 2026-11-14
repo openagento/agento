@@ -253,7 +253,8 @@ services:
   mysql:
     image: mysql:8.0
     # Sized for 200 parallel jobs. See docs/architecture/publisher-consumer.md (Sizing).
-    command: --max-connections=600
+    # Binlog kept 3 days, not MySQL's 30: no replication reads it, and 30 days filled disks.
+    command: --max-connections=600 --binlog-expire-logs-seconds=${MYSQL_BINLOG_EXPIRE_SECONDS:-259200}
     ports:
       - "127.0.0.1:${MYSQL_PORT:-3306}:3306"
     environment:

@@ -74,6 +74,40 @@ services:
 
 Compose adds this port to the managed one. Use a host port that is not `MYSQL_PORT`.
 
+## MySQL binlog retention
+
+The managed file starts MySQL with `--binlog-expire-logs-seconds=${MYSQL_BINLOG_EXPIRE_SECONDS:-259200}`:
+MySQL keeps binary logs for 3 days (259200 seconds), not the MySQL 8.0 default of 30 days. Agento
+uses no replication and no point-in-time recovery from binlogs, and 30 days of binlogs can fill
+the disk under a heavy job load. Binlog stays on, so you can still recover the last 3 days.
+
+To change the window, set the value in seconds in `docker/.env`, then recreate MySQL:
+
+```bash
+# docker/.env
+MYSQL_BINLOG_EXPIRE_SECONDS=604800   # 7 days
+```
+
+```bash
+docker compose up -d mysql
+```
+
+The new value applies only when the mysql container is recreated. `agento upgrade` does this for
+you (its `docker compose up -d`); after `agento upgrade --no-restart` or a manual upgrade, run
+`docker compose up -d mysql`. This restarts MySQL. When the setting is active, MySQL itself removes
+older binlogs at startup and on each log rotation. You do not need a manual `PURGE BINARY LOGS`.
+
+Check the values:
+
+```sql
+SELECT @@binlog_expire_logs_seconds, @@log_bin, @@max_connections;  -- 259200, 1, 600
+```
+
+**Do not set `command:` for `mysql` in the override unless you mean to replace all of it.** Compose
+replaces `command`, it does not merge it. An override such as
+`command: --max-connections=600 --skip-log-bin` removes the managed binlog window and every other
+managed flag; repeat each flag you want to keep.
+
 ## Adding a new service
 
 ```yaml

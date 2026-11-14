@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **MySQL keeps binlogs 3 days, not 30.** The managed compose starts MySQL with
+  `--binlog-expire-logs-seconds=${MYSQL_BINLOG_EXPIRE_SECONDS:-259200}`. With the MySQL 8.0
+  default (30 days), binlogs filled the disk of a busy install; Agento uses no replication.
+  Binlog stays on. Set `MYSQL_BINLOG_EXPIRE_SECONDS` in `docker/.env` to change the window. See
+  docs/deployment/docker-compose-override.md#mysql-binlog-retention. **Upgrade note:** the value
+  applies when the mysql container is recreated: `agento upgrade` does it; after `--no-restart`
+  run `docker compose up -d mysql`. MySQL then removes the older binlogs itself (at startup and on
+  log rotation); no manual `PURGE` is needed. An install that sets `command:` for `mysql` in
+  `docker-compose.override.yml` (e.g. `--max-connections=600 --skip-log-bin`) does not get this
+  default at all, because Compose replaces `command`, it does not merge it.
 - **Breaking: no tool takes a `user` argument (AG-83).** The 22 shipped tools that asked the model
   for its email (`jira_*`, `mysql`/`mssql`/`opensearch` adapter tools, `browser_*`,
   `email_send`, `schedule_followup`) no longer have it. The toolbox already knows the caller from
