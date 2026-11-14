@@ -54,13 +54,12 @@ class CredentialRegisterCommand:
         mode.add_argument(
             "--with-api-key", dest="with_api_key", action="store_true",
             help="Read provider API key from stdin (piped/redirected) or "
-                 "interactive prompt (input hidden). Codex: OpenAI key. "
-                 "Claude: Anthropic key.",
+                 "interactive prompt (input hidden).",
         )
         mode.add_argument(
             "--with-access-token", dest="with_access_token", action="store_true",
             help="Read access-token JWT from stdin or interactive prompt "
-                 "(Codex only). Skips interactive OAuth.",
+                 "(harnesses that accept an access token only). Skips interactive OAuth.",
         )
 
     def execute(self, args: argparse.Namespace) -> None:
