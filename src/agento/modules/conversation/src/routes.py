@@ -132,6 +132,8 @@ def show(req: Request) -> Response:
     # checks the same grant anyway; this keeps a control the reader cannot use off screen).
     if row["channel"] != service.PANEL_CHANNEL:
         body["channel_write"] = service.can_write_channel(req.conn, req.session.user, row)
+    # Stop shows while the thread has an open top-level turn; the route checks the write gate.
+    body["stoppable"] = service.open_turn(req.conn, row["id"]) is not None
     body["runs"] = [_run_json(r, details)
                     for r in service.list_runs(req.conn, conversation_id=row["id"])]
     # Ids, nesting and status only: what the timeline already shows every reader.

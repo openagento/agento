@@ -528,6 +528,18 @@ describe("sub-agents in the timeline", () => {
     "/api/conversation/threads/5": () => ({ ...thread("jira"), run_details: true, runs }),
   });
 
+  it("a channel thread with a running turn shows Stop too: it has no user message", async () => {
+    captureHub();
+    const api = await stubApi({
+      ...routes([started(1, "p", 10)]),
+      "/api/conversation/threads/5": () => ({ ...thread("jira"), runs: [], stoppable: true }),
+      "POST /api/conversation/threads/5/stop": { job_id: 10, status: "DEAD" },
+    });
+    render(<View threadId={5} />, { wrapper });
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+    await vi.waitFor(() => expect(api.calls("POST", "/api/conversation/threads/5/stop")).toHaveLength(1));
+  });
+
   it("a child job is a collapsed card in its parent's turn: number, view, harness, state; open, its answer", async () => {
     captureHub();
     await stubApi(routes([
@@ -679,6 +691,7 @@ describe("the chat turn", () => {
         ev("message.created", null, { message_id: 1, content: "long task" }, 1),
         ev("run.started", "x", { job_id: 7, attempt: 1, max_attempts: 3 }, 2),
       ], () => [{ ...msg(1, "long task", state), stopped }]),
+      "/api/conversation/threads/5": () => ({ ...thread(), stoppable: !stopped }),
       "POST /api/conversation/threads/5/stop": () => { state = "terminal"; stopped = true; return { job_id: 7, status: "DEAD" }; },
     });
     render(<View threadId={5} />, { wrapper });

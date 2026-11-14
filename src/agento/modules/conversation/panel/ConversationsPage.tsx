@@ -394,7 +394,10 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
   // Stop ends the running turn; the next message continues its session.
   const stop = useMutation({
     mutationFn: () => apiFetch(`/api/conversation/threads/${threadId}/stop`, { method: "POST" }),
-    onSettled: () => void qc.invalidateQueries({ queryKey: messagesKey(threadId) }),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: messagesKey(threadId) });
+      void qc.invalidateQueries({ queryKey: threadKey(threadId) });
+    },
   });
   // Retry re-sends the failed turn's text as a new message: no new route (U4).
   const resendRequest = useRequestId();
@@ -477,7 +480,8 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
   // A terminal turn with no answer and no loaded failure still gets its error and Retry.
   const unanswered = !channel && lastUser !== -1 && turnState(rows, lastUser, false) === "failed"
     && !newest?.failure?.failed && !rows[lastUser].stopped;
-  const stoppable = lastUser !== -1 && rows[lastUser].job_state === "published";
+  // Any open top-level turn, a channel's too (the server reads it from the thread's runs).
+  const stoppable = detail?.stoppable === true;
 
   // Regenerate hangs off the newest answer's own hover row, as the chat apps do (U9), not
   // under the whole timeline. It is offered on the same condition as before.

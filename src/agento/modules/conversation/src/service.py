@@ -790,27 +790,40 @@ def unblock(conn, *, conversation_id: int, message_id: int, actor_id: int) -> bo
 STOPPED = "Stopped"   # job.error_class of a turn the panel stopped
 
 
+def open_turn(conn, conversation_id: int) -> dict | None:
+    """The thread's top-level job that Stop acts on (`id`, `status`), or None.
+
+    Found through the thread's executions, so a turn a channel started (Jira, a schedule)
+    counts as well as a panel message's. Sub-agent jobs are not turns of the thread."""
+    with conn.cursor() as cur:
+        # ponytail: only the newest 50 runs of the thread are read; an open top-level turn
+        # older than 50 later runs (its own sub-agents) would not get a Stop button.
+        cur.execute(
+            "SELECT j.id, j.status FROM (SELECT job_id, id FROM execution "
+            "  WHERE conversation_id = %s ORDER BY id DESC LIMIT 50) x "
+            "JOIN job j ON j.id = x.job_id "
+            "WHERE j.depth = 0 AND j.status IN ('RUNNING', 'PAUSED') "
+            "ORDER BY x.id DESC LIMIT 1", (conversation_id,))
+        turn = cur.fetchone()
+    conn.commit()
+    return turn
+
+
 def stop(conn, *, conversation_id: int) -> int:
     """End the thread's open turn so the thread is free again. Returns its job id.
 
     `pause_job` stops the run (SIGTERM, capabilities revoked, session kept). A `PAUSED` job
     with a session would hold the thread's line for ever (§4.4), so once the process is gone
-    the job becomes `DEAD` and the message terminal: the next message is the next turn, and
-    it resumes this turn's session (`threads.resolve_resume`). While the process is still
+    the job becomes `DEAD` and its message (a panel turn has one) terminal: the next turn
+    resumes this turn's session (`threads.resolve_resume`). While the process is still
     alive the job stays `PAUSED` and the caller may stop again: freeing the line then would
     start the next turn beside it. The job comes from the thread, never from the caller.
     """
     from agento.framework.job_store import fetch_job, pause_job
     from agento.framework.runner import client as runner_client
 
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT j.id, j.status FROM message m JOIN job j ON j.id = m.job_id "
-            "WHERE m.conversation_id = %s AND m.role = 'user' AND m.job_state = 'published' "
-            "ORDER BY m.id DESC LIMIT 1", (conversation_id,))
-        turn = cur.fetchone()
-    conn.commit()
-    if turn is None or turn["status"] not in ("RUNNING", "PAUSED"):
+    turn = open_turn(conn, conversation_id)
+    if turn is None:
         raise SubmissionError(409, "no turn of this thread is running")
     if turn["status"] == "RUNNING":
         try:

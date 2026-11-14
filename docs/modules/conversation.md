@@ -452,7 +452,9 @@ than in an observer.
 
 `POST /api/conversation/threads/{id}/stop` stops the thread's running turn (the **Stop** button
 under the status line). It has the write gate of a post (`write_refusal`), and the job comes
-from the thread — the newest user message still `published` — never from the caller.
+from the thread, never from the caller: the newest top-level (`depth = 0`) job of the thread's
+runs that is `RUNNING` or `PAUSED`. It is read from the runs, not the messages, so a turn a
+channel started (Jira, a schedule) stops too. The thread detail says `stoppable` while there is one.
 
 It calls `pause_job` (SIGTERM through the owning runner, capabilities revoked, session kept).
 A `PAUSED` job with a session would hold the thread's line for ever, so once the runner says

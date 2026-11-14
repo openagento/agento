@@ -42,6 +42,8 @@ export interface ThreadDetail extends Thread {
   jobs: SubJob[];
   /** Channel threads only: the reader holds `conversation.channel_write`. */
   channel_write?: boolean;
+  /** The thread has an open top-level turn that Stop can end. */
+  stoppable?: boolean;
 }
 
 /** Events oldest first. */
