@@ -14,8 +14,8 @@ import logging
 import pytest
 
 from agento.framework.consumer import Consumer, _JobResult, failure_kind
+from agento.framework.execution_hooks import SEAMS
 from agento.framework.execution_hooks import clear as clear_hooks
-from agento.framework.execution_hooks import register_execution_finalizer
 from agento.framework.job_models import Job
 
 from .conftest import _test_connection, fetch_job
@@ -41,7 +41,7 @@ class Recorder:
 def recorder():
     clear_hooks()
     r = Recorder()
-    register_execution_finalizer(r, module="test")
+    SEAMS["execution_finalizer"].register(r, module="test")
     yield r
     clear_hooks()
 

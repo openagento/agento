@@ -12,12 +12,7 @@ from agento.framework.execution_hooks import (
     clear,
     finalize_execution,
     mint_execution_id,
-    register_execution_delta_sink,
-    register_execution_finalizer,
-    register_execution_id_provider,
-    register_resume_session_resolver,
     resolve_resume_session,
-    write_execution_deltas,
 )
 from tests.unit.framework.delta_fakes import FakeSink
 
@@ -67,14 +62,10 @@ def test_with_no_resolver_the_shipped_rule_stands():
     assert resolve_resume_session(conn=None, job_id=1, attempt=2) is None
 
 
-def test_with_no_sink_deltas_are_discarded():
-    write_execution_deltas([DeltaRecord("e", 1, "delta", "hi", None)])   # must not raise
-
-
 # --- one each -------------------------------------------------------------
 
 def test_a_registered_provider_mints():
-    register_execution_id_provider(Provider(), module="conversation")
+    SEAMS["execution_id_provider"].register(Provider(), module="conversation")
 
     assert mint_execution_id(conn=None, job_id=7, attempt=2) == "x-7-2"
 
@@ -89,17 +80,17 @@ def test_a_profile_reaches_only_a_provider_that_takes_it():
             return "p"
 
     profile = RunProfile(harness="h", provider="p", model=None, credential_id=None)
-    register_execution_id_provider(Provider(), module="conversation")
+    SEAMS["execution_id_provider"].register(Provider(), module="conversation")
     assert mint_execution_id(conn=None, job_id=7, attempt=2, profile=profile) == "x-7-2"
     clear()
-    register_execution_id_provider(Profiled(), module="conversation")
+    SEAMS["execution_id_provider"].register(Profiled(), module="conversation")
     assert mint_execution_id(conn=None, job_id=7, attempt=2, profile=profile) == "p"
     assert seen == [profile]
 
 
 def test_a_registered_finalizer_is_called_with_the_transition():
     finalizer = Finalizer()
-    register_execution_finalizer(finalizer, module="conversation")
+    SEAMS["execution_finalizer"].register(finalizer, module="conversation")
 
     finalize_execution(conn=None, job_id=7, attempt=2, execution_id="e",
                        outcome="failed", job_terminal=False)
@@ -108,46 +99,43 @@ def test_a_registered_finalizer_is_called_with_the_transition():
 
 
 def test_a_registered_resolver_and_sink_are_reached():
-    register_resume_session_resolver(Resolver(), module="conversation")
+    SEAMS["resume_session_resolver"].register(Resolver(), module="conversation")
     sink = FakeSink()
-    register_execution_delta_sink(sink, module="conversation")
-    record = DeltaRecord("e", 1, "delta", "hi", None)
+    SEAMS["execution_delta_sink"].register(sink, module="conversation")
 
     assert resolve_resume_session(conn=None, job_id=1, attempt=2) == "session-9"
-    write_execution_deltas([record])
-
-    assert sink.batches == [[record]]
+    assert SEAMS["execution_delta_sink"].get() is sink
 
 
 def test_a_second_module_cannot_take_a_seam():
-    register_execution_id_provider(Provider(), module="conversation")
+    SEAMS["execution_id_provider"].register(Provider(), module="conversation")
 
     with pytest.raises(ValueError) as exc:
-        register_execution_id_provider(Provider(), module="other")
+        SEAMS["execution_id_provider"].register(Provider(), module="other")
 
     assert "already provided by conversation" in str(exc.value)
 
 
 def test_one_module_may_re_register_its_own_seam():
     """The consumer re-bootstraps every idle poll tick; that must not be a collision."""
-    register_execution_id_provider(Provider(), module="conversation")
-    register_execution_id_provider(Provider(), module="conversation")
+    SEAMS["execution_id_provider"].register(Provider(), module="conversation")
+    SEAMS["execution_id_provider"].register(Provider(), module="conversation")
 
     assert mint_execution_id(conn=None, job_id=1, attempt=1) == "x-1-1"
 
 
 def test_a_class_that_does_not_implement_the_protocol_is_refused():
     with pytest.raises(TypeError) as exc:
-        register_execution_id_provider(NotAProvider(), module="conversation")
+        SEAMS["execution_id_provider"].register(NotAProvider(), module="conversation")
 
     assert "does not implement execution_id_provider" in str(exc.value)
 
 
 def test_clear_empties_every_seam():
-    register_execution_id_provider(Provider(), module="conversation")
-    register_execution_finalizer(Finalizer(), module="conversation")
-    register_resume_session_resolver(Resolver(), module="conversation")
-    register_execution_delta_sink(FakeSink(), module="conversation")
+    SEAMS["execution_id_provider"].register(Provider(), module="conversation")
+    SEAMS["execution_finalizer"].register(Finalizer(), module="conversation")
+    SEAMS["resume_session_resolver"].register(Resolver(), module="conversation")
+    SEAMS["execution_delta_sink"].register(FakeSink(), module="conversation")
 
     clear()
 
