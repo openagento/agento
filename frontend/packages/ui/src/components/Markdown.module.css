@@ -1,3 +1,5 @@
 /* Mantine's Typography draws a link with color alone, which in dark mode is 1.5:1 against the
    text (WCAG link-in-text-block). Underline it; `.ag-prose a` in agento-ui.css does the same. */
 .root a { text-decoration: underline; }
+/* `<Markdown highlight>` (the chat): a wide table scrolls in its own box, not past the message. */
+.tableScroll { max-width: 100%; overflow-x: auto; }

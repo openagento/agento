@@ -30,7 +30,7 @@ export function ChatLayout({ title, actions, children, footer, overlay, viewport
         {actions && <Group gap="xs" wrap="nowrap">{actions}</Group>}
       </Group>
       <div className={classes.body}>
-        <ScrollArea className={classes.scroll} type="auto" viewportRef={viewportRef}
+        <ScrollArea className={classes.scroll} type="auto" scrollbars="y" viewportRef={viewportRef}
           viewportProps={{ role: "region", "aria-label": label, tabIndex: 0, onScroll }}>
           <div className={classes.column}>{children}</div>
         </ScrollArea>
@@ -62,7 +62,7 @@ export function ChatMessage({ author, text, time, label, actions: extra }: {
     </Group>
   );
   if (author === "assistant") {
-    return <div className={classes.message}><Markdown highlight>{text}</Markdown>{actions}</div>;
+    return <div className={`${classes.message} ${classes.prose}`}><Markdown highlight>{text}</Markdown>{actions}</div>;
   }
   return (
     <div className={`${classes.message} ${author === "user" ? classes.user : ""}`}>

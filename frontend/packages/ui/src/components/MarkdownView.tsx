@@ -14,9 +14,14 @@ const components: Components = {
 const text = (n: ElementContent): string =>
   n.type === "text" ? n.value : n.type === "element" ? n.children.map(text).join("") : "";
 
-/** A fenced block (`pre > code`) goes to `HighlightedCode`; anything else stays a plain `pre`. */
+/** A fenced block (`pre > code`) goes to `HighlightedCode`; anything else stays a plain `pre`. A
+ *  table scrolls in its own box, which the keyboard can reach (axe scrollable-region-focusable). */
 const highlighted: Components = {
   ...components,
+  table: ({ node: _node, ...props }) => (
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scroll box must take focus to scroll by key
+    <div className={classes.tableScroll} role="region" aria-label="Table" tabIndex={0}><table {...props} /></div>
+  ),
   pre: ({ node, children, ...props }) => {
     const code = node?.children[0];
     if (code?.type !== "element" || code.tagName !== "code") return <pre {...props}>{children}</pre>;

@@ -105,3 +105,48 @@ function Screen() {
 }
 
 export const FullScreen: StoryObj = { render: () => <Screen /> };
+
+// Content that cannot wrap: a 12-column table, a 300-char word (in a paragraph, in inline code and
+// in a URL) and a fenced line of 300 chars. The column must stay centred and nothing may overflow it.
+const WORD = "x".repeat(300);
+const HEAD = Array.from({ length: 12 }, (_, i) => `Column header ${String(i + 1).padStart(2, "0")}`);
+const WIDE_TABLE = [`| ${HEAD.join(" | ")} |`, `|${"---|".repeat(12)}`,
+  ...[1, 2, 3].map((r) => `| ${HEAD.map((_, c) => `r${r}c${c + 1}`).join(" | ")} |`)].join("\n");
+const WIDE_TEXT = `${WORD}\n\nInline \`${WORD}\` and https://example.com/${WORD}`;
+const WIDE_CODE = "```text\n" + WORD + "\n```";
+
+export const WideContent: StoryObj = {
+  render: () => (
+    <div style={{ width: 900, height: 600 }}>
+      <ChatLayout title="Wide content">
+        <ChatList>
+          <li><ChatMessage author="user" text="Show me the report." /></li>
+          <li><ChatMessage author="assistant" text={WIDE_TABLE} /></li>
+          <li><ChatMessage author="assistant" text={WIDE_TEXT} /></li>
+          <li><ChatMessage author="assistant" text={WIDE_CODE} /></li>
+        </ChatList>
+      </ChatLayout>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const c = within(canvasElement);
+    const table = await c.findByRole("table");
+    // HighlightedCode is a lazy chunk: its language label shows once it has loaded.
+    const code = (await c.findByText("text")).parentElement!;
+    const viewport = c.getByRole("region", { name: "Timeline" });
+    const column = viewport.firstElementChild!.firstElementChild as HTMLElement;
+    const vp = viewport.getBoundingClientRect();
+    const col = column.getBoundingClientRect();
+    // No horizontal overflow in the timeline, and the column is centred in it.
+    await expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth);
+    await expect(Math.abs((col.left - vp.left) - (vp.left + viewport.clientWidth - col.right))).toBeLessThanOrEqual(1);
+    // The table scrolls in its own box; the text and the code stay inside the column.
+    const box = c.getByRole("region", { name: "Table" });
+    await expect(box).toContainElement(table);
+    await expect(box.scrollWidth).toBeGreaterThan(box.clientWidth);
+    const inside = (el: Element) => el.getBoundingClientRect().right <= col.right + 1;
+    await expect(inside(box)).toBe(true);
+    for (const p of column.querySelectorAll("p")) await expect(inside(p)).toBe(true);
+    await expect(inside(code)).toBe(true);
+  },
+};

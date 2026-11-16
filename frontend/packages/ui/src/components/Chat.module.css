@@ -46,6 +46,9 @@
   overflow-wrap: anywhere;
 }
 .incoming { border-left: 3px solid var(--mantine-color-default-border); }
+/* An answer's long word or URL wraps; break-word, not anywhere, so a table cell keeps its natural
+   width and the table scrolls in its own box (MarkdownView). */
+.prose { overflow-wrap: break-word; }
 /* The time and copy row shows on hover or keyboard focus; on a touch screen always. */
 .actions { opacity: 0; transition: opacity 120ms; }
 .message:hover .actions, .message:focus-within .actions { opacity: 1; }
