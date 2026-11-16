@@ -312,6 +312,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback (ROADMAP.md).
 
 ### Fixed
+- **No false `[startup] ERROR` for the subagent and scheduler tools.** At each toolbox start the
+  log said `Failed to load …/subagent/toolbox/agent.js` and `…/scheduler/toolbox/schedule-tools.js:
+  isToolEnabled is not a function`, but the tools worked. Both modules now use the same startup
+  guard as the other modules, and a test runs the startup pass over every core module.
 - **A run dir no longer holds a copy of every session (D-PHOME-1).** Since 1.0 each run HOME got
   a full copy of the view's `state/` session store (about 870 MB per run dir). Now it gets only
   the sessions the run may resume, with their sidecar dirs. After the run, the consumer copies

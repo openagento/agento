@@ -126,6 +126,8 @@ const fields = {
 
 export function register(server, { log, db, isToolEnabled, jobId, agentViewId, moduleConfigs, errorCategory }) {
   const config = moduleConfigs?.scheduler ?? {};
+  // At startup (registerModuleRestApis) isToolEnabled is undefined and the server is a stub.
+  const enabled = (name) => !isToolEnabled || isToolEnabled(name);
   const core = moduleConfigs?.core ?? {};
   const conversation = moduleConfigs?.conversation ?? {};
 
@@ -247,7 +249,7 @@ export function register(server, { log, db, isToolEnabled, jobId, agentViewId, m
 
   const firstFire = 'The first fire time is set within a minute; see schedule_list.';
 
-  if (isToolEnabled('schedule_create')) {
+  if (enabled('schedule_create')) {
     server.tool(
       'schedule_create',
       'Create a recurring schedule. Each fire runs `prompt` as a new task in this agent_view, in the '
@@ -283,7 +285,7 @@ export function register(server, { log, db, isToolEnabled, jobId, agentViewId, m
     );
   }
 
-  if (isToolEnabled('schedule_update')) {
+  if (enabled('schedule_update')) {
     server.tool(
       'schedule_update',
       'Change a schedule you reach (see schedule_list). Set only the fields to change.',
@@ -316,7 +318,7 @@ export function register(server, { log, db, isToolEnabled, jobId, agentViewId, m
     );
   }
 
-  if (isToolEnabled('schedule_list')) {
+  if (enabled('schedule_list')) {
     server.tool(
       'schedule_list',
       'List the schedules you reach in this agent_view. Times: starts_at is local in `timezone`; '
@@ -336,7 +338,7 @@ export function register(server, { log, db, isToolEnabled, jobId, agentViewId, m
     );
   }
 
-  if (isToolEnabled('schedule_delete')) {
+  if (enabled('schedule_delete')) {
     server.tool(
       'schedule_delete',
       'Delete a schedule you reach. Its conversation stays.',
