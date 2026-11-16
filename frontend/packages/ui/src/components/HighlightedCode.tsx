@@ -14,7 +14,7 @@ export default function HighlightedCode({ code, language }: { code: string; lang
       <div className={classes.root}>
         {language && <Text size="xs" c="dimmed" className={classes.language}>{language}</Text>}
         <CodeHighlight code={code} language={language ?? "plaintext"} copyLabel="Copy" copiedLabel="Copied"
-          withBorder radius="sm" />
+          withBorder radius="sm" attributes={{ pre: { tabIndex: 0 } }} />
       </div>
     </CodeHighlightAdapterProvider>
   );

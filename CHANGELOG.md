@@ -312,6 +312,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback (ROADMAP.md).
 
 ### Fixed
+- **A wide answer no longer overflows the conversation timeline.** A Markdown table, a long URL,
+  a long word or long inline code in an agent's answer ran past the chat column, and the
+  timeline scrolled sideways under it. The timeline now scrolls only up and down, long words and
+  URLs wrap, and a wide table scrolls in its own box (Tab reaches it, as it reaches a long fenced
+  code block).
 - **No false `[startup] ERROR` for the subagent and scheduler tools.** At each toolbox start the
   log said `Failed to load …/subagent/toolbox/agent.js` and `…/scheduler/toolbox/schedule-tools.js:
   isToolEnabled is not a function`, but the tools worked. Both modules now use the same startup

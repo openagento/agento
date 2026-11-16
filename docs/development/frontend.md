@@ -102,7 +102,8 @@ npm test            # build, lint, then every unit test and every story in headl
   links open with `rel="noopener noreferrer"`. Its kit twin is `.ag-prose` (kit 1.2.0): the kit does
   not parse Markdown, the miniapp writes the HTML. `<Markdown highlight>` is opt-in: a fenced block
   renders with `@mantine/code-highlight` and the `highlight.js` common languages (language label,
-  copy button), both in their own lazy chunk. The kit has no syntax highlighting, so only the chat
+  copy button), both in their own lazy chunk, and a table goes in its own scroll box (a focusable
+  `region` named "Table"). The kit has no syntax highlighting, so only the chat
   passes `highlight`; the default `Markdown` stays what the parity story compares with `.ag-prose`.
   (The `@catalogue` text of `.ag-prose` is part of the released kit bytes, UI-3: it says so only
   when a kit version is cut — it is in 1.2.0.)
@@ -126,6 +127,8 @@ npm test            # build, lint, then every unit test and every story in headl
   `MenuButton` (`packages/ui/src/components/Chat*.tsx`) are Mantine components with no `.ag-*`
   twin: a miniapp shows no chat (UI-2). The timeline fills the shell's main area; below `sm` the
   thread list is a `Drawer`. Each rendered timeline item is exactly one `li` of `ChatList`.
+  The timeline scrolls only vertically (`scrollbars="y"`); an answer wraps long words and URLs,
+  and its wide tables and code blocks scroll inside their own box (story `WideContent`).
   A sub-agent's job is a `SubagentRun` card (collapsed, with its state badge) nested in its
   parent's turn; open, it holds its own `ChatList` ([conversation.md](../modules/conversation.md#turns-and-sub-agents-in-the-panel)).
   `Rail` is the thread column: a fixed top block (new conversation, the `SearchToggle`, the search
