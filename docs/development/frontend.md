@@ -175,6 +175,10 @@ call `/api/admin/*` ([panel.md](../architecture/panel.md#admin-screens)).
 - **The scope is in the URL.** `ScopePicker` (Default / Workspace / Agent view) writes
   `?scope=&scope_id=`, so a reload or a link from Agents ("Open config") keeps it. Tools, Skills
   and Config use it.
+- **Jobs columns are picked per browser.** The Columns icon on Jobs opens a checkbox list of the
+  job fields (`ORDER` in `routes/admin/Jobs.tsx`, one order for the list and the table). The choice
+  is kept in `localStorage` (`agento.admin.jobs.columns`); a dot on the icon marks a non-default set.
+  Actions is always shown, and the last visible column cannot be unchecked.
 - **A secret is never shown.** A secret config row shows `Set` or `Not set` and the editor is
   disabled with the CLI hint. A credential shows that it has an error, never the message.
 - **What the panel cannot do, it names.** Replay and build show the CLI command with a copy

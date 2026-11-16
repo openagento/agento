@@ -8,7 +8,15 @@ const row = (id: number, status: string, ref: string) => ({
   created_at: "2026-10-02T10:00:00Z", started_at: "2026-10-02T10:00:00Z", finished_at: "2026-10-02T10:00:03Z",
   input_tokens: 1, output_tokens: 2, error_class: null,
 });
-afterEach(teardown);
+afterEach(() => { teardown(); localStorage.clear(); });
+
+const KEY = "agento.admin.jobs.columns";
+const headers = () => screen.getAllByRole("columnheader").map((h) => h.textContent);
+const DEFAULT = ["ID", "Type", "Status", "Agent view", "Reference", "Created", "Duration", "Actions"];
+async function openPicker() {
+  fireEvent.click(screen.getByRole("button", { name: "Columns" }));
+  return within(await screen.findByRole("dialog", { name: "Columns" }));
+}
 
 describe("Jobs", () => {
   it("sends the status filter from the URL and searches the rows on the client", async () => {
@@ -51,5 +59,59 @@ describe("Jobs", () => {
     });
     renderAt("/admin/jobs?job=9", <Jobs />);
     expect(await within(await screen.findByRole("dialog")).findByText("p9")).toBeInTheDocument();
+  });
+
+  describe("column picker", () => {
+    const show = async (stored?: string) => {
+      if (stored !== undefined) localStorage.setItem(KEY, stored);
+      await stubApi({ "/api/admin/jobs": [row(1, "SUCCESS", "AG-1")] });
+      renderAt("/admin/jobs", <Jobs />);
+      expect(await screen.findAllByRole("row")).toHaveLength(2);
+    };
+
+    it("shows today's columns by default", async () => {
+      await show();
+      expect(headers()).toEqual(DEFAULT);
+    });
+
+    it("adds and removes columns live, in one order, and keeps the choice", async () => {
+      await show();
+      const picker = await openPicker();
+      fireEvent.click(picker.getByRole("checkbox", { name: "Input tokens" }));
+      fireEvent.click(picker.getByRole("checkbox", { name: "Source" }));
+      fireEvent.click(picker.getByRole("checkbox", { name: "Type" }));
+      expect(headers()).toEqual(["ID", "Status", "Agent view", "Source", "Reference", "Created", "Duration", "Input tokens", "Actions"]);
+      expect(screen.getByText("jira")).toBeInTheDocument();
+      expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual(["id", "status", "view", "source", "ref", "created", "duration", "input_tokens"]);
+    });
+
+    it("reads a stored choice on the first render", async () => {
+      await show(JSON.stringify(["error_class", "id"]));
+      expect(headers()).toEqual(["ID", "Error class", "Actions"]);
+    });
+
+    it.each([["{"], ['["nope"]'], ['"id"'], ["[]"]])("falls back to the default for a stored %s", async (stored) => {
+      await show(stored);
+      expect(headers()).toEqual(DEFAULT);
+    });
+
+    it("keeps the last column: its checkbox is disabled", async () => {
+      await show(JSON.stringify(["ref"]));
+      const picker = await openPicker();
+      expect(picker.getByRole("checkbox", { name: "Reference" })).toBeDisabled();
+      expect(picker.getByRole("checkbox", { name: "Reference" })).toHaveAccessibleDescription("At least one column stays visible");
+      expect(picker.getByRole("checkbox", { name: "ID" })).toBeEnabled();
+    });
+
+    it("Show all columns and Reset columns, each disabled when it changes nothing", async () => {
+      await show();
+      const picker = await openPicker();
+      expect(picker.getByRole("button", { name: "Reset columns" })).toBeDisabled();
+      fireEvent.click(picker.getByRole("button", { name: "Show all columns" }));
+      expect(headers()).toHaveLength(15);
+      expect(picker.getByRole("button", { name: "Show all columns" })).toBeDisabled();
+      fireEvent.click(picker.getByRole("button", { name: "Reset columns" }));
+      expect(headers()).toEqual(DEFAULT);
+    });
   });
 });
