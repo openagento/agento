@@ -15,8 +15,8 @@ from agento.framework.defer import defer_seconds
 from agento.framework.event_manager import ObserverEntry, get_event_manager
 from agento.framework.event_manager import clear as clear_event_manager
 from agento.framework.events import ClaimVerdict
+from agento.framework.execution_hooks import SEAMS
 from agento.framework.execution_hooks import clear as clear_hooks
-from agento.framework.execution_hooks import register_resume_session_resolver
 from agento.framework.job_models import AgentType, Job
 from agento.framework.threads import LINE_DEFER_MAX_MS, LINE_DEFER_MS, line_defer_ms
 
@@ -255,7 +255,7 @@ class TestResumeSession:
                 Resolver.calls += 1
                 return "legacy"
 
-        register_resume_session_resolver(Resolver(), module="m")
+        SEAMS["resume_session_resolver"].register(Resolver(), module="m")
         job = self._job(thread_detached=detached, fresh_session=fresh)
         assert Consumer._resume_session(MagicMock(), job, "h1") == expected
         assert Resolver.calls == calls

@@ -11,9 +11,9 @@ import pytest
 
 from agento.framework.consumer import Consumer
 from agento.framework.execution_hooks import (
+    SEAMS,
     RunProfile,
     mint_execution_id,
-    register_execution_id_provider,
 )
 from agento.framework.execution_hooks import clear as clear_hooks
 from agento.modules.conversation.src.hooks import ConversationExecutionIds
@@ -31,7 +31,7 @@ def conn():
 @pytest.fixture
 def provider():
     clear_hooks()
-    register_execution_id_provider(ConversationExecutionIds(), module="conversation")
+    SEAMS["execution_id_provider"].register(ConversationExecutionIds(), module="conversation")
     yield
     clear_hooks()
 
@@ -118,7 +118,7 @@ def test_a_run_stamps_its_execution_id_on_the_capability_it_mints(
     """The seam's whole purpose, end to end: the run's capability is attributable."""
     bootstrap_for_tests()
     clear_hooks()
-    register_execution_id_provider(ConversationExecutionIds(), module="conversation")
+    SEAMS["execution_id_provider"].register(ConversationExecutionIds(), module="conversation")
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO job (type, source, reference_id, idempotency_key, status, "

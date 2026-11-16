@@ -108,16 +108,6 @@ def get_active_identities_for_type(conn, identity_type: str) -> list[IngressIden
         return [IngressIdentity.from_row(row) for row in cur.fetchall()]
 
 
-def get_identities_for_agent_view(conn, agent_view_id: int) -> list[IngressIdentity]:
-    """Get all ingress identities bound to a specific agent_view."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT * FROM ingress_identity WHERE agent_view_id = %s "
-            "ORDER BY identity_type, priority DESC, identity_value, id",
-            (agent_view_id,),
-        )
-        return [IngressIdentity.from_row(row) for row in cur.fetchall()]
-
 
 def match_ingress_identities(conn, identity_type: str, identity_value: str) -> list[IngressIdentity]:
     """Return every ACTIVE binding of ``identity_type`` that matches ``identity_value``.

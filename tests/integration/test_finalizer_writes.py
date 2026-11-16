@@ -11,11 +11,11 @@ import uuid
 
 import pytest
 
-from agento.framework.execution_hooks import clear as clear_hooks
 from agento.framework.execution_hooks import (
+    SEAMS,
     finalize_execution,
-    register_execution_finalizer,
 )
+from agento.framework.execution_hooks import clear as clear_hooks
 from agento.modules.conversation.src import relay, service
 from agento.modules.conversation.src.finalizer import (
     TRUNCATION_MARKER,
@@ -32,7 +32,7 @@ from .conftest import (
 @pytest.fixture(autouse=True)
 def finalizer():
     clear_hooks()
-    register_execution_finalizer(ConversationFinalizer(), module="conversation")
+    SEAMS["execution_finalizer"].register(ConversationFinalizer(), module="conversation")
     yield
     # The registry is global: leave the shipped registrations behind us, or every
     # later test in the session runs with the seams empty.

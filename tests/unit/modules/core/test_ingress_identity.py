@@ -9,7 +9,6 @@ from agento.framework import ingress_identity as ii
 from agento.framework.ingress_identity import (
     IngressIdentity,
     bind_identity,
-    get_identities_for_agent_view,
     get_ingress_identity,
     is_regex_identity_type,
     list_identities,
@@ -91,15 +90,6 @@ class TestGetIngressIdentity:
         identity = get_ingress_identity(conn, "email", "nobody@example.com")
         assert identity is None
 
-
-class TestGetIdentitiesForAgentView:
-    def test_returns_list(self):
-        rows = [_make_row(id=1), _make_row(id=2, identity_value="other@example.com")]
-        conn, _ = _mock_conn(rows=rows)
-        identities = get_identities_for_agent_view(conn, 10)
-        assert len(identities) == 2
-        assert identities[0].id == 1
-        assert identities[1].id == 2
 
 
 class TestBindIdentity:

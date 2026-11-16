@@ -122,20 +122,8 @@ SEAMS = {
 }
 
 
-def register_execution_id_provider(provider: ExecutionIdProvider, *, module: str) -> None:
-    _EXECUTION_ID_PROVIDER.register(provider, module=module)
 
 
-def register_execution_finalizer(finalizer: ExecutionFinalizer, *, module: str) -> None:
-    _EXECUTION_FINALIZER.register(finalizer, module=module)
-
-
-def register_resume_session_resolver(resolver: ResumeSessionResolver, *, module: str) -> None:
-    _RESUME_SESSION_RESOLVER.register(resolver, module=module)
-
-
-def register_execution_delta_sink(sink: ExecutionDeltaSink, *, module: str) -> None:
-    _EXECUTION_DELTA_SINK.register(sink, module=module)
 
 
 def clear() -> None:
@@ -179,10 +167,3 @@ def resolve_resume_session(*, conn, job_id: int, attempt: int) -> str | None:
     if resolver is None:
         return None
     return resolver.resolve(conn=conn, job_id=job_id, attempt=attempt)
-
-
-def write_execution_deltas(batch: Sequence[DeltaRecord]) -> None:
-    sink = _EXECUTION_DELTA_SINK.get()
-    if sink is None:
-        return
-    sink.write(batch)
