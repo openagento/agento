@@ -60,8 +60,10 @@ function describeRun(config) {
 
 export function register(server, { log, db, isToolEnabled, jobId, agentViewId, moduleConfigs, enqueueJob, errorCategory }) {
   const config = moduleConfigs?.subagent ?? {};
+  // At startup (registerModuleRestApis) isToolEnabled is undefined and the server is a stub.
+  const enabled = (name) => !isToolEnabled || isToolEnabled(name);
 
-  if (isToolEnabled('agent_run')) {
+  if (enabled('agent_run')) {
     server.tool(
       'agent_run',
       describeRun(config),
@@ -157,7 +159,7 @@ export function register(server, { log, db, isToolEnabled, jobId, agentViewId, m
     );
   }
 
-  if (isToolEnabled('agent_result')) {
+  if (enabled('agent_result')) {
     server.tool(
       'agent_result',
       'Read the status of a job delegated from your line (agent_run, or a later turn of that child), and its output once it is SUCCESS.',
