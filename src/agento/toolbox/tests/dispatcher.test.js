@@ -232,6 +232,11 @@ describe('executeTool', () => {
     }
   });
 
+  it('names a removed or unknown field so the agent can fix its call', async () => {
+    const { response } = await run(capabilityContext('mcp_job'), 'echo', { text: 'a', user: 'x@y.z' }, deps());
+    expect(response.error.message).toBe("invalid arguments: (root): Unrecognized key(s) in object: 'user'");
+  });
+
   it('maps a throw and an isError result to tool_error, and keeps the tool result', async () => {
     const thrower = { schema: {}, handler: async () => { throw new Error('upstream 500'); } };
     const erring = { schema: {}, handler: async () => ({ isError: true, content: [{ type: 'text', text: 'nope' }] }) };

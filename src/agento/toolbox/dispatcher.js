@@ -130,7 +130,8 @@ async function authorizeAndRun(authContext, toolName, args, deps) {
   // Omitted arguments (MCP) mean {}; an explicit null is not an arguments object.
   const parsed = argumentSchema(entry.schema).safeParse(args === undefined ? {} : args);
   if (!parsed.success) {
-    const where = parsed.error.issues.map(i => i.path.join('.') || '(root)').join(', ');
+    // Zod's message names the problem (e.g. an unrecognized key) — echoed to the caller only.
+    const where = parsed.error.issues.map(i => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ');
     return failure('invalid_arguments', `invalid arguments: ${where}`);
   }
 
