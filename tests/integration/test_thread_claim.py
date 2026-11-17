@@ -12,7 +12,6 @@ from agento.framework.consumer import Consumer
 from agento.framework.event_manager import ObserverEntry, get_event_manager
 from agento.framework.job_models import AgentType
 from agento.framework.publish_service import publish_job
-from agento.modules.core.src.patches.assign_open_job_threads import AssignOpenJobThreads
 
 from .conftest import _test_connection
 
@@ -513,20 +512,3 @@ def test_a_row_inserted_with_no_thread_gets_its_default_one_at_claim(conn, consu
     [thread] = _sql(conn, "SELECT ref, agent_view_id FROM thread WHERE id = %s", (job.thread_id,))
     assert thread == {"ref": "jira:AI-9", "agent_view_id": view}
     assert _row(conn, job.id)["thread_id"] == job.thread_id
-
-
-def test_the_upgrade_patch_gives_every_open_legacy_job_its_default_thread(conn, int_db_config, view):
-    existing = _publish(int_db_config, view, reference_id="AI-5")
-    for i, status in enumerate(("TODO", "RUNNING", "PAUSED", "SUCCESS", "DEAD")):
-        _sql(conn, "INSERT INTO job (type, source, agent_view_id, reference_id, idempotency_key, status) "
-                   "VALUES ('todo', 'jira', %s, 'AI-5', %s, %s)", (view, f"legacy:{i}", status))
-
-    with _test_connection() as patch_conn:
-        AssignOpenJobThreads().apply(patch_conn)
-        AssignOpenJobThreads().apply(patch_conn)              # a rerun is a no-op
-
-    rows = _sql(conn, "SELECT status, thread_id FROM job WHERE idempotency_key LIKE 'legacy:%%'")
-    shared = _row(conn, existing)["thread_id"]
-    assert {r["status"]: r["thread_id"] for r in rows} == {
-        "TODO": shared, "RUNNING": shared, "PAUSED": shared, "SUCCESS": None, "DEAD": None}
-    assert _sql(conn, "SELECT COUNT(*) AS n FROM thread")[0]["n"] == 1

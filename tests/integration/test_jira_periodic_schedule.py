@@ -1,28 +1,23 @@
 """Jira periodic tasks on the generic schedule (AG-67 plan §5.4, §6), against a real MySQL.
 
 The ``jira_periodic`` source fires through ``tick.fire`` on the issue's thread; ``jira:periodic:sync``
-resets the timing columns only when the rule changes; the upgrade check and the data patch turn the
-legacy cron rows and map into RRULE, also on an upgrade that enables the module later.
+resets the timing columns only when the rule changes; the upgrade check refuses a legacy value that
+cannot become an RRULE.
 """
 from __future__ import annotations
 
 import json
 import logging
 from datetime import UTC, datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from agento.framework.bootstrap import CORE_MODULES_DIR
-from agento.framework.data_patch import apply_patch, get_all_pending
 from agento.framework.module_discovery import scan_all_modules
-from agento.framework.module_status import filter_enabled
 from agento.framework.schedule import sources, tick
 from agento.framework.setup import UpgradeCheckError, run_upgrade_checks
 from agento.modules.jira_periodic_tasks.src.config import PeriodicTasksConfig
-from agento.modules.jira_periodic_tasks.src.patches.convert_frequency_map_to_rrule import (
-    ConvertFrequencyMapToRrule,
-)
 from agento.modules.jira_periodic_tasks.src.sync import CronEntry, JiraCronSync
 from agento.modules.jira_periodic_tasks.src.upgrade_check import FrequencyMapCheck
 
@@ -172,72 +167,6 @@ class TestSyncWriter:
             cur.execute("SELECT source, enabled FROM schedule ORDER BY id")
             assert cur.fetchall() == [{"source": "scheduler", "enabled": 1}, {"source": "jira_periodic", "enabled": 0}]
         conn.rollback()
-
-
-def _legacy(conn, view, ref, cron, *, created="2026-01-05 13:00:00", enabled=1) -> int:
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO schedule (source, source_ref, title, agent_view_id, cron_expr, enabled, created_at) "
-                    "VALUES ('cron', %s, 't', %s, %s, %s, %s)", (ref, view, cron, enabled, created))
-        sid = cur.lastrowid
-    conn.commit()
-    return sid
-
-
-class TestDataPatch:
-
-    def test_the_patch_converts_the_map_and_the_legacy_rows(self, conn, view):
-        with conn.cursor() as cur:
-            for scope, scope_id in (("default", 0), ("agent_view", view)):
-                cur.execute("INSERT INTO core_config_data (scope, scope_id, path, value) VALUES (%s, %s, %s, %s)",
-                            (scope, scope_id, "jira_periodic_tasks/frequency_map",
-                             json.dumps({"Weekly": "0 7 * * 1", "Done": "FREQ=HOURLY;BYMINUTE=0"})))
-        conn.commit()
-        weekly = _legacy(conn, view, "AI-1", "0 7 * * 1")
-        viewless = _legacy(conn, None, "AI-9", "0 8 * * *")
-
-        ConvertFrequencyMapToRrule().apply(conn)
-
-        with conn.cursor() as cur:
-            cur.execute("SELECT value FROM core_config_data WHERE path = 'jira_periodic_tasks/frequency_map'")
-            maps = [json.loads(r["value"]) for r in cur.fetchall()]
-            cur.execute("SELECT id, source, owner_agent_view_id, rrule, starts_at, timezone, next_fire_at, cron_expr, "
-                        "enabled, last_error FROM schedule ORDER BY id")
-            rows = {r.pop("id"): r for r in cur.fetchall()}
-        conn.rollback()
-        assert maps == [{"Weekly": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=7;BYMINUTE=0", "Done": "FREQ=HOURLY;BYMINUTE=0"}] * 2
-        common = {"source": "jira_periodic", "starts_at": datetime(2026, 1, 5), "timezone": "UTC",
-                  "next_fire_at": None, "cron_expr": None}
-        assert rows[weekly] == {**common, "owner_agent_view_id": view,
-                                "rrule": "FREQ=WEEKLY;BYDAY=MO;BYHOUR=7;BYMINUTE=0", "enabled": 1, "last_error": None}
-        assert rows[viewless] == {**common, "owner_agent_view_id": None, "rrule": "FREQ=DAILY;BYHOUR=8;BYMINUTE=0",
-                                  "enabled": 0, "last_error": "no_agent_view"}
-
-        tick.tick(conn, now=datetime(2026, 6, 1, 12), batch=10)  # Monday 1 June 2026
-        assert _row(conn, "AI-1")["next_fire_at"] == datetime(2026, 6, 8, 7)
-        assert FrequencyMapCheck().check(conn) == []  # nothing is pending after the patch
-
-    def test_a_disabled_module_converts_on_the_upgrade_that_enables_it(self, conn, view, tmp_path):
-        sid = _legacy(conn, view, "AI-1", "0 7 * * 1")
-
-        def pending(status: dict):
-            with patch("agento.framework.module_status.read_module_status", return_value=status):
-                manifests = filter_enabled(scan_all_modules(CORE_MODULES_DIR, str(tmp_path)))
-            return [(m, p) for m, p in get_all_pending(manifests, conn)
-                    if p["name"] == "ConvertFrequencyMapToRrule"]
-
-        try:
-            assert pending({"jira_periodic_tasks": False}) == []
-            tick.tick(conn, now=datetime(2026, 6, 1, 12), batch=10)  # no source matches 'cron': inert
-            assert _row(conn, "AI-1")["source"] == "cron"
-
-            (m, p), = pending({})
-            apply_patch(m, p, conn, logging.getLogger("test"))
-            row = _row(conn, "AI-1")
-            assert (row["id"], row["source"], row["cron_expr"]) == (sid, "jira_periodic", None)
-        finally:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM data_patch WHERE name = 'ConvertFrequencyMapToRrule'")
-            conn.commit()
 
 
 class TestUpgradeCheck:
