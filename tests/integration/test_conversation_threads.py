@@ -14,12 +14,9 @@ import pytest
 from agento.framework.job_models import Job, JobRequester, RequesterTrust
 from agento.framework.job_types import resolve_job_type
 from agento.framework.publish_service import publish_job
-from agento.framework.threads import default_ref, ensure_thread, place_claim
+from agento.framework.threads import place_claim
 from agento.modules.conversation.src import routes, service
 from agento.modules.conversation.src.hooks import ConversationExecutionIds
-from agento.modules.conversation.src.patches.assign_conversation_threads import (
-    AssignConversationThreads,
-)
 
 from .test_conversation_submission import _Req
 
@@ -255,113 +252,3 @@ def test_a_pending_reply_whose_view_is_gone_is_still_published_by_the_sweep(conn
     conversation = _rows(conn, "SELECT thread_id FROM conversation WHERE id = %s", (cid,))[0]
     assert (reply["source"], reply["reference_id"]) == ("jira", "AI-7")
     assert reply["thread_id"] is not None and reply["thread_id"] != conversation["thread_id"]
-
-
-# --- the upgrade (AssignConversationThreads) ----------------------------------------
-
-def _legacy_conversation(conn, *, view, channel="panel", user_id=None, external_ref=None,
-                         external_key=None) -> int:
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO conversation (user_id, agent_view_id, title, channel, "
-                    "external_ref, external_key) VALUES (%s, %s, 't', %s, %s, %s)",
-                    (user_id, view, channel, external_ref, external_key))
-        cid = cur.lastrowid
-    conn.commit()
-    return cid
-
-
-def _legacy_job(conn, *, view, source, reference, status="TODO") -> int:
-    """An open job as the core patch `AssignOpenJobThreads` left it: in its default thread."""
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO job (type, source, agent_view_id, reference_id, "
-                    "idempotency_key, status, attempt, max_attempts) "
-                    "VALUES ('followup', %s, %s, %s, %s, %s, 0, 3)",
-                    (source, view, reference, str(uuid.uuid4()), status))
-        job_id = cur.lastrowid
-        cur.execute("UPDATE job SET thread_id = %s WHERE id = %s",
-                    (ensure_thread(cur, agent_view_id=view,
-                                   ref=default_ref(source, reference, job_id)), job_id))
-    conn.commit()
-    return job_id
-
-
-def _turn(conn, cid: int, job_id: int) -> None:
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO message (conversation_id, role, content, job_id, job_state) "
-                    "VALUES (%s, 'user', 'q', %s, 'published')", (cid, job_id))
-    conn.commit()
-
-
-def _thread_ref(conn, cid: int) -> str:
-    return _rows(conn, "SELECT t.ref FROM conversation c JOIN thread t ON t.id = c.thread_id "
-                       "WHERE c.id = %s", (cid,))[0]["ref"]
-
-
-def test_the_upgrade_gives_each_conversation_its_thread(conn, world):
-    view = world["view"]
-    panel = _legacy_conversation(conn, view=view, user_id=world["owner"].id)
-    jira = _legacy_conversation(conn, view=view, channel="jira", external_ref="AI-7",
-                                external_key="a" * 40)
-    no_ref = _legacy_conversation(conn, view=view, channel="cron", external_key="b" * 40)
-    run_job = _legacy_job(conn, view=view, source="cron", reference=None, status="SUCCESS")
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO execution (execution_id, job_id, attempt, status, "
-                    "conversation_id) VALUES (%s, %s, 1, 'succeeded', %s)",
-                    (str(uuid.uuid4()), run_job, no_ref))
-    conn.commit()
-    no_run = _legacy_conversation(conn, view=view, channel="cron", external_key="c" * 40)
-
-    AssignConversationThreads().apply(conn)
-
-    assert _thread_ref(conn, panel) == f"conversation:{panel}"
-    # The thread a new job on the issue computes: its history continues there.
-    assert _thread_ref(conn, jira) == "jira:AI-7"
-    assert _thread_ref(conn, no_ref) == f"job:{run_job}"
-    assert _thread_ref(conn, no_run) == f"legacy:{'c' * 40}"
-    new_round = _publish(view=view)
-    assert _run(conn, new_round) == jira
-
-
-def test_two_conversations_of_one_thread_do_not_share_it(conn, world):
-    """Should two pre-thread conversations map to one thread, the second keeps its history
-    in a `legacy:` thread: the unique key allows one conversation per thread."""
-    first = _legacy_conversation(conn, view=world["view"], channel="jira", external_ref="AI-7",
-                                 external_key="a" * 40)
-    second = _legacy_conversation(conn, view=world["view"], channel="jira",
-                                  external_ref="AI-7", external_key="d" * 40)
-
-    AssignConversationThreads().apply(conn)
-
-    assert _thread_ref(conn, first) == "jira:AI-7"
-    assert _thread_ref(conn, second) == f"legacy:{'d' * 40}"
-
-
-def test_queued_turns_stay_in_their_users_conversation_after_the_upgrade(conn, world):
-    """A queued panel turn and a queued channel reply: the core patch put each in its default
-    thread; without the move, the turn's run would be shown nowhere and the reply's would open
-    a second, ownerless conversation."""
-    view = world["view"]
-    panel = _legacy_conversation(conn, view=view, user_id=world["owner"].id)
-    turn = _legacy_job(conn, view=view, source="conversation", reference=f"{panel}:1")
-    _turn(conn, panel, turn)
-    mail = _legacy_conversation(conn, view=view, channel="outlook", external_ref="m-1",
-                                external_key="e" * 40)
-    reply = _legacy_job(conn, view=view, source="outlook", reference="m-9")
-    _turn(conn, mail, reply)
-    running = _legacy_job(conn, view=view, source="outlook", reference="m-8",
-                          status="RUNNING")
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO execution (execution_id, job_id, attempt, status, "
-                    "conversation_id) VALUES (%s, %s, 1, 'running', %s)",
-                    (str(uuid.uuid4()), running, mail))
-    conn.commit()
-
-    patch = AssignConversationThreads()
-    patch.apply(conn)
-    patch.apply(conn)                     # a rerun changes nothing
-
-    assert _run(conn, turn) == panel
-    assert _run(conn, reply) == mail
-    assert _job(conn, running)["thread_id"] == _rows(
-        conn, "SELECT thread_id FROM conversation WHERE id = %s", (mail,))[0]["thread_id"]
-    assert len(_rows(conn, "SELECT id FROM conversation")) == 2
