@@ -14,9 +14,8 @@ class GitHubConfig:
     ``bootstrap()`` resolves from) selects ``scope='default'`` rows only, and ``showInDefault: false``
     keeps ``github/github_token`` out of DEFAULT — so an agent_view row is invisible to bootstrap. The
     publisher additionally resolves only the non-secret paths via per-path ``ScopedConfigService.get()``,
-    never ``get_module()``. The one gap is a global ``CONFIG__GITHUB__GITHUB_TOKEN``, which
-    ``resolve_field`` returns before the DB and before any module code runs; ``env_guard`` makes the
-    module refuse to run and refuse to report complete in that state (see Global Constraints).
+    never ``get_module()``. The field is ``toolbox_only`` with ``allowEnv: false``, so Python never
+    resolves it from ENV either; ``env_guard`` still refuses the non-secret view-scoped keys in ENV.
     """
 
     enabled: bool = False
