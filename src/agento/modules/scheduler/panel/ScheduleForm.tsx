@@ -136,11 +136,13 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
   const readOnly = row !== null && !row.can.write;
   const diff = changes(form, base);
   const dirty = Object.keys(diff).length > 0 || filesDirty;
+  const [fileError, setFileError] = useState<string | null>(null);
   const room = options.max_uploads - uploads.files.length;
   const attach = (picked: File[]) => {
     // A drop lands in Task: open it, or the new chips would hide in a closed section.
     if (!open.includes("task")) setOpen([...open, "task"]);
-    setFailure(picked.length > room ? { field: null, text: `A schedule takes at most ${options.max_uploads} files.` } : null);
+    // Said at the field, where the eye is, not at the submit row a screen below.
+    setFileError(picked.length > room ? `A schedule takes at most ${options.max_uploads} files.` : null);
     uploads.add(picked.slice(0, Math.max(0, room)));
   };
 
@@ -157,7 +159,8 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
     onSuccess: (r, { form: f, ids }) => {
       setFailure(null);
       void refresh();
-      if (row) { setBase(f); setFileBase(keyOf(ids)); }
+      // A file that failed to upload is not part of what was saved: it must not stay beside the saved ones.
+      if (row) { setBase(f); setFileBase(keyOf(ids)); uploads.reset(uploads.files.filter((x) => x.status !== "error")); }
       else navigate(`/schedules/${(r as { id: number }).id}`);
     },
     onError: fail,
@@ -232,9 +235,10 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
                 onChange={(v) => set({ agent_view_id: v })} />
               <TextAreaField label="Prompt" value={form.prompt} error={errorOf("prompt")} minRows={5}
                 hint="Each run starts from this prompt, in the same conversation." onChange={(e) => set({ prompt: e.target.value })} />
-              <FilesField label="Files" files={uploads.files} onFiles={readOnly ? undefined : attach} onRemove={uploads.remove}
+              <FilesField label="Files" files={uploads.files} onFiles={readOnly ? undefined : attach} error={fileError}
+                onRemove={(id) => { uploads.remove(id); setFileError(null); }}
                 empty={readOnly ? "No files." : "Drop files anywhere on this form, or add them with the paperclip."}
-                hint="Every run gets these files. The agent of this agent view and everyone who can read this schedule's conversation can read them." />
+                hint="Every run gets these files. The agent and everyone who can read this schedule's conversation can read them." />
             </Section>
             <Section value="when" title="Schedule" description="When it runs"
               summary={`${preset?.label ?? (form.rrule ? "Custom" : "Not set")} · ${form.timezone}`}>
@@ -276,7 +280,7 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
               {row ? "Save changes" : "Create schedule"}
             </Button>
             {row && dirty && (
-              <Button variant="subtle" onClick={() => { setForm(base); commit(base); uploads.reset(savedFiles(row)); setFileBase(keyOf(savedFiles(row).map((f) => f.id))); setFailure(null); }}>Discard changes</Button>
+              <Button variant="subtle" onClick={() => { setForm(base); commit(base); uploads.reset(savedFiles(row)); setFileBase(keyOf(savedFiles(row).map((f) => f.id))); setFileError(null); setFailure(null); }}>Discard changes</Button>
             )}
           </div>
         )}

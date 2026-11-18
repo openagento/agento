@@ -164,6 +164,8 @@
 .fileInput { display: none; }
 /* A form's files: the paperclip, then the chips (or the empty text) on the same line. */
 .filesField { display: flex; flex-wrap: wrap; align-items: center; gap: var(--mantine-spacing-xs); }
+/* The chips wrap one by one beside the paperclip, not as one block under it on a narrow screen. */
+.filesField .chips { display: contents; }
 /* The drop hint is laid over this box. */
 .drop { position: relative; }
 /* The drop target is the WHOLE conversation: the history is where the eye is during a drag,
@@ -186,4 +188,7 @@
   border: 1px solid var(--mantine-color-default-border);
   border-radius: var(--mantine-radius-md);
   background-color: var(--mantine-color-default);
+  /* A drop box taller than the screen (a long form): the card stays in view, not at the
+     centre of a box whose centre is off screen. In a box that fits, sticky changes nothing. */
+  position: sticky; top: 30vh; bottom: 30vh;
 }
