@@ -4,7 +4,7 @@ import { AgentoUiProvider } from "../Provider";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 import { Markdown } from "./Markdown";
-import { ChatComposer, ChatError, ToolCall } from "./Chat";
+import { ChatMessage, middleEllipsis, ChatComposer, ChatError, ToolCall } from "./Chat";
 import { ArchiveAction, DeleteAction, EndAction, MakeCurrentAction, OpenAction, RegenerateAction } from "./IconAction";
 import { CopyButton } from "./CopyButton";
 import { clampRail, MenuButton, ThreadList } from "./ChatShell";
@@ -187,12 +187,32 @@ describe("ChatComposer", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("a failed file keeps its place with the reason, and does not hold Send back", () => {
+  it("a failed file keeps its place with the reason, and holds Send until it is removed", () => {
+    // Sending around it would silently drop a file the user believes is attached.
+    const onRemove = vi.fn();
     render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} canSend onFiles={vi.fn()}
+      onRemoveAttachment={onRemove}
       attachments={[{ id: "1", name: "big.zip", status: "error", error: "file too large" }]} />,
       { wrapper: AgentoUiProvider });
     expect(screen.getByTitle("big.zip — file too large")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Remove big.zip" })).toBeEnabled();
+  });
+
+  it("a long name keeps its extension, and the full name stays in the title", () => {
+    expect(middleEllipsis("report.pdf")).toBe("report.pdf");
+    expect(middleEllipsis("a-very-long-quarterly-report-name.pdf")).toBe("a-very-long-quarter….pdf");
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} canSend onFiles={vi.fn()}
+      attachments={[{ id: "1", name: "a-very-long-quarterly-report-name.pdf", status: "ready" }]} />,
+      { wrapper: AgentoUiProvider });
+    expect(screen.getByTitle("a-very-long-quarterly-report-name.pdf")).toBeInTheDocument();
+  });
+
+  it("a sent message shows the files it carried, with no text of its own", () => {
+    render(<ChatMessage author="user" text="" attachments={["report.pdf", "notes.txt"]} />,
+      { wrapper: AgentoUiProvider });
+    expect(screen.getByText("report.pdf")).toBeInTheDocument();
+    expect(screen.getByText("notes.txt")).toBeInTheDocument();
   });
 
   it("a drop hands the files over, and the hint only shows while the drag is over", () => {

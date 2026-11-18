@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING
 
 from .artifacts_dir import (
     SHARED_LINK,
-    deliver_attachments,
     build_artifacts_dir,
     copy_build_to_artifacts_dir,
+    deliver_attachments,
     get_current_build_dir,
     prepare_artifacts_dir,
     prepare_thread_dir,
@@ -302,11 +302,11 @@ def materialize_run_workspace(
 
     # After the build copy: the link wins over an entry the build named `shared`.
     if thread_key is not None:
-        prepare_thread_dir(thread_key, artifacts_dir)
-    if attachments:
-        # After the link: `./shared` must already BE the thread's dir, or the copy would land
-        # in the run dir and be invisible to the next turn.
-        deliver_attachments(attachments, Path(artifacts_dir) / SHARED_LINK)
+        shared = prepare_thread_dir(thread_key, artifacts_dir) / SHARED_LINK
+        if attachments:
+            # The THREAD's own dir, never the run's `./shared` link: every destination is
+            # opened with O_NOFOLLOW, and a link is exactly what that refuses (SEC-5).
+            deliver_attachments(attachments, shared)
 
     # SSH identity: the NON-SECRET files only. The private key is never written — it is
     # delivered in memory through the per-run env to a per-run ssh-agent (ssh_prelude.py).
