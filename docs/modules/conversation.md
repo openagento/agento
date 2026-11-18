@@ -216,16 +216,20 @@ the sweep also takes. Nothing is copied or renamed at submit time, so there is n
 step that can fail half way inside a transaction. A file the caller may not use refuses the
 whole message: a submission is its files, or it is nothing.
 
-`complete_pending` reads that column, appends
+`complete_pending` reads that column and passes the descriptor to the job as
+`job.attachments` — a vendor-free column the framework reads without asking any module what it
+means (MOD-1). The published prompt is the user's text only. When the job runs, the framework
+(`Workflow.execute`) appends
 
 ```
 Attached files:
 - ./shared/attachments/<key>/<name>
 ```
 
-to the prompt, and passes the descriptor to the job as `job.attachments` — a vendor-free
-column the framework reads without asking any module what it means (MOD-1). A message that
-carries only files needs no text, and is titled by its first file.
+for that turn ([threads.md](../architecture/threads.md)). A history rebuilt for a fresh session
+keeps the same lines for each EARLIER turn that carried files (`workflow.turn_text`, through the
+framework's `attachment_block`). A message that carries only files needs no text, and is titled
+by its first file.
 
 Run preparation copies each file into the thread's `shared/attachments/<key>/` **after** the
 `./shared` link exists, into a temporary sibling that is renamed into place. Every step runs

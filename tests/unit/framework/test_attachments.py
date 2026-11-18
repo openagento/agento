@@ -15,6 +15,7 @@ import pytest
 from agento.framework import artifacts_dir, run_preparation
 from agento.framework.artifacts_dir import (
     AttachmentError,
+    attachment_block,
     deliver_attachments,
     parse_attachments,
 )
@@ -57,6 +58,28 @@ class TestParse:
     def test_a_descriptor_that_is_not_safe_fails_the_run(self, workspace, raw):
         with pytest.raises(AttachmentError):
             parse_attachments(raw)
+
+
+class TestBlock:
+    """The lines the agent reads: derived from the same parse the delivery uses."""
+
+    @pytest.mark.parametrize("raw", [None, ""])
+    def test_no_descriptor_adds_nothing(self, raw):
+        assert attachment_block(raw) == ""
+
+    def test_one_file(self):
+        assert attachment_block(descriptor()) == (
+            "\n\nAttached files:\n- ./shared/attachments/m7/report.pdf")
+
+    def test_several_files_keep_their_order(self):
+        raw = ('{"key": "m7", "files": [{"from": "uploads/a/x", "as": "a.txt"},'
+               ' {"from": "uploads/a/y", "as": "b.txt"}]}')
+        assert attachment_block(raw) == (
+            "\n\nAttached files:\n- ./shared/attachments/m7/a.txt\n- ./shared/attachments/m7/b.txt")
+
+    def test_a_descriptor_that_cannot_be_delivered_is_not_described(self):
+        with pytest.raises(AttachmentError):
+            attachment_block('{"key": "../x", "files": [{"from": "uploads/a", "as": "a"}]}')
 
 
 class TestSource:

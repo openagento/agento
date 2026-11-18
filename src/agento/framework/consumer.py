@@ -1251,6 +1251,7 @@ class Consumer:
                     update_reference_id=self._update_job_reference_id,
                     capability_token=rest_capability_token,
                     resume_session_id=resume_session_id,
+                    attachments=job.attachments,
                 )
                 result = self._execute_with_one_retry(
                     job, runner, model_override,

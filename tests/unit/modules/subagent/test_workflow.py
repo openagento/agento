@@ -38,7 +38,7 @@ def test_prompt_is_header_plus_verbatim_prompt():
 def test_execute_job_runs_the_built_prompt():
     runner = MagicMock()
     runner.execute.return_value = RunResult(raw_output="ok")
-    SubagentWorkflow(runner, MagicMock()).execute_job(SubagentChannel(), _job(PROMPT), MagicMock())
+    SubagentWorkflow(runner, MagicMock()).execute_job(SubagentChannel(), _job(PROMPT), MagicMock(attachments=None))
     assert runner.execute.call_args.args[0].prompt.endswith(PROMPT)
 
 

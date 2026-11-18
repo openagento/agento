@@ -34,13 +34,14 @@ def fake_conn(fetches, rowcount=0):
     return conn, cur
 
 
-def test_the_turn_tells_the_agent_where_its_files_are():
+def test_the_turn_publishes_the_users_text_and_its_descriptor():
     conn, _ = fake_conn([row(uploads=json.dumps(DESCRIPTOR)), {"status": "TODO"}, {"job_id": 9}])
     with patch.object(service, "publish_job", return_value=9) as publish, \
             patch.object(service, "resolve_job_type", return_value="t"):
         service.complete_pending(conn, 2)
     kwargs = publish.call_args.kwargs
-    assert kwargs["prompt"] == "hi\n\nAttached files:\n- ./shared/attachments/m2/report.pdf"
+    # The text the user wrote: the framework names the files when the job runs.
+    assert kwargs["prompt"] == "hi"
     # The descriptor rides along as the job's own column: the framework reads it, and never
     # the conversation's tables (MOD-1).
     assert json.loads(kwargs["attachments"]) == DESCRIPTOR
@@ -57,13 +58,13 @@ def test_a_channel_reply_publishes_no_attachments():
     assert "attachments" not in publish.call_args.kwargs
 
 
-def test_a_message_that_is_only_files_is_prompted_with_the_block_alone():
+def test_a_message_that_is_only_files_publishes_no_text():
     conn, _ = fake_conn([row(content="", uploads=json.dumps(DESCRIPTOR)),
                          {"status": "TODO"}, {"job_id": 9}])
     with patch.object(service, "publish_job", return_value=9) as publish, \
             patch.object(service, "resolve_job_type", return_value="t"):
         service.complete_pending(conn, 2)
-    assert publish.call_args.kwargs["prompt"] == "Attached files:\n- ./shared/attachments/m2/report.pdf"
+    assert publish.call_args.kwargs["prompt"] == ""
 
 
 def test_a_turn_with_no_files_publishes_none():
@@ -187,43 +188,62 @@ class TestSweep:
 
 
 class TestTheRebuiltHistory:
-    """The run is NOT given the prompt the publish wrote: `build_prompt` rebuilds the turn
-    text from the `message` rows. A turn's files have to travel in that rebuild, or the agent
-    is handed a question about a file whose path it was never told (AG-87)."""
+    """The run is NOT given the prompt the publish wrote: `build_prompt` rebuilds the history
+    from the `message` rows. An EARLIER turn's files travel in that rebuild; the files of the
+    turn this job runs for are named once, by the framework (`Workflow.execute`) (AG-87)."""
 
-    def test_a_turn_carries_the_paths_of_the_files_it_was_sent_with(self):
+    @pytest.mark.parametrize(("turn", "text"), [
+        ({"content": "podsumuj plik", "uploads": json.dumps(DESCRIPTOR)},
+         "podsumuj plik\n\nAttached files:\n- ./shared/attachments/m2/report.pdf"),
+        ({"content": "", "uploads": DESCRIPTOR},
+         "Attached files:\n- ./shared/attachments/m2/report.pdf"),
+        ({"content": "hi", "uploads": None}, "hi"),
+    ])
+    def test_an_earlier_turn_carries_its_files(self, turn, text):
         from agento.modules.conversation.src import workflow
 
-        text = workflow.turn_text({"content": "podsumuj plik", "uploads": json.dumps(DESCRIPTOR)})
-        assert "podsumuj plik" in text
-        assert "./shared/attachments/m2/report.pdf" in text
+        assert workflow.turn_text(turn) == text
 
-    def test_a_turn_of_files_alone_is_the_paths(self):
-        from agento.modules.conversation.src import workflow
-
-        text = workflow.turn_text({"content": "", "uploads": json.dumps(DESCRIPTOR)})
-        assert text.startswith("Attached files:")
-
-    def test_a_turn_with_no_file_is_its_own_text(self):
-        from agento.modules.conversation.src import workflow
-
-        assert workflow.turn_text({"content": "hi", "uploads": None}) == "hi"
-
-    def test_build_prompt_puts_the_paths_in_the_history_it_sends(self):
+    @staticmethod
+    def _flow(turns):
         from agento.modules.conversation.src import workflow
 
         cur = MagicMock()
-        cur.fetchall.return_value = [
-            {"role": "user", "content": "podsumuj plik", "uploads": json.dumps(DESCRIPTOR)},
-        ]
+        cur.fetchall.return_value = turns
         conn = MagicMock()
         conn.cursor.return_value.__enter__.return_value = cur
         channel = MagicMock()
-        channel.get_prompt_fragments.return_value = MagicMock(read_context="ctx")
+        channel.get_prompt_fragments.return_value = MagicMock(read_context="ctx", respond="odpowiedz")
+        runner = MagicMock()
+        runner.execute.return_value = MagicMock()
+        return workflow.ConversationWorkflow(runner=runner, logger=MagicMock()), channel, conn, runner
 
-        flow = workflow.ConversationWorkflow(runner=MagicMock(), logger=MagicMock())
-        prompt = flow.build_prompt(channel, "1:2", conn=conn)
+    def test_the_run_names_this_turns_files_once(self):
+        from agento.framework.job_models import AgentType, Job
+        from agento.framework.workflows.base import JobContext
 
-        assert "./shared/attachments/m2/report.pdf" in prompt
+        earlier = {"key": "m1", "files": [{"from": "uploads/t1/u4/cd/old.txt", "as": "old.txt"}]}
+        flow, channel, conn, runner = self._flow([
+            {"role": "user", "content": "najpierw to", "uploads": json.dumps(earlier)},
+            {"role": "assistant", "content": "ok", "uploads": None},
+            {"role": "user", "content": "podsumuj plik", "uploads": json.dumps(DESCRIPTOR)},
+        ])
+        context = JobContext(config={}, logger=MagicMock(), update_reference_id=lambda *a: None,
+                             attachments=json.dumps(DESCRIPTOR))
+        with patch("agento.modules.conversation.src.workflow.get_connection", return_value=conn):
+            flow.execute_job(channel, Job.stub(type=AgentType.BLANK, source="conversation", reference_id="1:2"), context)
+        prompt = runner.execute.call_args.args[0].prompt
+        assert prompt.count("./shared/attachments/m2/report.pdf") == 1
+        assert prompt.endswith("Attached files:\n- ./shared/attachments/m2/report.pdf")
+        assert "./shared/attachments/m1/old.txt" in prompt
         # The query has to ask for the column at all - that is where the paths were lost.
-        assert "uploads" in cur.execute.call_args[0][0]
+        assert "uploads" in conn.cursor.return_value.__enter__.return_value.execute.call_args[0][0]
+
+
+class TestDescriptorJson:
+    @pytest.mark.parametrize("value", [json.dumps(DESCRIPTOR), json.dumps(DESCRIPTOR).encode(), DESCRIPTOR])
+    def test_every_shape_the_driver_returns_is_the_same_text(self, value):
+        assert json.loads(uploads.descriptor_json(value)) == DESCRIPTOR
+
+    def test_no_value_is_none(self):
+        assert uploads.descriptor_json(None) is None
