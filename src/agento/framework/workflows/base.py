@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from ..artifacts_dir import attachment_block
 from ..channels.base import Channel
 from ..harness import Runner, RunRequest, RunResult
 from ..job_models import Job
@@ -24,6 +25,9 @@ class JobContext:
     # framework/threads.py), set only when the harness declares `resume`. `None` means a
     # fresh session.
     resume_session_id: str | None = None
+    # The job's `attachments` descriptor. `execute` names its files in every prompt, so no
+    # workflow has to remember to.
+    attachments: str | None = None
 
 
 class Workflow(ABC):
@@ -65,6 +69,8 @@ class Workflow(ABC):
             self.logger.warning(f"ref={reference_id} session not found; starting a fresh one")
             session = None
         prompt = self.build_prompt(channel, reference_id, resumed=session is not None, **kwargs)
+        # A resumed turn too: the session holds the earlier turns, not this turn's files.
+        prompt += attachment_block(context.attachments if context else None)
         result = self.runner.execute(RunRequest(prompt=prompt, session_id=session))
         result.prompt = prompt
         self.logger.info(

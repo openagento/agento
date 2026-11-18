@@ -60,8 +60,8 @@ def test_a_staged_file_becomes_the_messages_attachment(conn, world, thread, work
     conn.commit()
     assert descriptor["files"][0]["as"] == "report.pdf"
     assert json.loads(job["attachments"]) == descriptor
-    assert job["prompt"].endswith("./shared/attachments/"
-                                  f"{descriptor['key']}/report.pdf")
+    # The user's text: the framework names the files when the job runs (`Workflow.execute`).
+    assert job["prompt"] == "look"
 
 
 def test_a_message_of_only_files_is_a_turn_of_its_own(conn, world, thread, workspace):

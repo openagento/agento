@@ -70,3 +70,21 @@ def test_every_framework_workflow_passes_the_context(workflow, job_fields):
     runner = _Runner(True)
     workflow(runner, logging.getLogger("t")).execute_job(TestChannel(), job, _context("s-1"))
     assert runner.requests[0].session_id == "s-1"
+
+
+_FILES = '{"key": "m7", "files": [{"from": "uploads/t1/u2/abc/report.pdf", "as": "report.pdf"}]}'
+_BLOCK = "\n\nAttached files:\n- ./shared/attachments/m7/report.pdf"
+
+
+@pytest.mark.parametrize(("attachments", "session", "prompt"), [
+    (_FILES, None, "the whole task" + _BLOCK),       # fresh: the files are named
+    (_FILES, "s-1", "only the new turn" + _BLOCK),   # resumed: the session never saw them
+    (None, None, "the whole task"),                  # no files: the prompt is untouched
+])
+def test_execute_names_the_jobs_files(attachments, session, prompt):
+    """The framework, not each workflow, tells the agent where its files are (AG-87)."""
+    runner = _Runner(True)
+    context = JobContext(config={}, logger=logging.getLogger("t"), update_reference_id=lambda *a: None,
+                         resume_session_id=session, attachments=attachments)
+    result = _Prompted(runner, logging.getLogger("t")).execute(TestChannel(), "R", context=context)
+    assert (runner.requests[0].prompt, result.prompt) == (prompt, prompt)

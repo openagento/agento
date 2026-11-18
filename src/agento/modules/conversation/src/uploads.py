@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import email.parser
 import email.policy
+import json
 import os
 import re
 import secrets
@@ -174,11 +175,14 @@ def descriptor(conversation_id: int, user_id: int, upload_ids: list[str], key: s
     return {"key": key, "files": files}
 
 
-def prompt_block(uploads: dict) -> str:
-    """The lines the agent reads. The paths are the run's own, never the staging ones."""
-    key = uploads["key"]
-    lines = "\n".join(f"- ./shared/attachments/{key}/{f['as']}" for f in uploads["files"])
-    return f"\n\nAttached files:\n{lines}"
+def descriptor_json(value: object) -> str | None:
+    """`message.uploads` as the JSON text the framework takes. PyMySQL hands a JSON column
+    back as text, bytes or an already decoded object depending on the server."""
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return value if isinstance(value, str) else json.dumps(value)
 
 
 def parse_one_file(body: bytes, content_type: str) -> tuple[str, bytes]:

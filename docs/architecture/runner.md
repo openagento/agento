@@ -197,6 +197,8 @@ credential.
   READS it through `THREAD_GID` and never writes it; every component is opened with
   `O_NOFOLLOW` on a validated fd, because `shared/` itself is writable by every run of the
   thread. A job with no thread gets the same tree under its own run dir's `shared/`.
+  `Workflow.execute` names those paths in the prompt, for every workflow
+  ([threads.md](threads.md)).
   The group comes from the sandbox image (the cron and runner image): after an upgrade to it,
   rebuild the images (`agento upgrade` does; in dev, `docker compose -f
   docker-compose.dev.yml build`). A restart only leaves the consumer outside the group, and every

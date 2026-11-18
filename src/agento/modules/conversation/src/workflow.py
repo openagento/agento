@@ -10,8 +10,7 @@ a question the user was never told had arrived, and turn 2's own job would ask i
 """
 from __future__ import annotations
 
-import json
-
+from agento.framework.artifacts_dir import attachment_block
 from agento.framework.channels.base import Channel
 from agento.framework.database_config import DatabaseConfig
 from agento.framework.db import get_connection
@@ -50,14 +49,12 @@ def load_turns(conn, conversation_id: int, up_to_message_id: int) -> list[dict]:
 
 
 def turn_text(turn: dict) -> str:
-    """One turn as the agent reads it: what the person wrote, plus the paths of the files they
-    sent with it. The history is rebuilt from the message rows, so a turn that does not carry
-    its own files here loses them - the publish-time prompt is NOT what the run is given."""
+    """An EARLIER turn as the agent reads it: what the person wrote, plus the paths of the
+    files they sent with it. The history is rebuilt from the message rows, so a fresh session
+    would otherwise lose them. The turn this job runs for gets its files from the framework
+    (`Workflow.execute`), not from here."""
     text = turn["content"] or ""
-    raw = turn.get("uploads")
-    if not raw:
-        return text
-    block = uploads.prompt_block(json.loads(raw) if isinstance(raw, (str, bytes)) else raw)
+    block = attachment_block(uploads.descriptor_json(turn.get("uploads")))
     return (text + block) if text else block.lstrip("\n")
 
 
@@ -86,8 +83,9 @@ class ConversationWorkflow(Workflow):
         # behind it any more than a fresh one may.
         if kwargs.get("resumed"):
             turns = turns[-1:]
+        texts = [turn_text(t) for t in turns[:-1]] + [turns[-1]["content"] or ""]
         history = "\n\n".join(
-            f"{_ROLE_LABEL.get(t['role'], t['role'])}: {turn_text(t)}" for t in turns
+            f"{_ROLE_LABEL.get(t['role'], t['role'])}: {text}" for t, text in zip(turns, texts, strict=True)
         )
         return (
             f"{fragments.read_context}\n\n"

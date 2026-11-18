@@ -218,6 +218,21 @@ def parse_attachments(raw: str | None) -> tuple[str, list[tuple[str, str]]] | No
     return key, out
 
 
+def attachment_block(raw: str | None) -> str:
+    """The lines that tell the agent where a job's files are, or ``""`` when it has none.
+
+    Derived from `parse_attachments`, the parse `deliver_attachments` uses, so the paths named
+    are by construction the paths delivered. `Workflow.execute` appends it to every run; no
+    workflow writes it. A descriptor that cannot be delivered is not described: it raises.
+    """
+    parsed = parse_attachments(raw)
+    if parsed is None:
+        return ""
+    key, files = parsed
+    lines = "\n".join(f"- ./{SHARED_LINK}/{ATTACHMENTS_DIRNAME}/{key}/{name}" for _, name in files)
+    return f"\n\nAttached files:\n{lines}"
+
+
 def _source_path(source: str) -> str:
     """The real file a `from` names, or raise. Asked only when a file is about to be COPIED:
     a delivery that is already done never looks at staging, which by then may be swept."""

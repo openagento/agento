@@ -46,16 +46,9 @@ logger = logging.getLogger(__name__)
 
 def attachment_names(value: object) -> list[str]:
     """The file names a message carried, for a reader. Never the paths behind them."""
-    raw = _uploads_json(value)
+    raw = uploads.descriptor_json(value)
     return [f["as"] for f in json.loads(raw)["files"]] if raw else []
 
-
-def _uploads_json(value: object) -> str | None:
-    """`message.uploads` as the JSON text the framework takes. PyMySQL hands a JSON column
-    back already decoded on some servers and as text on others; both reach here."""
-    if value is None:
-        return None
-    return value if isinstance(value, str) else json.dumps(value)
 
 MODULE_DIR = Path(__file__).resolve().parent.parent
 JOB_TYPE = "conversation"
@@ -1055,7 +1048,7 @@ def check_client_message_id(value: object) -> str:
 
 def check_content(conn, value: object, *, allow_empty: bool = False) -> str:
     """`allow_empty` is a submission that carries files: the files ARE the message, and the
-    turn's prompt is then the `Attached files:` block alone."""
+    run's prompt then names them alone (`Workflow.execute`)."""
     if not isinstance(value, str) or (not value and not allow_empty):
         raise SubmissionError(400, "content must be a non-empty string")
     # Bytes, not characters: the column and every relay downstream count bytes.
@@ -1255,7 +1248,7 @@ def regenerate(conn, *, conversation_id: int, message_id: int, user_id: int,
                           # Verbatim, `key` included: the new turn reuses the files the
                           # original already had DELIVERED to the thread. Staging is long
                           # gone by then, and nothing has to be re-uploaded.
-                          uploads_json=_uploads_json(row["uploads"]))
+                          uploads_json=uploads.descriptor_json(row["uploads"]))
 
 
 def derive_title(content: str) -> str:
@@ -1292,9 +1285,9 @@ def complete_pending(conn, message_id: int) -> int:
     if row["job_state"] != "pending":
         return row["job_id"]              # already published: nothing happened here
 
-    attachments = _uploads_json(row.get("uploads"))
-    block = uploads.prompt_block(json.loads(attachments)) if attachments else ""
-    prompt = (row["content"] + block) if row["content"] else block.lstrip("\n")
+    attachments = uploads.descriptor_json(row.get("uploads"))
+    # The user's text only: `Workflow.execute` names the files of `attachments` in the run.
+    prompt = row["content"]
     requester = (None if row["author_user_id"] is None else
                  JobRequester(key=f"user:{row['author_user_id']}", trust=RequesterTrust.ACCOUNT))
     if row["channel"] == PANEL_CHANNEL:
@@ -1421,8 +1414,8 @@ def _sweep_one(conn, conversation_id: int, retention_hours: int) -> int:
         # the source is the thread holding the delivered copy, never the job's state.
         live = {Path(f["from"]).parent.name
                 for row in rows
-                if not attachments_delivered(row["thread_key"], _uploads_json(row["uploads"]))
-                for f in json.loads(_uploads_json(row["uploads"]))["files"]}
+                if not attachments_delivered(row["thread_key"], uploads.descriptor_json(row["uploads"]))
+                for f in json.loads(uploads.descriptor_json(row["uploads"]))["files"]}
         for user_id in uploads.users_with_uploads(conversation_id):
             for upload_id in uploads.expired_dirs(conversation_id, user_id, retention_hours):
                 if upload_id in live:

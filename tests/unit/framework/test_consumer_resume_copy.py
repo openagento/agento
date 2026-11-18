@@ -76,3 +76,10 @@ def test_run_job_saves_with_session_ids(run, tmp_path):
     _session(tmp_path, "s-line")
     _, save, _ = run(_make_job(agent_view_id=2, attempt=2, session_id="s9"), line_sid="s-line")
     assert save.call_args.kwargs["session_ids"] == ("s9", "s-line", "s9")
+
+
+def test_run_job_hands_the_workflow_the_jobs_attachments(run):
+    """`Workflow.execute` names the files from the context: the consumer must put them there."""
+    raw = '{"key": "m7", "files": [{"from": "uploads/t1/u2/abc/a.pdf", "as": "a.pdf"}]}'
+    _, _, workflow = run(_make_job(agent_view_id=2, attachments=raw))
+    assert workflow.execute_job.call_args.args[2].attachments == raw

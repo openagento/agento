@@ -82,11 +82,6 @@ class TestDescriptor:
             assert file["from"].startswith("uploads/t7/u3/")
             assert not Path(file["from"]).is_absolute()
 
-    def test_the_prompt_names_the_runs_own_paths(self):
-        doc = {"key": "m12", "files": [{"from": "uploads/x", "as": "report.pdf"}]}
-        assert uploads.prompt_block(doc) == (
-            "\n\nAttached files:\n- ./shared/attachments/m12/report.pdf")
-
 
 class TestParseOneFile:
     def body(self, filename="report.pdf", payload=b"bytes"):

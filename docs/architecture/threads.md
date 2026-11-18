@@ -94,6 +94,10 @@ link.
 under the key of the message that carried them, before the run starts
 ([conversation.md](../modules/conversation.md#files-on-a-message)). Like `downloads/` it is
 2750 — only the preparer writes it, and the runs read it through `THREAD_GID`.
+The run is also told where they are: `Workflow.execute` appends an `Attached files:` list of
+`./shared/attachments/<key>/<name>` paths to the prompt of every job whose `attachments` is set,
+fresh or resumed (`artifacts_dir.attachment_block`, built from the same parse as the delivery). A
+workflow writes nothing for this.
 
 `downloads/` is the toolbox's: a tool that fetches a file for the thread (Jira attachments) writes
 it there, under a name it chooses, through dirs no run can write (SEC-5), and skips a file that is
