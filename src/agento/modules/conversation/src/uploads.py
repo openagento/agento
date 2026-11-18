@@ -133,6 +133,10 @@ def store(conversation_id: int, user_id: int, name: str, data: bytes) -> tuple[s
     stored = safe_name(name)
     root = Path(UPLOADS_DIR)
     root.mkdir(mode=0o700, exist_ok=True)
+    # The root gets the same check as every component below it: it lives in the workspace, and
+    # a link planted there would steer every staged file somewhere else (SEC-5).
+    if root.is_symlink() or not root.is_dir():
+        raise UploadError(500, "upload failed")
     parent = _open_dir(root, f"t{int(conversation_id)}", 0o700)
     parent = _open_dir(parent, f"u{int(user_id)}", 0o700)
     target = _open_dir(parent, upload_id, 0o700)

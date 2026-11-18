@@ -223,6 +223,10 @@ def _source_path(source: str) -> str:
     a delivery that is already done never looks at staging, which by then may be swept."""
     root = Path(BASE_WORKSPACE_DIR) / UPLOADS_DIRNAME
     path = Path(BASE_WORKSPACE_DIR) / source
+    # The ROOT is checked before anything is resolved against it: `resolve()` would follow a
+    # planted `uploads` link and then happily confirm that the file is "under uploads" (SEC-5).
+    if root.is_symlink() or not root.is_dir():
+        raise AttachmentError("the uploads root is not a directory")
     # `strict=False` would accept a dangling link; the file must be there and real.
     try:
         resolved = path.resolve(strict=True)

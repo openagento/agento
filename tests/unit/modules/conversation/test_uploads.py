@@ -39,6 +39,14 @@ def test_two_files_of_one_message_keep_distinct_names():
 
 
 class TestStore:
+    def test_a_symlinked_uploads_root_is_refused(self, staging, tmp_path):
+        """The root gets the same check as the components below it (SEC-5)."""
+        (tmp_path / "elsewhere").mkdir()
+        staging.symlink_to(tmp_path / "elsewhere")
+        with pytest.raises(uploads.UploadError):
+            uploads.store(7, 3, "report.pdf", b"bytes")
+        assert not (tmp_path / "elsewhere" / "t7").exists()
+
     def test_a_stored_file_is_private_to_its_user(self, staging):
         upload_id, stored = uploads.store(7, 3, "report.pdf", b"bytes")
         path = uploads.user_dir(7, 3) / upload_id / stored

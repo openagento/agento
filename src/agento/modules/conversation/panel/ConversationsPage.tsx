@@ -197,8 +197,14 @@ function useUploads(threadId: number) {
   // old list for one frame (and is what React asks you not to do).
   const [held, setHeld] = useState<{ thread: number; list: Staged[] }>({ thread: threadId, list: [] });
   const files = held.thread === threadId ? held.list : [];
-  const setFiles = (next: (list: Staged[]) => Staged[]) =>
+  // An upload answers late. The callback carries the thread it was started in, and a write from
+  // a thread the user has left is dropped - it must not resurrect that list over the open one.
+  const shown = useRef(threadId);
+  useLayoutEffect(() => { shown.current = threadId; }, [threadId]);
+  const setFiles = (next: (list: Staged[]) => Staged[]) => {
+    if (shown.current !== threadId) return;
     setHeld((prev) => ({ thread: threadId, list: next(prev.thread === threadId ? prev.list : []) }));
+  };
   const patch = (id: string, change: Partial<Staged>) =>
     setFiles((list) => list.map((f) => (f.id === id ? { ...f, ...change } : f)));
   const add = (picked: File[]) => {
