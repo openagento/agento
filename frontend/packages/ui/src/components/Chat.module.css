@@ -124,3 +124,25 @@
 /* The textarea is the pill's own surface: the box is the pill. */
 .pillInput { flex: 1; min-width: 0; }
 .disclaimer { text-align: center; }
+/* The pill's own rows: the chips sit above the text line, inside the same box. */
+.pillRow { display: flex; align-items: flex-end; gap: var(--mantine-spacing-xs); }
+.pill { position: relative; flex-direction: column; align-items: stretch; }
+.pillOver { border-color: var(--mantine-primary-color-filled); border-style: dashed; }
+.chips { display: flex; flex-wrap: wrap; gap: var(--mantine-spacing-xs); padding-bottom: calc(var(--mantine-spacing-xs) / 1.5); }
+.chip {
+  display: inline-flex; align-items: center; gap: calc(var(--mantine-spacing-xs) / 2);
+  max-width: 14rem; padding: 2px var(--mantine-spacing-xs);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-xl); background-color: var(--mantine-color-body);
+}
+.chipError { border-color: var(--mantine-color-red-filled); color: var(--mantine-color-red-filled); }
+.chipName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chipRemove { display: inline-flex; color: inherit; opacity: 0.6; }
+.chipRemove:hover, .chipRemove:focus-visible { opacity: 1; }
+.fileInput { display: none; }
+/* The drop target is the whole pill; the hint covers it while a drag is over the composer. */
+.dropHint {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  border-radius: var(--mantine-radius-xl); background-color: var(--mantine-color-body);
+  opacity: 0.92; pointer-events: none;
+}

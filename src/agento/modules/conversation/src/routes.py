@@ -14,7 +14,7 @@ from datetime import datetime
 
 from agento.web.api import Request, Response, error
 
-from . import retention, service
+from . import retention, service, uploads
 
 _iso = service.iso
 
@@ -314,6 +314,30 @@ def _write_refusal(req: Request, row: dict) -> Response | None:
     return None if refusal is None else error(refusal.status, str(refusal))
 
 
+def upload(req: Request) -> Response:
+    """Stage ONE file for the next message of this thread (PRD E3-E5 §4.1).
+
+    Staging is per (conversation, user): the id this returns is only usable by the caller,
+    in this thread, and only until it is claimed or swept. The write gates are the ones
+    `send` asks - a caller who may not post may not stage either.
+    """
+    row = _visible(req)
+    if row is None:
+        return error(404, "not found")
+    refusal = _write_refusal(req, row)
+    if refusal is not None:
+        return refusal
+    try:
+        name, data = uploads.parse_one_file(req.body, req.headers.get("Content-Type") or "")
+        service.check_upload_bytes(req.conn, data)
+        upload_id, stored = uploads.store(row["id"], req.session.user.id, name, data)
+    except uploads.UploadError as exc:
+        return error(exc.status, str(exc))
+    except service.SubmissionError as exc:
+        return error(exc.status, str(exc))
+    return Response(201, {"upload_id": upload_id, "name": stored, "bytes": len(data)})
+
+
 def regenerate(req: Request) -> Response:
     """Re-ask a user message as a new turn (§4.1's submission, with content from a row)."""
     row = _visible(req)
@@ -347,7 +371,10 @@ def send(req: Request) -> Response:
     body = req.json if isinstance(req.json, dict) else {}
     try:
         client_message_id = service.check_client_message_id(body.get("client_message_id"))
-        content = service.check_content(req.conn, body.get("content"))
+        upload_ids = service.check_upload_ids(req.conn, body.get("upload_ids"))
+        # A message that carries files needs no text of its own.
+        content = service.check_content(req.conn, body.get("content"),
+                                        allow_empty=upload_ids is not None)
         # A post into an archived thread REACTIVATES it (§3.2) - it is not refused. The
         # submission is validated first, so a rejected body does not revive a thread the
         # caller never managed to post into; the revival then happens INSIDE the insert's
@@ -355,7 +382,8 @@ def send(req: Request) -> Response:
         message_id, job_id, created = service.submit_message(
             req.conn, conversation_id=row["id"], user_id=req.session.user.id,
             client_message_id=client_message_id, content=content,
-            reactivate_actor_id=req.session.user.id, writer=req.session.user, seen=row)
+            reactivate_actor_id=req.session.user.id, writer=req.session.user, seen=row,
+            upload_ids=upload_ids)
     except service.SubmissionError as exc:
         return error(exc.status, str(exc))
     return Response(201 if created else 200,

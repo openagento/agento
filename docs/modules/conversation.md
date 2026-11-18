@@ -18,7 +18,7 @@ the four identifiers and the event contract. This page is the module's operation
 | Table | Holds |
 | --- | --- |
 | `conversation` | One thread: its owner, its agent_view, `active` or `archived`, `pinned_at` (NULL = not pinned), and `thread_id` — the framework thread it shows, one conversation per thread (migration 007). |
-| `message` | One turn. A `user` row carries its poster (`author_user_id`, migration 009: the job is published as that user, never as the owner) and the job bookkeeping (`job_id`, `execution_id`, `job_state`); a CHECK keeps that off an `assistant` row. |
+| `message` | One turn. `uploads` (migration 010) holds the attachment descriptor a submission claimed, or NULL. A `user` row carries its poster (`author_user_id`, migration 009: the job is published as that user, never as the owner) and the job bookkeeping (`job_id`, `execution_id`, `job_state`); a CHECK keeps that off an `assistant` row. |
 | `execution` | One attempt at answering a turn. `execution_id` is unique; `(job_id, attempt)` is **not** — the pool-wait path refunds an attempt, so two real attempts can carry one number. The mint writes the attempt's harness, provider, model and `credential_id` (an id; the label is read through a join). |
 | `conversation_event` | The append-only log a stream replays. Its `id` is the cursor, and it is global, not per-thread. `UNIQUE (source_kind, source_id)` makes the relay idempotent. |
 | `execution_delta` | Per-execution streamed output, bounded by the `stream/max_delta*` limits. |
@@ -45,6 +45,9 @@ config levels — see [the config README](../config/README.md#numeric-bounds-min
 | `conversation/history/page_size` | 100 | 1 – 500 |
 | `conversation/sweep/pending_grace_seconds` | 60 | 5 – 3600 |
 | `conversation/limits/max_message_bytes` | 32768 | 1024 – 49152 |
+| `conversation/limits/upload_max_bytes` | 26214400 | 1024 – 26214400 |
+| `conversation/limits/uploads_per_message` | 10 | 1 – 20 |
+| `conversation/limits/upload_retention_hours` | 24 | 1 – 168 |
 | `conversation/retention/event_days` | 0 (for ever) | 0 – |
 | `conversation/retention/outbox_days` | 7 | 1 – |
 | `conversation/retention/archived_days` | 0 (for ever) | 0 – |
@@ -190,6 +193,45 @@ unreactivatable.
 A thread whose `agent_view_id` is NULL lost its view to a **delete** (`ON DELETE SET NULL`).
 There is no scope left to reach or to deactivate, so it stays readable to its owner — and a
 new turn on it answers 404, because there is nothing left to run it.
+
+## Files on a message
+
+A composer file goes through **two trees**, and nothing is ever moved between them:
+
+| | Staging | Delivered |
+| --- | --- | --- |
+| Where | `workspace/uploads/t<conversation>/u<user>/<upload_id>/<name>` | `<thread shared>/attachments/<key>/<name>` |
+| Owner | `agent`, dirs 0700, files 0600 | the preparer's uid + `THREAD_GID`, dir 2750, files 0640 |
+| Written by | `POST /api/conversation/threads/<id>/uploads` | run preparation (`deliver_attachments`) |
+| Emptied by | the sweep, after `limits/upload_retention_hours` | thread retention |
+
+The upload route stages one file and answers `{upload_id, name, bytes}`. The id is **not** a
+right: it is only usable by the user who staged it, in the thread they staged it in, because
+the directory it is looked up in is addressed by both.
+
+A submission names its ids in `upload_ids`. The claim is a pure DB write — the descriptor
+`{"key": "m<message_id>", "files": [{"from": …, "as": …}]}` is written to `message.uploads`
+inside the insert's own transaction, under the conversation's named lock `cv_up:<id>`, which
+the sweep also takes. Nothing is copied or renamed at submit time, so there is no filesystem
+step that can fail half way inside a transaction. A file the caller may not use refuses the
+whole message: a submission is its files, or it is nothing.
+
+`complete_pending` reads that column, appends
+
+```
+Attached files:
+- ./shared/attachments/<key>/<name>
+```
+
+to the prompt, and passes the descriptor to the job as `job.attachments` — a vendor-free
+column the framework reads without asking any module what it means (MOD-1). A message that
+carries only files needs no text, and is titled by its first file.
+
+Run preparation copies each file into the thread's `shared/attachments/<key>/` **after** the
+`./shared` link exists, through `O_NOFOLLOW` directory handles (SEC-5), into a temporary
+sibling that is renamed into place. A delivered directory that already holds every name is
+left alone and its sources are never read — which is what makes a retry work, and what lets
+`regenerate` reuse the files verbatim (`key` included) long after staging is swept.
 
 ## Submission: two commits, never one
 

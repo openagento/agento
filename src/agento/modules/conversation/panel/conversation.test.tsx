@@ -662,7 +662,7 @@ describe("the chat turn", () => {
     expect(screen.getByText("Two fi")).toBeInTheDocument();
   });
 
-  it("a turn that failed on its last attempt shows one error, and Retry sends the question again", async () => {
+  it("a turn that failed on its last attempt shows one error, and Retry re-asks the message", async () => {
     captureHub();
     const api = await stubApi({
       ...routes([
@@ -671,15 +671,16 @@ describe("the chat turn", () => {
         ev("error", "x", { text: "rate limited" }, 3),
         ev("job.failed", "x", { job_id: 7, attempt: 3, kind: "harness" }, 4),
       ], () => [msg(1, "why?", "terminal")]),
-      "POST /api/conversation/threads/5/messages": {},
+      "POST /api/conversation/threads/5/regenerate": {},
     });
     render(<View threadId={5} />, { wrapper });
     expect(await screen.findByText("The agent could not answer.")).toBeInTheDocument();
     expect(screen.getByText("The run failed after 3 of 3 attempts.")).toBeInTheDocument();
     expect(screen.getAllByText("The agent could not answer.")).toHaveLength(1);
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    await vi.waitFor(() => expect(api.calls("POST", "/api/conversation/threads/5/messages")).toHaveLength(1));
-    expect(api.calls("POST", "/api/conversation/threads/5/messages")[0].body).toMatchObject({ content: "why?" });
+    // The MESSAGE, not its text: that is what carries the turn's attachments over.
+    await vi.waitFor(() => expect(api.calls("POST", "/api/conversation/threads/5/regenerate")).toHaveLength(1));
+    expect(api.calls("POST", "/api/conversation/threads/5/regenerate")[0].body).toMatchObject({ message_id: 1 });
   });
 
   it("Stop ends a running turn; a stopped turn asks for the next message, with no error", async () => {

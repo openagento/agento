@@ -268,17 +268,20 @@ class Call:
             return False
 
 
-async def _read_body(receive, headers, limit: int, json_body: bool) -> bytes | api.Response:
+async def _read_body(receive, headers, limit: int, json_body: bool,
+                     *, multipart: bool = False) -> bytes | api.Response:
     try:
         length = int(headers.get("Content-Length") or 0)
     except ValueError:
         return api.error(400, "bad Content-Length")
     if length > limit:
         return api.error(413, "body too large")
+    ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
     if json_body:
-        ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype != "application/json":
             return api.error(400, "Content-Type must be application/json")
+    elif multipart and ctype != "multipart/form-data":
+        return api.error(400, "Content-Type must be multipart/form-data")
     body = b""
     while True:                       # bounded too when the body is chunked, with no length
         message = await receive()
@@ -359,7 +362,12 @@ class RegexRoute(BaseRoute):
             if route is None:
                 resp = api.error(405 if known else 404, "method not allowed" if known else "not found")
             else:
-                body = await _read_body(receive, call.headers, MAX_JSON_BODY, route.json_body)
+                # A multipart route brings its own cap; every other route is JSON-only at
+                # MAX_JSON_BODY, unchanged (SEC-9).
+                body = await _read_body(
+                    receive, call.headers,
+                    route.multipart_bytes or MAX_JSON_BODY,
+                    route.json_body, multipart=route.multipart_bytes > 0)
                 resp = await anyio.to_thread.run_sync(call._api, route, body)
         else:
             resp = api.Response(404, b"")

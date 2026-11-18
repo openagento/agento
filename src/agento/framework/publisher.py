@@ -38,6 +38,7 @@ def insert_job(
     requester: JobRequester | None,
     prompt: str | None = None,
     context: str | None = None,
+    attachments: str | None = None,
     harness: str | None = None,
     model: str | None = None,
     thread: str | None = None,
@@ -84,15 +85,15 @@ def insert_job(
         """
         INSERT INTO job
             (type, source, agent_view_id, priority, reference_id,
-             idempotency_key, status, attempt, max_attempts, prompt, context, schedule_id,
+             idempotency_key, status, attempt, max_attempts, prompt, context, attachments, schedule_id,
              requester_key, requester_email, requester_trust, requester_meta,
              agent_type, model, parent_job_id, depth, thread_id, line_id, test_config)
         VALUES
-            (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            (%s, %s, %s, %s, %s, %s, 'TODO', 0, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
              %s, %s, %s, %s, %s, %s)
         """,
         (agent_type.value, source, agent_view_id, priority, reference_id,
-         idempotency_key, max_attempts, prompt, context, schedule_id,
+         idempotency_key, max_attempts, prompt, context, attachments, schedule_id,
          requester.key if requester else None,
          requester.email if requester else None,
          requester.trust.value if requester else "claimed",

@@ -129,6 +129,11 @@ npm test            # build, lint, then every unit test and every story in headl
   thread list is a `Drawer`. Each rendered timeline item is exactly one `li` of `ChatList`.
   The timeline scrolls only vertically (`scrollbars="y"`); an answer wraps long words and URLs,
   and its wide tables and code blocks scroll inside their own box (story `WideContent`).
+  `ChatComposer` is one pill with one submit control: `stoppable` + `onStop` turn Send into
+  Stop while a turn runs, and `attachments` + `onFiles` + `onRemoveAttachment` add the file
+  row, the "Add files" button and the whole-pill drop target. Both are optional, so the
+  composer without them is exactly the field it was. The page owns the uploads; the component
+  holds no state but the drag counter.
   A sub-agent's job is a `SubagentRun` card (collapsed, with its state badge) nested in its
   parent's turn; open, it holds its own `ChatList` ([conversation.md](../modules/conversation.md#turns-and-sub-agents-in-the-panel)).
   `Rail` is the thread column: a fixed top block (new conversation, the `SearchToggle`, the search

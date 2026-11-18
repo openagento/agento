@@ -97,13 +97,15 @@ def test_both_paths_end_in_one_schema_and_convert_the_legacy_row(two_dbs, tmp_pa
     try:
         _old_shape(a, tmp_path / "a")
         _legacy_row(a)
-        assert migrate(a) == ["056_generic_schedule"]
+        # `in`, not `==`: every later framework migration runs here too, and this test is
+        # about 056 alone.
+        assert "056_generic_schedule" in migrate(a)
         _jira(a)
 
         _old_shape(b, tmp_path / "b")
         _legacy_row(b)
         _jira(b)
-        assert migrate(b) == ["056_generic_schedule"]
+        assert "056_generic_schedule" in migrate(b)
 
         schema_a, schema_b = _schema(a, db_a), _schema(b, db_b)
         assert schema_a == schema_b

@@ -155,6 +155,63 @@ describe("ChatComposer", () => {
       { wrapper: AgentoUiProvider });
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
+
+  it("without `onFiles` the composer has no Add files control at all", () => {
+    setup();
+    expect(screen.queryByRole("button", { name: "Add files" })).not.toBeInTheDocument();
+  });
+
+  it("a picked file reaches onFiles; chips name the files and each one can be removed", () => {
+    const onFiles = vi.fn();
+    const onRemove = vi.fn();
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} canSend onFiles={onFiles}
+      onRemoveAttachment={onRemove}
+      attachments={[{ id: "1", name: "report.pdf", status: "ready" },
+        { id: "2", name: "notes.txt", status: "uploading" }]} />, { wrapper: AgentoUiProvider });
+    expect(screen.getByText("report.pdf")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Remove notes.txt" }));
+    expect(onRemove).toHaveBeenCalledWith("2");
+  });
+
+  it("a ready file may be sent with no text; a file still uploading holds Send back", () => {
+    const onSend = vi.fn();
+    const { unmount } = render(<ChatComposer value="" onChange={vi.fn()} onSend={onSend} canSend
+      onFiles={vi.fn()} attachments={[{ id: "1", name: "a.pdf", status: "ready" }]} />,
+      { wrapper: AgentoUiProvider });
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    unmount();
+    render(<ChatComposer value="hi" onChange={vi.fn()} onSend={onSend} canSend onFiles={vi.fn()}
+      attachments={[{ id: "1", name: "a.pdf", status: "uploading" }]} />, { wrapper: AgentoUiProvider });
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("a failed file keeps its place with the reason, and does not hold Send back", () => {
+    render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} canSend onFiles={vi.fn()}
+      attachments={[{ id: "1", name: "big.zip", status: "error", error: "file too large" }]} />,
+      { wrapper: AgentoUiProvider });
+    expect(screen.getByTitle("big.zip — file too large")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+
+  it("a drop hands the files over, and the hint only shows while the drag is over", () => {
+    const onFiles = vi.fn();
+    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} canSend onFiles={onFiles} />,
+      { wrapper: AgentoUiProvider });
+    const form = screen.getByRole("textbox", { name: "Message" }).closest("form")!;
+    const file = new File(["x"], "a.pdf");
+    expect(screen.queryByText("Drop files to attach")).not.toBeInTheDocument();
+    fireEvent.dragEnter(form, { dataTransfer: { files: [file] } });
+    expect(screen.getByText("Drop files to attach")).toBeInTheDocument();
+    // Leaving a CHILD must not clear the hint - that is what the counter is for.
+    fireEvent.dragEnter(form.querySelector("textarea")!, { dataTransfer: { files: [file] } });
+    fireEvent.dragLeave(form.querySelector("textarea")!);
+    expect(screen.getByText("Drop files to attach")).toBeInTheDocument();
+    fireEvent.drop(form, { dataTransfer: { files: [file] } });
+    expect(onFiles).toHaveBeenCalledWith([file]);
+    expect(screen.queryByText("Drop files to attach")).not.toBeInTheDocument();
+  });
 });
 
 describe("ToolCall and ChatError", () => {

@@ -13,5 +13,8 @@
   "retention/event_days": 0,
   "retention/outbox_days": 7,
   "retention/archived_days": 0,
-  "retention/idle_days": 90
+  "retention/idle_days": 90,
+  "limits/upload_max_bytes": 26214400,
+  "limits/uploads_per_message": 10,
+  "limits/upload_retention_hours": 24
 }

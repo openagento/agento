@@ -120,6 +120,8 @@ class Job:
     thread_id: int | None = None
     resume_job_id: int | None = None
     line_id: int | None = None
+    # The files the run must find under `./shared/attachments/` (artifacts_dir).
+    attachments: str | None = None
     # Not a `job` column: the random key of the job's thread, read at claim; it names the
     # thread's dir (artifacts_dir.thread_dir).
     thread_key: str | None = None
@@ -183,6 +185,7 @@ class Job:
             prompt=row.get("prompt"),
             output=row.get("output"),
             context=row.get("context"),
+            attachments=row.get("attachments"),
             idempotency_key=row["idempotency_key"],
             status=JobStatus(row["status"]),
             attempt=row["attempt"],

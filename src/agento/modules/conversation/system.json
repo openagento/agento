@@ -68,6 +68,27 @@
     "min": 1024,
     "max": 49152
   },
+  "limits/upload_max_bytes": {
+    "type": "integer",
+    "label": "Maximum upload size (bytes)",
+    "description": "The largest single file the composer may attach. The route's own body cap is a little larger, for the multipart framing.",
+    "min": 1024,
+    "max": 26214400
+  },
+  "limits/uploads_per_message": {
+    "type": "integer",
+    "label": "Files per message",
+    "description": "How many staged files one message may claim.",
+    "min": 1,
+    "max": 20
+  },
+  "limits/upload_retention_hours": {
+    "type": "integer",
+    "label": "Staged upload retention (hours)",
+    "description": "A staged file no message has claimed is removed after this long. Claimed files live in the thread, not here.",
+    "min": 1,
+    "max": 168
+  },
   "retention/event_days": {
     "type": "integer",
     "label": "Event retention (days)",

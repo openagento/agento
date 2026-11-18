@@ -15,6 +15,7 @@ Two things carry the weight here:
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from datetime import datetime
@@ -37,7 +38,18 @@ from agento.framework.job_types import resolve_job_type
 from agento.framework.publish_service import publish_job
 from agento.framework.threads import ensure_thread
 
+from . import uploads
+
 logger = logging.getLogger(__name__)
+
+
+def _uploads_json(value: object) -> str | None:
+    """`message.uploads` as the JSON text the framework takes. PyMySQL hands a JSON column
+    back already decoded on some servers and as text on others; both reach here."""
+    if value is None:
+        return None
+    return value if isinstance(value, str) else json.dumps(value)
+
 MODULE_DIR = Path(__file__).resolve().parent.parent
 JOB_TYPE = "conversation"
 FOLLOWUP_JOB_TYPE = "followup"
@@ -1027,13 +1039,35 @@ def check_client_message_id(value: object) -> str:
     return value
 
 
-def check_content(conn, value: object) -> str:
-    if not isinstance(value, str) or not value:
+def check_content(conn, value: object, *, allow_empty: bool = False) -> str:
+    """`allow_empty` is a submission that carries files: the files ARE the message, and the
+    turn's prompt is then the `Attached files:` block alone."""
+    if not isinstance(value, str) or (not value and not allow_empty):
         raise SubmissionError(400, "content must be a non-empty string")
     # Bytes, not characters: the column and every relay downstream count bytes.
     if len(_utf8(value, "content")) > config(conn, "limits/max_message_bytes"):
         raise SubmissionError(413, "message too large")
     return value
+
+
+def check_upload_ids(conn, value: object) -> list[str] | None:
+    """The staged ids a submission claims. None when the caller attached nothing."""
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise SubmissionError(400, "upload_ids must be a list of strings")
+    if not value:
+        return None
+    if len(value) > config(conn, "limits/uploads_per_message"):
+        raise SubmissionError(400, "too many files for one message")
+    if len(set(value)) != len(value):
+        raise SubmissionError(400, "upload_ids must be unique")
+    return value
+
+
+def check_upload_bytes(conn, data: bytes) -> None:
+    if len(data) > config(conn, "limits/upload_max_bytes"):
+        raise SubmissionError(413, "file too large")
 
 
 def check_title(value: object) -> str | None:
@@ -1048,7 +1082,8 @@ def check_title(value: object) -> str | None:
 
 def submit_message(conn, *, conversation_id: int, user_id: int, client_message_id: str,
                    content: str, reactivate_actor_id: int | None = None,
-                   writer: User | None = None, seen: dict | None = None
+                   writer: User | None = None, seen: dict | None = None,
+                   upload_ids: list[str] | None = None, uploads_json: str | None = None
                    ) -> tuple[int, int, bool]:
     """(message_id, job_id, created). §4.1's three steps, of which this is 1 and 3.
 
@@ -1060,7 +1095,29 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
 
     `writer` and `seen` (the conversation row the route checked): a route's post. The read
     and write gates are asked again in this transaction, before the insert (SEC-7).
+
+    `upload_ids` CLAIMS staged uploads for this message: a pure DB write of the descriptor
+    into `message.uploads`, inside this transaction, under the conversation's upload lock -
+    so the sweep cannot take a file between the descriptor and the commit. Nothing is ever
+    moved; delivery copies. `uploads_json` is a descriptor that already exists (a
+    regeneration reuses the one its original claimed) and is written verbatim.
     """
+    # Around the lock too: `GET_LOCK` refusing is a 503 for the caller, not a 500.
+    try:
+        with (uploads.uploads_lock(conn, conversation_id) if upload_ids
+              else contextlib.nullcontext()):
+            return _submit_locked(conn, conversation_id=conversation_id, user_id=user_id,
+                                  client_message_id=client_message_id, content=content,
+                                  reactivate_actor_id=reactivate_actor_id, writer=writer,
+                                  seen=seen, upload_ids=upload_ids, uploads_json=uploads_json)
+    except uploads.UploadError as exc:
+        raise SubmissionError(exc.status, str(exc)) from None
+
+
+def _submit_locked(conn, *, conversation_id: int, user_id: int, client_message_id: str,
+                   content: str, reactivate_actor_id: int | None, writer: User | None,
+                   seen: dict | None, upload_ids: list[str] | None,
+                   uploads_json: str | None) -> tuple[int, int, bool]:
     created = True
     revived = False
     try:
@@ -1083,10 +1140,19 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
                 (conversation_id, user_id, content, client_message_id),
             )
             message_id = cur.lastrowid
+            if upload_ids:
+                uploads_json = json.dumps(uploads.descriptor(
+                    conversation_id, user_id, upload_ids, f"m{message_id}"))
+            if uploads_json:
+                cur.execute("UPDATE message SET uploads = %s WHERE id = %s",
+                            (uploads_json, message_id))
             # An untitled thread is named by its first message (E9 chat UX, U9); a thread
             # created with a title keeps it. Under the row lock taken above.
+            # A message that is only files is titled by its first file: an empty title would
+            # leave the thread unnamed for ever, since the column is only set while NULL.
+            first = json.loads(uploads_json)["files"][0]["as"] if uploads_json else None
             cur.execute("UPDATE conversation SET title = %s WHERE id = %s AND title IS NULL",
-                        (derive_title(content), conversation_id))
+                        (derive_title(content or first or ""), conversation_id))
             # Only the winner announces the turn: the re-read path below is a replay of a
             # turn the thread has already announced, and the event row has no uniqueness
             # of its own that would save it from a second announcement.
@@ -1095,6 +1161,9 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
                          source_kind="message", source_id=message_id,
                          locked=reactivate_actor_id is None)
         conn.commit()
+    except uploads.UploadError as exc:
+        conn.rollback()                 # the message is not written without its files
+        raise SubmissionError(exc.status, str(exc)) from None
     except SubmissionError:
         conn.rollback()                 # release the locks; nothing was written
         raise
@@ -1145,7 +1214,7 @@ def regenerate(conn, *, conversation_id: int, message_id: int, user_id: int,
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT content FROM message WHERE id = %s AND conversation_id = %s "
+            "SELECT content, uploads FROM message WHERE id = %s AND conversation_id = %s "
             "AND role = 'user'",
             (message_id, conversation_id),
         )
@@ -1155,7 +1224,11 @@ def regenerate(conn, *, conversation_id: int, message_id: int, user_id: int,
         raise SubmissionError(404, "message not found")
     return submit_message(conn, conversation_id=conversation_id, user_id=user_id,
                           client_message_id=client_message_id, content=row["content"],
-                          reactivate_actor_id=user_id, writer=writer, seen=seen)
+                          reactivate_actor_id=user_id, writer=writer, seen=seen,
+                          # Verbatim, `key` included: the new turn reuses the files the
+                          # original already had DELIVERED to the thread. Staging is long
+                          # gone by then, and nothing has to be re-uploaded.
+                          uploads_json=_uploads_json(row["uploads"]))
 
 
 def derive_title(content: str) -> str:
@@ -1179,7 +1252,7 @@ def complete_pending(conn, message_id: int) -> int:
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT m.id, m.content, m.job_id, m.job_state, m.conversation_id, "
+            "SELECT m.id, m.content, m.uploads, m.job_id, m.job_state, m.conversation_id, "
             "       m.author_user_id, c.agent_view_id, c.channel, c.external_ref, c.thread_id "
             "FROM message m JOIN conversation c ON c.id = m.conversation_id "
             "WHERE m.id = %s",
@@ -1192,6 +1265,9 @@ def complete_pending(conn, message_id: int) -> int:
     if row["job_state"] != "pending":
         return row["job_id"]              # already published: nothing happened here
 
+    attachments = _uploads_json(row.get("uploads"))
+    block = uploads.prompt_block(json.loads(attachments)) if attachments else ""
+    prompt = (row["content"] + block) if row["content"] else block.lstrip("\n")
     requester = (None if row["author_user_id"] is None else
                  JobRequester(key=f"user:{row['author_user_id']}", trust=RequesterTrust.ACCOUNT))
     if row["channel"] == PANEL_CHANNEL:
@@ -1203,7 +1279,8 @@ def complete_pending(conn, message_id: int) -> int:
             idempotency_key=f"conversation:{row['conversation_id']}:{row['id']}",
             requester=requester,
             priority=50,
-            prompt=row["content"],
+            prompt=prompt,
+            attachments=attachments,
             # Every turn of one conversation is one thread: a turn continues the last one.
             thread=panel_thread_ref(row["conversation_id"]),
         )
@@ -1220,7 +1297,8 @@ def complete_pending(conn, message_id: int) -> int:
             idempotency_key=f"channel-reply:{row['conversation_id']}:{row['id']}",
             requester=requester,
             priority=50,
-            context=row["content"],
+            context=prompt,
+            attachments=attachments,
             # The channel's own thread: the reply is the next turn of the mail conversation,
             # issue or PR, and its run lands in this conversation (`link_execution`). A
             # thread whose view is gone has no owner to join (`join_thread`): the reply then
@@ -1272,6 +1350,49 @@ def sweep_pending(conn, *, grace_seconds: int, limit: int = 500) -> int:
     for message_id in ids:
         complete_pending(conn, message_id)
     return len(ids)
+
+
+def sweep_uploads(conn, *, retention_hours: int) -> int:
+    """Remove staged files that no live message needs any more. Returns how many.
+
+    Staging is the record of what was uploaded and not yet claimed, so the sweep is the
+    only thing that empties it. It holds the conversation's upload lock, which a claim
+    also holds from before it reads the directory until after it commits - so a file can
+    never be taken between the descriptor and the message that names it.
+
+    A claimed file stays until its turn is terminal: delivery copies from staging at run
+    preparation, and a retry of a live turn prepares again. After that the thread's own
+    copy is what every later turn reuses (`regenerate`).
+    """
+    taken = 0
+    for conversation_id in uploads.conversations_with_uploads():
+        try:
+            taken += _sweep_one(conn, conversation_id, retention_hours)
+        except uploads.UploadError:
+            continue          # busy: this conversation waits for the next tick
+    return taken
+
+
+def _sweep_one(conn, conversation_id: int, retention_hours: int) -> int:
+    """One conversation's staging, under its own lock."""
+    taken = 0
+    with uploads.uploads_lock(conn, conversation_id):
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT uploads FROM message WHERE conversation_id = %s "
+                "AND uploads IS NOT NULL AND job_state <> 'terminal'",
+                (conversation_id,))
+            rows = cur.fetchall()
+        conn.commit()                     # the SELECT opened a transaction
+        live = {Path(f["from"]).parent.name
+                for row in rows for f in json.loads(_uploads_json(row["uploads"]))["files"]}
+        for user_id in uploads.users_with_uploads(conversation_id):
+            for upload_id in uploads.expired_dirs(conversation_id, user_id, retention_hours):
+                if upload_id in live:
+                    continue
+                uploads.remove(conversation_id, user_id, upload_id)
+                taken += 1
+    return taken
 
 
 def reconcile_terminal(conn, limit: int = 500) -> int:

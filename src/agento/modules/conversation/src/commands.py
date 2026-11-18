@@ -5,6 +5,7 @@ Two halves, in order:
 * `sweep_pending` finishes a submission whose publish never happened (the §4.1 crash
   window), which is bounded by `sweep/pending_grace_seconds` so a live submission still in
   flight is never raced;
+* `sweep_uploads` removes staged files no live message needs;
 * `reconcile_terminal` advances a message whose job already finished but whose finalizer
   write was lost. §4.4 reads that column to let the next turn run, so without this half a
   crash at the wrong moment blocks the thread for ever.
@@ -44,7 +45,10 @@ class ConversationSweepCommand:
             grace = service.config(conn, "sweep/pending_grace_seconds")
             completed = service.sweep_pending(conn, grace_seconds=grace)
             advanced = service.reconcile_terminal(conn)
-            print(f"Completed {completed} pending message(s), advanced {advanced} to terminal.")
+            swept = service.sweep_uploads(
+                conn, retention_hours=service.config(conn, "limits/upload_retention_hours"))
+            print(f"Completed {completed} pending message(s), advanced {advanced} to "
+                  f"terminal, removed {swept} stale upload(s).")
         finally:
             conn.close()
 
