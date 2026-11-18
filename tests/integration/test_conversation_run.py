@@ -47,6 +47,7 @@ def test_the_prompt_carries_the_turn_and_the_prior_history(conn, world):
 
     assert prompt.index("pierwsze") < prompt.index("odpowiedź") < prompt.index("drugie")
     assert "Użytkownik: drugie" in prompt
+    assert "Formatuj odpowiedź w Markdown (GFM)." in prompt
 
 
 def test_a_second_turn_queued_first_is_not_swallowed_by_the_first_run(conn, world):

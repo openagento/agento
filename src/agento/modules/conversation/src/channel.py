@@ -10,7 +10,8 @@ from __future__ import annotations
 from agento.framework.channels.base import PromptFragments
 
 _READ = "Kontekst to wątek rozmowy poniżej. Nie ma zewnętrznego systemu do odczytu."
-_RESPOND = "Odpowiedz użytkownikowi w tym samym języku, w którym napisał."
+_RESPOND = ("Odpowiedz użytkownikowi w tym samym języku, w którym napisał. "
+            "Formatuj odpowiedź w Markdown (GFM).")
 
 
 class ConversationChannel:
