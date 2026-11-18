@@ -43,6 +43,12 @@ from . import uploads
 logger = logging.getLogger(__name__)
 
 
+def attachment_names(value: object) -> list[str]:
+    """The file names a message carried, for a reader. Never the paths behind them."""
+    raw = _uploads_json(value)
+    return [f["as"] for f in json.loads(raw)["files"]] if raw else []
+
+
 def _uploads_json(value: object) -> str | None:
     """`message.uploads` as the JSON text the framework takes. PyMySQL hands a JSON column
     back already decoded on some servers and as text on others; both reach here."""
@@ -342,7 +348,7 @@ def list_messages(conn, *, conversation_id: int, limit: int) -> list[dict]:
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT m.id, m.role, m.content, m.client_message_id, m.job_id, m.job_state, "
+            "SELECT m.id, m.role, m.content, m.uploads, m.client_message_id, m.job_id, m.job_state, "
             "       m.created_at, j.status AS job_status, j.session_id, j.error_class "
             "FROM message m LEFT JOIN job j ON j.id = m.job_id "
             "WHERE m.conversation_id = %s ORDER BY m.created_at, m.id LIMIT %s",
@@ -519,11 +525,16 @@ def project_events(conn, rows: list[dict], user: User, conversation: dict) -> li
     message_ids = {p["message_id"] for r, p in zip(rows, payloads, strict=True)
                    if r["kind"] == "message.created" and p.get("message_id")}
     contents: dict[int, str] = {}
+    attached: dict[int, list[str]] = {}
     if message_ids:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, content FROM message WHERE id IN "
+            cur.execute("SELECT id, content, uploads FROM message WHERE id IN "
                         f"({','.join(['%s'] * len(message_ids))})", list(message_ids))
-            contents = {m["id"]: m["content"] for m in cur.fetchall()}
+            rows_by_id = {m["id"]: m for m in cur.fetchall()}
+        contents = {i: m["content"] for i, m in rows_by_id.items()}
+        # The names only: what the reader needs is "this message carried these files", and
+        # the staging path behind them is nobody's business (SEC-9).
+        attached = {i: attachment_names(m["uploads"]) for i, m in rows_by_id.items()}
     details = can_see_run_details(conn, user, conversation)
     job_ids = {p["job_id"] for r, p in zip(rows, payloads, strict=True)
                if details and r["kind"] in _PROMPTED and p.get("job_id")}
@@ -542,6 +553,8 @@ def project_events(conn, rows: list[dict], user: User, conversation: dict) -> li
     for row, payload in zip(rows, payloads, strict=True):
         if row["kind"] == "message.created" and payload.get("message_id") in contents:
             payload["content"] = contents[payload["message_id"]]
+            if attached.get(payload["message_id"]):
+                payload["attachments"] = attached[payload["message_id"]]
         if row["kind"] in _PROMPTED and payload.get("job_id") in prompts:
             payload["prompt"] = prompts[payload["job_id"]]
         if not details and isinstance(payload.get("data"), dict):

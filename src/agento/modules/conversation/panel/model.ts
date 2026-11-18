@@ -55,6 +55,8 @@ export interface Message {
   blocked: boolean; blocked_reason: "paused" | "paused_unrecoverable" | null;
   /** The turn was stopped from the panel: it ended without an answer, on purpose. */
   stopped?: boolean;
+  /** The names of the files this message carried. A message may be files and no text. */
+  attachments?: string[];
 }
 
 export const RUN_POLL_MS = 10_000;

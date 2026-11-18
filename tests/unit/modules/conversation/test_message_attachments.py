@@ -91,21 +91,20 @@ class TestClaim:
         cur.lastrowid = 2
         with patch.object(uploads, "uploads_lock"), \
                 patch.object(uploads, "descriptor", side_effect=uploads.UploadError(400, "upload not available")), \
-                patch.object(service, "complete_pending") as publish:
-            with pytest.raises(service.SubmissionError) as caught:
-                service.submit_message(conn, conversation_id=1, user_id=4,
-                                       client_message_id="c1", content="hi", upload_ids=["ab"])
+                patch.object(service, "complete_pending") as publish, pytest.raises(service.SubmissionError) as caught:
+            service.submit_message(conn, conversation_id=1, user_id=4,
+                                   client_message_id="c1", content="hi", upload_ids=["ab"])
         assert caught.value.status == 400
         conn.rollback.assert_called()
         publish.assert_not_called()
 
     def test_a_busy_conversation_is_a_503_not_a_500(self):
-        conn, cur = fake_conn([{"id": 2}])
+        conn, _ = fake_conn([{"id": 2}])
         with patch.object(uploads, "uploads_lock",
-                          side_effect=uploads.UploadError(503, "uploads are busy, try again")):
-            with pytest.raises(service.SubmissionError) as caught:
-                service.submit_message(conn, conversation_id=1, user_id=4,
-                                       client_message_id="c1", content="hi", upload_ids=["ab"])
+                          side_effect=uploads.UploadError(503, "uploads are busy, try again")), \
+                pytest.raises(service.SubmissionError) as caught:
+            service.submit_message(conn, conversation_id=1, user_id=4,
+                                   client_message_id="c1", content="hi", upload_ids=["ab"])
         assert caught.value.status == 503
 
     def test_a_message_of_only_files_is_titled_by_its_first_file(self):

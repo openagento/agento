@@ -48,6 +48,7 @@ def _run_json(row: dict, details: bool) -> dict:
 def _message_json(row: dict) -> dict:
     reason = row.get("blocked_reason")
     return {"id": row["id"], "role": row["role"], "content": row["content"],
+            "attachments": service.attachment_names(row.get("uploads")),
             "client_message_id": row["client_message_id"], "job_id": row["job_id"],
             "job_state": row["job_state"], "created_at": _iso(row["created_at"]),
             # A reader must be able to tell "waiting" from "stuck" (§4.5).

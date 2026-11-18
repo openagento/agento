@@ -6,7 +6,6 @@ test here is really the same question: can a turn that plants a symlink or a hal
 the next delivery write outside the thread, or read a file that is not there any more?
 """
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -30,7 +29,7 @@ def workspace(tmp_path, monkeypatch):
 
 
 def descriptor(key="m7", source="uploads/t1/u2/abc/report.pdf", name="report.pdf"):
-    return '{"key": "%s", "files": [{"from": "%s", "as": "%s"}]}' % (key, source, name)
+    return f'{{"key": "{key}", "files": [{{"from": "{source}", "as": "{name}"}}]}}'
 
 
 class TestParse:
@@ -124,9 +123,9 @@ class TestDeliver:
 
     def test_a_failed_copy_leaves_no_half_delivered_dir(self, workspace, tmp_path):
         shared = tmp_path / "thread" / "shared"
-        with patch("agento.framework.artifacts_dir.shutil.copyfile", side_effect=OSError("disk")):
-            with pytest.raises(OSError):
-                deliver_attachments(descriptor(), shared, gid=os.getgid())
+        with patch("agento.framework.artifacts_dir.shutil.copyfile", side_effect=OSError("disk")), \
+                pytest.raises(OSError):
+            deliver_attachments(descriptor(), shared, gid=os.getgid())
         assert list((shared / "attachments").iterdir()) == []
 
     def test_nothing_happens_without_a_descriptor(self, tmp_path):
@@ -135,10 +134,15 @@ class TestDeliver:
         assert not shared.exists()
 
 
-def test_run_preparation_delivers_after_the_shared_link():
-    """The copy must land in the THREAD's dir, which `./shared` only points at once
-    `prepare_thread_dir` has run - before that it would land in the run dir, and the next
-    turn of the thread would not see the files at all."""
-    from agento.framework import run_preparation
-    source = Path(run_preparation.__file__).read_text()
-    assert source.index("prepare_thread_dir") < source.index("deliver_attachments(attachments")
+def test_delivery_is_given_the_threads_own_dir_not_the_runs_link(workspace, tmp_path):
+    """Every destination is opened with `O_NOFOLLOW`, so handing the run's `./shared` symlink
+    to the delivery would fail every real run. Run preparation must pass the thread's dir."""
+    thread = tmp_path / "_threads" / "k" / "shared"
+    thread.mkdir(parents=True)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "shared").symlink_to(thread)
+    with pytest.raises(OSError):
+        deliver_attachments(descriptor(), run / "shared", gid=os.getgid())
+    deliver_attachments(descriptor(), thread, gid=os.getgid())
+    assert (thread / "attachments" / "m7" / "report.pdf").is_file()

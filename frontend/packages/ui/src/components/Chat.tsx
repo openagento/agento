@@ -51,10 +51,12 @@ export function ChatList({ children }: { children: ReactNode }) {
 /** One message. `user`: a bubble on the right, plain text. `assistant`: full width Markdown.
  *  `incoming`: what a channel sent (a trigger), plain text on the left under its `label`. The
  *  time and a copy button show on hover. */
-export function ChatMessage({ author, text, time, label, actions: extra }: {
+export function ChatMessage({ author, text, time, label, actions: extra, attachments }: {
   author: "user" | "assistant" | "incoming"; text: string; time?: string | null; label?: ReactNode;
   /** More actions for this message's hover row (Regenerate on the newest answer). */
   actions?: ReactNode;
+  /** The names of the files this message carried. A message may be files and nothing else. */
+  attachments?: string[];
 }) {
   const actions = (
     <Group gap={TIGHT} className={classes.actions}>
@@ -70,7 +72,12 @@ export function ChatMessage({ author, text, time, label, actions: extra }: {
     <div className={`${classes.message} ${author === "user" ? classes.user : ""}`}>
       {label && <Text size="xs" c="dimmed">{label}</Text>}
       <Paper radius="lg" px="md" py="xs" className={`${classes.bubble} ${author === "incoming" ? classes.incoming : ""}`}>
-        <Text size="sm" className={classes.pre}>{text}</Text>
+        {text !== "" && <Text size="sm" className={classes.pre}>{text}</Text>}
+        {attachments && attachments.length > 0 && (
+          <div className={classes.chips}>
+            {attachments.map((name) => <FileChip key={name} name={name} />)}
+          </div>
+        )}
       </Paper>
       {actions}
     </div>
@@ -197,19 +204,40 @@ export function ChatError({ title, children, details, onRetry }: {
 /** One file the composer is carrying. `uploading` shows a spinner; `error` says why it failed. */
 export interface Attachment { id: string; name: string; status: "uploading" | "ready" | "error"; error?: string }
 
-/** A chip per attached file. The name is middle-truncated by CSS, and the full one is the title. */
+/** A long name keeps its extension: `a-very-long-report-name.pdf` reads as `a-very-l….pdf`,
+ *  which is what tells two attachments apart. The full name stays in the `title`. */
+export function middleEllipsis(name: string, max = 24): string {
+  if (name.length <= max) return name;
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 && name.length - dot <= 6 ? name.slice(dot) : "";
+  return `${name.slice(0, max - ext.length - 1)}…${ext}`;
+}
+
+/** One file, as a chip. In the composer it is removable and may still be uploading; under a
+ *  sent message it is just the name. */
+function FileChip({ name, icon, tone, title, action }: {
+  name: string; icon?: ReactNode; tone?: "error"; title?: string; action?: ReactNode;
+}) {
+  return (
+    <div className={tone === "error" ? `${classes.chip} ${classes.chipError}` : classes.chip}
+      title={title ?? name}>
+      {icon ?? <Paperclip size={12} />}
+      <Text span size="xs">{middleEllipsis(name)}</Text>
+      {action}
+    </div>
+  );
+}
+
 function AttachmentChip({ file, onRemove }: { file: Attachment; onRemove?: (id: string) => void }) {
   const failed = file.status === "error";
   return (
-    <div className={failed ? `${classes.chip} ${classes.chipError}` : classes.chip}
-      title={failed ? `${file.name} — ${file.error ?? "upload failed"}` : file.name}>
-      {file.status === "uploading" ? <Loader size={12} /> : <Paperclip size={12} />}
-      <Text span size="xs" className={classes.chipName}>{file.name}</Text>
-      {onRemove && (
+    <FileChip name={file.name} tone={failed ? "error" : undefined}
+      title={failed ? `${file.name} — ${file.error ?? "upload failed"}` : file.name}
+      icon={file.status === "uploading" ? <Loader size={12} /> : <Paperclip size={12} />}
+      action={onRemove && (
         <UnstyledButton className={classes.chipRemove} aria-label={`Remove ${file.name}`}
           onClick={() => onRemove(file.id)}><X size={12} /></UnstyledButton>
-      )}
-    </div>
+      )} />
   );
 }
 
@@ -221,9 +249,11 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error, pl
 }) {
   const stop = stoppable && onStop !== undefined;
   const files = attachments ?? [];
-  const busy = files.some((f) => f.status === "uploading");
+  // A file that failed holds Send back until the user removes it: sending around it would
+  // silently drop a file the user believes is attached.
+  const held = files.some((f) => f.status === "uploading" || f.status === "error");
   // A message with a ready file needs no text: the files ARE the message.
-  const ready = canSend && !busy && (value.trim() !== "" || files.some((f) => f.status === "ready"));
+  const ready = canSend && !held && (value.trim() !== "" || files.some((f) => f.status === "ready"));
   const submit = (e?: FormEvent) => { e?.preventDefault(); if (ready) onSend(); };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
@@ -254,7 +284,7 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error, pl
             textarea is `unstyled` so the pill's own border is the only box (U9). */}
         <div className={over > 0 ? `${classes.pill} ${classes.pillOver}` : classes.pill}>
           {files.length > 0 && (
-            <div className={classes.chips}>
+            <div className={classes.chips} aria-live="polite" aria-label="Attached files">
               {files.map((f) => <AttachmentChip key={f.id} file={f} onRemove={onRemoveAttachment} />)}
             </div>
           )}

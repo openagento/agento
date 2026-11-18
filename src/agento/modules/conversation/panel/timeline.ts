@@ -126,7 +126,8 @@ export interface Thought { type: "reasoning"; key: string; text: string; live: b
 export type Item =
   // `messageId`: a retry of this turn re-asks the MESSAGE, not its text - that is what
   // carries its attachments into the new turn (the content alone would lose them).
-  | { type: "user"; key: string; content: string; messageId: number | null; createdAt: string | null }
+  | { type: "user"; key: string; content: string; messageId: number | null;
+      attachments?: string[]; createdAt: string | null }
   | Text
   | Thought
   | { type: "answer"; key: string; content: string }
@@ -183,6 +184,8 @@ export function buildItems(events: StreamEvent[]): Item[] {
       case "message.created":
         into.push({ type: "user", key, content: str(e.payload.content),
           messageId: typeof e.payload.message_id === "number" ? e.payload.message_id : null,
+          attachments: Array.isArray(e.payload.attachments)
+            ? e.payload.attachments.filter((n): n is string => typeof n === "string") : undefined,
           createdAt: e.created_at ?? null });
         break;
       case "assistant.partial":

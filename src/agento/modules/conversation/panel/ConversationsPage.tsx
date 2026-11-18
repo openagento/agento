@@ -230,7 +230,7 @@ export function Composer({ threadId, busy, stoppable = false, onStop, stopping =
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
       placeholder="Ask the agent…" stoppable={stoppable} onStop={onStop} stopping={stopping}
       attachments={files.files} onFiles={files.add} onRemoveAttachment={files.remove}
-      hint={busy ? "The agent is answering…" : "Enter sends. Shift+Enter adds a new line. The agent can make mistakes."}
+      hint={busy ? "The agent is answering…" : "Enter sends. Shift+Enter adds a new line. Drop or paste files to attach. The agent can make mistakes."}
       error={send.error ? message(send.error) : undefined} />
   );
 }
@@ -273,7 +273,8 @@ function retained(rows: Message[], events: StreamEvent[]): Item[] {
   const oldest = events[0]?.created_at;
   return rows.filter((m) => !shown.has(m.id) && (!oldest || !m.created_at || Date.parse(m.created_at) <= Date.parse(oldest)))
     .map((m): Item => (m.role === "user"
-      ? { type: "user", key: `message-${m.id}`, content: m.content, messageId: m.id, createdAt: m.created_at }
+      ? { type: "user", key: `message-${m.id}`, content: m.content, messageId: m.id,
+          attachments: m.attachments, createdAt: m.created_at }
       : { type: "answer", key: `message-${m.id}`, content: m.content }));
 }
 
@@ -294,7 +295,8 @@ interface Ctx { detail: ThreadDetail | undefined; details: boolean }
 function shownView(item: Shown, ctx: Ctx, actions?: ReactNode) {
   switch (item.type) {
     case "user":
-      return <li key={item.key}><ChatMessage author="user" text={item.content} time={item.createdAt} /></li>;
+      return <li key={item.key}><ChatMessage author="user" text={item.content}
+        attachments={item.attachments} time={item.createdAt} /></li>;
     case "text":
       return <li key={item.key}><ChatMessage author="assistant" text={item.text} actions={actions} /></li>;
     case "answer":
