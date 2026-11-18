@@ -114,15 +114,20 @@
 /* --- the composer: one rounded field holding the text and the send button --- */
 .pill {
   display: flex; align-items: flex-end; gap: var(--mantine-spacing-xs);
-  padding: calc(var(--mantine-spacing-xs) / 1.5) calc(var(--mantine-spacing-xs) / 1.5)
-           calc(var(--mantine-spacing-xs) / 1.5) var(--mantine-spacing-sm);
+  /* Equal block padding: the send disc gets the same breathing room below it as above, so it
+     never reads as hanging off the pill's bottom edge. */
+  padding: var(--mantine-spacing-xs) calc(var(--mantine-spacing-xs) / 1.5)
+           var(--mantine-spacing-xs) var(--mantine-spacing-sm);
   border: 1px solid var(--mantine-color-default-border);
   border-radius: var(--mantine-radius-xl);
   background-color: var(--mantine-color-default);
 }
 .pill:focus-within { border-color: var(--mantine-color-dimmed); }
 /* The textarea is the pill's own surface: the box is the pill. */
-.pillInput { flex: 1; min-width: 0; }
+/* One line of text is shorter than the icon buttons beside it, and the row is bottom-aligned,
+   so without this the text sits low against them. Once the text grows past the buttons the
+   textarea is the tallest item and centering it is a no-op - the buttons stay at the bottom. */
+.pillInput { flex: 1; min-width: 0; align-self: center; }
 .disclaimer { text-align: center; }
 /* The pill's own rows: the chips sit above the text line, inside the same box. */
 .pillRow { display: flex; align-items: flex-end; gap: var(--mantine-spacing-xs); }
@@ -141,6 +146,8 @@
    color scheme for exactly this (UI-1, `theme.ts` agentoCssVariables). */
 .chipError { border-color: var(--mantine-color-error); color: var(--mantine-color-error); }
 .chipReason { opacity: 0.85; }
+/* The size is secondary to the name: dimmed, and never the thing the eye lands on. */
+.chipSize { color: var(--mantine-color-dimmed); }
 .fileInput { display: none; }
 /* The drop target is the WHOLE conversation: the history is where the eye is during a drag,
    and a target the user has to aim at is a target they miss. The hint sits over the pane.
@@ -149,8 +156,17 @@
 .layoutOver { outline: 2px dashed var(--mantine-primary-color-filled); outline-offset: calc(var(--mantine-spacing-xs) * -1); }
 .dropHint {
   position: absolute; inset: 0; z-index: 2;
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--mantine-radius-md); pointer-events: none;
+  /* A scrim, not a sheet: the conversation stays visible behind the card, which is what makes
+     the drag read as "it lands here" instead of "the page went blank". */
+  background-color: color-mix(in srgb, var(--mantine-color-body) 72%, transparent);
+}
+.dropCard {
+  display: flex; flex-direction: column; align-items: center;
   gap: calc(var(--mantine-spacing-xs) / 2);
-  border-radius: var(--mantine-radius-md); background-color: var(--mantine-color-body);
-  opacity: 0.94; pointer-events: none;
+  padding: var(--mantine-spacing-lg) var(--mantine-spacing-xl);
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  background-color: var(--mantine-color-default);
 }

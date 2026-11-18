@@ -1080,8 +1080,13 @@ def check_upload_ids(conn, value: object) -> list[str] | None:
 
 
 def check_upload_bytes(conn, data: bytes) -> None:
-    if len(data) > config(conn, "limits/upload_max_bytes"):
-        raise SubmissionError(413, "file too large")
+    """The refusal NAMES the limit: a user told only "too large" has to guess, or read docs
+    they do not have. The number is the operator's own config value."""
+    cap = config(conn, "limits/upload_max_bytes")
+    if len(data) > cap:
+        raise SubmissionError(413, f"file too large (max {cap // (1024 * 1024)} MB)"
+                              if cap >= 1024 * 1024 else
+                              f"file too large (max {cap // 1024} KB)")
 
 
 def check_title(value: object) -> str | None:
@@ -1098,7 +1103,7 @@ def check_panel_thread(row: dict) -> None:
     """Files are a PANEL composer feature (B-6). A channel turn is published with no
     attachment descriptor, so a file accepted here would reach the agent as a path to
     something that was never delivered. Both write routes ask this (CLS-1)."""
-    if (row.get("channel") or "panel") != "panel":
+    if (row.get("channel") or PANEL_CHANNEL) != PANEL_CHANNEL:
         raise SubmissionError(400, "this conversation takes no files")
 
 

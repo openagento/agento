@@ -46,8 +46,13 @@ export function ChatLayout({ title, actions, children, footer, overlay, viewport
       aria-label="Conversation" {...drag}>
       {over > 0 && (
         <div className={classes.dropHint}>
-          <Paperclip size={18} />
-          <Text size="sm" fw={500}>Drop files to attach</Text>
+          {/* A card over a scrim, not a sheet over the pane: the conversation stays readable,
+              so the drag reads as "this is where it lands", not as a page that broke. */}
+          <div className={classes.dropCard}>
+            <Paperclip size={18} />
+            <Text size="sm" fw={500}>Drop files to attach</Text>
+            <Text size="xs" c="dimmed">They go with your next message.</Text>
+          </div>
         </div>
       )}
       <Group justify="space-between" wrap="nowrap" pb="xs">
@@ -225,7 +230,20 @@ export function ChatError({ title, children, details, onRetry }: {
  *  with no running turn, and a Stop shown then answers 409. The page passes the same flag the
  *  server gives it. Enter still only ever sends. */
 /** One file the composer is carrying. `uploading` shows a spinner; `error` says why it failed. */
-export interface Attachment { id: string; name: string; status: "uploading" | "ready" | "error"; error?: string }
+export interface Attachment {
+  id: string; name: string; status: "uploading" | "ready" | "error"; error?: string;
+  /** The picked file's size. Shown on the chip: it is what tells a user which of two files
+   *  with similar names they just attached, and why one of them was refused. */
+  bytes?: number;
+}
+
+/** A size a person reads at a glance: 1 KB = 1024 B, one decimal below 10 units. */
+export function fileSize(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let n = bytes, i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+  return `${i === 0 || n >= 10 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
+}
 
 /** A long name keeps its extension: `a-very-long-report-name.pdf` reads as `a-very-l….pdf`,
  *  which is what tells two attachments apart. The full name stays in the `title`. */
@@ -238,14 +256,15 @@ export function middleEllipsis(name: string, max = 24): string {
 
 /** One file, as a chip. In the composer it is removable and may still be uploading; under a
  *  sent message it is just the name. */
-function FileChip({ name, icon, tone, reason, action }: {
-  name: string; icon?: ReactNode; tone?: "error"; reason?: string; action?: ReactNode;
+function FileChip({ name, icon, tone, reason, size, action }: {
+  name: string; icon?: ReactNode; tone?: "error"; reason?: string; size?: number; action?: ReactNode;
 }) {
   return (
     <div className={tone === "error" ? `${classes.chip} ${classes.chipError}` : classes.chip}
       title={reason ? `${name} — ${reason}` : name}>
       {icon ?? <Paperclip size={12} />}
       <Text span size="xs">{middleEllipsis(name)}</Text>
+      {size !== undefined && <Text span size="xs" className={classes.chipSize}>{fileSize(size)}</Text>}
       {/* The reason is TEXT, not a hover title: a file that did not arrive has to say so to
           someone who never hovers, and to a screen reader. */}
       {reason && <Text span size="xs" className={classes.chipReason}>{reason}</Text>}
@@ -257,7 +276,7 @@ function FileChip({ name, icon, tone, reason, action }: {
 function AttachmentChip({ file, onRemove }: { file: Attachment; onRemove?: (id: string) => void }) {
   const failed = file.status === "error";
   return (
-    <FileChip name={file.name} tone={failed ? "error" : undefined}
+    <FileChip name={file.name} tone={failed ? "error" : undefined} size={file.bytes}
       reason={failed ? (file.error ?? "upload failed") : undefined}
       icon={file.status === "uploading" ? <Loader size={12} /> : <Paperclip size={12} />}
       action={onRemove && (
@@ -311,7 +330,8 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error, pl
                     real control, so the input is hidden from the a11y tree and the tab order. */}
                 <input ref={input} type="file" multiple className={classes.fileInput} tabIndex={-1}
                   aria-hidden="true" onChange={onPick} />
-                <IconAction label="Add files" icon={<Paperclip size={16} />}
+                {/* `bottom`: the chips this button fills sit directly above it. */}
+                <IconAction label="Add files" tip="bottom" size="lg" icon={<Paperclip size={16} />}
                   onClick={() => input.current?.click()} />
               </>
             )}

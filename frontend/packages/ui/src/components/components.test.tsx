@@ -4,7 +4,7 @@ import { AgentoUiProvider } from "../Provider";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 import { Markdown } from "./Markdown";
-import { ChatMessage, middleEllipsis, ChatComposer, ChatError, ChatLayout, ToolCall } from "./Chat";
+import { ChatMessage, fileSize, middleEllipsis, ChatComposer, ChatError, ChatLayout, ToolCall } from "./Chat";
 import { ArchiveAction, DeleteAction, EndAction, MakeCurrentAction, OpenAction, RegenerateAction } from "./IconAction";
 import { CopyButton } from "./CopyButton";
 import { clampRail, MenuButton, ThreadList } from "./ChatShell";
@@ -407,5 +407,20 @@ describe("clampRail", () => {
     expect(clampRail(10)).toBe(220);
     expect(clampRail(9000)).toBe(480);
     expect(clampRail(300.4)).toBe(300);
+  });
+});
+
+describe("the attachment chip's size", () => {
+  it("reads a size at a glance and never outshouts the name", () => {
+    expect(fileSize(0)).toBe("0 B");
+    expect(fileSize(900)).toBe("900 B");
+    expect(fileSize(1024)).toBe("1.0 KB");
+    expect(fileSize(15 * 1024)).toBe("15 KB");
+    expect(fileSize(2.5 * 1024 * 1024)).toBe("2.5 MB");
+    render(<ChatComposer value="" onChange={() => {}} onSend={() => {}} canSend
+      attachments={[{ id: "a", name: "raport.pdf", status: "ready", bytes: 2048 }]}
+      onFiles={() => {}} onRemoveAttachment={() => {}} />, { wrapper: AgentoUiProvider });
+    expect(screen.getByText("raport.pdf")).toBeInTheDocument();
+    expect(screen.getByText("2.0 KB")).toBeInTheDocument();
   });
 });

@@ -1,14 +1,21 @@
 import { ActionIcon, Menu, Tooltip } from "@mantine/core";
+import type { ActionIconProps } from "@mantine/core";
 import { Archive, CircleCheck, CircleStop, ExternalLink, Eye, FileText, RefreshCw, Settings, Trash2 } from "lucide-react";
 import type { ComponentPropsWithRef, ReactNode } from "react";
 
 /** An action as an icon. `label` is its hover title and its accessible name (RULES.md UI-7).
  *  The rest props reach the button, so a Popover.Target or Menu.Target can wrap it. */
-export function IconAction({ label, icon, danger = false, ...rest }:
-  Omit<ComponentPropsWithRef<"button">, "children" | "color"> & { label: string; icon: ReactNode; danger?: boolean }) {
+/** `tip` places the tooltip. The default opens upward, which is right for an action in a row;
+ *  an action with content ABOVE it (the composer's `+`, under the file chips) passes "bottom",
+ *  so the tooltip never covers what the action just produced. */
+/** `size` matches a neighbour of another height: two icon buttons on one bottom-aligned row
+ *  read as misaligned unless their boxes are the same (the composer's `+` beside send). */
+export function IconAction({ label, icon, danger = false, tip = "top", size, ...rest }:
+  Omit<ComponentPropsWithRef<"button">, "children" | "color" | "size">
+  & { label: string; icon: ReactNode; danger?: boolean; tip?: "top" | "bottom"; size?: ActionIconProps["size"] }) {
   return (
-    <Tooltip label={label} withArrow>
-      <ActionIcon variant="subtle" color={danger ? "red" : "gray"} aria-label={label} {...rest}>{icon}</ActionIcon>
+    <Tooltip label={label} position={tip} withArrow>
+      <ActionIcon variant="subtle" size={size} color={danger ? "red" : "gray"} aria-label={label} {...rest}>{icon}</ActionIcon>
     </Tooltip>
   );
 }
