@@ -49,6 +49,9 @@ class Route:
     # "session": a live panel session (and, for a write, the CSRF token); "login": no session.
     auth: str = "session"
     json_body: bool = False
+    # > 0: the body is `multipart/form-data` with THIS byte cap instead of MAX_JSON_BODY.
+    # A route that declares nothing is still JSON-only (SEC-9).
+    multipart_bytes: int = 0
     # Required on every route (D-ADMIN-ACL-2): an admin panel leaf the session's user must hold
     # (a tuple: any one of them), "self" (any signed-in user; the handler scopes), or
     # "anonymous" (auth="login" only). server._run checks it; compose_routes validates it.

@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS job (
     prompt          MEDIUMTEXT NULL,
     output          MEDIUMTEXT NULL,
     context         TEXT NULL,
+    attachments     TEXT NULL,
     idempotency_key VARCHAR(512) NOT NULL,
     requester_key   VARCHAR(255) NULL,
     requester_email VARCHAR(320) NULL,
@@ -555,4 +556,5 @@ INSERT INTO schema_migration (version) VALUES
     ('053_job_parent_depth'),
     ('054_thread'),
     ('055_test_run'),
-    ('056_generic_schedule');
+    ('056_generic_schedule'),
+    ('057_job_attachments');

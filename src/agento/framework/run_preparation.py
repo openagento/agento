@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .artifacts_dir import (
+    SHARED_LINK,
+    deliver_attachments,
     build_artifacts_dir,
     copy_build_to_artifacts_dir,
     get_current_build_dir,
@@ -158,6 +160,7 @@ def materialize_run_workspace(
     check_build: Callable[[object, int], None] | None = None,
     link_state: bool = False,
     thread_key: str | None = None,
+    attachments: str | None = None,
     resume_session_ids: Sequence[str] = (),
 ) -> tuple[Path | None, Path | None]:
     """Prepare ``(home_dir, working_dir)`` for one run.
@@ -188,6 +191,10 @@ def materialize_run_workspace(
 
     ``thread_key`` is the random key of the job's thread (``Job.thread_key``): the run dir
     gets ``./shared``, a link to the thread's ``shared/`` dir (``prepare_thread_dir``).
+
+    ``attachments`` is the job's descriptor of files the run must find under
+    ``./shared/attachments/`` (``artifacts_dir.deliver_attachments``). A job with no thread
+    gets them under its own run dir's ``shared/`` — the fail-safe branch, not a feature.
     ``agento run`` has no job, so no thread and no link.
 
     ``resume_session_ids`` are the sessions the run may resume: only they are copied from
@@ -296,6 +303,10 @@ def materialize_run_workspace(
     # After the build copy: the link wins over an entry the build named `shared`.
     if thread_key is not None:
         prepare_thread_dir(thread_key, artifacts_dir)
+    if attachments:
+        # After the link: `./shared` must already BE the thread's dir, or the copy would land
+        # in the run dir and be invisible to the next turn.
+        deliver_attachments(attachments, Path(artifacts_dir) / SHARED_LINK)
 
     # SSH identity: the NON-SECRET files only. The private key is never written — it is
     # delivered in memory through the per-run env to a per-run ssh-agent (ssh_prelude.py).

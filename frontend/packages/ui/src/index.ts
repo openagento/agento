@@ -27,6 +27,6 @@ export { FieldRow, PageColumn, Section, Sections, SideDrawer, SwitchField } from
 export { durationOf, formatDuration, JobDetail, type JobDetailData } from "./components/JobDetail";
 export { ConnectionStatus, type ConnectionState } from "./components/ConnectionStatus";
 export {
-  ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, SubagentRun, ToolCall, ToolGroup,
+  ChatComposer, type Attachment, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, SubagentRun, ToolCall, ToolGroup,
 } from "./components/Chat";
 export { MenuButton, Rail, SearchToggle, SplitView, ThreadList, type ThreadLink } from "./components/ChatShell";

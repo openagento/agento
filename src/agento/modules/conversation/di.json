@@ -80,6 +80,13 @@
     },
     {
       "method": "POST",
+      "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/uploads",
+      "handler": "src.routes.upload",
+      "multipart_bytes": 26739834,
+      "acl": "self"
+    },
+    {
+      "method": "POST",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})/messages/(?P<message_id>[0-9]{1,19})/unblock",
       "handler": "src.routes.unblock",
       "acl": "self"

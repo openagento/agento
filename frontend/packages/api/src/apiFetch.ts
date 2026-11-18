@@ -9,6 +9,8 @@ const WRITES = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 export interface ApiOptions {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   json?: unknown;
+  /** A file upload. The browser sets `Content-Type` with its own boundary, so we must not. */
+  form?: FormData;
   signal?: AbortSignal;
   /** A 401 is the expected "signed out" answer here; it does not end the session. */
   quiet401?: boolean;
@@ -37,7 +39,7 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiOptions = {})
     method,
     headers,
     credentials: "same-origin",
-    body: opts.json === undefined ? undefined : JSON.stringify(opts.json),
+    body: opts.form ?? (opts.json === undefined ? undefined : JSON.stringify(opts.json)),
     signal: opts.signal,
   });
   if (getEpoch() !== at) throw new SessionChangedError();

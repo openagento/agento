@@ -1103,6 +1103,7 @@ class Consumer:
                     ssh_identity=ssh_identity,
                     check_build=self._check_build,
                     thread_key=job.thread_key,
+                    attachments=job.attachments,
                     resume_session_ids=resume_session_ids,
                 )
             except Exception as exc:

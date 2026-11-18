@@ -4,7 +4,7 @@ import { apiFetch, LIVE_REFETCH_MS, ApiError, useMutation, useQuery, useQueryCli
 import {
   AppLink, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
   LoadingState, MenuButton, Rail as RailFrame, Reasoning, RegenerateAction, RowMenu, SearchToggle, SelectField, SplitView, SubagentRun,
-  TextField, ThreadList, ToolCall, ToolGroup, jobTone, type JobState, type ThreadLink,
+  TextField, ThreadList, ToolCall, ToolGroup, jobTone, type Attachment, type JobState, type ThreadLink,
 } from "@agento/ui";
 import { DAY_GROUPS, dayGroup, inFlight, jobTree, turnState, type JobNode, type Message, type Thread, type ThreadDetail } from "./model";
 import { buildItems, findTurn, isSubagent, turns, type Item, type Shown, type Tool, type Turn } from "./timeline";
@@ -184,6 +184,33 @@ function useRequestId() {
   };
 }
 
+/** The composer's files: one staging upload per picked file, and the ids a send then claims.
+ *
+ *  A file is staged the moment it is picked, so the send is a normal JSON post that only
+ *  names ids. A failed upload stays on screen as a red chip until the user removes it - it
+ *  is never silently dropped, and it never blocks the send of the files that did arrive. */
+type Staged = Attachment & { uploadId?: string };
+
+function useUploads(threadId: number) {
+  const [files, setFiles] = useState<Staged[]>([]);
+  const patch = (id: string, change: Partial<Staged>) =>
+    setFiles((list) => list.map((f) => (f.id === id ? { ...f, ...change } : f)));
+  const add = (picked: File[]) => {
+    for (const file of picked) {
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setFiles((list) => [...list, { id, name: file.name, status: "uploading" }]);
+      const form = new FormData();
+      form.append("file", file, file.name);
+      apiFetch<{ upload_id: string }>(`/api/conversation/threads/${threadId}/uploads`, { method: "POST", form })
+        .then((res) => patch(id, { status: "ready", uploadId: res.upload_id }))
+        .catch((err: unknown) => patch(id, { status: "error", error: message(err) }));
+    }
+  };
+  const remove = (id: string) => setFiles((list) => list.filter((f) => f.id !== id));
+  const ids = files.flatMap((f) => (f.status === "ready" && f.uploadId ? [f.uploadId] : []));
+  return { files, add, remove, ids, clear: () => setFiles([]) };
+}
+
 /** The composer: typing is always allowed; only Send waits for the agent (U8). */
 export function Composer({ threadId, busy, stoppable = false, onStop, stopping = false }: {
   threadId: number; busy: boolean; stoppable?: boolean; onStop?: () => void; stopping?: boolean;
@@ -191,16 +218,18 @@ export function Composer({ threadId, busy, stoppable = false, onStop, stopping =
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const request = useRequestId();
+  const files = useUploads(threadId);
   const send = useMutation({
     mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
-      method: "POST", json: { content, client_message_id: request.for(content) },
+      method: "POST", json: { content, client_message_id: request.for(content), upload_ids: files.ids },
     }),
     // The list too: the first message gives the thread its server title (U9).
-    onSuccess: () => { request.done(); setText(""); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
+    onSuccess: () => { request.done(); setText(""); files.clear(); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
   });
   return (
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
       placeholder="Ask the agent…" stoppable={stoppable} onStop={onStop} stopping={stopping}
+      attachments={files.files} onFiles={files.add} onRemoveAttachment={files.remove}
       hint={busy ? "The agent is answering…" : "Enter sends. Shift+Enter adds a new line. The agent can make mistakes."}
       error={send.error ? message(send.error) : undefined} />
   );
@@ -214,15 +243,17 @@ export function ChannelComposer({ threadId, busy, stoppable = false, onStop, sto
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const request = useRequestId();
+  const files = useUploads(threadId);
   const send = useMutation({
     mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
-      method: "POST", json: { content, client_message_id: request.for(content) },
+      method: "POST", json: { content, client_message_id: request.for(content), upload_ids: files.ids },
     }),
-    onSuccess: () => { request.done(); setText(""); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
+    onSuccess: () => { request.done(); setText(""); files.clear(); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
   });
   return (
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
       placeholder="Reply in the channel…" stoppable={stoppable} onStop={onStop} stopping={stopping}
+      attachments={files.files} onFiles={files.add} onRemoveAttachment={files.remove}
       hint={busy ? "The agent is answering…" : "Your reply continues this task in the channel it came from."}
       error={send.error ? message(send.error) : undefined} />
   );
@@ -242,7 +273,7 @@ function retained(rows: Message[], events: StreamEvent[]): Item[] {
   const oldest = events[0]?.created_at;
   return rows.filter((m) => !shown.has(m.id) && (!oldest || !m.created_at || Date.parse(m.created_at) <= Date.parse(oldest)))
     .map((m): Item => (m.role === "user"
-      ? { type: "user", key: `message-${m.id}`, content: m.content, createdAt: m.created_at }
+      ? { type: "user", key: `message-${m.id}`, content: m.content, messageId: m.id, createdAt: m.created_at }
       : { type: "answer", key: `message-${m.id}`, content: m.content }));
 }
 
@@ -406,8 +437,10 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
   // Retry re-sends the failed turn's text as a new message: no new route (U4).
   const resendRequest = useRequestId();
   const resend = useMutation({
-    mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
-      method: "POST", json: { content, client_message_id: resendRequest.for(content) },
+    // The MESSAGE is re-asked, not its text: `regenerate` copies the original's attachments
+    // into the new turn, which a fresh post of the content alone would lose (CLS-1).
+    mutationFn: (messageId: number) => apiFetch(`/api/conversation/threads/${threadId}/regenerate`, {
+      method: "POST", json: { message_id: messageId, client_message_id: resendRequest.for(String(messageId)) },
     }),
     onSuccess: () => { resendRequest.done(); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
   });
@@ -496,10 +529,10 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
     disabled={regenerate.isPending} />;
 
   const list: ReactNode[] = [];
-  let asked = "";
+  let askedId: number | null = null;
   for (const item of top) {
     if (item.type !== "turn") {
-      if (item.type === "user") asked = item.content;
+      if (item.type === "user") askedId = item.messageId;
       list.push(shownView(item, ctx, item === newestAnswer ? regenAction : undefined)!);
       continue;
     }
@@ -507,9 +540,9 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
     if (channel) list.push(triggerView(item, detail!));
     for (const i of item.items) list.push(shownView(i, ctx, i === newestAnswer ? regenAction : undefined)!);
     if (item.failure && !item.failure.retrying) {
-      const text = asked;
-      const retryable = !channel && item === newest && item.failure.failed && !busy && text !== "";
-      list.push(failureView(item, details, retryable ? () => resend.mutate(text) : undefined));
+      const id = askedId;
+      const retryable = !channel && item === newest && item.failure.failed && !busy && id !== null;
+      list.push(failureView(item, details, retryable && id !== null ? () => resend.mutate(id) : undefined));
     }
   }
   const run = detail?.runs[0];
@@ -569,7 +602,7 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
       overlay={unseen > 0 && <Button variant="primary" onClick={jump}>{unseen} new events ↓</Button>}
       footer={detail && (channel
         ? (detail.channel_write && detail.external_ref
-          ? <ChannelComposer threadId={threadId} busy={busy} stoppable={stoppable}
+          ? <ChannelComposer key={threadId} threadId={threadId} busy={busy} stoppable={stoppable}
               onStop={() => stop.mutate()} stopping={stop.isPending} />
           : (
             /* No composer to host Stop: a read-only channel thread still has to be stoppable. */
@@ -580,7 +613,7 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
               )}
             </>
           ))
-        : <Composer threadId={threadId} busy={busy} stoppable={stoppable}
+        : <Composer key={threadId} threadId={threadId} busy={busy} stoppable={stoppable}
             onStop={() => stop.mutate()} stopping={stop.isPending} />)}
     >
       {olderButton}
@@ -595,7 +628,7 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
       )}
       {unanswered && (
         <ChatError title="The agent could not answer."
-          onRetry={busy ? undefined : () => resend.mutate(rows[lastUser].content)} />
+          onRetry={busy ? undefined : () => resend.mutate(rows[lastUser].id)} />
       )}
       {/* With no answer to hang it off (a first turn that only failed), Regenerate still shows. */}
       {!channel && lastUser !== -1 && !busy && !unanswered && newestAnswer === undefined && (

@@ -13,13 +13,14 @@ want it explicitly; nothing in the framework calls it.
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import re
 import shutil
 from pathlib import Path
 
-from .workspace_paths import ARTIFACTS_DIR, BUILD_DIR
+from .workspace_paths import ARTIFACTS_DIR, BASE_WORKSPACE_DIR, BUILD_DIR, UPLOADS_DIRNAME
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,134 @@ def prepare_thread_dir(key: str, run_dir: Path, *, gid: int | None = None) -> Pa
         shutil.rmtree(link)
     link.symlink_to(shared_dir(key))
     return path
+
+
+# One path component: never a separator, never `.`/`..`, never a leading dot.
+_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+ATTACHMENTS_DIRNAME = "attachments"
+
+
+class AttachmentError(RuntimeError):
+    """A job's `attachments` descriptor cannot be delivered. The run fails loudly."""
+
+
+def _component(value: object, what: str) -> str:
+    """A descriptor field that becomes ONE directory or file name, or nothing."""
+    if not isinstance(value, str) or not _COMPONENT.fullmatch(value) or value in (".", ".."):
+        raise AttachmentError(f"attachment {what} is not a single path component")
+    return value
+
+
+def parse_attachments(raw: str | None) -> tuple[str, list[tuple[str, str]]] | None:
+    """``(key, [(from, as)])`` of a job's descriptor, or ``None`` when it has none.
+
+    `from` is still the RELATIVE path the descriptor carries: the file behind it is only
+    resolved when it is about to be copied (`_source_path`), so a delivery that is already
+    done needs no staging file at all.
+
+    The descriptor is vendor-free and self-contained — the framework never asks the module
+    that wrote it what it means. Every name is validated here, BEFORE a byte is read, and a
+    bad one fails the run: a `key`/`as` must be one path component, and a `from` must be a
+    relative path under the workspace's ``uploads/`` (SEC-5).
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        doc = json.loads(raw)
+    except ValueError as exc:
+        raise AttachmentError("attachments is not JSON") from exc
+    if not isinstance(doc, dict):
+        raise AttachmentError("attachments is not an object")
+    key = _component(doc.get("key"), "key")
+    files = doc.get("files")
+    if not isinstance(files, list) or not files:
+        raise AttachmentError("attachments lists no file")
+    out: list[tuple[str, str]] = []
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise AttachmentError("an attachment entry is not an object")
+        name = _component(entry.get("as"), "name")
+        source = entry.get("from")
+        if not isinstance(source, str) or not source:
+            raise AttachmentError("an attachment has no source")
+        if ".." in Path(source).parts or Path(source).is_absolute():
+            raise AttachmentError("an attachment source leaves the workspace")
+        out.append((source, name))
+    return key, out
+
+
+def _source_path(source: str) -> str:
+    """The real file a `from` names, or raise. Asked only when a file is about to be COPIED:
+    a delivery that is already done never looks at staging, which by then may be swept."""
+    root = Path(BASE_WORKSPACE_DIR) / UPLOADS_DIRNAME
+    path = Path(BASE_WORKSPACE_DIR) / source
+    # `strict=False` would accept a dangling link; the file must be there and real.
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise AttachmentError("attachment source missing") from exc
+    if not resolved.is_relative_to(root.resolve()) or not resolved.is_file():
+        raise AttachmentError("an attachment source is not an uploaded file")
+    return str(path)
+
+
+def deliver_attachments(raw: str | None, shared: Path, *, gid: int | None = None) -> None:
+    """Put a job's attachments at ``<shared>/attachments/<key>/<as>``. Idempotent.
+
+    Called by run preparation, which owns the thread dirs. Two orders matter:
+
+    1. **The delivered dir decides.** A dir that already holds every name is done, and the
+       sources are not read at all — that is what makes a retry work, and what lets a
+       regenerated turn reuse files whose staging copies are long gone.
+    2. **Copy, then publish.** The files are copied into a temporary sibling and the dir is
+       `rename()`d into place, so a half-copied dir is never visible and is never mistaken
+       for a finished delivery.
+
+    Every destination component goes through ``_thread_subdir``: ``shared/`` is writable by
+    every run of the thread, so an earlier turn can plant ``attachments`` as a symlink, and a
+    path-string copy would then write and chown outside the thread tree (SEC-5).
+    `attachments/` itself is 2750 like ``downloads/``: only this call writes it, the run
+    reads it through ``THREAD_GID``.
+    """
+    from .runner.uids import THREAD_GID
+    parsed = parse_attachments(raw)
+    if parsed is None:
+        return
+    key, files = parsed
+    group = THREAD_GID if gid is None else gid
+    shared.mkdir(parents=True, exist_ok=True)
+    root = shared / ATTACHMENTS_DIRNAME
+    target = root / key
+    if target.is_dir() and all((target / name).is_file() for _, name in files):
+        return
+    fd = os.open(shared, _OPEN_DIR)
+    try:
+        os.close(_thread_subdir(fd, ATTACHMENTS_DIRNAME, 0o2750, group))
+    finally:
+        os.close(fd)
+    staging = root / f".{key}.{os.getpid()}"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(0o700)
+    try:
+        for source, name in files:
+            # copyfile streams through a fixed buffer: the memory is the buffer, not the file.
+            shutil.copyfile(_source_path(source), staging / name)
+            os.chown(staging / name, -1, group)
+            os.chmod(staging / name, 0o640)
+        os.chown(staging, -1, group)
+        os.chmod(staging, 0o2750)
+        try:
+            os.rename(staging, target)
+        except OSError:
+            # Another preparation of the same job won the race and published first.
+            if not target.is_dir():
+                raise
+            shutil.rmtree(staging, ignore_errors=True)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def cleanup_artifacts_dir(artifacts_dir: Path) -> None:

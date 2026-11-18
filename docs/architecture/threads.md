@@ -76,6 +76,7 @@ forks. The claim writes `resume_job_id` on the row, so a FAILED or DEAD job reco
 /workspace/artifacts/_threads/            0711 agent            (no run can list the keys)
 └── <key>/                                2750 agent:agento_thread
     ├── shared/                           2770 agent:agento_thread   every run of the thread
+    │   └── attachments/<key>/<name>      2750 / files 0640           the files a message carried
     └── downloads/                        2750 agent:agento_thread   the toolbox writes, runs read
         └── jira/<KEY>/<id>_<name>        files 0640
 <run dir>/shared -> /workspace/artifacts/_threads/<key>/shared
@@ -88,6 +89,11 @@ uid gets the group `THREAD_GID` 19990 (`runner/uids.py`; the sandbox image adds 
 `shared/`. An image built before this change has no group: a threaded job then fails closed with
 "not in the thread group" until the image is rebuilt. `agento run` has no job, so it gets no
 link.
+
+`attachments/` is run preparation's: the files a panel message carried are copied there,
+under the key of the message that carried them, before the run starts
+([conversation.md](../modules/conversation.md#files-on-a-message)). Like `downloads/` it is
+2750 — only the preparer writes it, and the runs read it through `THREAD_GID`.
 
 `downloads/` is the toolbox's: a tool that fetches a file for the thread (Jira attachments) writes
 it there, under a name it chooses, through dirs no run can write (SEC-5), and skips a file that is

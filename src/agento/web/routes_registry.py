@@ -68,6 +68,7 @@ def _route(module_name: str, module_dir: Path, decl: object, taken: dict[str, st
     route_acl = decl["acl"]
     return Route(decl["method"], re.compile(compiled_pattern(decl["path"])), function,
                  json_body=bool(decl.get("json_body", False)),
+                 multipart_bytes=int(decl.get("multipart_bytes", 0) or 0),
                  acl=route_acl if isinstance(route_acl, str) else tuple(route_acl))
 
 

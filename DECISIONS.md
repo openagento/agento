@@ -4,6 +4,29 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-11-18 — Composer files: two trees, a DB claim, a vendor-free job column (AG-87)
+
+- **Nothing is ever moved.** A staged file is COPIED into the thread at run preparation.
+  A move would put a filesystem rename inside the message's transaction, where a partial
+  failure cannot be rolled back, and would stop two messages naming the same file.
+- **The claim is a pure DB write**, under one named lock per conversation (`cv_up:<id>`) that
+  the sweep also takes. That one lock is what makes "is this file still needed?" answerable:
+  without it the sweep and a submission race between the directory read and the commit. An
+  earlier design quarantined expired dirs instead; it only moved the window.
+- **`job.attachments` is a framework column holding a vendor-free descriptor**
+  (`{key, files:[{from, as}]}`), not a foreign key into `message`. The framework must never
+  read a module's table to prepare a run (MOD-1), and the descriptor is self-contained.
+- **The delivered directory decides.** Delivery is skipped when the destination already holds
+  every name, and only then are the sources read. That is what makes a retry and a
+  regeneration work after the staging copies are swept — the thread's own copy is the
+  durable one, and `regenerate` copies the descriptor verbatim, `key` included.
+- **Multipart is parsed with the stdlib** (`email.parser` over a re-headed body). One route
+  takes one file; a parser dependency for that is not worth the supply chain (SEC-11).
+- **A retry of a failed turn re-asks the MESSAGE, not its text.** Re-posting the content was
+  the sibling path that silently dropped the turn's files (CLS-1).
+
+---
+
 ## 2026-11-12 — Editable agent schedules: RRULE, a framework tick, schedule = channel (AG-67)
 
 - **RRULE (python-dateutil) over cron and APScheduler.** A schedule needs a start, an end, a
