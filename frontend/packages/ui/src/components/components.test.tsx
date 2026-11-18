@@ -470,3 +470,11 @@ describe("a user's message", () => {
     expect(chip.compareDocumentPosition(bubble!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
+
+describe("the composer's caret", () => {
+  it("waits in the text line when a conversation opens", () => {
+    render(<ChatComposer value="" onChange={() => {}} onSend={() => {}} canSend focusOnMount />,
+      { wrapper: AgentoUiProvider });
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Message" }));
+  });
+});

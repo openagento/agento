@@ -248,7 +248,7 @@ export function Composer({ threadId, busy, stoppable = false, onStop, stopping =
   });
   return (
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
-      placeholder="Ask the agent…" stoppable={stoppable} onStop={onStop} stopping={stopping}
+      placeholder="Ask the agent…" focusOnMount stoppable={stoppable} onStop={onStop} stopping={stopping}
       attachments={files.files} onFiles={files.add} onRemoveAttachment={files.remove}
       hint={busy ? "The agent is answering…" : "Enter sends. Shift+Enter adds a new line. Drop or paste files to attach. The agent can make mistakes."}
       error={send.error ? message(send.error) : undefined} />
