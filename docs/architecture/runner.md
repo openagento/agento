@@ -191,6 +191,12 @@ credential.
   uid" without one. Its home is `/nonexistent`: `ssh` reads `~/.ssh` there, not in
   `$HOME`, and a run uid cannot create it. The run dir's `shared` entry is a link to
   the thread's `shared/`; the owner walk skips links, so a thread dir never goes to a run uid.
+  Under that `shared/` the run may also find `attachments/<key>/` — files a job carried in its
+  `attachments` descriptor, copied there by run preparation while it is still root
+  (`artifacts_dir.deliver_attachments`). The dir is 2750 and owned by the preparer, so a run
+  READS it through `THREAD_GID` and never writes it; every component is opened with
+  `O_NOFOLLOW` on a validated fd, because `shared/` itself is writable by every run of the
+  thread. A job with no thread gets the same tree under its own run dir's `shared/`.
   The group comes from the sandbox image (the cron and runner image): after an upgrade to it,
   rebuild the images (`agento upgrade` does; in dev, `docker compose -f
   docker-compose.dev.yml build`). A restart only leaves the consumer outside the group, and every

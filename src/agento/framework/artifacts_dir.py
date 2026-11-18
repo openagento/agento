@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 from pathlib import Path
 
 from .workspace_paths import ARTIFACTS_DIR, BASE_WORKSPACE_DIR, BUILD_DIR, UPLOADS_DIRNAME
@@ -154,8 +155,11 @@ def prepare_thread_dir(key: str, run_dir: Path, *, gid: int | None = None) -> Pa
     return path
 
 
-# One path component: never a separator, never `.`/`..`, never a leading dot.
-_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# One path component: never a separator, never a control character, never `.`/`..`, never a
+# leading dot. It is a rule of EXCLUSION, not an allow-list: the name a user gave a file is
+# sanitized where it is staged (`safe_name`), and that sanitizer keeps spaces and letters that
+# are not ASCII. An allow-list here would pass staging and fail the run (BUG).
+_SEPARATORS = ("/", "\\", "\0")
 
 ATTACHMENTS_DIRNAME = "attachments"
 
@@ -166,8 +170,13 @@ class AttachmentError(RuntimeError):
 
 def _component(value: object, what: str) -> str:
     """A descriptor field that becomes ONE directory or file name, or nothing."""
-    if not isinstance(value, str) or not _COMPONENT.fullmatch(value) or value in (".", ".."):
+    bad = (not isinstance(value, str) or not value or len(value.encode()) > 255
+           or value in (".", "..") or value.startswith(".")
+           or any(sep in value for sep in _SEPARATORS)
+           or any(ch < " " or ch == "\x7f" for ch in value))
+    if bad:
         raise AttachmentError(f"attachment {what} is not a single path component")
+    assert isinstance(value, str)
     return value
 
 
@@ -224,23 +233,104 @@ def _source_path(source: str) -> str:
     return str(path)
 
 
+def _is_delivered(root_fd: int, key: str, files: list[tuple[str, str]]) -> bool:
+    """True when ``<root_fd>/<key>`` is a real dir holding every name as a real file.
+
+    Every stat is relative to an fd and refuses a symlink, so a planted link named ``<key>``
+    is never mistaken for a finished delivery (SEC-5). Completeness is checked HERE and
+    nowhere else: a dir that merely exists is not a delivery (BUG).
+    """
+    try:
+        fd = os.open(key, _OPEN_DIR, dir_fd=root_fd)
+    except OSError:
+        return False
+    try:
+        for _, name in files:
+            try:
+                st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except OSError:
+                return False
+            if not stat.S_ISREG(st.st_mode):
+                return False
+    finally:
+        os.close(fd)
+    return True
+
+
+def attachments_delivered(thread_key: str | None, raw: str | None) -> bool:
+    """True when the thread already holds every file this descriptor names.
+
+    The one answer to "may the staged sources go?". Job state is NOT that answer: a run can
+    reach a terminal state by failing DURING preparation, before the copy, and a retry would
+    then find the only copy gone (BUG). What the thread holds is the fact.
+    """
+    parsed = parse_attachments(raw)
+    if parsed is None:
+        return True                       # nothing to deliver, nothing to keep
+    if thread_key is None:
+        return False                      # delivered under a run dir we cannot name here
+    key, files = parsed
+    try:
+        fd = os.open(shared_dir(thread_key) / ATTACHMENTS_DIRNAME, _OPEN_DIR)
+    except OSError:
+        return False
+    try:
+        return _is_delivered(fd, key, files)
+    finally:
+        os.close(fd)
+
+
+def _remove_at(parent_fd: int, name: str) -> None:
+    """Remove a flat dir of regular files, relative to ``parent_fd``. Never follows a link."""
+    try:
+        fd = os.open(name, _OPEN_DIR, dir_fd=parent_fd)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(name, dir_fd=parent_fd)
+        return
+    try:
+        for entry in os.listdir(fd):
+            with contextlib.suppress(OSError):
+                os.unlink(entry, dir_fd=fd)
+    finally:
+        os.close(fd)
+    with contextlib.suppress(OSError):
+        os.rmdir(name, dir_fd=parent_fd)
+
+
+def _copy_into(dir_fd: int, name: str, source: str, group: int) -> None:
+    """One file into ``dir_fd``, created exclusively and never through a link."""
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                 0o640, dir_fd=dir_fd)
+    try:
+        with open(source, "rb") as src, os.fdopen(os.dup(fd), "wb") as dst:
+            # copyfileobj streams through a fixed buffer: the memory is the buffer, not the file.
+            shutil.copyfileobj(src, dst)
+        os.fchown(fd, -1, group)
+        os.fchmod(fd, 0o640)
+    finally:
+        os.close(fd)
+
+
 def deliver_attachments(raw: str | None, shared: Path, *, gid: int | None = None) -> None:
     """Put a job's attachments at ``<shared>/attachments/<key>/<as>``. Idempotent.
 
-    Called by run preparation, which owns the thread dirs. Two orders matter:
+    Called by run preparation, which owns the thread dirs. Three orders matter:
 
     1. **The delivered dir decides.** A dir that already holds every name is done, and the
        sources are not read at all — that is what makes a retry work, and what lets a
-       regenerated turn reuse files whose staging copies are long gone.
+       regenerated turn reuse files whose staging copies are long gone. A dir that holds only
+       SOME of them is not a delivery and never ends the call (BUG).
     2. **Copy, then publish.** The files are copied into a temporary sibling and the dir is
        `rename()`d into place, so a half-copied dir is never visible and is never mistaken
        for a finished delivery.
-
-    Every destination component goes through ``_thread_subdir``: ``shared/`` is writable by
-    every run of the thread, so an earlier turn can plant ``attachments`` as a symlink, and a
-    path-string copy would then write and chown outside the thread tree (SEC-5).
-    `attachments/` itself is 2750 like ``downloads/``: only this call writes it, the run
-    reads it through ``THREAD_GID``.
+    3. **A validated fd, never a path string.** ``shared/`` is writable by every run of the
+       thread, so an earlier turn can plant ``attachments`` or ``<key>`` as a symlink — and
+       can replace it AFTER a path-based check and before the copy. So every step below runs
+       against an open directory fd: the inode checked is the inode written, chowned and
+       renamed, and a swap between the check and the write is not reachable (SEC-5).
+       ``attachments/`` itself is 2750 like ``downloads/``: only this call writes it, the run
+       reads it through ``THREAD_GID``.
     """
     from .runner.uids import THREAD_GID
     parsed = parse_attachments(raw)
@@ -249,37 +339,40 @@ def deliver_attachments(raw: str | None, shared: Path, *, gid: int | None = None
     key, files = parsed
     group = THREAD_GID if gid is None else gid
     shared.mkdir(parents=True, exist_ok=True)
-    root = shared / ATTACHMENTS_DIRNAME
-    target = root / key
-    if target.is_dir() and all((target / name).is_file() for _, name in files):
-        return
     fd = os.open(shared, _OPEN_DIR)
     try:
-        os.close(_thread_subdir(fd, ATTACHMENTS_DIRNAME, 0o2750, group))
+        root = _thread_subdir(fd, ATTACHMENTS_DIRNAME, 0o2750, group)
     finally:
         os.close(fd)
-    staging = root / f".{key}.{os.getpid()}"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(0o700)
     try:
-        for source, name in files:
-            # copyfile streams through a fixed buffer: the memory is the buffer, not the file.
-            shutil.copyfile(_source_path(source), staging / name)
-            os.chown(staging / name, -1, group)
-            os.chmod(staging / name, 0o640)
-        os.chown(staging, -1, group)
-        os.chmod(staging, 0o2750)
+        if _is_delivered(root, key, files):
+            return
+        staging = f".{key}.{os.getpid()}"
+        _remove_at(root, staging)
         try:
-            os.rename(staging, target)
-        except OSError:
-            # Another preparation of the same job won the race and published first.
-            if not target.is_dir():
-                raise
-            shutil.rmtree(staging, ignore_errors=True)
-    except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise
+            os.mkdir(staging, 0o700, dir_fd=root)
+            staging_fd = _thread_subdir(root, staging, 0o700, -1)
+            try:
+                for source, name in files:
+                    _copy_into(staging_fd, name, _source_path(source), group)
+                os.fchown(staging_fd, -1, group)
+                os.fchmod(staging_fd, 0o2750)   # after the group: a chown clears setgid
+            finally:
+                os.close(staging_fd)
+            try:
+                os.rename(staging, key, src_dir_fd=root, dst_dir_fd=root)
+            except OSError:
+                # Another preparation of the same job may have published first — but only a
+                # COMPLETE dir is that. Anything else is a half-delivery or a planted entry,
+                # and dropping our complete copy for it would run the turn short a file (BUG).
+                if not _is_delivered(root, key, files):
+                    raise
+                _remove_at(root, staging)
+        except BaseException:
+            _remove_at(root, staging)
+            raise
+    finally:
+        os.close(root)
 
 
 def cleanup_artifacts_dir(artifacts_dir: Path) -> None:

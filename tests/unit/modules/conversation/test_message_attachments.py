@@ -34,18 +34,27 @@ def fake_conn(fetches, rowcount=0):
     return conn, cur
 
 
-@pytest.mark.parametrize("channel,field", [(service.PANEL_CHANNEL, "prompt"), ("outlook", "context")])
-def test_the_turn_tells_the_agent_where_its_files_are(channel, field):
-    conn, _ = fake_conn([row(channel=channel, uploads=json.dumps(DESCRIPTOR)),
-                         {"status": "TODO"}, {"job_id": 9}])
+def test_the_turn_tells_the_agent_where_its_files_are():
+    conn, _ = fake_conn([row(uploads=json.dumps(DESCRIPTOR)), {"status": "TODO"}, {"job_id": 9}])
     with patch.object(service, "publish_job", return_value=9) as publish, \
             patch.object(service, "resolve_job_type", return_value="t"):
         service.complete_pending(conn, 2)
     kwargs = publish.call_args.kwargs
-    assert kwargs[field] == "hi\n\nAttached files:\n- ./shared/attachments/m2/report.pdf"
+    assert kwargs["prompt"] == "hi\n\nAttached files:\n- ./shared/attachments/m2/report.pdf"
     # The descriptor rides along as the job's own column: the framework reads it, and never
     # the conversation's tables (MOD-1).
     assert json.loads(kwargs["attachments"]) == DESCRIPTOR
+
+
+def test_a_channel_reply_publishes_no_attachments():
+    """Only the panel composer attaches files: a file in a channel reply belongs in the
+    external system the reply goes to, which is a different upload entirely (Settled 17)."""
+    conn, _ = fake_conn([row(channel="outlook", uploads=json.dumps(DESCRIPTOR)),
+                         {"status": "TODO"}, {"job_id": 9}])
+    with patch.object(service, "publish_job", return_value=9) as publish, \
+            patch.object(service, "resolve_job_type", return_value="t"):
+        service.complete_pending(conn, 2)
+    assert "attachments" not in publish.call_args.kwargs
 
 
 def test_a_message_that_is_only_files_is_prompted_with_the_block_alone():
@@ -129,10 +138,11 @@ def test_a_regeneration_reuses_the_files_the_original_already_delivered():
 
 
 class TestSweep:
-    def sweep(self, rows, expired=("ab",)):
+    def sweep(self, rows, expired=("ab",), delivered=False):
         conn, _ = fake_conn([])
         conn.cursor.return_value.__enter__.return_value.fetchall.return_value = rows
         with patch.object(uploads, "uploads_lock"), \
+                patch.object(service, "attachments_delivered", return_value=delivered), \
                 patch.object(uploads, "conversations_with_uploads", return_value=[1]), \
                 patch.object(uploads, "users_with_uploads", return_value=[4]), \
                 patch.object(uploads, "expired_dirs", return_value=list(expired)), \
@@ -140,14 +150,30 @@ class TestSweep:
             taken = service.sweep_uploads(conn, retention_hours=24)
         return taken, remove
 
+    def row(self, **over):
+        return {"uploads": json.dumps(DESCRIPTOR), "thread_id": 5, "thread_key": "k" * 32, **over}
+
     def test_an_expired_file_no_live_message_names_is_taken(self):
         taken, remove = self.sweep([])
         assert taken == 1
         remove.assert_called_once_with(1, 4, "ab")
 
-    def test_a_file_a_live_message_still_needs_is_kept(self):
+    def test_a_file_whose_copy_the_thread_does_not_hold_yet_is_kept(self):
         """Delivery copies from staging at run preparation, and a retry prepares again."""
-        taken, remove = self.sweep([{"uploads": json.dumps(DESCRIPTOR)}])
+        taken, remove = self.sweep([self.row()], delivered=False)
+        assert taken == 0
+        remove.assert_not_called()
+
+    def test_a_confirmed_delivery_releases_its_source_at_once(self):
+        """The thread holds the copy: nothing will ever read the staged one again."""
+        taken, remove = self.sweep([self.row()], delivered=True)
+        assert taken == 1
+        remove.assert_called_once_with(1, 4, "ab")
+
+    def test_a_terminal_turn_that_never_delivered_still_keeps_its_source(self):
+        """A run can fail DURING preparation, before the copy. Job state is not the signal:
+        a Retry of that turn must still find the only copy there (BUG)."""
+        taken, remove = self.sweep([self.row(job_state="terminal")], delivered=False)
         assert taken == 0
         remove.assert_not_called()
 

@@ -228,10 +228,22 @@ column the framework reads without asking any module what it means (MOD-1). A me
 carries only files needs no text, and is titled by its first file.
 
 Run preparation copies each file into the thread's `shared/attachments/<key>/` **after** the
-`./shared` link exists, through `O_NOFOLLOW` directory handles (SEC-5), into a temporary
-sibling that is renamed into place. A delivered directory that already holds every name is
-left alone and its sources are never read — which is what makes a retry work, and what lets
-`regenerate` reuse the files verbatim (`key` included) long after staging is swept.
+`./shared` link exists, into a temporary sibling that is renamed into place. Every step runs
+against an open directory fd, never a path string: `shared/` is writable by every run of the
+thread, so an earlier turn can plant `attachments` or `<key>` as a symlink — and can replace
+it *after* a path-based check and before the copy. The inode that is checked is the inode
+that is written, chowned and renamed (SEC-5). A job with no thread gets the same tree under
+its own run dir's `shared/`.
+
+A delivered directory counts as done only when it holds **every** name; then its sources are
+never read — which is what makes a retry work, and what lets `regenerate` reuse the files
+verbatim (`key` included) long after staging is swept. A regeneration takes no `upload_ids`:
+the two are alternatives, not a merge.
+
+That complete directory is also what releases the staged sources. The sweep asks the thread,
+never the job: a run can reach a terminal state by failing *during* preparation, before the
+copy, and a Retry would then find the only copy gone. A confirmed delivery releases its
+sources at the next tick; anything else waits for `limits/upload_retention_hours`.
 
 ## Submission: two commits, never one
 

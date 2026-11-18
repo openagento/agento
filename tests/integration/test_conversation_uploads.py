@@ -127,3 +127,21 @@ def test_a_thread_the_caller_cannot_reach_stages_nothing(conn, world, workspace)
     refused = routes.upload(_Upload(conn, world["owner"], other))
     assert refused.status == 404
     assert uploads.conversations_with_uploads() == []
+
+
+def test_a_regeneration_that_also_carries_upload_ids_is_refused(conn, world, thread, workspace):
+    """The two are alternatives, not a merge: a silent drop would send a message the user
+    believes carries the file they just picked (B-7)."""
+    staged = routes.upload(_Upload(conn, world["owner"], thread))
+    sent = routes.send(_Req(conn, world["owner"], params={"id": thread},
+                            json={"content": "look", "client_message_id": "c1",
+                                  "upload_ids": [staged.body["upload_id"]]}))
+    refused = routes.regenerate(_Req(conn, world["owner"], params={"id": thread},
+                                     json={"message_id": sent.body["message_id"],
+                                           "client_message_id": "c2", "upload_ids": []}))
+    assert refused.status == 400
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM message WHERE conversation_id = %s "
+                    "AND role = 'user'", (thread,))
+        assert cur.fetchone()["n"] == 1            # nothing was re-asked
+    conn.commit()

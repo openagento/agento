@@ -353,6 +353,11 @@ def regenerate(req: Request) -> Response:
         message_id = body.get("message_id")
         if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id < 1:
             raise service.SubmissionError(400, "message_id must be a positive integer")
+        if body.get("upload_ids") is not None:
+            # A regeneration reuses the source message's own files, key included. The two
+            # are alternatives, not a merge: silently dropping the ids would send a message
+            # the user believes carries the file they just picked (B-7).
+            raise service.SubmissionError(400, "a regeneration takes no upload_ids")
         new_id, job_id, created = service.regenerate(
             req.conn, conversation_id=row["id"], message_id=message_id,
             user_id=req.session.user.id, client_message_id=client_message_id,

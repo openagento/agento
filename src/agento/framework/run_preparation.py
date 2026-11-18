@@ -145,6 +145,24 @@ def check_workspace_build(em, agent_view_id: int) -> None:
         raise check_event.error
 
 
+def _link_thread_and_deliver(thread_key: str | None, attachments: str | None,
+                             artifacts_dir: Path) -> None:
+    """Link the run's ``./shared`` and put the job's attachments where its prompt says.
+
+    With a thread, the destination is the THREAD's own dir, never the run's ``./shared``
+    link: every destination component is opened with ``O_NOFOLLOW``, and a link is exactly
+    what that refuses (SEC-5). With no thread, ``./shared`` is a real dir of the run dir and
+    is itself the destination - the panel always has a thread, so that is the fail-safe
+    branch, not a feature: without it a job with attachments would run with the paths its
+    own prompt names simply absent.
+    """
+    shared = Path(artifacts_dir) / SHARED_LINK
+    if thread_key is not None:
+        shared = prepare_thread_dir(thread_key, artifacts_dir) / SHARED_LINK
+    if attachments:
+        deliver_attachments(attachments, shared)
+
+
 def materialize_run_workspace(
     runtime: AgentViewRuntime,
     *,
@@ -301,12 +319,7 @@ def materialize_run_workspace(
             )
 
     # After the build copy: the link wins over an entry the build named `shared`.
-    if thread_key is not None:
-        shared = prepare_thread_dir(thread_key, artifacts_dir) / SHARED_LINK
-        if attachments:
-            # The THREAD's own dir, never the run's `./shared` link: every destination is
-            # opened with O_NOFOLLOW, and a link is exactly what that refuses (SEC-5).
-            deliver_attachments(attachments, shared)
+    _link_thread_and_deliver(thread_key, attachments, artifacts_dir)
 
     # SSH identity: the NON-SECRET files only. The private key is never written — it is
     # delivered in memory through the per-run env to a per-run ssh-agent (ssh_prelude.py).

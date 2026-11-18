@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import re
 
+import anyio
 import httpx
 import pytest
 
 from agento.framework.access import accounts
-from agento.web import security
+from agento.web import security, server
 
 from .conftest import PANEL, TOKEN, sign_in_as
 
@@ -315,3 +316,51 @@ def test_a_blank_query_parameter_reaches_the_route_as_present(web, monkeypatch):
     monkeypatch.setattr(api, "ROUTES", [*api.ROUTES, route])
     httpx.get(f"{web}/api/echo?after=&n=1&n=2")
     assert seen == [{"after": "", "n": "1"}]
+
+
+class TestMultipartBody:
+    """The one capability a route may ask for: its OWN byte cap, and a multipart body.
+
+    A route that declares nothing stays JSON-only at the JSON cap (SEC-9) - these assert both
+    halves, because the opt-in is what keeps a 25 MB body off every other route.
+    """
+
+    def read(self, body: bytes, ctype: str, *, limit: int, json_body: bool, multipart: bool):
+        sent = [{"body": body, "more_body": False}]
+
+        async def receive():
+            return sent.pop(0)
+
+        headers = {"Content-Length": str(len(body)), "Content-Type": ctype}
+        return anyio.run(lambda: server._read_body(receive, headers, limit, json_body,
+                                                   multipart=multipart))
+
+    def test_a_multipart_body_within_the_cap_is_read(self):
+        body = b"--X\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a\"\r\n\r\nx\r\n--X--\r\n"
+        assert self.read(body, "multipart/form-data; boundary=X",
+                         limit=len(body), json_body=False, multipart=True) == body
+
+    def test_a_body_over_the_routes_cap_never_reaches_the_handler(self):
+        resp = self.read(b"x" * 100, "multipart/form-data; boundary=X",
+                         limit=10, json_body=False, multipart=True)
+        assert resp.status == 413
+
+    def test_a_chunked_body_over_the_cap_is_cut_while_it_streams(self):
+        """No Content-Length: the limit must still hold, or the cap is advisory only."""
+        chunks = [{"body": b"x" * 8, "more_body": True} for _ in range(5)]
+
+        async def receive():
+            return chunks.pop(0)
+
+        resp = anyio.run(lambda: server._read_body(
+            receive, {"Content-Type": "multipart/form-data"}, 10, False, multipart=True))
+        assert resp.status == 413
+
+    def test_a_multipart_route_still_refuses_another_content_type(self):
+        resp = self.read(b"{}", "application/json", limit=100, json_body=False, multipart=True)
+        assert resp.status == 400
+
+    def test_a_route_that_declares_nothing_is_still_json_only(self):
+        resp = self.read(b"x", "multipart/form-data; boundary=X",
+                         limit=100, json_body=True, multipart=False)
+        assert resp.status == 400

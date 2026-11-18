@@ -192,7 +192,13 @@ function useRequestId() {
 type Staged = Attachment & { uploadId?: string };
 
 function useUploads(threadId: number) {
-  const [files, setFiles] = useState<Staged[]>([]);
+  // The thread is part of the state, not an effect that clears it: switching conversations
+  // must not carry a picked file into another one, and resetting in an effect would show the
+  // old list for one frame (and is what React asks you not to do).
+  const [held, setHeld] = useState<{ thread: number; list: Staged[] }>({ thread: threadId, list: [] });
+  const files = held.thread === threadId ? held.list : [];
+  const setFiles = (next: (list: Staged[]) => Staged[]) =>
+    setHeld((prev) => ({ thread: threadId, list: next(prev.thread === threadId ? prev.list : []) }));
   const patch = (id: string, change: Partial<Staged>) =>
     setFiles((list) => list.map((f) => (f.id === id ? { ...f, ...change } : f)));
   const add = (picked: File[]) => {
@@ -208,20 +214,28 @@ function useUploads(threadId: number) {
   };
   const remove = (id: string) => setFiles((list) => list.filter((f) => f.id !== id));
   const ids = files.flatMap((f) => (f.status === "ready" && f.uploadId ? [f.uploadId] : []));
-  return { files, add, remove, ids, clear: () => setFiles([]) };
+  return { files, add, remove, ids, clear: () => setFiles(() => []) };
 }
 
 /** The composer: typing is always allowed; only Send waits for the agent (U8). */
-export function Composer({ threadId, busy, stoppable = false, onStop, stopping = false }: {
+export function Composer({ threadId, busy, stoppable = false, onStop, stopping = false, files: staged }: {
   threadId: number; busy: boolean; stoppable?: boolean; onStop?: () => void; stopping?: boolean;
+  /** The page's staging, so a file dropped anywhere on the pane lands in this composer.
+   *  Without it the composer stages on its own - the `+` button still works. */
+  files?: ReturnType<typeof useUploads>;
 }) {
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const request = useRequestId();
-  const files = useUploads(threadId);
+  const own = useUploads(threadId);
+  const files = staged ?? own;
   const send = useMutation({
     mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
-      method: "POST", json: { content, client_message_id: request.for(content), upload_ids: files.ids },
+      method: "POST",
+      // The ids are part of the submission's identity: replacing a file without touching the
+      // text is a DIFFERENT message, and reusing the id would replay the earlier one.
+      json: { content, client_message_id: request.for(`${content}\u0000${files.ids.join(",")}`),
+              upload_ids: files.ids },
     }),
     // The list too: the first message gives the thread its server title (U9).
     onSuccess: () => { request.done(); setText(""); files.clear(); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
@@ -243,17 +257,17 @@ export function ChannelComposer({ threadId, busy, stoppable = false, onStop, sto
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const request = useRequestId();
-  const files = useUploads(threadId);
   const send = useMutation({
     mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
-      method: "POST", json: { content, client_message_id: request.for(content), upload_ids: files.ids },
+      method: "POST", json: { content, client_message_id: request.for(content) },
     }),
-    onSuccess: () => { request.done(); setText(""); files.clear(); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
+    onSuccess: () => { request.done(); setText(""); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
   });
+  // No files here: a file in a channel reply belongs in the external system the reply goes
+  // to, which is a different upload entirely. Text only, and the Stop toggle.
   return (
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
       placeholder="Reply in the channel…" stoppable={stoppable} onStop={onStop} stopping={stopping}
-      attachments={files.files} onFiles={files.add} onRemoveAttachment={files.remove}
       hint={busy ? "The agent is answering…" : "Your reply continues this task in the channel it came from."}
       error={send.error ? message(send.error) : undefined} />
   );
@@ -421,6 +435,8 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
   const admin = useSession()?.role === "admin";
   const { messages, thread, store, version, stream, loaded, loadError, retry, reconnect, resume } = useConversation(threadId);
   const box = useRef<HTMLDivElement>(null);
+  // One staging per pane: the composer and the pane's drop target fill the same list.
+  const paneFiles = useUploads(threadId);
   /** scrollHeight before an older page was merged: the prepend keeps the visible event in place. */
   const anchor = useRef<number | null>(null);
   const [following, setFollowing] = useState(true);
@@ -576,6 +592,9 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
 
   return (
     <ChatLayout
+      // The whole conversation is the drop target (not just the composer): a file dropped on
+      // the history is a file the user meant to attach.
+      onFiles={channel ? undefined : paneFiles.add}
       title={detail?.title || `Conversation ${threadId}`}
       actions={<>
         {/* The connection is a status, not an action: it stays visible, and only when it is
@@ -616,7 +635,7 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
             </>
           ))
         : <Composer key={threadId} threadId={threadId} busy={busy} stoppable={stoppable}
-            onStop={() => stop.mutate()} stopping={stop.isPending} />)}
+            files={paneFiles} onStop={() => stop.mutate()} stopping={stop.isPending} />)}
     >
       {olderButton}
       {older.error && (

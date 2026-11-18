@@ -24,6 +24,7 @@ from pathlib import Path
 import pymysql
 
 from agento.framework.access.accounts import User, can_reach, get_user, has_operation, scope_is_active
+from agento.framework.artifacts_dir import attachments_delivered
 from agento.framework.channels.registry import get_channel
 from agento.framework.events import (
     ConversationArchivedEvent,
@@ -1311,7 +1312,8 @@ def complete_pending(conn, message_id: int) -> int:
             requester=requester,
             priority=50,
             context=prompt,
-            attachments=attachments,
+            # No `attachments`: the panel composer is the only one that attaches files, and
+            # a file in a channel reply belongs in the external system it goes to.
             # The channel's own thread: the reply is the next turn of the mail conversation,
             # issue or PR, and its run lands in this conversation (`link_execution`). A
             # thread whose view is gone has no owner to join (`join_thread`): the reply then
@@ -1373,9 +1375,11 @@ def sweep_uploads(conn, *, retention_hours: int) -> int:
     also holds from before it reads the directory until after it commits - so a file can
     never be taken between the descriptor and the message that names it.
 
-    A claimed file stays until its turn is terminal: delivery copies from staging at run
-    preparation, and a retry of a live turn prepares again. After that the thread's own
-    copy is what every later turn reuses (`regenerate`).
+    A claimed file stays until the THREAD holds its delivered copy: delivery copies from
+    staging at run preparation, and a retry prepares again. Job state is deliberately not
+    the signal - a run can reach a terminal state by failing during preparation, before the
+    copy, and a retry would then find the only copy gone (BUG). Once the copy is there, it
+    is what every later turn reuses (`regenerate`), so the source goes at the next tick.
     """
     taken = 0
     for conversation_id in uploads.conversations_with_uploads():
@@ -1392,13 +1396,18 @@ def _sweep_one(conn, conversation_id: int, retention_hours: int) -> int:
     with uploads.uploads_lock(conn, conversation_id):
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT uploads FROM message WHERE conversation_id = %s "
-                "AND uploads IS NOT NULL AND job_state <> 'terminal'",
+                "SELECT m.uploads, t.`key` AS thread_key FROM message m "
+                "LEFT JOIN thread t ON t.id = m.thread_id "
+                "WHERE m.conversation_id = %s AND m.uploads IS NOT NULL",
                 (conversation_id,))
             rows = cur.fetchall()
         conn.commit()                     # the SELECT opened a transaction
+        # EVERY message that still names a source, whatever its job reached: what releases
+        # the source is the thread holding the delivered copy, never the job's state.
         live = {Path(f["from"]).parent.name
-                for row in rows for f in json.loads(_uploads_json(row["uploads"]))["files"]}
+                for row in rows
+                if not attachments_delivered(row["thread_key"], _uploads_json(row["uploads"]))
+                for f in json.loads(_uploads_json(row["uploads"]))["files"]}
         for user_id in uploads.users_with_uploads(conversation_id):
             for upload_id in uploads.expired_dirs(conversation_id, user_id, retention_hours):
                 if upload_id in live:

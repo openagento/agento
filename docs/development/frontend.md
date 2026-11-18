@@ -131,9 +131,12 @@ npm test            # build, lint, then every unit test and every story in headl
   and its wide tables and code blocks scroll inside their own box (story `WideContent`).
   `ChatComposer` is one pill with one submit control: `stoppable` + `onStop` turn Send into
   Stop while a turn runs, and `attachments` + `onFiles` + `onRemoveAttachment` add the file
-  row, the "Add files" button and the whole-pill drop target. Both are optional, so the
-  composer without them is exactly the field it was. The page owns the uploads; the component
-  holds no state but the drag counter.
+  row and the "Add files" button (a paste of files goes the same way). Both are optional, so
+  the composer without them is exactly the field it was, and it holds no state of its own.
+  The **drop** target is `ChatLayout`'s own `onFiles`, not the composer's: the whole
+  conversation pane takes the drop and shows the hint over it, because during a drag the eye
+  is on the history, and a target the user has to aim at is a target they miss. The page owns
+  the staged list and hands the same one to both.
   A sub-agent's job is a `SubagentRun` card (collapsed, with its state badge) nested in its
   parent's turn; open, it holds its own `ChatList` ([conversation.md](../modules/conversation.md#turns-and-sub-agents-in-the-panel)).
   `Rail` is the thread column: a fixed top block (new conversation, the `SearchToggle`, the search
