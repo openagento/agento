@@ -210,7 +210,7 @@ function useUploads(threadId: number) {
   const add = (picked: File[]) => {
     for (const file of picked) {
       const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      setFiles((list) => [...list, { id, name: file.name, status: "uploading" }]);
+      setFiles((list) => [...list, { id, name: file.name, bytes: file.size, status: "uploading" }]);
       const form = new FormData();
       form.append("file", file, file.name);
       apiFetch<{ upload_id: string }>(`/api/conversation/threads/${threadId}/uploads`, { method: "POST", form })
