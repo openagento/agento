@@ -991,3 +991,27 @@ describe("the rail", () => {
     expect(api.calls("GET", "/api/conversation/threads").map((c) => c.url.search)).toContain("?scope=shared&before=8");
   });
 });
+
+describe("staged uploads and the thread they belong to", () => {
+  it("an upload that answers after the user left its thread does not wipe the open one", async () => {
+    const settle: ((r: Response) => void)[] = [];
+    const { fetchMock } = await stubApi({});
+    fetchMock.mockImplementation(() => new Promise<Response>((res) => { settle.push(res); }));
+    const { container, rerender } = render(<Composer threadId={3} busy={false} />, { wrapper });
+    const pick = (name: string) => {
+      const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+      fireEvent.change(input, { target: { files: [new File(["x"], name)] } });
+    };
+    pick("first.pdf");
+    expect(await screen.findByText("first.pdf")).toBeInTheDocument();
+
+    rerender(<Composer threadId={4} busy={false} />);
+    pick("second.pdf");
+    expect(await screen.findByText("second.pdf")).toBeInTheDocument();
+
+    // The thread-3 upload answers now. Its write belongs to a thread the user has left.
+    await act(async () => { settle[0](json({ upload_id: "u1" })); });
+    expect(screen.getByText("second.pdf")).toBeInTheDocument();
+    expect(screen.queryByText("first.pdf")).not.toBeInTheDocument();
+  });
+});

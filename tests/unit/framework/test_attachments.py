@@ -79,6 +79,16 @@ class TestSource:
             deliver_attachments(descriptor(source="uploads/t1/u2/abc/link.pdf"),
                                 tmp_path / "shared", gid=os.getgid())
 
+    def test_a_symlinked_uploads_root_is_refused(self, workspace, tmp_path):
+        """The root itself is a check, not a prefix: a link there steers every source."""
+        elsewhere = tmp_path / "elsewhere" / "t1" / "u2" / "abc"
+        elsewhere.mkdir(parents=True)
+        (elsewhere / "report.pdf").write_bytes(b"other bytes")
+        shutil.rmtree(workspace / "uploads")
+        (workspace / "uploads").symlink_to(tmp_path / "elsewhere")
+        with pytest.raises(AttachmentError):
+            deliver_attachments(descriptor(), tmp_path / "shared", gid=os.getgid())
+
 
 class TestDeliver:
     def delivered(self, shared):
