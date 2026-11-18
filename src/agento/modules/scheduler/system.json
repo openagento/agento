@@ -1,5 +1,7 @@
 {
   "limits/max_per_user": {"type": "integer", "label": "Max schedules one user owns", "description": "A user at the limit cannot create one more, in the panel or through an agent's schedule_create. Admin has no limit; an owner change is not limited.", "min": 1, "max": 1000, "showInDefault": true, "showInWorkspace": true, "showInAgentView": true},
   "limits/max_per_agent_view": {"type": "integer", "label": "Max schedules an agent_view owns", "description": "The limit for schedules an agent creates with schedule_create when its job has no panel user.", "min": 1, "max": 1000, "showInDefault": true, "showInWorkspace": true, "showInAgentView": true},
+  "limits/uploads_per_schedule": {"type": "integer", "label": "Max files on one schedule", "description": "Every run of the schedule gets these files.", "min": 0, "max": 50, "showInDefault": true, "showInWorkspace": false, "showInAgentView": false},
+  "limits/upload_retention_hours": {"type": "integer", "label": "Hours a staged schedule file that nothing names is kept", "description": "A file a schedule no longer names, or that no schedule was saved with, is removed after this time.", "min": 1, "max": 720, "showInDefault": true, "showInWorkspace": false, "showInAgentView": false},
   "presets": {"type": "json", "label": "Recurrence presets (label to RRULE, for example FREQ=DAILY;BYHOUR=9;BYMINUTE=0)", "showInDefault": true, "showInWorkspace": false, "showInAgentView": false}
 }

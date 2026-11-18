@@ -22,7 +22,8 @@ class _Source:
     editable = True
 
     def fire_spec(self, cur, row):
-        return FireSpec("testsrc", "blank", str(row["id"]), f"schedule:{row['id']}", None, row["prompt"], 50)
+        return FireSpec("testsrc", "blank", str(row["id"]), f"schedule:{row['id']}", None, row["prompt"], 50,
+                        row["attachments"])
 
     def on_delete(self, cur, row):
         cur.execute("INSERT INTO schedule_test_log (schedule_id) VALUES (%s)", (row["id"],))
@@ -126,6 +127,13 @@ def _tick(conn, now=NOW, batch=500):
 
 
 class TestFireDue:
+    def test_the_job_carries_the_files_the_source_names(self, conn, view, registered, events):
+        descriptor = '{"key": "s1-abc", "files": [{"from": "uploads/s1/u1/x/a.txt", "as": "a.txt"}]}'
+        with_files, without = _schedule(conn, view, attachments=descriptor), _schedule(conn, view)
+        _tick(conn)
+        assert [j["attachments"] for j in _jobs(conn, with_files)] == [descriptor]
+        assert [j["attachments"] for j in _jobs(conn, without)] == [None]
+
     def test_publishes_one_job_and_advances(self, conn, view, registered, events):
         sid = _schedule(conn, view)
         result = _tick(conn)

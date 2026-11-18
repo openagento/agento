@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from agento.framework import uploads
 from agento.framework.access import accounts
 from agento.framework.harness.options_source import HARNESS_REGISTRY, resolve_options
 from agento.framework.schedule import engine, tick
@@ -27,7 +28,8 @@ from .rights import Rights
 
 _NOT_FOUND = error(404, "not found")
 _FORBIDDEN = error(403, "forbidden")
-_FIELDS = ("title", "prompt", "agent_view_id", "rrule", "starts_at", "timezone", "harness", "model", "enabled")
+_FIELDS = ("title", "prompt", "agent_view_id", "rrule", "starts_at", "timezone", "harness", "model", "enabled",
+           "upload_ids")
 MAX_TITLE = 500
 MAX_MODEL = 128
 
@@ -147,6 +149,7 @@ def get_schedule(req: Request) -> Response:
     row, can = loaded
     body = _json(row, can, _presets(req.conn), _extra(req.conn, [row["id"]]))
     body["members"] = _members(req.conn, row["id"]) if can.share else None
+    body["attachments"] = uploads.staged(row["attachments"])
     return Response(200, body)
 
 
@@ -200,6 +203,7 @@ def options(req: Request) -> Response:
         "default_timezone": tick.default_timezone(req.conn),
         "min_interval_minutes": tick.min_interval_minutes(req.conn),
         "agent_views": _target_views(req.conn, user),
+        "max_uploads": int(store.setting(req.conn, "limits/uploads_per_schedule")),
     })
 
 
@@ -323,13 +327,54 @@ def _values(req: Request, body: dict, *, row: dict | None) -> tuple[dict, dict |
     return {**values, **timing}, basis
 
 
+def _upload_ids(req: Request, body: dict) -> list[str] | None | Response:
+    """``upload_ids``: the FULL wanted file set, in order. Absent: the set is not changed."""
+    if "upload_ids" not in body:
+        return None
+    ids = body["upload_ids"]
+    limit = int(store.setting(req.conn, "limits/uploads_per_schedule"))
+    if (not isinstance(ids, list) or len(ids) > limit
+            or not all(isinstance(i, str) and uploads.UPLOAD_ID.fullmatch(i) for i in ids) or len(set(ids)) != len(ids)):
+        return _refuse(400, "bad_uploads", f"a schedule takes at most {limit} files")
+    return ids
+
+
+def _stage(req: Request, owner: str) -> Response:
+    """Stage ONE multipart file under ``owner`` for the session user. The id is usable only by
+    that user, in a save of that schedule (or, from the draft bucket, in their create)."""
+    try:
+        name, data = uploads.parse_one_file(req.body, req.headers.get("Content-Type") or "")
+        uploads.check_bytes(req.conn, data)
+        upload_id, stored = uploads.store(owner, _user(req).id, name, data)
+    except uploads.UploadError as exc:
+        return _refuse(exc.status, "upload", str(exc))
+    return Response(201, {"upload_id": upload_id, "name": stored, "bytes": len(data)})
+
+
+def upload(req: Request) -> Response:
+    """POST /api/scheduler/schedules/<id>/uploads (multipart, one file): the write right."""
+    loaded = _load(req, "write")
+    return loaded if isinstance(loaded, Response) else _stage(req, store._owner(loaded[0]["id"]))
+
+
+def upload_draft(req: Request) -> Response:
+    """POST /api/scheduler/uploads (multipart, one file): a file for a schedule the caller has
+    not saved yet (``scheduler.own``, as create)."""
+    return _stage(req, store.DRAFT) if rights.may_create(req.conn, _user(req)) else _FORBIDDEN
+
+
 def create(req: Request) -> Response:
     """POST /api/scheduler/schedules {title, prompt, agent_view_id, rrule, starts_at?, timezone?,
-    harness?, model?, enabled?}: a schedule owned by the caller (``scheduler.own``, D-13)."""
+    harness?, model?, enabled?, upload_ids?}: a schedule owned by the caller (``scheduler.own``,
+    D-13). ``upload_ids`` are the caller's draft uploads."""
     user = _user(req)
     if not rights.may_create(req.conn, user):
         return _FORBIDDEN
-    parsed = _values(req, api._body(req), row=None)
+    body = api._body(req)
+    upload_ids = _upload_ids(req, body)
+    if isinstance(upload_ids, Response):
+        return upload_ids
+    parsed = _values(req, body, row=None)
     if isinstance(parsed, Response):
         return parsed
     values, basis = parsed
@@ -340,19 +385,24 @@ def create(req: Request) -> Response:
         limit = None if user.role == "admin" else int(store.setting(req.conn, "limits/max_per_user",
                                                                     values["agent_view_id"]))
         schedule_id = store.save(req.conn, {**values, **basis}, user=user, actor=web_subject(user), owner_user_id=user.id,
-                                 fires=fires, limit=limit)
+                                 fires=fires, limit=limit, upload_ids=upload_ids)
         return Response(201, {"id": schedule_id})
 
     return _run(go)
 
 
 def update(req: Request) -> Response:
-    """PATCH /api/scheduler/schedules/<id> {any create field}: the write right."""
+    """PATCH /api/scheduler/schedules/<id> {any create field}: the write right. ``upload_ids``
+    is the full wanted set: the ids the schedule has now, and the caller's new uploads to it."""
     loaded = _load(req, "write")
     if isinstance(loaded, Response):
         return loaded
     row, _ = loaded
-    parsed = _values(req, api._body(req), row=row)
+    body = api._body(req)
+    upload_ids = _upload_ids(req, body)
+    if isinstance(upload_ids, Response):
+        return upload_ids
+    parsed = _values(req, body, row=row)
     if isinstance(parsed, Response):
         return parsed
     values, basis = parsed
@@ -361,7 +411,7 @@ def update(req: Request) -> Response:
         fires = None if basis is None else store.validate(req.conn, basis["rrule"], basis["starts_at"],
                                                           basis["timezone"])
         store.save(req.conn, values, user=_user(req), actor=web_subject(_user(req)), schedule_id=row["id"],
-                   basis=basis, fires=fires)
+                   basis=basis, fires=fires, upload_ids=upload_ids)
         return Response(204)
 
     return _run(go)

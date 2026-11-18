@@ -15,12 +15,16 @@ export interface Schedule {
   last_run_status: string | null; conversation_id: number | null; can: Can;
   /** Only on GET /schedules/<id>, and only with the share right. */
   members?: Member[] | null;
+  /** Only on GET /schedules/<id>: the files every run gets. `bytes` is null when the file is gone. */
+  attachments?: { upload_id: string; name: string; bytes: number | null }[];
 }
 export type Group = "mine" | "shared" | "agent" | "user";
 export interface Options {
   presets: { label: string; rrule: string }[]; harnesses: { value: string; label: string }[];
   default_timezone: string; min_interval_minutes: number;
   agent_views: { id: number; code: string; label: string; workspace_id: number }[];
+  /** The most files one schedule takes. */
+  max_uploads: number;
 }
 export interface Fire { at: string; local: string }
 /** One job of the schedule (`GET …/runs`, newest first). `answer`: what its last attempt wrote into
@@ -65,6 +69,8 @@ const MESSAGES = {
   bad_user: "Pick a user.",
   read_only: "This schedule is read-only.",
   not_found: "The schedule was not found.",
+  bad_uploads: "The schedule has too many files. Remove some.",
+  upload_gone: "A file is no longer available. Remove it and attach it again.",
 } as const;
 export const CODES = Object.keys(MESSAGES);
 

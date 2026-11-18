@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 
 
 class FireSpec(NamedTuple):
-    """What one fire publishes: the job's channel source, job type, reference and thread."""
+    """What one fire publishes: the job's channel source, job type, reference and thread.
+    ``attachments`` is a job attachment descriptor (``artifacts_dir.parse_attachments``) or None."""
 
     source: str
     agent_type: str
@@ -27,6 +28,7 @@ class FireSpec(NamedTuple):
     requester: JobRequester | None
     context: str | None
     priority: int
+    attachments: str | None = None
 
 
 @runtime_checkable

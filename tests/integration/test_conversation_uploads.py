@@ -10,7 +10,8 @@ import json
 
 import pytest
 
-from agento.modules.conversation.src import routes, service, uploads
+from agento.framework import uploads
+from agento.modules.conversation.src import routes, service
 
 from .conftest import _clean  # noqa: F401
 from .test_conversation_submission import _Req
@@ -115,7 +116,7 @@ def test_a_body_that_is_not_multipart_is_refused(conn, world, thread, workspace)
 def test_a_file_over_the_limit_is_refused(conn, world, thread, workspace):
     with conn.cursor() as cur:
         cur.execute("INSERT INTO core_config_data (scope, scope_id, path, value) "
-                    "VALUES ('default', 0, 'conversation/limits/upload_max_bytes', '1024')")
+                    "VALUES ('default', 0, 'core/uploads/max_bytes', '1024')")
     conn.commit()
     refused = routes.upload(_Upload(conn, world["owner"], thread, payload=b"x" * 2048))
     assert refused.status == 413
@@ -126,7 +127,7 @@ def test_a_thread_the_caller_cannot_reach_stages_nothing(conn, world, workspace)
                                         agent_view_id=world["view"], title="theirs")
     refused = routes.upload(_Upload(conn, world["owner"], other))
     assert refused.status == 404
-    assert uploads.conversations_with_uploads() == []
+    assert uploads.owners("t") == []
 
 
 def test_a_regeneration_that_also_carries_upload_ids_is_refused(conn, world, thread, workspace):
@@ -175,14 +176,14 @@ def test_a_channel_thread_stages_no_file(conn, world, workspace):
     # An admin: the channel's own write gate must not be what refuses this.
     refused = routes.upload(_Upload(conn, world["admin"], _channel(conn, world)))
     assert refused.status == 400
-    assert uploads.conversations_with_uploads() == []
+    assert uploads.owners("t") == []
 
 
 def test_a_channel_thread_refuses_upload_ids(conn, world, workspace):
     channel = _channel(conn, world)
     # Staged INTO the channel itself: a file staged elsewhere is already refused for
     # belonging to another conversation, which would hide the removal of this gate.
-    upload_id, _ = uploads.store(channel, world["admin"].id, "report.pdf", b"bytes")
+    upload_id, _ = uploads.store(f"t{channel}", world["admin"].id, "report.pdf", b"bytes")
     refused = routes.send(_Req(conn, world["admin"], params={"id": channel},
                                json={"content": "look", "client_message_id": "c1",
                                      "upload_ids": [upload_id]}))

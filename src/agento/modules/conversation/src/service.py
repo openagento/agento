@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pymysql
 
+from agento.framework import uploads
 from agento.framework.access.accounts import User, can_reach, get_user, has_operation, scope_is_active
 from agento.framework.artifacts_dir import attachments_delivered
 from agento.framework.channels.registry import get_channel
@@ -38,8 +39,6 @@ from agento.framework.job_models import TERMINAL_STATUSES, JobRequester, Request
 from agento.framework.job_types import resolve_job_type
 from agento.framework.publish_service import publish_job
 from agento.framework.threads import ensure_thread
-
-from . import uploads
 
 logger = logging.getLogger(__name__)
 
@@ -1072,14 +1071,33 @@ def check_upload_ids(conn, value: object) -> list[str] | None:
     return value
 
 
-def check_upload_bytes(conn, data: bytes) -> None:
-    """The refusal NAMES the limit: a user told only "too large" has to guess, or read docs
-    they do not have. The number is the operator's own config value."""
-    cap = config(conn, "limits/upload_max_bytes")
-    if len(data) > cap:
-        raise SubmissionError(413, f"file too large (max {cap // (1024 * 1024)} MB)"
-                              if cap >= 1024 * 1024 else
-                              f"file too large (max {cap // 1024} KB)")
+UPLOAD_LOCK_WAIT_SECONDS = 10
+
+
+def upload_owner(conversation_id: int) -> str:
+    """The staging owner of a conversation (`framework/uploads.py`)."""
+    return f"t{int(conversation_id)}"
+
+
+@contextlib.contextmanager
+def uploads_lock(conn, conversation_id: int):
+    """Hold the conversation's upload lock: a claim and the sweep never interleave.
+
+    The same `GET_LOCK` shape as the versioned-artifacts retention lock
+    (`framework/access/launches.py`). A named lock belongs to its CONNECTION and survives
+    COMMIT, so this must never run on a `db.pooled` one (`framework/db.py`).
+    """
+    name = f"cv_up:{int(conversation_id)}"
+    with conn.cursor() as cur:
+        cur.execute("SELECT GET_LOCK(%s, %s) AS got", (name, UPLOAD_LOCK_WAIT_SECONDS))
+        row = cur.fetchone()
+    if not row or row["got"] != 1:
+        raise uploads.UploadError(503, "uploads are busy, try again")
+    try:
+        yield
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("SELECT RELEASE_LOCK(%s)", (name,))
 
 
 def check_title(value: object) -> str | None:
@@ -1124,7 +1142,7 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
     """
     # Around the lock too: `GET_LOCK` refusing is a 503 for the caller, not a 500.
     try:
-        with (uploads.uploads_lock(conn, conversation_id) if upload_ids
+        with (uploads_lock(conn, conversation_id) if upload_ids
               else contextlib.nullcontext()):
             return _submit_locked(conn, conversation_id=conversation_id, user_id=user_id,
                                   client_message_id=client_message_id, content=content,
@@ -1162,7 +1180,7 @@ def _submit_locked(conn, *, conversation_id: int, user_id: int, client_message_i
             message_id = cur.lastrowid
             if upload_ids:
                 uploads_json = json.dumps(uploads.descriptor(
-                    conversation_id, user_id, upload_ids, f"m{message_id}"))
+                    upload_owner(conversation_id), user_id, upload_ids, f"m{message_id}"))
             if uploads_json:
                 cur.execute("UPDATE message SET uploads = %s WHERE id = %s",
                             (uploads_json, message_id))
@@ -1388,7 +1406,7 @@ def sweep_uploads(conn, *, retention_hours: int) -> int:
     is what every later turn reuses (`regenerate`), so the source goes at the next tick.
     """
     taken = 0
-    for conversation_id in uploads.conversations_with_uploads():
+    for conversation_id in uploads.owners("t"):
         try:
             taken += _sweep_one(conn, conversation_id, retention_hours)
         except uploads.UploadError:
@@ -1399,7 +1417,8 @@ def sweep_uploads(conn, *, retention_hours: int) -> int:
 def _sweep_one(conn, conversation_id: int, retention_hours: int) -> int:
     """One conversation's staging, under its own lock."""
     taken = 0
-    with uploads.uploads_lock(conn, conversation_id):
+    owner = upload_owner(conversation_id)
+    with uploads_lock(conn, conversation_id):
         with conn.cursor() as cur:
             cur.execute(
                 # The thread is the CONVERSATION's (007_thread.sql); a message has none.
@@ -1416,11 +1435,11 @@ def _sweep_one(conn, conversation_id: int, retention_hours: int) -> int:
                 for row in rows
                 if not attachments_delivered(row["thread_key"], uploads.descriptor_json(row["uploads"]))
                 for f in json.loads(uploads.descriptor_json(row["uploads"]))["files"]}
-        for user_id in uploads.users_with_uploads(conversation_id):
-            for upload_id in uploads.expired_dirs(conversation_id, user_id, retention_hours):
+        for user_id in uploads.users(owner):
+            for upload_id in uploads.expired_dirs(owner, user_id, retention_hours):
                 if upload_id in live:
                     continue
-                uploads.remove(conversation_id, user_id, upload_id)
+                uploads.remove(owner, user_id, upload_id)
                 taken += 1
     return taken
 

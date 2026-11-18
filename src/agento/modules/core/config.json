@@ -15,6 +15,7 @@
   "artifacts/retention_days": 30,
   "scheduler/min_interval_minutes": 5,
   "scheduler/default_timezone": "",
+  "uploads/max_bytes": 26214400,
   "limits/window_seconds": 60,
   "limits/max_requests_per_user": 120,
   "limits/max_requests_per_address": 60,

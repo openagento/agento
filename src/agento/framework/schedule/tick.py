@@ -184,7 +184,7 @@ def fire(cur, schedule_id: int, *, fire_at: datetime, idempotency_key: str, acto
         agent_view_id=row["agent_view_id"], reference_id=spec.reference_id,
         idempotency_key=idempotency_key, requester=spec.requester, priority=spec.priority,
         context=spec.context, thread=spec.thread, harness=row["harness"], model=row["model"],
-        schedule_id=schedule_id,
+        schedule_id=schedule_id, attachments=spec.attachments,
     )
     cur.execute("UPDATE schedule SET last_fire_at = %s WHERE id = %s", (fire_at, schedule_id))
     if published is None:  # this key already published its job: nothing new to announce

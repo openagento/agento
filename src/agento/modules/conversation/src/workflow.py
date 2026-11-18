@@ -10,6 +10,7 @@ a question the user was never told had arrived, and turn 2's own job would ask i
 """
 from __future__ import annotations
 
+from agento.framework import uploads
 from agento.framework.artifacts_dir import attachment_block
 from agento.framework.channels.base import Channel
 from agento.framework.database_config import DatabaseConfig
@@ -17,8 +18,6 @@ from agento.framework.db import get_connection
 from agento.framework.harness import RunResult
 from agento.framework.job_models import Job
 from agento.framework.workflows.base import JobContext, Workflow
-
-from . import uploads
 
 _ROLE_LABEL = {"user": "Użytkownik", "assistant": "Asystent"}
 

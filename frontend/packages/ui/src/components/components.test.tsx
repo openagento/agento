@@ -230,15 +230,19 @@ describe("ChatLayout drop target", () => {
     const pane = screen.getByLabelText("Conversation");
     const file = new File(["x"], "a.pdf");
     expect(screen.queryByText("Drop files to attach")).not.toBeInTheDocument();
-    fireEvent.dragEnter(pane, { dataTransfer: { files: [file] } });
+    // A dragged link or text selection has nothing to attach: no hint.
+    fireEvent.dragEnter(pane, { dataTransfer: { files: [], types: ["text/plain"] } });
+    expect(screen.queryByText("Drop files to attach")).not.toBeInTheDocument();
+    fireEvent.dragLeave(pane);
+    fireEvent.dragEnter(pane, { dataTransfer: { files: [file], types: ["Files"] } });
     expect(screen.getByText("Drop files to attach")).toBeInTheDocument();
     // Leaving a CHILD must not clear the hint - that is what the counter is for.
     const history = screen.getByText("history");
-    fireEvent.dragEnter(history, { dataTransfer: { files: [file] } });
+    fireEvent.dragEnter(history, { dataTransfer: { files: [file], types: ["Files"] } });
     fireEvent.dragLeave(history);
     expect(screen.getByText("Drop files to attach")).toBeInTheDocument();
     // A drop on the HISTORY, far from the composer, is the case the composer-only target missed.
-    fireEvent.drop(history, { dataTransfer: { files: [file] } });
+    fireEvent.drop(history, { dataTransfer: { files: [file], types: ["Files"] } });
     expect(onFiles).toHaveBeenCalledWith([file]);
     expect(screen.queryByText("Drop files to attach")).not.toBeInTheDocument();
   });
@@ -246,7 +250,7 @@ describe("ChatLayout drop target", () => {
   it("takes no drop when the pane is not a target", () => {
     render(<ChatLayout title="t"><p>history</p></ChatLayout>, { wrapper: AgentoUiProvider });
     fireEvent.dragEnter(screen.getByLabelText("Conversation"),
-      { dataTransfer: { files: [new File(["x"], "a.pdf")] } });
+      { dataTransfer: { files: [new File(["x"], "a.pdf")], types: ["Files"] } });
     expect(screen.queryByText("Drop files to attach")).not.toBeInTheDocument();
   });
 });

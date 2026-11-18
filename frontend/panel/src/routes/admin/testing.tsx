@@ -18,6 +18,9 @@ export const ALL_LEAVES = [
   "versioned_artifacts", "versioned_artifacts.publish", "versioned_artifacts.delete",
 ];
 
+/** The JSON body of a call; a multipart body (a staged file) has none. */
+const parsed = (body: unknown) => (typeof body === "string" ? JSON.parse(body) : undefined);
+
 export async function stubApi(answers: Record<string, Answer>, acl: string[] = ALL_LEAVES) {
   const role = acl === ALL_LEAVES ? "admin" : "user";
   const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
@@ -30,7 +33,7 @@ export async function stubApi(answers: Record<string, Answer>, acl: string[] = A
       .find((k) => k && k in answers);
     if (!key) return new Response(JSON.stringify({ error: "not stubbed" }), { status: 404 });
     const a = answers[key];
-    const body = await (typeof a === "function" ? a(init?.body ? JSON.parse(String(init.body)) : undefined, url) : a);
+    const body = await (typeof a === "function" ? a(parsed(init?.body), url) : a);
     if (body instanceof Response) return body;
     return body === null ? new Response(null, { status: 204 }) : new Response(JSON.stringify(body), { status: 200 });
   });
@@ -41,7 +44,7 @@ export async function stubApi(answers: Record<string, Answer>, acl: string[] = A
     /** Every call to `METHOD path` (path without the query), with its parsed JSON body. */
     calls: (method: string, path: string) => fetchMock.mock.calls
       .filter(([u, i]) => (i?.method ?? "GET") === method && new URL(String(u), window.location.origin).pathname === path)
-      .map(([u, i]) => ({ url: new URL(String(u), window.location.origin), body: i?.body ? JSON.parse(String(i.body)) : undefined })),
+      .map(([u, i]) => ({ url: new URL(String(u), window.location.origin), body: parsed(i?.body) })),
   };
 }
 

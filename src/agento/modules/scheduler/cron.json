@@ -1,0 +1,9 @@
+{
+  "jobs": [
+    {
+      "name": "scheduler_sweep_uploads",
+      "schedule": "23 * * * *",
+      "command": "scheduler:sweep-uploads"
+    }
+  ]
+}

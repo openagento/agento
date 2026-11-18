@@ -1,10 +1,10 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
-import { apiFetch, LIVE_REFETCH_MS, ApiError, useMutation, useQuery, useQueryClient, useSession, type StreamEvent } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, ApiError, useMutation, useQuery, useQueryClient, useSession, useUploads, type StreamEvent } from "@agento/api";
 import {
   AppLink, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ChatTime, ConnectionStatus, EmptyState, ErrorState,
   LoadingState, MenuButton, Rail as RailFrame, Reasoning, RegenerateAction, RowMenu, SearchToggle, SelectField, SplitView, SubagentRun,
-  TextField, ThreadList, ToolCall, ToolGroup, jobTone, type Attachment, type JobState, type ThreadLink,
+  TextField, ThreadList, ToolCall, ToolGroup, jobTone, type JobState, type ThreadLink,
 } from "@agento/ui";
 import { DAY_GROUPS, dayGroup, inFlight, jobTree, turnState, type JobNode, type Message, type Thread, type ThreadDetail } from "./model";
 import { buildItems, findTurn, isSubagent, turns, type Item, type Shown, type Tool, type Turn } from "./timeline";
@@ -184,44 +184,7 @@ function useRequestId() {
   };
 }
 
-/** The composer's files: one staging upload per picked file, and the ids a send then claims.
- *
- *  A file is staged the moment it is picked, so the send is a normal JSON post that only
- *  names ids. A failed upload stays on screen as a red chip until the user removes it - it
- *  is never silently dropped, and it never blocks the send of the files that did arrive. */
-type Staged = Attachment & { uploadId?: string };
-
-function useUploads(threadId: number) {
-  // The thread is part of the state, not an effect that clears it: switching conversations
-  // must not carry a picked file into another one, and resetting in an effect would show the
-  // old list for one frame (and is what React asks you not to do).
-  const [held, setHeld] = useState<{ thread: number; list: Staged[] }>({ thread: threadId, list: [] });
-  const files = held.thread === threadId ? held.list : [];
-  // An upload answers late. The callback carries the thread it was started in, and a write from
-  // a thread the user has left is dropped - it must not resurrect that list over the open one.
-  const shown = useRef(threadId);
-  useLayoutEffect(() => { shown.current = threadId; }, [threadId]);
-  const setFiles = (next: (list: Staged[]) => Staged[]) => {
-    if (shown.current !== threadId) return;
-    setHeld((prev) => ({ thread: threadId, list: next(prev.thread === threadId ? prev.list : []) }));
-  };
-  const patch = (id: string, change: Partial<Staged>) =>
-    setFiles((list) => list.map((f) => (f.id === id ? { ...f, ...change } : f)));
-  const add = (picked: File[]) => {
-    for (const file of picked) {
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      setFiles((list) => [...list, { id, name: file.name, bytes: file.size, status: "uploading" }]);
-      const form = new FormData();
-      form.append("file", file, file.name);
-      apiFetch<{ upload_id: string }>(`/api/conversation/threads/${threadId}/uploads`, { method: "POST", form })
-        .then((res) => patch(id, { status: "ready", uploadId: res.upload_id }))
-        .catch((err: unknown) => patch(id, { status: "error", error: message(err) }));
-    }
-  };
-  const remove = (id: string) => setFiles((list) => list.filter((f) => f.id !== id));
-  const ids = files.flatMap((f) => (f.status === "ready" && f.uploadId ? [f.uploadId] : []));
-  return { files, add, remove, ids, clear: () => setFiles(() => []) };
-}
+const uploadsUrl = (threadId: number) => `/api/conversation/threads/${threadId}/uploads`;
 
 /** The composer: typing is always allowed; only Send waits for the agent (U8). */
 export function Composer({ threadId, busy, stoppable = false, onStop, stopping = false, files: staged }: {
@@ -233,7 +196,7 @@ export function Composer({ threadId, busy, stoppable = false, onStop, stopping =
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const request = useRequestId();
-  const own = useUploads(threadId);
+  const own = useUploads(uploadsUrl(threadId));
   const files = staged ?? own;
   const send = useMutation({
     mutationFn: (content: string) => apiFetch(`/api/conversation/threads/${threadId}/messages`, {
@@ -244,7 +207,7 @@ export function Composer({ threadId, busy, stoppable = false, onStop, stopping =
               upload_ids: files.ids },
     }),
     // The list too: the first message gives the thread its server title (U9).
-    onSuccess: () => { request.done(); setText(""); files.clear(); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
+    onSuccess: () => { request.done(); setText(""); files.reset(); void qc.invalidateQueries({ queryKey: messagesKey(threadId) }); void qc.invalidateQueries({ queryKey: ["threads"] }); },
   });
   return (
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
@@ -451,7 +414,7 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
   const { messages, thread, store, version, stream, loaded, loadError, retry, reconnect, resume } = useConversation(threadId);
   const box = useRef<HTMLDivElement>(null);
   // One staging per pane: the composer and the pane's drop target fill the same list.
-  const paneFiles = useUploads(threadId);
+  const paneFiles = useUploads(uploadsUrl(threadId));
   /** scrollHeight before an older page was merged: the prepend keeps the visible event in place. */
   const anchor = useRef<number | null>(null);
   const [following, setFollowing] = useState(true);

@@ -133,6 +133,15 @@ npm test            # build, lint, then every unit test and every story in headl
   Stop while a turn runs, and `attachments` + `onFiles` + `onRemoveAttachment` add the file
   row and the "Add files" button (a paste of files goes the same way). Both are optional, so
   the composer without them is exactly the field it was, and it holds no state of its own.
+  The file pieces are exported for other panel forms, and the composer uses the same ones:
+  `FileDrop` (a region that takes dropped FILES — a dragged link or text shows no hint — with the
+  card over a scrim; `hint` is its second line), `AttachmentChips`, `AttachButton` (the paperclip
+  and its hidden input) and `FilesField` (the three as one form field: label, hint, and an `empty`
+  text). They are panel-only too: a file is staged through a session route of `web`, which a
+  miniapp does not have. The state is `useUploads(endpoint, initial?)` of `@agento/api`: one POST
+  of one file to `endpoint` per picked file; it returns `{files, add, remove, reset, ids, busy}`
+  (`ids`: the staged ids in order; an `error` entry stays in `files` and is never in `ids`), and
+  drops a late answer for an endpoint the user has left.
   The **drop** target is `ChatLayout`'s own `onFiles`, not the composer's: the whole
   conversation pane takes the drop and shows the hint over it, because during a drag the eye
   is on the history, and a target the user has to aim at is a target they miss. The page owns

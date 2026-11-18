@@ -12,9 +12,10 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+from agento.framework import uploads
 from agento.web.api import Request, Response, error
 
-from . import retention, service, uploads
+from . import retention, service
 
 _iso = service.iso
 
@@ -331,8 +332,8 @@ def upload(req: Request) -> Response:
     try:
         service.check_panel_thread(row)
         name, data = uploads.parse_one_file(req.body, req.headers.get("Content-Type") or "")
-        service.check_upload_bytes(req.conn, data)
-        upload_id, stored = uploads.store(row["id"], req.session.user.id, name, data)
+        uploads.check_bytes(req.conn, data)
+        upload_id, stored = uploads.store(service.upload_owner(row["id"]), req.session.user.id, name, data)
     except uploads.UploadError as exc:
         return error(exc.status, str(exc))
     except service.SubmissionError as exc:

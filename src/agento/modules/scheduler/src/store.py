@@ -5,10 +5,13 @@ Every event is dispatched after the commit (EVT-4), except the ``_before`` vetoe
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
+from agento.framework import uploads
 from agento.framework.access import accounts
 from agento.framework.config_resolver import load_db_overrides, read_config_defaults, resolve_field
 from agento.framework.event_manager import get_event_manager
@@ -18,6 +21,7 @@ from agento.framework.events import (
     ScheduleSavedEvent,
     ScheduleShareEvent,
 )
+from agento.framework.job_models import OPEN_STATUSES
 from agento.framework.schedule import engine, tick
 from agento.framework.schedule.tick import FireOutcome
 from agento.framework.scoped_config import build_scoped_overrides
@@ -27,10 +31,12 @@ from . import rights
 from .rights import SOURCE
 from .source import thread_id
 
+logger = logging.getLogger(__name__)
+
 MODULE_DIR = Path(__file__).resolve().parent.parent
 TIMING = ("rrule", "starts_at", "timezone")
 # The columns a save may write: everything else is the tick's, the owner change's or the row's id.
-WRITABLE = ("title", "prompt", "agent_view_id", *TIMING, "harness", "model", "enabled")
+WRITABLE = ("title", "prompt", "agent_view_id", *TIMING, "harness", "model", "enabled", "attachments")
 # A GET_LOCK name is server-wide: the database name keeps two deployments on one server apart.
 # The schedule_create tool takes the same name (toolbox/schedule-tools.js).
 LIMIT_LOCK = "scheduler:limit:user:{}:"
@@ -102,8 +108,88 @@ def _veto(row: dict, schedule_id: int | None, actor: str) -> None:
         raise StoreError(409, "vetoed", "the save was refused")
 
 
+def _owner(schedule_id: int) -> str:
+    """The staging owner of a schedule's files; ``s0`` holds the files of a form not saved yet."""
+    return f"s{schedule_id}"
+
+
+DRAFT = _owner(0)
+
+
+def _upload_ids(text: str | None) -> set[str]:
+    return {Path(f["from"]).parent.name for f in json.loads(text)["files"]} if text else set()
+
+
+def _claim(schedule_id: int, current: str | None, upload_ids: list[str], user_id: int, *, draft: bool) -> str | None:
+    """The descriptor of the wanted file set, in order. Caller holds the row lock (the sweep
+    takes it too), or the row is not committed yet.
+
+    An id the current descriptor names keeps its entry, so a member keeps the owner's files
+    with no reach to the owner's staging dir. Any other id must be the caller's own staged
+    upload: of this schedule, or of the draft bucket (``draft``), whose bytes are copied here.
+    The key is made from the whole source-to-name mapping: a delivered directory is never used
+    again for other bytes (``artifacts_dir`` delivers once per key).
+    """
+    kept = {Path(f["from"]).parent.name: f for f in (json.loads(current)["files"] if current else [])}
+    taken = {kept[i]["as"] for i in upload_ids if i in kept}
+    owner, files = _owner(schedule_id), []
+    try:
+        for upload_id in upload_ids:
+            if upload_id in kept:
+                files.append(kept[upload_id])
+                continue
+            if draft:
+                upload_id = uploads.copy(DRAFT, owner, user_id, upload_id)
+            files += uploads.descriptor(owner, user_id, [upload_id], "", taken=taken)["files"]
+    except uploads.UploadError:
+        raise StoreError(400, "upload_gone", "a file is no longer available; attach it again") from None
+    if not files:
+        return None
+    if current and json.loads(current)["files"] == files:
+        return current
+    mapping = "".join(f"{f['from']}\t{f['as']}\n" for f in files)
+    return json.dumps({"key": f"{owner}-{hashlib.sha1(mapping.encode()).hexdigest()[:12]}", "files": files})
+
+
+def sweep_uploads(conn, *, retention_hours: int) -> int:
+    """Remove the staged schedule files nothing names any more; the ONE remover of an ``s…``
+    tree. A dir goes when it is older than the retention, the row's descriptor does not name it
+    and no open job of the schedule names it. So a replaced set, a deleted schedule, a form
+    nobody saved and the draft bucket all end here. One transaction per tree, under the row lock
+    a save holds when it claims. The rollback ends the caller's read snapshot (REPEATABLE
+    READ), as in ``_locked``: the job read after the lock must see every fire committed before it."""
+    removed = 0
+    conn.rollback()
+    for schedule_id in uploads.owners("s"):
+        owner = _owner(schedule_id)
+        try:
+            with conn.cursor() as cur:
+                row = tick.lock_row(cur, schedule_id) if schedule_id else None
+                named = _upload_ids(row["attachments"]) if row else set()
+                cur.execute(f"SELECT attachments FROM job WHERE schedule_id = %s AND status IN"
+                            f" ({', '.join(['%s'] * len(OPEN_STATUSES))})", (schedule_id, *OPEN_STATUSES))
+                for job in cur.fetchall():
+                    named |= _upload_ids(job["attachments"])
+                for user_id in uploads.users(owner):
+                    for upload_id in uploads.expired_dirs(owner, user_id, retention_hours):
+                        if upload_id not in named:
+                            uploads.remove(owner, user_id, upload_id)
+                            removed += 1
+                if row is None and schedule_id:  # no route stages under a schedule that is gone
+                    uploads.prune(owner)
+            conn.commit()
+        except (ValueError, KeyError, TypeError):  # a descriptor that does not parse: keep its tree
+            conn.rollback()
+            logger.warning("scheduler: sweep skipped %s, its descriptor does not parse", owner)
+        except BaseException:
+            conn.rollback()
+            raise
+    return removed
+
+
 def save(conn, values: dict, *, user: accounts.User, actor: str, schedule_id: int | None = None, owner_user_id: int | None = None,
-         basis: dict | None = None, fires: list[engine.Fire] | None = None, limit: int | None = None) -> int:
+         basis: dict | None = None, fires: list[engine.Fire] | None = None, limit: int | None = None,
+         upload_ids: list[str] | None = None) -> int:
     """Create (``schedule_id`` None, owned by ``owner_user_id``) or update one row.
 
     ``fires`` were validated from ``basis`` (the full timing triple) before this call. A
@@ -111,7 +197,7 @@ def save(conn, values: dict, *, user: accounts.User, actor: str, schedule_id: in
     ``anchor_local`` and ``last_error`` (plan §5.1); an edit that changes no timing field
     leaves them, except a re-enable, which clears ``next_fire_at`` so the tick computes it and
     a missed fire is not run late (D-5). ``limit`` caps the owner's rows on create (None: no
-    limit). Dispatches ``schedule_save_before`` (veto) and, after the commit,
+    limit). ``upload_ids`` is the full wanted file set (None: leave it; ``_claim``). Dispatches ``schedule_save_before`` (veto) and, after the commit,
     ``schedule_save_after``.
     """
     lock = None
@@ -140,10 +226,17 @@ def save(conn, values: dict, *, user: accounts.User, actor: str, schedule_id: in
                 cur.execute(f"INSERT INTO schedule ({', '.join(cols)}) VALUES ({', '.join(['%s'] * len(cols))})",
                             tuple(cols.values()))
                 schedule_id = cur.lastrowid
+                if upload_ids:
+                    # Copy, then commit: a failed transaction leaves a tree no row names (the sweep's).
+                    cur.execute("UPDATE schedule SET attachments = %s WHERE id = %s",
+                                (_claim(schedule_id, None, upload_ids, user.id, draft=True), schedule_id))
                 audit(cur, schedule_id, "create", actor)
                 created = True
             else:
                 row = _locked(cur, schedule_id, user, "write")
+                if upload_ids is not None:
+                    values = {**values, "attachments": _claim(schedule_id, row["attachments"], upload_ids,
+                                                              user.id, draft=False)}
                 changes = {k: v for k, v in values.items() if row[k] != v}
                 if "agent_view_id" in changes:
                     raise StoreError(400, "view_fixed", "the agent view is set at create")

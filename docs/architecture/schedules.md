@@ -18,6 +18,7 @@ Migration 056 makes the old Jira-only table generic. It renames `agent_type` →
 | --- | --- |
 | `agent_view_id` | The view the job runs in. `NULL` → the row never fires. A `scheduler` row keeps the view it was created with (docs/modules/scheduler.md). |
 | `owner_user_id` / `owner_agent_view_id` | The owner. A user owner must be active and must reach the view at each fire. |
+| `attachments` | Migration 058. The files every fire carries: a job attachment descriptor (`{"key", "files": [{"from", "as"}]}`, the shape of `job.attachments`), or `NULL`. |
 | `prompt`, `harness`, `model` | What the job carries. `harness`/`model` pin the job's runtime (`NULL` = the view's config). |
 | `rrule`, `starts_at`, `timezone` | When it fires. `starts_at` is local time in `timezone`. |
 | `next_fire_at`, `last_fire_at` | Naive UTC. `next_fire_at IS NULL` means "the tick computes it". |
@@ -73,7 +74,12 @@ A module declares its sources in `di.json`:
 does for channels and job types. Run now and a panel delete therefore find the source in `web`.
 
 The class has `name`, `editable` and `fire_spec(cur, row) -> FireSpec(source, agent_type,
-reference_id, thread, requester, context, priority)`. It may have `on_delete(cur, row)`, called
+reference_id, thread, requester, context, priority, attachments=None)`. `attachments` is a job
+attachment descriptor: `tick.fire` passes it to the job unchanged, run preparation delivers the
+files to `./shared/attachments/<key>/` and `Workflow.execute` names them in the prompt
+([runner.md](runner.md)). The framework does not read what the descriptor names; a source that
+sets it owns its staged files (`framework/uploads.py`). The files reach the agent of the row's
+view and every reader of the schedule's conversation. It may have `on_delete(cur, row)`, called
 in the delete transaction before the row goes. `sources.load_sources()` reads the enabled
 modules on each call. A broken declaration is logged and left out.
 

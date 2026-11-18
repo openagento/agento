@@ -11,7 +11,14 @@
   "schedule_sources": [
     {"name": "scheduler", "class": "src.source.SchedulerSource"}
   ],
+  "commands": [
+    {"name": "scheduler:sweep-uploads", "class": "src.commands.SchedulerSweepUploadsCommand"}
+  ],
   "routes": [
+    {"method": "POST", "path": "/api/scheduler/uploads", "handler": "src.routes.upload_draft",
+     "multipart_bytes": 26739834, "acl": "self"},
+    {"method": "POST", "path": "/api/scheduler/schedules/(?P<id>[0-9]{1,18})/uploads", "handler": "src.routes.upload",
+     "multipart_bytes": 26739834, "acl": "self"},
     {"method": "GET", "path": "/api/scheduler/schedules", "handler": "src.routes.list_schedules", "acl": "self"},
     {"method": "POST", "path": "/api/scheduler/schedules", "handler": "src.routes.create", "json_body": true,
      "acl": "self"},
