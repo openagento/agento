@@ -128,6 +128,33 @@ describe("ChatComposer", () => {
     fireEvent.keyDown(box, { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
   });
+
+  it("`stoppable` turns the one submit control into Stop; Enter still only sends", () => {
+    const onSend = vi.fn();
+    const onStop = vi.fn();
+    render(<ChatComposer value="hi" onChange={vi.fn()} onSend={onSend} canSend={false}
+      stoppable onStop={onStop} />, { wrapper: AgentoUiProvider });
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+    const box = screen.getByRole("textbox", { name: "Message" });
+    expect(box).toBeEnabled();
+    // Enter while a turn runs must never stop it: the keyboard path is Send only.
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onStop).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("`stopping` disables Stop, and `onStop` without `stoppable` still renders Send", () => {
+    const onStop = vi.fn();
+    const { unmount } = render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} canSend={false}
+      stoppable onStop={onStop} stopping />, { wrapper: AgentoUiProvider });
+    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+    unmount();
+    render(<ChatComposer value="hi" onChange={vi.fn()} onSend={vi.fn()} canSend onStop={onStop} />,
+      { wrapper: AgentoUiProvider });
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
 });
 
 describe("ToolCall and ChatError", () => {

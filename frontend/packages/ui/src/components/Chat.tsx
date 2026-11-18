@@ -5,7 +5,7 @@ import {
   Text, Textarea, Title, Tooltip, UnstyledButton,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
-import { Bot, Brain, ChevronRight, CircleAlert, Info, Layers, RotateCcw, SendHorizontal, Wrench } from "lucide-react";
+import { Bot, Brain, ChevronRight, CircleAlert, Info, Layers, RotateCcw, SendHorizontal, Square, Wrench } from "lucide-react";
 import type { FormEvent, KeyboardEvent, ReactNode, Ref, UIEvent } from "react";
 import classes from "./Chat.module.css";
 import { CopyButton } from "./CopyButton";
@@ -186,11 +186,18 @@ export function ChatError({ title, children, details, onRetry }: {
 }
 
 /** The composer: typing is always allowed; only sending waits (`canSend`). Enter sends,
- *  Shift+Enter adds a line, and a key that composes text (IME) never sends. */
-export function ChatComposer({ value, onChange, onSend, canSend, hint, error, placeholder = "Ask the agent…" }: {
+ *  Shift+Enter adds a line, and a key that composes text (IME) never sends.
+ *
+ *  `stoppable` + `onStop` turn the one submit control into Stop while a turn runs. It is
+ *  deliberately NOT derived from a busy flag: busy is read off the status line and can be true
+ *  with no running turn, and a Stop shown then answers 409. The page passes the same flag the
+ *  server gives it. Enter still only ever sends. */
+export function ChatComposer({ value, onChange, onSend, canSend, hint, error, placeholder = "Ask the agent…",
+  stoppable = false, onStop, stopping = false }: {
   value: string; onChange: (v: string) => void; onSend: () => void; canSend: boolean; hint?: ReactNode;
-  error?: ReactNode; placeholder?: string;
+  error?: ReactNode; placeholder?: string; stoppable?: boolean; onStop?: () => void; stopping?: boolean;
 }) {
+  const stop = stoppable && onStop !== undefined;
   const ready = canSend && value.trim() !== "";
   const submit = (e?: FormEvent) => { e?.preventDefault(); if (ready) onSend(); };
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -206,9 +213,11 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error, pl
             placeholder={placeholder} autosize minRows={1} maxRows={8} value={value}
             onChange={(e) => onChange(e.currentTarget.value)} onKeyDown={onKey}
             aria-describedby={hint ? "composer-hint" : undefined} />
-          <Tooltip label="Send" withArrow>
-            <ActionIcon type="submit" size="lg" radius="xl" variant="filled" aria-label="Send" disabled={!ready}>
-              <SendHorizontal size={16} />
+          <Tooltip label={stop ? "Stop" : "Send"} withArrow>
+            <ActionIcon type={stop ? "button" : "submit"} size="lg" radius="xl" variant="filled"
+              aria-label={stop ? "Stop" : "Send"} disabled={stop ? stopping : !ready}
+              onClick={stop ? onStop : undefined}>
+              {stop ? <Square size={14} fill="currentColor" /> : <SendHorizontal size={16} />}
             </ActionIcon>
           </Tooltip>
         </div>
