@@ -178,13 +178,16 @@ def test_a_channel_thread_stages_no_file(conn, world, workspace):
     assert uploads.conversations_with_uploads() == []
 
 
-def test_a_channel_thread_refuses_upload_ids(conn, world, thread, workspace):
-    staged = routes.upload(_Upload(conn, world["admin"], thread))
+def test_a_channel_thread_refuses_upload_ids(conn, world, workspace):
     channel = _channel(conn, world)
+    # Staged INTO the channel itself: a file staged elsewhere is already refused for
+    # belonging to another conversation, which would hide the removal of this gate.
+    upload_id, _ = uploads.store(channel, world["admin"].id, "report.pdf", b"bytes")
     refused = routes.send(_Req(conn, world["admin"], params={"id": channel},
                                json={"content": "look", "client_message_id": "c1",
-                                     "upload_ids": [staged.body["upload_id"]]}))
+                                     "upload_ids": [upload_id]}))
     assert refused.status == 400
+    assert refused.body["error"] == "this conversation takes no files"
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) AS n FROM message WHERE conversation_id = %s", (channel,))
         assert cur.fetchone()["n"] == 0
