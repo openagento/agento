@@ -10,12 +10,16 @@ a question the user was never told had arrived, and turn 2's own job would ask i
 """
 from __future__ import annotations
 
+import json
+
 from agento.framework.channels.base import Channel
 from agento.framework.database_config import DatabaseConfig
 from agento.framework.db import get_connection
 from agento.framework.harness import RunResult
 from agento.framework.job_models import Job
 from agento.framework.workflows.base import JobContext, Workflow
+
+from . import uploads
 
 _ROLE_LABEL = {"user": "Użytkownik", "assistant": "Asystent"}
 
@@ -38,11 +42,23 @@ def parse_reference(reference_id: str | None) -> tuple[int, int]:
 def load_turns(conn, conversation_id: int, up_to_message_id: int) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT role, content FROM message "
+            "SELECT role, content, uploads FROM message "
             "WHERE conversation_id = %s AND id <= %s ORDER BY id",
             (conversation_id, up_to_message_id),
         )
         return list(cur.fetchall())
+
+
+def turn_text(turn: dict) -> str:
+    """One turn as the agent reads it: what the person wrote, plus the paths of the files they
+    sent with it. The history is rebuilt from the message rows, so a turn that does not carry
+    its own files here loses them - the publish-time prompt is NOT what the run is given."""
+    text = turn["content"] or ""
+    raw = turn.get("uploads")
+    if not raw:
+        return text
+    block = uploads.prompt_block(json.loads(raw) if isinstance(raw, (str, bytes)) else raw)
+    return (text + block) if text else block.lstrip("\n")
 
 
 class ConversationWorkflow(Workflow):
@@ -71,7 +87,7 @@ class ConversationWorkflow(Workflow):
         if kwargs.get("resumed"):
             turns = turns[-1:]
         history = "\n\n".join(
-            f"{_ROLE_LABEL.get(t['role'], t['role'])}: {t['content']}" for t in turns
+            f"{_ROLE_LABEL.get(t['role'], t['role'])}: {turn_text(t)}" for t in turns
         )
         return (
             f"{fragments.read_context}\n\n"

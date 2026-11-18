@@ -184,3 +184,46 @@ class TestSweep:
                 patch.object(uploads, "remove") as remove:
             assert service.sweep_uploads(conn, retention_hours=24) == 0
         remove.assert_not_called()
+
+
+class TestTheRebuiltHistory:
+    """The run is NOT given the prompt the publish wrote: `build_prompt` rebuilds the turn
+    text from the `message` rows. A turn's files have to travel in that rebuild, or the agent
+    is handed a question about a file whose path it was never told (AG-87)."""
+
+    def test_a_turn_carries_the_paths_of_the_files_it_was_sent_with(self):
+        from agento.modules.conversation.src import workflow
+
+        text = workflow.turn_text({"content": "podsumuj plik", "uploads": json.dumps(DESCRIPTOR)})
+        assert "podsumuj plik" in text
+        assert "./shared/attachments/m2/report.pdf" in text
+
+    def test_a_turn_of_files_alone_is_the_paths(self):
+        from agento.modules.conversation.src import workflow
+
+        text = workflow.turn_text({"content": "", "uploads": json.dumps(DESCRIPTOR)})
+        assert text.startswith("Attached files:")
+
+    def test_a_turn_with_no_file_is_its_own_text(self):
+        from agento.modules.conversation.src import workflow
+
+        assert workflow.turn_text({"content": "hi", "uploads": None}) == "hi"
+
+    def test_build_prompt_puts_the_paths_in_the_history_it_sends(self):
+        from agento.modules.conversation.src import workflow
+
+        cur = MagicMock()
+        cur.fetchall.return_value = [
+            {"role": "user", "content": "podsumuj plik", "uploads": json.dumps(DESCRIPTOR)},
+        ]
+        conn = MagicMock()
+        conn.cursor.return_value.__enter__.return_value = cur
+        channel = MagicMock()
+        channel.get_prompt_fragments.return_value = MagicMock(read_context="ctx")
+
+        flow = workflow.ConversationWorkflow(runner=MagicMock(), logger=MagicMock())
+        prompt = flow.build_prompt(channel, "1:2", conn=conn)
+
+        assert "./shared/attachments/m2/report.pdf" in prompt
+        # The query has to ask for the column at all - that is where the paths were lost.
+        assert "uploads" in cur.execute.call_args[0][0]
