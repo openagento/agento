@@ -205,6 +205,25 @@ describe("the schedule form", { timeout: 20_000 }, () => {
     expect(await screen.findByText("A schedule takes at most 2 files.")).toBeInTheDocument();
     await waitFor(() => expect(api.calls("POST", `${B}/uploads`)).toHaveLength(2));
     expect(screen.queryByText("c.txt")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Remove a.txt" }));     // room again: the message goes
+    expect(screen.queryByText("A schedule takes at most 2 files.")).toBeNull();
+  });
+
+  it("a file that failed to upload does not stay beside the saved ones", async () => {
+    let n = 0;
+    await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/1`]: row(1, "Digest"), [`POST ${B}/preview`]: FIRES,
+      [`PATCH ${B}/schedules/1`]: null,
+      [`POST ${B}/schedules/1/uploads`]: () => (n++ === 0 ? new Response(JSON.stringify({ upload_id: "ok" }), { status: 201 }) : refuse(413, "upload")) });
+    at("/schedules/1");
+    drop(await screen.findByLabelText("Title"), "good.pdf");
+    const submit = screen.getByRole("button", { name: "Save changes" });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    drop(screen.getByLabelText("Title"), "bad.pdf");
+    await screen.findByRole("button", { name: "Remove bad.pdf" });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Remove bad.pdf" })).toBeNull());
+    expect(screen.getByRole("button", { name: "Remove good.pdf" })).toBeInTheDocument();
   });
 
   it("a read-only schedule shows its files and takes none", async () => {
