@@ -5,6 +5,8 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 import { Markdown } from "./Markdown";
 import { ChatMessage, fileSize, middleEllipsis, ChatComposer, ChatError, ChatLayout, ToolCall } from "./Chat";
+import { fileIcon } from "./FileIcon";
+import { dayTime } from "./Timestamp";
 import { ArchiveAction, DeleteAction, EndAction, MakeCurrentAction, OpenAction, RegenerateAction } from "./IconAction";
 import { CopyButton } from "./CopyButton";
 import { clampRail, MenuButton, ThreadList } from "./ChatShell";
@@ -422,5 +424,49 @@ describe("the attachment chip's size", () => {
       onFiles={() => {}} onRemoveAttachment={() => {}} />, { wrapper: AgentoUiProvider });
     expect(screen.getByText("raport.pdf")).toBeInTheDocument();
     expect(screen.getByText("2.0 KB")).toBeInTheDocument();
+  });
+});
+
+describe("the chip's icon", () => {
+  it("names the family of the file, and falls back to the paperclip", () => {
+    const kind = (name: string) => {
+      const { container } = render(<>{fileIcon(name)}</>);
+      return container.querySelector("svg")?.getAttribute("class") ?? "";
+    };
+    // Same family, same icon; a different family, a different one.
+    expect(kind("shot.png")).toBe(kind("photo.jpeg"));
+    expect(kind("budget.xlsx")).toBe(kind("rows.csv"));
+    expect(kind("shot.png")).not.toBe(kind("budget.xlsx"));
+    expect(kind("index.html")).not.toBe(kind("main.py"));
+    // Unknown and extension-less names both keep the paperclip the chip always had.
+    expect(kind("archive.zzz")).toBe(kind("Makefile"));
+    expect(kind("archive.zzz")).toContain("paperclip");
+  });
+});
+
+describe("a turn's clock line", () => {
+  const now = new Date("2026-11-18T12:00:00Z");
+  const fmt = { dateFormat: "iso" as const, timeZone: "UTC" };
+  it("says the day in words while the day is near, then the date", () => {
+    expect(dayTime(new Date("2026-11-18T10:26:00Z"), fmt, now)).toBe("Today 10:26");
+    expect(dayTime(new Date("2026-11-17T23:59:00Z"), fmt, now)).toBe("Yesterday 23:59");
+    expect(dayTime(new Date("2026-11-16T08:05:00Z"), fmt, now)).toBe("2026-11-16 08:05");
+    // The day is decided in the label's OWN zone, not the browser's.
+    expect(dayTime(new Date("2026-11-18T00:30:00Z"), { dateFormat: "us", timeZone: "America/New_York" }, now))
+      .toBe("Yesterday 7:30 PM");
+  });
+});
+
+describe("a user's message", () => {
+  it("carries its files above the bubble, not inside it", () => {
+    const { container } = render(
+      <ChatMessage author="user" text="podsumuj" attachments={["index.html"]} />,
+      { wrapper: AgentoUiProvider });
+    const chip = screen.getByText("index.html");
+    const bubble = container.querySelector("[class*='bubble']");
+    expect(bubble).not.toBeNull();
+    expect(bubble!.contains(chip)).toBe(false);
+    // The chips come first, as the composer stacked them above the text line.
+    expect(chip.compareDocumentPosition(bubble!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
