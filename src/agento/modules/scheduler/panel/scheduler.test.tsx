@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { ApiError, queryClient } from "@agento/api";
@@ -25,7 +25,7 @@ const JIRA = row(5, "PROJ-7 weekly", {
 const OPTIONS = {
   presets: [{ label: "Every hour", rrule: "FREQ=HOURLY;BYMINUTE=0" }, { label: "Every day at 9:00", rrule: "FREQ=DAILY;BYHOUR=9;BYMINUTE=0" }],
   harnesses: [{ value: "claude", label: "Claude Code" }], default_timezone: "Europe/Warsaw", min_interval_minutes: 5,
-  agent_views: [{ id: 3, code: "dev", label: "Dev", workspace_id: 1 }],
+  agent_views: [{ id: 3, code: "dev", label: "Dev", workspace_id: 1 }], max_uploads: 2,
 };
 const FIRES = { fires: [{ at: "2026-11-14T08:00:00Z", local: "2026-11-14T09:00:00" }, { at: "2026-11-15T08:00:00Z", local: "2026-11-15T09:00:00" }] };
 const RUNS = [
@@ -128,6 +128,94 @@ describe("the schedule form", { timeout: 20_000 }, () => {
     // After the create the page navigates to /schedules/42 and loads it; under a loaded
     // test host that can take longer than the 1 s default.
     expect(await screen.findByDisplayValue("Digest", {}, { timeout: 5000 })).toBeInTheDocument();
+  });
+
+  const drop = (target: Element, ...names: string[]) => {
+    const files = names.map((n) => new File(["12345"], n));
+    fireEvent.drop(target, { dataTransfer: { files, types: ["Files"] } });
+  };
+
+  it("a new schedule stages a dropped file to the draft route and sends its id", async () => {
+    const api = await stubApi({ [`${B}/options`]: OPTIONS, [`POST ${B}/preview`]: FIRES, [`POST ${B}/uploads`]: { upload_id: "u-new" },
+      [`POST ${B}/schedules`]: { id: 42 }, [`${B}/schedules/42`]: row(42, "Digest") });
+    at("/schedules/new");
+    fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Digest" } });
+    fireEvent.change(screen.getByLabelText("Prompt"), { target: { value: "Summarize" } });
+    fireEvent.change(screen.getByLabelText("RRULE"), { target: { value: "FREQ=HOURLY;BYMINUTE=0" } });
+    drop(screen.getByLabelText("Title"), "report.pdf");
+    const chips = await screen.findByLabelText("Attached files");
+    expect(within(chips).getByText("report.pdf")).toBeInTheDocument();
+    expect(within(chips).getByText("5 B")).toBeInTheDocument();
+    await waitFor(() => expect(api.calls("POST", `${B}/uploads`)).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Create schedule" }));
+    await waitFor(() => expect(api.calls("POST", `${B}/schedules`)[0]?.body).toMatchObject({ title: "Digest", upload_ids: ["u-new"] }));
+  });
+
+  it("an edit sends the full file set, waits for an upload, and Discard brings the saved files back", async () => {
+    const settle: ((r: Response) => void)[] = [];
+    const saved = row(1, "Digest", { attachments: [{ upload_id: "u-old", name: "old.pdf", bytes: 2048 }] });
+    const api = await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/1`]: saved, [`POST ${B}/preview`]: FIRES,
+      [`PATCH ${B}/schedules/1`]: null, [`POST ${B}/schedules/1/uploads`]: () => new Promise<Response>((res) => { settle.push(res); }) });
+    at("/schedules/1");
+    const chips = await screen.findByLabelText("Attached files");
+    expect(within(chips).getByText("old.pdf")).toBeInTheDocument();
+    expect(within(chips).getByText("2.0 KB")).toBeInTheDocument();
+    const submit = screen.getByRole("button", { name: "Save changes" });
+    expect(submit).toBeDisabled();
+
+    drop(screen.getByLabelText("Title"), "new.pdf");
+    expect(await within(chips).findByText("new.pdf")).toBeInTheDocument();
+    expect(submit).toBeDisabled();                                   // the upload is in flight
+    await act(async () => { settle[0](new Response(JSON.stringify({ upload_id: "u-new" }), { status: 201 })); });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(within(chips).queryByText("new.pdf")).toBeNull();
+    expect(within(chips).getByText("old.pdf")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove old.pdf" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(api.calls("PATCH", `${B}/schedules/1`)[0]?.body).toEqual({ upload_ids: [] }));
+  });
+
+  it("Discard after another user changed the files leaves the form clean", async () => {
+    const file = (id: string) => ({ upload_id: id, name: `${id}.pdf`, bytes: 1 });
+    let current = row(1, "Digest", { attachments: [file("a")] });
+    await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/1`]: () => current, [`POST ${B}/preview`]: FIRES,
+      [`POST ${B}/schedules/1/uploads`]: { upload_id: "b" } });
+    at("/schedules/1");
+    const chips = await screen.findByLabelText("Attached files");
+    drop(screen.getByLabelText("Title"), "b.pdf");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save changes" })).not.toBeDisabled());
+    current = row(1, "Digest", { attachments: [file("a"), file("c")] });
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ["scheduler", "schedule", "1"] }); });
+    expect(within(chips).queryByText("c.pdf")).toBeNull();          // the edit stays
+
+    fireEvent.click(await screen.findByRole("button", { name: "Discard changes" }));
+    expect(await within(chips).findByText("c.pdf")).toBeInTheDocument();
+    expect(within(chips).queryByText("b.pdf")).toBeNull();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Discard changes" })).toBeNull();
+  });
+
+  it("takes no more files than the limit and says so", async () => {
+    const api = await stubApi({ [`${B}/options`]: OPTIONS, [`POST ${B}/preview`]: FIRES, [`POST ${B}/uploads`]: { upload_id: "u" } });
+    at("/schedules/new");
+    drop(await screen.findByLabelText("Title"), "a.txt", "b.txt", "c.txt");
+    expect(await screen.findByText("A schedule takes at most 2 files.")).toBeInTheDocument();
+    await waitFor(() => expect(api.calls("POST", `${B}/uploads`)).toHaveLength(2));
+    expect(screen.queryByText("c.txt")).toBeNull();
+  });
+
+  it("a read-only schedule shows its files and takes none", async () => {
+    await stubApi({ [`${B}/options`]: OPTIONS, [`POST ${B}/preview`]: FIRES,
+      [`${B}/schedules/5`]: { ...JIRA, attachments: [{ upload_id: "u-old", name: "old.pdf", bytes: null }] } });
+    at("/schedules/5");
+    expect(await screen.findByText("old.pdf")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add files" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove old.pdf" })).toBeNull();
+    fireEvent.dragEnter(screen.getByLabelText("Title"), { dataTransfer: { files: [], types: ["Files"] } });
+    expect(screen.queryByText("Drop files to attach")).toBeNull();
   });
 
   it("the preview shows the refusal of a bad rule", async () => {

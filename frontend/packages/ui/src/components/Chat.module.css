@@ -162,6 +162,10 @@
 /* The size is secondary to the name: dimmed, and never the thing the eye lands on. */
 .chipSize { color: var(--mantine-color-dimmed); }
 .fileInput { display: none; }
+/* A form's files: the paperclip, then the chips (or the empty text) on the same line. */
+.filesField { display: flex; flex-wrap: wrap; align-items: center; gap: var(--mantine-spacing-xs); }
+/* The drop hint is laid over this box. */
+.drop { position: relative; }
 /* The drop target is the WHOLE conversation: the history is where the eye is during a drag,
    and a target the user has to aim at is a target they miss. The hint sits over the pane.
    No transition: a drop target that fades in reads as lag, and a drag is already a

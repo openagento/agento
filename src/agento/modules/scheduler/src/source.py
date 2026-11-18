@@ -45,7 +45,7 @@ class SchedulerSource:
                      if row["owner_user_id"] is not None else None)
         priority = resolve_agent_view_context(cur.connection, row["agent_view_id"]).priority
         return FireSpec(SOURCE, SOURCE, str(row["id"]), thread_ref(row["id"]), requester,
-                        f"{header(row)}\n\n{row['prompt'] or ''}", priority)
+                        f"{header(row)}\n\n{row['prompt'] or ''}", priority, row["attachments"])
 
     def on_delete(self, cur, row: dict) -> None:
         """Mark the conversation, in the deleting transaction (``tick.finalize_delete``). The

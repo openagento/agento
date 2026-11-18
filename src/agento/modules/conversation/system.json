@@ -68,13 +68,6 @@
     "min": 1024,
     "max": 49152
   },
-  "limits/upload_max_bytes": {
-    "type": "integer",
-    "label": "Maximum upload size (bytes)",
-    "description": "The largest single file the composer may attach. The route's own body cap is a little larger, for the multipart framing.",
-    "min": 1024,
-    "max": 26214400
-  },
   "limits/uploads_per_message": {
     "type": "integer",
     "label": "Files per message",

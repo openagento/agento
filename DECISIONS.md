@@ -4,6 +4,29 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-11-18 — Schedule files: a content-derived key, one remover (AG-87)
+
+- **Staging is the framework's** (`framework/uploads.py`), with an owner segment
+  (`t<conversation>` | `s<schedule>`). The scheduler already lists `conversation` in `sequence`,
+  so MOD-1 did not force the move; staging is mechanism two modules need (one fd-discipline), and
+  the framework's run preparation already reads that tree. The size cap is `core/uploads/max_bytes`
+  with no data patch: the upload feature was not released, so no deployment holds the old path.
+- **The key is made from the content**: `s<id>-<12 hex of the SHA-1 of every "<from>\t<as>"
+  line>`. A version counter (`s<id>v<n>`) starts again when the set is emptied and filled, and
+  delivery is done once per key, by NAME — so a key used again with the same names would give a
+  run the old bytes. A `from` holds a random 128-bit upload id: the same mapping gives the same
+  key (no new copy), any other mapping gives a new directory.
+- **The sweep is the only remover** of a staged schedule file (`scheduler:sweep-uploads`): old,
+  not named by the row, not named by an open job. `on_delete` removes nothing, because an
+  `rmtree` inside a transaction that can still roll back leaves a live row that names missing
+  files. One rule then covers a replaced set, a deleted schedule, an abandoned form and the
+  draft bucket.
+- **A new schedule stages to a per-user draft bucket** (`s0`), and the create COPIES the bytes to
+  `s<new id>` before its commit. The descriptor never names the draft bucket, so no schedule's
+  files depend on a tree that every user's abandoned forms share.
+
+---
+
 ## 2026-11-18 — Composer files: two trees, a DB claim, a vendor-free job column (AG-87)
 
 - **Nothing is ever moved.** A staged file is COPIED into the thread at run preparation.

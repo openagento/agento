@@ -205,6 +205,9 @@ backstop, never a replacement for it.
 `core/scheduler/min_interval_minutes` (default 5, range 1 – 1440, default scope only) is the
 shortest gap between two fires of one schedule. A save refuses a rule with a shorter gap
 (`too_frequent`), and `scheduler:tick` skips a fire that comes sooner than this after the last one.
+`core/uploads/max_bytes` (default 26214400, range 1024 – 26214400, default scope only) is the
+size cap of one file a panel user stages, for a message or for a schedule.
+
 `core/scheduler/default_timezone` (default empty, default scope only) is the IANA zone a new
 schedule gets when it names none. Empty means the container's `TZ`, then `UTC`; an invalid zone
 logs a warning and gives `UTC`. See [schedules.md](../architecture/schedules.md).

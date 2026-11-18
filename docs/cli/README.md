@@ -83,6 +83,7 @@
 | `job:resume <job_id>` | Resume a paused job (re-queue for consumer) ([details](job-pause-resume.md)) |
 | `job:set-runtime <job_id> [--harness H] [--model M] [--clear] [--test JSON \| --no-test]` | Pin (or clear) a queued job's harness/model, or make it a test run; TODO jobs only ([details](job-runtime.md)) |
 | `scheduler:tick` (`sc:ti`) | Fire due schedules and finalize deleted ones. Framework cron, every minute; safe to run by hand — a second tick that finds one running does nothing ([details](../architecture/schedules.md#the-tick)) |
+| `scheduler:sweep-uploads` (`sc:su`) | Remove staged schedule files that no schedule and no open run names. The `scheduler` module's cron, hourly; safe to run by hand ([details](../modules/scheduler.md#files-on-a-schedule)) |
 | **Conversations** (the `conversation` module; all three are cron passes an operator can also run by hand) | |
 | `conversation:sweep` (`co:sw`) | Finish stranded submissions and reconcile finished jobs ([details](../modules/conversation.md)) |
 | `conversation:relay` (`co:rel`) | Relay framework job events into conversation threads, and prune the relayed rows. One run passes every second for 55 s. ONE process by contract: a second would invert a thread's event order, so a run that finds the `conversation_relay` lock held exits at once ([details](../modules/conversation.md#the-outbox-relay)) |

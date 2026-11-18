@@ -1,6 +1,8 @@
 {
   "limits/max_per_user": 10,
   "limits/max_per_agent_view": 20,
+  "limits/uploads_per_schedule": 10,
+  "limits/upload_retention_hours": 24,
   "presets": {
     "Every hour": "FREQ=HOURLY;BYMINUTE=0",
     "Every day at 9:00": "FREQ=DAILY;BYHOUR=9;BYMINUTE=0",

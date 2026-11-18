@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS schedule (
     owner_user_id       INT UNSIGNED NULL,
     owner_agent_view_id INT UNSIGNED NULL,
     prompt              MEDIUMTEXT NULL,
+    attachments         TEXT NULL,
     rrule               VARCHAR(1024) NULL,
     starts_at           DATETIME NULL,
     timezone            VARCHAR(64) NULL,
@@ -557,4 +558,5 @@ INSERT INTO schema_migration (version) VALUES
     ('054_thread'),
     ('055_test_run'),
     ('056_generic_schedule'),
-    ('057_job_attachments');
+    ('057_job_attachments'),
+    ('058_schedule_attachments');

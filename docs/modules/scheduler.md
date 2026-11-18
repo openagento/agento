@@ -62,10 +62,40 @@ on the row:
 |---|---|---|---|
 | `scheduler/limits/max_per_user` | 10 | default, workspace, agent_view (target view) | schedules one user owns. Admin has no limit. An owner change is not limited. The count runs after a named lock and on a fresh snapshot, so two creates at once cannot both pass it. |
 | `scheduler/limits/max_per_agent_view` | 20 | default, workspace, agent_view | schedules one agent_view owns (made by a tool) |
+| `scheduler/limits/uploads_per_schedule` | 10 | default | files on one schedule (0 – 50) |
+| `scheduler/limits/upload_retention_hours` | 24 | default | hours a staged schedule file that nothing names is kept (1 – 720) |
 | `scheduler/presets` | 5 presets | default | the panel's recurrence list, `{label: rrule}` |
 
 The core paths `scheduler/min_interval_minutes` and `scheduler/default_timezone` are in
 [config/README.md](../config/README.md).
+
+## Files on a schedule
+
+A panel user with the write right attaches files to a schedule. Every run gets them under
+`./shared/attachments/<key>/`, and the framework names them in the prompt; the module writes no
+prompt text. **What attaching exposes:** the files reach the agent of the schedule's agent view,
+and every user who can read the schedule's conversation (the owner, the members, an admin). The
+form says so.
+
+- **Staging** is the framework's (`framework/uploads.py`): `uploads/s<schedule_id>/u<user>/<upload_id>/<name>`,
+  dirs 0700 under a uid no run has, so no agent reads the staging tree. A form that is not saved
+  yet stages to the draft bucket `uploads/s0/u<user>/…`. The size cap is `core/uploads/max_bytes`.
+- **A save claims.** `upload_ids` on create or update is the FULL wanted set, in order (`[]`
+  clears it; absent leaves it). On an update, an id the schedule already has keeps its entry —
+  so a member keeps the owner's files with no reach to the owner's staging dir — and a new id
+  must be the caller's own upload to this schedule, else 400 `upload_gone`. On a create, each id
+  must be the caller's draft upload; its bytes are copied to `s<new id>` before the commit. The
+  claim runs under the row lock.
+- **The key** of the descriptor in `schedule.attachments` is `s<id>-<12 hex of the SHA-1 of the
+  file list, one line "<from>\t<as>" each>`. Delivery is done once per key, by name, so a key must
+  never mean other bytes: a changed set is a new key and a new directory in the thread. The
+  earlier delivered directories stay; they follow the thread's retention.
+- **One remover.** `scheduler:sweep-uploads` (`sc:su`, cron, hourly) removes a staged dir when it
+  is older than `limits/upload_retention_hours`, the schedule's descriptor does not name it, and
+  no open job of the schedule names it. A replaced set, a deleted schedule, an abandoned form and
+  the draft bucket all end there. A delete removes no file: its transaction can still roll back.
+  The conversation sweep enters only `t…` trees.
+- The `schedule_*` tools take no files: an agent has no staging tree.
 
 ## Run now
 
@@ -117,12 +147,14 @@ All routes need a session; times are `starts_at` naive local in the row's `timez
 | Method and path | Right | Answer |
 |---|---|---|
 | `GET /api/scheduler/schedules` | a read leaf or a share (probe) | `{groups: {mine, shared, agent, user}}`, each a list of rows |
-| `GET /api/scheduler/options` | as the probe | `{presets: [{label, rrule}], harnesses: [{value, label}], default_timezone, min_interval_minutes, agent_views: [{id, code, label, workspace_id}]}` |
+| `GET /api/scheduler/options` | as the probe | `{presets: [{label, rrule}], harnesses: [{value, label}], default_timezone, min_interval_minutes, agent_views: [{id, code, label, workspace_id}], max_uploads}` |
 | `POST /api/scheduler/preview` | as the probe | body `{rrule, starts_at?, timezone?}` → `{fires: [{at, local}]}` (next 5) |
-| `POST /api/scheduler/schedules` | `scheduler.own` | body `{title, prompt, agent_view_id, rrule, starts_at?, timezone?, harness?, model?, enabled?}` → 201 `{id}` |
-| `GET /api/scheduler/schedules/<id>` | read | the row, plus `members: [{user_id, username}]` (null without the share right) |
+| `POST /api/scheduler/schedules` | `scheduler.own` | body `{title, prompt, agent_view_id, rrule, starts_at?, timezone?, harness?, model?, enabled?, upload_ids?}` → 201 `{id}`. `upload_ids`: the caller's draft uploads; 400 `bad_uploads` (not a list of at most `limits/uploads_per_schedule` distinct ids) or `upload_gone` |
+| `POST /api/scheduler/uploads` | `scheduler.own` | one `multipart/form-data` file for a schedule not saved yet → 201 `{upload_id, name, bytes}`; a refusal has code `upload` |
+| `GET /api/scheduler/schedules/<id>` | read | the row, plus `members: [{user_id, username}]` (null without the share right) and `attachments: [{upload_id, name, bytes}]` (`bytes` null when the staged file is gone; never a path) |
 | `PATCH /api/scheduler/schedules/<id>` | write | any create field, none required → 204. A different `agent_view_id` → 400 `view_fixed` (the same value does nothing) |
-| `DELETE /api/scheduler/schedules/<id>` | delete | 204 |
+| `POST /api/scheduler/schedules/<id>/uploads` | write | one `multipart/form-data` file → 201 `{upload_id, name, bytes}`; 413 over `core/uploads/max_bytes` |
+| `DELETE /api/scheduler/schedules/<id>` | delete | 204. The staged files go at a later sweep |
 | `POST /api/scheduler/schedules/<id>/run` | write | 201 `{job_id, conversation_id}` or 409 |
 | `GET /api/scheduler/schedules/<id>/runs` | read | the newest 10 jobs: `[{id, status, created_at, started_at, finished_at, answer}]`; `answer` is what the last attempt wrote into the conversation (null while it runs, or none). The job's prompt, model and tokens stay behind `GET /api/admin/jobs/<id>` (`admin.jobs`) |
 | `GET /api/scheduler/schedules/<id>/member-options` | share | `[{id, username}]` active users except the owner |
@@ -142,7 +174,9 @@ answers 2xx. The list shows the groups that have rows (My schedules also when th
 one), polls every 10 s, and has an Enabled switch per row (write right). A schedule opens at
 `/schedules/<id>` (`/schedules/new` creates one). The header holds the Enabled switch (on an existing
 schedule it saves at once) and the actions menu. The fields are in four sections that open and close;
-a closed section shows a one-line summary: **Task** (title, agent view, prompt), **Schedule** (a
+a closed section shows a one-line summary: **Task** (title, agent view, prompt, files — the
+paperclip, or a drop anywhere on the form; a file is staged when it is picked, Save waits for an
+upload in flight and sends the full set, and a read-only form shows the chips only), **Schedule** (a
 preset, or "Custom…" — a dialog that writes the RRULE; start; time zone from the browser's IANA
 list), **Agent runtime** (an optional harness and model pin) and **Advanced** (the RRULE text, open by
 itself when no preset names the rule). A refusal that names a field shows under that field and opens

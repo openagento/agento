@@ -1,7 +1,7 @@
 // The chat building blocks (U1-U8): Mantine components, themed by theme.ts only. The panel's
 // conversation screen composes them; it may not import Mantine itself (boundaries.test.ts).
 import {
-  ActionIcon, Alert, Button, Code, Collapse, Group, Loader, Paper, ScrollArea, Spoiler, Stack,
+  ActionIcon, Alert, Button, Code, Collapse, Group, Input, Loader, Paper, ScrollArea, Spoiler, Stack,
   Text, Textarea, Title, Tooltip, UnstyledButton,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
@@ -21,6 +21,48 @@ import { Timestamp } from "./Timestamp";
 /** Half the theme's `xs` spacing: tool rows and message actions sit closer than `xs` (UI-1). */
 const TIGHT = "calc(var(--mantine-spacing-xs) / 2)";
 
+/** A region that takes dropped files: the WHOLE region is the target, with a card over a scrim
+ *  while a drag is over it. Without `onFiles` it is a plain element. Panel only (no kit twin):
+ *  a file is staged through a session route, which a miniapp does not have. */
+export function FileDrop({ onFiles, hint, as: Tag = "div", className, children, ...rest }: {
+  onFiles?: (files: File[]) => void; hint: string; as?: "div" | "section"; className?: string; children: ReactNode;
+  "aria-label"?: string;
+}) {
+  // A counter, not a boolean: dragging over a child fires `dragleave` on the parent, and a
+  // boolean makes the overlay flicker on every inner element the pointer crosses.
+  const [over, setOver] = useState(0);
+  // Only a drag of FILES: a dragged link or a text selection has nothing to attach.
+  const files = (e: DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
+  const drag = onFiles && {
+    onDragEnter: (e: DragEvent) => { if (files(e)) { e.preventDefault(); setOver((n) => n + 1); } },
+    onDragOver: (e: DragEvent) => { if (files(e)) e.preventDefault(); },
+    onDragLeave: () => setOver((n) => Math.max(0, n - 1)),
+    onDrop: (e: DragEvent) => {
+      if (!files(e)) return;
+      e.preventDefault(); setOver(0);
+      const picked = Array.from(e.dataTransfer.files);
+      if (picked.length > 0) onFiles(picked);
+    },
+  };
+  const shown = onFiles !== undefined && over > 0;
+  return (
+    <Tag className={[classes.drop, shown && classes.layoutOver, className].filter(Boolean).join(" ")} {...rest} {...drag}>
+      {shown && (
+        <div className={classes.dropHint}>
+          {/* A card over a scrim, not a sheet over the pane: the content stays readable,
+              so the drag reads as "this is where it lands", not as a page that broke. */}
+          <div className={classes.dropCard}>
+            <Paperclip size={18} />
+            <Text size="sm" fw={500}>Drop files to attach</Text>
+            <Text size="xs" c="dimmed">{hint}</Text>
+          </div>
+        </div>
+      )}
+      {children}
+    </Tag>
+  );
+}
+
 /** A timeline that fills the screen: a title row, one scroll region and a footer pinned at the
  *  bottom (the composer). `overlay` floats over the bottom of the region ("N new events ↓"). */
 export function ChatLayout({ title, actions, children, footer, overlay, viewportRef, onScroll, label = "Timeline", onFiles }: {
@@ -30,33 +72,9 @@ export function ChatLayout({ title, actions, children, footer, overlay, viewport
    *  has to find the composer is a drag the user aims, and the history is where the eye is. */
   onFiles?: (files: File[]) => void;
 }) {
-  // A counter, not a boolean: dragging over a child fires `dragleave` on the parent, and a
-  // boolean makes the overlay flicker on every inner element the pointer crosses.
-  const [over, setOver] = useState(0);
-  const drag = onFiles && {
-    onDragEnter: (e: DragEvent) => { e.preventDefault(); setOver((n) => n + 1); },
-    onDragOver: (e: DragEvent) => e.preventDefault(),
-    onDragLeave: () => setOver((n) => Math.max(0, n - 1)),
-    onDrop: (e: DragEvent) => {
-      e.preventDefault(); setOver(0);
-      const picked = Array.from(e.dataTransfer.files);
-      if (picked.length > 0) onFiles(picked);
-    },
-  };
   return (
-    <section className={over > 0 ? `${classes.layout} ${classes.layoutOver}` : classes.layout}
-      aria-label="Conversation" {...drag}>
-      {over > 0 && (
-        <div className={classes.dropHint}>
-          {/* A card over a scrim, not a sheet over the pane: the conversation stays readable,
-              so the drag reads as "this is where it lands", not as a page that broke. */}
-          <div className={classes.dropCard}>
-            <Paperclip size={18} />
-            <Text size="sm" fw={500}>Drop files to attach</Text>
-            <Text size="xs" c="dimmed">They go with your next message.</Text>
-          </div>
-        </div>
-      )}
+    <FileDrop as="section" className={classes.layout} aria-label="Conversation" onFiles={onFiles}
+      hint="They go with your next message.">
       <Group justify="space-between" wrap="nowrap" pb="xs">
         <Title order={2} size="h4" lineClamp={1}>{title}</Title>
         {actions && <Group gap="xs" wrap="nowrap">{actions}</Group>}
@@ -69,7 +87,7 @@ export function ChatLayout({ title, actions, children, footer, overlay, viewport
         {overlay && <div className={classes.overlay}>{overlay}</div>}
       </div>
       {footer ? <div className={classes.footer}><div className={classes.column}>{footer}</div></div> : <div />}
-    </section>
+    </FileDrop>
   );
 }
 
@@ -302,6 +320,53 @@ function AttachmentChip({ file, onRemove }: { file: Attachment; onRemove?: (id: 
   );
 }
 
+/** The files a form carries, as chips. With `onRemove` each chip has its remove button. */
+export function AttachmentChips({ files, onRemove }: { files: Attachment[]; onRemove?: (id: string) => void }) {
+  if (files.length === 0) return null;
+  return (
+    <div className={classes.chips} aria-live="polite" aria-label="Attached files">
+      {files.map((f) => <AttachmentChip key={f.id} file={f} onRemove={onRemove} />)}
+    </div>
+  );
+}
+
+/** The paperclip: opens the file picker and hands over what the user picked. */
+export function AttachButton({ onFiles, tip }: { onFiles: (files: File[]) => void; tip?: "bottom" }) {
+  const input = useRef<HTMLInputElement>(null);
+  const onPick = (e: ChangeEvent<HTMLInputElement>) => {
+    const picked = Array.from(e.currentTarget.files ?? []);
+    e.currentTarget.value = "";
+    if (picked.length > 0) onFiles(picked);
+  };
+  return (
+    <>
+      {/* The input stays in the DOM and out of sight: the button beside it is the
+          real control, so the input is hidden from the a11y tree and the tab order. */}
+      <input ref={input} type="file" multiple className={classes.fileInput} tabIndex={-1}
+        aria-hidden="true" onChange={onPick} />
+      <IconAction label="Add files" tip={tip} size="lg" icon={<Paperclip size={16} />}
+        onClick={() => input.current?.click()} />
+    </>
+  );
+}
+
+/** Files as a form field: the label and the hint of every other field, the paperclip and the
+ *  chips. Without `onFiles` it only shows the files (a read-only form). */
+export function FilesField({ label, hint, error, files, onFiles, onRemove, empty }: {
+  label: string; hint?: ReactNode; error?: ReactNode; files: Attachment[]; onFiles?: (files: File[]) => void;
+  onRemove?: (id: string) => void; empty: string;
+}) {
+  return (
+    <Input.Wrapper label={label} description={hint} error={error} inputWrapperOrder={["label", "input", "description", "error"]}>
+      <div className={classes.filesField}>
+        {onFiles && <AttachButton onFiles={onFiles} />}
+        <AttachmentChips files={files} onRemove={onFiles ? onRemove : undefined} />
+        {files.length === 0 && <Text span size="sm" c="dimmed">{empty}</Text>}
+      </div>
+    </Input.Wrapper>
+  );
+}
+
 export function ChatComposer({ value, onChange, onSend, canSend, hint, error, placeholder = "Ask the agent…",
   stoppable = false, onStop, stopping = false, attachments, onFiles, onRemoveAttachment, focusOnMount = false }: {
   value: string; onChange: (v: string) => void; onSend: () => void; canSend: boolean; hint?: ReactNode;
@@ -325,38 +390,19 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error, pl
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
   };
-  const input = useRef<HTMLInputElement>(null);
-  const take = (list: FileList | null) => {
-    const picked = Array.from(list ?? []);
-    if (picked.length > 0) onFiles?.(picked);
-  };
   const onPaste = (e: ClipboardEvent) => {
-    if (onFiles && e.clipboardData.files.length > 0) { e.preventDefault(); take(e.clipboardData.files); }
+    if (onFiles && e.clipboardData.files.length > 0) { e.preventDefault(); onFiles(Array.from(e.clipboardData.files)); }
   };
-  const onPick = (e: ChangeEvent<HTMLInputElement>) => { take(e.currentTarget.files); e.currentTarget.value = ""; };
   return (
     <form onSubmit={submit} onPaste={onPaste}>
       <Stack gap={TIGHT}>
         {/* One rounded field holds the text and the send button, as the chat apps do: the
             textarea is `unstyled` so the pill's own border is the only box (U9). */}
         <div className={classes.pill}>
-          {files.length > 0 && (
-            <div className={classes.chips} aria-live="polite" aria-label="Attached files">
-              {files.map((f) => <AttachmentChip key={f.id} file={f} onRemove={onRemoveAttachment} />)}
-            </div>
-          )}
+          <AttachmentChips files={files} onRemove={onRemoveAttachment} />
           <div className={classes.pillRow}>
-            {onFiles && (
-              <>
-                {/* The input stays in the DOM and out of sight: the button beside it is the
-                    real control, so the input is hidden from the a11y tree and the tab order. */}
-                <input ref={input} type="file" multiple className={classes.fileInput} tabIndex={-1}
-                  aria-hidden="true" onChange={onPick} />
-                {/* `bottom`: the chips this button fills sit directly above it. */}
-                <IconAction label="Add files" tip="bottom" size="lg" icon={<Paperclip size={16} />}
-                  onClick={() => input.current?.click()} />
-              </>
-            )}
+            {/* `bottom`: the chips this button fills sit directly above it. */}
+            {onFiles && <AttachButton onFiles={onFiles} tip="bottom" />}
             <Textarea className={classes.pillInput} variant="unstyled" aria-label="Message" ref={line}
               placeholder={placeholder} autosize minRows={1} maxRows={8} value={value}
               onChange={(e) => onChange(e.currentTarget.value)} onKeyDown={onKey}

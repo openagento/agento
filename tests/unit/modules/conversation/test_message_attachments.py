@@ -12,7 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agento.modules.conversation.src import service, uploads
+from agento.framework import uploads
+from agento.modules.conversation.src import service
 
 DESCRIPTOR = {"key": "m2", "files": [{"from": "uploads/t1/u4/ab/report.pdf", "as": "report.pdf"}]}
 
@@ -83,7 +84,7 @@ class TestClaim:
         conn, cur = fake_conn(cur_fetch or [{"id": 2}])
         cur.lastrowid = 2
         with patch.object(service, "complete_pending", return_value=9), \
-                patch.object(uploads, "uploads_lock"):
+                patch.object(service, "uploads_lock"):
             service.submit_message(conn, conversation_id=1, user_id=4,
                                    client_message_id="c1", content="hi", **kwargs)
         return cur
@@ -99,7 +100,7 @@ class TestClaim:
         """No message, no job: a submission is its files or it is nothing."""
         conn, cur = fake_conn([{"id": 2}])
         cur.lastrowid = 2
-        with patch.object(uploads, "uploads_lock"), \
+        with patch.object(service, "uploads_lock"), \
                 patch.object(uploads, "descriptor", side_effect=uploads.UploadError(400, "upload not available")), \
                 patch.object(service, "complete_pending") as publish, pytest.raises(service.SubmissionError) as caught:
             service.submit_message(conn, conversation_id=1, user_id=4,
@@ -110,7 +111,7 @@ class TestClaim:
 
     def test_a_busy_conversation_is_a_503_not_a_500(self):
         conn, _ = fake_conn([{"id": 2}])
-        with patch.object(uploads, "uploads_lock",
+        with patch.object(service, "uploads_lock",
                           side_effect=uploads.UploadError(503, "uploads are busy, try again")), \
                 pytest.raises(service.SubmissionError) as caught:
             service.submit_message(conn, conversation_id=1, user_id=4,
@@ -122,7 +123,7 @@ class TestClaim:
             conn, cur = fake_conn([{"id": 2}])
             cur.lastrowid = 2
             with patch.object(service, "complete_pending", return_value=9), \
-                    patch.object(uploads, "uploads_lock"):
+                    patch.object(service, "uploads_lock"):
                 service.submit_message(conn, conversation_id=1, user_id=4,
                                        client_message_id="c1", content="", upload_ids=["ab"])
         titles = [c for c in cur.execute.call_args_list if "SET title" in c.args[0]]
@@ -142,10 +143,10 @@ class TestSweep:
     def sweep(self, rows, expired=("ab",), delivered=False):
         conn, _ = fake_conn([])
         conn.cursor.return_value.__enter__.return_value.fetchall.return_value = rows
-        with patch.object(uploads, "uploads_lock"), \
+        with patch.object(service, "uploads_lock"), \
                 patch.object(service, "attachments_delivered", return_value=delivered), \
-                patch.object(uploads, "conversations_with_uploads", return_value=[1]), \
-                patch.object(uploads, "users_with_uploads", return_value=[4]), \
+                patch.object(uploads, "owners", return_value=[1]), \
+                patch.object(uploads, "users", return_value=[4]), \
                 patch.object(uploads, "expired_dirs", return_value=list(expired)), \
                 patch.object(uploads, "remove") as remove:
             taken = service.sweep_uploads(conn, retention_hours=24)
@@ -157,7 +158,7 @@ class TestSweep:
     def test_an_expired_file_no_live_message_names_is_taken(self):
         taken, remove = self.sweep([])
         assert taken == 1
-        remove.assert_called_once_with(1, 4, "ab")
+        remove.assert_called_once_with("t1", 4, "ab")
 
     def test_a_file_whose_copy_the_thread_does_not_hold_yet_is_kept(self):
         """Delivery copies from staging at run preparation, and a retry prepares again."""
@@ -169,7 +170,7 @@ class TestSweep:
         """The thread holds the copy: nothing will ever read the staged one again."""
         taken, remove = self.sweep([self.row()], delivered=True)
         assert taken == 1
-        remove.assert_called_once_with(1, 4, "ab")
+        remove.assert_called_once_with("t1", 4, "ab")
 
     def test_a_terminal_turn_that_never_delivered_still_keeps_its_source(self):
         """A run can fail DURING preparation, before the copy. Job state is not the signal:
@@ -180,8 +181,8 @@ class TestSweep:
 
     def test_a_busy_conversation_does_not_end_the_tick(self):
         conn, _ = fake_conn([])
-        with patch.object(uploads, "uploads_lock", side_effect=uploads.UploadError(503, "busy")), \
-                patch.object(uploads, "conversations_with_uploads", return_value=[1, 2]), \
+        with patch.object(service, "uploads_lock", side_effect=uploads.UploadError(503, "busy")), \
+                patch.object(uploads, "owners", return_value=[1, 2]), \
                 patch.object(uploads, "remove") as remove:
             assert service.sweep_uploads(conn, retention_hours=24) == 0
         remove.assert_not_called()

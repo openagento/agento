@@ -45,7 +45,6 @@ config levels — see [the config README](../config/README.md#numeric-bounds-min
 | `conversation/history/page_size` | 100 | 1 – 500 |
 | `conversation/sweep/pending_grace_seconds` | 60 | 5 – 3600 |
 | `conversation/limits/max_message_bytes` | 32768 | 1024 – 49152 |
-| `conversation/limits/upload_max_bytes` | 26214400 | 1024 – 26214400 |
 | `conversation/limits/uploads_per_message` | 10 | 1 – 20 |
 | `conversation/limits/upload_retention_hours` | 24 | 1 – 168 |
 | `conversation/retention/event_days` | 0 (for ever) | 0 – |
@@ -196,7 +195,11 @@ new turn on it answers 404, because there is nothing left to run it.
 
 ## Files on a message
 
-A composer file goes through **two trees**, and nothing is ever moved between them:
+A composer file goes through **two trees**, and nothing is ever moved between them. Staging is
+the framework's (`framework/uploads.py`): the conversation module is the owner `t<conversation>`
+of its files, as the scheduler is the owner `s<schedule>` of its own
+([scheduler.md](scheduler.md#files-on-a-schedule)). The size cap of one file is
+`core/uploads/max_bytes` (default 26214400, range 1024 – 26214400), for every owner:
 
 | | Staging | Delivered |
 | --- | --- | --- |

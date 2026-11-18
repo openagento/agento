@@ -3,9 +3,9 @@
 // `/schedules/new` creates one. The API checks every right; the page hides what `can` refuses.
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { apiFetch, LIVE_REFETCH_MS, useMutation, useQuery, useQueryClient } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, useMutation, useQuery, useQueryClient, useUploads, type StagedFile } from "@agento/api";
 import {
-  Button, ConfirmDialog, DataTable, DeleteAction, ErrorState, FieldRow, LoadingState, PageColumn, PageHeader, RowMenu, Section, SectionHeader,
+  Button, ConfirmDialog, DataTable, DeleteAction, ErrorState, FieldRow, FileDrop, FilesField, LoadingState, PageColumn, PageHeader, RowMenu, Section, SectionHeader,
   Sections, SelectField, SwitchField, TextAreaField, TextField, Timestamp, type RowAction,
 } from "@agento/ui";
 import { BASE, codeOf, explain, message, scheduleUrl, useOptions, type Fire, type Options, type Schedule } from "./api";
@@ -43,6 +43,11 @@ const changes = (f: Form, base: Form) => {
   const was = toBody(base);
   return Object.fromEntries(Object.entries(toBody(f)).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(was[k])));
 };
+
+/** The saved files of a row, as the staged list the form starts from. */
+const savedFiles = (s: Schedule | null): StagedFile[] => (s?.attachments ?? []).map((a) => (
+  { id: a.upload_id, uploadId: a.upload_id, name: a.name, bytes: a.bytes ?? undefined, status: "ready" }));
+const keyOf = (ids: string[]) => ids.join();
 
 const timing = (f: Form): Timing => ({ rrule: f.rrule, starts_at: f.starts_at, timezone: f.timezone });
 
@@ -96,10 +101,20 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
   // runs the engine in a child process on the server.
   const [checked, setChecked] = useState(() => timing(base));
   const commit = (f = form) => setChecked(timing(f));
+  // The files: staged to the schedule, or to the user's draft bucket while it has no id. A save
+  // names the full wanted set, so the set is dirty when its ids differ from the saved ones.
+  const uploads = useUploads(row ? `${scheduleUrl(row.id)}/uploads` : `${BASE}/uploads`, savedFiles(row));
+  const [fileBase, setFileBase] = useState(() => keyOf(savedFiles(row).map((f) => f.id)));
+  const filesDirty = keyOf(uploads.ids) !== fileBase;
   // A new row from the poll: a clean field (form equals base) takes the new value, an edit stays.
   const [seen, setSeen] = useState(row);
   if (row && row !== seen) {
     setSeen(row);
+    if (!filesDirty) {
+      const saved = savedFiles(row);
+      const key = keyOf(saved.map((f) => f.id));
+      if (key !== fileBase) { uploads.reset(saved); setFileBase(key); }
+    }
     const next = toForm(row, options);
     const keys = Object.keys(next) as (keyof Form)[];
     setForm(Object.fromEntries(keys.map((k) => [k, form[k] === base[k] ? next[k] : form[k]])) as unknown as Form);
@@ -120,7 +135,14 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
   const [dialog, setDialog] = useState<null | "custom" | "share" | "owner" | "delete">(null);
   const readOnly = row !== null && !row.can.write;
   const diff = changes(form, base);
-  const dirty = Object.keys(diff).length > 0;
+  const dirty = Object.keys(diff).length > 0 || filesDirty;
+  const room = options.max_uploads - uploads.files.length;
+  const attach = (picked: File[]) => {
+    // A drop lands in Task: open it, or the new chips would hide in a closed section.
+    if (!open.includes("task")) setOpen([...open, "task"]);
+    setFailure(picked.length > room ? { field: null, text: `A schedule takes at most ${options.max_uploads} files.` } : null);
+    uploads.add(picked.slice(0, Math.max(0, room)));
+  };
 
   const preview = useQuery({
     queryKey: ["scheduler-preview", checked], enabled: checked.rrule.trim() !== "", retry: false, staleTime: Infinity,
@@ -129,13 +151,13 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
     } }),
   });
   const save = useMutation({
-    mutationFn: (f: Form) => (row
-      ? apiFetch(scheduleUrl(row.id), { method: "PATCH", json: changes(f, base) })
-      : apiFetch<{ id: number }>(`${BASE}/schedules`, { method: "POST", json: toBody(f) })),
-    onSuccess: (r, f) => {
+    mutationFn: ({ form: f, ids }: { form: Form; ids: string[] }) => (row
+      ? apiFetch(scheduleUrl(row.id), { method: "PATCH", json: { ...changes(f, base), ...(keyOf(ids) !== fileBase ? { upload_ids: ids } : {}) } })
+      : apiFetch<{ id: number }>(`${BASE}/schedules`, { method: "POST", json: { ...toBody(f), ...(ids.length ? { upload_ids: ids } : {}) } })),
+    onSuccess: (r, { form: f, ids }) => {
       setFailure(null);
       void refresh();
-      if (row) setBase(f);
+      if (row) { setBase(f); setFileBase(keyOf(ids)); }
       else navigate(`/schedules/${(r as { id: number }).id}`);
     },
     onError: fail,
@@ -197,7 +219,8 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
           ? `This schedule comes from ${row.source}${row.source_ref ? ` (${row.source_ref})` : ""}. It is read-only here.`
           : "You may see this schedule, but not change it."}</p>
       )}
-      <form className="ag-stack" onSubmit={(e) => { e.preventDefault(); save.mutate(form); }}>
+      <FileDrop onFiles={readOnly ? undefined : attach} hint="Every run of this schedule gets them.">
+      <form className="ag-stack" onSubmit={(e) => { e.preventDefault(); save.mutate({ form, ids: uploads.ids }); }}>
         <fieldset className="ag-stack" disabled={readOnly}>
           <Sections value={open} onChange={setOpen}>
             <Section value="task" title="Task" description="What the agent does"
@@ -209,6 +232,9 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
                 onChange={(v) => set({ agent_view_id: v })} />
               <TextAreaField label="Prompt" value={form.prompt} error={errorOf("prompt")} minRows={5}
                 hint="Each run starts from this prompt, in the same conversation." onChange={(e) => set({ prompt: e.target.value })} />
+              <FilesField label="Files" files={uploads.files} onFiles={readOnly ? undefined : attach} onRemove={uploads.remove}
+                empty={readOnly ? "No files." : "Drop files anywhere on this form, or add them with the paperclip."}
+                hint="Every run gets these files. The agent of this agent view and everyone who can read this schedule's conversation can read them." />
             </Section>
             <Section value="when" title="Schedule" description="When it runs"
               summary={`${preset?.label ?? (form.rrule ? "Custom" : "Not set")} · ${form.timezone}`}>
@@ -246,15 +272,16 @@ function Editor({ row, options }: { row: Schedule | null; options: Options }) {
         {failure && !failure.field && <p className="ag-field__error" role="alert">{failure.text}</p>}
         {!readOnly && (
           <div className="ag-row">
-            <Button type="submit" variant="primary" disabled={save.isPending || (row !== null && !dirty)}>
+            <Button type="submit" variant="primary" disabled={save.isPending || uploads.busy || (row !== null && !dirty)}>
               {row ? "Save changes" : "Create schedule"}
             </Button>
             {row && dirty && (
-              <Button variant="subtle" onClick={() => { setForm(base); commit(base); setFailure(null); }}>Discard changes</Button>
+              <Button variant="subtle" onClick={() => { setForm(base); commit(base); uploads.reset(savedFiles(row)); setFileBase(keyOf(savedFiles(row).map((f) => f.id))); setFailure(null); }}>Discard changes</Button>
             )}
           </div>
         )}
       </form>
+      </FileDrop>
       {row && <><SectionHeader>Last runs</SectionHeader><LastRuns row={row} /></>}
       <SectionHeader>Next runs</SectionHeader>
       {!enabled && row ? <p className="ag-muted">Paused. Turn it on to run again; these are the times it would run.</p> : null}
