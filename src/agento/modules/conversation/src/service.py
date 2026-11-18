@@ -1094,6 +1094,14 @@ def check_title(value: object) -> str | None:
     return value
 
 
+def check_panel_thread(row: dict) -> None:
+    """Files are a PANEL composer feature (B-6). A channel turn is published with no
+    attachment descriptor, so a file accepted here would reach the agent as a path to
+    something that was never delivered. Both write routes ask this (CLS-1)."""
+    if (row.get("channel") or "panel") != "panel":
+        raise SubmissionError(400, "this conversation takes no files")
+
+
 def submit_message(conn, *, conversation_id: int, user_id: int, client_message_id: str,
                    content: str, reactivate_actor_id: int | None = None,
                    writer: User | None = None, seen: dict | None = None,
@@ -1396,8 +1404,10 @@ def _sweep_one(conn, conversation_id: int, retention_hours: int) -> int:
     with uploads.uploads_lock(conn, conversation_id):
         with conn.cursor() as cur:
             cur.execute(
+                # The thread is the CONVERSATION's (007_thread.sql); a message has none.
                 "SELECT m.uploads, t.`key` AS thread_key FROM message m "
-                "LEFT JOIN thread t ON t.id = m.thread_id "
+                "JOIN conversation c ON c.id = m.conversation_id "
+                "LEFT JOIN thread t ON t.id = c.thread_id "
                 "WHERE m.conversation_id = %s AND m.uploads IS NOT NULL",
                 (conversation_id,))
             rows = cur.fetchall()

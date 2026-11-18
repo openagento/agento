@@ -145,3 +145,47 @@ def test_a_regeneration_that_also_carries_upload_ids_is_refused(conn, world, thr
                     "AND role = 'user'", (thread,))
         assert cur.fetchone()["n"] == 1            # nothing was re-asked
     conn.commit()
+
+
+def test_the_sweep_runs_its_query_against_a_real_database(conn, world, thread, workspace):
+    """The sweep's SELECT joins message -> conversation -> thread. A mocked cursor accepts
+    any SQL; only a real database says whether the columns are there."""
+    staged = routes.upload(_Upload(conn, world["owner"], thread))
+    routes.send(_Req(conn, world["owner"], params={"id": thread},
+                     json={"content": "look", "client_message_id": "c1",
+                           "upload_ids": [staged.body["upload_id"]]}))
+    # Nothing has expired, so the sweep takes nothing - it must still complete.
+    assert service.sweep_uploads(conn, retention_hours=24) == 0
+
+
+def _channel(conn, world):
+    """A conversation that mirrors an external system."""
+    conversation = service.create_conversation(conn, user_id=world["owner"].id,
+                                               agent_view_id=world["view"], title="mail")
+    with conn.cursor() as cur:
+        cur.execute("UPDATE conversation SET channel = 'outlook', external_ref = 'r1' "
+                    "WHERE id = %s", (conversation,))
+    conn.commit()
+    return conversation
+
+
+def test_a_channel_thread_stages_no_file(conn, world, workspace):
+    """A channel turn is published with no attachment descriptor (B-6), so a file accepted
+    here would reach the agent as a path to something that was never delivered."""
+    # An admin: the channel's own write gate must not be what refuses this.
+    refused = routes.upload(_Upload(conn, world["admin"], _channel(conn, world)))
+    assert refused.status == 400
+    assert uploads.conversations_with_uploads() == []
+
+
+def test_a_channel_thread_refuses_upload_ids(conn, world, thread, workspace):
+    staged = routes.upload(_Upload(conn, world["admin"], thread))
+    channel = _channel(conn, world)
+    refused = routes.send(_Req(conn, world["admin"], params={"id": channel},
+                               json={"content": "look", "client_message_id": "c1",
+                                     "upload_ids": [staged.body["upload_id"]]}))
+    assert refused.status == 400
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM message WHERE conversation_id = %s", (channel,))
+        assert cur.fetchone()["n"] == 0
+    conn.commit()

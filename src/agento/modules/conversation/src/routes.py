@@ -329,6 +329,7 @@ def upload(req: Request) -> Response:
     if refusal is not None:
         return refusal
     try:
+        service.check_panel_thread(row)
         name, data = uploads.parse_one_file(req.body, req.headers.get("Content-Type") or "")
         service.check_upload_bytes(req.conn, data)
         upload_id, stored = uploads.store(row["id"], req.session.user.id, name, data)
@@ -378,6 +379,8 @@ def send(req: Request) -> Response:
     try:
         client_message_id = service.check_client_message_id(body.get("client_message_id"))
         upload_ids = service.check_upload_ids(req.conn, body.get("upload_ids"))
+        if upload_ids is not None:
+            service.check_panel_thread(row)
         # A message that carries files needs no text of its own.
         content = service.check_content(req.conn, body.get("content"),
                                         allow_empty=upload_ids is not None)
