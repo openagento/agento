@@ -163,7 +163,8 @@
 .chipSize { color: var(--mantine-color-dimmed); }
 .fileInput { display: none; }
 /* A form's files: the paperclip, then the chips (or the empty text) on the same line. */
-.filesField { display: flex; flex-wrap: wrap; align-items: center; gap: var(--mantine-spacing-xs); }
+/* The margin: a chip is a bordered pill, so the hint needs more air under it than under a text input. */
+.filesField { display: flex; flex-wrap: wrap; align-items: center; gap: var(--mantine-spacing-xs); margin-bottom: var(--mantine-spacing-xs); }
 /* The chips wrap one by one beside the paperclip, not as one block under it on a narrow screen. */
 .filesField .chips { display: contents; }
 /* The drop hint is laid over this box. */
