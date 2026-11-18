@@ -8,7 +8,9 @@ import { useDisclosure } from "@mantine/hooks";
 import { Bot, Brain, ChevronRight, CircleAlert, Info, Layers, Paperclip, RotateCcw, SendHorizontal, Square, Wrench, X } from "lucide-react";
 import type { ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, Ref, UIEvent } from "react";
 import { useRef, useState } from "react";
+import { fileIcon } from "./FileIcon";
 import { IconAction } from "./IconAction";
+import { DayTime } from "./Timestamp";
 import classes from "./Chat.module.css";
 import { CopyButton } from "./CopyButton";
 import { JOB_STATE_LABEL, type JobState } from "./JobStatusCard";
@@ -71,6 +73,16 @@ export function ChatLayout({ title, actions, children, footer, overlay, viewport
   );
 }
 
+/** When a turn started, on its own centred line: the one above the first message dates the
+ *  conversation, and the one above each later message dates that follow-up. Without it a long
+ *  thread is a wall with no clock in it. */
+export function ChatTime({ value }: { value: string | null | undefined }) {
+  if (!value) return null;
+  return (
+    <div className={classes.time}><Text size="xs" c="dimmed"><DayTime value={value} /></Text></div>
+  );
+}
+
 /** The ordered list the timeline items go into (`aria-live` so new items are read out). */
 export function ChatList({ children }: { children: ReactNode }) {
   return <ol className={classes.list} aria-live="polite">{children}</ol>;
@@ -99,14 +111,18 @@ export function ChatMessage({ author, text, time, label, actions: extra, attachm
   return (
     <div className={`${classes.message} ${author === "user" ? classes.user : ""}`}>
       {label && <Text size="xs" c="dimmed">{label}</Text>}
-      <Paper radius="lg" px="md" py="xs" className={`${classes.bubble} ${author === "incoming" ? classes.incoming : ""}`}>
-        {text !== "" && <Text size="sm" className={classes.pre}>{text}</Text>}
-        {attachments && attachments.length > 0 && (
-          <div className={classes.chips}>
-            {attachments.map((name) => <FileChip key={name} name={name} />)}
-          </div>
-        )}
-      </Paper>
+      {/* The files sit ABOVE the bubble, as the composer stacked them above the text line: the
+          bubble is what the person wrote, the chips are what they brought with it. */}
+      {attachments && attachments.length > 0 && (
+        <div className={classes.chips}>
+          {attachments.map((name) => <FileChip key={name} name={name} />)}
+        </div>
+      )}
+      {text !== "" && (
+        <Paper radius="lg" px="md" py="xs" className={`${classes.bubble} ${author === "incoming" ? classes.incoming : ""}`}>
+          <Text size="sm" className={classes.pre}>{text}</Text>
+        </Paper>
+      )}
       {actions}
     </div>
   );
@@ -262,7 +278,7 @@ function FileChip({ name, icon, tone, reason, size, action }: {
   return (
     <div className={tone === "error" ? `${classes.chip} ${classes.chipError}` : classes.chip}
       title={reason ? `${name} — ${reason}` : name}>
-      {icon ?? <Paperclip size={12} />}
+      {icon ?? fileIcon(name)}
       <Text span size="xs">{middleEllipsis(name)}</Text>
       {size !== undefined && <Text span size="xs" className={classes.chipSize}>{fileSize(size)}</Text>}
       {/* The reason is TEXT, not a hover title: a file that did not arrive has to say so to
@@ -278,7 +294,7 @@ function AttachmentChip({ file, onRemove }: { file: Attachment; onRemove?: (id: 
   return (
     <FileChip name={file.name} tone={failed ? "error" : undefined} size={file.bytes}
       reason={failed ? (file.error ?? "upload failed") : undefined}
-      icon={file.status === "uploading" ? <Loader size={12} /> : <Paperclip size={12} />}
+      icon={file.status === "uploading" ? <Loader size={12} /> : fileIcon(file.name)}
       action={onRemove && (
         <IconAction label={`Remove ${file.name}`} icon={<X size={12} />}
           onClick={() => onRemove(file.id)} />

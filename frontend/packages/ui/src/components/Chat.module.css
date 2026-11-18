@@ -45,6 +45,13 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* What the person wrote is the primary color, as every chat app does it: their own words are
+   the one thing on the timeline they can find without reading. The contrast token is the pair
+   the theme already keeps for this background (UI-1). */
+.user .bubble {
+  background-color: var(--mantine-primary-color-filled);
+  color: var(--mantine-primary-color-contrast);
+}
 .incoming { border-left: 3px solid var(--mantine-color-default-border); }
 /* An answer's long word or URL wraps; break-word, not anywhere, so a table cell keeps its natural
    width and the table scrolls in its own box (MarkdownView). */
@@ -129,6 +136,9 @@
    textarea is the tallest item and centering it is a no-op - the buttons stay at the bottom. */
 .pillInput { flex: 1; min-width: 0; align-self: center; }
 .disclaimer { text-align: center; }
+/* Centred, like the day marker in every messaging app: it belongs to the thread, not to either
+   side of it. */
+.time { text-align: center; padding: calc(var(--mantine-spacing-xs) / 2) 0; }
 /* The pill's own rows: the chips sit above the text line, inside the same box. */
 .pillRow { display: flex; align-items: flex-end; gap: var(--mantine-spacing-xs); }
 .pill { position: relative; flex-direction: column; align-items: stretch; }
@@ -138,7 +148,10 @@
    chip needs no width of its own. */
 .chip {
   display: inline-flex; align-items: center; gap: calc(var(--mantine-spacing-xs) / 2);
-  padding: calc(var(--mantine-spacing-xs) / 5) var(--mantine-spacing-xs); white-space: nowrap;
+  padding: calc(var(--mantine-spacing-xs) / 3) var(--mantine-spacing-xs); white-space: nowrap;
+  /* The text's own line box, not Mantine's 1.4 line-height: otherwise the half-pixel it adds
+     below the glyphs makes the equal padding read as "more space under the name". */
+  line-height: 1;
   border: 1px solid var(--mantine-color-default-border);
   border-radius: var(--mantine-radius-xl); background-color: var(--mantine-color-body);
 }

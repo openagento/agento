@@ -4,7 +4,7 @@ export { jobTone, StatusBadge, type BadgeTone } from "./components/StatusBadge";
 export { Card } from "./components/Card";
 export { JobStatusCard, JOB_STATE_LABEL, type JobState } from "./components/JobStatusCard";
 export {
-  DisplayFormatProvider, formatTimestamp, Timestamp, type DateFormat, type DisplayFormat,
+  dayTime, DayTime, DisplayFormatProvider, formatTimestamp, Timestamp, type DateFormat, type DisplayFormat,
 } from "./components/Timestamp";
 export { EditableTitle, PageHeader, SectionHeader } from "./components/Headers";
 export { EmptyState, ErrorState, LoadingState } from "./components/States";
@@ -27,6 +27,6 @@ export { FieldRow, PageColumn, Section, Sections, SideDrawer, SwitchField } from
 export { durationOf, formatDuration, JobDetail, type JobDetailData } from "./components/JobDetail";
 export { ConnectionStatus, type ConnectionState } from "./components/ConnectionStatus";
 export {
-  ChatComposer, type Attachment, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, Reasoning, SubagentRun, ToolCall, ToolGroup,
+  ChatComposer, type Attachment, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ChatTime, Reasoning, SubagentRun, ToolCall, ToolGroup,
 } from "./components/Chat";
 export { MenuButton, Rail, SearchToggle, SplitView, ThreadList, type ThreadLink } from "./components/ChatShell";

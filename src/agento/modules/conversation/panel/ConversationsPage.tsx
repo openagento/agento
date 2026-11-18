@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import { apiFetch, LIVE_REFETCH_MS, ApiError, useMutation, useQuery, useQueryClient, useSession, type StreamEvent } from "@agento/api";
 import {
-  AppLink, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ConnectionStatus, EmptyState, ErrorState,
+  AppLink, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ChatTime, ConnectionStatus, EmptyState, ErrorState,
   LoadingState, MenuButton, Rail as RailFrame, Reasoning, RegenerateAction, RowMenu, SearchToggle, SelectField, SplitView, SubagentRun,
   TextField, ThreadList, ToolCall, ToolGroup, jobTone, type Attachment, type JobState, type ThreadLink,
 } from "@agento/ui";
@@ -315,8 +315,17 @@ interface Ctx { detail: ThreadDetail | undefined; details: boolean }
 function shownView(item: Shown, ctx: Ctx, actions?: ReactNode) {
   switch (item.type) {
     case "user":
-      return <li key={item.key}><ChatMessage author="user" text={item.content}
-        attachments={item.attachments} time={item.createdAt} /></li>;
+      // Every ask carries its own clock line: the first dates the conversation, each later one
+      // dates that follow-up, so a long thread says when its parts happened without a hover.
+      // One list item, clock line included: the timeline measures its own items to hold the
+      // scroll in place, so an ask must stay ONE item however it is decorated.
+      return (
+        <li key={item.key}>
+          <ChatTime value={item.createdAt} />
+          <ChatMessage author="user" text={item.content}
+            attachments={item.attachments} time={item.createdAt} />
+        </li>
+      );
     case "text":
       return <li key={item.key}><ChatMessage author="assistant" text={item.text} actions={actions} /></li>;
     case "answer":
