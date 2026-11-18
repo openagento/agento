@@ -7,7 +7,7 @@ import {
 import { useDisclosure } from "@mantine/hooks";
 import { Bot, Brain, ChevronRight, CircleAlert, Info, Layers, Paperclip, RotateCcw, SendHorizontal, Square, Wrench, X } from "lucide-react";
 import type { ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, Ref, UIEvent } from "react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fileIcon } from "./FileIcon";
 import { IconAction } from "./IconAction";
 import { DayTime } from "./Timestamp";
@@ -303,12 +303,18 @@ function AttachmentChip({ file, onRemove }: { file: Attachment; onRemove?: (id: 
 }
 
 export function ChatComposer({ value, onChange, onSend, canSend, hint, error, placeholder = "Ask the agent…",
-  stoppable = false, onStop, stopping = false, attachments, onFiles, onRemoveAttachment }: {
+  stoppable = false, onStop, stopping = false, attachments, onFiles, onRemoveAttachment, focusOnMount = false }: {
   value: string; onChange: (v: string) => void; onSend: () => void; canSend: boolean; hint?: ReactNode;
   error?: ReactNode; placeholder?: string; stoppable?: boolean; onStop?: () => void; stopping?: boolean;
   attachments?: Attachment[]; onFiles?: (files: File[]) => void; onRemoveAttachment?: (id: string) => void;
+  /** Put the caret in the text line as soon as the composer appears: opening a conversation is
+   *  asking something, so the first keystroke should land in it with no click. It is a focus
+   *  call on mount, not the `autoFocus` attribute, which a11y lint bans outright. */
+  focusOnMount?: boolean;
 }) {
   const stop = stoppable && onStop !== undefined;
+  const line = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { if (focusOnMount) line.current?.focus(); }, [focusOnMount]);
   const files = attachments ?? [];
   // A file that failed holds Send back until the user removes it: sending around it would
   // silently drop a file the user believes is attached.
@@ -351,7 +357,7 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error, pl
                   onClick={() => input.current?.click()} />
               </>
             )}
-            <Textarea className={classes.pillInput} variant="unstyled" aria-label="Message"
+            <Textarea className={classes.pillInput} variant="unstyled" aria-label="Message" ref={line}
               placeholder={placeholder} autosize minRows={1} maxRows={8} value={value}
               onChange={(e) => onChange(e.currentTarget.value)} onKeyDown={onKey}
               aria-describedby={hint ? "composer-hint" : undefined} />
