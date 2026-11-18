@@ -21,12 +21,35 @@ const TIGHT = "calc(var(--mantine-spacing-xs) / 2)";
 
 /** A timeline that fills the screen: a title row, one scroll region and a footer pinned at the
  *  bottom (the composer). `overlay` floats over the bottom of the region ("N new events ↓"). */
-export function ChatLayout({ title, actions, children, footer, overlay, viewportRef, onScroll, label = "Timeline" }: {
+export function ChatLayout({ title, actions, children, footer, overlay, viewportRef, onScroll, label = "Timeline", onFiles }: {
   title: ReactNode; actions?: ReactNode; children: ReactNode; footer?: ReactNode; overlay?: ReactNode;
   viewportRef?: Ref<HTMLDivElement>; onScroll?: (e: UIEvent<HTMLDivElement>) => void; label?: string;
+  /** Files dropped anywhere on the conversation. The whole pane is the target: a drag that
+   *  has to find the composer is a drag the user aims, and the history is where the eye is. */
+  onFiles?: (files: File[]) => void;
 }) {
+  // A counter, not a boolean: dragging over a child fires `dragleave` on the parent, and a
+  // boolean makes the overlay flicker on every inner element the pointer crosses.
+  const [over, setOver] = useState(0);
+  const drag = onFiles && {
+    onDragEnter: (e: DragEvent) => { e.preventDefault(); setOver((n) => n + 1); },
+    onDragOver: (e: DragEvent) => e.preventDefault(),
+    onDragLeave: () => setOver((n) => Math.max(0, n - 1)),
+    onDrop: (e: DragEvent) => {
+      e.preventDefault(); setOver(0);
+      const picked = Array.from(e.dataTransfer.files);
+      if (picked.length > 0) onFiles(picked);
+    },
+  };
   return (
-    <section className={classes.layout} aria-label="Conversation">
+    <section className={over > 0 ? `${classes.layout} ${classes.layoutOver}` : classes.layout}
+      aria-label="Conversation" {...drag}>
+      {over > 0 && (
+        <div className={classes.dropHint}>
+          <Paperclip size={18} />
+          <Text size="sm" fw={500}>Drop files to attach</Text>
+        </div>
+      )}
       <Group justify="space-between" wrap="nowrap" pb="xs">
         <Title order={2} size="h4" lineClamp={1}>{title}</Title>
         {actions && <Group gap="xs" wrap="nowrap">{actions}</Group>}
@@ -215,14 +238,17 @@ export function middleEllipsis(name: string, max = 24): string {
 
 /** One file, as a chip. In the composer it is removable and may still be uploading; under a
  *  sent message it is just the name. */
-function FileChip({ name, icon, tone, title, action }: {
-  name: string; icon?: ReactNode; tone?: "error"; title?: string; action?: ReactNode;
+function FileChip({ name, icon, tone, reason, action }: {
+  name: string; icon?: ReactNode; tone?: "error"; reason?: string; action?: ReactNode;
 }) {
   return (
     <div className={tone === "error" ? `${classes.chip} ${classes.chipError}` : classes.chip}
-      title={title ?? name}>
+      title={reason ? `${name} — ${reason}` : name}>
       {icon ?? <Paperclip size={12} />}
       <Text span size="xs">{middleEllipsis(name)}</Text>
+      {/* The reason is TEXT, not a hover title: a file that did not arrive has to say so to
+          someone who never hovers, and to a screen reader. */}
+      {reason && <Text span size="xs" className={classes.chipReason}>{reason}</Text>}
       {action}
     </div>
   );
@@ -232,11 +258,11 @@ function AttachmentChip({ file, onRemove }: { file: Attachment; onRemove?: (id: 
   const failed = file.status === "error";
   return (
     <FileChip name={file.name} tone={failed ? "error" : undefined}
-      title={failed ? `${file.name} — ${file.error ?? "upload failed"}` : file.name}
+      reason={failed ? (file.error ?? "upload failed") : undefined}
       icon={file.status === "uploading" ? <Loader size={12} /> : <Paperclip size={12} />}
       action={onRemove && (
-        <UnstyledButton className={classes.chipRemove} aria-label={`Remove ${file.name}`}
-          onClick={() => onRemove(file.id)}><X size={12} /></UnstyledButton>
+        <IconAction label={`Remove ${file.name}`} icon={<X size={12} />}
+          onClick={() => onRemove(file.id)} />
       )} />
   );
 }
@@ -259,30 +285,20 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error, pl
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
   };
   const input = useRef<HTMLInputElement>(null);
-  // A counter, not a boolean: dragging over a child fires `dragleave` on the parent, and a
-  // boolean makes the overlay flicker on every inner element the pointer crosses.
-  const [over, setOver] = useState(0);
   const take = (list: FileList | null) => {
     const picked = Array.from(list ?? []);
     if (picked.length > 0) onFiles?.(picked);
-  };
-  const onDrop = (e: DragEvent) => {
-    e.preventDefault(); setOver(0); take(e.dataTransfer.files);
   };
   const onPaste = (e: ClipboardEvent) => {
     if (onFiles && e.clipboardData.files.length > 0) { e.preventDefault(); take(e.clipboardData.files); }
   };
   const onPick = (e: ChangeEvent<HTMLInputElement>) => { take(e.currentTarget.files); e.currentTarget.value = ""; };
   return (
-    <form onSubmit={submit} onPaste={onPaste}
-      onDragEnter={onFiles && ((e) => { e.preventDefault(); setOver((n) => n + 1); })}
-      onDragOver={onFiles && ((e) => e.preventDefault())}
-      onDragLeave={onFiles && (() => setOver((n) => Math.max(0, n - 1)))}
-      onDrop={onFiles && onDrop}>
+    <form onSubmit={submit} onPaste={onPaste}>
       <Stack gap={TIGHT}>
         {/* One rounded field holds the text and the send button, as the chat apps do: the
             textarea is `unstyled` so the pill's own border is the only box (U9). */}
-        <div className={over > 0 ? `${classes.pill} ${classes.pillOver}` : classes.pill}>
+        <div className={classes.pill}>
           {files.length > 0 && (
             <div className={classes.chips} aria-live="polite" aria-label="Attached files">
               {files.map((f) => <AttachmentChip key={f.id} file={f} onRemove={onRemoveAttachment} />)}
@@ -311,7 +327,6 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error, pl
               </ActionIcon>
             </Tooltip>
           </div>
-          {over > 0 && <div className={classes.dropHint}><Text size="sm">Drop files to attach</Text></div>}
         </div>
         {hint && <Text id="composer-hint" size="xs" c="dimmed" className={classes.disclaimer}>{hint}</Text>}
         {error && <Text size="xs" c="red" role="alert">{error}</Text>}

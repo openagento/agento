@@ -4,7 +4,7 @@ import { AgentoUiProvider } from "../Provider";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
 import { Markdown } from "./Markdown";
-import { ChatMessage, middleEllipsis, ChatComposer, ChatError, ToolCall } from "./Chat";
+import { ChatMessage, middleEllipsis, ChatComposer, ChatError, ChatLayout, ToolCall } from "./Chat";
 import { ArchiveAction, DeleteAction, EndAction, MakeCurrentAction, OpenAction, RegenerateAction } from "./IconAction";
 import { CopyButton } from "./CopyButton";
 import { clampRail, MenuButton, ThreadList } from "./ChatShell";
@@ -194,6 +194,9 @@ describe("ChatComposer", () => {
       onRemoveAttachment={onRemove}
       attachments={[{ id: "1", name: "big.zip", status: "error", error: "file too large" }]} />,
       { wrapper: AgentoUiProvider });
+    // The reason is READ, not hovered: a title alone tells a touch user and a screen reader
+    // nothing about why their file is not going.
+    expect(screen.getByText("file too large")).toBeInTheDocument();
     expect(screen.getByTitle("big.zip — file too large")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Remove big.zip" })).toBeEnabled();
@@ -215,21 +218,33 @@ describe("ChatComposer", () => {
     expect(screen.getByText("notes.txt")).toBeInTheDocument();
   });
 
-  it("a drop hands the files over, and the hint only shows while the drag is over", () => {
+});
+
+describe("ChatLayout drop target", () => {
+  it("the WHOLE pane takes a drop, and the hint only shows while the drag is over", () => {
     const onFiles = vi.fn();
-    render(<ChatComposer value="" onChange={vi.fn()} onSend={vi.fn()} canSend onFiles={onFiles} />,
+    render(<ChatLayout title="t" onFiles={onFiles}><p>history</p></ChatLayout>,
       { wrapper: AgentoUiProvider });
-    const form = screen.getByRole("textbox", { name: "Message" }).closest("form")!;
+    const pane = screen.getByLabelText("Conversation");
     const file = new File(["x"], "a.pdf");
     expect(screen.queryByText("Drop files to attach")).not.toBeInTheDocument();
-    fireEvent.dragEnter(form, { dataTransfer: { files: [file] } });
+    fireEvent.dragEnter(pane, { dataTransfer: { files: [file] } });
     expect(screen.getByText("Drop files to attach")).toBeInTheDocument();
     // Leaving a CHILD must not clear the hint - that is what the counter is for.
-    fireEvent.dragEnter(form.querySelector("textarea")!, { dataTransfer: { files: [file] } });
-    fireEvent.dragLeave(form.querySelector("textarea")!);
+    const history = screen.getByText("history");
+    fireEvent.dragEnter(history, { dataTransfer: { files: [file] } });
+    fireEvent.dragLeave(history);
     expect(screen.getByText("Drop files to attach")).toBeInTheDocument();
-    fireEvent.drop(form, { dataTransfer: { files: [file] } });
+    // A drop on the HISTORY, far from the composer, is the case the composer-only target missed.
+    fireEvent.drop(history, { dataTransfer: { files: [file] } });
     expect(onFiles).toHaveBeenCalledWith([file]);
+    expect(screen.queryByText("Drop files to attach")).not.toBeInTheDocument();
+  });
+
+  it("takes no drop when the pane is not a target", () => {
+    render(<ChatLayout title="t"><p>history</p></ChatLayout>, { wrapper: AgentoUiProvider });
+    fireEvent.dragEnter(screen.getByLabelText("Conversation"),
+      { dataTransfer: { files: [new File(["x"], "a.pdf")] } });
     expect(screen.queryByText("Drop files to attach")).not.toBeInTheDocument();
   });
 });
