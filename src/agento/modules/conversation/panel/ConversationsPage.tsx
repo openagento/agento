@@ -185,7 +185,9 @@ function useRequestId() {
 }
 
 /** The composer: typing is always allowed; only Send waits for the agent (U8). */
-export function Composer({ threadId, busy }: { threadId: number; busy: boolean }) {
+export function Composer({ threadId, busy, stoppable = false, onStop, stopping = false }: {
+  threadId: number; busy: boolean; stoppable?: boolean; onStop?: () => void; stopping?: boolean;
+}) {
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const request = useRequestId();
@@ -198,7 +200,7 @@ export function Composer({ threadId, busy }: { threadId: number; busy: boolean }
   });
   return (
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
-      placeholder="Ask the agent…"
+      placeholder="Ask the agent…" stoppable={stoppable} onStop={onStop} stopping={stopping}
       hint={busy ? "The agent is answering…" : "Enter sends. Shift+Enter adds a new line. The agent can make mistakes."}
       error={send.error ? message(send.error) : undefined} />
   );
@@ -206,7 +208,9 @@ export function Composer({ threadId, busy }: { threadId: number; busy: boolean }
 
 /** The channel composer: an operator reply that continues the external task. Shown only with
  *  the `conversation.channel_write` grant and a reference to reply to - the route checks both. */
-export function ChannelComposer({ threadId, busy }: { threadId: number; busy: boolean }) {
+export function ChannelComposer({ threadId, busy, stoppable = false, onStop, stopping = false }: {
+  threadId: number; busy: boolean; stoppable?: boolean; onStop?: () => void; stopping?: boolean;
+}) {
   const qc = useQueryClient();
   const [text, setText] = useState("");
   const request = useRequestId();
@@ -218,7 +222,7 @@ export function ChannelComposer({ threadId, busy }: { threadId: number; busy: bo
   });
   return (
     <ChatComposer value={text} onChange={setText} onSend={() => send.mutate(text)} canSend={!busy && !send.isPending}
-      placeholder="Reply in the channel…"
+      placeholder="Reply in the channel…" stoppable={stoppable} onStop={onStop} stopping={stopping}
       hint={busy ? "The agent is answering…" : "Your reply continues this task in the channel it came from."}
       error={send.error ? message(send.error) : undefined} />
   );
@@ -565,9 +569,19 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
       overlay={unseen > 0 && <Button variant="primary" onClick={jump}>{unseen} new events ↓</Button>}
       footer={detail && (channel
         ? (detail.channel_write && detail.external_ref
-          ? <ChannelComposer threadId={threadId} busy={busy} />
-          : <p className="ag-muted">Read-only: this conversation comes from {channel}.</p>)
-        : <Composer threadId={threadId} busy={busy} />)}
+          ? <ChannelComposer threadId={threadId} busy={busy} stoppable={stoppable}
+              onStop={() => stop.mutate()} stopping={stop.isPending} />
+          : (
+            /* No composer to host Stop: a read-only channel thread still has to be stoppable. */
+            <>
+              <p className="ag-muted">Read-only: this conversation comes from {channel}.</p>
+              {stoppable && (
+                <Button onClick={() => stop.mutate()} disabled={stop.isPending}>Stop</Button>
+              )}
+            </>
+          ))
+        : <Composer threadId={threadId} busy={busy} stoppable={stoppable}
+            onStop={() => stop.mutate()} stopping={stop.isPending} />)}
     >
       {olderButton}
       {older.error && (
@@ -590,11 +604,6 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
       {regenerate.error && <p className="ag-field__error" role="alert">{message(regenerate.error)}</p>}
       {status && (
         <ChatStatus busy={!status.startsWith("This turn") && !status.startsWith("Stopped")}>{status}</ChatStatus>
-      )}
-      {stoppable && (
-        <div className="ag-row">
-          <Button onClick={() => stop.mutate()} disabled={stop.isPending}>Stop</Button>
-        </div>
       )}
       {stop.error && <p className="ag-field__error" role="alert">{message(stop.error)}</p>}
       {blocked.map((m) => (
