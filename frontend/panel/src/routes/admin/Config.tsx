@@ -8,8 +8,9 @@ import {
 } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useSearchParams } from "react-router";
+import { Pencil } from "lucide-react";
 import { apiFetch, refreshDisplay, useMutation, useQuery, useQueryClient } from "@agento/api";
-import { Button, ConfirmDialog, DataTable, EmptyState, ErrorState, LoadingState, PageHeader, type Column } from "@agento/ui";
+import { Button, ConfirmDialog, DataTable, EmptyState, ErrorState, IconAction, LoadingState, PageHeader, type Column } from "@agento/ui";
 import { ScopePicker } from "./ScopePicker";
 import { message, useConfigWrite, useScope, whole } from "./shared";
 
@@ -134,7 +135,7 @@ function Fields({ module, tool }: { module: string; tool: string | null }) {
     { id: "value", header: "Value", cell: valueCell },
     { id: "source", header: "Source", sortValue: (f) => f.source,
       cell: (f) => whole(<Badge variant="light" color={SOURCE_COLOR[f.source] ?? "gray"}>{f.source}</Badge>) },
-    { id: "actions", header: "Actions", cell: (f) => <Button variant="subtle" onClick={() => setEditing(f)}>Edit</Button> },
+    { id: "actions", header: "Actions", cell: (f) => <IconAction label="Edit" icon={<Pencil size={16} />} onClick={() => setEditing(f)} /> },
   ];
   return (
     <Stack gap="sm">
