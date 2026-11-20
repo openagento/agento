@@ -340,6 +340,12 @@ AG-65 follow-ups:
 - **Proactive refresh:** a scheduled tick that refreshes any enabled OAuth credential below the
   horizon, so jobs almost never meet a near-expiry credential.
 - **`agento run`:** use `refresh_credentials` before an interactive run too.
+### ⚪ SQL read-only scanner — follow-ups
+
+- **PostgreSQL dollar-quoted strings.** The shared `isReadOnlySql` scanner does not lex `$$…$$` /
+  `$tag$…$tag$`. No shipped adapter uses the `postgresql` dialect (only the example in
+  `docs/tools/creating-an-adapter.md`); lex or refuse dollar quotes before one does.
+
 ### ⚪ Model check — follow-ups
 
 The `agent_view/model` tester (DECISIONS.md 2026-10-07) runs from the panel **Test** button,

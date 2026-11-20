@@ -175,7 +175,7 @@ A full-access tier must also:
 
 Every adapter should log through `options.log` when present (the session logger, which names the verified caller on every line), falling back to the process-wide MCP logger — otherwise an invocation has no caller in `toolbox_mcp.log`.
 
-The shared validator deliberately rejects backslashes inside PostgreSQL string literals. PostgreSQL `E'...'` strings always interpret backslash escapes, while plain strings depend on server settings; rejecting the ambiguous form prevents the validator and server from disagreeing about where a statement ends.
+The shared validator rejects a PostgreSQL or MySQL quoted string or identifier where an odd run of backslashes stands directly before the closing delimiter. PostgreSQL `E'...'` strings always interpret backslash escapes, plain strings depend on `standard_conforming_strings`, and MySQL depends on `NO_BACKSLASH_ESCAPES`: only that one form can make the validator and the server disagree about where a literal ends, so only that form is refused. Every other backslash (`LIKE 'a\_b'`, a regex back-reference, an even run such as `'a\\'`) is allowed. The `REPLACE(` string function is allowed; the `REPLACE` statement stays blocked.
 
 The `healthcheck` function is called by the scoped diagnostic `/health?test=true` to verify connectivity. The view comes from the `internal_rest` capability row, never from the URL — a `?agent_view_id=` that disagrees with the capability is answered `400`, not silently ignored. It should return one result per tool: `ok` (connected), `fail` (error), or `skip` (not configured).
 

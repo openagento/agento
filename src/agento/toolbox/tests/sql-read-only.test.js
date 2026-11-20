@@ -45,4 +45,45 @@ describe('SQL read-only validation', () => {
     const query = "SELECT E'foo\\'bar'; DELETE FROM report --'";
     expect(isReadOnlySql(query, ['SELECT', 'WITH'], { dialect: 'postgresql' })).toBe(false);
   });
+
+  it.each([
+    ["SELECT * FROM t WHERE name LIKE 'a\\_b'", 'LIKE escape'],
+    ["SELECT REGEXP_REPLACE(s, '(a)\\1', 'x') FROM t", 'regex back-reference'],
+    ["SELECT 'a\\\\' AS s", 'even run before the delimiter'],
+    ["SELECT 'a\\\\''b'", 'even run, then a doubled quote'],
+    ['SELECT `we\\ird` FROM t', 'backslash in a backtick identifier'],
+    ["SELECT REPLACE(name, 'a', 'b') FROM t", 'REPLACE() string function'],
+    ["SELECT replace /* c */ (name, 'a', 'b') FROM t", 'REPLACE () with a comment before the parenthesis'],
+  ])('allows MySQL read-only query: %s (%s)', query => {
+    expect(isReadOnlySql(query, MYSQL_STARTS, { dialect: 'mysql' })).toBe(true);
+  });
+
+  it.each([
+    ["SELECT 'a\\'; DELETE FROM t -- '", 'odd run before the delimiter'],
+    ["SELECT 'a\\\\\\'; DELETE FROM t -- '", 'run of three before the delimiter'],
+    ['SELECT "a\\"; DELETE FROM t -- "', 'odd run before a double quote'],
+    ['SELECT `a\\`; DELETE FROM t -- `', 'odd run before a backtick'],
+    ["SELECT 'unterminated\\", 'backslash at end of input'],
+    ['REPLACE INTO t VALUES (1)', 'REPLACE INTO statement'],
+    ['REPLACE t (a) VALUES (1)', 'REPLACE statement without INTO'],
+    ['REPLACE(1)', 'statement that starts with REPLACE('],
+    ['EXPLAIN REPLACE INTO t VALUES (1)', 'REPLACE behind EXPLAIN'],
+    ['EXPLAIN REPLACE t SET a = 1', 'REPLACE SET behind EXPLAIN'],
+    ["SELECT REPLACE(a, 'x', 'y') FROM t; REPLACE INTO t VALUES (1)", 'REPLACE() then a second statement'],
+    ['EXPLAIN REPLACE `t` (a) VALUES (1)', 'REPLACE statement with a backtick table name'],
+    ['DESCRIBE REPLACE `t` (a) VALUES (1)', 'REPLACE statement behind DESCRIBE'],
+    ['EXPLAIN REPLACE "t" (a) VALUES (1)', 'REPLACE statement with a double-quoted table name'],
+    ['EXPLAIN REPLACE /* c */ `t` (a) SELECT 1', 'REPLACE statement with a comment, then a quoted table name'],
+    ['EXPLAIN REPLACE   (a) VALUES (1)', 'REPLACE statement with a non-ASCII identifier MySQL does not treat as space'],
+  ])('blocks MySQL query: %s (%s)', query => {
+    expect(isReadOnlySql(query, MYSQL_STARTS, { dialect: 'mysql' })).toBe(false);
+  });
+
+  it('allows an even backslash run in a PostgreSQL escape string', () => {
+    expect(isReadOnlySql("SELECT E'a\\\\\\\\'", ['SELECT', 'WITH'], { dialect: 'postgresql' })).toBe(true);
+  });
+
+  it('allows the MSSQL REPLACE() string function', () => {
+    expect(isReadOnlySql("SELECT REPLACE(name, 'a', 'b') FROM t", MSSQL_STARTS, { dialect: 'mssql' })).toBe(true);
+  });
 });

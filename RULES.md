@@ -6,8 +6,8 @@ repeats only the ranked goals below, word for word.
 
 ## How to use this file
 
-- **Cite by ID** (`SEC-1`) in findings, triage, code comments, and DECISIONS.md. Never cite a line
-  number of this file.
+- **Cite by ID** (`SEC-1`) in findings, triage, DECISIONS.md, and in a code comment that CODE-10
+  allows. Never cite a line number of this file.
 - **IDs are permanent.** Do not renumber. A retired rule keeps its heading and gets
   `Retired <date>: <reason>`.
 - **Tier** orders the findings: **P0** security or trust boundary, **P1** architecture, contract,
@@ -405,6 +405,13 @@ resolves a shortcut, so a shortcut goes into each set in `framework/cli/__init__
 command (`_LOCAL_COMMANDS`, `_INTERACTIVE_COMMANDS`, `_MAYBE_INTERACTIVE_COMMANDS`). If not, the shortcut runs in the wrong container or without a TTY.
 `tests/unit/framework/test_command_shortcuts.py` guards both. Show the shortcut in the command's
 `docs/cli/` page.
+
+**CODE-10 Self-explaining code (P2).** Code explains itself through names: a named variable, a
+named predicate, or a small function. Do not write a comment that tells what the code does or why a
+branch exists when a name can tell it. A comment is allowed only where a rule asks for one (CODE-3,
+UI-1), for a `ponytail:` marker that names a known ceiling and its upgrade path, or for a fact that
+the code cannot show (an external bug, a vendor quirk, an incident, with a link or a rule ID). This
+applies to the lines a change adds or changes; old comments are not DEBT (CODE-6).
 
 ## CLS — Defect classes
 

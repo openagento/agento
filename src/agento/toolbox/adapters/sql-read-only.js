@@ -6,6 +6,10 @@ const WRITE_KEYWORDS = new Set([
   'TRANSACTION', 'TRUNCATE', 'UPDATE', 'UPSERT', 'USE',
 ]);
 
+// MySQL token whitespace is ASCII only; JS \s also matches U+00A0 and other characters that MySQL
+// reads as identifier text: https://dev.mysql.com/doc/refman/8.4/en/identifiers.html
+const OPENING_PARENTHESIS_AFTER_SQL_WHITESPACE = /^[ \t\n\v\f\r]*\(/;
+
 const DIALECTS = {
   mssql: {
     hashComments: false,
@@ -81,7 +85,16 @@ function sanitizedSql(query, dialectName) {
         : state === 'double-quote' ? '"'
           : state === 'backtick' ? '`' : ']';
       result += ' ';
-      if (dialect.rejectBackslashInQuotes && char === '\\') return null;
+      if (dialect.rejectBackslashInQuotes && char === '\\') {
+        let backslashRunEnd = i;
+        while (query[backslashRunEnd + 1] === '\\') backslashRunEnd += 1;
+        const backslashRunIsOdd = (backslashRunEnd - i + 1) % 2 === 1;
+        const literalEndDependsOnSqlMode = backslashRunIsOdd && query[backslashRunEnd + 1] === closing;
+        if (literalEndDependsOnSqlMode) return null;
+        result += ' '.repeat(backslashRunEnd - i);
+        i = backslashRunEnd;
+        continue;
+      }
       if (char === closing) {
         if (next === closing) {
           result += ' ';
@@ -110,16 +123,16 @@ function sanitizedSql(query, dialectName) {
       result += ' ';
     } else if (char === "'") {
       state = 'single-quote';
-      result += ' ';
+      result += char;
     } else if (char === '"') {
       state = 'double-quote';
-      result += ' ';
+      result += char;
     } else if (dialect.backtickIdentifiers && char === '`') {
       state = 'backtick';
-      result += ' ';
+      result += char;
     } else if (dialect.bracketIdentifiers && char === '[') {
       state = 'bracket';
-      result += ' ';
+      result += char;
     } else {
       result += char;
     }
@@ -139,8 +152,12 @@ export function isReadOnlySql(query, allowedStartKeywords, { dialect = 'mssql' }
     : trimmed;
   if (withoutTrailingSemicolon.includes(';')) return false;
 
-  const tokens = withoutTrailingSemicolon.match(/[A-Za-z_][A-Za-z0-9_$#]*/g)
-    ?.map(token => token.toUpperCase()) || [];
+  const isReplaceFunctionCallAfterStatementStart = (match, position) => position > 0
+    && match[0].toUpperCase() === 'REPLACE'
+    && OPENING_PARENTHESIS_AFTER_SQL_WHITESPACE.test(withoutTrailingSemicolon.slice(match.index + match[0].length));
+  const tokens = [...withoutTrailingSemicolon.matchAll(/[A-Za-z_][A-Za-z0-9_$#]*/g)]
+    .filter((match, position) => !isReplaceFunctionCallAfterStatementStart(match, position))
+    .map(match => match[0].toUpperCase());
   if (tokens.length === 0 || !allowedStartKeywords.includes(tokens[0])) return false;
   const allowedMetadataKeywords = tokens[0] === 'SHOW' ? new Set(['CREATE']) : new Set();
   if (tokens.some(token => WRITE_KEYWORDS.has(token) && !allowedMetadataKeywords.has(token))) return false;
