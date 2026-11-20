@@ -13,6 +13,8 @@
     "type": "obscure",
     "label": "GitHub personal access token (encrypted at rest; toolbox-only)",
     "description": "Agent_view scope only. bootstrap() resolves DEFAULT-scope obscure config in the cron process and would decrypt the token there.",
+    "access": "toolbox_only",
+    "allowEnv": false,
     "showInDefault": false,
     "showInWorkspace": false,
     "showInAgentView": true

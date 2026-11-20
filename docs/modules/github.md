@@ -31,7 +31,7 @@ arrive with an operator-configured origin allow-list, not a request-body field.
 | `github/enabled` | boolean | any | Channel inert until `1` (default `0`) |
 | `github/github_owner` | string | any | Owner (user or organization) that owns the watched repos |
 | `github/github_login` | string | **agent_view only** | The agent account's GitHub login (author/self match) |
-| `github/github_token` | **obscure** | **agent_view only** | Personal access token — encrypted at rest, **toolbox-only** |
+| `github/github_token` | **obscure** | **agent_view only** | Personal access token — encrypted at rest, **toolbox-only** (`access: toolbox_only`, `allowEnv: false`) |
 | `github/repo_allowlist` | string | **agent_view only** | Comma-separated **bare** repo names (`api,web` — never `acme/api`; the owner comes from `github_owner`); **empty ⇒ view skipped** (no scan) |
 | `github/poll_top` | integer | any | Max **agent-authored** open PRs per repo per poll (clamped 1..100, default 20) |
 
@@ -60,20 +60,16 @@ per-view secrecy requirement.
 
 ### The limit of that enforcement (read this)
 
-Scope enforcement covers the **DB** path only:
-
 - a stored (DB) token is **never** decrypted in the cron process — see `load_db_overrides` above;
-- an **ENV** var (`CONFIG__GITHUB__GITHUB_TOKEN`) still outranks DB config in `resolve_field`, and is
-  resolved during `bootstrap()` *before any module code runs*, so an operator who exports one puts the
-  plaintext in the cron process's reach for that boot;
-- the module therefore **refuses to operate** in that state on all four surfaces — the publisher
+- `github_token` declares `"access": "toolbox_only"` and `"allowEnv": false`: Python's `resolve_field`
+  never resolves it, and `module:validate` (so `setup:upgrade`) fails while `CONFIG__GITHUB__GITHUB_TOKEN`
+  is set;
+- for the two non-secret view-scoped keys (`github_login`, `repo_allowlist`) an **ENV** var still
+  outranks DB config, so the module **refuses to operate** while any of the three keys is set, on all four surfaces — the publisher
   (`run_lane` → 0 jobs), the REST handlers (HTTP 503), MCP registration (zero tools registered), and
   onboarding (`is_complete()` reports incomplete and names the offending key). The same three keys are
   refused on both sides — Python (`src/env_guard.py`) and Node (`toolbox/env-guard.js`) — and an
-  integration test asserts the two key lists cannot drift apart;
-- the proper fix is a per-field `toolbox_only` exclusion in the framework resolver. **It does not exist
-  today.** It is recorded as a framework follow-up (see [DECISIONS.md](../../DECISIONS.md) and
-  [ROADMAP.md](../../ROADMAP.md)), not as something this module claims to have solved.
+  integration test asserts the two key lists cannot drift apart.
 
 Nothing in this module, its docs or its onboarding asks anyone to set a `CONFIG__GITHUB__*` override
 for a credential: credentials are stored encrypted in `core_config_data` at AGENT_VIEW scope, as

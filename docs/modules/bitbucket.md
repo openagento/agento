@@ -28,7 +28,7 @@ workspaces/repos with different credentials).
 | `bitbucket/enabled` | boolean | Channel inert until `1` (default `0`) |
 | `bitbucket/bitbucket_workspace` | string | Workspace slug |
 | `bitbucket/bitbucket_email` | string | Agent Atlassian account email (Basic-auth username) |
-| `bitbucket/bitbucket_api_token` | **obscure** | Atlassian API token — encrypted at rest, **toolbox-only** |
+| `bitbucket/bitbucket_api_token` | **obscure** | Atlassian API token — encrypted at rest, **toolbox-only** (`access: toolbox_only`, `allowEnv: false`, agent_view scope only) |
 | `bitbucket/bitbucket_account_uuid` | string | Agent's Bitbucket account UUID (`author.uuid` match) |
 | `bitbucket/repo_allowlist` | string | Comma-separated **bare** repo slugs (`api,web` — never `acme/api`; the workspace comes from `bitbucket_workspace`); **empty ⇒ view skipped** (no scan) |
 | `bitbucket/poll_top` | integer | Max open PRs fetched per repo per poll (clamped 1..50, default 20) |
