@@ -1,7 +1,7 @@
-import { ActionIcon } from "@mantine/core";
 import { Pencil } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import css from "./Editable.module.css";
+import { IconAction } from "./IconAction";
 
 export function PageHeader({ title, description, actions }: {
   title: ReactNode; description?: ReactNode; actions?: ReactNode;
@@ -57,8 +57,8 @@ export function EditableTitle({ value, label = "Title", maxLength, onSave, start
   return (
     <span className={css.editable}>
       {value}
-      <ActionIcon variant="subtle" color="gray" size="sm" className={css.pencil} aria-label={`Edit ${label.toLowerCase()}`}
-        onClick={() => setDraft(value)}><Pencil size={14} /></ActionIcon>
+      <IconAction size="sm" className={css.pencil} label={`Edit ${label.toLowerCase()}`} icon={<Pencil size={14} />}
+        onClick={() => setDraft(value)} />
     </span>
   );
 }
