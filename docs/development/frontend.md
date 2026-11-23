@@ -54,6 +54,13 @@ npm test            # build, lint, then every unit test and every story in headl
   1.2.0). A default radius is a theme value, so the kit emits it as `--ag-radius-default`, and the
   `.ag-button` / `.ag-field__input` twins use that token — not a hardcoded step — or the parity
   story fails the next time the default moves.
+- **One scrollbar look (kit 1.4.0).** A list or a thread scrolls in a Mantine `ScrollArea`
+  (`theme.ts` sets `scrollbarSize: 8` for all of them; do not set it per call). Every other scroll
+  box (a textarea, a JSON input, a modal body, a wide table, the page) gets the browser's
+  scrollbar, which `agento-ui.css` makes thin, with the `ScrollArea` thumb
+  (`--ag-color-scrollbar-thumb`) on no track. `data-theme` sets `color-scheme` too, so the browser
+  draws that scrollbar dark when the panel is dark, also when the OS is light. Do not style a
+  scrollbar in one component: change the kit rule (UI-9).
   `SelectField` is a Mantine `Select` (combobox), so its open list has the theme's look. A miniapp
   writes `<select class="ag-field__input">`: the closed box and chevron are the same (the parity
   story checks them), and the browser draws its open list. `contained` on `TextField` and

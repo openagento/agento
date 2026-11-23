@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ELEMENTS } from "./src/agento-ui.js";
 import { CATALOGUE } from "./src/catalogue";
-import { dark, light, TONES } from "./scripts/tokens";
+import { dark, light, SCROLLBAR_THUMB, TONES } from "./scripts/tokens";
 import { blocks, main, SKILL, uncatalogued } from "./scripts/gen-skill";
 import { diffDirs, KIT_VERSION, kitCss, SDK } from "./scripts/build-kit";
 
@@ -39,6 +39,19 @@ describe("tokens", () => {
   ];
   it.each([["light", light], ["dark", dark]] as const)("%s mode meets WCAG AA for text", (_, map) => {
     for (const [fg, bg] of pairs) expect(ratio(map[fg], map[bg]), `${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
+describe("scrollbars", () => {
+  const kit = kitCss();
+  it.each(["light", "dark"] as const)("data-theme=%s sets color-scheme, so native scrollbars follow the panel, not the OS", (mode) => {
+    expect(kit).toMatch(new RegExp(`:root\\[data-theme="${mode}"\\] \\{\\n  color-scheme: ${mode};`));
+  });
+  it.each(["light", "dark"] as const)("the %s native thumb is the Mantine ScrollArea thumb", (mode) => {
+    const mantine = readFileSync(join(__dirname, "../../node_modules/@mantine/core/styles/ScrollArea.css"), "utf8");
+    const thumb = new RegExp(`\\[data-mantine-color-scheme='${mode}'\\]\\) \\.m_d8b5e363 \\{\\s*background-color: ([^;]+);`).exec(mantine);
+    expect(thumb?.[1]).toBe(SCROLLBAR_THUMB[mode]);
+    expect(kit).toContain(":root { scrollbar-color: var(--ag-color-scrollbar-thumb) transparent; }");
   });
 });
 

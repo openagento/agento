@@ -2,7 +2,7 @@
 // miniapp kit build resolves it into `agento-ui.css` (packages/miniapp-kit/scripts/tokens.ts),
 // so a Mantine widget in the panel and an `.ag-*` element in a miniapp use the same values.
 // Imported by a Node build script with no path aliases: import only bare packages here.
-import { createTheme, type CSSVariablesResolver, type MantineColorsTuple } from "@mantine/core";
+import { createTheme, ScrollArea, type CSSVariablesResolver, type MantineColorsTuple } from "@mantine/core";
 
 // The neutral scales. Mantine's own `gray` and `dark` carry a blue hue (`#868e96` is
 // `hsl(210 8% 55%)`); a chat surface reads as warm-neutral, so these are near-zero
@@ -27,6 +27,7 @@ export const agentoTheme = createTheme({
   headings: { fontFamily: "Inter, system-ui, -apple-system, 'Segoe UI', sans-serif" },
   // Soft corners everywhere, as the chat apps do: a `lg` button, card, input and bubble.
   defaultRadius: "lg",
+  components: { ScrollArea: ScrollArea.extend({ defaultProps: { scrollbarSize: 8 } }) },
 });
 
 /** Raises only the Mantine colors that fail WCAG AA for text (kit.test.ts checks every pair). */
