@@ -4,6 +4,31 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-11-23 — Jobs grid: search and sort in SQL, a narrow search index
+
+- **The jobs grid pages, searches and sorts in MySQL**, not in the browser. The browser held 50
+  rows, so its search missed every older job. `web/grid.py` checks the query; each route keeps its
+  own sort-key → SQL map, so the helper builds no SQL and a new grid reuses it as is.
+- **Search keeps the panel's old meaning**: a literal, case-insensitive substring of
+  `id type status view reference` (`CONCAT_WS … COLLATE utf8mb4_0900_ai_ci LIKE … ESCAPE`). One
+  change is deliberate: the collation also folds accents (`zolc` finds `żółć`), which the old
+  browser search did not. A
+  `FULLTEXT` index was refused: it matches words, not substrings, so `G-7` would not find `AG-7`.
+- **Migration 059 adds `idx_job_search (type, status, agent_view_id, reference_id, id)`**, and a
+  search sorted by id, type, status, view or reference FORCE-INDEXes it (owner's choice,
+  2026-11-23). A search sorted by another column (duration, a time, tokens) needs that column, so
+  it reads the rows without the hint (about 1 s for a broad search on 500 000 rows). On 500 000 realistic rows (about
+  2.8 KB each) with a 128 MB buffer pool, a search read the wide rows in 0.6–15 s; on the narrow
+  index it takes 0.2–0.5 s. `id` is named in the index although InnoDB appends it: MySQL treats an
+  expression over `j.id` as covered only when `id` is a named part. The optimizer does not choose
+  the index on its own, so the hint is needed.
+- **A sort the index does not cover** (duration, tokens, timestamps) stays at about 0.5–1 s at
+  500 000 jobs. Accepted; job retention is the bound (ROADMAP.md).
+- **The total**: the window `COUNT(*) OVER ()` in the inner, id-only query for a search;
+  `offset + rows` when the page is short; otherwise one `COUNT(*)`.
+
+---
+
 ## 2026-11-18 — Schedule files: a content-derived key, one remover (AG-87)
 
 - **Staging is the framework's** (`framework/uploads.py`), with an owner segment

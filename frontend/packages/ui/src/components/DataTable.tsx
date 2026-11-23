@@ -1,5 +1,6 @@
-// A server-paged table: it sorts the rows it has and never pages on the client (the
-// API bounds the page). Rows take focus with the arrow keys; Enter calls `onRowActivate`.
+// A server-paged table: it never pages on the client (the API bounds the page). It sorts the rows it
+// has, or, given `onSortChange`, leaves the order to the server and only reports a header click.
+// Rows take focus with the arrow keys; Enter calls `onRowActivate`.
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Table, UnstyledButton } from "@mantine/core";
 import {
@@ -23,11 +24,16 @@ export interface Column<T extends RowData> {
 
 const features = tableFeatures({ rowSortingFeature, sortedRowModel: createSortedRowModel() });
 
+export interface Sort { id: string; desc: boolean }
+
 export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, error, onRetry, emptyTitle = "Nothing here yet",
-  emptyText, caption, onRowActivate }: {
+  emptyText, emptyAction, caption, onRowActivate, sort, onSortChange }: {
   columns: Column<T>[]; rows: T[] | undefined; rowKey: (row: T) => string;
   loading?: boolean; error?: string | null; onRetry?: () => void;
-  emptyTitle?: string; emptyText?: ReactNode; caption: string; onRowActivate?: (row: T) => void;
+  emptyTitle?: string; emptyText?: ReactNode; emptyAction?: ReactNode; caption: string; onRowActivate?: (row: T) => void;
+  /** Server sort: the order the rows came in, and the header click that asks for another one.
+   *  A header cycles through its first direction, the other one, and back to the page's default (`null`). */
+  sort?: Sort; onSortChange?: (sort: Sort | null) => void;
 }) {
   const data = rows ?? (EMPTY as T[]);
   const [active, setActive] = useState(0);
@@ -42,11 +48,21 @@ export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, e
   // every render, so React would remount every cell (an open select closes when a row takes focus).
   const cellOf = new Map(columns.map((c) => [c.id, c.cell]));
   const wrapOf = new Map(columns.map((c) => [c.id, c.nowrap ? css.nowrap : c.prose ? css.prose : undefined]));
-  const table = useTable({ features, columns: defs, data, getRowId: (r: T) => rowKey(r) });
+  const sorting = sort ? [sort] : [];
+  const serverSort = onSortChange
+    ? {
+      manualSorting: true, state: { sorting },
+      onSortingChange: (next: Sort[] | ((old: Sort[]) => Sort[])) => {
+        const [first] = typeof next === "function" ? next(sorting) : next;
+        onSortChange(first ? { id: first.id, desc: first.desc } : null);
+      },
+    }
+    : {};
+  const table = useTable({ features, columns: defs, data, getRowId: (r: T) => rowKey(r), ...serverSort });
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorState message={error} onRetry={onRetry} />;
-  if (!data.length) return <EmptyState title={emptyTitle}>{emptyText}</EmptyState>;
+  if (!data.length) return <EmptyState title={emptyTitle} action={emptyAction}>{emptyText}</EmptyState>;
 
   const tableRows = table.getRowModel().rows;
   const focusRow = (i: number) => {

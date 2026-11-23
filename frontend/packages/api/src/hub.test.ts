@@ -129,3 +129,39 @@ describe("assertPanelModule", () => {
     expect(() => assertPanelModule("x", m)).toThrow(msg);
   });
 });
+
+describe("assertPanelModule jobLink", () => {
+  const base = { contractVersion: 1, id: "x", routes: [{ path: "/x", load: async () => ({ default: () => null }) }], availability: { probe: "/api/x/ping" } };
+  const link = { label: "Open x", api: "/api/x/jobs/{job}", to: "/x/{id}" };
+  it("accepts a link under the module's own prefix", () => {
+    const m = { ...base, jobLink: link };
+    expect(assertPanelModule("x", m)).toBe(m);
+  });
+  it.each([
+    [{ api: "/api/other/jobs/{job}" }, /api must be a GET under \/api\/x\//],
+    [{ api: "/api/x/../admin/{job}" }, /api must be a GET under/],
+    [{ api: "/api/x/jobs" }, /\{job\} once/],
+    [{ api: "/api/x/{job}/{job}" }, /\{job\} once/],
+    [{ api: "api/x/jobs/{job}" }, /api must start with one \//],
+    [{ to: "x/{id}" }, /to must start with one \//],
+    [{ to: "//evil.example/{id}" }, /to must start with one \//],
+    [{ to: "/x/{id}?a=1" }, /to must not hold/],
+    [{ api: "/api/x/jobs/{job}#f" }, /api must not hold/],
+    [{ to: "/x\\{id}" }, /to must not hold/],
+    [{ label: "" }, /label/],
+    [{ api: "/api/x/jobs/{job}/../current" }, /api must keep \{job\} as one whole path segment/],
+    [{ to: "/x/{id}/../all" }, /to must keep \{id\} as one whole path segment/],
+    [{ to: "/x/job-{id}" }, /to must keep \{id\} as one whole path segment/],
+    [{ api: "/api/x/{job}/../%7Bjob%7D" }, /api must keep \{job\} as one whole path segment/],
+    [{ to: "/x/{id}/../%7Bid%7D" }, /to must keep \{id\} as one whole path segment/],
+    [{ api: "/api/x/{job}/../{jo\tb}" }, /api must keep \{job\} as one whole path segment/],
+    [{ to: "/x/{id}/../{i\nd}" }, /to must keep \{id\} as one whole path segment/],
+  ])("rejects %j", (patch, msg) => {
+    expect(() => assertPanelModule("x", { ...base, jobLink: { ...link, ...patch } })).toThrow(msg);
+  });
+  it("rejects a slot inside the module segment, which only id 1 would keep under the prefix", () => {
+    const x1 = { ...base, id: "x1", availability: { probe: "/api/x1/ping" } };
+    expect(() => assertPanelModule("x1", { ...x1, jobLink: { ...link, api: "/api/x{job}/jobs" } }))
+      .toThrow(/api must keep \{job\} as one whole path segment after \/api\/x1\//);
+  });
+});

@@ -1,18 +1,18 @@
-import { useState } from "react";
-import { Columns3, Eye, ListChecks, RotateCcw } from "lucide-react";
-import { Checkbox, Group, Indicator, Popover, SegmentedControl, Stack, Text, TextInput } from "@mantine/core";
+import { useEffect, useState } from "react";
+import { Columns3, Eye, ListChecks, RotateCcw, Search } from "lucide-react";
+import { Box, Checkbox, Group, Indicator, Loader, Popover, SegmentedControl, Stack, Text, TextInput } from "@mantine/core";
 import { useLocalStorage } from "@mantine/hooks";
-import { useSearchParams } from "react-router";
-import { apiFetch, LIVE_REFETCH_MS, useQuery } from "@agento/api";
+import { useNavigate, useSearchParams } from "react-router";
+import { apiFetch, keepPreviousData, LIVE_REFETCH_MS, useJobLinks, useQuery } from "@agento/api";
 import {
-  DataTable, durationOf, ErrorState, formatDuration, IconAction, JobDetail, jobTone, LoadingState, PageHeader, SideDrawer,
-  StatusBadge, Timestamp, type Column, type JobDetailData,
+  Button, DataTable, durationOf, ErrorState, formatDuration, IconAction, JobDetail, jobTone, lastPage, LoadingState, OpenAction,
+  PageHeader, Pager, SideDrawer, StatusBadge, Timestamp, useGridParams, type Column, type JobDetailData,
 } from "@agento/ui";
 import { message, whole, type JobHead, type JobRow } from "./shared";
 
 const STATUSES = ["All", "TODO", "RUNNING", "SUCCESS", "FAILED", "DEAD"];
-// The same fields the TUI search reads (framework/admin/screens/jobs.py).
-const SEARCHED = ["id", "type", "status", "agent_view_code", "reference_id"] as const;
+const DEFAULT_SORT = { id: "id", desc: true };
+interface JobPage { rows: JobRow[]; total: number; page: number; page_size: number }
 const when = (v: string | null | undefined) => (v ? <Timestamp value={v} /> : "—");
 
 const seconds = (j: JobHead) => formatDuration(durationOf(j));
@@ -22,7 +22,7 @@ export const jobColumns = (open?: (j: JobHead) => void): Column<JobHead>[] => [
   { id: "type", header: "Type", cell: (j) => j.type, sortValue: (j) => j.type },
   { id: "status", header: "Status", cell: (j) => whole(<StatusBadge tone={jobTone(j.status)}>{j.status}</StatusBadge>), sortValue: (j) => j.status },
   { id: "view", header: "Agent view", cell: (j) => j.agent_view_code ?? "—", sortValue: (j) => j.agent_view_code ?? "" },
-  { id: "ref", header: "Reference", cell: (j) => <Text size="sm" lineClamp={2} style={{ overflowWrap: "anywhere" }}>{j.reference_id ?? "—"}</Text>, sortValue: (j) => j.reference_id ?? "" },
+  { id: "ref", header: "Reference", cell: (j) => <Text size="sm" lineClamp={2} style={{ overflowWrap: "break-word" }}>{j.reference_id ?? "—"}</Text>, sortValue: (j) => j.reference_id ?? "" },
   { id: "created", header: "Created", cell: (j) => when(j.created_at), sortValue: (j) => j.created_at ?? "", nowrap: true },
   { id: "duration", header: "Duration", cell: seconds, sortValue: (j) => durationOf(j) ?? -1 },
   ...(open ? [{ id: "actions", header: "Actions", cell: (j: JobHead) => <IconAction label="Details" icon={<Eye size={16} />} onClick={() => open(j)} /> }] : []),
@@ -101,26 +101,39 @@ function JobDrawer({ id, onClose }: { id: number | null; onClose: () => void }) 
     queryFn: ({ signal }) => apiFetch<JobDetailData>(`/api/admin/jobs/${id}`, { signal }),
     refetchInterval: LIVE_REFETCH_MS,
   });
+  const navigate = useNavigate();
+  const links = useJobLinks(id).map((l) => <OpenAction key={l.to} label={l.label} onClick={() => void navigate(l.to)} />);
   return (
-    <SideDrawer opened={id !== null} onClose={onClose} title={`Job ${id ?? ""}`}>
+    <SideDrawer opened={id !== null} onClose={onClose} title={`Job ${id ?? ""}`} actions={links}>
       {job.isPending ? <LoadingState /> : job.error ? <ErrorState message={message(job.error)} /> : job.data && <JobDetail job={job.data} />}
     </SideDrawer>
   );
 }
 
+/** What the empty result was filtered by, in words: `Status FAILED and “abc”`. */
+function constraints(status: string, q: string) {
+  return [status !== "All" && `Status ${status}`, q && `“${q}”`].filter(Boolean).join(" and ");
+}
+
 export function Jobs() {
-  const [params, setParams] = useSearchParams();
-  const status = STATUSES.includes(params.get("status") ?? "") ? params.get("status")! : "All";
-  const [search, setSearch] = useState("");
+  const [params] = useSearchParams();
+  const grid = useGridParams({ defaultSort: DEFAULT_SORT, sorts: ORDER, filters: { status: STATUSES.slice(1) } });
+  const status = grid.filters.status ?? "All";
   // `?job=<id>` opens that job (a conversation's runs link here).
   const [openId, setOpenId] = useState<number | null>(() => Number(params.get("job")) || null);
   const jobs = useQuery({
-    queryKey: ["admin-jobs", status],
-    queryFn: ({ signal }) => apiFetch<JobRow[]>(`/api/admin/jobs${status === "All" ? "" : `?status=${status}`}`, { signal }),
+    queryKey: ["admin-jobs", grid.query],
+    queryFn: ({ signal }) => apiFetch<JobPage>(`/api/admin/jobs?${grid.query}`, { signal }),
+    placeholderData: keepPreviousData,
     refetchInterval: LIVE_REFETCH_MS,
   });
-  const needle = search.trim().toLowerCase();
-  const rows = jobs.data?.filter((j) => !needle || SEARCHED.map((k) => String(j[k] ?? "")).join(" ").toLowerCase().includes(needle));
+  const answer = jobs.data;
+  // Only an answer for the query in the URL may move the URL: a kept previous answer has another total.
+  const current = answer && !jobs.isPlaceholderData && answer.page === grid.page ? answer : undefined;
+  const last = current ? lastPage(current.total, current.page_size) : null;
+  useEffect(() => {
+    if (last !== null && grid.page > last) grid.setPage(last, { replace: true });
+  }, [last, grid.page]); // eslint-disable-line react-hooks/exhaustive-deps -- grid is new each render
   const open = (j: JobHead) => setOpenId(j.id);
   const [visible, setVisible] = useLocalStorage<string[]>({
     key: STORAGE_KEY, defaultValue: DEFAULT_VISIBLE, getInitialValueInEffect: false,
@@ -131,20 +144,32 @@ export function Jobs() {
   const byId = new Map<string, Column<JobRow>>([...defined, ...EXTRA].filter((c) => c.id !== "actions").map((c) => [c.id, c]));
   const shown = sanitize(visible);
   const columns = [...shown.map((id) => byId.get(id)!), ...actions];
+  const filtered = constraints(status, grid.q);
   return (
     <div className="ag-stack">
       <PageHeader title="Jobs" description="The job queue. Activate a row for its detail." />
       <Group gap="sm" align="flex-end">
-        <SegmentedControl aria-label="Status" data={STATUSES} value={status}
-          onChange={(v) => setParams((p) => { const n = new URLSearchParams(p); if (v === "All") n.delete("status"); else n.set("status", v); return n; })} />
-        <TextInput aria-label="Search jobs" placeholder="Search…" value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
+        {/* Six statuses are wider than a phone: the row scrolls sideways. The wrapper scrolls, not the
+            control, or Mantine's indicator is drawn off its option. */}
+        <Box maw="100%" style={{ overflowX: "auto" }}>
+          <SegmentedControl aria-label="Status" data={STATUSES} value={status} miw="max-content"
+            onChange={(v) => grid.setFilter("status", v === "All" ? null : v)} />
+        </Box>
+        <TextInput aria-label="Search jobs" placeholder="ID, type, view or reference" value={grid.search} w={300} error={grid.searchError}
+          leftSection={<Search size={16} aria-hidden />}
+          rightSection={jobs.isPlaceholderData ? <Loader size="xs" aria-label="Searching" /> : null}
+          onChange={(e) => grid.setSearch(e.currentTarget.value)} />
         <Group ml="auto">
           <ColumnPicker headers={new Map([...byId].map(([id, c]) => [id, c.header]))} visible={shown} onChange={setVisible} />
         </Group>
       </Group>
-      <DataTable caption="Jobs" columns={columns} rows={rows} rowKey={(j) => String(j.id)} onRowActivate={open}
+      <DataTable caption="Jobs" columns={columns} rows={answer?.rows} rowKey={(j) => String(j.id)} onRowActivate={open}
+        sort={grid.sort} onSortChange={grid.setSort}
         loading={jobs.isPending} error={jobs.error ? message(jobs.error) : null} onRetry={() => void jobs.refetch()}
-        emptyTitle="No jobs" />
+        emptyTitle={filtered ? "No matching jobs" : "No jobs"}
+        emptyText={filtered ? `No job matches ${filtered}.` : undefined}
+        emptyAction={filtered ? <Button onClick={grid.clear}>Clear filters</Button> : undefined} />
+      {answer && <Pager page={answer.page} pageSize={answer.page_size} total={answer.total} onPage={grid.setPage} />}
       <JobDrawer id={openId} onClose={() => setOpenId(null)} />
     </div>
   );

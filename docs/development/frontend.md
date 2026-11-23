@@ -202,6 +202,7 @@ call `/api/admin/*` ([panel.md](../architecture/panel.md#admin-screens)).
 - **The scope is in the URL.** `ScopePicker` (Default / Workspace / Agent view) writes
   `?scope=&scope_id=`, so a reload or a link from Agents ("Open config") keeps it. Tools, Skills
   and Config use it.
+- **Jobs pages, searches and sorts in the database.** See [Server grids](#server-grids).
 - **Jobs columns are picked per browser.** The Columns icon on Jobs opens a checkbox list of the
   job fields (`ORDER` in `routes/admin/Jobs.tsx`, one order for the list and the table). The choice
   is kept in `localStorage` (`agento.admin.jobs.columns`); a dot on the icon marks a non-default set.
@@ -233,6 +234,41 @@ call `/api/admin/*` ([panel.md](../architecture/panel.md#admin-screens)).
   keeps the draft, so the write can be retried.
 - **Mouse and keyboard.** `DataTable` activates a row on Enter; each admin table also has a button
   column (Details, Usage, Edit) for the mouse.
+
+## Server grids
+
+A grid over a table that grows without bound pages, searches and sorts in SQL, never in the
+browser. Jobs is the first one; another grid uses the same three parts:
+
+- **`web/grid.py`** checks the query once: `page` (1–100 000), `page_size` (25, 50 or 100), `q`
+  (trimmed, at most 200 characters), `sort` (one of the keys the route lists) and `dir`. A bad
+  value is 400. `contains(q)` makes a literal `LIKE` pattern (`%` and `_` match themselves), and
+  `page_body()` makes `{rows, total, page, page_size}`. It builds no SQL: the route maps each sort
+  key to SQL itself and always adds the primary key as the tie-break.
+- **`useGridParams`** (`@agento/ui`) keeps `page`, `q`, `sort`, `dir` and the page's filters in
+  the URL, so a reload, Back and a shared link show the same page. The search box writes `q`
+  after `SEARCH_DEBOUNCE_MS` (300 ms); any change but a page change goes back to page 1. Use it
+  with `placeholderData: keepPreviousData`, so the table does not blank while the next page loads,
+  and move to `lastPage()` (with `replace`) when the answer for the current URL has fewer pages.
+  Give it the sort keys the route accepts (`sorts`) and each filter's values (`filters`): a URL
+  value the server would refuse (an old or hand-made link) reads as its default, not a 400. The
+  search is stripped and counted as `grid.py` does; a search box longer than 200 characters says
+  so (`searchError`) and sends nothing until it fits.
+- **`Pager`** shows `51–100 of 1,234` and Previous / Next; it is not shown when one page holds all.
+  `DataTable` with `sort` + `onSortChange` sorts on the server: a header click reports the new sort
+  and the rows stay in the server's order. A header cycles through its first direction, the other
+  one, and back to the page's default sort. The sorted header shows a chevron for its direction; the
+  rule is in `agento-ui.css`, keyed on `aria-sort`, so `<ag-table>` shows the same mark (kit 1.5.0).
+  A page change scrolls the grid's top back into view when it is above the fixed header.
+
+The Jobs SQL (`framework/admin/data.py` `_job_rows`) is a deferred join: the inner query sorts and
+counts only ids (`COUNT(*) OVER ()` for a search), the outer one reads the full rows of one page.
+A search sorted by id, type, status, view or reference reads the narrow index `idx_job_search`
+(type, status, agent view, reference, id), not the wide rows; a search sorted by any other column
+needs that column, so it reads the rows. Measured on 500 000 realistic jobs with a 128 MB buffer pool: page 1 29 ms, page 1000
+58 ms, a search 0.2–0.5 s, a sort by view 0.15 s, a sort by duration 0.55 s, a broad search sorted
+by duration 1 s. A sort that the index does not cover scans the table, so keep job retention in
+mind (ROADMAP.md).
 
 ## Adding a module screen
 

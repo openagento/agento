@@ -18,7 +18,8 @@ export {
 export {
   APP_ICON_NAMES, AppIcon, AppTile, IconPicker, TILE_DISABLED, TileGrid, ViewToggle, type TileMode,
 } from "./components/Tiles";
-export { DataTable, type Column } from "./components/DataTable";
+export { DataTable, type Column, type Sort } from "./components/DataTable";
+export { lastPage, MAX_PAGE, Pager, SEARCH_DEBOUNCE_MS, useGridParams } from "./components/Grid";
 export { AppLink } from "./components/Link";
 export { RowMenu, type RowAction, type RowDetail } from "./components/RowMenu";
 export { ConfirmDialog } from "./components/ConfirmDialog";

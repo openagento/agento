@@ -224,6 +224,7 @@ select.ag-field__input {
 
 /* @catalogue .ag-table
 Data table. Wrap it in `.ag-table` so it scrolls sideways on a narrow screen, or use the `<ag-table>` element.
+A sortable header holds a `<button>`; set `aria-sort="ascending"` or `"descending"` on the sorted `<th>` and it shows a direction mark.
 <div class="ag-table"><table><thead><tr><th>Name</th></tr></thead><tbody><tr><td>Alpha</td></tr></tbody></table></div>
 */
 .ag-table { display: block; overflow-x: auto; }
@@ -237,6 +238,20 @@ Data table. Wrap it in `.ag-table` so it scrolls sideways on a narrow screen, or
 .ag-table tr { border-bottom: 1px solid var(--ag-color-divider); }
 .ag-table th { font-weight: 700; white-space: nowrap; }
 .ag-table th button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+/* The sorted column shows its direction. Keyed on aria-sort, so the panel's DataTable header
+   (a button in a th) shows the same mark (UI-2). */
+th[aria-sort="ascending"] > button::after, th[aria-sort="descending"] > button::after {
+  content: "";
+  display: inline-block;
+  inline-size: 0.4em;
+  block-size: 0.4em;
+  margin-inline-start: var(--ag-space-2);
+  border-inline-end: 1.5px solid currentColor;
+  border-block-end: 1.5px solid currentColor;
+}
+th[aria-sort="ascending"] > button, th[aria-sort="descending"] > button { white-space: nowrap; }
+th[aria-sort="ascending"] > button::after { transform: translateY(0.1em) rotate(-135deg); }
+th[aria-sort="descending"] > button::after { transform: translateY(-0.15em) rotate(45deg); }
 .ag-table tbody tr:last-child { border-bottom: 0; }
 .ag-table tbody tr:focus-visible { outline: 2px solid var(--ag-color-primary); outline-offset: -2px; }
 

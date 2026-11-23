@@ -12,8 +12,9 @@ export {
 export { useCan, useDisplay, useSession } from "./useSession";
 export { useUploads, type StagedFile } from "./useUploads";
 // Modules import Query through this package only (one QueryClient, one teardown).
-export { useQuery, useMutation, useQueryClient, QueryClientProvider } from "@tanstack/react-query";
+export { keepPreviousData, useQuery, useMutation, useQueryClient, QueryClientProvider } from "@tanstack/react-query";
 export {
-  assertPanelModule, PANEL_CONTRACT_VERSION, RegistryContractError, type PanelModule, type PanelRoute,
+  assertPanelModule, PANEL_CONTRACT_VERSION, RegistryContractError, type JobLink, type PanelModule, type PanelRoute,
 } from "./contract";
+export { PanelModulesProvider, useJobLinks, type JobLinkTarget } from "./jobLinks";
 export { endLaunch, openLaunch, reconcileLaunches, trackedLaunchIds, type LaunchOutcome, type LaunchRequest } from "./launch";

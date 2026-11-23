@@ -284,6 +284,15 @@ them; the panel shows a module's screens only while its `availability.probe` (a 
 `/api/<module>/`) answers 2xx, so a disabled module's screens are hidden. A user or PyPI module
 never ships panel JavaScript. See [../development/frontend.md](../development/frontend.md#adding-a-module-screen).
 
+A module may also declare a `jobLink` — `{label, api, to}` — to add one button to a job's Details
+drawer (Jobs and a schedule's Last runs). The drawer GETs `api` with `{job}` replaced by the job id;
+a 2xx answer with a positive integer `id` shows the button, which opens `to` with `{id}` replaced.
+Any other answer shows no button, so a reader who may not see the target never learns it exists.
+`assertPanelModule` resolves each template for two ids and refuses it unless the two URLs stay on
+the panel origin (an `api` under `/api/<module>/`) and differ in exactly one whole path segment
+after that prefix; `\`, `?` and `#` are refused too. The
+conversation module uses it for **Open conversation** (`GET /api/conversation/jobs/{id}`).
+
 ## Admin screens
 
 The admin TUI's screens, for an admin in the panel ([frontend.md](../development/frontend.md#admin-screens)).
@@ -297,7 +306,7 @@ the CSRF controls above. A scope is `?scope=default|workspace|agent_view&scope_i
 |---|---|---|---|
 | GET | `/api/admin/scopes` | any core leaf (`admin.*`) | workspaces and agent_views, for the scope picker |
 | GET | `/api/admin/dashboard` | `admin.dashboard` | health, version, module count, recent jobs, credentials, agent views |
-| GET | `/api/admin/jobs[?status=]` | `admin.jobs` | the newest 50 jobs; status `TODO`, `RUNNING`, `SUCCESS`, `FAILED` or `DEAD` |
+| GET | `/api/admin/jobs?page=<n>[&page_size=25\|50\|100][&q=][&sort=][&dir=asc\|desc][&status=]` | `admin.jobs` | one page of jobs, `{rows, total, page, page_size}` ([server grids](../development/frontend.md#server-grids)). `q` matches as a literal, accent- and case-insensitive substring of the text `id type status view reference` (one space between parts, an empty part for no view). `sort` is `id` (default, newest first), `type`, `status`, `view`, `ref`, `created`, `started`, `finished`, `duration`, `input_tokens`, `output_tokens`, `source`, `agent_type` or `error_class`. A bad value is 400; a page past the end is `rows: []` with the real `total`. Without `page`, the newest 50 jobs as an array (deprecated, see ROADMAP.md); status `TODO`, `RUNNING`, `SUCCESS`, `FAILED` or `DEAD` |
 | GET | `/api/admin/jobs/<id>` | `admin.jobs` | the job, with prompt, output, summary and error cut to 500 chars |
 | GET | `/api/admin/agents` | `admin.agents` | agent_views with workspace, ingress count and last build status |
 | GET | `/api/admin/credentials` | `admin.credentials` | credentials with 24 h usage, `type`, `limits` and `limits_at`; `status` and `error_source`, never the error message or the token |

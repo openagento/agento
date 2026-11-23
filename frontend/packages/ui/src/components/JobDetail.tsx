@@ -35,7 +35,7 @@ export function JobDetail({ job: j }: { job: JobDetailData }) {
   const facts: [string, ReactNode][] = [
     ["Status", <StatusBadge key="s" tone={jobTone(j.status)}>{j.status}</StatusBadge>], ["Type", j.type], ["Source", j.source],
     ["Agent view", j.agent_view_code ?? "—"], ["Reference", j.reference_id ?? "—"], ["Agent", j.agent_type ?? "—"],
-    ["Model", j.model ?? "—"], ["Tokens in / out", `${j.input_tokens ?? 0} / ${j.output_tokens ?? 0}`],
+    ["Model", j.model ?? "—"], ["Tokens in / out", `${(j.input_tokens ?? 0).toLocaleString()} / ${(j.output_tokens ?? 0).toLocaleString()}`],
     ["Created", when(j.created_at)], ["Started", when(j.started_at)], ["Finished", when(j.finished_at)],
     ["Duration", formatDuration(durationOf(j))], ...(j.error_class ? [["Error class", j.error_class] as [string, ReactNode]] : []),
   ];

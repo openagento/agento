@@ -1,11 +1,12 @@
 import type { ReactNode } from "react";
 import { Button } from "./Button";
 
-export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
+export function EmptyState({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <div className="ag-state ag-state--empty">
       <p className="ag-state__title">{title}</p>
       {children && <p className="ag-state__text">{children}</p>}
+      {action && <p className="ag-state__text">{action}</p>}
     </div>
   );
 }

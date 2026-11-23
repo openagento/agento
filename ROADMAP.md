@@ -312,6 +312,15 @@ given a `Superseded by` line — a decision log that rewrites its own past stops
 
 A minimal but real control plane so operators can create workspaces and agent_views, manage scoped config overrides, attach tools from the toolbox, and manage allowlists without hand-editing JSON or SQL. API-first and binding-based — the admin frontend is a client of the API, and the same DB source of truth backs API, CLI, and runtime.
 
+### ⚪ Server grids — follow-ups
+
+- Move the other growing grids (conversations, schedules' runs, tool invocations) to `web/grid.py`
+  + `useGridParams` + `Pager` ([frontend.md](docs/development/frontend.md#server-grids)).
+- Job retention: a sort the search index does not cover (duration, tokens, timestamps) scans
+  `job`, about 0.5–1 s at 500 000 rows. A retention window bounds it.
+- A miniapp kit twin of `Pager` (UI-3), when a miniapp needs a paged list.
+- Remove the array form of `GET /api/admin/jobs` (no `page`) once no client sends it (CODE-5).
+
 ### ⚪ Credential broker / key vault
 
 A dedicated broker service that owns secret storage: admin writes secrets, toolbox reads them with scoped broker tokens, and agent-execution runtimes never get direct vault access by default. Config stores secret references rather than raw values, and external backends like Azure Key Vault stay optional adapters, not MVP requirements.

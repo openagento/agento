@@ -6,6 +6,7 @@ const conversation: PanelModule = {
   contractVersion: 1,
   id: "conversation",
   availability: { probe: "/api/conversation/threads" },
+  jobLink: { label: "Open conversation", api: "/api/conversation/jobs/{job}", to: "/conversations/{id}" },
   routes: [
     { path: "/conversations", nav: "Conversations", load: () => import("./ConversationsPage.tsx") },
     { path: "/conversations/:threadId", load: () => import("./ConversationsPage.tsx") },

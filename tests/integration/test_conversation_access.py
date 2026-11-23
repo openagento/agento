@@ -478,3 +478,24 @@ def test_an_owned_channel_conversation_with_a_running_run_is_not_idle(conn, worl
     conn.commit()
 
     assert retention.auto_archive(conn, idle_days=90) == 0
+
+
+# --- the job detail's link to its conversation ---------------------------------------
+
+def test_a_job_links_to_its_conversation_only_for_a_reader(conn, world):
+    from .test_conversation_submission import _conversation, _submit
+
+    cid = _conversation(conn, world)
+    _, job_id, _ = _submit(conn, cid, world)
+    conn.commit()
+
+    def answer(user, job):
+        return routes.by_job(_Req(conn, user, params={"id": str(job)}))
+
+    assert (answer(world["owner"], job_id).status, answer(world["owner"], job_id).body) == (200, {"id": cid})
+    assert answer(world["stranger"], job_id).status == 404   # another user's panel thread
+    assert answer(world["owner"], job_id + 1000).status == 404  # no such job
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM conversation WHERE id = %s", (cid,))
+    conn.commit()
+    assert answer(world["owner"], job_id).status == 404      # a thread with no conversation
