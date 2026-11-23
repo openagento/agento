@@ -416,8 +416,8 @@ applies to the lines a change adds or changes; old comments are not DEBT (CODE-6
 ## CLS — Defect classes
 
 **CLS-1 Close the class (P1).** A class is a rename, a removed flow, a renamed config key, a changed
-meaning of an existing value, event, or config contract, or every call site and twin (layer, adapter)
-of a defective helper. It puts the whole repo in scope, including files the diff does not touch (docs,
+meaning of an existing value, event, or config contract, every call site and twin (layer, adapter)
+of a defective helper, or a visual treatment of one kind of element (UI-9). It puts the whole repo in scope, including files the diff does not touch (docs,
 `system.json` labels, tool descriptions, manifests). The reviewer reports one finding per class with
 every instance and the search that found them. The fixer sweeps the whole class and adds one guard
 test for it.
@@ -438,8 +438,8 @@ asserts the bound, not only that the runs pass (`tests/integration/test_delta_sc
 
 Scope: `frontend/**` and `src/agento/modules/*/panel/**`.
 
-**UI-1 One source of visual values (P1).** A color, radius, font, or spacing value comes from
-`packages/ui/src/theme.ts`. The kit gets it as an `--ag-*` variable that `scripts/tokens.ts`
+**UI-1 One source of visual values (P1).** A color, radius, font, or spacing value, and the look of
+what the browser draws (scrollbar, `color-scheme`), comes from `packages/ui/src/theme.ts`. The kit gets it as an `--ag-*` variable that `scripts/tokens.ts`
 generates. No color literal in `components.css` or in `packages/ui` outside `theme.ts`. A value that
 Mantine sets in its component CSS, not in a theme variable, is copied once with a comment that names
 the Mantine source (the divider and chevron in `tokens.ts`, the dialog backdrop). No `style` or
@@ -488,6 +488,17 @@ roles, tool grants, app settings. That screen refreshes with `invalidateQueries`
 save, and has no `refetchInterval`: a poll there costs requests and can overwrite a form while the
 user edits it. Ask "can a cron, a job, an agent or a worker change this data?" Yes: poll. No: do not.
 Owner: 2026-10-16.
+
+**UI-9 One look per element kind (P1).** A visual treatment of one kind of element (scrollbar,
+focus ring, text selection, a native control) is set once: a `theme.ts` `components` default for a
+Mantine component, or a global rule in `components.css` for the native element. A per-call prop or
+a component CSS rule that changes that treatment for one instance (`scrollbarSize` on one
+`ScrollArea`) is a finding. A change to a treatment is a CLS-1 class: sweep every Mantine component
+and every native element of that kind. The panel's theme switch sets `color-scheme` through
+`data-theme`, so what the browser draws follows the panel, not the OS. Verify a visual change in
+light and dark, with the OS set to the opposite scheme. Incident: the conversation rail got a thin
+`ScrollArea`, and the composer textarea kept a light native scrollbar in the dark panel.
+Owner: 2026-11-23.
 
 ## TST — Tests
 

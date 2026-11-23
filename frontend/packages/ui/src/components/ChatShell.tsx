@@ -83,7 +83,7 @@ export function Rail({ top, children }: { top: ReactNode; children: ReactNode })
   return (
     <>
         <div className={classes.railTop}>{top}</div>
-        <ScrollArea className={classes.railList} type="auto" scrollbars="y" scrollbarSize={8}>{children}</ScrollArea>
+        <ScrollArea className={classes.railList} type="auto" scrollbars="y">{children}</ScrollArea>
     </>
   );
 }

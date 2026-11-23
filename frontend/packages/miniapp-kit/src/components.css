@@ -5,6 +5,11 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* A native scrollbar (a textarea, a wide table, the page) looks like the panel's Mantine
+   ScrollArea: thin, its thumb, no track. `scrollbar-color` inherits; `scrollbar-width` does not. */
+:root { scrollbar-color: var(--ag-color-scrollbar-thumb) transparent; }
+* { scrollbar-width: thin; }
+
 /* @catalogue .ag-app
 Page root. Put it on <body>: it sets the font, the text color and the background.
 <body class="ag-app"><main class="ag-page">…</main></body>

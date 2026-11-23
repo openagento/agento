@@ -56,6 +56,9 @@ const SOURCE: Record<string, string | Record<Mode, string>> = {
 /** The status tones and the Mantine color of each: text, and the `light` variant of a badge. */
 export const TONES = { neutral: "gray", info: "blue", success: "green", warning: "yellow", danger: "red" } as const;
 
+/** The ScrollArea thumb: Mantine sets it in ScrollArea.css as a literal, not in a theme variable. */
+export const SCROLLBAR_THUMB: Record<Mode, string> = { light: "rgba(0, 0, 0, 0.4)", dark: "rgba(255, 255, 255, 0.4)" };
+
 function colors(mode: Mode): Record<string, string> {
   const out = Object.fromEntries(Object.entries(SOURCE).map(([k, v]) => [k, resolve(typeof v === "string" ? v : v[mode], mode)]));
   for (const [tone, c] of Object.entries(TONES)) {
@@ -64,6 +67,7 @@ function colors(mode: Mode): Record<string, string> {
     out[`${tone}LightHover`] = resolve(`--mantine-color-${c}-light-hover`, mode);
     out[`${tone}LightText`] = resolve(`--mantine-color-${c}-light-color`, mode);
   }
+  out.scrollbarThumb = SCROLLBAR_THUMB[mode];
   return out;
 }
 
@@ -97,7 +101,9 @@ function colorBlock(map: Record<string, string>): string {
 }
 
 /** The `:root` variable section of `agento-ui.css`: light by default, dark by the OS
- *  preference unless the page says `data-theme="light"`, and dark when it says `dark`. */
+ *  preference unless the page says `data-theme="light"`, and dark when it says `dark`.
+ *  `data-theme` also sets `color-scheme`, which the browser uses to draw native scrollbars
+ *  and controls; `light dark` alone follows the OS, not the panel's theme switch. */
 export function variablesCss(): string {
   const rest = [
     ...Object.entries(radius).map(([k, v]) => `  --ag-radius-${k}: ${v};`),
@@ -115,6 +121,7 @@ export function variablesCss(): string {
   return [
     `:root {\n  color-scheme: light dark;\n${colorBlock(light)}\n${rest}\n}`,
     `@media (prefers-color-scheme: dark) {\n  :root:not([data-theme="light"]) {\n${colorBlock(dark).replace(/^/gm, "  ")}\n  }\n}`,
-    `:root[data-theme="dark"] {\n${colorBlock(dark)}\n}`,
+    `:root[data-theme="dark"] {\n  color-scheme: dark;\n${colorBlock(dark)}\n}`,
+    `:root[data-theme="light"] {\n  color-scheme: light;\n}`,
   ].join("\n\n");
 }
