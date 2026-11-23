@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS job (
     KEY idx_job_priority_created (priority DESC, created_at ASC),
     KEY idx_job_requester_key (requester_key),
     KEY idx_job_requester_email (requester_email),
+    KEY idx_job_search (type, status, agent_view_id, reference_id, id),  -- 059
 
     CONSTRAINT fk_job_schedule
         FOREIGN KEY (schedule_id) REFERENCES schedule(id) ON DELETE SET NULL,
@@ -559,4 +560,5 @@ INSERT INTO schema_migration (version) VALUES
     ('055_test_run'),
     ('056_generic_schedule'),
     ('057_job_attachments'),
-    ('058_schedule_attachments');
+    ('058_schedule_attachments'),
+    ('059_job_search_index');

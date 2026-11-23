@@ -410,6 +410,31 @@ def test_jobs_filters_by_status_strictly(web, monkeypatch):
     assert get_jobs.call_args.kwargs == {"status": None, "strict": True}
 
 
+def test_jobs_with_page_answers_one_page_and_its_total(web, monkeypatch):
+    sign_in_as(monkeypatch, ADMIN)
+    get_job_page = MagicMock(return_value=([JOB_ROW], 123))
+    monkeypatch.setattr(data, "get_job_page", get_job_page)
+    body = _call(web, "GET", "/api/admin/jobs?page=3&page_size=25&q=50%25_x&sort=duration&dir=asc"
+                             "&status=FAILED").json()
+    assert get_job_page.call_args.kwargs == {"limit": 25, "offset": 50, "status": "FAILED",
+                                             "search": "%50\\%\\_x%", "order": ("duration", False)}
+    assert (body["total"], body["page"], body["page_size"]) == (123, 3, 25)
+    assert [r["id"] for r in body["rows"]] == [5] and "error_message" not in body["rows"][0]
+
+
+def test_jobs_page_past_the_end_is_empty_with_the_real_total(web, monkeypatch):
+    sign_in_as(monkeypatch, ADMIN)
+    monkeypatch.setattr(data, "get_job_page", MagicMock(return_value=([], 7)))
+    assert _call(web, "GET", "/api/admin/jobs?page=9").json() == {"rows": [], "total": 7, "page": 9, "page_size": 50}
+
+
+@pytest.mark.parametrize("query", ["page=0", "page=1&sort=error_message", "page=1&page_size=7", "page=1&dir=up"])
+def test_jobs_bad_grid_value_is_400(web, monkeypatch, query):
+    sign_in_as(monkeypatch, ADMIN)
+    monkeypatch.setattr(data, "get_job_page", MagicMock(side_effect=AssertionError("must not be called")))
+    assert _call(web, "GET", f"/api/admin/jobs?{query}").status_code == 400
+
+
 @pytest.mark.parametrize("status", ["done", "", "failed"])
 def test_jobs_unknown_status_is_400(web, monkeypatch, status):
     sign_in_as(monkeypatch, ADMIN)

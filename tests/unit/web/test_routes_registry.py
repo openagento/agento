@@ -240,6 +240,7 @@ def test_the_shipped_conversation_module_loads_its_own_routes(etc, tmp_path):
         "POST ^/api/conversation/threads/(?P<id>[0-9]{1,19})/stop$",
         "POST ^/api/conversation/threads/(?P<id>[0-9]{1,19})/messages/"
         "(?P<message_id>[0-9]{1,19})/unblock$",
+        "GET ^/api/conversation/jobs/(?P<id>[0-9]{1,19})$",
     }
     assert all(r.auth == "session" for r in routes)
 

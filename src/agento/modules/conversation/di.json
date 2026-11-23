@@ -53,6 +53,12 @@
       "acl": "self"
     },
     {
+      "method": "GET",
+      "path": "/api/conversation/jobs/(?P<id>[0-9]{1,19})",
+      "handler": "src.routes.by_job",
+      "acl": "self"
+    },
+    {
       "method": "PATCH",
       "path": "/api/conversation/threads/(?P<id>[0-9]{1,19})",
       "handler": "src.routes.update",

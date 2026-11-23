@@ -5,7 +5,7 @@ description: Use when you write the HTML of a miniapp page — the Agento kit cl
 
 # Miniapp UI
 
-Use when you write a miniapp page: hand-written HTML over the Agento kit 1.4.0 (`.ag-*` classes, `<ag-*>` elements). Generated from frontend/packages/miniapp-kit; do not edit.
+Use when you write a miniapp page: hand-written HTML over the Agento kit 1.5.0 (`.ag-*` classes, `<ag-*>` elements). Generated from frontend/packages/miniapp-kit; do not edit.
 
 ## Page skeleton
 
@@ -18,13 +18,13 @@ Load the kit from the apps origin. Write plain HTML; set every text with `textCo
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>My app</title>
-  <link rel="stylesheet" href="/_ui/1.4.0/agento-ui.css">
-  <script type="module" src="/_ui/1.4.0/agento-ui.js"></script>
+  <link rel="stylesheet" href="/_ui/1.5.0/agento-ui.css">
+  <script type="module" src="/_ui/1.5.0/agento-ui.js"></script>
 </head>
 <body class="ag-app">
   <main class="ag-page ag-stack">…</main>
   <script type="module">
-    import { createAgentoSdk } from "/_ui/1.4.0/agento-bridge.js";
+    import { createAgentoSdk } from "/_ui/1.5.0/agento-bridge.js";
     const sdk = createAgentoSdk({ panelOrigin: "https://<panel host>" });
     // sdk.callAction("<tool listed in miniapp.json actions>", { ... }) returns a Promise.
   </script>
@@ -133,6 +133,7 @@ Modifier --contained puts the label inside the box, in small text above the valu
 ### `.ag-table`
 
 Data table. Wrap it in `.ag-table` so it scrolls sideways on a narrow screen, or use the `<ag-table>` element.
+A sortable header holds a `<button>`; set `aria-sort="ascending"` or `"descending"` on the sorted `<th>` and it shows a direction mark.
 
 ```html
 <div class="ag-table"><table><thead><tr><th>Name</th></tr></thead><tbody><tr><td>Alpha</td></tr></tbody></table></div>

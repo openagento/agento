@@ -1,9 +1,10 @@
 import { Notifications } from "@mantine/notifications";
-import { QueryClientProvider, queryClient } from "@agento/api";
+import { PanelModulesProvider, QueryClientProvider, queryClient } from "@agento/api";
 import { AgentoUiProvider } from "@agento/ui";
 import { RouterProvider } from "react-router";
 import { router } from "./router";
 import { SessionDisplayFormat } from "./DisplayFormat";
+import { MODULES } from "./generated/registry";
 
 export function App() {
   return (
@@ -11,7 +12,9 @@ export function App() {
       <Notifications />
       <QueryClientProvider client={queryClient}>
         <SessionDisplayFormat>
-          <RouterProvider router={router} />
+          <PanelModulesProvider modules={MODULES}>
+            <RouterProvider router={router} />
+          </PanelModulesProvider>
         </SessionDisplayFormat>
       </QueryClientProvider>
     </AgentoUiProvider>

@@ -154,6 +154,44 @@ def get_dashboard_data(conn) -> DashboardData:
     return data
 
 
+_JOB_FROM = "FROM job j LEFT JOIN agent_view av ON j.agent_view_id = av.id"
+# The search reads idx_job_search (sql/059) instead of the wide job rows, when the sort needs no other
+# column. MySQL picks a full row scan on its own, so the index is named.
+_JOB_SEARCH_FROM = "FROM job j FORCE INDEX (idx_job_search) LEFT JOIN agent_view av ON j.agent_view_id = av.id"
+_SEARCH_INDEX_SORTS = {"id", "type", "status", "view", "ref"}
+# Today's panel search, moved into SQL: the space-joined fields, a NULL as an empty part. The explicit
+# collation makes it case- and accent-insensitive whatever the server default is.
+_JOB_SEARCH = (
+    "CONCAT_WS(' ', j.id, j.type, j.status, COALESCE(av.code, ''), COALESCE(j.reference_id, '')) "
+    "COLLATE utf8mb4_0900_ai_ci LIKE %s ESCAPE '\\\\'"
+)
+JOB_ORDERS = {
+    "id": "j.id", "type": "j.type", "status": "CAST(j.status AS CHAR)", "view": "av.code",
+    "ref": "j.reference_id", "created": "j.created_at", "started": "j.started_at",
+    "finished": "j.finished_at", "duration": "TIMESTAMPDIFF(SECOND, j.started_at, j.finished_at)",
+    "input_tokens": "j.input_tokens", "output_tokens": "j.output_tokens", "source": "j.source",
+    "agent_type": "j.agent_type", "error_class": "j.error_class",
+}
+
+
+def _job_where(*, status=None, source=None, agent_view_code=None, search=None) -> tuple[str, list]:
+    conditions: list[str] = []
+    params: list = []
+    if status:
+        conditions.append("j.status = %s")
+        params.append(status)
+    if source:
+        conditions.append("j.source = %s")
+        params.append(source)
+    if agent_view_code:
+        conditions.append("av.code = %s")
+        params.append(agent_view_code)
+    if search:
+        conditions.append(_JOB_SEARCH)
+        params.append(search)
+    return (" WHERE " + " AND ".join(conditions) if conditions else ""), params
+
+
 def get_jobs(
     conn,
     *,
@@ -164,36 +202,40 @@ def get_jobs(
     agent_view_code: str | None = None,
     strict: bool = False,
 ) -> list[dict]:
+    return _job_rows(conn, limit=limit, offset=offset, status=status, source=source,
+                     agent_view_code=agent_view_code, strict=strict)
+
+
+def _job_rows(conn, *, limit, offset, status=None, source=None, agent_view_code=None, strict=False,
+              search=None, order=("id", True), with_total=False) -> list[dict]:
     if conn is None:
         return []
 
     def _query() -> list[dict]:
         _ensure_conn(conn)
+        where, params = _job_where(status=status, source=source, agent_view_code=agent_view_code, search=search)
+        key, desc = order
+        direction = "DESC" if desc else "ASC"
+        # NULL order is MySQL's: first ascending, last descending.
+        # A deferred join: the sort reads (key, id) pairs and the full rows are fetched for one page only.
+        # 500k jobs: a sort by agent view 0.7 s → 0.15 s.
         sql = (
             "SELECT j.id, j.type, j.status, j.source, j.reference_id, j.agent_type, "
             "j.created_at, j.started_at, j.finished_at, j.input_tokens, j.output_tokens, "
             "j.error_class, j.error_message, "
-            "av.code AS agent_view_code "
-            "FROM job j LEFT JOIN agent_view av ON j.agent_view_id = av.id"
+            "av.code AS agent_view_code"
+            + (", page.total " if with_total else " ")
+            + f"FROM (SELECT j.id, {JOB_ORDERS[key]} AS sort_key"
+            + (", COUNT(*) OVER () AS total" if with_total else "")
+            + f" {_JOB_SEARCH_FROM if search and key in _SEARCH_INDEX_SORTS else _JOB_FROM}{where} ORDER BY "
+            + (f"j.id {direction}" if key == "id" else f"sort_key {direction}, j.id {direction}")
+            + " LIMIT %s OFFSET %s) page "
+            "JOIN job j ON j.id = page.id LEFT JOIN agent_view av ON j.agent_view_id = av.id "
+            f"ORDER BY page.sort_key {direction}, j.id {direction}"
         )
-        conditions: list[str] = []
-        params: list = []
-        if status:
-            conditions.append("j.status = %s")
-            params.append(status)
-        if source:
-            conditions.append("j.source = %s")
-            params.append(source)
-        if agent_view_code:
-            conditions.append("av.code = %s")
-            params.append(agent_view_code)
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
-        sql += " ORDER BY j.id DESC LIMIT %s OFFSET %s"
-        params.extend([limit, offset])
         with conn.cursor() as cur:
-            cur.execute(sql, params)
-            return cur.fetchall()
+            cur.execute(sql, [*params, limit, offset])
+            return list(cur.fetchall())
 
     # strict=True lets query errors propagate — callers like `job:list` (an observability command) must
     # NOT have a DB failure silently rendered as "no jobs". The admin TUI keeps the default swallow.
@@ -203,6 +245,29 @@ def get_jobs(
         return _query()
     except Exception:
         return []
+
+
+def get_job_page(conn, *, limit: int, offset: int, status: str | None = None, search: str | None = None,
+                 order: tuple[str, bool] = ("id", True)) -> tuple[list[dict], int]:
+    """One page of jobs and the count of all that match. ``search`` is a LIKE pattern
+    (``web.grid.contains``); ``order`` is (a JOB_ORDERS key, descending). Errors propagate."""
+    rows = _job_rows(conn, limit=limit, offset=offset, status=status, search=search, order=order, strict=True,
+                     with_total=search is not None)
+    if rows and search is not None:
+        return rows, rows[0]["total"]
+    if len(rows) < limit and (rows or offset == 0):
+        return rows, offset + len(rows)
+    return rows, count_jobs(conn, status=status, search=search)
+
+
+def count_jobs(conn, *, status: str | None = None, search: str | None = None) -> int:
+    """The total that a page of jobs is part of, from the same WHERE. Errors propagate."""
+    _ensure_conn(conn)
+    where, params = _job_where(status=status, search=search)
+    source = _JOB_SEARCH_FROM if search else "FROM job j"
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT COUNT(*) AS n {source}{where}", params)
+        return int(cur.fetchone()["n"])
 
 
 def get_job_detail(conn, job_id: int) -> dict | None:

@@ -14,7 +14,7 @@ from datetime import datetime
 from agento.framework.access import accounts, acl
 from agento.framework.admin import data
 
-from . import api
+from . import api, grid
 from .api import Request, Response, Route, _access_error, _actor, _body, _iso, _positive_int, _r, error
 
 _SCOPES = ("default", "workspace", "agent_view")
@@ -102,7 +102,15 @@ def jobs(req: Request) -> Response:
     status = req.query.get("status")
     if status is not None and status not in JOB_STATUSES:
         return error(400, f"status must be one of {', '.join(JOB_STATUSES)}")
-    return Response(200, [_job(j) for j in data.get_jobs(req.conn, status=status, strict=True)])
+    if "page" not in req.query:
+        return Response(200, [_job(j) for j in data.get_jobs(req.conn, status=status, strict=True)])
+    g = grid.parse_grid(req.query, sorts=data.JOB_ORDERS, default_sort="id")
+    if isinstance(g, Response):
+        return g
+    search = grid.contains(g.q) if g.q else None
+    rows, total = data.get_job_page(req.conn, limit=g.page_size, offset=g.offset, status=status, search=search,
+                                    order=(g.sort, g.desc))
+    return Response(200, grid.page_body([_job(j) for j in rows], total, g))
 
 
 def job_detail(req: Request) -> Response:

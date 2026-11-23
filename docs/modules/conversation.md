@@ -70,6 +70,7 @@ tool's input or output) before the per-run byte cap counts it.
 | PATCH | `/api/conversation/threads/{id}` | `{title?, pinned?}`: renames the thread, pins or unpins it — the refreshed thread; `400` on an empty body, a title past 255 characters or a non-boolean `pinned`, `404` on a thread this caller cannot see, `403` on a channel thread the caller does not own, `409` past `MAX_PINNED` (50) pinned threads |
 | DELETE | `/api/conversation/threads/{id}` | archives it (§10.1's deletion is an operator path); `403` on a channel thread for a caller who is neither its owner nor an admin |
 | GET | `/api/conversation/threads/{id}/messages` | its messages |
+| GET | `/api/conversation/jobs/{id}` | `{id}`, the conversation of that job's thread, when the caller may read it; otherwise 404 (the job Details drawer's **Open conversation**, [panel.md](../architecture/panel.md#module-screens)) |
 | POST | `/api/conversation/threads/{id}/messages` | `201` on the first submission, `200` on a repeat; in a **channel** thread it posts an operator reply — `403` without `conversation.channel_write`, `409 read_only` when the thread has no `external_ref` |
 | POST | `/api/conversation/threads/{id}/regenerate` | `{message_id, client_message_id}`: asks that user message again as a new turn — `201`, `200` on a repeat of the same `client_message_id`, `404` when the id is not a user message of this thread |
 

@@ -62,6 +62,17 @@ def _visible(req: Request) -> dict | None:
                                 user=req.session.user)
 
 
+def by_job(req: Request) -> Response:
+    """The conversation of a job's thread, as `{id}`, for the job detail's link to it."""
+    with req.conn.cursor() as cur:
+        cur.execute("SELECT c.id FROM job j JOIN conversation c ON c.thread_id = j.thread_id WHERE j.id = %s",
+                    (int(req.params["id"]),))
+        row = cur.fetchone()
+    if row is None or service.load_visible(req.conn, conversation_id=row["id"], user=req.session.user) is None:
+        return error(404, "not found")
+    return Response(200, {"id": row["id"]})
+
+
 def create(req: Request) -> Response:
     body = req.json if isinstance(req.json, dict) else {}
     view_id = body.get("agent_view_id")

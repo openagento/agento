@@ -1,7 +1,8 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApiError, queryClient } from "@agento/api";
+import { ApiError, PanelModulesProvider, queryClient } from "@agento/api";
+import { MODULES } from "../../../../../frontend/panel/src/generated/registry";
 import { renderAt, stubApi, teardown } from "../../../../../frontend/panel/src/routes/admin/testing";
 import { CODES, message } from "./api";
 import { buildRrule, type Spec } from "./RecurrenceDialog";
@@ -419,6 +420,20 @@ describe("the schedule form", { timeout: 20_000 }, () => {
     const drawer = await screen.findByRole("dialog", { name: /Run 77/ });
     expect(await within(drawer).findByText("green")).toBeInTheDocument();
     fireEvent.click(within(drawer).getByRole("button", { name: "Open conversation" }));
+    expect(await screen.findByText("conversation page")).toBeInTheDocument();
+  });
+
+  it("last runs: the job Details drawer opens the job's conversation", async () => {
+    await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/1`]: row(1, "Digest"), [`POST ${B}/preview`]: FIRES,
+      [`${B}/schedules/1/runs`]: RUNS, "/api/admin/jobs/77": JOB, "/api/conversation/jobs/77": { id: 9 } });
+    renderAt("/schedules/1", <PanelModulesProvider modules={MODULES}><Routes>
+      <Route path="/schedules/:id" element={<SchedulePage />} />
+      <Route path="/conversations/:id" element={<p>conversation page</p>} />
+    </Routes></PanelModulesProvider>);
+    const runs = await screen.findByRole("table", { name: "Last runs" });
+    fireEvent.click(await within(runs).findByRole("button", { name: "Job 77 details" }));
+    const drawer = await screen.findByRole("dialog", { name: /Job 77/ });
+    fireEvent.click(await within(drawer).findByRole("button", { name: "Open conversation" }));
     expect(await screen.findByText("conversation page")).toBeInTheDocument();
   });
 

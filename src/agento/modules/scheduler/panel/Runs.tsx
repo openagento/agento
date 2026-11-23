@@ -2,7 +2,7 @@
 // who may read jobs (`admin.jobs`), the job itself — both in a drawer that keeps the form.
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { apiFetch, LIVE_REFETCH_MS, useCan, useQuery } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, useCan, useJobLinks, useQuery } from "@agento/api";
 import {
   ChatMessage, DataTable, DetailsAction, durationOf, EmptyState, ErrorState, formatDuration, JobDetail, jobTone,
   LoadingState, OpenAction, PreviewAction, SideDrawer, StatusBadge, Timestamp, type Column, type JobDetailData,
@@ -78,8 +78,10 @@ function JobDrawer({ id, onClose }: { id: number; onClose: () => void }) {
     queryKey: ["scheduler", "job", id], refetchInterval: LIVE_REFETCH_MS,
     queryFn: ({ signal }) => apiFetch<JobDetailData>(`/api/admin/jobs/${id}`, { signal }),
   });
+  const navigate = useNavigate();
+  const links = useJobLinks(id).map((l) => <OpenAction key={l.to} label={l.label} onClick={() => navigate(l.to)} />);
   return (
-    <SideDrawer opened onClose={onClose} title={`Job ${id}`}>
+    <SideDrawer opened onClose={onClose} title={`Job ${id}`} actions={links}>
       {job.isPending ? <LoadingState /> : job.error ? <ErrorState message={message(job.error)} /> : <JobDetail job={job.data} />}
     </SideDrawer>
   );

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentoUiProvider } from "../Provider";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DataTable, type Column } from "./DataTable";
+import { lastPage, MAX_PAGE, Pager } from "./Grid";
 import { Markdown } from "./Markdown";
 import { ChatMessage, fileSize, middleEllipsis, ChatComposer, ChatError, ChatLayout, ToolCall } from "./Chat";
 import { fileIcon } from "./FileIcon";
@@ -480,5 +481,96 @@ describe("the composer's caret", () => {
     render(<ChatComposer value="" onChange={() => {}} onSend={() => {}} canSend focusOnMount />,
       { wrapper: AgentoUiProvider });
     expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Message" }));
+  });
+});
+
+describe("DataTable server sort", () => {
+  const two: Column<Row>[] = [...columns, { id: "id", header: "Id", cell: (r) => r.id, sortValue: (r) => r.id }];
+  const names = () => screen.getAllByRole("row").slice(1).map((r) => r.textContent);
+
+  it("keeps the server's order and reports a header click instead of sorting", () => {
+    const onSortChange = vi.fn();
+    const unsorted = [rows[2], rows[0], rows[1]];
+    render(<DataTable caption="Rows" columns={two} rows={unsorted} rowKey={(r) => r.id}
+      sort={{ id: "id", desc: true }} onSortChange={onSortChange} />, { wrapper: AgentoUiProvider });
+    expect(screen.getByRole("columnheader", { name: "Id" })).toHaveAttribute("aria-sort", "descending");
+    fireEvent.click(screen.getByRole("button", { name: "Name" }));
+    expect(onSortChange).toHaveBeenCalledWith({ id: "name", desc: false });
+    expect(names()).toEqual(["Gammac", "Alphaa", "Betab"]);
+    fireEvent.click(screen.getByRole("button", { name: "Id" }));
+    // Text sorts ascending first: from descending, the next step is "no sort", the page's default.
+    expect(onSortChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("a header cycles: its first direction, the other one, then no sort", () => {
+    const onSortChange = vi.fn();
+    const at = (sort: { id: string; desc: boolean }) => render(<DataTable caption="Rows" columns={two} rows={rows}
+      rowKey={(r) => r.id} sort={sort} onSortChange={onSortChange} />, { wrapper: AgentoUiProvider });
+    const view = at({ id: "id", desc: false });
+    fireEvent.click(screen.getByRole("button", { name: "Name" }));
+    expect(onSortChange).toHaveBeenLastCalledWith({ id: "name", desc: false });
+    view.unmount();
+    const asc = at({ id: "name", desc: false });
+    fireEvent.click(screen.getByRole("button", { name: "Name" }));
+    expect(onSortChange).toHaveBeenLastCalledWith({ id: "name", desc: true });
+    asc.unmount();
+    at({ id: "name", desc: true });
+    fireEvent.click(screen.getByRole("button", { name: "Name" }));
+    expect(onSortChange).toHaveBeenLastCalledWith(null);
+  });
+
+  it("without onSortChange it still sorts its own rows", () => {
+    render(<DataTable caption="Rows" columns={two} rows={[rows[2], rows[0], rows[1]]} rowKey={(r) => r.id} />,
+      { wrapper: AgentoUiProvider });
+    fireEvent.click(screen.getByRole("button", { name: "Name" }));
+    expect(names()).toEqual(["Alphaa", "Betab", "Gammac"]);
+  });
+});
+
+describe("Pager", () => {
+  const pager = (page: number, total: number, onPage = vi.fn()) => {
+    render(<Pager page={page} pageSize={50} total={total} onPage={onPage} />, { wrapper: AgentoUiProvider });
+    return onPage;
+  };
+
+  it("is not there when everything fits on one page", () => {
+    pager(1, 50);
+    expect(screen.queryByRole("button", { name: "Next page" })).toBeNull();
+  });
+
+  it("says where it is, in locale numbers, and moves one page", () => {
+    const onPage = pager(2, 1234);
+    expect(screen.getByText(`51–100 of ${(1234).toLocaleString()}`)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(onPage.mock.calls).toEqual([[1], [3]]);
+  });
+
+  it.each([
+    ["page 1", 1, 120, "Previous page"],
+    ["the last page by total", 3, 120, "Next page"],
+    ["the server's MAX_PAGE", MAX_PAGE, 50 * MAX_PAGE + 1000, "Next page"],
+  ])("disables the step past %s", (_name, page, total, label) => {
+    pager(page, total);
+    expect(screen.getByRole("button", { name: label })).toBeDisabled();
+  });
+
+  it("a page change brings the grid's top back into view, under the fixed header, only when it is out of view", () => {
+    const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+    const at = (top: number) => ({ top, bottom: top + 10 }) as DOMRect;
+    render(<><header /><div data-testid="grid" /><Pager page={2} pageSize={50} total={500} onPage={() => {}} /></>,
+      { wrapper: AgentoUiProvider });
+    vi.spyOn(document.querySelector("header")!, "getBoundingClientRect").mockReturnValue(at(46));
+    const grid = vi.spyOn(screen.getByTestId("grid"), "getBoundingClientRect").mockReturnValue(at(-900));
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(scrollBy).toHaveBeenCalledWith({ top: -956 });
+    grid.mockReturnValue(at(120));
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
+    expect(scrollBy).toHaveBeenCalledTimes(1);
+    scrollBy.mockRestore();
+  });
+
+  it.each([[0, 1], [50, 1], [51, 2], [50 * MAX_PAGE * 2, MAX_PAGE]])("lastPage(%i) is %i", (total, last) => {
+    expect(lastPage(total, 50)).toBe(last);
   });
 });
