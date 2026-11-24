@@ -846,11 +846,18 @@ export async function registerTools(server, context, agentViewId = null, preload
   const requiresByTool = new Map();
   const declaredToolNames = new Set();          // union: used by the unscoped adapter/startup gate
   const declaredByModule = new Map();           // per module: used while a module's register() runs
+  // A name two modules declare gets the union: an extra `stub-in-test` only stubs or refuses.
+  const labelsByTool = new Map();
   for (const mod of modules) {
     const owned = new Set();
     for (const t of mod.tools || []) {
       if (t.name) { declaredToolNames.add(t.name); owned.add(t.name); }
       if (t.requires) requiresByTool.set(t.name, t.requires);
+      if (t.name && Array.isArray(t.labels)) {
+        const labels = labelsByTool.get(t.name) || new Set();
+        for (const label of t.labels) if (typeof label === 'string') labels.add(label);
+        labelsByTool.set(t.name, labels);
+      }
     }
     declaredByModule.set(mod.name, owned);
   }
@@ -908,19 +915,21 @@ export async function registerTools(server, context, agentViewId = null, preload
   // The dispatcher's registry: what executeTool runs, on both transports.
   const tools = new Map();
   const failedModules = new Set();
+  const allTools = await loadTools(dbOverrides);
+  const enabledTools = allTools.filter(t => enabledCheck(t.name));
+  // An adapter tool registers outside any module's register(); its manifest names the module.
+  const adapterModuleByName = new Map(enabledTools.map(t => [t.name, t.module]));
   const originalTool = server.tool.bind(server);
   server.tool = (name, desc, schema, handler, options = {}) => {
     allToolNames.push(name);
     if (currentModule) registeredBy.push({ name, module: currentModule });
     const strategy = options.resultStrategy !== undefined ? options.resultStrategy : 'text';
     const wrapped = wrapHandler(handler, name, strategy, offloadConfig);
-    tools.set(name, { schema, handler: wrapped, module: currentModule });
+    tools.set(name, { schema, handler: wrapped, module: currentModule ?? adapterModuleByName.get(name) ?? null });
     return originalTool(name, desc, schema, wrapped);
   };
 
   // 1. Register config-driven adapter tools (filtered by is_enabled)
-  const allTools = await loadTools(dbOverrides);
-  const enabledTools = allTools.filter(t => enabledCheck(t.name));
   const moduleToolTypes = getModuleToolTypes();
   const { healthchecks: adapterHealthchecks } = registerAdapterTools(
     server,
@@ -1005,12 +1014,17 @@ export async function registerTools(server, context, agentViewId = null, preload
   const isEnabled = (toolName, overrides) => toolChainState(toolName, {
     declared: declaredToolNames, requiresByTool, dbOverrides: overrides, configDefaults,
   }) === 'enabled';
-  // `tools/{name}/sensitive` = '1' in the module's config.json: a test run stubs the tool unless
-  // its test config says `real`. A property of the tool, so no scoped override (D-TEST-RUN-1).
-  const isSensitive = toolName => String(configDefaults[`tools/${toolName}/sensitive`] ?? '') === '1';
+  // The manifest `labels`, plus `stub-in-test` for `tools/{name}/sensitive` = '1' in the module's
+  // config.json — the compatibility translation ROADMAP.md lists for removal. A property of the
+  // tool, so no scoped override (D-TEST-RUN-1).
+  const defaultLabels = (toolName) => {
+    const labels = new Set(labelsByTool.get(toolName));
+    if (String(configDefaults[`tools/${toolName}/sensitive`] ?? '') === '1') labels.add('stub-in-test');
+    return labels;
+  };
 
   return {
     toolNames: allToolNames, healthchecks, agentViewMeta, undeclaredToolNames,
-    tools, unavailableTools, isEnabled, isSensitive,
+    tools, unavailableTools, isEnabled, defaultLabels,
   };
 }

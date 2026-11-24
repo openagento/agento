@@ -5,7 +5,7 @@
   "client_connection_pool_max_per_tool": {"type": "integer", "label": "Maximum client DB connections per tool"},
   "server_concurrency_budget": {"type": "integer", "label": "Maximum concurrent DB operations per server", "showInDefault": true, "showInWorkspace": false, "showInAgentView": false},
   "email_whitelist": {"type": "string", "label": "Allowed email recipients (comma-separated)"},
-  "smtp_host": {"type": "string", "label": "SMTP host", "tester": {"kind": "smtp", "host": "{core/smtp_host}", "port": "{core/smtp_port}", "user": "{core/smtp_user}", "pass": "{core/smtp_pass}"}},
+  "smtp_host": {"type": "string", "review_fingerprint": true, "label": "SMTP host", "tester": {"kind": "smtp", "host": "{core/smtp_host}", "port": "{core/smtp_port}", "user": "{core/smtp_user}", "pass": "{core/smtp_pass}"}},
   "smtp_port": {"type": "integer", "label": "SMTP port", "tester": {"kind": "smtp", "host": "{core/smtp_host}", "port": "{core/smtp_port}", "user": "{core/smtp_user}", "pass": "{core/smtp_pass}"}},
   "smtp_user": {"type": "string", "label": "SMTP user", "tester": {"kind": "smtp", "host": "{core/smtp_host}", "port": "{core/smtp_port}", "user": "{core/smtp_user}", "pass": "{core/smtp_pass}"}},
   "smtp_pass": {"type": "obscure", "label": "SMTP password", "tester": {"kind": "smtp", "host": "{core/smtp_host}", "port": "{core/smtp_port}", "user": "{core/smtp_user}", "pass": "{core/smtp_pass}"}},

@@ -11,7 +11,7 @@ Two modes are selected automatically by presence of a prompt argument:
 
 Shortcut: `ru`.
 
-`--yolo` and `--pretty` count only at the start or the end of the prompt, and `--harness`, `--model`, `--credential` and `--test` only at the start. The same word in the middle stays in the prompt text.
+`--yolo` and `--pretty` count only at the start or the end of the prompt, and `--harness`, `--model`, `--credential`, `--test` and `--stub-tools` only at the start. The same word in the middle stays in the prompt text.
 
 ### `--yolo` — skip interactive approval prompts
 
@@ -51,8 +51,8 @@ agento run dev_01 --credential 6 "…"      # options may also follow the code
 
 For tests, mostly evaluations. Test runs work only where the cron container has
 `AGENTO_TEST_MODE_ENABLED=1` (set it in `docker/docker-compose.override.yml` of a test
-environment; never in production). Elsewhere `--test` is refused, and a job that carries a
-test config fails at its start without a retry, so it never runs for real.
+environment; never in production). Elsewhere `--test` and `--stub-tools` are refused, and a job that carries
+a test config fails at its start without a retry, so it never runs for real.
 
 The value is a JSON object with the tools to stub or to run; the test framework builds it and
 Agento validates it:
@@ -62,10 +62,17 @@ Agento validates it:
 ```
 
 - A tool in `stub` is not run: the agent gets `{"ok": true}` and cannot see that the call did
-  nothing. A tool in `real` runs. A tool in neither list is stubbed when its module marks it
-  `tools/<name>/sensitive: "1"`, else it runs. `{}` uses the module defaults only.
+  nothing. A tool in `real` runs. A tool in neither list is stubbed when its effective labels
+  (the module defaults plus the admin changes in the Tools screen) hold `stub-in-test`, else it
+  runs. `{}` uses the labels only.
 - An unknown key, a tool no module declares, or a tool in both lists is an error, and nothing
   runs.
+- Agento resolves the policy **once**, when the run starts: to the list of stubbed tools and the
+  list of tools it knew then. The run and the jobs made from it keep that list. A label change
+  later applies to the next run only.
+- A tool the list does not cover is refused, never run: the agent gets
+  `test policy does not cover <name>; start a new run`. That occurs when a module is enabled, or
+  a tool gets `stub-in-test` from its module, after the run started. Start a new run.
 - The toolbox still checks `is_enabled` and the arguments first, and writes the audit row with
   `tool_invocation.stubbed = 1` when the stub answered.
 - The run never gets the SSH private key, so `git push` over SSH fails. Network and the harness
@@ -74,16 +81,58 @@ Agento validates it:
 
 ```bash
 agento run eval_01 --test '{"stub": ["jira_search"]}' "close AG-1 and comment why"
-agento run --test '{}' eval_01        # interactive; module defaults only
+agento run --test '{}' eval_01        # interactive; labels only
 ```
 
 A job is a test run with `job:set-runtime <id> --test '<json>'` ([job-runtime.md](job-runtime.md#test-run)).
-Known limits:
+
+### `--stub-tools <label>` — stub every tool with a label
+
+```bash
+agento run eval_01 --stub-tools external-communication "close AG-1 and comment why"
+agento run --stub-tools external-communication eval_01 --stub-tools private-data "…"
+```
+
+- Repeat it for more labels. It goes before or after the code; after the code it counts only at
+  the start of the prompt.
+- Alone it makes the run a test run, as `--test '{}'`. With `--test` it adds to its `stub`.
+- An unknown label is an error. A tool with the label that `--test` lists in `real` is an error
+  that names the tool: say what you want, nothing runs.
+- It is refused, and nothing runs, when the run's harness config has an MCP server other than
+  the Agento toolbox (`direct MCP server '<name>' cannot be stubbed`): its calls do not go
+  through the toolbox, so nothing could stub them. It is also refused when the harness cannot
+  report its MCP servers. `--test` alone still works there; it stubs the toolbox tools only.
+
+### Upgrade and rollback
+
+The toolbox capability stores the v2 policy as `["agento-test-policy", 2, {…}]`. A toolbox from
+before v2 refuses any array, so it refuses every v2 capability (the session has no
+authentication; nothing runs). The job row keeps the plain v2 object. So both upgrade orders are
+safe: a new consumer with an old toolbox fails closed, and an old consumer with a new toolbox
+writes the old `{stub, real}` shape, which the new toolbox still reads.
+
+To roll back to a version before v2:
+
+1. Set `AGENTO_TEST_MODE_ENABLED=0` on `cron` and `web` first, and restart them. With test mode
+   off, no version mints a test capability, so after the rollback no queued or child v2 job
+   reaches the old toolbox.
+2. Roll back.
+3. Cancel the queued test jobs, or keep them with their policies until a v2 consumer runs them.
+   Only then set `AGENTO_TEST_MODE_ENABLED=1` again.
+
+No command turns a queued test job into a normal job (`job:set-runtime --no-test` is removed).
+
+### Known limits of a test run
+
 
 - The stub runs before the handler, so handler policy does not run in a test run.
 - A test run is one job and the jobs made from it. A later turn in the same thread is a normal job.
 
-Background: DECISIONS.md D-TEST-RUN-1.
+- The toolbox reads its modules once per MCP session. A session that opened before a module
+  change keeps the tools it started with; a session that opens after it refuses the changed
+  tools (`test policy does not cover <name>`).
+
+Background: DECISIONS.md D-TEST-RUN-1, D-TOOL-LABELS-1.
 
 ### `--pretty` — human-readable event stream
 

@@ -5,13 +5,13 @@
   "sequence": [],
   "order": 121,
   "tools": [
-    {"type": "mcp", "name": "github_get_pr", "description": "Read a pull request (description, state, branches)", "toolset": "github"},
-    {"type": "mcp", "name": "github_get_pr_diff", "description": "Read a pull request's diff", "toolset": "github"},
-    {"type": "mcp", "name": "github_get_pr_comments", "description": "Read a pull request's comments (conversation + inline review comments)", "toolset": "github"},
-    {"type": "mcp", "name": "github_get_pr_reviews", "description": "Read a pull request's reviews / review history", "toolset": "github"},
-    {"type": "mcp", "name": "github_add_comment", "description": "Reply to a PR (conversation or inline file:line)", "toolset": "github"},
-    {"type": "mcp", "name": "github_resolve_thread", "description": "Resolve a PR review thread", "toolset": "github"},
-    {"type": "mcp", "name": "github_set_review", "description": "Submit a review decision (approve / request changes / comment)", "toolset": "github"},
-    {"type": "mcp", "name": "github_create_pr", "description": "Open a new pull request (allow-list gated)", "toolset": "github"}
+    {"type": "mcp", "name": "github_get_pr", "description": "Read a pull request (description, state, branches)", "toolset": "github", "labels": ["private-data", "untrusted-content"], "availability": "conditional"},
+    {"type": "mcp", "name": "github_get_pr_diff", "description": "Read a pull request's diff", "toolset": "github", "labels": ["private-data", "untrusted-content"], "availability": "conditional"},
+    {"type": "mcp", "name": "github_get_pr_comments", "description": "Read a pull request's comments (conversation + inline review comments)", "toolset": "github", "labels": ["private-data", "untrusted-content"], "availability": "conditional"},
+    {"type": "mcp", "name": "github_get_pr_reviews", "description": "Read a pull request's reviews / review history", "toolset": "github", "labels": ["private-data", "untrusted-content"], "availability": "conditional"},
+    {"type": "mcp", "name": "github_add_comment", "description": "Reply to a PR (conversation or inline file:line)", "toolset": "github", "labels": ["external-communication", "stub-in-test"], "availability": "conditional"},
+    {"type": "mcp", "name": "github_resolve_thread", "description": "Resolve a PR review thread", "toolset": "github", "labels": ["stub-in-test"], "availability": "conditional"},
+    {"type": "mcp", "name": "github_set_review", "description": "Submit a review decision (approve / request changes / comment)", "toolset": "github", "labels": ["external-communication", "stub-in-test"], "availability": "conditional"},
+    {"type": "mcp", "name": "github_create_pr", "description": "Open a new pull request (allow-list gated)", "toolset": "github", "labels": ["external-communication", "stub-in-test"], "availability": "conditional"}
   ]
 }

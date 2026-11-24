@@ -216,7 +216,9 @@ call `/api/admin/*` ([panel.md](../architecture/panel.md#admin-screens)).
   from the key (`agent_view` → "Agent View"); the URL keeps the key.
 - **Access and enablement are the same tree.** Role resources, Tools and Skills all render
   `routes/ResourceTree.tsx`: a Mantine `Tree` of checkboxes with search, expand/collapse, select
-  all/clear, and the sticky `UnsavedBar` (Reset and Save as icons, UI-7). The page gives it one
+  all/clear, and the sticky `UnsavedBar` (Reset and Save as icons, UI-7). Below 48em a row's info
+  (badges, labels) goes to its own line under the name, indented past the checkbox, so no pill is
+  cut and none reads as the next row's. The page gives it one
   memoized `toData(search)`; the tree owns `search` and the expanded state, so a page that keys it on
   its scope clears both on a scope change. `useTree` holds only the expanded state: the checked
   leaves are a `Set` the page holds (`roleTree.ts`, `enablementTree.ts`), because `useTree`'s own
@@ -232,6 +234,61 @@ call `/api/admin/*` ([panel.md](../architecture/panel.md#admin-screens)).
   refetched. Drafts are held **per scope** (`routes/admin/EnablementTree.tsx`), because the scope is
   in the URL and the screen stays mounted across a change of it — see DECISIONS.md. A failed save
   keeps the draft, so the write can be retried.
+- **Tool labels are admin only.** `GET /api/admin/tools` sends each tool's `requires` to every
+  reader and its `catalog` (labels, review status, `revision`) to the `admin` role only; the label
+  routes answer 403 to any other role ([panel.md](../architecture/panel.md#admin-screens)). The
+  panel checks the role too (`useSession()?.role === "admin"`): another role sees no label, no tab
+  and no warning, even if a response carried them. Tools has three tabs in `?tab=`: **Enablement**
+  (every reader), **Catalog** and **Labels** (admin). The Enablement panel stays mounted, so its
+  draft survives a tab switch; Catalog and Labels mount only while shown.
+- **The catalog polls.** The minute `tool:sync-catalog` adds tools and sends a changed contract back
+  to review, so Catalog (`ToolCatalog.tsx`, its own query key over the default scope) and Labels
+  refetch every 60 s (UI-8; the Enablement tree reads the label names without a poll), and every classification or label write invalidates the catalog,
+  the labels and each scope's tool tree. Its filters (name, module, status, labels) AND together; a
+  label filter needs every selected label. Before the first sync the tab names the command. A row
+  has two columns, Tool and Actions: the Tool cell holds the name, the review state, the module and
+  the labels, so a phone shows the whole row with its Classify action.
+- **Review run.** While a tool is to review, a banner counts them and offers **Start review**: it
+  sets the status filter, remounts the table (a header sort goes back to catalog order) and opens
+  the first tool in the drawer at "Reviewed", with "N left" under its title. **Save and next** saves and opens the next; **Skip**
+  opens the next without a save. The run keeps its own record of what it showed and of each tool
+  the server answered as reviewed, with that revision (a later sync that moves the revision counts
+  the tool again); a save that answers (or fails) after its drawer moved on or closed does nothing to the drawer shown now, so its one end message ("All tools are reviewed." or "Review paused. N tools to
+  review.") never reads a catalog refetch that has not come back; a save in the run shows no
+  message of its own.
+- **Classify in a drawer.** `ToolClassifyDrawer.tsx` keeps its form across a refetch. When the
+  row's `revision` moves under it, it shows "Changed on the server — reload"; Save still sends the
+  revision it was opened on, so the server answers 409 (a notification, then a refetch). One new
+  chip goes in the classification itself (`new_label`); more new chips are created with
+  `POST /api/admin/tool-labels` first. The review status is sent only when the admin changed it: in a
+  plain Classify a label edit never approves a contract; a review run opens each tool at
+  "Reviewed", so its **Save and next** approves the tool unless the admin picks "To review". The form waits for the label list: without it a chip
+  cannot be told from a new label. A selected label is held by its key, so a rename elsewhere does
+  not change it; typed text becomes a new label only with Enter (not on blur, a comma or a paste), and one label
+  is one chip, however it was typed. The label input comes last, under the Review control, and its
+  hints (the risk groups, the `--stub-tools` keys) are its description: its open dropdown covers
+  only the buttons. It has no autofocus, and the form is locked while a save runs.
+- **The lethal trifecta warning.** The editor computes it from the unsaved draft (`trifecta.ts`):
+  a tool counts when it and every master up its `requires` chain are checked, over all items (a
+  search changes nothing). `TrifectaAlert` shows above the tree. The conversation shows each run's
+  frozen `tool_risk` above its turn: a red `TrifectaAlert` for `trifecta: true` ("Lethal trifecta")
+  and `"possible"` ("Possible lethal trifecta"); a yellow "Assessment incomplete" note when
+  coverage is not complete without a trifecta (a `pending` direct check, direct MCP servers named,
+  an error); nothing for an old run (`null`). A top-level run whose warning equals the previous
+  assessed run's (verdict, tools per group, gaps) shows it compact: still red, "Same risk as the
+  last assessment.", the groups behind an underlined **Show tools** link in the alert's own text
+  color. A run with no assessment in between is skipped. The first run, a changed risk, a sub-agent card and
+  the single-job view show it in full.
+- **One risk vocabulary.** `@agento/ui` `ToolRisk.tsx` holds the three risk label keys and names,
+  each label's icon (`labelIcon`, `LabelBadge`), the review state (`ReviewState`: an icon and a
+  word, no hue, so a fresh install's 62 unreviewed rows are not a wall of one color) and
+  `TrifectaAlert`. The admin screens and the conversation module panel (which may import only
+  `@agento/ui`) use it, so a risk looks the same everywhere. A label is a neutral badge; its hue is
+  on the icon only (3:1 against the badge face in both themes, `components.test.tsx`), and its
+  shape and name carry the meaning without color. A long name (up to 100 characters) wraps in its
+  badge; label names and keys break anywhere (`routes/layout.ts` `wrapAnywhere`, with the shared
+  `TIGHT` gap). A label key is looked up in a `Map`, so a custom label such as "constructor" gets
+  the tag icon. Panel only: no `.ag-*` twin.
 - **Mouse and keyboard.** `DataTable` activates a row on Enter; each admin table also has a button
   column (Details, Usage, Edit) for the mouse.
 
@@ -335,6 +392,11 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 | Apps catalogue, approval page (approve CAS, revoke, preview) | `modules/miniapps/panel/miniapps.test.tsx` |
 | Schedules list groups, form create/edit (only the changed fields), preset and Custom recurrence, preview, Run now disabled while dirty, Jira row read-only, share, owner change, delete, a message for every refusal code | `modules/scheduler/panel/scheduler.test.tsx` |
 | Artifacts list, versions, make current CAS, delete after the code is typed | `modules/versioned_artifacts/panel/artifacts.test.tsx` |
+| Lethal trifecta over a draft: three tools, one missing, all on one tool, `requires` master unchecked, unknown master, cycle | `panel/src/routes/trifecta.test.ts` |
+| Tools tabs for admins only; the warning follows the draft without a save and survives a search; labels on leaves; nothing for another role | `panel/src/routes/admin/Tools.test.tsx` |
+| Catalog filters AND, one save creates and assigns a chip, extra chips first, 409 refetches, a refetch keeps the drawer's edits and shows the changed notice, Reload, the empty catalog | `panel/src/routes/admin/ToolCatalog.test.tsx` |
+| Built-in labels have no actions, delete names the usage, a taken name is refused inline | `panel/src/routes/admin/ToolLabels.test.tsx` |
+| The run warning: two runs, different warnings; none for a non-admin or an old run; the incomplete note; pending → recorded on the poll; possible trifecta | `modules/conversation/panel/conversation.test.tsx` |
 | Roles list, Delete kept for a built-in or used role, Add role; the role tree saves one PUT, locked leaves are never sent, a search keeps hidden checks, a scope switch asks before it discards, the global scope shows the Admin leaves | `panel/src/routes/Roles.test.tsx`, `panel/src/routes/RoleEdit.test.tsx`, `panel/src/routes/roleTree.test.ts` |
 | Probe 404 / 2xx / network error → nav and NotAvailable | `panel/src/registry.test.tsx` |
 | The example miniapp decodes the toolbox action envelope | `packages/miniapp-kit/kit.test.ts` |

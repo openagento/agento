@@ -92,8 +92,8 @@ def read_config_defaults(module_path: Path) -> dict:
     return data
 
 
-def _resolve_literal_config_json(path: str) -> str | None:
-    """Resolve a module-agnostic ``config.json`` key by its LITERAL path.
+def _literal_config_defaults() -> dict:
+    """Every enabled module's ``config.json``, merged in manifest order.
 
     Mirrors the toolbox's ``loadConfigDefaults()``, which merges every module's
     ``config.json`` with ``Object.assign`` and looks a path up verbatim — so the
@@ -105,13 +105,10 @@ def _resolve_literal_config_json(path: str) -> str | None:
     """
     from .bootstrap import get_manifests
 
-    found: str | None = None
+    merged: dict = {}
     for manifest in get_manifests():
-        defaults = read_config_defaults(manifest.path)
-        if defaults and path in defaults:
-            val = defaults[path]
-            found = str(val) if val is not None else None
-    return found
+        merged.update(read_config_defaults(manifest.path))
+    return merged
 
 
 def _coerce_type(value: str, field_type: str) -> Any:
@@ -400,6 +397,10 @@ class ScopedConfigService:
     exposes the raw merged dict for dict-indexing consumers.
     """
 
+    # The merged config.json, read at the first fallback: one stat per module per instance,
+    # not per get (SCL-1: a claim resolves every tool's flag).
+    _literal_defaults: dict | None = None
+
     def __init__(self, conn, scope: str = "default", scope_id: int = 0, workspace_id: int | None = None,
                  *, strict: bool = False):
         """Build a resolver for a (scope, scope_id).
@@ -659,7 +660,12 @@ class ScopedConfigService:
 
     def _resolve_config_json(self, path: str) -> str | None:
         val = self._resolve_module_config_json(path)
-        return val if val is not None else _resolve_literal_config_json(path)
+        if val is not None:
+            return val
+        if self._literal_defaults is None:
+            self._literal_defaults = _literal_config_defaults()
+        literal = self._literal_defaults.get(path)
+        return str(literal) if literal is not None else None
 
     def _resolve_module_config_json(self, path: str) -> str | None:
         from .bootstrap import get_manifests

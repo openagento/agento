@@ -570,9 +570,9 @@ def test_show_says_whether_the_caller_sees_run_details(conn, world):
            "provider": "anthropic", "credential": "team-1", "model": "m",
            "input_tokens": 1, "output_tokens": 2, "parent_job_id": 5, "depth": 1,
            "resume_job_id": 4, "agent_view": "b"}
-    assert set(routes._run_json(run, False)) == {"execution_id", "attempt", "status",
+    assert set(routes._run_json(run, False, admin=False)) == {"execution_id", "attempt", "status",
                                                  "started_at", "finished_at"}
-    shown = routes._run_json(run, True)
+    shown = routes._run_json(run, True, admin=False)
     assert (shown["harness"], shown["provider"], shown["credential"], shown["model"]) == (
         "claude", "anthropic", "team-1", "m")
     # A sub-agent's run says whose child it is, and in which view it ran.

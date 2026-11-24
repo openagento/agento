@@ -1,6 +1,6 @@
 {
   "enabled": {"type": "boolean", "label": "Enable Bitbucket channel"},
-  "bitbucket_workspace": {"type": "string", "label": "Bitbucket Cloud workspace slug"},
+  "bitbucket_workspace": {"type": "string", "review_fingerprint": true, "label": "Bitbucket Cloud workspace slug"},
   "bitbucket_email": {"type": "string", "label": "Agent Atlassian account email (Basic-auth username)"},
   "bitbucket_api_token": {"type": "obscure", "label": "Atlassian API token (encrypted at rest; toolbox-only)", "access": "toolbox_only", "allowEnv": false, "showInDefault": false, "showInWorkspace": false, "showInAgentView": true},
   "bitbucket_account_uuid": {"type": "string", "label": "Agent's Bitbucket account UUID (author.uuid match)"},

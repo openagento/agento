@@ -60,6 +60,8 @@ def _set_module_state(name: str, enabled: bool) -> None:
     print(f"Module '{name}' {state}")
 
     if project_root is None:
+        core_dir, user_dir = _module_dirs()
+        _sync_tool_catalog(None, core_dir=core_dir, user_dir=user_dir)
         return
 
     # A harness module declares the CLI binary it needs installed in the sandbox image
@@ -110,6 +112,38 @@ def _set_module_state(name: str, enabled: bool) -> None:
                     "Warning: 'docker compose up -d' failed — restart manually for the "
                     "change to take effect."
                 )
+
+    _sync_tool_catalog(project_root)
+
+
+_CATALOG_LATER = "Warning: the tool catalog was not synced now; the per-minute cron sync will do it."
+
+
+def _sync_tool_catalog(project_root, *, core_dir: Path | None = None, user_dir: Path | None = None) -> None:
+    """Best effort: a failure never fails the toggle, the ``tool:sync-catalog`` cron job catches up."""
+    if project_root is None:
+        from ..db import get_connection
+        from ..tool_catalog import sync_enabled_modules
+        from .runtime import _load_framework_config
+
+        try:
+            conn = get_connection(_load_framework_config()[0])
+            try:
+                sync_enabled_modules(conn, core_dir=str(core_dir), user_dir=str(user_dir))
+            finally:
+                conn.close()
+        except Exception as exc:  # the toggle is done, the cron sync retries
+            print(f"{_CATALOG_LATER} ({type(exc).__name__})")
+        return
+
+    from ._cron_exec import cron_exec
+    from ._project import compose_file_flags
+
+    flags = compose_file_flags(project_root)
+    if not flags or subprocess.run(
+        ["docker", "compose", *flags, *cron_exec(["/opt/cron-agent/run.sh", "tool:sync-catalog"])]
+    ).returncode != 0:
+        print(_CATALOG_LATER)
 
 
 def _declared_sandbox_pins(project_root, name: str) -> set[str]:

@@ -7,6 +7,7 @@ needs to change.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from .descriptor import (
@@ -125,6 +126,19 @@ def is_toolbox_endpoint(url: str, target: tuple[str, str, int]) -> bool:
         return False
     return origin == target and parts.path.rstrip("/") in _MCP_PATHS
 
+
+def detect_direct_mcp_servers(adapter: object, artifacts_dir: Path, toolbox_url: str) -> list[str] | None:
+    """The run's MCP servers that bypass the toolbox, or ``None`` when that is unknown."""
+    try:
+        # Optional WorkspaceAdapter member (CODE-3): an adapter without it, or one that
+        # fails to read its config, reports "unknown", never "none".
+        names = adapter.direct_mcp_servers(artifacts_dir, toolbox_origin(toolbox_url))  # type: ignore[attr-defined]
+    except Exception:
+        return None
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        return None
+    return names
+
 __all__ = [
     "AGENT_CONFIG_PREFIX",
     "HARNESS_OPTION_KEY",
@@ -170,6 +184,7 @@ __all__ = [
     "account_label_for_scope",
     "clear",
     "create_runner",
+    "detect_direct_mcp_servers",
     "enumerate_harness_declarations",
     "enumerate_sandbox_packages",
     "find_harness",

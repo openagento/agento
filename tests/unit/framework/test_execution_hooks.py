@@ -12,6 +12,7 @@ from agento.framework.execution_hooks import (
     clear,
     finalize_execution,
     mint_execution_id,
+    record_tool_risk,
     resolve_resume_session,
 )
 from tests.unit.framework.delta_fakes import FakeSink
@@ -149,3 +150,32 @@ def test_a_delta_record_is_frozen_and_vendor_free():
         record.seq = 2  # type: ignore[misc]
     assert set(record.__dataclass_fields__) == {
         "execution_id", "seq", "kind", "text", "tool_name", "data", "created_at"}
+
+
+def test_mint_only_provider_registers_and_mints():
+    """`record_tool_risk` is optional: a provider with only `mint` still registers, mints,
+    and receives no assessment write."""
+    SEAMS["execution_id_provider"].register(Provider(), module="m")
+    profile = RunProfile(harness="h", provider="p", model=None, credential_id=None, tool_risk={"v": 1})
+    assert mint_execution_id(conn=None, job_id=1, attempt=1, profile=profile) == "x-1-1"
+    assert record_tool_risk(conn=None, execution_id="x-1-1", tool_risk={"v": 1}) is False
+
+
+def test_record_tool_risk_reaches_a_provider_that_has_it():
+    calls = []
+
+    class Recording(Provider):
+        def record_tool_risk(self, *, conn, execution_id, tool_risk):
+            calls.append((execution_id, tool_risk))
+
+    SEAMS["execution_id_provider"].register(Recording(), module="m")
+    assert record_tool_risk(conn=None, execution_id="e", tool_risk={"v": 1}) is True
+    assert calls == [("e", {"v": 1})]
+
+
+def test_with_no_provider_nothing_is_recorded():
+    assert record_tool_risk(conn=None, execution_id="e", tool_risk={}) is False
+
+
+def test_tool_risk_defaults_to_none():
+    assert RunProfile(harness="h", provider="p", model=None, credential_id=None).tool_risk is None

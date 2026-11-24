@@ -10,7 +10,13 @@ import pytest
 from agento.framework.admin.data import EnablementItem
 from agento.framework.admin.screens._enablement import prompt_label
 from agento.framework.module_validator import validate_module
-from agento.framework.tool_enablement import blocked_by, is_effective, is_effective_for_view, scan_tool_requires
+from agento.framework.tool_enablement import (
+    blocked_by,
+    effective_tools_for_view,
+    is_effective,
+    is_effective_for_view,
+    scan_tool_requires,
+)
 
 BASE = {"name": "demo", "version": "1.0.0", "description": "d"}
 
@@ -235,3 +241,22 @@ class TestStrictScopedConfig:
 
         with pytest.raises(LookupError):
             ScopedConfigService(self._conn(view_row=False), "agent_view", 7, strict=True)
+
+
+def test_effective_tools_for_view_reads_one_scoped_config():
+    """One `ScopedConfigService` for every name (one claim, one read), and the chain applies."""
+    built = []
+
+    class _Svc:
+        def __init__(self, conn, scope, scope_id, *, strict):
+            built.append((scope, scope_id, strict))
+
+        def get(self, path):
+            return {"tools/demo/is_enabled": "0", "tools/demo_a/is_enabled": "1",
+                    "tools/other/is_enabled": "1"}.get(path)
+
+    manifests = [MagicMock(tools=[_t("demo"), _t("demo_a", requires="demo"), _t("other")])]
+    with patch("agento.framework.bootstrap.get_manifests", return_value=manifests), \
+         patch("agento.framework.config_resolver.ScopedConfigService", _Svc):
+        assert effective_tools_for_view(object(), 7, ["demo", "demo_a", "other", "unknown"]) == {"other"}
+    assert built == [("agent_view", 7, True)]

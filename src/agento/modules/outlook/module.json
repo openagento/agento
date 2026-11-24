@@ -5,11 +5,11 @@
   "sequence": [],
   "order": 110,
   "tools": [
-    {"type": "mcp", "name": "outlook_list_thread", "description": "List earlier messages + attachment metadata of the triggering Outlook thread (read-only; opt-in — enable the tool to also widen read scope to the thread)", "toolset": "outlook"},
-    {"type": "mcp", "name": "outlook_get_message", "description": "Read a full email by message ID", "toolset": "outlook"},
-    {"type": "mcp", "name": "outlook_get_attachment", "description": "Download one attachment from an email to the artifacts dir", "toolset": "outlook"},
-    {"type": "mcp", "name": "outlook_reply", "description": "Reply-all on the triggering email thread (whitelist-gated; blocks the whole send if any recipient is not whitelisted)", "toolset": "outlook"},
-    {"type": "mcp", "name": "outlook_mark_processed", "description": "Mark an email as read/processed", "toolset": "outlook"},
-    {"type": "mcp", "name": "outlook_send_mail", "description": "Send a new email (whitelist-gated)", "toolset": "outlook"}
+    {"type": "mcp", "name": "outlook_list_thread", "description": "List earlier messages + attachment metadata of the triggering Outlook thread (read-only; opt-in — enable the tool to also widen read scope to the thread)", "toolset": "outlook", "labels": ["private-data", "untrusted-content"]},
+    {"type": "mcp", "name": "outlook_get_message", "description": "Read a full email by message ID", "toolset": "outlook", "labels": ["private-data", "untrusted-content"]},
+    {"type": "mcp", "name": "outlook_get_attachment", "description": "Download one attachment from an email to the artifacts dir", "toolset": "outlook", "labels": ["private-data", "untrusted-content"]},
+    {"type": "mcp", "name": "outlook_reply", "description": "Reply-all on the triggering email thread (whitelist-gated; blocks the whole send if any recipient is not whitelisted)", "toolset": "outlook", "labels": ["external-communication", "stub-in-test"]},
+    {"type": "mcp", "name": "outlook_mark_processed", "description": "Mark an email as read/processed", "toolset": "outlook", "labels": ["stub-in-test"]},
+    {"type": "mcp", "name": "outlook_send_mail", "description": "Send a new email (whitelist-gated)", "toolset": "outlook", "labels": ["external-communication", "stub-in-test"]}
   ]
 }

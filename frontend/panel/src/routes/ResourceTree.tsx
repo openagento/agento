@@ -3,13 +3,19 @@
 // the leaves a search hides). The page gives one memoized `toData(search)`; the tree owns `search`
 // and `expanded`, so a page that keys it on its scope clears both on a scope change.
 import { useMemo, useState, type ReactNode } from "react";
+import { useMediaQuery } from "@mantine/hooks";
 import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, ListChecks, ListX, RotateCcw, Save, Search } from "lucide-react";
 import {
-  ActionIcon, Badge, Checkbox, Divider, Group, Highlight, Paper, Stack, Text, TextInput, Tree,
+  ActionIcon, Badge, Box, Checkbox, Divider, Group, Highlight, Paper, Stack, Text, TextInput, Tree,
   getTreeExpandedState, useTree, type RenderTreeNodePayload, type TreeNodeData,
 } from "@mantine/core";
 import { EmptyState, IconAction } from "@agento/ui";
+import { TIGHT } from "./layout";
 import { leavesOf, nodeState, toggle } from "./roleTree";
+
+/** Where a `size="sm"` Checkbox's label text starts: the box (`--checkbox-size-sm` in
+ *  @mantine/core/styles.css, which main.tsx loads; not a theme variable) plus its label offset. */
+const CHECKBOX_INDENT = "calc(1.25rem * var(--mantine-scale) + var(--mantine-spacing-sm))";
 
 /** Every node with children, at any depth — the nodes an expand/collapse button acts on. */
 export const groupValues = (data: TreeNodeData[]): string[] => data.flatMap((n) =>
@@ -33,6 +39,7 @@ export function ResourceTree({ toData, checked, locked, onChange, busy, renderIc
   // The buttons follow the VISIBLE data: a search filters groups out. With no group `allOpen` is
   // vacuously true and `anyOpen` false, so both buttons hide — there is nothing to expand.
   const groups = useMemo(() => groupValues(data), [data]);
+  const narrow = useMediaQuery("(max-width: 48em)");
   const allOpen = groups.every((v) => expanded[v]);
   const anyOpen = groups.some((v) => expanded[v]);
 
@@ -40,6 +47,12 @@ export function ResourceTree({ toData, checked, locked, onChange, busy, renderIc
     const leaves = leavesOf(node);
     const state = nodeState(node, checked);
     const label = String(node.label);
+    const info = renderInfo(node, search);
+    const count = hasChildren && (
+      <Badge variant="default" size="sm" radius="sm">
+        {leaves.filter((v) => checked.has(v)).length} of {leaves.length}
+      </Badge>
+    );
     const box = (
       <Checkbox size="sm" aria-label={label} checked={state === "checked"} indeterminate={state === "indeterminate"}
         disabled={busy || leaves.every((v) => locked.has(v))}
@@ -49,7 +62,7 @@ export function ResourceTree({ toData, checked, locked, onChange, busy, renderIc
         wrapperProps={{ onClick: (e: React.MouseEvent) => e.stopPropagation() }} />
     );
     return (
-      <Group gap="xs" wrap="nowrap" {...elementProps}>
+      <Group gap="xs" wrap="nowrap" align="flex-start" py={narrow ? TIGHT : undefined} {...elementProps}>
         {hasChildren && (
           <ActionIcon variant="subtle" color="gray" size="sm" aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
             aria-expanded={open} onClick={() => tree.toggleExpanded(node.value)}>
@@ -59,13 +72,16 @@ export function ResourceTree({ toData, checked, locked, onChange, busy, renderIc
         {/* A leaf keeps the chevron's slot (same component and size), so its checkbox lines up under its group's. */}
         {!hasChildren && <ActionIcon component="span" variant="transparent" size="sm" aria-hidden />}
         {renderIcon?.(node)}
-        {box}
-        {hasChildren && (
-          <Badge variant="default" size="sm" radius="sm">
-            {leaves.filter((v) => checked.has(v)).length} of {leaves.length}
-          </Badge>
+        {narrow ? (
+          // A phone puts the info on its own line under the name (indented past the checkbox), so a
+          // pill is never cut and never reads as the next row's.
+          <Stack gap={TIGHT} flex={1} miw={0}>
+            <Group gap="xs" wrap="nowrap">{box}{count}</Group>
+            {info && <Box pl={CHECKBOX_INDENT}>{info}</Box>}
+          </Stack>
+        ) : (
+          <Group gap="xs" flex={1} miw={0}>{box}{count}{info}</Group>
         )}
-        {renderInfo(node, search)}
       </Group>
     );
   };

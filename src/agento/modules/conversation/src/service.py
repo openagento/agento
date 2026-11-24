@@ -296,7 +296,7 @@ def list_runs(conn, *, conversation_id: int) -> list[dict]:
     """The thread's runs, newest first. Harness, provider and credential are the attempt's own
     (written at mint); the model is the one the CLI reported, else the configured one. A
     sub-agent's run (`depth` > 0) names its parent job and its view, which may be another
-    view than the conversation's."""
+    view than the conversation's. `tool_risk` is for an admin reader only (routes.py)."""
     with conn.cursor() as cur:
         cur.execute(
             "SELECT e.execution_id, e.job_id, e.attempt, e.status, e.started_at, "
@@ -304,13 +304,23 @@ def list_runs(conn, *, conversation_id: int) -> list[dict]:
             "       COALESCE(e.provider, j.provider) AS provider, "
             "       COALESCE(j.model, e.model) AS model, c.label AS credential, "
             "       j.input_tokens, j.output_tokens, j.parent_job_id, j.depth, j.resume_job_id, "
-            "       v.code AS agent_view "
+            "       v.code AS agent_view, e.tool_risk "
             "FROM execution e LEFT JOIN job j ON j.id = e.job_id "
             "LEFT JOIN credential c ON c.id = e.credential_id "
             "LEFT JOIN agent_view v ON v.id = j.agent_view_id "
             "WHERE e.conversation_id = %s ORDER BY e.started_at DESC, e.id DESC LIMIT %s",
             (conversation_id, MAX_RUNS))
         return list(cur.fetchall())
+
+
+def tool_risk(value: object) -> dict | None:
+    """The run's stored assessment; None for a run from before it (or a value not an object)."""
+    if isinstance(value, bytes | str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    return value if isinstance(value, dict) else None
 
 
 def list_subagent_jobs(conn, *, thread_id: int) -> list[dict]:

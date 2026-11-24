@@ -192,6 +192,14 @@ class PiWorkspaceAdapter:
         target.mkdir(parents=True, exist_ok=True)
         (target / BRIDGE_CONFIG_FILENAME).write_text(json.dumps(payload, indent=2) + "\n")
 
+    def direct_mcp_servers(self, artifacts_dir: Path, toolbox_target: tuple[str, str, int]) -> list[str]:
+        """Pi reaches MCP only through the bridge's one URL: direct when it is not our toolbox."""
+        path = Path(artifacts_dir) / BRIDGE_DIR / BRIDGE_CONFIG_FILENAME
+        if not path.is_file():
+            return []
+        url = json.loads(path.read_text()).get("url")
+        return [] if isinstance(url, str) and is_toolbox_endpoint(url, toolbox_target) else ["toolbox"]
+
     def inject_runtime_params(
         self,
         artifacts_dir: Path,

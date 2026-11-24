@@ -369,7 +369,11 @@ describe('schedule_followup in a delegated job', () => {
 });
 
 describe('schedule_followup test run', () => {
-  it.each([null, { stub: ['send'], real: [] }])('the follow-up copies the current job test config %o', async (test) => {
+  it.each([
+    null,
+    { stub: ['send'], real: [] },
+    { v: 2, stub: ['send'], real: [], stub_labels: ['finanse'], unstub: [], known: ['mod/send'] },
+  ])('the follow-up copies the current job test config %o', async (test) => {
     const register = await loadRegister();
     const server = fakeServer();
     const { db, calls } = fakeDb({
@@ -381,6 +385,8 @@ describe('schedule_followup test run', () => {
     const insert = calls.executed.find((c) => /INSERT INTO job\b/i.test(c.sql) && !/outbox/i.test(c.sql));
     expect(insert.sql).toMatch(/line_id, test_config,/);
     expect(insert.params[12]).toBe(test === null ? null : JSON.stringify(test));
+    // The job column holds the plain object; only the capability column holds the envelope.
+    if (test !== null) expect(Array.isArray(JSON.parse(insert.params[12]))).toBe(false);
   });
 });
 

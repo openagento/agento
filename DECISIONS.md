@@ -4,6 +4,73 @@ Architectural and technical decisions — *why*, not *what*. For implementation 
 
 ---
 
+## 2026-11-24 — Tool labels and catalog (D-TOOL-LABELS-1)
+
+PRD `docs/plans/Agento_PRD_Etykiety_tooli.md` (owner, 2026-11-23: one shared catalog, admin
+editing, reusable labels, three fixed risk labels, no `--exclude-tools`, the stub stays
+`{"ok": true}`, two red warnings for admins only). Owner, 2026-11-24: the transitional path for
+direct MCP servers now, the toolbox gateway later; `job:set-runtime --no-test` removed. An admin
+classifies every MCP tool with labels; the panel warns about a *lethal trifecta* (a run that can
+read private data, read untrusted content and send data out); `agento run --stub-tools <label>`
+stubs a group of tools.
+
+- **Tool identity is the source plus the exact name** (`module:<module>`, `tool_name`, binary
+  collation). A tool name is unique across modules today, but a label override, a review and a
+  test policy are keyed by `<module>/<tool>`, so a retired tool's override never covers another
+  module's tool of the same name.
+- **Effective labels = manifest defaults ⊕ admin overrides.** An override row is an explicit
+  `add` or `remove`; the catalog sync never deletes rows, so overrides survive a disable, an
+  absence and a rediscovery. An **in-tree** module's manifest `labels` count in full. An
+  **out-of-tree** module contributes only `stub-in-test`: its risk labels come from the admin, so a
+  third-party manifest cannot hide its own risk. The four built-in definitions cannot be renamed or
+  deleted; their assignments can be edited.
+- **A changed contract sends the tool back to review.** `contract_hash` covers the source, name,
+  description, toolset, `requires`, default labels, the tool's schema lock
+  (`tool-contracts.json`, written by `npm run contracts:update` and guarded by a vitest; the
+  module `version` for a module with no lock) and the module's review fingerprint (hashes of the
+  `system.json` fields flagged `review_fingerprint`, which name the remote system). A sync that
+  changes the hash also bumps `revision`, so an admin cannot approve a contract they did not see
+  (409). The sync runs off the claim path: in `setup:upgrade`, after `module:enable|disable`, and
+  every minute from cron (`tool:sync-catalog`). The GitHub and Bitbucket API base URLs are
+  hard-coded in the toolbox, so they are not in a fingerprint.
+- **A test policy is resolved once, before the execution mint** (PRD §7). The public input stays
+  `{"stub": [...], "real": [...]}` plus `--stub-tools`. At the claim the consumer reads one label
+  snapshot (one statement), resolves the v2 policy (`stub`, `real`, `stub_labels`, `unstub`,
+  `known`), writes it to `job.test_config` and to the capability. Children and retries copy it and
+  never resolve it again, so a label edit during a run applies to the next run only.
+- **The dispatcher checks the list, it never decides a stub.** The consumer's manifests can be
+  older than the toolbox's per-session module scan (a busy consumer does not reload). So a call
+  whose `<module>/<tool>` is not in `known`, or whose tool got a `stub-in-test` default after the
+  resolution, is refused (`denied`, `test policy does not cover <name>; start a new run`), never
+  run for real. A policy that does not validate is refused too (`invalid test policy`).
+- **`--test` stays compatible, and each mixed-version order fails closed.** The capability stores
+  the v2 policy in the envelope `["agento-test-policy", 2, {…}]`; a toolbox from before v2 refuses
+  any array, so it refuses the session. The job row keeps the plain object, so a rolled-back
+  consumer reads a dict, not `None` (a production run with the SSH key). A legacy `{stub, real}`
+  capability minted before the upgrade keeps today's behaviour. The rollback runbook starts with
+  `AGENTO_TEST_MODE_ENABLED=0` (docs/cli/run.md).
+- **The assessment is frozen at the job claim, over the toolbox gate.** Its input is the view's
+  tools after `is_enabled` and `requires`, minus the tools the dispatcher rule stubs or refuses
+  for the run's policy. It is stored on `execution.tool_risk` (the `conversation` module) and
+  later label edits do not change it. A toolbox module-load failure only removes tools, so the
+  assessment can over-warn, never miss a trifecta. A tool its module marks
+  `availability: "conditional"` gives `"possible"`. An interactive `agento run` has no
+  execution row, so it has no assessment. Warnings and labels are admin only on the server;
+  labels grant and deny nothing.
+- **Direct MCP servers are detected per harness, not proxied.** An entry of the run's written
+  MCP config that is not the toolbox endpoint (by URL, never by name) bypasses the toolbox: no
+  capability, no `is_enabled`, no audit row, no stub. Each harness reports them through the
+  optional `WorkspaceAdapter.direct_mcp_servers`, after the workspace is written; the
+  assessment then shows `coverage: "incomplete"` with their names, and `--stub-tools` refuses the
+  run. `--test` alone keeps its old scope (the toolbox tools only).
+- **The toolbox-managed MCP gateway is deferred** (owner 2026-11-24, "transitional now, gateway
+  later"): it is a ROADMAP.md item with its own PRD.
+- **No events.** The classification write, the review transition and the label registry have no
+  independent observer: the panel, the resolution and the assessment read the catalog directly
+  (EVT-1). The assessment is run metadata on the existing `execution` row.
+
+---
+
 ## 2026-11-23 — Jobs grid: search and sort in SQL, a narrow search index
 
 - **The jobs grid pages, searches and sorts in MySQL**, not in the browser. The browser held 50
@@ -217,6 +284,9 @@ lets an evaluation run the agent without side effects in the tools that act outs
   module must state it for every tool (`module:validate`). This is not a security gate:
   `is_enabled` still decides whether a tool is callable (TBX-2), and a test run still checks it,
   the ceiling and the arguments before the stub.
+  - *Reversed 2026-11-24 (D-TOOL-LABELS-1):* `sensitive` is replaced by the `stub-in-test`
+    label, which an admin may edit (PRD 2026-11-23; owner 2026-11-24). In-tree modules keep
+    their `sensitive` keys for one minor release as a compatibility mirror (ROADMAP.md).
 - **The stub is one fixed success** (`{"ok": true}`), with no sign that the call was not made,
   so the agent acts as in a real run. A tool that returns data the agent needs next (an id)
   gets nothing useful; the evaluation reads the audit instead.
@@ -228,6 +298,9 @@ lets an evaluation run the agent without side effects in the tools that act outs
   A test run is one job and the jobs made from it, not a whole thread.
 - **A test run never gets the SSH private key**, so it cannot push. It still has network and its
   harness credential: a test run is a test aid, not a sandbox.
+- **2026-11-24: no command clears a test policy** (owner). `job:set-runtime --no-test` is
+  removed, because clearing the policy lets a queued test job run with real tools and the SSH
+  private key; a test job is cancelled, never converted. `--test` can still replace its policy.
 
 ## 2026-10-26 — Imported runs: a timeline in time order (D-CONV-BACKFILL-1)
 

@@ -2,11 +2,18 @@
 // A leaf is the item's config path — unique across toolsets, which the name is not.
 import type { TreeNodeData } from "@mantine/core";
 
-export interface EnablementItem { name: string; path: string; enabled: boolean; explicit_here: boolean; blocked_by?: string | null }
+/** A tool's catalog row (`GET /api/admin/tools`, admin only; `null` before the first catalog sync). */
+export interface CatalogEntry { id: number; source: string; labels: string[]; reviewed: boolean; revision: number }
+
+/** `requires` (tools only) is the master tool's name; `catalog` reaches the admin role only. */
+export interface EnablementItem {
+  name: string; path: string; enabled: boolean; explicit_here: boolean; blocked_by?: string | null;
+  requires?: string | null; catalog?: CatalogEntry | null;
+}
 export type Groups = { group: string; items: EnablementItem[] }[];
 
 /** What a leaf row shows beside its label. */
-export interface EnablementInfo { blockedBy?: string | null; inherited?: boolean }
+export interface EnablementInfo { blockedBy?: string | null; inherited?: boolean; labels?: string[] }
 
 /** A group whose own name matches keeps all its items; otherwise only the items that match. */
 export function toTreeData(groups: Groups, search: string): TreeNodeData[] {
@@ -19,7 +26,9 @@ export function toTreeData(groups: Groups, search: string): TreeNodeData[] {
       value: `grp:${group}`, label: group,
       children: kept.map((i): TreeNodeData => ({
         value: i.path, label: i.name,
-        nodeProps: { blockedBy: i.blocked_by, inherited: i.enabled && !i.explicit_here } satisfies EnablementInfo,
+        nodeProps: {
+          blockedBy: i.blocked_by, inherited: i.enabled && !i.explicit_here, labels: i.catalog?.labels,
+        } satisfies EnablementInfo,
       })),
     }];
   });

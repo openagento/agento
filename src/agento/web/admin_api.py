@@ -8,9 +8,9 @@ from __future__ import annotations
 import functools
 import logging
 import re
-from dataclasses import asdict
 from datetime import datetime
 
+from agento.framework import tool_catalog
 from agento.framework.access import accounts, acl
 from agento.framework.admin import data
 
@@ -221,12 +221,76 @@ def cancel_credential_login(req: Request) -> Response:
     return Response(204)
 
 
+_TOOL_KEYS = ("name", "path", "enabled", "explicit_here", "blocked_by", "requires")
+
+
+def _is_admin(req: Request) -> bool:
+    """Tool labels and review status are for the admin role only (PRD §4), whatever leaves a role holds."""
+    return req.session.user.role == "admin"
+
+
 def tools(req: Request) -> Response:
     scope = config_scope(req, req.query)
     if isinstance(scope, Response):
         return scope
-    return Response(200, [{"toolset": toolset, "tools": [asdict(t) for t in items]}
-                          for toolset, items in data.get_tool_states(req.conn, *scope)])
+    admin = _is_admin(req)
+    extra = ("catalog",) if admin else ()
+    return Response(200, [{"toolset": toolset, "tools": [{k: getattr(t, k) for k in _TOOL_KEYS + extra} for t in items]}
+                          for toolset, items in data.get_tool_states(req.conn, *scope, with_catalog=admin)])
+
+
+def _catalog_error(exc: accounts.AccessError) -> Response:
+    return error(409, str(exc)) if isinstance(exc, tool_catalog.CatalogConflict) else _access_error(exc)
+
+
+def _admin_only(handler):
+    @functools.wraps(handler)
+    def guarded(req: Request) -> Response:
+        if not _is_admin(req):
+            return error(403, "forbidden")
+        try:
+            return handler(req)
+        except accounts.AccessError as exc:
+            return _catalog_error(exc)
+    return guarded
+
+
+@_admin_only
+def tool_labels(req: Request) -> Response:
+    return Response(200, tool_catalog.list_labels(req.conn))
+
+
+@_admin_only
+def create_tool_label(req: Request) -> Response:
+    return Response(201, tool_catalog.create_label(req.conn, _body(req).get("name")))
+
+
+@_admin_only
+def rename_tool_label(req: Request) -> Response:
+    return Response(200, tool_catalog.rename_label(req.conn, int(req.params["id"]), _body(req).get("name")))
+
+
+@_admin_only
+def delete_tool_label(req: Request) -> Response:
+    tool_catalog.delete_label(req.conn, int(req.params["id"]))
+    return Response(204)
+
+
+@_admin_only
+def classify_tool(req: Request) -> Response:
+    body = _body(req)
+    revision, labels = body.get("revision"), body.get("labels")
+    new_label, review = body.get("new_label"), body.get("review")
+    if not isinstance(revision, int) or isinstance(revision, bool):
+        return error(400, "revision must be an integer")
+    if not isinstance(labels, list) or not all(isinstance(k, str) for k in labels):
+        return error(400, "labels must be a list of label keys")
+    if new_label is not None and not isinstance(new_label, str):
+        return error(400, "new_label must be a string or null")
+    if review not in ("reviewed", "to_review", None):
+        return error(400, "review must be reviewed, to_review or null")
+    return Response(200, tool_catalog.classify_tool(req.conn, int(req.params["id"]), revision=revision,
+                                                    labels=labels, new_label=new_label, review=review))
 
 
 def skills(req: Request) -> Response:
@@ -465,6 +529,9 @@ _ROLE = r"/api/admin/roles/(?P<code>[a-z][a-z0-9_]{1,15})"
 _CRED = r"/api/admin/credentials/(?P<id>[0-9]{1,10})"
 _LOGIN = r"/api/admin/credential-logins/(?P<id>[0-9]{1,19})"
 _CRED_EDIT = "admin.credentials.edit"
+_TOOL = r"/api/admin/tools/(?P<id>[0-9]{1,10})"
+_LABEL = r"/api/admin/tool-labels/(?P<id>[0-9]{1,10})"
+_CLASSIFY = "admin.tools.classify"
 
 ROUTES: list[Route] = [
     # Any core leaf: the core ScopePicker is its one reader.
@@ -481,6 +548,11 @@ ROUTES: list[Route] = [
     _r("POST", _LOGIN + "/code", credential_login_code, json_body=True, acl=_CRED_EDIT),
     _r("POST", _LOGIN + "/cancel", cancel_credential_login, acl=_CRED_EDIT),
     _r("GET", "/api/admin/tools", tools, acl="admin.tools"),
+    _r("PATCH", _TOOL + "/classification", classify_tool, json_body=True, acl=_CLASSIFY),
+    _r("GET", "/api/admin/tool-labels", tool_labels, acl="admin.tools"),
+    _r("POST", "/api/admin/tool-labels", create_tool_label, json_body=True, acl=_CLASSIFY),
+    _r("PATCH", _LABEL, rename_tool_label, json_body=True, acl=_CLASSIFY),
+    _r("DELETE", _LABEL, delete_tool_label, acl=_CLASSIFY),
     _r("GET", "/api/admin/skills", skills, acl="admin.skills"),
     _r("GET", "/api/admin/config/modules", config_modules, acl="admin.config"),
     _r("GET", "/api/admin/config", get_config, acl="admin.config"),

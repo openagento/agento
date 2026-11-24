@@ -1,0 +1,36 @@
+{
+  "stored": [
+    {"name": "legacy empty", "value": {}, "valid": true, "v2": false},
+    {"name": "legacy stub and real", "value": {"stub": ["jira_search"], "real": ["email_send"]}, "valid": true, "v2": false},
+    {"name": "legacy stub only", "value": {"stub": ["jira_search"]}, "valid": true, "v2": false},
+    {"name": "v2 minimal", "value": {"v": 2, "stub": [], "real": [], "stub_labels": [], "unstub": [], "known": []}, "valid": true, "v2": true},
+    {"name": "v2 full", "value": {"v": 2, "stub": ["jira_add_comment"], "real": ["jira_search"], "stub_labels": ["finanse"], "unstub": ["outlook/outlook_reply"], "known": ["jira/jira_add_comment", "jira/jira_search", "outlook/outlook_reply"]}, "valid": true, "v2": true},
+    {"name": "json null", "value": null, "valid": false, "v2": false},
+    {"name": "array", "value": [], "valid": false, "v2": false},
+    {"name": "number", "value": 1, "valid": false, "v2": false},
+    {"name": "string", "value": "stub", "valid": false, "v2": false},
+    {"name": "unknown version", "value": {"v": 3}, "valid": false, "v2": false},
+    {"name": "stubbed key", "value": {"stubbed": ["email_send"]}, "valid": false, "v2": false},
+    {"name": "legacy non-string element", "value": {"stub": [1]}, "valid": false, "v2": false},
+    {"name": "legacy stub and real overlap", "value": {"stub": ["a"], "real": ["a"]}, "valid": false, "v2": false},
+    {"name": "v2 key without v", "value": {"stub": [], "real": [], "known": []}, "valid": false, "v2": false},
+    {"name": "v2 missing key", "value": {"v": 2, "stub": [], "real": [], "stub_labels": [], "unstub": []}, "valid": false, "v2": false},
+    {"name": "v2 extra key", "value": {"v": 2, "stub": [], "real": [], "stub_labels": [], "unstub": [], "known": [], "x": []}, "valid": false, "v2": false},
+    {"name": "v2 non-string element", "value": {"v": 2, "stub": [1], "real": [], "stub_labels": [], "unstub": [], "known": []}, "valid": false, "v2": false},
+    {"name": "v2 stub and real overlap", "value": {"v": 2, "stub": ["a"], "real": ["a"], "stub_labels": [], "unstub": [], "known": []}, "valid": false, "v2": false},
+    {"name": "v2 unstub outside known", "value": {"v": 2, "stub": [], "real": [], "stub_labels": [], "unstub": ["m/a"], "known": []}, "valid": false, "v2": false},
+    {"name": "v2 v as string", "value": {"v": "2", "stub": [], "real": [], "stub_labels": [], "unstub": [], "known": []}, "valid": false, "v2": false}
+  ],
+  "capability": [
+    {"name": "sql null", "sql_null": true, "value": null, "valid": true, "policy": null},
+    {"name": "bare legacy", "sql_null": false, "value": {"stub": ["jira_search"], "real": []}, "valid": true, "policy": {"stub": ["jira_search"], "real": []}},
+    {"name": "envelope v2", "sql_null": false, "value": ["agento-test-policy", 2, {"v": 2, "stub": ["a"], "real": [], "stub_labels": [], "unstub": [], "known": ["m/a"]}], "valid": true, "policy": {"v": 2, "stub": ["a"], "real": [], "stub_labels": [], "unstub": [], "known": ["m/a"]}},
+    {"name": "json null", "sql_null": false, "value": null, "valid": false},
+    {"name": "bare v2", "sql_null": false, "value": {"v": 2, "stub": [], "real": [], "stub_labels": [], "unstub": [], "known": []}, "valid": false},
+    {"name": "envelope holding legacy", "sql_null": false, "value": ["agento-test-policy", 2, {"stub": [], "real": []}], "valid": false},
+    {"name": "envelope wrong tag", "sql_null": false, "value": ["other", 2, {"v": 2, "stub": [], "real": [], "stub_labels": [], "unstub": [], "known": []}], "valid": false},
+    {"name": "envelope wrong version", "sql_null": false, "value": ["agento-test-policy", 3, {"v": 2, "stub": [], "real": [], "stub_labels": [], "unstub": [], "known": []}], "valid": false},
+    {"name": "envelope four elements", "sql_null": false, "value": ["agento-test-policy", 2, {"v": 2, "stub": [], "real": [], "stub_labels": [], "unstub": [], "known": []}, 1], "valid": false},
+    {"name": "stubbed key", "sql_null": false, "value": {"stubbed": ["email_send"]}, "valid": false}
+  ]
+}

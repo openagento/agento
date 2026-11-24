@@ -234,6 +234,17 @@ def setup_upgrade(
             if module_name not in disabled_this_run:
                 result.onboardings_run.append(module_name)
 
+    # 5. Tool catalog, after onboarding: a module it disabled leaves the catalog too.
+    if not dry_run and enabled:
+        from .tool_catalog import NoEnabledModules, sync_enabled_modules
+
+        try:
+            catalog = sync_enabled_modules(conn, core_dir=core_dir, user_dir=user_dir)
+            logger.info("Tool catalog: %d new, %d changed, %d absent",
+                        catalog.inserted, catalog.changed, catalog.absent)
+        except NoEnabledModules as exc:
+            logger.warning("%s", exc)
+
     em.dispatch(
         "setup_upgrade_after",
         SetupCompleteEvent(result=result, dry_run=dry_run),

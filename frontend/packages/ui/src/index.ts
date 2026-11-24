@@ -31,3 +31,4 @@ export {
   AttachButton, AttachmentChips, ChatComposer, type Attachment, ChatError, FileDrop, FilesField, ChatLayout, ChatList, ChatMessage, ChatStatus, ChatTime, Reasoning, SubagentRun, ToolCall, ToolGroup,
 } from "./components/Chat";
 export { MenuButton, Rail, SearchToggle, SplitView, ThreadList, type ThreadLink } from "./components/ChatShell";
+export { labelIcon, LabelBadge, ReviewState, RISK_KEYS, RISK_NAMES, TrifectaAlert, type RiskKey } from "./components/ToolRisk";

@@ -10,7 +10,7 @@ import httpx
 import pytest
 import respx
 
-from agento.framework import config_test, config_write
+from agento.framework import config_test, config_write, tool_catalog
 from agento.framework.access import accounts, acl, sessions
 from agento.framework.admin import data
 from agento.web import admin_api, api, toolbox_client
@@ -493,17 +493,107 @@ def test_credential_writes(web, monkeypatch, action, fn):
     write.assert_not_called()
 
 
-def test_tools_by_toolset_at_the_query_scope(web, monkeypatch):
-    sign_in_as(monkeypatch, ADMIN)
+CATALOG = {"id": 4, "source": "module:fake", "labels": ["private-data"], "reviewed": False, "revision": 2}
+
+
+@pytest.mark.parametrize(("user", "leaves"), [(ADMIN, None), (SUPPORT_USER, ["admin.tools", "admin.tools.classify"])])
+def test_tools_list_has_requires_and_catalog_for_admin_only(web, monkeypatch, user, leaves):
+    sign_in_as(monkeypatch, user)
+    if leaves:
+        monkeypatch.setattr(accounts, "held_admin", lambda conn, role: leaves)
     monkeypatch.setattr(admin_api, "_scope_exists", lambda conn, scope, scope_id: True)
-    states = MagicMock(return_value=[("fake", [
-        data.EnablementItem("fake_tool", "tools/fake_tool/is_enabled", True, False, blocked_by="fake_switch")])])
+    admin = user.role == "admin"
+    states = MagicMock(return_value=[("fake", [data.EnablementItem(
+        "fake_tool", "tools/fake_tool/is_enabled", True, False, blocked_by="fake_switch", requires="fake_switch",
+        catalog=CATALOG if admin else None)])])
     monkeypatch.setattr(data, "get_tool_states", states)
     body = _call(web, "GET", "/api/admin/tools?scope=agent_view&scope_id=3").json()
     assert states.call_args.args[1:] == ("agent_view", 3)
-    assert body == [{"toolset": "fake", "tools": [{"name": "fake_tool", "path": "tools/fake_tool/is_enabled",
-                                                   "enabled": True, "explicit_here": False,
-                                                   "blocked_by": "fake_switch"}]}]
+    assert states.call_args.kwargs == {"with_catalog": admin}
+    tool = {"name": "fake_tool", "path": "tools/fake_tool/is_enabled", "enabled": True, "explicit_here": False,
+            "blocked_by": "fake_switch", "requires": "fake_switch"}
+    assert body == [{"toolset": "fake", "tools": [{**tool, "catalog": CATALOG} if admin else tool]}]
+
+
+FINANSE = {"id": 5, "key": "finanse", "name": "Finanse", "protected": False, "usage": 0}
+
+
+def test_label_routes_admin_only(web, monkeypatch):
+    sign_in_as(monkeypatch, SUPPORT_USER)
+    monkeypatch.setattr(accounts, "held_admin", lambda conn, role: ["admin.tools", "admin.tools.classify"])
+    for name in ("list_labels", "create_label", "rename_label", "delete_label", "classify_tool"):
+        monkeypatch.setattr(tool_catalog, name, MagicMock(side_effect=AssertionError("must not be called")))
+    for method, path, body in [
+        ("GET", "/api/admin/tool-labels", None), ("POST", "/api/admin/tool-labels", {"name": "x"}),
+        ("PATCH", "/api/admin/tool-labels/5", {"name": "x"}), ("DELETE", "/api/admin/tool-labels/5", None),
+        ("PATCH", "/api/admin/tools/4/classification", {"revision": 0, "labels": []}),
+    ]:
+        assert _call(web, method, path, body).status_code == 403, (method, path)
+
+
+def test_label_routes(web, monkeypatch):
+    sign_in_as(monkeypatch, ADMIN)
+    monkeypatch.setattr(tool_catalog, "list_labels", lambda conn: [FINANSE])
+    assert _call(web, "GET", "/api/admin/tool-labels").json() == [FINANSE]
+    create = MagicMock(return_value=FINANSE)
+    monkeypatch.setattr(tool_catalog, "create_label", create)
+    r = _call(web, "POST", "/api/admin/tool-labels", {"name": "Finanse"})
+    assert (r.status_code, r.json()) == (201, FINANSE) and create.call_args.args[1:] == ("Finanse",)
+    rename = MagicMock(return_value={**FINANSE, "name": "Money"})
+    monkeypatch.setattr(tool_catalog, "rename_label", rename)
+    assert _call(web, "PATCH", "/api/admin/tool-labels/5", {"name": "Money"}).json()["name"] == "Money"
+    assert rename.call_args.args[1:] == (5, "Money")
+    delete = MagicMock()
+    monkeypatch.setattr(tool_catalog, "delete_label", delete)
+    assert _call(web, "DELETE", "/api/admin/tool-labels/5").status_code == 204
+    assert delete.call_args.args[1:] == (5,)
+
+
+def test_classify_route(web, monkeypatch):
+    sign_in_as(monkeypatch, ADMIN)
+    classify = MagicMock(return_value=CATALOG)
+    monkeypatch.setattr(tool_catalog, "classify_tool", classify)
+    r = _call(web, "PATCH", "/api/admin/tools/4/classification",
+              {"revision": 1, "labels": ["private-data"], "new_label": "Finanse", "review": "reviewed"})
+    assert (r.status_code, r.json()) == (200, CATALOG)
+    assert classify.call_args.args[1:] == (4,)
+    assert classify.call_args.kwargs == {"revision": 1, "labels": ["private-data"], "new_label": "Finanse",
+                                         "review": "reviewed"}
+    _call(web, "PATCH", "/api/admin/tools/4/classification", {"revision": 2, "labels": []})
+    assert classify.call_args.kwargs == {"revision": 2, "labels": [], "new_label": None, "review": None}
+
+
+@pytest.mark.parametrize("body", [
+    {}, {"revision": "1", "labels": []}, {"revision": True, "labels": []}, {"revision": 1},
+    {"revision": 1, "labels": "private-data"}, {"revision": 1, "labels": [1]},
+    {"revision": 1, "labels": [], "new_label": 3}, {"revision": 1, "labels": [], "review": "approved"},
+])
+def test_classify_route_refuses_a_bad_body(web, monkeypatch, body):
+    sign_in_as(monkeypatch, ADMIN)
+    monkeypatch.setattr(tool_catalog, "classify_tool", MagicMock(side_effect=AssertionError("must not be called")))
+    assert _call(web, "PATCH", "/api/admin/tools/4/classification", body).status_code == 400
+
+
+@pytest.mark.parametrize("method,path,body,fn,refusal,status", [
+    ("POST", "/api/admin/tool-labels", {"name": "x"}, "create_label",
+     tool_catalog.CatalogConflict("a label with this name already exists"), 409),
+    ("POST", "/api/admin/tool-labels", {"name": ""}, "create_label",
+     accounts.AccessError("label name must have 1 to 100 characters"), 400),
+    ("PATCH", "/api/admin/tool-labels/1", {"name": "x"}, "rename_label",
+     accounts.AccessError("a built-in label cannot be renamed or deleted"), 400),
+    ("DELETE", "/api/admin/tool-labels/9", None, "delete_label", accounts.AccessError("label not found"), 404),
+    ("PATCH", "/api/admin/tools/4/classification", {"revision": 0, "labels": []}, "classify_tool",
+     tool_catalog.CatalogConflict("the tool was changed since it was read; reload it"), 409),
+    ("PATCH", "/api/admin/tools/4/classification", {"revision": 0, "labels": ["x"]}, "classify_tool",
+     accounts.AccessError("unknown label: x"), 400),
+    ("PATCH", "/api/admin/tools/9/classification", {"revision": 0, "labels": []}, "classify_tool",
+     accounts.AccessError("tool not found"), 404),
+])
+def test_label_refusals_name_the_reason(web, monkeypatch, method, path, body, fn, refusal, status):
+    sign_in_as(monkeypatch, ADMIN)
+    monkeypatch.setattr(tool_catalog, fn, MagicMock(side_effect=refusal))
+    r = _call(web, method, path, body)
+    assert (r.status_code, r.json()["error"]) == (status, str(refusal))
 
 
 def test_skills_at_the_default_scope(web, monkeypatch):

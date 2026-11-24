@@ -128,6 +128,14 @@ enforced in **both** resolvers — Python (`framework/config_resolver.py`) and t
 See [zero-trust.md](../architecture/zero-trust.md) and
 [toolbox-only secret boundary](../security/toolbox-only-secret-boundary.md).
 
+## Review Fingerprint (`review_fingerprint`)
+
+`"review_fingerprint": true` marks a field that names the system a module's tools talk to (for
+example `jira/jira_host`). When its value changes in any scope, in `config.json` or in its
+`CONFIG__*` variable, every tool of the module goes back to admin review in the tool catalog.
+Only hashes of the values are stored. `module:validate` refuses the flag on an `obscure` or a
+`toolbox_only` field. See [Adding a tool](../tools/adding-a-tool.md#tool-catalog-and-review).
+
 ## Scope Restrictions (`showIn*`)
 
 Fields declared in a module's `system.json` may restrict which scopes allow editing, using Magento-style flags:

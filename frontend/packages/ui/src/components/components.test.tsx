@@ -15,6 +15,11 @@ import { MemoryRouter } from "react-router";
 import { AppTile, TileGrid, ViewToggle } from "./Tiles";
 import { AppLink } from "./Link";
 import { RowMenu } from "./RowMenu";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { DEFAULT_THEME } from "@mantine/core";
+import { agentoTheme } from "../theme";
+import { LabelBadge, ReviewState, RISK_KEYS, TrifectaAlert } from "./ToolRisk";
 
 interface Row { id: string; name: string }
 const rows: Row[] = [{ id: "a", name: "Alpha" }, { id: "b", name: "Beta" }, { id: "c", name: "Gamma" }];
@@ -572,5 +577,80 @@ describe("Pager", () => {
 
   it.each([[0, 1], [50, 1], [51, 2], [50 * MAX_PAGE * 2, MAX_PAGE]])("lastPage(%i) is %i", (total, last) => {
     expect(lastPage(total, 50)).toBe(last);
+  });
+});
+
+// WCAG 2.x contrast of two `#rrggbb` colors.
+const lum = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+  .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
+  .reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+const contrast = (a: string, b: string) => {
+  const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+};
+
+describe("tool risk", () => {
+  // Read from the CSS itself, so a changed shade is checked, not a copy of it.
+  const css = readFileSync(join(__dirname, "ToolRisk.module.css"), "utf8");
+  const shades = [...css.matchAll(/^(:where\(\[data-mantine-color-scheme='dark'\]\) )?\.([\w-]+)(?:, [^{]+)? \{ color: var\(--mantine-color-(\w+)-(\d)\); \}/gm)]
+    .map(([, dark, cls, color, shade]) => ({ dark: Boolean(dark), cls, hex: DEFAULT_THEME.colors[color][Number(shade)] }));
+
+  it("each risk icon has 3:1 against the badge face in light and dark (WCAG 1.4.11)", () => {
+    expect(shades.map((s) => `${s.dark ? "dark " : ""}${s.cls}`).sort()).toEqual([
+      "dark external-communication", "dark private-data", "dark untrusted-content",
+      "external-communication", "private-data", "untrusted-content",
+    ]);
+    for (const s of shades) {
+      const face = s.dark ? agentoTheme.colors!.dark![6] : "#ffffff";
+      expect(contrast(s.hex, face), `${s.cls} on ${face}`).toBeGreaterThanOrEqual(3);
+    }
+  });
+
+  it("a label badge shows its name and its icon; an unknown label, even \"constructor\", gets the tag icon", () => {
+    render(<>
+      <LabelBadge labelKey="private-data" name="Private data access" /><LabelBadge labelKey="finance" name="Finance" />
+      <LabelBadge labelKey="constructor" name="Constructor" /><LabelBadge labelKey="toString" name="toString" />
+    </>, { wrapper: AgentoUiProvider });
+    expect(screen.getByText("Private data access")).toBeInTheDocument();
+    const icons = [...document.querySelectorAll("svg[data-risk]")];
+    expect(icons.map((i) => i.getAttribute("data-risk"))).toEqual(["private-data", "finance", "constructor", "toString"]);
+    for (const icon of icons.slice(1)) expect(icon.classList.contains("lucide-tag")).toBe(true);
+    expect(icons[2].getAttribute("class")).not.toMatch(/function/);
+  });
+
+  it("a long label name wraps inside its badge instead of being cut", () => {
+    expect(css).toMatch(/\.badge \.badgeLabel \{ white-space: normal; overflow: visible; overflow-wrap: anywhere; text-align: start; \}/);
+    render(<LabelBadge labelKey="x" name={"A".repeat(100)} />, { wrapper: AgentoUiProvider });
+    expect(screen.getByText("A".repeat(100)).className).toMatch(/badgeLabel/);
+  });
+
+  it("the review state is text with an icon and no hue, so 62 unreviewed rows are not a wall of color", () => {
+    render(<><ReviewState reviewed={false} /><ReviewState reviewed /></>, { wrapper: AgentoUiProvider });
+    expect(screen.getByText("To review")).toBeInTheDocument();
+    expect(screen.getByText("Reviewed")).toBeInTheDocument();
+    expect(document.querySelector(".lucide-circle-dot")!.getAttribute("class")).not.toMatch(/untrusted|toReview/);
+  });
+
+  const categories = { "private-data": ["a", "b"], "untrusted-content": ["b"], "external-communication": ["c"] };
+  it("the trifecta alert lists the three groups in order, in a div, not a paragraph", () => {
+    render(<TrifectaAlert title="Lethal trifecta" intro="Intro text." categories={categories} />, { wrapper: AgentoUiProvider });
+    const items = screen.getAllByRole("listitem").map((li) => li.textContent);
+    expect(items).toEqual(["Private data access: a, b", "Untrusted content: b", "External communication: c"]);
+    expect(screen.getByRole("list").closest("p")).toBeNull();
+    expect(RISK_KEYS).toHaveLength(3);
+  });
+
+  it("a compact alert stays red and shows the groups only on request", () => {
+    render(<TrifectaAlert title="Lethal trifecta" intro="Intro text." categories={categories} compact="Same risk as the last run." />,
+      { wrapper: AgentoUiProvider });
+    expect(screen.getByText("Lethal trifecta")).toBeInTheDocument();
+    expect(screen.queryByRole("list")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show tools" }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    const hide = screen.getByRole("button", { name: "Hide tools" });
+    expect(hide).toHaveAttribute("aria-expanded", "true");
+    // The alert's own text color (no red-on-red pair, hovered or not), and no background of its own.
+    expect(hide.style.color).toBe("inherit");
+    expect(hide.className).not.toMatch(/mantine-Button/);
   });
 });

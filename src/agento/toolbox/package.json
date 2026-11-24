@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "vitest run",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "contracts:update": "CONTRACTS_UPDATE=1 vitest run tests/tool-contracts.test.js"
   },
   "dependencies": {
     "@azure/identity": "^4.13.1",

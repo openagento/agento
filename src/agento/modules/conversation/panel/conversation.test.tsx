@@ -1,4 +1,4 @@
-import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hub, queryClient as qc, type StreamEvent, type StreamHandlers } from "@agento/api";
 import { Providers as wrapper, stubApi, teardown } from "../../../../../frontend/panel/src/routes/admin/testing";
@@ -701,6 +701,135 @@ describe("the chat turn", () => {
     expect(await screen.findByText("Stopped. Write a message to continue.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
     expect(screen.queryByText("The agent could not answer.")).not.toBeInTheDocument();
+  });
+});
+
+describe("the run's tool risk (admin only)", () => {
+  const risk = (over: Record<string, unknown> = {}) => ({
+    v: 1, trifecta: false, tool_coverage: "complete", coverage: "complete", direct: "recorded",
+    categories: {}, uncovered: [], notes: [], ...over,
+  });
+  const TRIFECTA = risk({ trifecta: true, categories: {
+    "private-data": ["mail_read"], "untrusted-content": ["web_fetch"], "external-communication": ["mail_send"],
+  } });
+  const run = (x: string, tool_risk: unknown) => ({ execution_id: x, attempt: 1, status: "succeeded", started_at: null, finished_at: null, tool_risk });
+  /** Two turns: job 7 (execution x, "Answer one") and job 8 (execution y, "Answer two"). */
+  const routes = (runs: () => unknown[]) => ({
+    "/api/conversation/threads/5/timeline": () => page([
+      ev("run.started", "x", { job_id: 7, attempt: 1 }, 1), ev("assistant.message", "x", { message_id: 1, content: "Answer one" }, 2),
+      ev("run.started", "y", { job_id: 8, attempt: 1 }, 3), ev("assistant.message", "y", { message_id: 2, content: "Answer two" }, 4),
+    ]),
+    "/api/conversation/threads/5/messages": () => [],
+    "/api/conversation/threads/5": () => ({ ...thread(), runs: runs() }),
+  });
+  const before = (a: Element, b: Element) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+  it("two runs of one thread show different warnings", async () => {
+    captureHub();
+    await stubApi(routes(() => [run("y", risk({ coverage: "incomplete", uncovered: ["github"] })), run("x", TRIFECTA)]));
+    render(<View threadId={5} />, { wrapper });
+    const alert = (await screen.findByText("Lethal trifecta")).closest("[role=alert]")!;
+    expect(alert).toHaveTextContent("Private data access: mail_read");
+    expect(alert).toHaveTextContent("External communication: mail_send");
+    const note = screen.getByText("Assessment incomplete");
+    expect(before(alert, screen.getByText("Answer one"))).toBe(true);
+    expect(before(screen.getByText("Answer one"), note)).toBe(true);
+    expect(before(note, screen.getByText("Answer two"))).toBe(true);
+    expect(screen.getAllByText(/lethal trifecta/i)).toHaveLength(1);
+  });
+
+  it("the same risk again shows compact, a changed risk in full", async () => {
+    captureHub();
+    const OTHER = risk({ trifecta: true, categories: { ...TRIFECTA.categories, "external-communication": ["mail_send", "jira_add_comment"] } });
+    await stubApi({
+      ...routes(() => [run("z", OTHER), run("y", TRIFECTA), run("x", TRIFECTA)]),
+      "/api/conversation/threads/5/timeline": () => page([
+        ev("run.started", "x", { job_id: 7, attempt: 1 }, 1), ev("assistant.message", "x", { message_id: 1, content: "Answer one" }, 2),
+        ev("run.started", "y", { job_id: 8, attempt: 1 }, 3), ev("assistant.message", "y", { message_id: 2, content: "Answer two" }, 4),
+        ev("run.started", "z", { job_id: 9, attempt: 1 }, 5), ev("assistant.message", "z", { message_id: 3, content: "Answer three" }, 6),
+      ]),
+    });
+    render(<View threadId={5} />, { wrapper });
+    await screen.findByText("Answer three");
+    const alerts = screen.getAllByText("Lethal trifecta").map((t) => t.closest("[role=alert]")!);
+    expect(alerts).toHaveLength(3);
+    expect(alerts.map((a) => a.querySelectorAll("li").length)).toEqual([3, 0, 3]);
+    expect(alerts[1]).toHaveTextContent("Same risk as the last assessment.");
+    expect(alerts[2]).toHaveTextContent("External communication: mail_send, jira_add_comment");
+    fireEvent.click(within(alerts[1] as HTMLElement).getByRole("button", { name: "Show tools" }));
+    expect(alerts[1]).toHaveTextContent("Private data access: mail_read");
+  });
+
+  it("a run with no assessment in between is skipped: the next alert compares with the last assessment", async () => {
+    captureHub();
+    await stubApi({
+      ...routes(() => [run("z", TRIFECTA), run("y", null), run("x", TRIFECTA)]),
+      "/api/conversation/threads/5/timeline": () => page([
+        ev("run.started", "x", { job_id: 7, attempt: 1 }, 1), ev("assistant.message", "x", { message_id: 1, content: "Answer one" }, 2),
+        ev("run.started", "y", { job_id: 8, attempt: 1 }, 3), ev("assistant.message", "y", { message_id: 2, content: "Answer two" }, 4),
+        ev("run.started", "z", { job_id: 9, attempt: 1 }, 5), ev("assistant.message", "z", { message_id: 3, content: "Answer three" }, 6),
+      ]),
+    });
+    render(<View threadId={5} />, { wrapper });
+    await screen.findByText("Answer three");
+    const alerts = screen.getAllByText("Lethal trifecta").map((t) => t.closest("[role=alert]")!);
+    expect(alerts.map((a) => a.querySelectorAll("li").length)).toEqual([3, 0]);
+    expect(alerts[1]).toHaveTextContent("Same risk as the last assessment.");
+  });
+
+  it("no warning for non-admin", async () => {
+    captureHub();
+    // The server sends `tool_risk` to the admin role only; the screen holds the line as well.
+    await stubApi(routes(() => [run("x", TRIFECTA), run("y", risk({ coverage: "error" }))]), ["conversation.run_details"]);
+    render(<View threadId={5} />, { wrapper });
+    await screen.findByText("Answer two");
+    expect(screen.queryByText(/lethal trifecta/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Assessment incomplete")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["a direct MCP server", risk({ coverage: "incomplete", uncovered: ["github", "browser"] }), /github, browser/],
+    ["a failed assessment", risk({ tool_coverage: "error", coverage: "error" }), /could not be assessed/],
+    ["modules changed", risk({ tool_coverage: "incomplete", coverage: "incomplete", notes: ["modules_changed"] }), /modules changed/],
+  ])("incomplete note: %s", async (_name, tool_risk, text) => {
+    captureHub();
+    await stubApi(routes(() => [run("x", tool_risk)]));
+    render(<View threadId={5} />, { wrapper });
+    const note = (await screen.findByText("Assessment incomplete")).closest("li")!;
+    expect(note.textContent).toMatch(text);
+    expect(screen.queryByText(/lethal trifecta/i)).not.toBeInTheDocument();
+  });
+
+  it("old run shows nothing", async () => {
+    captureHub();
+    await stubApi(routes(() => [run("x", null), run("y", undefined)]));
+    render(<View threadId={5} />, { wrapper });
+    await screen.findByText("Answer two");
+    expect(screen.queryByText(/lethal trifecta/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Assessment incomplete")).not.toBeInTheDocument();
+  });
+
+  it("pending then recorded on poll without reopening", async () => {
+    vi.useFakeTimers();
+    captureHub();
+    let tool_risk = risk({ coverage: "incomplete", direct: "pending" });
+    await stubApi(routes(() => [run("x", tool_risk)]));
+    render(<View threadId={5} />, { wrapper });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+    expect(screen.getByText("Assessment incomplete").closest("li")!.textContent).toMatch(/not checked yet/);
+    tool_risk = risk();
+    await act(async () => { await vi.advanceTimersByTimeAsync(IDLE_POLL_MS); });
+    expect(screen.queryByText("Assessment incomplete")).not.toBeInTheDocument();
+  });
+
+  it("possible trifecta shown red with possible wording", async () => {
+    captureHub();
+    await stubApi(routes(() => [run("x", { ...TRIFECTA, trifecta: "possible", tool_coverage: "incomplete", coverage: "incomplete",
+      notes: ["conditional_tools"] })]));
+    render(<View threadId={5} />, { wrapper });
+    const alert = (await screen.findByText("Possible lethal trifecta")).closest("[role=alert]")!;
+    expect(alert).toHaveTextContent("Untrusted content: web_fetch");
+    expect(screen.queryByText("Assessment incomplete")).not.toBeInTheDocument();
   });
 });
 

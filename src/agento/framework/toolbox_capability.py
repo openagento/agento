@@ -28,7 +28,7 @@ import secrets
 from .auth_context import LEGACY_REST_SUBJECT, derive_auth_context
 from .database_config import DatabaseConfig
 from .db import get_connection
-from .test_run import require_test_mode
+from .test_run import capability_envelope, require_test_mode
 
 KIND_MCP_JOB = "mcp_job"
 KIND_MCP_INTERACTIVE = "mcp_interactive"
@@ -113,12 +113,14 @@ def issue_capability(
             raise ValueError("mcp_interactive must not carry a job_id")
     elif kind == KIND_INTERNAL_REST and job_id is not None and not _positive_id(job_id):
         raise ValueError("internal_rest job_id must be null or a positive integer")
+    stored_test_config = None
     if test_config is not None:
         if kind not in (KIND_MCP_JOB, KIND_MCP_INTERACTIVE):
             raise ValueError("only an agent's run capability may be a test run")
         # The one mint both `agento run` and a job pass, so a test_config written straight
-        # into the DB is refused here too (D-TEST-RUN-1).
+        # into the DB is refused here too (D-TEST-RUN-1). Only a resolved policy is minted.
         require_test_mode()
+        stored_test_config = json.dumps(capability_envelope(test_config))
     if not isinstance(allowed_transports, list) or not allowed_transports:
         raise ValueError("allowed_transports must name at least one transport")
     if "sse" in allowed_transports:
@@ -181,7 +183,7 @@ def issue_capability(
                 row["app_artifact_code"], row["app_version_id"], row["app_launch_id"],
                 None if tool_ceiling is None else json.dumps(tool_ceiling),
                 json.dumps(row["allowed_transports"]), row["source_kind"], source_id,
-                None if test_config is None else json.dumps(test_config),
+                stored_test_config,
             ),
         )
     if commit:

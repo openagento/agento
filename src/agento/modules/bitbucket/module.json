@@ -5,13 +5,13 @@
   "sequence": [],
   "order": 120,
   "tools": [
-    {"type": "mcp", "name": "bitbucket_get_pr", "description": "Read a pull request (description, state, branches)", "toolset": "bitbucket"},
-    {"type": "mcp", "name": "bitbucket_get_pr_diff", "description": "Read a pull request's diff", "toolset": "bitbucket"},
-    {"type": "mcp", "name": "bitbucket_get_pr_comments", "description": "Read a pull request's comments", "toolset": "bitbucket"},
-    {"type": "mcp", "name": "bitbucket_get_pr_activity", "description": "Read a pull request's activity/review history", "toolset": "bitbucket"},
-    {"type": "mcp", "name": "bitbucket_add_comment", "description": "Reply to a PR (general or inline file:line)", "toolset": "bitbucket"},
-    {"type": "mcp", "name": "bitbucket_resolve_comment", "description": "Resolve a PR comment thread", "toolset": "bitbucket"},
-    {"type": "mcp", "name": "bitbucket_set_review", "description": "Set the review decision (approve / request changes / none)", "toolset": "bitbucket"},
-    {"type": "mcp", "name": "bitbucket_create_pr", "description": "Open a new pull request (allow-list gated)", "toolset": "bitbucket"}
+    {"type": "mcp", "name": "bitbucket_get_pr", "description": "Read a pull request (description, state, branches)", "toolset": "bitbucket", "labels": ["private-data", "untrusted-content"], "availability": "conditional"},
+    {"type": "mcp", "name": "bitbucket_get_pr_diff", "description": "Read a pull request's diff", "toolset": "bitbucket", "labels": ["private-data", "untrusted-content"], "availability": "conditional"},
+    {"type": "mcp", "name": "bitbucket_get_pr_comments", "description": "Read a pull request's comments", "toolset": "bitbucket", "labels": ["private-data", "untrusted-content"], "availability": "conditional"},
+    {"type": "mcp", "name": "bitbucket_get_pr_activity", "description": "Read a pull request's activity/review history", "toolset": "bitbucket", "labels": ["private-data", "untrusted-content"], "availability": "conditional"},
+    {"type": "mcp", "name": "bitbucket_add_comment", "description": "Reply to a PR (general or inline file:line)", "toolset": "bitbucket", "labels": ["external-communication", "stub-in-test"], "availability": "conditional"},
+    {"type": "mcp", "name": "bitbucket_resolve_comment", "description": "Resolve a PR comment thread", "toolset": "bitbucket", "labels": ["stub-in-test"], "availability": "conditional"},
+    {"type": "mcp", "name": "bitbucket_set_review", "description": "Set the review decision (approve / request changes / none)", "toolset": "bitbucket", "labels": ["external-communication", "stub-in-test"], "availability": "conditional"},
+    {"type": "mcp", "name": "bitbucket_create_pr", "description": "Open a new pull request (allow-list gated)", "toolset": "bitbucket", "labels": ["external-communication", "stub-in-test"], "availability": "conditional"}
   ]
 }

@@ -1,0 +1,9 @@
+.wrap { overflow-wrap: anywhere; min-width: 0; }
+/* A selected value in an input (a Mantine Pill: one line, cut with an ellipsis) wraps like a label
+   badge: a rounded box read from the start. Doubled selectors: Mantine's own single-class rules lose.
+   Its width comes from its text (Mantine's `flex: 0` has a zero basis: one letter per line); the
+   remove button keeps the one-line height (its icon is sized from it: auto would fill the row). */
+.pill.pill { flex: 0 1 auto; height: auto; min-height: var(--pill-height); white-space: normal; --pill-radius: calc(var(--pill-height) / 2); }
+.pill :global(.mantine-Pill-label) { height: auto; overflow: visible; overflow-wrap: anywhere;
+  line-height: var(--mantine-line-height-xs); padding-block: calc(var(--mantine-spacing-xs) / 5); }
+.pill :global(.mantine-Pill-remove) { height: var(--pill-height); }

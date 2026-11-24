@@ -16,6 +16,8 @@ NON_RETRYABLE_ERRORS = frozenset({
     "TransientAuthError",  # stale/revoked credential — terminal unless a healthy token remains
     "InvalidJobRuntime",  # pinned harness unknown / no harness — config fault, not transient
     "ModelConfigError",  # wrong agent_view/model — the same config fails every attempt
+    "InvalidTestConfig",  # a test policy that cannot be used — the same policy fails again
+    "SnapshotTooLarge",  # the label snapshot is over its bound — a test run is refused
 })
 
 

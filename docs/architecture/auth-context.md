@@ -114,16 +114,21 @@ Migration `036_toolbox_capability_auth_context` backfills the rows that existed 
 4. finds the tool, then reads its `is_enabled` chain again for the caller's scope;
 5. checks the launch `tool_ceiling` and the user's `permitted_tools`;
 6. validates the arguments strictly (an unknown key is an error);
-7. runs the handler, then writes the final outcome to the audit row. In a test run (the
-   capability row's `test_config`, beside the context, not in it) a tool the config stubs is
-   not run: the answer is `{"ok": true}`, and the audit row gets `outcome = ok` and
-   `stubbed = 1` (DECISIONS.md D-TEST-RUN-1).
+7. in a test run (the capability row's `test_config`, beside the context, not in it) applies
+   the run's frozen test policy: a policy that does not validate is refused
+   (`invalid test policy`); a tool the policy does not cover is refused
+   (`test policy does not cover <name>; start a new run`); both get `outcome = denied` and the
+   handler is not called. A tool the policy stubs is not run: the answer is `{"ok": true}`, and
+   the audit row gets `outcome = ok` and `stubbed = 1` (DECISIONS.md D-TEST-RUN-1,
+   D-TOOL-LABELS-1; [run.md](../cli/run.md#--test--a-test-run));
+8. runs the handler, then writes the final outcome to the audit row.
 
 | outcome             | invoke status |
 |---------------------|---------------|
 | `ok`                | 200           |
 | `invalid_arguments` | 400           |
 | `unauthorized`      | 403           |
+| `denied`            | 403 (a test policy refused the call) |
 | `not_found`         | 404 (also a disabled tool) |
 | `tool_error`        | 422           |
 | `unavailable`       | 503 (also a failed audit insert: the tool does not run) |

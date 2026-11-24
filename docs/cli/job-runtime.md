@@ -77,7 +77,6 @@ wants a retry to pick up new config runs `job:set-runtime --clear` first.
 
 ```bash
 agento job:set-runtime <job_id> --test '{"stub": ["jira_search"], "real": ["jira_add_comment"]}'
-agento job:set-runtime <job_id> --no-test    # a normal job again
 ```
 
 `job.test_config` is copied to the run's toolbox capability at claim, as for
@@ -86,4 +85,9 @@ run never gets the SSH private key. A job made from a test-run job is a test run
 config: an `agent_run` child, a `schedule_followup` job and the parent wake. A later turn in the
 same thread is a normal job. `--clear` does not change it. Where `AGENTO_TEST_MODE_ENABLED` is
 not `1`, `--test` is refused and such a job fails at its start, without a retry.
+A test job stays a test job until it runs or is cancelled: `--test` can replace its policy, but
+no option removes it. A stored policy that Agento cannot read (for example a hand-edited row)
+fails the job at its start, without a retry and without blocking the jobs after it; every
+other `job:set-runtime` change of such a job is refused (`Error: job <id> has an invalid test
+policy; replace it with --test`) until `--test` replaces it.
 Background: DECISIONS.md D-TEST-RUN-1.

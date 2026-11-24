@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,8 @@ _MODULE_CONFIGS: dict[str, dict[str, Any]] = {}
 
 # Manifest registry — for shutdown hooks and introspection
 _MANIFESTS: list[ModuleManifest] = []
+# When the scan of the last successful bootstrap() began (ns), for modules_changed_since_bootstrap.
+_BOOTSTRAPPED_AT: list[int] = []
 
 
 def set_module_config(module_name: str, config: Any) -> None:
@@ -80,6 +83,11 @@ def get_module_config(module_name: str) -> dict[str, Any]:
 def get_manifests() -> list[ModuleManifest]:
     """Get loaded module manifests (dependency order)."""
     return list(_MANIFESTS)
+
+
+def bootstrapped_at() -> int | None:
+    """``time.time_ns()`` taken before the last successful ``bootstrap()`` scanned modules."""
+    return _BOOTSTRAPPED_AT[0] if _BOOTSTRAPPED_AT else None
 
 
 def dispatch_shutdown() -> None:
@@ -131,6 +139,7 @@ def bootstrap(
         quiet: When True, downgrade the final "loaded N module(s)" log to DEBUG
                (used by the consumer's per-tick re-bootstrap to avoid log spam).
     """
+    started = time.time_ns()
     clear_registries()
     # _MANIFESTS is NOT cleared here. Discovery below can raise (a bad manifest, a
     # dependency cycle), and an empty registry between the clear and the repopulate makes
@@ -207,6 +216,7 @@ def bootstrap(
     # Store manifests for shutdown and introspection — replaced in one statement, never
     # cleared first (see the note above the discovery block).
     _MANIFESTS[:] = manifests
+    _BOOTSTRAPPED_AT[:] = [started]
 
     # Dispatch module_ready (all modules loaded, safe to query registries)
     for m in manifests:

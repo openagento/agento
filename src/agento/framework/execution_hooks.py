@@ -29,6 +29,8 @@ class RunProfile:
     provider: str
     model: str | None
     credential_id: int | None
+    # The run's tool risk assessment at mint (framework/tool_risk.py); None = not assessed.
+    tool_risk: dict | None = None
 
 
 @runtime_checkable
@@ -143,6 +145,19 @@ def mint_execution_id(*, conn, job_id: int, attempt: int,
     if profile is not None and "profile" in inspect.signature(provider.mint).parameters:
         return provider.mint(conn=conn, job_id=job_id, attempt=attempt, profile=profile)
     return provider.mint(conn=conn, job_id=job_id, attempt=attempt)
+
+
+def record_tool_risk(*, conn, execution_id: str, tool_risk: dict) -> bool:
+    """Hand the post-workspace assessment to the provider's optional ``record_tool_risk``.
+
+    Optional on purpose: on the runtime-checkable protocol it would make ``_Slot.register``
+    refuse a mint-only provider. False when no provider has it.
+    """
+    record = getattr(_EXECUTION_ID_PROVIDER.get(), "record_tool_risk", None)
+    if record is None:
+        return False
+    record(conn=conn, execution_id=execution_id, tool_risk=tool_risk)
+    return True
 
 
 def finalize_execution(*, conn, job_id: int, attempt: int, execution_id: str | None,

@@ -315,27 +315,62 @@ def test_shipped_core_modules_are_clean():
     assert offenders == {}
 
 
-# --- sensitive key: required for core modules only (CODE-5) ---------------
+# --- labels: `sensitive == "1"` <=> `stub-in-test` while both exist (compat, CODE-5) ---
 
-def _sens(errors):
-    return [e for e in errors if "/sensitive' default" in e and "has no" in e]
+def _stub_mismatch(errors):
+    return [e for e in errors if "stub-in-test" in e and "sensitive" in e]
 
 
 def _as_core(monkeypatch, tmp_path):
     monkeypatch.setattr("agento.framework.bootstrap.CORE_MODULES_DIR", tmp_path)
 
 
-@pytest.mark.parametrize(("config", "is_core", "flagged"), [
-    ({}, True, True),
-    ({"tools/t1/sensitive": "0"}, True, False),
-    ({"tools/t1/sensitive": "1"}, True, False),
-    ({}, False, False),
+@pytest.mark.parametrize(("config", "labels", "is_core", "flagged"), [
+    ({}, [], True, False),
+    ({"tools/t1/sensitive": "0"}, [], True, False),
+    ({"tools/t1/sensitive": "1"}, ["stub-in-test"], True, False),
+    ({"tools/t1/sensitive": "1"}, [], True, True),
+    ({}, ["stub-in-test"], True, True),
+    ({"tools/t1/sensitive": "0"}, ["stub-in-test"], True, True),
+    ({"tools/t1/sensitive": "1"}, [], False, False),
 ])
-def test_core_module_must_state_sensitive_for_each_tool(monkeypatch, tmp_path, config, is_core, flagged):
+def test_in_tree_sensitive_key_equals_stub_in_test_label(monkeypatch, tmp_path, config, labels, is_core, flagged):
     if is_core:
         _as_core(monkeypatch, tmp_path)
-    d = _mk(tmp_path, tools=[_t("t1")], config=config)
-    assert bool(_sens(validate_module(d))) is flagged
+    d = _mk(tmp_path, tools=[_t("t1", labels=labels)], config=config)
+    assert bool(_stub_mismatch(validate_module(d))) is flagged
+
+
+@pytest.mark.parametrize(("labels", "ok"), [
+    (["private-data", "untrusted-content", "external-communication", "stub-in-test"], True),
+    ([], True),
+    ("stub-in-test", False),
+    ([1], False),
+    (["my-label"], False),
+    (["stub-in-test", "stub-in-test"], False),
+])
+def test_tool_labels_take_only_builtin_keys(tmp_path, labels, ok):
+    d = _mk(tmp_path, tools=[_t("t1", labels=labels)])
+    assert bool([e for e in validate_module(d) if "'labels'" in e]) is (not ok)
+
+
+@pytest.mark.parametrize(("availability", "ok"), [("conditional", True), ("always", False), (True, False)])
+def test_tool_availability_is_only_conditional(tmp_path, availability, ok):
+    d = _mk(tmp_path, tools=[_t("t1", availability=availability)])
+    assert bool([e for e in validate_module(d) if "'availability'" in e]) is (not ok)
+
+
+@pytest.mark.parametrize(("field", "ok"), [
+    ({"type": "string", "review_fingerprint": True}, True),
+    ({"type": "string", "review_fingerprint": "true"}, False),
+    ({"type": "obscure", "review_fingerprint": True}, False),
+    ({"type": "string", "access": "toolbox_only", "review_fingerprint": True}, False),
+    ({"type": "obscure", "review_fingerprint": False}, True),
+])
+def test_review_fingerprint_flag(tmp_path, field, ok):
+    d = _mk(tmp_path)
+    (d / "system.json").write_text(json.dumps({"host": {"label": "Host", **field}}))
+    assert bool([e for e in validate_module(d) if "review_fingerprint" in e]) is (not ok)
 
 
 @pytest.mark.parametrize("tool", [

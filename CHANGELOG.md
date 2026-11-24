@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Breaking: `job:set-runtime --no-test` is removed.** A queued test job stays a test job until
+  it runs or is cancelled; `--test` can still replace its policy. A test policy is now resolved
+  once at claim (v2: the stubbed tools and the tools it knew) and the job and its children keep
+  it. New `agento run --stub-tools <label>` (repeatable) stubs every tool with that label; it is
+  refused when the harness config has an MCP server other than the toolbox. **Upgrade note:** to
+  roll back, set `AGENTO_TEST_MODE_ENABLED=0` on `cron` and `web` first (see
+  docs/cli/run.md#upgrade-and-rollback).
 - **MySQL keeps binlogs 3 days, not 30.** The managed compose starts MySQL with
   `--binlog-expire-logs-seconds=${MYSQL_BINLOG_EXPIRE_SECONDS:-259200}`. With the MySQL 8.0
   default (30 days), binlogs filled the disk of a busy install; Agento uses no replication.
@@ -30,6 +37,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   capability, the same values as the `tool_invocation` row. Lines no longer have `user=…`.
 
 ### Added
+- **Tool labels, the tool catalog and lethal-trifecta warnings.** An admin classifies every MCP
+  tool with labels in **Tools → Catalog** and manages them in **Tools → Labels** (leaf
+  `admin.tools.classify`, `admin` role only). Four built-in labels (`private-data`,
+  `untrusted-content`, `external-communication`, `stub-in-test`) plus custom ones; a tool goes
+  back to review when its contract or connection target changes (`tool-contracts.json`,
+  `npm run contracts:update`, `system.json` `review_fingerprint`). `tool:sync-catalog` (`tl:sc`)
+  syncs the catalog in `setup:upgrade`, after `module:enable|disable` and every minute (cron
+  `tool_catalog_sync`). Admins see a red warning in the agent_view tool editor (from the
+  unsaved draft) and on each conversation run (frozen at the job claim in
+  `execution.tool_risk`), or a yellow "Assessment incomplete" note when the run has a direct MCP
+  server. `agento run --stub-tools <label>` (repeatable) stubs every tool with that label. A tool
+  call a test run's policy does not cover is refused (`denied`, HTTP 403). Manifest `tools[]`
+  gain `labels` and `availability: "conditional"`; harnesses gain the optional
+  `WorkspaceAdapter.direct_mcp_servers`. **Upgrade note:** `tools/<name>/sensitive` becomes the
+  `stub-in-test` label; `sensitive: "1"` in a user module still reads as `stub-in-test`, and
+  in-tree modules keep the key for one minor release (ROADMAP.md). Run `setup:upgrade`
+  (migrations `060_tool_catalog`, conversation `011_execution_tool_risk`).
 - **`core/smtp_reply_to`.** The `Reply-To` of `email_send` mail now comes from this setting
   (empty: no header). Before, it was the email the model passed.
 - **`artifacts:prune` (`ar:pr`) and nightly retention of run and thread dirs.** Cron job

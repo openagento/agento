@@ -1,0 +1,12 @@
+{
+  "jira": "switch",
+  "jira_add_comment": "ee2715ae42d61edcbb0e1c36fc3632ad11e06b04",
+  "jira_assign_issue": "d6b5984b81318e5c29742b3d0ae140c2d28ca3fe",
+  "jira_attach_file": "d859dc163ee3e5eeec457bb289aae89240220cd1",
+  "jira_create_issue": "b214fd6570ec37447be5125152fe1061280e4516",
+  "jira_get_attachment": "d089f664d016ac270905546a9462621d9145e019",
+  "jira_get_issue": "b4b9d4262f955bc224a63e06c672b65e61ca7fe5",
+  "jira_search": "bd26bd72252db01662fddc914c14b032ec96169d",
+  "jira_transition_issue": "fe6b11e3f6a192067f3d8c2b108ce9c2a3332bc4",
+  "jira_update_issue": "4783d6f74d6beba43add3adabe6583d9d85b053d"
+}

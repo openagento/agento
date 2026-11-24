@@ -1,8 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   GRANTS_SQL, grantsFor, tokenHash, extractToken, createVerifier, createRequireCapability, rejectScopeMismatch,
-  createSourceLookup, NO_AUTH_SOURCES, resolveAuthTtls,
+  createSourceLookup, NO_AUTH_SOURCES, resolveAuthTtls, validPolicy, decodeCapabilityPolicy, INVALID_TEST_POLICY,
 } from '../capability.js';
 import { ENDPOINTS } from '../auth-context.js';
 import { capabilityRow, capabilityContext } from './capability-rows.js';
@@ -49,17 +52,31 @@ describe('verifyCapability', () => {
     ['parsed', { stub: ['send'], real: [] }],
     ['as text', '{"stub": ["send"], "real": []}'],
   ])('carries the row\'s test config (%s) beside the context, never inside it', async (_name, stored) => {
-    const query = fakeQuery([capabilityRow('mcp_job', { test_config: stored })]);
+    const query = fakeQuery([capabilityRow('mcp_job', { test_config: stored, test_is_null: 0 })]);
     expect(await createVerifier(query)('t', { endpoint: 'mcp' })).toEqual({
       context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null,
       test: { stub: ['send'], real: [] },
     });
-    expect(query.mock.calls[0][0]).toMatch(/c\.test_config/);
+    expect(query.mock.calls[0][0]).toMatch(/c\.test_config IS NULL AS test_is_null/);
   });
 
-  it.each(['{not json', '[1]', '"text"'])('refuses a capability whose test config is %s', async (stored) => {
-    const query = fakeQuery([capabilityRow('mcp_job', { test_config: stored })]);
-    expect(await createVerifier(query)('t', { endpoint: 'mcp' })).toBeNull();
+  it('unwraps the v2 envelope', async () => {
+    const v2 = { v: 2, stub: ['send'], real: [], stub_labels: [], unstub: [], known: ['m/send'] };
+    const query = fakeQuery([capabilityRow('mcp_job', { test_config: ['agento-test-policy', 2, v2], test_is_null: 0 })]);
+    expect((await createVerifier(query)('t', { endpoint: 'mcp' })).test).toEqual(v2);
+  });
+
+  // The session stays open: the dispatcher refuses each call and audits it as `denied`.
+  it.each(['{not json', '[1]', '"text"', 'null'])('marks a test config of %s invalid', async (stored) => {
+    const query = fakeQuery([capabilityRow('mcp_job', { test_config: stored, test_is_null: 0 })]);
+    expect((await createVerifier(query)('t', { endpoint: 'mcp' })).test).toBe(INVALID_TEST_POLICY);
+  });
+
+  it('JSON null test_config is refused, SQL NULL is production', async () => {
+    const jsonNull = fakeQuery([capabilityRow('mcp_job', { test_config: null, test_is_null: 0 })]);
+    expect((await createVerifier(jsonNull)('t', { endpoint: 'mcp' })).test).toBe(INVALID_TEST_POLICY);
+    const sqlNull = fakeQuery([capabilityRow('mcp_job', { test_config: null, test_is_null: 1 })]);
+    expect((await createVerifier(sqlNull)('t', { endpoint: 'mcp' })).test).toBeNull();
   });
 
   it('selects ids as exact strings in SQL, not as rounded JS numbers', async () => {
@@ -362,5 +379,37 @@ describe('rejectScopeMismatch', () => {
     const r = res();
     expect(rejectScopeMismatch(req({ query: { agent_view_id: '9' } }), r, vi.fn(), 'x')).toBe(true);
     expect(r.code).toBe(400);
+  });
+});
+
+const fixtureFile = path.join(path.dirname(fileURLToPath(import.meta.url)),
+  '..', '..', '..', '..', 'tests', 'fixtures', 'test_policies.json');
+const POLICIES = JSON.parse(fs.readFileSync(fixtureFile, 'utf8'));
+
+describe('test_policies.json fixture (same file as the pytest)', () => {
+  it.each(POLICIES.stored.map(c => [c.name, c]))('validPolicy: %s', (_name, c) => {
+    expect(validPolicy(c.value)).toBe(c.valid);
+  });
+
+  it.each(POLICIES.capability.map(c => [c.name, c]))('capability decoder: %s', (_name, c) => {
+    const row = { test_config: c.value, test_is_null: c.sql_null ? 1 : 0 };
+    expect(decodeCapabilityPolicy(row)).toEqual(c.valid ? { policy: c.policy } : { invalid: true });
+    const asText = { test_config: c.sql_null ? null : JSON.stringify(c.value), test_is_null: row.test_is_null };
+    expect(decodeCapabilityPolicy(asText)).toEqual(c.valid ? { policy: c.policy } : { invalid: true });
+  });
+});
+
+describe('validPolicy bounds', () => {
+  const v2 = (over) => ({ v: 2, stub: [], real: [], stub_labels: [], unstub: [], known: [], ...over });
+  const names = (n, p = 't') => Array.from({ length: n }, (_, i) => `${p}${i}`);
+  it.each([
+    ['1000 stubbed names', v2({ stub: names(1000) }), true],
+    ['1001 stubbed names', v2({ stub: names(1001) }), false],
+    ['2000 known ids', v2({ known: names(2000, 'm/t') }), true],
+    ['2001 known ids', v2({ known: names(2001, 'm/t') }), false],
+    ['2001 real names', v2({ real: names(2001) }), false],
+    ['201 stub labels', v2({ stub_labels: names(201) }), false],
+  ])('%s', (_name, value, valid) => {
+    expect(validPolicy(value)).toBe(valid);
   });
 });

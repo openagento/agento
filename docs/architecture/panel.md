@@ -133,7 +133,8 @@ Access comes from `role_grant` rows:
   list — one per admin screen (`admin.dashboard`, `admin.jobs`, `admin.agents`, `admin.credentials`,
   `admin.tools`, `admin.skills`, `admin.config`, `admin.users`, `admin.roles`; the modules add
   `versioned_artifacts`) and one per action (`admin.credentials.edit`,
-  `admin.config.edit` — also the Tools and Skills switches, `admin.users.create|edit`,
+  `admin.config.edit` — also the Tools and Skills switches, `admin.tools.classify` — tool labels
+  and review status, which also need the `admin` role, `admin.users.create|edit`,
   `admin.roles.create|edit|delete`, `versioned_artifacts.publish|delete`). Miniapps have no leaf:
   their rights are per app (D-MINIAPP-3).
   `admin` holds every leaf built in. The session's `user.acl` lists the leaves the panel shows. A role
@@ -316,13 +317,80 @@ the CSRF controls above. A scope is `?scope=default|workspace|agent_view&scope_i
 | GET | `/api/admin/credential-logins/<id>` | `admin.credentials.edit` | `{status, verify_url, user_code, needs_code, error_code, expires_at}`; 404 no login |
 | POST | `/api/admin/credential-logins/<id>/code` | `admin.credentials.edit` | `{code}`, 1–300 printable ASCII characters, no space; 204; 400 a bad code; 409 not `waiting`, no code expected, or a code already sent |
 | POST | `/api/admin/credential-logins/<id>/cancel` | `admin.credentials.edit` | 204; 404 no active login |
-| GET | `/api/admin/tools` | `admin.tools` | tools per toolset with `enabled`, `explicit_here`, `blocked_by` |
+| GET | `/api/admin/tools` | `admin.tools` | tools per toolset with `enabled`, `explicit_here`, `blocked_by`, `requires` (the manifest master or `null`); for the `admin` role only, also `catalog`: `{id, source, labels, reviewed, revision}` or `null` before the first catalog sync |
+| PATCH | `/api/admin/tools/<id>/classification` | `admin.tools.classify` + `admin` role | `{revision, labels: [key], new_label?, review?: "reviewed"\|"to_review"\|null}` → the `catalog` object; 409 when `revision` is not the row's; 400 an unknown label key |
+| GET | `/api/admin/tool-labels` | `admin.tools` + `admin` role | `[{id, key, name, protected, usage}]`; `usage` counts the present tools that carry the label |
+| POST | `/api/admin/tool-labels` | `admin.tools.classify` + `admin` role | `{name}` → 201 the label; 409 the normalized name is taken |
+| PATCH | `/api/admin/tool-labels/<id>` | `admin.tools.classify` + `admin` role | `{name}` → the label; the key never changes; 400 a built-in label |
+| DELETE | `/api/admin/tool-labels/<id>` | `admin.tools.classify` + `admin` role | 204, with the label's assignments; 400 a built-in label |
 | GET | `/api/admin/skills` | `admin.skills` | skills with `enabled`, `explicit_here` |
 | GET | `/api/admin/config/modules` | `admin.config` | modules with config, and their tools that have fields |
 | GET | `/api/admin/config?module=` | `admin.config` | the module's fields: source, editable, options, tester; `secret` and `is_set`, and `value` only when not secret |
 | PUT | `/api/admin/config` | `admin.config.edit` | `{path, reset}`; a secret path is refused |
 | DELETE | `/api/admin/config` | `admin.config.edit` | 204; a secret path is refused, no override is 404 |
 | POST | `/api/admin/config/test` | `admin.config.edit` | `{status, code, message}`; an `error` has a fixed message per code |
+
+**Tool labels.** The catalog (`framework/tool_catalog.py`) holds one row per module tool. A
+tool's effective labels are its manifest defaults plus the admin's `add` rows minus the `remove`
+rows; a classification write stores only that diff, in one transaction that locks the tool row
+and checks `revision` (optimistic lock: a second admin, or a catalog sync that changed the
+contract, gets 409). `new_label` creates a custom label, or reuses the one with the same
+normalized name (NFKC, case-folded, trimmed, inner spaces collapsed), and assigns it in the same
+transaction. A label's `key` is an ASCII slug of its first name (`-2`, `-3` on a collision) and
+never changes. The four built-in labels (`private-data`, `untrusted-content`,
+`external-communication`, `stub-in-test`) cannot be renamed or deleted; their assignments can
+be edited. At most 200 labels. Editing labels never changes the review status; only `review`
+does. These fields and routes need the `admin` role on the server, whatever leaves a role
+holds (PRD §4): another role gets 403 and no `catalog` field.
+
+**Run assessment (lethal trifecta).** Two fields are for the `admin` role only, checked on the
+server: `catalog` on `GET /api/admin/tools` and `tool_risk` on each run of
+`GET /api/conversation/threads/{id}` ([conversation.md](../modules/conversation.md#rest);
+never for a `conversation.run_details` grant, never in a message or an event). The editor
+warning is computed in the browser from the unsaved draft. The run warning is the run's
+assessment, frozen at its job claim (`framework/tool_risk.py`) and stored on `execution.tool_risk`:
+
+```json
+{"v": 1, "trifecta": true | "possible" | false,
+ "tool_coverage": "complete" | "incomplete" | "error",
+ "coverage": "complete" | "incomplete" | "error",
+ "direct": "pending" | "recorded",
+ "categories": {"private-data": ["…"], "untrusted-content": ["…"], "external-communication": ["…"]},
+ "uncovered": ["<direct MCP server>"], "notes": ["modules_changed" | "conditional_tools" | "snapshot_too_large"]}
+```
+
+- Input: the view's tools after the toolbox gate (`is_enabled` and `requires`) with their
+  effective labels, minus the tools the run's test policy stubs or refuses. `trifecta` is `true`
+  when these tools cover the three risk labels, also when coverage is incomplete.
+- Two writes. At the execution mint `direct` is `"pending"` and `coverage` is `"incomplete"`
+  (or `"error"`). After the workspace is written, the harness reports its direct MCP servers
+  ([harness-contract.md](harness-contract.md#direct-mcp-servers-optional)) and one UPDATE sets
+  `direct: "recorded"`, `uncovered` and `coverage`: `"error"` when `tool_coverage` is `"error"`;
+  else `"incomplete"` when `tool_coverage` is `"incomplete"` or a direct server exists; else
+  `"complete"`. When the harness cannot report its servers, the record is `direct: "recorded"`,
+  `uncovered: []`, `coverage: "incomplete"`. A failed second write leaves `"pending"`, which the
+  panel shows as incomplete. Later label edits change neither write.
+- Lists are bounded: 50 names per category, 20 in `uncovered`, then `"…+N"`.
+- An assessment error never blocks the run: it is recorded as `trifecta: false`,
+  `tool_coverage` and `coverage` `"error"`, and empty lists (`snapshot_too_large` when the label
+  snapshot passed its row cap).
+
+Limits:
+
+- A tool whose module marks it `availability: "conditional"` (github and bitbucket without a
+  credential, the Playwright passthrough tools) may not be registered at run time. When the
+  three labels are covered only with such a tool, `trifecta` is `"possible"` (the panel shows it
+  red, "Possible lethal trifecta") and `tool_coverage` is `"incomplete"` (`conditional_tools`).
+- A toolbox module whose import or `register` fails is a deployment defect, logged by the
+  toolbox. Its tools are not callable, but the assessment counts them, so it can over-warn,
+  never miss a trifecta.
+- A busy consumer does not reload its bootstrap. It reads the default labels (manifests and
+  `config.json` `sensitive` defaults) once per bootstrap. When a module file changed since the
+  bootstrap, `tool_coverage` is `"incomplete"` with `modules_changed`.
+- The assessment is per job claim. An interactive `agento run` (prepare-run) has no execution
+  row, so it has no assessment. Without the `conversation` module nothing stores it.
+- A direct MCP server is not assessed: its tools are unknown. The run shows its name in
+  `uncovered` ([zero-trust.md](zero-trust.md#direct-mcp-servers)).
 
 **Artifacts.** The artifact admin API is `/api/versioned_artifacts/...` (leaves
 `versioned_artifacts`, `versioned_artifacts.publish`, `versioned_artifacts.delete`): list, history, make

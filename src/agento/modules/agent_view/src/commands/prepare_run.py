@@ -56,6 +56,21 @@ def _revoke_on_failure(db_config, token: str):
         raise
 
 
+def _refuse_direct_servers(writer, harness: str, working_dir, toolbox_url: str) -> None:
+    """``--stub-tools`` cannot stub a server that bypasses the toolbox: stop before the run."""
+    from agento.framework.harness import detect_direct_mcp_servers
+
+    direct = detect_direct_mcp_servers(writer, working_dir, toolbox_url)
+    if direct is None:
+        print(f"Error: harness '{harness}' cannot report its MCP servers; --stub-tools refused",
+              file=sys.stderr)
+        sys.exit(1)
+    if direct:
+        print(f"Error: direct MCP server '{direct[0]}' cannot be stubbed; --stub-tools refused",
+              file=sys.stderr)
+        sys.exit(1)
+
+
 class AgentViewPrepareRunCommand:
     @property
     def name(self) -> str:
@@ -102,6 +117,10 @@ class AgentViewPrepareRunCommand:
             "--test", metavar="JSON", default=None,
             help="Test run: a JSON object with the tools to stub or run (docs/cli/run.md).",
         )
+        parser.add_argument(
+            "--stub-tools", metavar="LABEL", action="append", default=None, dest="stub_tools",
+            help="Test run: also stub every tool with this label key. Repeatable (docs/cli/run.md).",
+        )
 
     def execute(self, args: argparse.Namespace) -> None:
         from agento.framework.agent_manager.credential_resolver import CredentialResolver
@@ -141,12 +160,13 @@ class AgentViewPrepareRunCommand:
 
             harness_pin = getattr(args, "harness", None)
             test_text = getattr(args, "test", None)
+            stub_labels = getattr(args, "stub_tools", None) or []
             test_config = None
-            if test_text is not None:
-                from agento.framework.test_run import InvalidTestConfig, parse_test_config
+            if test_text is not None or stub_labels:
+                from agento.framework.test_run import InvalidTestConfig, parse_test_config, resolve_run_policy
 
                 try:
-                    test_config = parse_test_config(test_text)
+                    test_config = resolve_run_policy(conn, parse_test_config(test_text), stub_labels=stub_labels)
                 except InvalidTestConfig as exc:
                     print(f"Error: {exc}", file=sys.stderr)
                     sys.exit(1)
@@ -268,6 +288,8 @@ class AgentViewPrepareRunCommand:
             )
 
             writer = workspace_adapter_for(runtime.harness)
+            if stub_labels:
+                _refuse_direct_servers(writer, runtime.harness, working_dir, toolbox_url)
             env = writer.credential_env(credential) if credential is not None else {}
             # Add GIT_AUTHOR_*/GIT_COMMITTER_* from the agent_view identity so the agent's commits are
             # authored correctly even in a clone with its own repo-local .git/config (env beats all

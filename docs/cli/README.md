@@ -13,7 +13,7 @@
 | `up` | Start Docker Compose runtime |
 | `down` | Stop Docker Compose runtime |
 | `logs [service]` | Show container logs |
-| `run <agent_view_code> [--harness H] [--model M] [--credential ID] [--test JSON] [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one. The options pin this run only; no config is changed. `--test`: a test run, the JSON lists the tools to stub or run ([details](run.md)) |
+| `run <agent_view_code> [--harness H] [--model M] [--credential ID] [--test JSON] [--stub-tools LABEL]… [prompt]` | Run the configured agent CLI — interactive without a prompt, headless with one. The options pin this run only; no config is changed. `--test`: a test run, the JSON lists the tools to stub or run; `--stub-tools`: also stub every tool with this label ([details](run.md)) |
 | **Setup** | |
 | `setup:upgrade [--dry-run] [--skip-onboarding]` | Apply migrations, data patches, run onboarding ([onboarding details](onboarding.md)) |
 | **Modules** | |
@@ -53,6 +53,7 @@
 | `tool:list [--agent-view <code>]` | List registered tools with enabled/disabled status ([details](tools.md)) |
 | `tool:enable <name> [--agent-view <code>]` | Enable a tool at given scope ([details](tools.md)) |
 | `tool:disable <name> [--agent-view <code>]` | Disable a tool at given scope ([details](tools.md)) |
+| `tool:sync-catalog` | Sync the tool catalog from the enabled module manifests ([details](tools.md#toolsync-catalog)) |
 | **Skills** | |
 | `skill:sync` | Scan skills from disk and sync to registry ([details](skills.md)) |
 | `skill:list [--agent-view <code>]` | List registered skills with status ([details](skills.md)) |
@@ -81,7 +82,7 @@
 | `job:list [--status S] [--source SRC] [--agent-view C] [--limit N]` | List recent jobs; surfaces failed/dead jobs with their error ([details](job-pause-resume.md)) |
 | `job:pause <job_id>` | Pause a running job (SIGTERM, keep session) ([details](job-pause-resume.md)) |
 | `job:resume <job_id>` | Resume a paused job (re-queue for consumer) ([details](job-pause-resume.md)) |
-| `job:set-runtime <job_id> [--harness H] [--model M] [--clear] [--test JSON \| --no-test]` | Pin (or clear) a queued job's harness/model, or make it a test run; TODO jobs only ([details](job-runtime.md)) |
+| `job:set-runtime <job_id> [--harness H] [--model M] [--clear] [--test JSON]` | Pin (or clear) a queued job's harness/model, or make it a test run; TODO jobs only ([details](job-runtime.md)) |
 | `scheduler:tick` (`sc:ti`) | Fire due schedules and finalize deleted ones. Framework cron, every minute; safe to run by hand — a second tick that finds one running does nothing ([details](../architecture/schedules.md#the-tick)) |
 | `scheduler:sweep-uploads` (`sc:su`) | Remove staged schedule files that no schedule and no open run names. The `scheduler` module's cron, hourly; safe to run by hand ([details](../modules/scheduler.md#files-on-a-schedule)) |
 | **Conversations** (the `conversation` module; all three are cron passes an operator can also run by hand) | |

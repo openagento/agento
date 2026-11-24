@@ -108,7 +108,7 @@ describe("the schedules list", () => {
 });
 
 // A form test renders the whole page and walks Mantine selects: on a loaded CI host it takes
-// longer than the 5 s default (one test waits 5 s itself for the page after a create).
+// longer than the 5 s default (one test waits up to 15 s itself for the page after a create).
 describe("the schedule form", { timeout: 20_000 }, () => {
   it("creates a schedule: a preset sets the RRULE, the preview shows the next fires", async () => {
     const api = await stubApi({ [`${B}/options`]: OPTIONS, [`POST ${B}/preview`]: FIRES, [`POST ${B}/schedules`]: { id: 42 },
@@ -127,8 +127,8 @@ describe("the schedule form", { timeout: 20_000 }, () => {
       harness: null, model: null, enabled: true,
     }));
     // After the create the page navigates to /schedules/42 and loads it; under a loaded
-    // test host that can take longer than the 1 s default.
-    expect(await screen.findByDisplayValue("Digest", {}, { timeout: 5000 })).toBeInTheDocument();
+    // CI runner that can take longer than 5 s.
+    expect(await screen.findByDisplayValue("Digest", {}, { timeout: 15000 })).toBeInTheDocument();
   });
 
   const drop = (target: Element, ...names: string[]) => {

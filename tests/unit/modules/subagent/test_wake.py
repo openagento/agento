@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -119,8 +120,13 @@ def test_the_walk_up_crosses_a_detach():
     assert [s for s in up.sql if "thread_id" in s] == []
 
 
+_FROZEN = {"v": 2, "stub": ["a"], "real": [], "stub_labels": ["finanse"], "unstub": [],
+           "known": ["m/a", "m/b"]}
+
+
 @pytest.mark.parametrize(("stored", "copied"), [
     (None, None), ('{"stub": ["a"], "real": []}', {"stub": ["a"], "real": []}),
+    (json.dumps(_FROZEN), _FROZEN),
 ])
 def test_the_wake_copies_the_parent_test_config(stored, copied):
     parent = {**_job(1, None, 0), "test_config": stored}
@@ -129,3 +135,24 @@ def test_the_wake_copies_the_parent_test_config(stored, copied):
         assert maybe_wake(_Conn(cur), 1, _AllWake()) == 77  # type: ignore[arg-type]
     assert "j.test_config" in cur.sql[0]
     assert publish.call_args.kwargs["test_config"] == copied
+
+
+def test_wake_keeps_frozen_policy_after_label_edit():
+    """The wake copies the parent's resolved list; it never re-reads the labels, so an admin
+    edit after the parent resolved does not reach it."""
+    parent = {**_job(1, None, 0), "test_config": json.dumps(_FROZEN)}
+    cur = _Cursor([[parent], [_job(2, 1, 1)], []])
+    with patch("agento.modules.subagent.src.observers.publish_job", return_value=77) as publish, \
+            patch("agento.framework.test_run.load_label_snapshot") as snapshot:
+        maybe_wake(_Conn(cur), 1, _AllWake())  # type: ignore[arg-type]
+    snapshot.assert_not_called()
+    assert publish.call_args.kwargs["test_config"] == _FROZEN
+    assert not [s for s in cur.sql if "tool_label" in s]
+
+
+def test_an_invalid_parent_policy_gets_no_wake():
+    parent = {**_job(1, None, 0), "test_config": '{"v": 3}'}
+    cur = _Cursor([[parent], [_job(2, 1, 1)], []])
+    with patch("agento.modules.subagent.src.observers.publish_job") as publish:
+        assert maybe_wake(_Conn(cur), 1, _AllWake()) is None  # type: ignore[arg-type]
+    publish.assert_not_called()

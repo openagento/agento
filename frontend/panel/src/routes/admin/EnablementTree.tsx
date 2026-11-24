@@ -5,26 +5,44 @@
 // scope at render). A draft is hidden while another scope is on screen and comes back when you
 // return; it dies with the page, like any other unsaved form.
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { Badge, Tooltip } from "@mantine/core";
-import { apiFetch, useQuery, useQueryClient } from "@agento/api";
-import { EmptyState, ErrorState, LoadingState } from "@agento/ui";
+import { Badge, Group, Tooltip } from "@mantine/core";
+import { apiFetch, useQuery, useQueryClient, useSession } from "@agento/api";
+import { EmptyState, ErrorState, LabelBadge, LoadingState } from "@agento/ui";
 import type { TreeNodeData } from "@mantine/core";
 import { ResourceTree, UnsavedBar } from "../ResourceTree";
 import { changeCount } from "../roleTree";
 import { initialChecked, lockedLeaves, toTreeData, toWrites, type EnablementInfo, type Groups } from "../enablementTree";
+import { trifecta } from "../trifecta";
 import { message, useConfigWrite, useScope } from "./shared";
+import { useToolLabels } from "./ToolLabels";
+import { TrifectaAlert } from "./TrifectaAlert";
+import { TIGHT } from "../layout";
 
-function info(node: TreeNodeData): ReactNode {
-  const { blockedBy, inherited } = (node.nodeProps ?? {}) as EnablementInfo;
-  if (blockedBy) return <Tooltip label={`Blocked by ${blockedBy}`} withArrow><Badge variant="light" color="gray" size="sm">blocked</Badge></Tooltip>;
-  if (inherited) return <Badge variant="light" color="gray" size="sm">inherited</Badge>;
-  return null;
+/** `names`: label key → name, for the admin role only; without it no label shows. */
+function info(node: TreeNodeData, names: Map<string, string> | null): ReactNode {
+  const { blockedBy, inherited, labels } = (node.nodeProps ?? {}) as EnablementInfo;
+  const state = blockedBy
+    ? <Tooltip label={`Blocked by ${blockedBy}`} withArrow><Badge variant="light" color="gray" size="sm" tt="none">Blocked</Badge></Tooltip>
+    : inherited ? <Badge variant="light" color="gray" size="sm" tt="none">Inherited</Badge> : null;
+  if (!names || !labels?.length) return state;
+  // One wrapping group: when it does not fit beside the name, the tree row puts it on its own line.
+  return (
+    <Group gap={TIGHT} wrap="wrap" flex="1 1 auto">
+      {state}
+      {labels.map((k) => <LabelBadge key={k} labelKey={k} name={names.get(k) ?? k} />)}
+    </Group>
+  );
 }
 
-/** `listKey` is this screen's own query key: Tools and Skills invalidate different lists. */
-export function EnablementTree<T>({ listKey, url, groupsOf, emptyTitle, emptyText }: {
-  listKey: string; url: string; groupsOf: (data: T) => Groups; emptyTitle: string; emptyText: ReactNode;
+/** `listKey` is this screen's own query key: Tools and Skills invalidate different lists.
+ *  `toolRisk`: the items are tools, so an admin sees their labels and the lethal-trifecta warning. */
+export function EnablementTree<T>({ listKey, url, groupsOf, emptyTitle, emptyText, toolRisk = false }: {
+  listKey: string; url: string; groupsOf: (data: T) => Groups; emptyTitle: string; emptyText: ReactNode; toolRisk?: boolean;
 }) {
+  const admin = useSession()?.role === "admin";
+  const risk = toolRisk && admin;
+  const labels = useToolLabels({ enabled: risk });
+  const names = useMemo(() => (risk ? new Map((labels.data ?? []).map((l) => [l.key, l.name])) : null), [risk, labels.data]);
   const { ready, query } = useScope();
   const qc = useQueryClient();
   const list = useQuery({
@@ -40,6 +58,8 @@ export function EnablementTree<T>({ listKey, url, groupsOf, emptyTitle, emptyTex
   const locked = useMemo(() => lockedLeaves(groups), [groups]);
   const checked = edits[query] ?? server;
   const changes = changeCount(checked, server);
+  const items = useMemo(() => groups.flatMap((g) => g.items), [groups]);
+  const warning = useMemo(() => (risk ? trifecta(items, checked) : null), [risk, items, checked]);
 
   const save = () => {
     const at = query;
@@ -68,8 +88,9 @@ export function EnablementTree<T>({ listKey, url, groupsOf, emptyTitle, emptyTex
   if (!groups.length) return <EmptyState title={emptyTitle}>{emptyText}</EmptyState>;
   return (
     <>
+      {warning?.complete && <TrifectaAlert categories={warning.categories} />}
       <ResourceTree key={query} toData={toData} checked={checked} locked={locked} busy={write.isPending}
-        onChange={(set) => setEdits((e) => ({ ...e, [query]: set }))} renderInfo={info}
+        onChange={(set) => setEdits((e) => ({ ...e, [query]: set }))} renderInfo={(node) => info(node, names)}
         emptyTitle={emptyTitle} emptyText={emptyText} />
       {changes > 0 && (
         <UnsavedBar changes={changes} busy={write.isPending} onSave={save}

@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
-from contextlib import redirect_stdout
+from contextlib import ExitStack, redirect_stdout
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -39,6 +39,21 @@ def _make_args(
 
 
 pytestmark = pytest.mark.usefixtures("builtin_harnesses")
+
+
+def _labels():
+    """The label snapshot of a fresh catalog: the built-in labels, no admin override."""
+    from agento.framework.bootstrap import CORE_MODULES_DIR
+    from agento.framework.module_loader import scan_modules
+    from agento.framework.test_run import LabelSnapshot
+    from agento.framework.tool_catalog import BUILTIN_LABEL_KEYS
+
+    snapshot = LabelSnapshot(labels=set(BUILTIN_LABEL_KEYS))
+    stack = ExitStack()
+    stack.enter_context(patch("agento.framework.test_run.load_label_snapshot", return_value=snapshot))
+    stack.enter_context(patch("agento.framework.bootstrap.get_manifests",
+                              return_value=scan_modules(str(CORE_MODULES_DIR))))
+    return stack
 
 
 @pytest.fixture
@@ -327,40 +342,55 @@ class TestAgentViewPrepareRunCommand:
         # The payload reaches the host terminal and its shell history.
         assert "tok-interactive" not in json.dumps(payload)
 
-    @pytest.mark.parametrize(("test", "test_config", "with_key"), [
-        (None, None, True),
-        ('{}', {"stub": [], "real": []}, False),
-        ('{"real": ["jira_add_comment"]}', {"stub": [], "real": ["jira_add_comment"]}, False),
-    ])
-    def test_the_interactive_capability_carries_the_test_config(
+    @pytest.mark.parametrize(("test", "stub_tools", "stub", "with_key"), [
+        (None, None, None, True),
+        ('{}', None, {"jira_add_comment"}, False),
+        ('{"real": ["jira_add_comment"]}', None, set(), False),
+        (None, ["external-communication"], {"jira_add_comment"}, False),
+        ('{"stub": ["jira_search"]}', ["external-communication"], {"jira_add_comment", "jira_search"}, False),
+    ], ids=["production", "test", "test-real", "stub-tools-alone", "test-and-stub-tools"])
+    def test_the_interactive_capability_carries_the_resolved_policy(
         self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub,
-        test, test_config, with_key, monkeypatch,
+        test, stub_tools, stub, with_key, monkeypatch,
     ):
         from agento.framework import ssh_identity
 
         monkeypatch.setenv("AGENTO_TEST_MODE_ENABLED", "1")
+        writer_stub.direct_mcp_servers.return_value = []
         args = _make_args()
         args.test = test
+        args.stub_tools = stub_tools
         with patch(
             "agento.framework.toolbox_capability.issue_capability", return_value="tok",
         ) as mock_issue, patch(
             "agento.framework.ssh_identity.resolve_ssh_identity",
             wraps=ssh_identity.resolve_ssh_identity,
-        ) as mock_ssh:
+        ) as mock_ssh, _labels():
             _run_command(
                 args, runtime_stub, token_stub, builder_stub, writer_stub,
                 home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
             )
-        assert mock_issue.call_args.kwargs["test_config"] == test_config
+        policy = mock_issue.call_args.kwargs["test_config"]
+        if stub is None:
+            assert policy is None
+        else:
+            assert policy["v"] == 2
+            assert stub <= set(policy["stub"])
+            assert ("jira_add_comment" in policy["real"]) == ("jira_add_comment" not in policy["stub"])
+            assert policy["stub_labels"] == (stub_tools or [])
+            assert "jira/jira_add_comment" in policy["known"]
         assert mock_ssh.call_args.kwargs == {"with_private_key": with_key}
 
-    @pytest.mark.parametrize(("mode", "test", "message"), [
-        ("1", '{"stub": ["no_such_tool"]}', "no module declares"),
-        (None, '{}', "test mode is off"),
-    ])
+    @pytest.mark.parametrize(("mode", "test", "stub_tools", "message"), [
+        ("1", '{"stub": ["no_such_tool"]}', None, "no module declares"),
+        (None, '{}', None, "test mode is off"),
+        (None, None, ["external-communication"], "test mode is off"),
+        ("1", None, ["no-such-label"], "unknown label"),
+        ("1", '{"real": ["jira_add_comment"]}', ["external-communication"], "tool 'jira_add_comment'"),
+    ], ids=["undeclared", "mode-off", "stub-tools-mode-off", "unknown-label", "label-in-real"])
     def test_a_refused_test_config_stops_before_any_mint(
         self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub, capsys,
-        monkeypatch, mode, test, message,
+        monkeypatch, mode, test, stub_tools, message,
     ):
         if mode is None:
             monkeypatch.delenv("AGENTO_TEST_MODE_ENABLED", raising=False)
@@ -368,14 +398,56 @@ class TestAgentViewPrepareRunCommand:
             monkeypatch.setenv("AGENTO_TEST_MODE_ENABLED", mode)
         args = _make_args()
         args.test = test
+        args.stub_tools = stub_tools
         with patch("agento.framework.toolbox_capability.issue_capability") as mock_issue, \
-                pytest.raises(SystemExit):
+                _labels(), pytest.raises(SystemExit):
             _run_command(
                 args, runtime_stub, token_stub, builder_stub, writer_stub,
                 home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
             )
         mock_issue.assert_not_called()
         assert message in capsys.readouterr().err
+
+    @pytest.mark.parametrize(("direct", "message"), [
+        (["other"], "direct MCP server 'other' cannot be stubbed"),
+        (None, "harness 'claude' cannot report its MCP servers"),
+    ], ids=["direct-server", "unknown-harness-report"])
+    def test_stub_tools_refused_with_direct_server(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub, capsys,
+        monkeypatch, direct, message,
+    ):
+        monkeypatch.setenv("AGENTO_TEST_MODE_ENABLED", "1")
+        args = _make_args()
+        args.stub_tools = ["external-communication"]
+        revoked = []
+        with patch("agento.framework.toolbox_capability.issue_capability", return_value="tok"), \
+                patch("agento.framework.harness.detect_direct_mcp_servers", return_value=direct), \
+                patch("agento.framework.toolbox_capability.revoke_capability",
+                      side_effect=lambda _conn, token, **_k: revoked.append(token)), \
+                patch("agento.framework.db.get_connection", return_value=MagicMock()), \
+                _labels(), pytest.raises(SystemExit):
+            _run_command(
+                args, runtime_stub, token_stub, builder_stub, writer_stub,
+                home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+            )
+        assert message in capsys.readouterr().err
+        assert revoked == ["tok"]
+
+    def test_legacy_test_allowed_with_direct_server(
+        self, tmp_path, runtime_stub, token_stub, builder_stub, writer_stub, monkeypatch,
+    ):
+        monkeypatch.setenv("AGENTO_TEST_MODE_ENABLED", "1")
+        args = _make_args()
+        args.test = "{}"
+        with patch("agento.framework.toolbox_capability.issue_capability", return_value="tok"), \
+                patch("agento.framework.harness.detect_direct_mcp_servers", return_value=["other"]) as detect, \
+                _labels():
+            payload = _run_command(
+                args, runtime_stub, token_stub, builder_stub, writer_stub,
+                home=tmp_path / "artifacts", working_dir=tmp_path / "artifacts",
+            )
+        assert payload["harness"] == "claude"
+        detect.assert_not_called()
 
     def test_unregistered_harness_returns_null_command(
         self, tmp_path, runtime_stub, token_stub, writer_stub,

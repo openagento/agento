@@ -242,6 +242,40 @@ class TestRunCommand:
         assert mock_fetch.call_args.kwargs["pins"]["test"] == '{"stub": []}'
         assert mock_fetch.call_args.kwargs["prompt"] == prompt
 
+    def test_stub_tools_repeatable_both_positions(self, tmp_path):
+        project_root, compose = _project_layout(tmp_path)
+        args = RunCommand()
+        parser = argparse.ArgumentParser()
+        args.configure(parser)
+        parsed = parser.parse_args(["--stub-tools", "a", "dev_01", "--stub-tools", "b", "--stub-tools=c", "p"])
+        with (
+            patch("agento.framework.cli.run.find_project_root", return_value=project_root),
+            patch("agento.framework.cli.run.compose_file_flags", return_value=["-f", str(compose)]),
+            patch(
+                "agento.framework.cli.run._fetch_runtime", return_value=_base_runtime(prompt=True),
+            ) as mock_fetch,
+            patch("agento.framework.cli.run.subprocess.run",
+                  return_value=subprocess.CompletedProcess(args=[], returncode=0)),
+            pytest.raises(SystemExit),
+        ):
+            RunCommand().execute(parsed)
+        assert mock_fetch.call_args.kwargs["pins"]["stub-tools"] == ["a", "b", "c"]
+        assert mock_fetch.call_args.kwargs["prompt"] == "p"
+
+    def test_stub_tools_alone_enables_test_mode(self, tmp_path):
+        from agento.framework.cli.run import _fetch_runtime
+
+        fake_result = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json.dumps(_base_runtime()) + "\n", stderr="",
+        )
+        with patch("agento.framework.cli.run.subprocess.run", return_value=fake_result) as mock_run:
+            _fetch_runtime(["-f", str(tmp_path / "compose.yml")], "dev_01",
+                           pins={"test": None, "stub-tools": ["a", "b"]})
+        cmd = mock_run.call_args.args[0]
+        assert "--test" not in cmd
+        tail = cmd[cmd.index("--stub-tools"):]
+        assert tail == ["--stub-tools", "a", "--stub-tools", "b"]
+
     @pytest.mark.parametrize(("flag", "kwarg"), [
         ("--yolo", "yolo"), ("--pretty", "pretty"),
     ])
