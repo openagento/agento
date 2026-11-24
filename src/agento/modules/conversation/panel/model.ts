@@ -1,5 +1,5 @@
 import type { StreamEvent } from "@agento/api";
-import type { JobState } from "@agento/ui";
+import type { JobState, RiskKey } from "@agento/ui";
 
 /** `channel` is "panel" or the job source of a channel thread (read-only, admins only). */
 export interface Thread {
@@ -15,6 +15,18 @@ export interface RunRow {
   job_id?: number; type?: string; harness?: string | null; provider?: string | null; credential?: string | null;
   model?: string | null; agent_view?: string | null;
   input_tokens?: number | null; output_tokens?: number | null;
+  /** The admin role only: the run's lethal-trifecta assessment, frozen at its start. `null` for a
+   *  run older than the assessment. */
+  tool_risk?: ToolRisk | null;
+}
+
+/** `trifecta`: `"possible"` when a tool that may decline at run time completes it. `coverage` is
+ *  `incomplete` while `direct` is `pending` (the run's own MCP servers are not checked yet). */
+export interface ToolRisk {
+  v: 1; trifecta: boolean | "possible";
+  tool_coverage: "complete" | "incomplete" | "error"; coverage: "complete" | "incomplete" | "error";
+  direct: "pending" | "recorded"; categories: Partial<Record<RiskKey, string[]>>;
+  uncovered: string[]; notes: string[];
 }
 
 /** A sub-agent job of the thread (`ThreadDetail.jobs`): every reader gets these four fields. */

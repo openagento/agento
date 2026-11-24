@@ -479,12 +479,8 @@ class SetRuntimeCommand:
         )
         parser.add_argument(
             "--test", metavar="JSON", default=None,
-            help="Make the job a test run: a JSON object with the tools to stub or run "
-                 "(docs/cli/run.md). Jobs it starts inherit it.",
-        )
-        parser.add_argument(
-            "--no-test", action="store_true", dest="no_test",
-            help="Make the job a normal job again.",
+            help="Make the job a test run, or replace its policy: a JSON object with the "
+                 "tools to stub or run (docs/cli/run.md). Jobs it starts inherit it.",
         )
 
     def execute(self, args: argparse.Namespace) -> None:
@@ -495,11 +491,8 @@ class SetRuntimeCommand:
         if args.clear and (args.harness or args.model):
             print("Error: --clear cannot be combined with --harness/--model", file=sys.stderr)
             sys.exit(1)
-        if args.test is not None and args.no_test:
-            print("Error: --test cannot be combined with --no-test", file=sys.stderr)
-            sys.exit(1)
-        if not (args.clear or args.harness or args.model or args.test is not None or args.no_test):
-            print("Error: give --harness, --model, --test, --no-test, or --clear", file=sys.stderr)
+        if not (args.clear or args.harness or args.model or args.test is not None):
+            print("Error: give --harness, --model, --test, or --clear", file=sys.stderr)
             sys.exit(1)
         test_config = None
         if args.test is not None:
@@ -517,7 +510,7 @@ class SetRuntimeCommand:
             job = set_job_runtime(
                 conn, args.job_id,
                 harness=args.harness, model=args.model, clear=args.clear,
-                test_config=test_config, clear_test=args.no_test,
+                test_config=test_config,
             )
         except ValueError as e:
             print(f"Error: {e}", file=sys.stderr)

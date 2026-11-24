@@ -29,14 +29,15 @@ def _conversation_json(row: dict) -> dict:
             "pinned": row["pinned_at"] is not None}
 
 
-def _run_json(row: dict, details: bool) -> dict:
+def _run_json(row: dict, details: bool, *, admin: bool) -> dict:
     """Without run details a run keeps its shape; harness, provider, credential, model, tokens
-    and the job link are omitted."""
+    and the job link are omitted. The tool risk assessment is an admin's only, never a
+    `conversation.run_details` grant's (PRD tool labels §4)."""
     if not details:
         return {"execution_id": row["execution_id"], "attempt": row["attempt"],
                 "status": row["status"], "started_at": _iso(row["started_at"]),
                 "finished_at": _iso(row["finished_at"])}
-    return {"execution_id": row["execution_id"], "job_id": row["job_id"],
+    body = {"execution_id": row["execution_id"], "job_id": row["job_id"],
             "attempt": row["attempt"], "status": row["status"],
             "started_at": _iso(row["started_at"]), "finished_at": _iso(row["finished_at"]),
             "type": row["type"], "harness": row["harness"], "provider": row["provider"],
@@ -44,6 +45,9 @@ def _run_json(row: dict, details: bool) -> dict:
             "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"],
             "parent_job_id": row["parent_job_id"], "depth": row["depth"],
             "resume_job_id": row["resume_job_id"], "agent_view": row["agent_view"]}
+    if admin:
+        body["tool_risk"] = service.tool_risk(row.get("tool_risk"))
+    return body
 
 
 def _message_json(row: dict) -> dict:
@@ -147,7 +151,8 @@ def show(req: Request) -> Response:
         body["channel_write"] = service.can_write_channel(req.conn, req.session.user, row)
     # Stop shows while the thread has an open top-level turn; the route checks the write gate.
     body["stoppable"] = service.open_turn(req.conn, row["id"]) is not None
-    body["runs"] = [_run_json(r, details)
+    admin = req.session is not None and req.session.user.role == "admin"
+    body["runs"] = [_run_json(r, details, admin=admin)
                     for r in service.list_runs(req.conn, conversation_id=row["id"])]
     # Ids, nesting and status only: what the timeline already shows every reader.
     body["jobs"] = (service.list_subagent_jobs(req.conn, thread_id=row["thread_id"])

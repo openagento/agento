@@ -64,7 +64,12 @@ describe('registerTools: requires chain in the tool gate', () => {
       createScopedLogger: vi.fn(),
     }));
     vi.doMock('../adapters/index.js', () => ({
-      registerAdapterTools: vi.fn(() => ({ names: [], healthchecks: [] })),
+      // Registers its config-driven tools the way the real adapters do (server.tool(name, …)).
+      registerAdapterTools: vi.fn((server, tools) => {
+        const names = tools.filter(t => t.type === 'mysql').map(t => t.name);
+        for (const name of names) server.tool(name, 'desc', {}, async () => ({ content: [] }));
+        return { names, healthchecks: [] };
+      }),
     }));
 
     vi.resetModules();
@@ -242,17 +247,42 @@ describe('registerTools: requires chain in the tool gate', () => {
     expect(isEnabled('undeclared_tool', { 'tools/undeclared_tool/is_enabled': { value: '1' } })).toBe(false);
   });
 
-  it('reads sensitive from the module config.json only: an explicit 1, never a DB row', async () => {
-    const { isSensitive } = await runRegisterTools({
+  it('defaultLabels: the manifest labels plus stub-in-test from config.json sensitive = 1, never a DB row', async () => {
+    const { defaultLabels } = await runRegisterTools({
       modules: [{
-        name: 'jira', tools: MASTERED, registers: ['jira_search'],
+        name: 'jira',
+        tools: [
+          MASTERED[0],
+          { ...MASTERED[1], labels: ['private-data', 'untrusted-content'] },
+          { ...MASTERED[2], labels: ['stub-in-test'] },
+        ],
+        registers: ['jira_search'],
         config: { 'tools/jira_search/sensitive': '1', 'tools/jira_get_issue/sensitive': '0' },
       }],
       dbValues: { 'tools/jira/sensitive': '1' },
     });
-    expect(isSensitive('jira_search')).toBe(true);
-    expect(isSensitive('jira_get_issue')).toBe(false);
-    expect(isSensitive('jira')).toBe(false);
+    expect(defaultLabels('jira_search')).toEqual(new Set(['private-data', 'untrusted-content', 'stub-in-test']));
+    expect(defaultLabels('jira_get_issue')).toEqual(new Set(['stub-in-test']));
+    expect(defaultLabels('jira')).toEqual(new Set());
+    expect(defaultLabels('undeclared_tool')).toEqual(new Set());
+  });
+
+  it('defaultLabels: a name two modules declare gets the union of their labels', async () => {
+    const { defaultLabels } = await runRegisterTools({
+      modules: [
+        { name: 'a', tools: [{ type: 'mcp', name: 'send', description: 'd', labels: ['stub-in-test'] }], registers: [] },
+        { name: 'b', tools: [{ type: 'mcp', name: 'send', description: 'd', availability: 'conditional' }], registers: [] },
+      ],
+    });
+    expect(defaultLabels('send')).toEqual(new Set(['stub-in-test']));
+  });
+
+  it('a config-driven adapter tool carries its declaring module in the registry', async () => {
+    const { tools } = await runRegisterTools({
+      modules: [{ name: 'warehouse', tools: [{ type: 'mysql', name: 'wh_query', description: 'd' }], registers: [] }],
+      dbValues: { 'tools/wh_query/is_enabled': '1' },
+    });
+    expect(tools.get('wh_query').module).toBe('warehouse');
   });
 
   it('reports the tools of a module whose register() threw as unavailable, not unknown', async () => {

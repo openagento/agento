@@ -110,6 +110,44 @@ describe('agent_run', () => {
     expect(jobInsert(calls).params[12]).toBe(test === null ? null : JSON.stringify(test));
   });
 
+  it('a child in another allowed view copies the frozen v2 policy object, never the capability envelope', async () => {
+    const policy = { v: 2, stub: ['send'], real: [], stub_labels: ['finanse'], unstub: [], known: ['mod/send'] };
+    const { db, calls } = fakeDb({
+      parent: { id: 42, agent_view_id: 7, priority: 20, depth: 0, thread_id: 5, line_id: null, test_config: policy },
+      views: [OWN, OTHER] });
+    await tools(db, {
+      moduleConfigs: { subagent: { allowed_agent_views: 'other', max_children_per_job: 10 } },
+    }).agent_run.handler({ agent_view: 'other', prompt: 'Do the thing.' });
+    expect(jobInsert(calls).params[1]).toBe(8);
+    expect(JSON.parse(jobInsert(calls).params[12])).toEqual(policy);
+  });
+
+  it('session opened after a default change refuses, an already open session keeps its registry', async () => {
+    const policy = { v: 2, stub: [], real: [], stub_labels: [], unstub: [], known: ['mod/send'] };
+    const handler = vi.fn(async () => ({ content: [{ type: 'text', text: 'real' }] }));
+    const registry = (labels) => ({
+      tools: new Map([['send', { schema: {}, handler, module: 'mod' }]]), unavailableTools: new Set(),
+      isEnabled: () => true, defaultLabels: () => new Set(labels),
+    });
+    const parentSession = registry([]);
+    const childSession = registry(['stub-in-test']);
+    const call = (reg) => executeTool(capabilityContext('mcp_job'), 'send', {}, {
+      endpoint: 'mcp',
+      audit: { insert: vi.fn(async () => {}), finalize: vi.fn(async () => {}) },
+      consume: vi.fn(async () => true),
+      reverify: vi.fn(async () => ({
+        context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, test: policy,
+      })),
+      loadRegistry: async () => reg,
+      loadOverrides: vi.fn(async () => ({})),
+    });
+    expect((await call(parentSession)).ok).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect((await call(childSession)).error).toEqual(
+      { code: 'denied', message: 'test policy does not cover send; start a new run' });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses at depth 3 with the exact text and inserts nothing', async () => {
     const { db, calls } = fakeDb({ parent: { id: 42, agent_view_id: 7, priority: 20, depth: 3 }, views: [OWN] });
     const res = await tools(db).agent_run.handler({ agent_view: 'own', prompt: 'x' });

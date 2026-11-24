@@ -39,6 +39,7 @@ change adds is a finding (`RULES.md` SEC).
 | A sub-agent child that runs in view B joins its parent's thread in view A, so it reads and writes view A's thread directory (`./shared`, `downloads/`). | `modules/subagent/toolbox/agent.js`, `framework/threads.py` (`join_thread`) | Accepted — part of the operator's `subagent/allowed_agent_views` consent; [DECISIONS.md](../../DECISIONS.md) 2026-10-22 D-THREAD-2 (owner, S5) |
 | With the `outlook` module disabled no observer checks the Outlook thread gate at claim, so a job that already waits in a mail conversation thread joins it, resumes its session and gets its `./shared`. | `modules/outlook/src/observers.py` (`outlook_thread_gate`) | Debt — owner decision pending, [outlook.md](../modules/outlook.md#reads-and-thread-actions-are-bound-to-the-triggering-message) |
 | The toolbox's lenient `loadScopedDbOverrides` falls back to the global overrides when the scoped query fails, so a view-level `is_enabled = 0` can lose to a global `1` (SEC-9 asks to fail closed). The MCP session, the invoke path and the per-call re-check use the strict loaders; the lenient one is left in `registerTools` with no preloaded overrides and in the non-strict health registration. | `toolbox/config-loader.js` (`loadScopedDbOverrides`), `toolbox/health-registration.js` | Debt — owner decision pending (recorded at the owner's request) |
+| A direct MCP server (`agent_view/mcp/servers`, the `codex/config` passthrough) is called by the harness, not the toolbox: no capability, no `is_enabled` gate, no audit row, no test stub. It is detected per harness at a job claim and shown as incomplete assessment coverage; `--stub-tools` refuses the run. | the run's harness MCP config ([Direct MCP servers](#direct-mcp-servers)) | Debt — transitional until the toolbox-managed gateway (ROADMAP.md; owner chose "gateway later" 2026-11-24, D-TOOL-LABELS-1) |
 | The agent holds its own harness OAuth credential. | per-run HOME (for example `.claude/.credentials.json`), written from the encrypted `credential` row | Part of the model (SEC-1) |
 | The agent holds an SSH key for git. | per-run HOME `.ssh/id_rsa`, written by `workspace_build` from the encrypted `agent_view/identity/ssh_private_key` | Accepted — the git push identity, [DECISIONS.md](../../DECISIONS.md) 2026-06-19 D-2 |
 
@@ -210,6 +211,28 @@ What is left:
 **Why not a shared secret, and why not segmentation alone** — see the 2026-08-23 entry in
 [DECISIONS.md](../../DECISIONS.md).
 
+## Direct MCP servers
+
+An operator can give a view MCP servers of its own: `agent_view/mcp/servers` (Claude, Codex) or
+the `codex/config` passthrough. The harness calls such a server itself. The call does not go
+through the toolbox, so it has no capability, no `is_enabled` gate, no `tool_invocation` audit
+row and no test stub. Any credential of that server is in the run's harness config, not in the
+toolbox.
+
+Agento does not hide this:
+
+- At a job claim, after the workspace is written, the harness reports every server of the run's
+  MCP config that is not the toolbox endpoint (by URL, never by name: a remote server keyed
+  `toolbox` is direct). See [harness-contract.md](harness-contract.md#direct-mcp-servers-optional).
+- The run's lethal-trifecta assessment then shows `coverage: "incomplete"` and names the servers
+  in `uncovered` ([panel.md](panel.md#admin-screens)). A harness that cannot report its servers
+  also gives `incomplete`.
+- `agento run --stub-tools` refuses such a run before it starts
+  ([run.md](../cli/run.md#--stub-tools-label--stub-every-tool-with-a-label)).
+
+The toolbox-managed MCP gateway, which would put these servers behind the toolbox, is a
+ROADMAP.md item (DECISIONS.md D-TOOL-LABELS-1).
+
 ## How It Works
 
 1. Agent calls MCP tool: `mysql_myapp_prod` with query `SELECT * FROM users LIMIT 5`
@@ -277,7 +300,8 @@ code — never the payload, the pasted code or the CLI output. See DECISIONS.md 
 - An `SSH_AUTH_SOCK` pointing at a per-run `ssh-agent` that dies with the run (measured 2 ms after it
   when probed, ≤10 s worst case) —
   a signing capability for git, **not** the key itself
-- MCP tools — through toolbox, which validates and executes requests
+- MCP tools — through toolbox, which validates and executes requests; a direct MCP server that
+  the operator configured is called without the toolbox ([Direct MCP servers](#direct-mcp-servers))
 - Filesystem — workspace/, modules/ (read-only)
 
 ## What the Agent CANNOT Access, by Mount

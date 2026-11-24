@@ -1,0 +1,13 @@
+{
+  "versioned_artifact": "switch",
+  "versioned_artifact_create_draft": "f93bb0431612557351bc04b4a3db1209de006aad",
+  "versioned_artifact_diff": "169601d8d23cb259cafc0218459be2ab01c5028a",
+  "versioned_artifact_discard_draft": "425be2f5dee43c1bf597fc80c70b2c97c50d6641",
+  "versioned_artifact_get_current": "a1fcda2fb045161cec9788f7eee800de8bb1f511",
+  "versioned_artifact_init": "77f441315451f6d62b3623f50d329cef8f311511",
+  "versioned_artifact_list": "35e20307d05fb9c36cbc4cedc921f753b5e7b2d9",
+  "versioned_artifact_list_versions": "bcc9520e502a7564eab0982b28c9cca0cefef1d6",
+  "versioned_artifact_materialize": "0f50eb2883f288a9d6a877f5368c6fa3f95bae17",
+  "versioned_artifact_publish": "c8e47254d032df14f9ff5a0aa352a6d1b8934f2f",
+  "versioned_artifact_save_version": "fb707e0877086635d102b53dcf39c00eb1b14167"
+}

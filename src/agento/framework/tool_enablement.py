@@ -7,7 +7,7 @@ admin Tools screen and ``tool:list`` so neither can drift from the runtime.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 
 def scan_tool_requires() -> dict[str, str]:
@@ -90,10 +90,15 @@ def is_effective(
 
 
 def is_effective_for_view(conn, name: str, *, agent_view_id: int) -> bool:
-    """Whether tool ``name`` is available to one agent_view, as the toolbox gate decides it.
+    """Whether tool ``name`` is available to one agent_view, as the toolbox gate decides it."""
+    return name in effective_tools_for_view(conn, agent_view_id, [name])
 
-    The value resolves agent_view -> workspace -> default (``ScopedConfigService``). The
-    ``requires`` chain comes from the manifests the last ``bootstrap()`` loaded, so a hot
+
+def effective_tools_for_view(conn, agent_view_id: int, names: Iterable[str]) -> set[str]:
+    """The ``names`` available to one agent_view, as the toolbox gate decides it.
+
+    The value resolves agent_view -> workspace -> default through ONE ``ScopedConfigService``.
+    The ``requires`` chain comes from the manifests the last ``bootstrap()`` loaded, so a hot
     path (a claim, a poll) does not scan the module tree on every call. Fails closed
     (SEC-9): an unreadable scope level or no bootstrapped manifests raise, never answer
     with a less specific value or an unchecked chain.
@@ -111,4 +116,8 @@ def is_effective_for_view(conn, name: str, *, agent_view_id: int) -> bool:
         for manifest in manifests for tool in manifest.tools
         if tool.get("name") and isinstance(tool.get("requires"), str) and tool["requires"]
     }
-    return is_effective(name, requires, lambda tool: svc.get(f"tools/{tool}/is_enabled") == "1")
+
+    def resolve(tool: str) -> bool:
+        return svc.get(f"tools/{tool}/is_enabled") == "1"
+
+    return {name for name in names if is_effective(name, requires, resolve)}

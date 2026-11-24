@@ -114,6 +114,35 @@ class TestGetToolStates:
         assert by["jira_create"].enabled is False
         assert by["jira_create"].explicit_here is False
 
+    def test_requires_always_and_catalog_only_when_asked(self):
+        from agento.framework.tool_catalog import CatalogTool
+
+        row = CatalogTool(id=4, source="module:jira", tool_name="jira_search", alias="jira_search", toolset="Jira",
+                          description=None, requires=None, labels=frozenset({"untrusted-content", "private-data"}),
+                          reviewed=True, contract_hash="c", revision=3, present=True)
+        load = MagicMock(return_value=[row])
+        conn, _ = _mock_conn()
+        with patch(
+            "agento.framework.admin.data._scan_tools_by_toolset",
+            return_value=[("Jira", ["jira_search", "jira_create"])],
+        ), patch(
+            "agento.framework.tool_enablement.scan_tool_requires", return_value={"jira_create": "jira_search"},
+        ), patch(
+            "agento.framework.scoped_config.build_scoped_overrides", return_value={}
+        ), patch(
+            "agento.framework.scoped_config.load_scoped_db_overrides", return_value={}
+        ), patch("agento.framework.tool_catalog.load_catalog", load):
+            plain = {i.name: i for i in get_tool_states(conn)[0][1]}
+            load.assert_not_called()
+            full = {i.name: i for i in get_tool_states(conn, with_catalog=True)[0][1]}
+
+        assert (plain["jira_create"].requires, plain["jira_create"].catalog) == ("jira_search", None)
+        assert load.call_args.kwargs == {"manifests": ()}
+        assert full["jira_search"].catalog == {"id": 4, "source": "module:jira",
+                                               "labels": ["private-data", "untrusted-content"],
+                                               "reviewed": True, "revision": 3}
+        assert full["jira_create"].catalog is None
+
     def test_agent_view_scope_includes_workspace_tier(self):
         conn, cursor = _mock_conn()
         cursor.fetchone.return_value = {"workspace_id": 7}

@@ -1,6 +1,6 @@
 {
   "enabled": {"type": "boolean", "label": "Enable GitHub channel"},
-  "github_owner": {"type": "string", "label": "GitHub owner (user or organization) that owns the watched repos"},
+  "github_owner": {"type": "string", "review_fingerprint": true, "label": "GitHub owner (user or organization) that owns the watched repos"},
   "github_login": {
     "type": "string",
     "label": "Agent's GitHub login (pull request author match)",

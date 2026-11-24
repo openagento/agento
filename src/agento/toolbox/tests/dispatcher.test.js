@@ -53,13 +53,13 @@ function consumer() {
   });
 }
 
-function registryWith(tools, { enabled = () => true, unavailable = [], sensitive = () => false } = {}) {
+function registryWith(tools, { enabled = () => true, unavailable = [], labels = () => [] } = {}) {
   return {
     toolNames: Object.keys(tools),
     tools: new Map(Object.entries(tools)),
     unavailableTools: new Set(unavailable),
     isEnabled: (name, overrides) => enabled(name, overrides),
-    isSensitive: name => sensitive(name),
+    defaultLabels: name => new Set(labels(name)),
   };
 }
 
@@ -307,40 +307,121 @@ describe('the SQL the dispatcher writes', () => {
     expect(query.mock.calls[1][1]).toEqual(['ok', 0, expect.any(String)]);
   });
 
-  const TEST = { stub: [], real: [] };
-  it.each([
-    ['a sensitive tool in a test run gets the stub; the handler does not run', TEST, true, true],
-    ['a tool that is not sensitive runs in a test run', TEST, false, false],
-    ['a sensitive tool runs in a normal run', null, true, false],
-    ['`stub` stubs a tool that is not sensitive', { stub: ['send'], real: [] }, false, true],
-    ['`real` runs a sensitive tool for real', { stub: [], real: ['send'] }, true, false],
-    ['a list that is not an array is ignored', { stub: 'send', real: 'send' }, true, true],
-  ])('%s', async (_name, test, sensitive, stubbed) => {
+  const v2 = (over = {}) => ({ v: 2, stub: [], real: [], stub_labels: [], unstub: [], known: ['mod/send'], ...over });
+  const STUB = ['stub-in-test'];
+  const testRun = (test, { labels = [], module = 'mod', name = 'send' } = {}) => {
     const handler = vi.fn(async () => ({ content: [{ type: 'text', text: 'real' }] }));
     const d = deps({
       reverify: vi.fn(async () => ({
         context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, test,
       })),
-      loadRegistry: async () => registryWith({ send: { schema: {}, handler } }, { sensitive: () => sensitive }),
+      loadRegistry: async () => registryWith({ [name]: { schema: {}, handler, module } }, { labels: () => labels }),
     });
-    const { response, row } = await run(capabilityContext('mcp_job'), 'send', {}, d);
+    return { handler, d, call: () => run(capabilityContext('mcp_job'), name, {}, d) };
+  };
+
+  it.each([
+    ['v2: a name in `stub` is stubbed', v2({ stub: ['send'] }), [], 'stub'],
+    ['v2: a covered tool with no default runs', v2(), [], 'run'],
+    ['v2: an id outside `known` is refused', v2({ known: [] }), [], 'refuse'],
+    ['v2: a `stub-in-test` default outside stub, real and unstub is refused', v2(), STUB, 'refuse'],
+    ['v2: a `stub-in-test` default whose id is in `unstub` runs', v2({ unstub: ['mod/send'] }), STUB, 'run'],
+    ['v2: a `stub-in-test` default named in `real` runs', v2({ real: ['send'] }), STUB, 'run'],
+    ['v2: an `unstub` of another module does not cover this module\'s tool of the same name',
+      v2({ known: ['mod/send', 'other/send'], unstub: ['other/send'] }), STUB, 'refuse'],
+    ['v2: a module reusing another module\'s stubbed name is refused, not stubbed',
+      v2({ stub: ['send'], known: ['other/send'] }), [], 'refuse'],
+    ['legacy: a `stub-in-test` default is stubbed', { stub: [], real: [] }, STUB, 'stub'],
+    ['legacy: a tool with no default runs', { stub: [], real: [] }, [], 'run'],
+    ['legacy: `stub` stubs a tool with no default', { stub: ['send'] }, [], 'stub'],
+    ['legacy: `real` runs a `stub-in-test` default', { real: ['send'] }, STUB, 'run'],
+    ['legacy: a risk label alone stubs nothing', {}, ['external-communication'], 'run'],
+    ['a production run (SQL NULL) ignores every default', null, STUB, 'run'],
+  ])('%s', async (_name, test, labels, decision) => {
+    const { handler, call } = testRun(test, { labels });
+    const { response, row } = await call();
+    expect(handler).toHaveBeenCalledTimes(decision === 'run' ? 1 : 0);
+    if (decision === 'refuse') {
+      expect(response.error).toEqual({ code: 'denied', message: 'test policy does not cover send; start a new run' });
+      expect(row).toMatchObject({ outcome: 'denied', stubbed: false });
+      return;
+    }
     expect(response.ok).toBe(true);
-    expect(handler).toHaveBeenCalledTimes(stubbed ? 0 : 1);
-    expect(response.result.content[0].text).toBe(stubbed ? '{"ok": true}' : 'real');
+    expect(response.result.content[0].text).toBe(decision === 'stub' ? '{"ok": true}' : 'real');
     // The caller cannot tell a stub from a real call.
     expect(Object.keys(response).sort()).toEqual(['execution_id', 'ok', 'result']);
-    expect(row).toMatchObject({ outcome: 'ok', stubbed });
+    expect(row).toMatchObject({ outcome: 'ok', stubbed: decision === 'stub' });
+  });
+
+  it('a config-driven adapter tool listed in `real` runs: its entry carries the declaring module', async () => {
+    const policy = v2({ real: ['wh_query'], known: ['warehouse/wh_query'] });
+    const { handler, call } = testRun(policy, { labels: STUB, module: 'warehouse', name: 'wh_query' });
+    expect((await call()).response.ok).toBe(true);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  const reverifyFrom = (row) => createVerifier(async () => [[capabilityRow('mcp_job', row)]]).reverify;
+
+  it.each([
+    ['JSON null', null],
+    ['an array', []],
+    ['a `stubbed` key', { stubbed: ['send'] }],
+    ['a v2 key without `v`', { stub: [], real: [], known: ['mod/send'] }],
+    ['an extra key', { ...v2(), x: [] }],
+    ['a non-string element', { stub: [1], real: [] }],
+    ['a list that is not an array', { stub: 'send', real: 'send' }],
+    ['`stub` and `real` overlapping', { stub: ['send'], real: ['send'] }],
+    ['a bare v2 object', v2()],
+    ['an envelope holding a legacy object', ['agento-test-policy', 2, { stub: [], real: [] }]],
+  ])('refuses an invalid test policy: %s', async (_name, stored) => {
+    const { handler, d, call } = testRun(null);
+    d.reverify = reverifyFrom({ test_config: stored, test_is_null: 0 });
+    const { response, row } = await call();
+    expect(response.error).toEqual({ code: 'denied', message: 'invalid test policy' });
+    expect(row).toMatchObject({ outcome: 'denied', stubbed: false });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('the v2 envelope stubs through the real capability reader', async () => {
+    const { handler, d, call } = testRun(null);
+    d.reverify = reverifyFrom({ test_config: ['agento-test-policy', 2, v2({ stub: ['send'] })], test_is_null: 0 });
+    const { response, row } = await call();
+    expect(response.result.content[0].text).toBe('{"ok": true}');
+    expect(row).toMatchObject({ outcome: 'ok', stubbed: true });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  // A frozen copy of the reader before test-policy v2 (capability.js derive tail): a rolled-back
+  // toolbox must fail closed on every v2 capability.
+  function oldCapabilityReader(row, derived) {
+    const raw = row.test_config;
+    let test;
+    if (typeof raw !== 'string') test = raw ?? null;
+    else { try { test = JSON.parse(raw); } catch { test = undefined; } }
+    if (test === undefined || (test !== null && (typeof test !== 'object' || Array.isArray(test)))) return null;
+    return { ...derived, test };
+  }
+
+  it('old capability reader rejects the v2 envelope: session refused, handler not called', async () => {
+    const envelope = ['agento-test-policy', 2, v2({ stub: ['send'] })];
+    const derived = { context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null };
+    expect(oldCapabilityReader({ test_config: envelope }, derived)).toBeNull();
+    expect(oldCapabilityReader({ test_config: JSON.stringify(envelope) }, derived)).toBeNull();
+    const { handler, d, call } = testRun(null);
+    d.reverify = vi.fn(async () => oldCapabilityReader({ test_config: envelope }, derived));
+    expect((await call()).response.error.code).toBe('unauthorized');
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it('a test run still refuses a disabled tool and invalid arguments', async () => {
     const d = deps({
       reverify: vi.fn(async () => ({
-        context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, test: TEST,
+        context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null, test: { stub: [], real: [] },
       })),
-      loadRegistry: async () => registryWith({ echo }, { enabled: name => name !== 'echo', sensitive: () => true }),
+      loadRegistry: async () => registryWith({ echo }, { enabled: name => name !== 'echo', labels: () => STUB }),
     });
     expect((await run(capabilityContext('mcp_job'), 'echo', { text: 'a' }, d)).response.error.code).toBe('not_found');
-    d.loadRegistry = async () => registryWith({ echo }, { sensitive: () => true });
+    d.loadRegistry = async () => registryWith({ echo }, { labels: () => STUB });
     const { response, row } = await run(capabilityContext('mcp_job'), 'echo', { text: 1 }, d);
     expect(response.error.code).toBe('invalid_arguments');
     expect(row.stubbed).toBe(false);
@@ -454,6 +535,22 @@ describe('POST /internal/tools/{name}:invoke', () => {
       expect((await replay.json()).error.code).toBe('unauthorized');
       expect(d.reverify).toHaveBeenCalledWith('201', { endpoint: 'invoke' });
       expect([...d.audit.rows.values()].map(r => r.transport)).toEqual(['http', 'http']);
+    } finally { close(); }
+  });
+
+  it('answers a test-policy refusal with 403 and an audited `denied`', async () => {
+    const d = deps({ endpoint: 'invoke' });
+    d.reverify = vi.fn(async () => ({
+      context: capabilityContext('mcp_job'), single_use: false, permitted_tools: null,
+      test: { v: 2, stub: [], real: [], stub_labels: [], unstub: [], known: [] },
+    }));
+    const { post, close } = await invokeApp(d, capabilityContext('mcp_job'));
+    try {
+      const res = await post('echo', { text: 'x' });
+      expect(res.status).toBe(HTTP_STATUS.denied);
+      expect(HTTP_STATUS.denied).toBe(403);
+      expect((await res.json()).error.code).toBe('denied');
+      expect([...d.audit.rows.values()][0].outcome).toBe('denied');
     } finally { close(); }
   });
 

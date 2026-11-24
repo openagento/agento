@@ -452,6 +452,19 @@ class CodexWorkspaceAdapter:
         config_path.write_text(_dump_toml(config))
         logger.debug("Generated %s", config_path)
 
+    def direct_mcp_servers(self, artifacts_dir: Path, toolbox_target: tuple[str, str, int]) -> list[str]:
+        """Every ``mcp_servers`` entry of the run's config.toml (the ``codex/config``
+        passthrough included) that is not a URL entry for our toolbox endpoint."""
+        config_path = artifacts_dir / ".codex" / "config.toml"
+        if not config_path.is_file():
+            return []
+        servers = tomllib.loads(config_path.read_text()).get("mcp_servers", {})
+        return sorted(
+            name for name, cfg in servers.items()
+            if not (isinstance(cfg, dict) and isinstance(cfg.get("url"), str)
+                    and is_toolbox_endpoint(cfg["url"], toolbox_target))
+        )
+
     def inject_runtime_params(
         self,
         artifacts_dir: Path,

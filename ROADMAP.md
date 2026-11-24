@@ -392,6 +392,45 @@ limits. Still open:
 - The toolbox `schedule_member: SELECT` grant is unused by the tools (OP-1 does not use
   members): use it or drop it.
 
+### ⚪ Toolbox-managed MCP gateway (tool labels follow-up)
+
+Today a direct MCP server (`agent_view/mcp/servers`, the `codex/config` passthrough) is called by the harness, not the toolbox: it is detected per harness, shown as
+incomplete assessment coverage, and `--stub-tools` refuses the run
+([zero-trust.md](docs/architecture/zero-trust.md#direct-mcp-servers), DECISIONS.md
+D-TOOL-LABELS-1). The owner chose "transitional now, gateway later" (2026-11-24). The gateway
+needs its own PRD and review loop. Requirements from PRD §6 (`docs/plans/Agento_PRD_Etykiety_tooli.md`):
+
+- explicit connections managed by the toolbox: the toolbox discovers their tools and serves them
+  through its registry, with a connection id of its own, unambiguous aliases, per-tool
+  enablement and every call through the existing dispatcher;
+- the panel gets the metadata without any credential;
+- adding a server or running discovery does not enable its tools;
+- an external declaration cannot give itself a built-in label;
+- an inventory of the config forms and transports of every supported harness, and a migration
+  path for each connection type; after a migration, remove the parallel direct config of the
+  same source; a type that cannot migrate is a gap to settle before the release;
+- a release test: catalog, warnings and stubbing of an external tool through a managed
+  connection.
+
+Requirements from the plan review (round 1):
+
+- one upstream MCP client per session;
+- secret headers bound to the upstream origin;
+- module-owned declarations (MOD-1);
+- a schema converter from the upstream JSON schema to the registry's argument check;
+- an operator path for discovery.
+
+### ⚪ Tool labels — compatibility removal
+
+One minor release after tool labels ship, remove together:
+
+- the retained in-tree `tools/<name>/sensitive` keys in the modules' `config.json`;
+- the `module:validate` equality check (`sensitive == "1"` exactly when `stub-in-test`) and the
+  acceptance of the `sensitive` key in `_TOOL_DEFAULT_KEY`;
+- the Python translation of `sensitive == "1"` to `stub-in-test` (`tool_catalog.default_labels`);
+- the toolbox `defaultLabels` compatibility read of `sensitive`;
+- the legacy-policy branch of the toolbox dispatcher.
+
 ### ⚪ Distribution & installation model
 
 `agento install && agento up` should start a working system from pre-built, versioned images with no local Docker build. This decouples the lean cron image from the full agent sandbox, makes builds reproducible via lockfiles and digest-pinned base images, and separates the dev compose (bind-mounts, local builds) from the customer compose (GHCR images, data-only mounts). Independent of the other milestones — it can land in parallel with any of them.

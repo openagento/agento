@@ -216,16 +216,35 @@ class TestSetJobRuntime:
         (None, {"test_config": _CFG}, _CFG),       # set
         ('{"stub": [], "real": ["x"]}', {"test_config": _CFG}, _CFG),   # replace
         ('{"stub": [], "real": ["x"]}', {}, {"stub": [], "real": ["x"]}),  # keep
-        ('{"stub": [], "real": ["x"]}', {"clear_test": True}, None),   # clear
         ('{"stub": [], "real": ["x"]}', {"clear": True}, {"stub": [], "real": ["x"]}),  # --clear keeps it
     ])
-    def test_the_test_config_is_set_kept_or_cleared(self, stored, kwargs, written):
+    def test_the_test_config_is_set_or_kept(self, stored, kwargs, written):
         conn, cursor = _mock_conn(self._todo(test_config=stored))
         job = set_job_runtime(conn, 42, **kwargs)
         sql, params = cursor.execute.call_args_list[-1][0]
         assert "test_config = %s" in sql
         assert params[3] == (None if written is None else json.dumps(written))
         assert job.test_config == written
+
+    def test_set_runtime_has_no_clear_test_parameter(self):
+        import inspect
+
+        assert "clear_test" not in inspect.signature(set_job_runtime).parameters
+
+    @pytest.mark.parametrize("kwargs", [{"model": "x"}, {"clear": True}, {}])
+    def test_an_invalid_stored_policy_refuses_an_edit_that_keeps_it(self, kwargs):
+        from agento.framework.test_run import InvalidTestConfig
+
+        conn, cursor = _mock_conn(self._todo(test_config='{"v": 3}'))
+        with pytest.raises(InvalidTestConfig, match="invalid test policy"):
+            set_job_runtime(conn, 42, **kwargs)
+        assert not [c for c in cursor.execute.call_args_list if c[0][0].lstrip().startswith("UPDATE")]
+
+    def test_test_replaces_an_invalid_stored_policy(self):
+        conn, cursor = _mock_conn(self._todo(test_config='{"v": 3}'))
+        job = set_job_runtime(conn, 42, test_config=_CFG)
+        assert cursor.execute.call_args_list[-1][0][1][3] == json.dumps(_CFG)
+        assert job.test_config == _CFG
 
     def test_changing_the_harness_drops_the_session(self):
         conn, cursor = _mock_conn(self._todo(agent_type="claude", session_id="sess-1"))

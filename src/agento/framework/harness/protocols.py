@@ -286,6 +286,19 @@ class WorkspaceAdapter(Protocol):
         """
         ...
 
+    def direct_mcp_servers(self, artifacts_dir: Path, toolbox_target: tuple[str, str, int]) -> list[str]:
+        """Names of the MCP servers in the run's written config that are not our toolbox.
+
+        Read from the files the run will use (``artifacts_dir``, after
+        ``inject_runtime_params``). Classify by endpoint, never by name: an entry is the
+        toolbox only when it is a URL entry that ``is_toolbox_endpoint(url, toolbox_target)``
+        accepts; a stdio entry, any other URL, or an entry with no usable URL is direct,
+        whatever its key. A direct server bypasses the toolbox, so a test run cannot stub it.
+        Raise when the config cannot be read. Optional: the framework calls it in a fail-safe
+        branch (``detect_direct_mcp_servers``), so an adapter without it reports "unknown".
+        """
+        ...
+
     def serialize_toolbox_connection(
         self, spec: ToolboxConnectionSpec, target_dir: Path
     ) -> None:

@@ -18,6 +18,7 @@ from .job_types import JOB_TYPE_GRAMMAR as _JOB_TYPE_GRAMMAR
 # the validator reports at setup time what the loader refuses at boot.
 from .module_loader import is_confined_class_path
 from .route_rules import declaration_error, route_key
+from .tool_catalog import BUILTIN_LABEL_KEYS, STUB_IN_TEST
 
 # `{module/field}` — the same shape the toolbox interpolates (config-tests.js).
 # Keep the `/` separator out of the segment class so it matches unambiguously;
@@ -474,7 +475,7 @@ def validate_tool_namespace(
     return results
 
 
-def _is_core_module(module_dir: Path) -> bool:
+def is_core_module(module_dir: Path) -> bool:
     from .bootstrap import CORE_MODULES_DIR
 
     return module_dir.resolve().parent == Path(CORE_MODULES_DIR).resolve()
@@ -752,6 +753,20 @@ def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> t
                         f"module's tools[] (got '{req}')"
                     )
 
+            if "labels" in tool:
+                labels = tool["labels"]
+                if (not isinstance(labels, list) or not all(isinstance(x, str) for x in labels)
+                        or len(set(labels)) != len(labels) or not set(labels) <= BUILTIN_LABEL_KEYS):
+                    errors.append(
+                        f"module.json: tools[{i}] 'labels' must be a list of distinct label keys "
+                        f"(known: {', '.join(sorted(BUILTIN_LABEL_KEYS))})"
+                    )
+            if "availability" in tool and tool["availability"] != "conditional":
+                errors.append(
+                    f"module.json: tools[{i}] 'availability' must be \"conditional\" "
+                    f"(got {tool['availability']!r})"
+                )
+
         # Same-module duplicates are locally detectable, so a scoped `module:validate <name>`
         # must catch them; validate_tool_namespace reports CROSS-module collisions only.
         seen_names: set[str] = set()
@@ -899,15 +914,19 @@ def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> t
                         "declare in module.json tools[]"
                     )
 
-    # A core module states for each tool it declares whether a test run stubs it. User and
-    # extension modules predate the key, so they keep validating without it (CODE-5).
-    if isinstance(tools, list) and _is_core_module(module_dir):
+    # Compat: an in-tree tool keeps its `tools/<name>/sensitive` default until the toolbox reads
+    # labels only, so the two must say the same thing (ROADMAP: remove with the key).
+    if isinstance(tools, list) and is_core_module(module_dir):
         own = config if isinstance(config, dict) else {}
-        for tool_name in sorted(declared_names):
-            if f"tools/{tool_name}/sensitive" not in own:
+        for tool in tools:
+            if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+                continue
+            labels = tool.get("labels")
+            stub = isinstance(labels, list) and STUB_IN_TEST in labels
+            if (str(own.get(f"tools/{tool['name']}/sensitive", "")) == "1") is not stub:
                 errors.append(
-                    f"config.json: tool '{tool_name}' has no 'tools/{tool_name}/sensitive' default "
-                    '("1" = a test run stubs it, "0" = a test run calls it)'
+                    f"module.json: tool '{tool['name']}' must carry the '{STUB_IN_TEST}' label exactly "
+                    f"when config.json 'tools/{tool['name']}/sensitive' is \"1\""
                 )
 
     errors.extend(validate_config_defaults(module_dir))
@@ -1011,6 +1030,19 @@ def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> t
                             f"system.json: field '{field_name}' has non-boolean {flag} "
                             f"{field_def[flag]!r} — the scope gate reads it as truthy, so the "
                             "field stays editable at that scope"
+                        )
+                # A review fingerprint hashes the value into contract_hash: a secret has no
+                # place there, and the Python side never reads a toolbox_only field (SEC-3).
+                if "review_fingerprint" in field_def:
+                    flag = field_def["review_fingerprint"]
+                    if not isinstance(flag, bool):
+                        errors.append(
+                            f"system.json: field '{field_name}' has non-boolean review_fingerprint {flag!r}"
+                        )
+                    elif flag and (field_def.get("type") == "obscure" or field_def.get("access") == "toolbox_only"):
+                        errors.append(
+                            f"system.json: field '{field_name}' sets review_fingerprint on an obscure or "
+                            "toolbox_only field"
                         )
                 if "allowEnv" in field_def and not isinstance(field_def["allowEnv"], bool):
                     errors.append(

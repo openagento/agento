@@ -320,6 +320,24 @@ class ClaudeWorkspaceAdapter:
         self._write_settings_json(working_dir, agent_config, harness_config)
         self._write_mcp_json(working_dir, agent_config, toolbox_url=toolbox_url)
 
+    def direct_mcp_servers(self, artifacts_dir: Path, toolbox_target: tuple[str, str, int]) -> list[str]:
+        """Every server of the run's ``.mcp.json`` and of ``.claude.json`` (user and project
+        scope) that is not a URL entry for our toolbox endpoint."""
+        tables = []
+        mcp_path = artifacts_dir / ".mcp.json"
+        if mcp_path.is_file():
+            tables.append(json.loads(mcp_path.read_text()).get("mcpServers", {}))
+        state_path = artifacts_dir / ".claude.json"
+        if state_path.is_file():
+            state = json.loads(state_path.read_text())
+            tables.append(state.get("mcpServers", {}))
+            tables.extend(project.get("mcpServers", {}) for project in (state.get("projects") or {}).values())
+        return sorted({
+            name for table in tables for name, cfg in table.items()
+            if not (isinstance(cfg, dict) and isinstance(cfg.get("url"), str)
+                    and is_toolbox_endpoint(cfg["url"], toolbox_target))
+        })
+
     def inject_runtime_params(
         self,
         artifacts_dir: Path,

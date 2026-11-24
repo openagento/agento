@@ -3,10 +3,12 @@ import { useNavigate, useParams, useSearchParams } from "react-router";
 import { apiFetch, LIVE_REFETCH_MS, ApiError, useMutation, useQuery, useQueryClient, useSession, useUploads, type StreamEvent } from "@agento/api";
 import {
   AppLink, Button, ChatComposer, ChatError, ChatLayout, ChatList, ChatMessage, ChatStatus, ChatTime, ConnectionStatus, EmptyState, ErrorState,
-  LoadingState, MenuButton, Rail as RailFrame, Reasoning, RegenerateAction, RowMenu, SearchToggle, SelectField, SplitView, SubagentRun,
-  TextField, ThreadList, ToolCall, ToolGroup, jobTone, type JobState, type ThreadLink,
+  LoadingState, MenuButton, Rail as RailFrame, Reasoning, RegenerateAction, RowMenu, SearchToggle, SelectField, SplitView, StatusBadge,
+  SubagentRun, TextField, ThreadList, ToolCall, ToolGroup, TrifectaAlert, jobTone, type JobState, type ThreadLink,
 } from "@agento/ui";
-import { DAY_GROUPS, dayGroup, inFlight, jobTree, turnState, type JobNode, type Message, type Thread, type ThreadDetail } from "./model";
+import {
+  DAY_GROUPS, dayGroup, inFlight, jobTree, turnState, type JobNode, type Message, type Thread, type ThreadDetail, type ToolRisk,
+} from "./model";
 import { buildItems, findTurn, isSubagent, turns, type Item, type Shown, type Tool, type Turn } from "./timeline";
 import { duration, liveSummary, toolSummary } from "./tools";
 import { fetchPage, fetchThread, messagesKey, threadKey, useConversation } from "./useConversation";
@@ -271,8 +273,57 @@ function toolView(t: Tool) {
   );
 }
 
-/** What a sub-agent card reads besides its turn: the thread's runs (harness, run details only). */
-interface Ctx { detail: ThreadDetail | undefined; details: boolean }
+/** What a sub-agent card reads besides its turn: the thread's runs (harness, run details only) and,
+ *  for the admin role, each run's tool risk. */
+interface Ctx { detail: ThreadDetail | undefined; details: boolean; risk: (executionId: string) => ToolRisk | null | undefined }
+
+/** Why an assessment is incomplete, in words; "" when it does not say. */
+function gaps(r: ToolRisk): string {
+  if (r.coverage === "error" || r.tool_coverage === "error") return "This run's tools could not be assessed.";
+  return [
+    r.uncovered.length ? `Tools of ${r.uncovered.join(", ")} come from outside the toolbox and were not assessed.` : null,
+    r.direct === "pending" ? "The run's other MCP servers are not checked yet." : null,
+    r.notes.includes("modules_changed") ? "The modules changed after the worker started, so its tool list may be old." : null,
+  ].filter(Boolean).join(" ");
+}
+
+/** What makes two assessments the same warning: the verdict, the tools of each group, the gaps. */
+function riskSignature(risk: ToolRisk): string {
+  const groups = Object.entries(risk.categories).map(([k, v]) => [k, [...(v ?? [])].sort()]).sort(([a], [b]) => String(a).localeCompare(String(b)));
+  return JSON.stringify([risk.trifecta, groups, risk.coverage === "complete" ? "" : gaps(risk)]);
+}
+
+/** The run's lethal-trifecta warning (PRD §5), frozen at its start, above its turn. An old run
+ *  (`null`) and a reader without the admin role get nothing. `repeat`: the same warning as the
+ *  thread's previous run, so it shows compact (still red, the groups one click away). */
+function riskView(key: string, risk: ToolRisk | null | undefined, repeat = false) {
+  if (!risk) return null;
+  if (risk.trifecta !== false) {
+    const possible = risk.trifecta === "possible";
+    const missing = risk.coverage === "complete" ? "" : gaps(risk);
+    return (
+      <li key={`${key}-risk`}>
+        <TrifectaAlert title={possible ? "Possible lethal trifecta" : "Lethal trifecta"} categories={risk.categories}
+          compact={repeat ? "Same risk as the last assessment." : undefined}
+          intro={<>
+            {possible
+              ? "Some of these tools register only when their connection is set up. If they did, this run could read private data, take in untrusted content and communicate externally."
+              : "This run could read private data, take in untrusted content and communicate externally. Text in the untrusted content can make it send the private data out."}
+            {missing && <><br />{missing}</>}
+          </>} />
+      </li>
+    );
+  }
+  if (risk.coverage === "complete") return null;
+  return (
+    <li key={`${key}-risk`}>
+      <div className="ag-row">
+        <StatusBadge tone="blocked">Assessment incomplete</StatusBadge>
+        <span className="ag-muted">{gaps(risk) || "Some of this run's tools were not assessed."}</span>
+      </div>
+    </li>
+  );
+}
 
 /** `actions` reaches the one message that offers them: Regenerate on the newest answer. */
 function shownView(item: Shown, ctx: Ctx, actions?: ReactNode) {
@@ -341,7 +392,8 @@ function subagentLabel(turn: Turn, ctx: Ctx, orphan: boolean): string {
 
 /** A sub-agent's turn as one collapsed card: its items, nested sub-agents and its failure. */
 function subagentView(turn: Turn, ctx: Ctx, orphan = false) {
-  const body = [...turn.items.map((i) => shownView(i, ctx)), ...(turn.failure && !turn.failure.retrying ? [failureView(turn, ctx.details)] : [])];
+  const body = [riskView(turn.key, ctx.risk(turn.executionId)), ...turn.items.map((i) => shownView(i, ctx)),
+    ...(turn.failure && !turn.failure.retrying ? [failureView(turn, ctx.details)] : [])].filter(Boolean);
   return (
     <SubagentRun label={subagentLabel(turn, ctx, orphan)} state={subagentState(turn)}>
       {body.length ? <ChatList>{body}</ChatList> : undefined}
@@ -504,7 +556,8 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
   const channel = detail && detail.channel !== "panel" ? detail.channel : null;
   const details = detail?.run_details ?? admin;
   const busy = inFlight(rows);
-  const ctx: Ctx = { detail, details };
+  const risk = (executionId: string) => (admin ? detail?.runs.find((r) => r.execution_id === executionId)?.tool_risk : null);
+  const ctx: Ctx = { detail, details, risk };
   // A sub-agent whose parent run is not loaded is top-level, but it is not the thread's turn.
   const newest = top.findLast((i): i is Turn => i.type === "turn" && !isSubagent(i)) ?? null;
   const status = statusText(rows, newest);
@@ -526,6 +579,7 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
 
   const list: ReactNode[] = [];
   let askedId: number | null = null;
+  let lastRisk: string | null = null;
   for (const item of top) {
     if (item.type !== "turn") {
       if (item.type === "user") askedId = item.messageId;
@@ -533,6 +587,11 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
       continue;
     }
     if (isSubagent(item)) { list.push(<li key={item.key}>{subagentView(item, ctx, true)}</li>); continue; }
+    const assessed = risk(item.executionId);
+    const signature = assessed ? riskSignature(assessed) : null;
+    const warning = riskView(item.key, assessed, signature !== null && signature === lastRisk);
+    if (signature !== null) lastRisk = signature; // a run with no assessment (an old run) is not compared
+    if (warning) list.push(warning);
     if (channel) list.push(triggerView(item, detail!));
     for (const i of item.items) list.push(shownView(i, ctx, i === newestAnswer ? regenAction : undefined)!);
     if (item.failure && !item.failure.retrying) {
@@ -550,6 +609,7 @@ export function View({ threadId, job = null }: { threadId: number; job?: number 
     const turn = findTurn(top, job);
     const prompt = turn?.first?.prompt ?? turn?.finished?.prompt;
     const body = turn ? [
+      riskView("job", risk(turn.executionId)),
       ...(typeof prompt === "string" ? [<li key="prompt"><ChatMessage author="incoming" label="Task" text={prompt} /></li>] : []),
       ...turn.items.map((i) => shownView(i, ctx)),
       ...(turn.failure && !turn.failure.retrying ? [failureView(turn, details)] : []),

@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { ENDPOINT_TRANSPORT, SINGLE_USE_KINDS } from './auth-context.js';
+import { isV2Policy, validPolicy } from './capability.js';
 import { ScopeResolutionError, ScopeUnavailableError } from './config-loader.js';
 import { errorCategory } from './log.js';
 
@@ -14,6 +15,7 @@ export const HTTP_STATUS = Object.freeze({
   invalid_arguments: 400,
   tool_error: 422,
   unavailable: 503,
+  denied: 403,
 });
 
 // Single use, atomically: of two concurrent presentations exactly one sees affectedRows 1.
@@ -31,13 +33,28 @@ const FINALIZE_AUDIT_SQL = 'UPDATE tool_invocation SET outcome = ?, stubbed = ? 
 // in a real run. Nothing in it says the call was not made.
 const STUB_RESULT = Object.freeze({ content: [{ type: 'text', text: '{"ok": true}' }] });
 
-// Whether a test run stubs this tool (framework/test_run.py): `real` runs it, `stub` stubs
-// it, and a tool in neither list is stubbed when its module marks it sensitive.
-function stubbedInTest(test, toolName, registry) {
-  if (!test) return false;
-  const listed = key => Array.isArray(test[key]) && test[key].includes(toolName);
-  if (listed('real')) return false;
-  return listed('stub') || registry.isSensitive(toolName);
+const STUB_IN_TEST = 'stub-in-test';
+
+/**
+ * stubDecision(test, toolName, registry) -> 'stub' | 'run' | 'refuse'
+ *
+ * A v2 policy was resolved once at run start (framework/test_run.py); this only checks it
+ * against the session's registry and never decides a stub itself. A tool the list did not
+ * consider, or a `stub-in-test` default that appeared after resolution, is refused. A legacy
+ * `{stub, real}` policy (minted before v2) keeps the old rule. `is_stubbed` is the Python twin.
+ */
+export function stubDecision(test, toolName, registry) {
+  if (test === null || test === undefined) return 'run';
+  const has = (list, value) => (list ?? []).includes(value);
+  const stubInTestDefault = registry.defaultLabels(toolName).has(STUB_IN_TEST);
+  if (!isV2Policy(test)) {
+    return has(test.stub, toolName) || (stubInTestDefault && !has(test.real, toolName)) ? 'stub' : 'run';
+  }
+  const id = `${registry.tools.get(toolName)?.module}/${toolName}`;
+  if (!has(test.known, id)) return 'refuse';
+  if (has(test.stub, toolName)) return 'stub';
+  if (stubInTestDefault && !has(test.real, toolName) && !has(test.unstub, id)) return 'refuse';
+  return 'run';
 }
 
 function canonical(value) {
@@ -135,9 +152,11 @@ async function authorizeAndRun(authContext, toolName, args, deps) {
     return failure('invalid_arguments', `invalid arguments: ${where}`);
   }
 
-  if (stubbedInTest(derived.test, toolName, registry)) {
-    return { ok: true, result: STUB_RESULT, stubbed: true };
-  }
+  const test = derived.test ?? null;
+  if (test !== null && !validPolicy(test)) return failure('denied', 'invalid test policy');
+  const decision = stubDecision(test, toolName, registry);
+  if (decision === 'refuse') return failure('denied', `test policy does not cover ${toolName}; start a new run`);
+  if (decision === 'stub') return { ok: true, result: STUB_RESULT, stubbed: true };
 
   let result;
   try {

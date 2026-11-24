@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from .test_run import load_test_config
+from .test_run import InvalidPolicy, load_test_config
 
 if TYPE_CHECKING:                       # job_types imports this module: runtime would cycle
     from .job_types import JobTypeLike
@@ -113,8 +113,9 @@ class Job:
     # The job that ran agent_run for this one, and how deep it is (0 = a root job).
     parent_job_id: int | None = None
     depth: int = 0
-    # A test run: what it changes (framework/test_run.py); None for a normal job.
-    test_config: dict[str, Any] | None = None
+    # A test run: what it changes (framework/test_run.py); None for a normal job. A stored
+    # value that is not a valid policy loads as InvalidPolicy and fails the job at its run.
+    test_config: dict[str, Any] | InvalidPolicy | None = None
     # The job's thread, the session it resumes (set at claim) and, for depth > 0, the
     # first job of the agent line it continues (framework/threads.py).
     thread_id: int | None = None

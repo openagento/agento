@@ -252,3 +252,35 @@ def test_a_pending_reply_whose_view_is_gone_is_still_published_by_the_sweep(conn
     conversation = _rows(conn, "SELECT thread_id FROM conversation WHERE id = %s", (cid,))[0]
     assert (reply["source"], reply["reference_id"]) == ("jira", "AI-7")
     assert reply["thread_id"] is not None and reply["thread_id"] != conversation["thread_id"]
+
+
+def test_tool_risk_is_stored_and_shown_to_an_admin_only(conn, world):
+    """Migration 011: the mint writes the assessment, one UPDATE adds the direct servers, and
+    only an admin reads it - never a `conversation.run_details` grant, never the timeline."""
+    from agento.framework.access import accounts
+    from agento.framework.execution_hooks import RunProfile
+    from agento.framework.tool_risk import assess, with_direct
+
+    cid = service.create_conversation(conn, user_id=world["owner"].id,
+                                      agent_view_id=world["view"], title="t")
+    _, job_id, _ = service.submit_message(conn, conversation_id=cid, user_id=world["owner"].id,
+                                          client_message_id="m1", content="hello")
+    minted = assess([], set(), None, modules_changed=False)
+    provider = ConversationExecutionIds()
+    execution_id = provider.mint(conn=conn, job_id=job_id, attempt=1, profile=RunProfile(
+        harness="h", provider="p", model=None, credential_id=None, tool_risk=minted))
+    conn.commit()
+    pending = routes.show(_Req(conn, world["admin"], params={"id": str(cid)})).body["runs"][0]
+    assert pending["tool_risk"] == minted
+
+    provider.record_tool_risk(conn=conn, execution_id=execution_id,
+                              tool_risk=with_direct(minted, ["remote"]))
+    conn.commit()
+    req = _Req(conn, world["admin"], params={"id": str(cid)})
+    recorded = routes.show(req).body["runs"][0]["tool_risk"]
+    assert (recorded["direct"], recorded["uncovered"]) == ("recorded", ["remote"])
+    assert "tool_risk" not in json.dumps(routes.timeline(req).body)
+
+    accounts.add_grant(conn, "user", "operation", service.RUN_DETAILS, agent_view_id=world["view"])
+    run = routes.show(_Req(conn, world["owner"], params={"id": str(cid)})).body["runs"][0]
+    assert "harness" in run and "tool_risk" not in run

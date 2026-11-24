@@ -16,6 +16,11 @@
             "command": "scheduler:tick"
         },
         {
+            "name": "tool_catalog_sync",
+            "schedule": "* * * * *",
+            "command": "tool:sync-catalog"
+        },
+        {
             "name": "outbox_prune",
             "schedule": "30 3 * * *",
             "command": "outbox:prune"

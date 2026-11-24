@@ -1,6 +1,6 @@
 // The expand/collapse buttons appear only when they would do something, over the VISIBLE data.
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentoUiProvider } from "@agento/ui";
 import { ResourceTree } from "./ResourceTree";
 import { toTreeData, type Groups } from "./enablementTree";
@@ -71,5 +71,28 @@ describe("ResourceTree expand/collapse", () => {
     expect(expand()).not.toBeInTheDocument();
     expect(collapse()).not.toBeInTheDocument();
     expect(screen.getByText("Nothing matches")).toBeInTheDocument();
+  });
+});
+
+describe("ResourceTree on a phone", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("puts a row's info on its own line under the checkbox, not beside it", () => {
+    vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
+      matches: query.includes("max-width"), media: query, onchange: null,
+      addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent: () => false,
+    }));
+    render(
+      <AgentoUiProvider env="test">
+        <ResourceTree toData={(s) => toTreeData(GROUPS, s)} checked={new Set()} locked={new Set()} onChange={() => undefined}
+          busy={false} renderInfo={(n) => (n.children ? null : <span data-testid="info">{String(n.label)}</span>)}
+          emptyTitle="Nothing" emptyText="Nothing at all" />
+      </AgentoUiProvider>,
+    );
+    const box = screen.getByRole("checkbox", { name: "git_log" });
+    const info = screen.getAllByTestId("info").find((i) => i.textContent === "git_log")!;
+    const row = box.closest(".mantine-Group-root")!;
+    expect(row.contains(info)).toBe(false);
+    expect(row.parentElement!.contains(info)).toBe(true);
   });
 });

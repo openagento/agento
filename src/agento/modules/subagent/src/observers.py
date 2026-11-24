@@ -35,7 +35,7 @@ from agento.framework.job_models import OPEN_STATUSES
 from agento.framework.job_types import resolve_job_type
 from agento.framework.publish_service import publish_job
 from agento.framework.scoped_config import Scope
-from agento.framework.test_run import load_test_config
+from agento.framework.test_run import InvalidPolicy, load_test_config
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,10 @@ def maybe_wake(conn, parent_id: int, config: _WakeConfig | None = None) -> int |
             if any(wake_key(r["id"]) not in woken for r in candidates):
                 return None
     conn.rollback()
+    test_config = load_test_config(parent["test_config"])
+    if isinstance(test_config, InvalidPolicy):
+        logger.warning("job %s has an invalid test policy: no wake", parent_id)
+        return None
     depth = parent["depth"]
     return publish_job(
         source=parent["source"], agent_type=resolve_job_type("followup"),
@@ -145,7 +149,7 @@ def maybe_wake(conn, parent_id: int, config: _WakeConfig | None = None) -> int |
         parent_job_id=parent["parent_job_id"], depth=depth,
         # At depth 0 the claim follows the thread's depth-0 line; deeper, P's own line.
         line_id=None if depth == 0 else (parent["line_id"] or parent["id"]),
-        test_config=load_test_config(parent["test_config"]),
+        test_config=test_config,
     )
 
 

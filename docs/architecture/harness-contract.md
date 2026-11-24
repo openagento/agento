@@ -229,6 +229,25 @@ tokens from `text` and from every string in `data`, and cuts each string at 64 K
 none. The mapper names no other harness and does no I/O: it runs on the stdout drain thread, in
 the runner. The runner sends each fragment to the worker, and the worker does the rest below.
 
+### Direct MCP servers (optional)
+
+```python
+def direct_mcp_servers(self, artifacts_dir: Path, toolbox_target: tuple[str, str, int]) -> list[str]: ...
+```
+
+Returns the names of the MCP servers in the run's written config that are **not** the Agento
+toolbox. It reads the files the run uses, after `inject_runtime_params`. It classifies by
+endpoint, never by name: an entry is the toolbox only when it is a URL entry that
+`is_toolbox_endpoint(url, toolbox_target)` accepts. A stdio entry, another URL or an entry with
+no URL is direct. It raises when it cannot read the config.
+
+A direct server bypasses the toolbox, so a test run cannot stub its tools: `agento run
+--stub-tools` is refused when the list is not empty. The framework calls the member through
+`detect_direct_mcp_servers`, which returns `None` ("unknown") when the member is absent, raises,
+or returns anything but a list of strings; `--stub-tools` is refused then too. Claude reads
+`.mcp.json` and the `mcpServers` of `.claude.json` (top level and per project), Codex reads
+`.codex/config.toml` `mcp_servers`, Pi reads `.pi/agento-toolbox.json`.
+
 ### Reading session files (optional)
 
 Two more optional members, read with `getattr` like the mapper (they are not in the protocol, so a

@@ -5,6 +5,7 @@ const T0 = 1790000000;
 const BASE = {
   on_behalf_of: null, execution_id: null, app_artifact_code: null, app_version_id: null,
   app_launch_id: null, tool_ceiling: null, source_kind: null, source_id: null,
+  test_config: null, test_is_null: 1,
   created_at: T0, expires_at: T0 + 3600,
 };
 

@@ -32,6 +32,7 @@ const ROW_SQL =
   'SELECT CAST(c.id AS CHAR) AS id, c.kind, c.actor, c.subject_id, c.on_behalf_of, c.agent_view_id, ' +
   'c.workspace_id, CAST(c.job_id AS CHAR) AS job_id, c.execution_id, c.app_artifact_code, ' +
   'c.app_version_id, c.app_launch_id, c.tool_ceiling, c.allowed_transports, c.source_kind, c.source_id, c.test_config, ' +
+  'c.test_config IS NULL AS test_is_null, ' +
   'UNIX_TIMESTAMP(c.created_at) AS created_at, UNIX_TIMESTAMP(c.expires_at) AS expires_at, ' +
   'av.workspace_id AS agent_view_workspace_id ' +
   'FROM toolbox_capability c LEFT JOIN agent_view av ON av.id = c.agent_view_id ' +
@@ -50,6 +51,64 @@ function jsonColumn(v) {
     return undefined;
   }
 }
+
+// The test policy twin of framework/test_run.py validate_stored_policy (fixture
+// tests/fixtures/test_policies.json): a legacy `{stub, real}` object or a resolved v2 object.
+const MAX_STUBBED = 1000;
+const MAX_KNOWN = 2000;
+const MAX_LABELS = 200;
+const LEGACY_KEYS = ['stub', 'real'];
+const V2_LIST_BOUNDS = { stub: MAX_STUBBED, real: MAX_KNOWN, stub_labels: MAX_LABELS, unstub: MAX_KNOWN, known: MAX_KNOWN };
+const POLICY_ENVELOPE_TAG = 'agento-test-policy';
+
+const isStringList = (v, max = Infinity) => Array.isArray(v) && v.length <= max && v.every(x => typeof x === 'string');
+const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+const disjoint = (a = [], b = []) => {
+  const other = new Set(b);
+  return !a.some(x => other.has(x));
+};
+
+function validLegacyPolicy(test) {
+  return Object.keys(test).every(k => LEGACY_KEYS.includes(k))
+    && LEGACY_KEYS.every(k => test[k] === undefined || isStringList(test[k]))
+    && disjoint(test.stub, test.real);
+}
+
+function validV2Policy(test) {
+  const keys = Object.keys(test);
+  const listKeys = Object.keys(V2_LIST_BOUNDS);
+  if (test.v !== 2 || keys.length !== listKeys.length + 1 || !keys.every(k => k === 'v' || listKeys.includes(k))) return false;
+  if (!listKeys.every(k => isStringList(test[k], V2_LIST_BOUNDS[k]))) return false;
+  const known = new Set(test.known);
+  return disjoint(test.stub, test.real) && test.unstub.every(id => known.has(id));
+}
+
+export function validPolicy(test) {
+  if (!isPlainObject(test)) return false;
+  return Object.hasOwn(test, 'v') ? validV2Policy(test) : validLegacyPolicy(test);
+}
+
+export const isV2Policy = test => Object.hasOwn(test, 'v');
+
+/**
+ * The capability column's own decoder, stricter than the job column: SQL NULL (production),
+ * a bare legacy object (minted before v2), or exactly `["agento-test-policy", 2, <v2>]`. The
+ * envelope is an array so that a toolbox from before v2 refuses it (DECISIONS / plan
+ * "Cutover and rollback"). JSON `null` is not SQL NULL: only `test_is_null` says production.
+ */
+export function decodeCapabilityPolicy(row) {
+  if (Number(row.test_is_null) === 1) return { policy: null };
+  const value = jsonColumn(row.test_config);
+  if (isPlainObject(value) && !isV2Policy(value) && validLegacyPolicy(value)) return { policy: value };
+  const isEnvelope = Array.isArray(value) && value.length === 3
+    && value[0] === POLICY_ENVELOPE_TAG && value[1] === 2;
+  if (isEnvelope && isPlainObject(value[2]) && validV2Policy(value[2])) return { policy: value[2] };
+  return { invalid: true };
+}
+
+// What `derive` hands the dispatcher for a policy that does not decode: the session opens, and
+// every call is refused and audited as `denied`.
+export const INVALID_TEST_POLICY = Symbol('invalid test policy');
 
 function intColumn(v) {
   if (v === null || v === undefined) return null;
@@ -130,10 +189,9 @@ export function createVerifier(query, { sourceCheckers = NO_AUTH_SOURCES, resolv
     });
     if (!derived) return null;
     // Beside the auth context, not in it: a test run changes what a call does, never who may
-    // make it. A stored config that does not parse fails closed.
-    const test = jsonColumn(row.test_config);
-    if (test === undefined || (test !== null && (typeof test !== 'object' || Array.isArray(test)))) return null;
-    return { ...derived, test };
+    // make it.
+    const decoded = decodeCapabilityPolicy(row);
+    return { ...derived, test: decoded.invalid ? INVALID_TEST_POLICY : decoded.policy };
   }
 
   // `endpoint` names the route presenting the token; the per-kind table in auth-context.js

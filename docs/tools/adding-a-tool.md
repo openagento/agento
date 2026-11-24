@@ -222,21 +222,68 @@ agento tool:disable mysql_acme_staging --agent-view developer
 
 The tool still exists but won't be registered for that agent_view's MCP sessions.
 
-## Test runs: mark a tool that acts outside the system
+## Tool labels
 
-A tool that writes outside Agento (sends a mail, comments, changes an issue, opens a PR)
-ships `"tools/<name>/sensitive": "1"` in its module's `config.json`. In a test run
-([`agento run --test`](../cli/run.md#--test--a-test-run)) the toolbox then answers it with
-`{"ok": true}` and does not call the handler, unless the test's JSON lists it in `real`.
-Unset means not sensitive: a test run calls the tool unless the JSON lists it in `stub`.
-It is a property of the tool: there is no per-scope override.
+A `tools[]` entry may carry `labels`, a list of built-in label keys:
 
-A **core** module must state the key for every tool it declares: `"0"` for a read-only tool,
-`"1"` for one that acts outside the system. `module:validate` fails without it. User and
-extension modules are not checked, so an old module keeps validating.
+```json
+{"type": "mcp", "name": "acme_send", "description": "Send a message to Acme", "toolset": "acme",
+ "labels": ["external-communication", "stub-in-test"]}
+```
+
+| Key | Meaning |
+|---|---|
+| `private-data` | The tool reads data that is not public (an issue, a mail, a PR, a logged-in page). |
+| `untrusted-content` | The tool returns text that a third party can write. |
+| `external-communication` | The tool sends data out of the system (a comment, a mail, a request). |
+| `stub-in-test` | A test run ([`agento run --test`](../cli/run.md#--test--a-test-run)) answers the tool with `{"ok": true}` and does not call the handler, unless the test's JSON lists it in `real`. |
+
+`module:validate` accepts only these four keys. The labels are the tool's **defaults**: an admin
+adds or removes labels per tool in the tool catalog, and the effective labels are the defaults
+plus the added labels minus the removed ones. A **user or extension** module contributes only
+`stub-in-test`: its risk labels come from the admin, not from its own manifest.
+
+Compatibility: an in-tree module also keeps `"tools/<name>/sensitive": "1"` in `config.json`
+for one minor release, so an older toolbox keeps its defaults during an upgrade. For in-tree
+modules `module:validate` requires `sensitive == "1"` exactly when the labels hold
+`stub-in-test`. For a user or extension module, `sensitive == "1"` still reads as
+`stub-in-test`. ROADMAP.md lists the removal.
 
 The stub runs before the handler, so a policy that lives in the handler does not run in a test
 run. A tool that needs a handler-level test mode is a follow-up (ROADMAP.md).
+
+### `availability: "conditional"`
+
+Set `"availability": "conditional"` on a declared tool that is not always registered: a tool
+that appears only when a credential is configured (github, bitbucket) or only when an upstream
+server lists it (the Playwright passthrough tools). `"conditional"` is the only value.
+
+## Tool catalog and review
+
+`tool:sync-catalog` ([CLI](../cli/tools.md#toolsync-catalog)) writes one `tool_catalog` row per
+declared tool of every enabled module. It runs in `setup:upgrade`, after `module:enable` /
+`module:disable`, and every minute from cron. A tool that leaves every manifest is marked
+absent, never deleted, so the admin's labels come back with it.
+
+Each row has a **contract hash**. When the contract changes, the tool goes back to admin
+review. The hash covers the source, name, description, toolset, `requires`, default labels,
+the tool's schema contract, and the module's **review fingerprint**:
+
+- **Schema contract.** An in-tree module ships `tool-contracts.json` beside `module.json`:
+  `{"<tool>": "<sha1 of the input schema the MCP SDK lists>"}`, `"@playwright/mcp@<version>"`
+  for a passthrough tool and `"switch"` for a toolset master switch. After you change a tool's
+  schema, run `cd src/agento/toolbox && npm run contracts:update` and commit the file. The vitest
+  `tests/tool-contracts.test.js` fails while a lock is stale. A module without the file uses its
+  `module.json` `version` instead, so a version bump sends its tools back to review.
+- **Review fingerprint.** A `system.json` field with `"review_fingerprint": true` names the
+  system the tools talk to (a host, a workspace, a mailbox). A change of its value in any
+  scope, in `config.json` or in its `CONFIG__*` variable changes the hash. Only hashes of the
+  values enter it. `module:validate` refuses the flag on an `obscure` or `toolbox_only` field.
+
+Limits: the contract test imports internal modules of the MCP SDK
+(`server/zod-compat.js`, `server/zod-json-schema-compat.js`), so an SDK upgrade can need a
+change to the test. A change of the schema converter changes every contract at once, and every
+tool goes back to review.
 
 ## Adding Knowledge
 

@@ -4,7 +4,7 @@
   "jira_projects": {"type": "json", "label": "Jira Projects (JSON array)"},
   "jira_assignee": {"type": "string", "label": "Agent username in Jira"},
   "jira_assignee_account_id": {"type": "string", "label": "Agent Jira account ID (for mention detection)"},
-  "jira_host": {"type": "string", "label": "Jira Cloud URL", "tester": {"kind": "http", "url": "{jira/jira_host}/rest/api/2/myself", "basic": ["{jira/jira_user}", "{jira/jira_token}"], "expect": 200}},
+  "jira_host": {"type": "string", "review_fingerprint": true, "label": "Jira Cloud URL", "tester": {"kind": "http", "url": "{jira/jira_host}/rest/api/2/myself", "basic": ["{jira/jira_user}", "{jira/jira_token}"], "expect": 200}},
   "jira_user": {"type": "string", "label": "Jira API user email", "tester": {"kind": "http", "url": "{jira/jira_host}/rest/api/2/myself", "basic": ["{jira/jira_user}", "{jira/jira_token}"], "expect": 200}},
   "jira_token": {"type": "obscure", "label": "Jira API token", "tester": {"kind": "http", "url": "{jira/jira_host}/rest/api/2/myself", "basic": ["{jira/jira_user}", "{jira/jira_token}"], "expect": 200}},
   "jira_admin_token": {"type": "obscure", "label": "Jira admin API token (optional, enables auto-configuration of statuses, fields, and screens)", "tester": {"kind": "http", "url": "{jira/jira_host}/rest/api/2/myself", "basic": ["{jira/jira_admin_user}", "{jira/jira_admin_token}"], "expect": 200}},

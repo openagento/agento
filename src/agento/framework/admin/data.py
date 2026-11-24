@@ -649,6 +649,8 @@ class EnablementItem:
     # tool is therefore unavailable at runtime even when `enabled` is True. Optional so
     # get_skill_states (skills have no masters) is unaffected.
     blocked_by: str | None = None
+    requires: str | None = None  # the manifest master, so the panel can evaluate an unsaved draft
+    catalog: dict | None = None  # admin only: {id, source, labels, reviewed, revision}
 
 
 def get_all_skill_names(conn) -> list[str]:
@@ -687,7 +689,8 @@ def _scan_tools_by_toolset() -> list[tuple[str, list[str]]]:
     return [(toolset, sorted(names)) for toolset, names in sorted(groups.items())]
 
 
-def get_tool_states(conn, scope: str = Scope.DEFAULT, scope_id: int = 0) -> list[tuple[str, list[EnablementItem]]]:
+def get_tool_states(conn, scope: str = Scope.DEFAULT, scope_id: int = 0, *,
+                    with_catalog: bool = False) -> list[tuple[str, list[EnablementItem]]]:
     """Resolved tool enablement grouped by toolset, for the Tools screen.
 
     Resolution routes through the single config service (ScopedConfigService).
@@ -698,6 +701,8 @@ def get_tool_states(conn, scope: str = Scope.DEFAULT, scope_id: int = 0) -> list
     ``enabled`` is the tool's OWN resolved value — that is what a checkbox toggle
     writes. ``blocked_by`` carries effectiveness: a tool whose declared ``requires``
     master is off is denied at runtime even when its own value is ``1``.
+    ``with_catalog`` adds each tool's catalog row (effective labels, review status), keyed
+    by name: the validator refuses one tool name in two modules.
     """
     if conn is None:
         return []
@@ -712,11 +717,19 @@ def get_tool_states(conn, scope: str = Scope.DEFAULT, scope_id: int = 0) -> list
     def _resolve(tool_name: str) -> bool:
         return svc.get(f"tools/{tool_name}/is_enabled") == "1"
 
+    catalog = {}
+    if with_catalog:
+        from ..tool_catalog import load_catalog
+
+        catalog = {t.alias: {"id": t.id, "source": t.source, "labels": sorted(t.labels), "reviewed": t.reviewed,
+                             "revision": t.revision} for t in load_catalog(conn, manifests=())}
+
     def _item(name: str) -> EnablementItem:
         path = f"tools/{name}/is_enabled"
         return EnablementItem(
             name, path, _resolve(name), svc.is_set_at_scope(path),
-            blocked_by=blocked_by(name, requires, _resolve),
+            blocked_by=blocked_by(name, requires, _resolve), requires=requires.get(name),
+            catalog=catalog.get(name),
         )
 
     return [(toolset, [_item(n) for n in names]) for toolset, names in _scan_tools_by_toolset()]

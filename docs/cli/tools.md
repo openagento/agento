@@ -120,3 +120,40 @@ The `--agent-view <code>` flag resolves the agent_view code to `scope=agent_view
 The toolbox uses the same `isToolEnabled` mechanism to filter which MCP tools are exposed to the agent CLI at runtime. Disabling a tool removes it from the agent's available tool set for that agent_view.
 
 Source: `src/agento/modules/agent_view/src/commands/tool_list.py`, `tool_enable.py`, `tool_disable.py`
+
+## `tool:sync-catalog`
+
+### Usage
+
+```bash
+agento tool:sync-catalog
+```
+
+Shortcut: `tl:sc`
+
+Writes one `tool_catalog` row per tool declared in the `module.json` of every enabled module, in
+one transaction. A new tool is inserted. A changed tool is updated; when its contract hash
+changes, the tool goes back to admin review. A tool that is no longer declared is marked absent
+and is never deleted, so the admin's label changes come back when the tool returns. The command
+writes nothing when nothing changed.
+
+When the scan finds no enabled module, the command stops with an error and changes nothing: a
+failed module scan must not mark every tool absent.
+
+It runs:
+
+- in `setup:upgrade`, after the data patches and the onboarding;
+- after `module:enable` and `module:disable` (on the host through the `cron` container; a
+  failure only prints a warning);
+- every minute from the framework cron job `tool_catalog_sync`.
+
+Output:
+
+```
+Tool catalog: 2 new, 1 changed, 0 absent.
+```
+
+Labels, the contract hash and the review fingerprint are described in
+[Adding a tool](../tools/adding-a-tool.md#tool-labels).
+
+Source: `src/agento/framework/cli/tool_catalog.py`, `src/agento/framework/tool_catalog.py`

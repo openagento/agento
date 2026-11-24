@@ -11,6 +11,7 @@ yet is exactly what the queue is for.
 """
 from __future__ import annotations
 
+import json
 import uuid
 
 from agento.framework.database_config import DatabaseConfig
@@ -77,14 +78,22 @@ class ConversationExecutionIds:
              profile: RunProfile | None = None) -> str | None:
         execution_id = str(uuid.uuid4())
         # With no profile (an older caller) the columns stay NULL: shown as unknown.
-        p = (profile.harness, profile.provider, profile.model, profile.credential_id) \
-            if profile else (None, None, None, None)
+        p = (profile.harness, profile.provider, profile.model, profile.credential_id,
+             None if profile.tool_risk is None else json.dumps(profile.tool_risk)) \
+            if profile else (None, None, None, None, None)
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO execution (execution_id, job_id, attempt, status, harness, "
-                "provider, model, credential_id) VALUES (%s, %s, %s, 'running', %s, %s, %s, %s)",
+                "provider, model, credential_id, tool_risk) "
+                "VALUES (%s, %s, %s, 'running', %s, %s, %s, %s, %s)",
                 (execution_id, job_id, attempt, *p),
             )
             service.link_execution(cur, execution_row_id=cur.lastrowid,
                                    execution_id=execution_id, job_id=job_id, attempt=attempt)
         return execution_id
+
+    def record_tool_risk(self, *, conn, execution_id: str, tool_risk: dict) -> None:
+        """The assessment after the workspace (direct MCP servers), on the caller's connection."""
+        with conn.cursor() as cur:
+            cur.execute("UPDATE execution SET tool_risk = %s WHERE execution_id = %s",
+                        (json.dumps(tool_risk), execution_id))

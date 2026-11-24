@@ -68,7 +68,12 @@ class RunCommand:
             "--test", metavar="JSON",
             help="Test run: a JSON object with the tools to stub or run, e.g. "
                  "'{\"stub\": [\"jira_search\"], \"real\": [\"jira_add_comment\"]}'. "
-                 "Sensitive tools are stubbed by default; no SSH private key (docs/cli/run.md).",
+                 "Tools labelled stub-in-test are stubbed by default; no SSH private key "
+                 "(docs/cli/run.md).",
+        )
+        parser.add_argument(
+            "--stub-tools", metavar="LABEL", action="append", dest="stub_tools",
+            help="Test run: also stub every tool with this label. Repeatable.",
         )
         parser.add_argument(
             "--harness",
@@ -106,7 +111,7 @@ class RunCommand:
         # Recover them from the START and the END of the captured tokens so both orders
         # work; the same word inside the prompt text stays in the prompt.
         prompt_tokens = list(args.prompt)
-        pins = {k: getattr(args, k, None) for k in _VALUE_OPTIONS}
+        pins = {k: getattr(args, k.replace("-", "_"), None) for k in _VALUE_OPTIONS}
         found: set[str] = set()
         prompt_tokens = _take_leading_options(prompt_tokens, pins, found)
         while prompt_tokens and prompt_tokens[-1] in _FLAG_OPTIONS:
@@ -221,12 +226,13 @@ class RunCommand:
         os.execvp("docker", exec_args)
 
 
-_VALUE_OPTIONS = ("harness", "model", "credential", "test")
+_VALUE_OPTIONS = ("harness", "model", "credential", "test", "stub-tools")
+_LIST_OPTIONS = ("stub-tools",)
 _FLAG_OPTIONS = ("--yolo", "--pretty")
 
 
 def _take_leading_options(tokens: list[str], pins: dict, flags: set[str] | None = None) -> list[str]:
-    """Move ``--harness/--model/--credential/--test`` typed after the agent_view code out of
+    """Move ``--harness/--model/--credential/--test/--stub-tools`` typed after the agent_view code out of
     the prompt into ``pins``, and the ``--yolo/--pretty`` flags into ``flags``; return
     the rest. Only LEADING tokens: a prompt may contain the same words."""
     while tokens:
@@ -242,7 +248,7 @@ def _take_leading_options(tokens: list[str], pins: dict, flags: set[str] | None 
             if len(tokens) < 2:
                 break
             value, tokens = tokens[1], tokens[1:]
-        pins[key] = value
+        pins[key] = [*(pins.get(key) or []), value] if key in _LIST_OPTIONS else value
         tokens = tokens[1:]
     return tokens
 
@@ -364,8 +370,9 @@ def _fetch_runtime(
     if yolo:
         cmd.append("--yolo")
     for key, value in (pins or {}).items():
-        if value is not None:
-            cmd.extend([f"--{key}", str(value)])
+        for item in value if isinstance(value, list) else [value]:
+            if item is not None:
+                cmd.extend([f"--{key}", str(item)])
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         sys.stderr.write(result.stderr)

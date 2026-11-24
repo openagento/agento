@@ -153,6 +153,10 @@ class TestCredentialErrorLogsCarryNoContent:
         assert STDERR_SENTINEL not in logged
 
 
+_SYNC = ("docker compose -f c.yml exec -u root -T cron /opt/cron-agent/launch.sh -- "
+         "/opt/cron-agent/run.sh tool:sync-catalog")
+
+
 class TestModuleToggleReprovisionsTheSandbox:
     """`module:enable` changed Python state only. A harness module also declares the CLI
     binary the sandbox image installs, so enabling a third harness registered its adapter
@@ -223,7 +227,7 @@ class TestModuleToggleReprovisionsTheSandbox:
         # No sandbox service: the image is built directly, then the cron image the
         # runners use (FROM the sandbox image), then the containers are recreated.
         assert joined[0].split(" ")[:4] == ["docker", "build", "-t", "agento-sandbox:latest"]
-        assert joined[1:] == ["docker compose -f c.yml build cron", "docker compose -f c.yml up -d"]
+        assert joined[1:] == ["docker compose -f c.yml build cron", "docker compose -f c.yml up -d", _SYNC]
 
     def test_toggle_does_not_touch_docker_for_a_non_harness_local_module(self, tmp_path):
         project = self._project(tmp_path)
@@ -231,7 +235,7 @@ class TestModuleToggleReprovisionsTheSandbox:
         joined = self._drive_toggle(project, pins=set(), enabled=True)
 
         assert not (project / ".agento" / "docker").exists()
-        assert joined == []
+        assert joined == [_SYNC]
 
 
 class TestManifestBooleansAreValidatedNotCoerced:

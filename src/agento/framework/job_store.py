@@ -7,6 +7,7 @@ import time
 
 from .job_models import Job, JobStatus
 from .runner import client as runner_client
+from .test_run import InvalidPolicy, InvalidTestConfig
 from .toolbox_capability import revoke_job_capabilities
 
 
@@ -132,12 +133,13 @@ def resume_job(conn, job_id: int) -> Job:
 def set_job_runtime(
     conn, job_id: int, *, harness: str | None = None,
     model: str | None = None, clear: bool = False,
-    test_config: dict | None = None, clear_test: bool = False,
+    test_config: dict | None = None,
 ) -> Job:
     """Pin (or clear) the harness/model of a job that has not been claimed yet.
 
-    ``test_config`` makes the job a test run (framework/test_run.py); ``clear_test`` makes it
-    a normal job again; neither keeps it. ``clear`` does not touch it.
+    ``test_config`` makes the job a test run or replaces its policy (framework/test_run.py);
+    without it the policy is kept. A test job never becomes a normal job: it runs or is
+    cancelled (D-TEST-RUN-1). ``clear`` does not touch it.
 
     ``provider`` is never set here — it is derived at claim time and therefore marks a
     committed runtime snapshot, so EVERY edit nulls it to re-open resolution.
@@ -159,7 +161,10 @@ def set_job_runtime(
 
     new_harness = None if clear else (harness if harness is not None else job.agent_type)
     new_model = None if clear else (model if model is not None else job.model)
-    new_test_config = None if clear_test else (test_config if test_config is not None else job.test_config)
+    new_test_config = test_config if test_config is not None else job.test_config
+    if isinstance(new_test_config, InvalidPolicy):
+        conn.rollback()
+        raise InvalidTestConfig(f"job {job_id} has an invalid test policy; replace it with --test")
     # Drop the session when the harness it belongs to is replaced or removed. rowcount
     # is NOT consulted: PyMySQL reports CHANGED rows, so a repeated identical edit
     # legitimately changes nothing — the status check above is the error source.

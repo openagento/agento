@@ -96,3 +96,16 @@ def test_last_declaring_module_wins_like_object_assign(patched_overrides):
          patch("agento.framework.config_resolver.read_config_defaults", side_effect=fake_defaults):
         svc = ScopedConfigService(MagicMock())
         assert svc.get("tools/dup_tool/is_enabled") == "0"
+
+
+def test_one_instance_reads_each_config_json_once(patched_overrides):
+    """A claim resolves every tool's flag through one instance (SCL-1): one read per module."""
+    with patch("agento.framework.bootstrap.get_manifests",
+               return_value=[_manifest("a", "/a"), _manifest("b", "/b")]), \
+         patch("agento.framework.config_resolver.read_config_defaults",
+               return_value={"tools/x/is_enabled": "1"}) as read:
+        svc = ScopedConfigService(MagicMock())
+        assert [svc.get(f"tools/{name}/is_enabled") for name in ("x", "y", "x")] == ["1", None, "1"]
+        assert read.call_count == 2
+        assert ScopedConfigService(MagicMock()).get("tools/x/is_enabled") == "1"
+        assert read.call_count == 4

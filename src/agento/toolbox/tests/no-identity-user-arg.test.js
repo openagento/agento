@@ -70,7 +70,7 @@ describe('no shipped tool takes an identity argument', () => {
       reverify: vi.fn(async () => ({ context: ctx, single_use: false, permitted_tools: null })),
       loadRegistry: async () => ({
         tools: new Map([['jira_get_issue', { schema: tool.schema, handler }]]),
-        unavailableTools: new Set(), isEnabled: () => true, isSensitive: () => false,
+        unavailableTools: new Set(), isEnabled: () => true, defaultLabels: () => new Set(),
       }),
       loadOverrides: vi.fn(async () => ({})),
       log: vi.fn(),

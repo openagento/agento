@@ -161,6 +161,22 @@ class TestSetupUpgrade:
         assert not any("crontab" in str(c) for c in run.call_args_list)
 
 
+    @pytest.mark.parametrize("dry_run", [False, True])
+    @patch("agento.framework.setup.get_pending", return_value=[])
+    @patch("agento.framework.setup.migrate", return_value=[])
+    def test_syncs_tool_catalog_unless_dry_run(self, mock_migrate, mock_pending, tmp_path, dry_run):
+        conn, _ = _mock_conn()
+        core_dir, user_dir = _setup_modules(tmp_path)
+        mod = Path(core_dir) / "core"
+        mod.mkdir()
+        (mod / "module.json").write_text(json.dumps({"name": "core", "version": "1.0.0", "description": "core"}))
+        with patch("agento.framework.tool_catalog.sync_enabled_modules") as sync:
+            setup_upgrade(conn, logging.getLogger("test"), dry_run=dry_run, core_dir=core_dir, user_dir=user_dir)
+        assert sync.called is not dry_run
+        if not dry_run:
+            assert sync.call_args.kwargs == {"core_dir": core_dir, "user_dir": user_dir}
+
+
 class TestSetupEvents:
     @patch("agento.framework.setup.migrate", return_value=[])
     def test_dispatches_setup_before_and_complete(self, mock_migrate, tmp_path):

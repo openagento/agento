@@ -5,6 +5,7 @@
   },
   "outlook_tenant_id": {
     "type": "string",
+    "review_fingerprint": true,
     "label": "Azure tenant ID",
     "tester": "graph_credentials"
   },
@@ -45,6 +46,7 @@
   },
   "outlook_mailbox_user_id": {
     "type": "string",
+    "review_fingerprint": true,
     "label": "Mailbox UPN to monitor (e.g. agent@example.com)",
     "tester": "graph_credentials"
   },

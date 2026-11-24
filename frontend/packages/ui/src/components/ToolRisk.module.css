@@ -1,0 +1,23 @@
+/* Tool risk icons (panel only: tool labels are admin data, so these have no .ag-* twin, UI-2).
+   The hue is on the icon only, never on text; each shade has at least 3:1 against the badge face
+   (white, dark-6), checked in components.test.tsx. Every value is a Mantine theme variable (UI-1). */
+.icon { flex: none; color: var(--mantine-color-dimmed); }
+.private-data { color: var(--mantine-color-violet-6); }
+.untrusted-content { color: var(--mantine-color-orange-8); }
+.external-communication { color: var(--mantine-color-blue-7); }
+:where([data-mantine-color-scheme='dark']) .private-data { color: var(--mantine-color-violet-4); }
+:where([data-mantine-color-scheme='dark']) .untrusted-content { color: var(--mantine-color-orange-5); }
+:where([data-mantine-color-scheme='dark']) .external-communication { color: var(--mantine-color-blue-4); }
+/* In the red alert the icons take the alert's color: the shape is the signal there. */
+.inAlert { color: inherit; }
+/* Doubled and nested selectors: the Badge's own (single-class) rules set a fixed height and a
+   one-line, ellipsis label, and must lose. */
+/* A one-line badge stays a pill; a wrapped one is a rounded box, read from the start. */
+.badge.badge { height: auto; min-height: var(--badge-height); max-width: 100%; border-radius: calc(var(--badge-height) / 2);
+  padding-block: calc(var(--mantine-spacing-xs) / 5); }
+.badge .badgeLabel { white-space: normal; overflow: visible; overflow-wrap: anywhere; text-align: start; }
+/* The disclosure keeps a 24px target (WCAG 2.5.8) with no background of its own. */
+.disclosure { flex: none; min-height: calc(var(--mantine-spacing-xs) * 2.4); }
+.groups { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: calc(var(--mantine-spacing-xs) / 2); }
+.group { display: flex; gap: var(--mantine-spacing-xs); align-items: flex-start; }
+.group > svg { margin-top: calc(var(--mantine-spacing-xs) / 3); }

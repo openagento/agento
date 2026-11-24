@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 import random
 import shutil
@@ -46,7 +47,7 @@ from .agent_view_runtime import (
     resolve_agent_view_runtime,
     resolve_job_runtime,
 )
-from .bootstrap import bootstrap, dispatch_reload, dispatch_shutdown, get_module_config
+from .bootstrap import bootstrap, dispatch_reload, dispatch_shutdown, get_manifests, get_module_config
 from .channels.registry import get_channel
 from .consumer_config import ConsumerConfig
 from .database_config import DatabaseConfig
@@ -81,6 +82,7 @@ from .execution_hooks import (
     RunProfile,
     finalize_execution,
     mint_execution_id,
+    record_tool_risk,
     resolve_resume_session,
 )
 from .harness import (
@@ -88,6 +90,7 @@ from .harness import (
     McpInitReport,
     RunRequest,
     RunResult,
+    detect_direct_mcp_servers,
     find_harness,
     get_harness,
     get_harness_config,
@@ -102,7 +105,15 @@ from .run_preparation import check_workspace_build, materialize_run_workspace, s
 from .runner import client as runner_client
 from .runner.client import RemoteRunner
 from .secret_redaction import redact_exception, redact_secret
+from .test_run import (
+    InvalidPolicy,
+    InvalidTestConfig,
+    load_label_snapshot,
+    manifest_tool_keys,
+    resolve_test_policy,
+)
 from .threads import line_blocked, line_defer_ms, lock_thread, place_claim, resolve_resume
+from .tool_risk import assess_run, with_direct
 from .toolbox_capability import (
     KIND_INTERNAL_REST,
     KIND_MCP_JOB,
@@ -923,6 +934,47 @@ class Consumer:
         conn.commit()
         return mcp_token, rest_token
 
+    @staticmethod
+    def _resolve_tool_policy(conn, job: Job) -> dict:
+        """Resolve the job's test policy and assess the run's tool risk, before its
+        execution row and capability.
+
+        One label snapshot per claim, shared by both. A test job's resolved v2 policy is
+        written to the job row in the claim's transaction (the capability commit), so
+        children and retries reuse it and never re-resolve; a snapshot a test job cannot
+        read refuses the run. A production job runs anyway: its assessment records the
+        error. Returns the mint-time assessment.
+        """
+        manifests = get_manifests()
+        try:
+            snapshot = load_label_snapshot(conn, manifest_tool_keys(manifests))
+        except Exception as exc:
+            if job.test_config is not None:
+                raise
+            return assess_run(conn, job.agent_view_id, None, None, manifests, error=exc)
+        if job.test_config is not None:
+            policy = resolve_test_policy(job.test_config, snapshot, manifests)
+            if policy is not job.test_config:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE job SET test_config = %s WHERE id = %s", (json.dumps(policy), job.id))
+                job.test_config = policy
+        return assess_run(conn, job.agent_view_id, job.test_config, snapshot, manifests)
+
+    def _record_direct_servers(self, job: Job, harness: str, artifacts_dir, toolbox_url: str,
+                               tool_risk: dict) -> None:
+        """Add the harness's direct MCP servers to the assessment, once, from the files the
+        run will use. A failure leaves the minted ``direct: "pending"`` (SEC-6: class only)."""
+        try:
+            direct = (detect_direct_mcp_servers(workspace_adapter_for(harness), artifacts_dir, toolbox_url)
+                      if artifacts_dir is not None else None)
+            with self._db() as conn:
+                if record_tool_risk(conn=conn, execution_id=job.execution_id,
+                                    tool_risk=with_direct(tool_risk, direct)):
+                    conn.commit()
+        except Exception as exc:
+            self.logger.warning("Could not record the direct MCP servers: %s", type(exc).__name__,
+                                extra={"job_id": job.id})
+
     def _resolve_run_runtime(self, conn, job: Job) -> AgentViewRuntime:
         """The effective harness/provider/model for THIS run, persisted on the row.
 
@@ -972,6 +1024,8 @@ class Consumer:
 
     def _run_job(self, job: Job) -> _JobResult | None:
         """Dispatch to the appropriate workflow with agent_view routing."""
+        if isinstance(job.test_config, InvalidPolicy):
+            raise InvalidTestConfig(job.test_config.reason)
         channel = get_channel(job.source)
         em = get_event_manager()
         artifacts_dir = None
@@ -1046,11 +1100,13 @@ class Consumer:
                 # capabilities, so the run's capability rows carry it and every tool call
                 # this attempt makes is attributable to the attempt. With no provider
                 # registered it is None and nothing below changes (§5.1).
+                tool_risk = self._resolve_tool_policy(conn, job)
                 job.execution_id = mint_execution_id(
                     conn=conn, job_id=job.id, attempt=job.attempt,
                     profile=RunProfile(harness=harness, provider=provider_desc.id,
                                        model=model_override,
-                                       credential_id=getattr(credential, "id", None)),
+                                       credential_id=getattr(credential, "id", None),
+                                       tool_risk=tool_risk),
                 )
                 mint = self._issue_run_capabilities(conn, job)
             if mint is None:
@@ -1109,6 +1165,8 @@ class Consumer:
             except Exception as exc:
                 redact_exception(exc, capability_token, rest_capability_token)
                 raise
+            if job.execution_id is not None:
+                self._record_direct_servers(job, harness, artifacts_dir, toolbox_url, tool_risk)
             if home_dir is None:
                 # No agent_view: a private HOME the runner gives the run uid, never
                 # `/workspace` itself; removed in the outer `finally`.
