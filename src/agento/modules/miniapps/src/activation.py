@@ -36,9 +36,9 @@ _AUDIT_SQL = (
 
 
 class ActivationError(Exception):
-    def __init__(self, status: int, message: str, **extra):
+    def __init__(self, status: int, message: str, *, code: str | None = None, **extra):
         super().__init__(message)
-        self.status, self.extra = status, extra
+        self.status, self.code, self.extra = status, code, extra
 
 
 def _resolve(conn, user: accounts.User, code: str, version: str) -> dict | None:
@@ -49,12 +49,12 @@ def _resolve(conn, user: accounts.User, code: str, version: str) -> dict | None:
     if r.status == 404:
         return None
     if r.status == 400 and version == "current":
-        raise ActivationError(409, "artifact has no published version")
+        raise ActivationError(409, "artifact has no published version", code="NO_PUBLISHED_VERSION")
     b = r.body
     if (r.status != 200 or not isinstance(b.get("version_id"), str)
             or not app_path.VERSION_ID_RE.fullmatch(b["version_id"])
             or not isinstance(b.get("content_id"), str) or not _CONTENT_ID.fullmatch(b["content_id"])):
-        raise ActivationError(503, "toolbox unavailable")
+        raise ActivationError(503, "toolbox unavailable", code="TOOLBOX_UNAVAILABLE")
     return b
 
 
@@ -64,15 +64,16 @@ def approve(conn, user: accounts.User, code: str, view_id: int, expected_version
     with launches.retention_lock(conn, code):
         r = _resolve(conn, user, code, "current")
         if r is None:
-            raise ActivationError(404, "not found")
+            raise ActivationError(404, "not found", code="NOT_FOUND")
         if r["version_id"] != expected_version_id:
-            raise ActivationError(409, "current version changed, reload", current_version=r["version_id"])
+            raise ActivationError(409, "current version changed, reload", current_version=r["version_id"],
+                                  code="CURRENT_VERSION_CHANGED")
         manifest = r.get("manifest")
         if not isinstance(manifest, dict) or not isinstance(manifest.get("actions"), list):
-            raise ActivationError(409, "manifest invalid")
+            raise ActivationError(409, "manifest invalid", code="MANIFEST_INVALID")
         allowed = manifest["actions"] if actions is None else list(dict.fromkeys(actions))
         if any(a not in manifest["actions"] for a in allowed):
-            raise ActivationError(400, "an action is not in the manifest")
+            raise ActivationError(400, "an action is not in the manifest", code="ACTION_NOT_IN_MANIFEST")
 
         def work(cur):
             # The full manifest is what `execute` needs grants for (S5); `allowed` is the call ceiling.
@@ -92,7 +93,7 @@ def approval(conn, user: accounts.User, code: str, view_id: int) -> dict:
     The resolve may serve a pruned tree again: idempotent, and approve does the same step."""
     r = _resolve(conn, user, code, "current")
     if r is None:
-        raise ActivationError(404, "not found")
+        raise ActivationError(404, "not found", code="NOT_FOUND")
     with conn.cursor() as cur:
         cur.execute("SELECT approved_version_id, allowed_actions, activated_by, activated_at FROM miniapp_activation"
                     " WHERE artifact_code = %s AND agent_view_id = %s", (code, view_id))
@@ -145,7 +146,7 @@ def launch(conn, user: accounts.User, code: str, workspace_id: int, view_id: int
         if preview:
             r = _resolve(conn, user, code, "current")
             if r is None:
-                raise ActivationError(404, "not found")
+                raise ActivationError(404, "not found", code="NOT_FOUND")
             version, actions = r["version_id"], []
         else:
             with conn.cursor() as cur:
@@ -153,7 +154,7 @@ def launch(conn, user: accounts.User, code: str, workspace_id: int, view_id: int
                             " WHERE artifact_code = %s AND agent_view_id = %s", (code, view_id))
                 row = cur.fetchone()
             if row is None:
-                raise ActivationError(404, "not found")
+                raise ActivationError(404, "not found", code="NOT_FOUND")
             version = row["approved_version_id"]
             r = _resolve(conn, user, code, version)
             if r is None or r["content_id"] != row["approved_content_id"]:
@@ -163,7 +164,7 @@ def launch(conn, user: accounts.User, code: str, workspace_id: int, view_id: int
                     cur.execute("DELETE FROM miniapp_activation WHERE artifact_code = %s AND agent_view_id = %s"
                                 " AND approved_content_id = %s", (code, view_id, row["approved_content_id"]))
                 conn.commit()
-                raise ActivationError(409, "approved version gone")
+                raise ActivationError(409, "approved version gone", code="APPROVED_VERSION_GONE")
             actions = row["allowed_actions"]
             actions = json.loads(actions) if isinstance(actions, (str, bytes)) else actions
         return launches.create_launch(conn, user, workspace_id=workspace_id, agent_view_id=view_id,
@@ -180,7 +181,7 @@ def catalogue(conn, user: accounts.User) -> list[dict]:
     r = toolbox_client.admin_request(conn, "GET", "versioned-artifacts", subject_id=actor(user))
     listed = r.body.get("artifacts") if r.status == 200 else None
     if not isinstance(listed, list) or not all(isinstance(a, dict) for a in listed):
-        raise ActivationError(503, "toolbox unavailable")
+        raise ActivationError(503, "toolbox unavailable", code="TOOLBOX_UNAVAILABLE")
     store = {a.get("artifact_code"): a for a in listed}
     for code in set(held) - set(store):
         log.warning("miniapp %s has rights rows but is not in the store", code)

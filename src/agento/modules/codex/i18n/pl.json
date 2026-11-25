@@ -1,0 +1,6 @@
+{
+  "module.title": "Codex",
+  "config.config.label": "Przekazywana konfiguracja config.toml Codex (TOML)",
+  "config.config.description": "Surowa konfiguracja Codex, głęboko scalana z blokiem, który Agento generuje w .codex/config.toml (wygrywa operator). Agento nie generuje własnych sandbox_mode ani approval_policy — uruchomienia bez interfejsu omijają sandbox flagą CLI, a ten sam plik jest katalogiem HOME uruchomienia interaktywnego. Ustawienie tutaj sandbox_mode (np. \"workspace-write\", które blokuje sieć na poziomie systemu) usuwa też flagę CLI --dangerously-bypass-approvals-and-sandbox, bez której plik byłby ignorowany. Niepoprawny TOML przerywa budowanie obszaru roboczego. Nigdy nie wpisuj tu poświadczenia: ta wartość jest przechowywana bez szyfrowania i zapisywana w kontenerze agenta.",
+  "limit.Week": "Tydzień"
+}

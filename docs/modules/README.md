@@ -13,6 +13,7 @@ modules/
     system.json       # Config field schemas with types and labels
     events.json       # Event observer declarations
     acl.json          # Admin panel leaves and scoped operations (optional)
+    i18n.json         # Panel languages and message catalogs (optional)
     data_patch.json   # Data patch declarations
     cron.json         # Cron job declarations
     sql/              # Schema migrations
@@ -35,6 +36,7 @@ modules/
 | `system.json` | Config field schemas with types and labels | Config resolver (3-level fallback) |
 | `events.json` | Event observer declarations | Bootstrap (wires observers) |
 | `acl.json` | Admin panel leaves and scoped operations (see below) | `web` (route `acl`), role grants, `module:validate` |
+| `i18n.json` | Panel languages, the module's message catalogs, packs and overrides ([i18n.md](../development/i18n.md)) | `web` (the catalog routes), `module:validate` |
 | `config.json` | Non-secret default values (hosts, ports, DB names) | Toolbox (config fallback) |
 | `data_patch.json` | Data patch declarations (seeding, transforms) | Setup (`setup:upgrade`) |
 | `cron.json` | Cron job declarations (scheduled CLI commands) | Setup (`setup:upgrade`) |

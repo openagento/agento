@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "catalog": {
+    "en": "i18n/en.json",
+    "pl": "i18n/pl.json"
+  }
+}

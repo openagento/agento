@@ -73,7 +73,7 @@ def by_job(req: Request) -> Response:
                     (int(req.params["id"]),))
         row = cur.fetchone()
     if row is None or service.load_visible(req.conn, conversation_id=row["id"], user=req.session.user) is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     return Response(200, {"id": row["id"]})
 
 
@@ -81,11 +81,11 @@ def create(req: Request) -> Response:
     body = req.json if isinstance(req.json, dict) else {}
     view_id = body.get("agent_view_id")
     if not (isinstance(view_id, int) and not isinstance(view_id, bool) and view_id > 0):
-        return error(400, "agent_view_id must be a positive integer")
+        return error(400, "agent_view_id must be a positive integer", code="INVALID_REQUEST")
     try:
         title = service.check_title(body.get("title"))
     except service.SubmissionError as exc:
-        return error(exc.status, str(exc))
+        return error(exc.status, str(exc), code=exc.code, params=exc.params)
 
     user = req.session.user
     # The gate the reads use, applied before the row exists: a thread may not be created
@@ -94,11 +94,11 @@ def create(req: Request) -> Response:
         cur.execute("SELECT workspace_id FROM agent_view WHERE id = %s", (view_id,))
         row = cur.fetchone()
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     from agento.framework.access.accounts import can_reach, scope_is_active
     if not can_reach(req.conn, user, workspace_id=row["workspace_id"], agent_view_id=view_id) \
             or not scope_is_active(req.conn, view_id):
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
 
     conversation_id = service.create_conversation(
         req.conn, user_id=user.id, agent_view_id=view_id, title=title)
@@ -110,12 +110,12 @@ def index(req: Request) -> Response:
     `?scope=shared[&before=<thread id>]` - `{conversations, next}`, keyset by thread id."""
     scope = req.query.get("scope", "mine")
     if scope not in ("mine", "channels", "shared"):
-        return error(400, "scope must be mine, channels or shared")
+        return error(400, "scope must be mine, channels or shared", code="INVALID_REQUEST")
     limit = service.config(req.conn, "history/page_size")
     if scope == "shared":
         cursor = req.query.get("before")
         if cursor is not None and not re.fullmatch(r"[0-9]{1,19}", cursor):
-            return error(400, "before must be a cursor from a shared page")
+            return error(400, "before must be a cursor from a shared page", code="INVALID_REQUEST")
         rows, next_cursor = service.list_shared(
             req.conn, user=req.session.user, limit=limit,
             before=int(cursor) if cursor is not None else None)
@@ -124,7 +124,7 @@ def index(req: Request) -> Response:
     before = None
     if req.query.get("before"):
         if scope != "channels" or not re.fullmatch(r"[0-9]{1,12}:[0-9]{1,19}", req.query["before"]):
-            return error(400, "before must be a cursor from a channels page")
+            return error(400, "before must be a cursor from a channels page", code="INVALID_REQUEST")
         ts, _, rid = req.query["before"].partition(":")
         before = (int(ts), int(rid))
     rows = service.list_visible(req.conn, user=req.session.user, limit=limit,
@@ -140,7 +140,7 @@ def index(req: Request) -> Response:
 def show(req: Request) -> Response:
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     body = _conversation_json(
         dict(row, live=service.is_live(req.conn, conversation_id=row["id"])))
     details = service.can_see_run_details(req.conn, req.session.user, row)
@@ -168,14 +168,14 @@ def update(req: Request) -> Response:
     """
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     if not _may_manage(req, row, admin=False):
-        return error(403, "forbidden")
+        return error(403, "forbidden", code="FORBIDDEN")
     body = req.json if isinstance(req.json, dict) else {}
     if "title" not in body and "pinned" not in body:
-        return error(400, "title or pinned is required")
+        return error(400, "title or pinned is required", code="INVALID_REQUEST")
     if "pinned" in body and not isinstance(body["pinned"], bool):
-        return error(400, "pinned must be a boolean")
+        return error(400, "pinned must be a boolean", code="INVALID_REQUEST")
     # Everything is validated BEFORE the write, and the write is one transaction: a refused
     # field must not leave the other one saved.
     try:
@@ -183,7 +183,7 @@ def update(req: Request) -> Response:
         service.update_thread(req.conn, row["id"], user_id=row["user_id"], title=title,
                               pinned=body.get("pinned"))
     except service.SubmissionError as exc:
-        return error(exc.status, str(exc))
+        return error(exc.status, str(exc), code=exc.code, params=exc.params)
     return Response(200, _conversation_json(
         dict(_visible(req) or row, live=service.is_live(req.conn, conversation_id=row["id"]))))
 
@@ -200,9 +200,9 @@ def destroy(req: Request) -> Response:
     """Archive, not delete: §10.1's deletion is an operator path with its own ordering."""
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     if not _may_manage(req, row, admin=True):
-        return error(403, "forbidden")
+        return error(403, "forbidden", code="FORBIDDEN")
     assert req.session is not None  # auth='session'
     user = req.session.user
     owned = row["channel"] != service.PANEL_CHANNEL and user.role != "admin"
@@ -210,14 +210,14 @@ def destroy(req: Request) -> Response:
         service.archive(req.conn, row["id"], actor_id=user.id, reason="manual",
                         owner_id=row["user_id"] if owned else None)
     except service.SubmissionError as exc:
-        return error(exc.status, str(exc))
+        return error(exc.status, str(exc), code=exc.code, params=exc.params)
     return Response(200, {"id": row["id"], "status": "archived"})
 
 
 def messages(req: Request) -> Response:
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     limit = service.config(req.conn, "history/page_size")
     rows = service.list_messages(req.conn, conversation_id=row["id"], limit=limit)
     return Response(200, [_message_json(r) for r in rows])
@@ -231,18 +231,18 @@ def events(req: Request) -> Response:
     """
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     # `0` for an absent `after`, and it IS asked of the watermark - unlike the live stream,
     # where no cursor means "start at the newest" and can therefore lose nothing. Here no
     # cursor means "from the beginning", which is a claim on exactly the rows a prune took,
     # so the survivors would be a gap presented as complete history.
     after = req.query.get("after", "0")
     if not after.isdigit():
-        return error(400, "after must be a non-negative integer")
+        return error(400, "after must be a non-negative integer", code="INVALID_REQUEST")
     if retention.cursor_expired(req.conn, conversation_id=row["id"], cursor=int(after)):
         # The rows this caller asked to continue from are gone. Answering the survivors
         # would be a gap presented as complete history (§10.1).
-        return error(409, "cursor_expired")
+        return error(409, "cursor_expired", code="CURSOR_EXPIRED")
     rows = service.list_events(req.conn, conversation_id=row["id"], after_id=int(after),
                                limit=service.config(req.conn, "history/page_size"))
     return Response(200, service.project_events(req.conn, rows, req.session.user, row))
@@ -258,10 +258,10 @@ def timeline(req: Request) -> Response:
     """
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     before, limit = req.query.get("before"), req.query.get("limit")
     if (before is not None and not before.isdigit()) or (limit is not None and not limit.isdigit()):
-        return error(400, "before and limit must be non-negative integers")
+        return error(400, "before and limit must be non-negative integers", code="INVALID_REQUEST")
     at = None
     if (before_at := req.query.get("before_at")) is not None:
         try:
@@ -269,16 +269,16 @@ def timeline(req: Request) -> Response:
         except ValueError:
             at = None
         if before is None or at is None or at.tzinfo is not None:
-            return error(400, "before_at must be a UTC ISO time, sent with before")
+            return error(400, "before_at must be a UTC ISO time, sent with before", code="INVALID_REQUEST")
     cursor = None
     if before is not None:
         if retention.cursor_expired(req.conn, conversation_id=row["id"], cursor=int(before),
                                     at=at):
-            return error(409, "cursor_expired")
+            return error(409, "cursor_expired", code="CURSOR_EXPIRED")
         cursor = ((at, int(before)) if at is not None else
                   service.event_anchor(req.conn, conversation_id=row["id"], event_id=int(before)))
         if cursor is None:
-            return error(409, "cursor_expired")
+            return error(409, "cursor_expired", code="CURSOR_EXPIRED")
     rows, has_older, newest_id = service.list_timeline(
         req.conn, conversation_id=row["id"], before=cursor,
         limit=int(limit) if limit else service.config(req.conn, "history/page_size"))
@@ -297,13 +297,13 @@ def unblock(req: Request) -> Response:
     """
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     try:
         changed = service.unblock(req.conn, conversation_id=row["id"],
                                   message_id=int(req.params["message_id"]),
                                   actor_id=req.session.user.id)
     except service.SubmissionError as exc:
-        return error(exc.status, str(exc))
+        return error(exc.status, str(exc), code=exc.code, params=exc.params)
     return Response(200, {"message_id": int(req.params["message_id"]),
                           "job_state": "terminal", "changed": changed})
 
@@ -314,14 +314,14 @@ def stop(req: Request) -> Response:
     A stop is a write, so it has the write gate of a post."""
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     refusal = _write_refusal(req, row)
     if refusal is not None:
         return refusal
     try:
         job_id = service.stop(req.conn, conversation_id=row["id"])
     except service.SubmissionError as exc:
-        return error(exc.status, str(exc))
+        return error(exc.status, str(exc), code=exc.code, params=exc.params)
     return Response(200, {"job_id": job_id, "status": "DEAD"})
 
 
@@ -329,7 +329,7 @@ def _write_refusal(req: Request, row: dict) -> Response | None:
     """`service.write_refusal`, for EVERY write route (CLS-1). The submission asks it again
     under the locks (SEC-7)."""
     refusal = service.write_refusal(req.conn, req.session.user, row)
-    return None if refusal is None else error(refusal.status, str(refusal))
+    return None if refusal is None else error(refusal.status, str(refusal), code=refusal.code, params=refusal.params)
 
 
 def upload(req: Request) -> Response:
@@ -341,7 +341,7 @@ def upload(req: Request) -> Response:
     """
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     refusal = _write_refusal(req, row)
     if refusal is not None:
         return refusal
@@ -351,9 +351,9 @@ def upload(req: Request) -> Response:
         uploads.check_bytes(req.conn, data)
         upload_id, stored = uploads.store(service.upload_owner(row["id"]), req.session.user.id, name, data)
     except uploads.UploadError as exc:
-        return error(exc.status, str(exc))
+        return error(exc.status, str(exc), code=exc.code, params=exc.params)
     except service.SubmissionError as exc:
-        return error(exc.status, str(exc))
+        return error(exc.status, str(exc), code=exc.code, params=exc.params)
     return Response(201, {"upload_id": upload_id, "name": stored, "bytes": len(data)})
 
 
@@ -361,7 +361,7 @@ def regenerate(req: Request) -> Response:
     """Re-ask a user message as a new turn (§4.1's submission, with content from a row)."""
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     refusal = _write_refusal(req, row)
     if refusal is not None:
         return refusal
@@ -370,25 +370,25 @@ def regenerate(req: Request) -> Response:
         client_message_id = service.check_client_message_id(body.get("client_message_id"))
         message_id = body.get("message_id")
         if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id < 1:
-            raise service.SubmissionError(400, "message_id must be a positive integer")
+            raise service.SubmissionError(400, "message_id must be a positive integer", code="INVALID_REQUEST")
         if body.get("upload_ids") is not None:
             # A regeneration reuses the source message's own files, key included. The two
             # are alternatives, not a merge: silently dropping the ids would send a message
             # the user believes carries the file they just picked (B-7).
-            raise service.SubmissionError(400, "a regeneration takes no upload_ids")
+            raise service.SubmissionError(400, "a regeneration takes no upload_ids", code="INVALID_REQUEST")
         new_id, job_id, created = service.regenerate(
             req.conn, conversation_id=row["id"], message_id=message_id,
             user_id=req.session.user.id, client_message_id=client_message_id,
             writer=req.session.user, seen=row)
     except service.SubmissionError as exc:
-        return error(exc.status, str(exc))
+        return error(exc.status, str(exc), code=exc.code, params=exc.params)
     return Response(201 if created else 200, {"message_id": new_id, "job_id": job_id})
 
 
 def send(req: Request) -> Response:
     row = _visible(req)
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     refusal = _write_refusal(req, row)
     if refusal is not None:
         return refusal
@@ -411,6 +411,6 @@ def send(req: Request) -> Response:
             reactivate_actor_id=req.session.user.id, writer=req.session.user, seen=row,
             upload_ids=upload_ids)
     except service.SubmissionError as exc:
-        return error(exc.status, str(exc))
+        return error(exc.status, str(exc), code=exc.code, params=exc.params)
     return Response(201 if created else 200,
                     {"message_id": message_id, "job_id": job_id})

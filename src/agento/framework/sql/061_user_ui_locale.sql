@@ -1,0 +1,1 @@
+ALTER TABLE `user` ADD COLUMN ui_locale VARCHAR(35) NULL AFTER role;

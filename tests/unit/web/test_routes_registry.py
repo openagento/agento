@@ -8,15 +8,20 @@ secrets in the panel process for no reason.
 from __future__ import annotations
 
 import json
+import logging
+import os
+import shutil
+import stat
 from pathlib import Path
 
 import httpx
 import pytest
 
-from agento.framework import job_types
+from agento.framework import i18n, job_types
 from agento.framework.access import acl
-from agento.web import api
+from agento.web import api, routes_registry
 from agento.web.routes_registry import RouteDeclarationError, load_module_routes
+from tests.module_writer import write_module
 
 
 @pytest.fixture(autouse=True)
@@ -551,3 +556,155 @@ def test_a_core_route_with_an_unknown_leaf_stops_the_start(monkeypatch, tmp_path
     with pytest.raises(RouteDeclarationError) as exc:
         _compose(monkeypatch, tmp_path, [])
     assert "admin.jbos" in str(exc.value)
+
+
+SNAPSHOT_FILES = ["modules.json", "module.json", "di.json", "events.json", "system.json", "data_patch.json",
+                  "cron.json", "config.json", "acl.json", "i18n.json", "en.json", "pl.json", "pack.json"]
+
+
+@pytest.mark.parametrize("piped", SNAPSHOT_FILES)
+def test_the_catalog_snapshot_path_opens_no_file_that_is_not_a_regular_file(tmp_path, monkeypatch, piped):
+    etc = tmp_path / "etc"
+    etc.mkdir()
+    (etc / "modules.json").write_text(json.dumps({"admin": True}))
+    module_dir = write_module(
+        tmp_path / "code", "admin", di_json={}, events_json={}, data_patch_json={}, cron_json={},
+        system_json={"locale/language": {"type": "string", "label": "Language"}},
+        config_json={"locale/language": "pl"}, acl_json={"screens": []},
+        i18n_json={"version": 1, "catalog": {"en": "en.json", "pl": "pl.json"}, "packs": {"pl": "pack.json"}},
+        **{"en.json": {"greeting": "Hello"}, "pl.json": {"greeting": "Cześć"},
+           "pack.json": {"admin": {"greeting": "Hej"}}})
+    path = etc / piped if piped == "modules.json" else module_dir / piped
+    path.unlink()
+    os.mkfifo(path)
+    opened = []
+    read_text = Path.read_text
+
+    def never_a_pipe(self, *args, **kwargs):
+        if stat.S_ISFIFO(self.stat().st_mode):
+            opened.append(self.name)
+            return "{}"
+        return read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", never_a_pipe)
+    dirs = [("admin", module_dir)]
+
+    catalogs = i18n.load(i18n.ordered_sources(i18n.enabled_manifests(dirs, {})))
+    routes_registry._sequence(module_dir)
+
+    assert opened == []
+    assert catalogs.messages["pl"]["panel"]
+    assert (catalogs.default_language == "pl") is (piped not in ("module.json", "config.json"))
+
+
+MARKER = "marker-7f3a"
+DEEP = "[" * 100_000
+HEALTHY_DEFAULTS = {"locale/language": "pl", "locale/date_format": "iso", "locale/timezone": "browser"}
+OUTSIDE_LINK = object()
+BROKEN_SNAPSHOT_FILES = [
+    pytest.param("config.json", OUTSIDE_LINK, "en", id="config-outside-link"),
+    pytest.param("config.json", DEEP, "en", id="config-deep-nesting"),
+    pytest.param("config.json", "{", "en", id="config-not-json"),
+    pytest.param("config.json", ["pl"], "en", id="config-not-an-object"),
+    pytest.param("config.json", {"locale/language": 5, "locale/date_format": ["iso"],
+                                 "locale/timezone": {"zone": "browser"}}, "en", id="config-wrong-types"),
+    pytest.param("config.json", {"locale/language": MARKER, "locale/date_format": MARKER,
+                                 "locale/timezone": MARKER}, "en", id="config-defaults-that-are-no-option"),
+    pytest.param("config.json", {"locale/language": "pl"}, "pl", id="config-lacks-the-display-fields"),
+    pytest.param("system.json", OUTSIDE_LINK, "pl", id="system-outside-link"),
+    pytest.param("system.json", {"locale/date_format": {"type": "select", "options": 5},
+                                 "locale/timezone": 7}, "pl", id="system-wrong-types"),
+    pytest.param("system.json", {"locale/date_format": {"type": "select", "options": [{"value": [MARKER]}]},
+                                 "locale/timezone": {"type": "select", "options": [{"value": {"a": MARKER}}]}},
+                 "pl", id="system-option-values-that-are-not-text"),
+]
+
+
+def _admin_module(tmp_path: Path) -> Path:
+    from agento.framework.bootstrap import CORE_MODULES_DIR
+
+    module_dir = Path(shutil.copytree(Path(CORE_MODULES_DIR) / "admin", tmp_path / "code" / "admin"))
+    (module_dir / "config.json").write_text(json.dumps(HEALTHY_DEFAULTS))
+    return module_dir
+
+
+def _start(monkeypatch, tmp_path, module_dir: Path):
+    monkeypatch.setattr(i18n, "_CATALOGS", None)
+    monkeypatch.setattr(api, "_DISPLAY", None)
+    _compose(monkeypatch, tmp_path, [("admin", module_dir)])
+    return i18n.current().default_language, api._DISPLAY
+
+
+def test_the_start_takes_the_file_defaults_of_a_whole_admin_module(monkeypatch, tmp_path):
+    language, display = _start(monkeypatch, tmp_path, _admin_module(tmp_path))
+
+    assert language == "pl"
+    assert {key: setting.default for key, setting in display.items()} == {"date_format": "iso", "timezone": "browser"}
+
+
+@pytest.mark.parametrize(("name", "content", "language"), BROKEN_SNAPSHOT_FILES)
+def test_a_snapshot_file_that_is_not_sound_gives_no_default_and_does_not_stop_the_start(
+        monkeypatch, tmp_path, caplog, name, content, language):
+    module_dir = _admin_module(tmp_path)
+    target = module_dir / name
+    if content is OUTSIDE_LINK:
+        outside = tmp_path / f"outside-{name}"
+        outside.write_text(target.read_text())
+        target.unlink()
+        target.symlink_to(outside)
+    else:
+        target.write_text(content if isinstance(content, str) else json.dumps(content))
+
+    with caplog.at_level(logging.WARNING):
+        got = _start(monkeypatch, tmp_path, module_dir)
+
+    dropped_language = name == "config.json" and isinstance(content, dict) and content.get("locale/language") != "pl"
+    assert got == (language, None)
+    assert "give no display settings" in caplog.text
+    assert ("is not a registered language" in caplog.text) == dropped_language
+    assert ("i18n skip: module=admin file=config.json reason=unusable file" in caplog.text) == (
+        name == "config.json" and content in (OUTSIDE_LINK, DEEP, "{"))
+    assert MARKER not in caplog.text
+
+
+STOPS = [
+    pytest.param("app/etc/modules.json", ["admin"], AttributeError, id="status-a-list"),
+    pytest.param("app/etc/modules.json", 7, AttributeError, id="status-a-number"),
+    pytest.param("app/etc/modules.json", None, AttributeError, id="status-null"),
+]
+
+
+@pytest.mark.parametrize(("relative", "content", "raised"), STOPS)
+def test_a_present_file_of_a_base_reader_with_a_wrong_shape_stops_the_composition(
+        monkeypatch, tmp_path, relative, content, raised):
+    module_dir = _admin_module(tmp_path)
+    _app_etc(tmp_path)
+    (tmp_path / relative).write_text(content if isinstance(content, str) else json.dumps(content))
+
+    with pytest.raises(raised):
+        _start(monkeypatch, tmp_path, module_dir)
+
+
+GERMAN = {"version": 1, "languages": [{"tag": "de", "name": "Deutsch"}]}
+
+
+@pytest.mark.parametrize("linked", [False, True], ids=["own-manifest", "manifest-linked-from-outside"])
+@pytest.mark.parametrize(("status", "languages"), [
+    ({}, ["en", "pl", "de"]), ({"pack_dir": False}, ["en", "pl"]), ({"pack_de": False}, ["en", "pl"]),
+], ids=["enabled", "disabled-by-directory-name", "disabled-by-manifest-name"])
+def test_web_and_a_cli_process_take_the_languages_of_the_same_enabled_modules(monkeypatch, tmp_path, status,
+                                                                              languages, linked):
+    module_dir = write_module(tmp_path / "code", "pack_dir", module_json={"name": "pack_de"}, i18n_json=GERMAN)
+    if linked:
+        (module_dir / "module.json").rename(tmp_path / "outside.json")
+        (module_dir / "module.json").symlink_to(tmp_path / "outside.json")
+    (_app_etc(tmp_path) / "modules.json").write_text(json.dumps(status))
+    monkeypatch.setattr(i18n, "_CATALOGS", None)
+    monkeypatch.setattr(api, "_DISPLAY", None)
+
+    _compose(monkeypatch, tmp_path, [("pack_dir", module_dir)])
+    in_web = list(i18n.current().languages)
+    monkeypatch.setattr(i18n, "_CATALOGS", None)
+    in_cli = list(i18n.languages())
+
+    assert (in_web, in_cli) == (languages, languages)

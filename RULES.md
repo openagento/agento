@@ -500,6 +500,17 @@ light and dark, with the OS set to the opposite scheme. Incident: the conversati
 `ScrollArea`, and the composer textarea kept a light native scrollbar in the dark panel.
 Owner: 2026-11-23.
 
+## I18N — Panel languages
+
+Scope: the catalogs under `src/agento/framework/i18n/` and `src/agento/modules/*/i18n/`.
+
+**I18N-1 A translation says the same thing (P2).** The guards check that a text has a key, a
+translation, its parameters, its plural forms, the glossary word for each term, and a code for
+each refusal (ESLint, `frontend/catalog.test.ts`, `tests/unit/test_refusal_contract.py`). They do
+not check meaning. The reviewer reads each new translation: it says what the English text says,
+and it is a correct sentence in its language. A new domain term gets a line in
+`src/agento/framework/i18n/glossary.json` in the same change.
+
 ## TST — Tests
 
 **TST-1 Red first (P1).** Each behaviour change has a test that fails without it: pytest + respx for
@@ -539,6 +550,7 @@ wrong (a command, flag, path, default, security step, runbook, contract) is a `D
 | Tool | `docs/tools/` |
 | Roadmap item done or moved | `ROADMAP.md` |
 | UI component, kit class, or frontend rule | `docs/development/frontend.md`; the `@catalogue` block (it regenerates the `miniapp-ui` skill) |
+| Panel text, refusal code, or domain term | the catalogs in every shipped language; `glossary.json` for a new term (I18N-1) |
 | A rule | this file, in the same change |
 
 **DOC-2 Record decisions (P2).** Add each non-obvious technical choice to DECISIONS.md. Do not rewrite

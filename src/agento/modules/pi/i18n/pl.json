@@ -1,0 +1,13 @@
+{
+  "module.title": "Pi",
+  "config.builtin_tools.label": "Wbudowane narzędzia Pi",
+  "config.builtin_tools.description": "Wyłącz, aby działać WYŁĄCZNIE z narzędziami toolboxa (bez bash/read/edit/write) — ściślejsza zasada najmniejszych uprawnień, niż da się wyrazić w claude lub codex.",
+  "config.builtin_tools.option.1": "Włączone (domyślnie)",
+  "config.builtin_tools.option.0": "Wyłączone — tylko narzędzia toolboxa",
+  "config.settings.label": "Przekazywane ustawienia settings.json Pi (JSON)",
+  "config.settings.description": "Surowe ustawienia Pi, scalane z blokiem, który Agento generuje w $HOME/.pi/agent/settings.json (wygrywa operator). Niepoprawny JSON przerywa budowanie obszaru roboczego. Nigdy nie wpisuj tu poświadczenia: ta wartość jest przechowywana bez szyfrowania i zapisywana w kontenerze agenta.",
+  "config.allow_model_substitution.label": "Zezwalaj dostawcy na podmianę modelu",
+  "config.allow_model_substitution.description": "Ustaw 1 TYLKO dla modeli typu router/meta, które z założenia przekazują żądanie do innego modelu (openrouter/free, openrouter/auto, … w OpenRouter — rozpoznawalne po architecture.tokenizer == \"Router\" w https://openrouter.ai/api/v1/models). Wyłącza to kontrolę tożsamości modelu, która inaczej słusznie oznaczyłaby takie przekazanie jako niezgodność. Kontrola DOSTAWCY pozostaje aktywna.",
+  "config.allow_model_substitution.option.0": "Nie — błąd przy każdej niezgodności modelu (domyślnie)",
+  "config.allow_model_substitution.option.1": "Tak — model typu router/meta, tożsamość modelu będzie inna"
+}

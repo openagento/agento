@@ -126,12 +126,12 @@ def create_launch(conn, user: User, *, workspace_id: int, agent_view_id: int | N
         # against set_role / set_active / remove_grant, which lock the same row.
         row = _lock_users(cur, "id = %s", (user.id,)).get(user.id)
         if not row or not row["is_active"]:
-            raise AccessError("not allowed")
+            raise AccessError("not allowed", code="FORBIDDEN")
         # The authorization that counts: inside the locked transaction, with the stored role
         # (admin holds every launch, D-MINIAPP-3; a demotion since sign-in is seen here).
         if not (row["role"] == "admin"
                 or has_operation(conn, row["role"], "artifact.launch", workspace_id, agent_view_id)):
-            raise AccessError("not allowed")
+            raise AccessError("not allowed", code="FORBIDDEN")
         if authorize is not None:
             authorize(User(user.id, user.username, row["role"], bool(row["is_active"])))
         cur.execute(

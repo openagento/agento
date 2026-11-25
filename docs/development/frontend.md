@@ -68,8 +68,30 @@ npm test            # build, lint, then every unit test and every story in headl
   follows the `NavbarSimple` pattern and the user list follows `UsersRolesTable`.
 - **A date goes through `Timestamp`.** It formats with `formatTimestamp` (`us`, `eu` or `iso`,
   in a fixed `en-US` locale and the configured zone) from the `DisplayFormatProvider` that the
-  panel fills from the session's `display` ([admin.md](../modules/admin.md)). With no provider it
-  shows `toLocaleString()`. Do not call `toLocaleString` or `Intl.DateTimeFormat` in a screen.
+  panel fills from the session's `display` ([admin.md](../modules/admin.md)). A format an operator
+  set (`date_format_explicit`) always wins. With none set, English keeps `us` and any other panel
+  language writes the date its own way (`Intl`, in that language); the zone never depends on the
+  language. With no provider (a component outside
+  the panel, a test) it writes the `us` format in the browser's zone; the panel always gives one, also when `display`
+  is `null` (`admin` disabled): then the format follows the panel language and the zone is the
+  browser's. The configured zone is the server's choice, and the zone data of a browser can
+  lack it: `Timestamp` then writes the moment in UTC and the label ends with `UTC`. It never
+  writes the browser's time as if it were the configured zone. A wall time that the server
+  computed in a zone of its own (a next run of a schedule) is `<WallTime local={f.local}
+  at={f.at} />`: the label is the server's `local` in the panel's format and language, with no
+  zone conversion in the browser, and `at` is the machine instant. Do not call `toLocaleString` or
+  `Intl.DateTimeFormat` in a screen.
+- **Only `packages/ui/src/intl.ts` calls `Intl`.** An installed language can have a tag that the
+  browser has no data for (`qaa`). `Intl` then writes in the default language of the browser, and
+  so does a `toLocale…` call with no tag: two users of one panel would read two formats. The
+  module gives each formatter `formatLocales(tag)` (the tag, then English). When you need a
+  formatter that `useFormat` and `Timestamp` do not give, use `numberFormat`, `dateTimeFormat`,
+  `relativeTimeFormat` or `timeZones` from `@agento/ui`. `numbers.test.ts` fails on an `Intl`
+  call, a `toLocale…String` call, `toLocaleUpperCase`, `toLocaleLowerCase` or `localeCompare` in
+  any other module of the panel. A tag that is not well-formed would make `Intl` throw; no
+  such tag comes in, because the API boundary refuses an answer whose tag does not match the
+  server's `TAG_RE` (see "A 2xx answer is checked" below).
+- **A text a user reads comes from a catalog.** See [Languages](#languages).
 - **An action is an icon with a title (UI-7).** A row, header or copy action is `IconAction`
   (`ArchiveAction`, `RegenerateAction` — re-ask the turn above, in a chat timeline — and
   `CopyButton`): a lucide icon in a Mantine `ActionIcon` inside a `Tooltip`, its
@@ -187,8 +209,172 @@ npm test            # build, lint, then every unit test and every story in headl
   beside it is status only, and shows only when the stream is not live. the job link only for an admin. A
   channel run starts with an incoming message "From `<source>` · `<reference>`"; its trigger text
   only when the server sent `prompt`. The composer always takes typing; only Send waits.
-- **One teardown.** Logout, the first 401 and a new login call `endSession()`: it clears the query
-  cache, closes the stream and closes every launch window.
+- **One teardown.** A confirmed logout, the first 401 and a new login call `endSession()`: it clears the query
+  cache, closes the stream and closes every launch window. An answer can come back after the
+  end: `apiFetch` drops it (`SessionChangedError`), but its caller runs some microtasks later.
+  So a function of `@agento/api` that writes module state after an `await` takes the epoch
+  before the request (`const at = epoch` / `getEpoch()`) and checks it in the same synchronous
+  run as the write (`boot`, `saveLocale`, `logout`, `openLaunch`, `endLaunch`).
+  `packages/api/src/lateAnswers.test.ts` scans the package for a write with no such check.
+- **A logout ends the tab's session only when the server said so**: a 2xx, or a 401 (the session
+  is already gone). With no answer, no network or a server error the server can still hold the
+  session, so `logout()` rejects and the tab keeps its session; `Shell` shows
+  `panel:shell.sign_out_failed`, stays on the page and lets the user press Sign out again (the
+  link is disabled while one sign-out runs). When the session ended on another path during
+  the request (the first 401 of another request), `Shell` does nothing: the expiry handler owns the
+  navigation, so the address keeps `next` and the sign-in page shows no sign-out failure. The logout answer clears the session cookie, and
+  the browser applies cookies in the order of arrival. So `login()` sends its request only after
+  every pending logout request of this tab settled (an answer or a failure). The logout request
+  has a deadline (`LOGOUT_DEADLINE_MS`, 5 s): `within` (the one deadline helper,
+  `packages/api/src/deadline.ts`; the store's `withDeadline` uses it) aborts the request, so its
+  late answer cannot arrive and clear the new cookie.
+- **The language save has no deadline.** `languageSwitch.pending` holds until the PATCH settles,
+  so one tab never has two saves in flight and a late commit of an old save cannot follow a newer
+  one. Two tabs or two devices are last-write-wins on the server, as every account field is.
+- **A 2xx answer is checked before it gets a type.** `apiFetch` gives the body as `unknown`
+  (a body that is not JSON, or whose read was aborted, is `undefined`). The readers of the
+  catalogs (`catalog.ts`) and of the session (`session.ts`: `boot`, `login`, `saveLocale`) give
+  it a type only through `shaped(body, isX)`; an answer with another shape rejects with a
+  `TypeError`, as a failed read does. The checks use the server's own rules: each language tag
+  (the catalog `locale`; `effective`, `instance`, each `available` tag, `ui_locale`) matches
+  `TAG_RE` (`isLanguageTag` in `shape.ts`), and each message of `messages` and `fallback` is a
+  text or a plural object with `other`, plural categories as keys and texts as values
+  (`isMessage` of `@agento/ui`, which `translate` uses too). `api.test.ts` reads `TAG_RE` from the
+  Python source and compares it; `packages/ui/src/i18n.test.tsx` does the same for `PLURAL_CATEGORIES`. So an unreadable catalog shows the bundled English, an
+  unreadable save answer is a failed language change, and an unreadable session answer starts no
+  session. `packages/api/src/api.test.ts` fails on a new `apiFetch<T>` or `body as T` in the
+  package; `jobLinks.tsx`, `launch.ts` and `useUploads.ts` are its listed exceptions.
+
+## Languages
+
+The panel shows one language per user. The texts live in flat JSON catalogs, one file per
+namespace and language: `src/agento/framework/i18n/ui/<tag>.json` (the `@agento/ui` components),
+`src/agento/framework/i18n/panel/<tag>.json` (the panel's own screens) and
+`src/agento/modules/<module>/i18n/<tag>.json` (a module; the namespace is the module name).
+`en.json` is the source. A message is a string with `{param}` holes, or a plural object
+(`{"one": …, "other": …}`) that `count` selects.
+
+| You need | You write |
+|---|---|
+| A text in a component | `const t = useT("panel")`, then `t("config.title")` or `t("home.greeting", { username })` |
+| A text whose English source is not a catalog (a `system.json` label, an API code) | `useLookup()`: `lookup(namespace, key) ?? otherText` |
+| The text of a failed call | `useErrorText(namespace)` from `@agento/api`: `errorText(e, "config.load_failed")` |
+| A number | `useFormat().number(n)`; a number given as a `{param}` is formatted for you |
+| A share out of 100 | `useFormat().percent(share)`: `42%`, with the digits and the sign of the language. Do not write a number as JSX text: `numbers.test.ts` fails on it (an id is `String(id)`) |
+| A duration in seconds | `useFormat().duration(seconds)`: `42s`, `3m 05s`, `1h 02m`; `—` for `null` |
+| A job status (`TODO`, `RUNNING`, …) | `useJobStatusText()`: `statusText(job.status)`. Keep the raw value for a filter or a request |
+| A sentence that holds an element | `withElements(t("form.next_run"), { time: <Timestamp value={at} /> })`: the catalog text has a `{time}` hole, and you do not give that param to `t` |
+| The product name | `PRODUCT_NAME` (not translated) |
+| The browser tab title | `PageHeader` sets `<title> · Agento`; a screen with no `PageHeader` calls `useDocumentTitle` |
+
+- **A key is a literal at the call.** `catalog.test.ts` reads every `t("…")` call and fails on a
+  key that `en.json` lacks, and on a `t(…)` whose key is not a literal. A table of texts is a
+  function that takes `t` (`adminScreens(t)` in `Shell.tsx`), not a module constant.
+- **Lookup order:** the user's language, then the English that the server sent with it, then the
+  English built into the bundle (`generated/messages.ts`, written by `npm run gen`), then the key.
+  A text that falls back to English uses the English plural rules.
+- **An API error never shows the server's words.** `useErrorText` reads `<namespace>:error.<CODE>`,
+  then `panel:error.<CODE>`, then the fallback key you give (in `<namespace>`, then in `panel`).
+  A refusal can have a `reason`: a second, more exact code beside a wide `code` that older
+  clients know (the scheduler's `code: "upload"` with `reason: "UPLOAD_TOO_LARGE"` and
+  `params.max_bytes`). The text of a known reason comes first, in the same two namespaces and
+  with the same `params`; an unknown reason reads the code. This is true for every module.
+  A text that `panel` holds (`error.generic`, the `error.UPLOAD_*` texts) is not copied into a
+  module catalog. `tests/unit/test_refusal_contract.py` fails when a code of the Python sources
+  has no text in English and in Polish, and when the web layer, the framework or a module raises
+  a coded exception (or a subclass of one) with no `code` ([panel.md](../architecture/panel.md#error-codes)).
+- **Derived keys.** The Config screen reads `<module>:config.<field path>.label`, `.description`
+  and `.option.<value>`, and `<module>:module.title`; the nav reads `<module>:nav.<route path>`,
+  and the job Details drawer reads `<module>:joblink`. With no such key the manifest's or the
+  descriptor's own text shows. The English source of `nav` and `joblink` is the descriptor
+  (`<module>/panel/index.ts`); `catalog.test.ts` fails when a translation lacks one of them.
+- **A literal text fails lint.** In `packages/ui/src`, `panel/src` and `<module>/panel`, ESLint
+  (`no-restricted-syntax`, the `LITERAL_TEXT` selectors in `eslint.config.js`) refuses a text with
+  a letter in JSX and in a text prop or field (`label`, `title`, `placeholder`, `aria-label`,
+  `description`, `message`, `alt`, …), also inside a ternary or a template string. Tests, stories
+  and the descriptors are exempt. The rule does not see a text in a variable that a prop then
+  receives: put such a text in the catalog too.
+- **A message is one sentence.** ESLint (the `WHOLE_SENTENCES` selectors) refuses a plural chosen
+  in code (`n === 1 ? … : …` with a text or a `t(…)` in a branch), two `t(…)` calls joined with `+`
+  or in one template string, and a template string that puts letters beside a `t(…)`. Use a plural
+  message with `count`, a `{param}` hole, or `withElements`.
+- **No guard is switched off.** `catalog.test.ts` fails on an `eslint-disable` comment in a shipped
+  file that names `no-restricted-syntax` or names no rule.
+- **A translation is a translation.** `catalog.test.ts` fails when a translated text equals the
+  English text (the words that are the same in both languages are in
+  `SAME_WORD_IN_BOTH_LANGUAGES`), and when a text does not use the word that the
+  [glossary](i18n.md#glossary) gives for a term.
+- **No key without a reader.** `catalog.test.ts` fails on an English key that no source asks for.
+  It knows a family of keys from the call that builds them (``lookup("ui", `job.status.${status}`)``).
+- **Nothing is keyed on the language.** `SessionI18n` (`panel/src/I18n.tsx`) gives the catalog that
+  `catalogStore.ts` holds. A language change (`switchLanguage`) re-renders the
+  screens and remounts none, so a draft and a stream stay. The profile settings are a dialog
+  (`panel/src/ProfileDialog.tsx`) that the user name in the header opens over the current screen:
+  there is no profile route, so the change needs no navigation. The store keeps the newest whole
+  catalog of each language for the session. `switchLanguage` gets the catalog first and saves
+  second: for a language it already holds it asks only if the version changed (`If-None-Match`,
+  304 with no body). The save sends the version of that catalog in `If-Match` (`apiFetch`
+  option `ifMatch`); the body is `{ "ui_locale" }` only. When the server's catalog is
+  another version (a `web` restart between the two calls) it answers 409 `CATALOG_CHANGED` and
+  stores nothing: the store drops its copy, reads again and saves again, once; a second refusal
+  is a failed change (`panel:error.CATALOG_CHANGED`). After a save the store shows its catalog
+  only when the answer names the same language and version; if not, it shows the language of the
+  answer. A save that worked closes the dialog and shows one message in the new language; a
+  sign-out removes the messages of the session. A failed read or a refused save changes nothing, and the dialog shows the
+  error with Save enabled. Only one change runs at a time, and its state (`getLanguageSwitch()`:
+  the `pending` language, or the change that `failed`) is in the store, not in the form: a dialog
+  that closes and opens again during a save shows the pending language with Save disabled, and a
+  failure that came while it was closed shows when it opens (the next close forgets it). The end
+  of the session drops every copy and the shown catalog; a read or a change
+  that an ended session started changes nothing. This holds by construction. The store has one
+  object per session (`current`, with the copies), and the end of the session puts a new one in
+  its place. An operation takes `current` once, in its first statement, and gives it to every
+  step: a copy goes into that object, which nothing reads after the end. Everything else (the
+  shown catalog, the language change, each request) goes through `live(session, effect)`, which
+  checks the session and runs the effect in the same call, with no `await` between. An `await`
+  is free; an effect after it is not. Do not read or write `held`, `languageSwitch` or `current`
+  and do not call `hold`, `note` or a request in an `async` function outside `live(…)`:
+  `catalogStore.interleaving.test.ts` scans the source for that and ends the session at every
+  microtask between an answer and the next step of every path. Two shows in one session go by
+  start order: a read shows its catalog only when no show that started later is on the screen,
+  so a read that answers after a language change does not put its language back.
+  `Shell` renders nothing without a user, so a
+  sign-out shows no English frame before the sign-in page.
+- **A text is made at render.** State, a ref and a store hold the error or the key with its
+  params, never the result of `t`, `lookup`, `errorText` or a formatter: a kept text stays in the
+  old language after a change. Keep a failure as the error (`useState<unknown>`) or as a
+  `Failure` (`{ error?, fallbackKey }` from `@agento/api`) and write
+  `errorText(failure.error, failure.fallbackKey)` in the JSX; `catalog.test.ts` reads a literal
+  `fallbackKey:` as a key. `storedTexts.test.ts` (TypeScript checker) fails on such a call in the
+  argument of a state setter, in a promise or mutation callback, in a `catch` block, and in a
+  function given to a call that does not run it in the same render (an array method and a React
+  hook are fine). It does not follow a text through a variable, so the rule is yours to keep. One
+  exception: the message of `notifications.show(…)`. A notification is the record of one event,
+  so it is written once, in the language shown at that event, and it does not change later.
+- **A fixed option of an `options_source` is a message.** The options of a source are data and
+  show as sent (an IANA zone name). A fixed option carries `label_key`, and Config reads
+  `panel:config.option.<label_key>` (`Browser time zone`); `label` is the English source.
+- **Do not cut an ISO string for a date** (`slice`, `replace("T", " ")`): the result has one
+  form in every language. Use `Timestamp`, or `WallTime` for a server wall time.
+- **A React key is a stable id.** Never a `label`, a `title` or another text a user reads: a
+  translation changes it (the row remounts on a language change), and two texts can be equal.
+  `RowAction`, `RowDetail` and a `ThreadList` group have a required `id`; ESLint refuses a text
+  field in a `key` (UI-6).
+- **Every routed screen names the tab**, also in its error state and when its module is off:
+  `PageHeader` with a text title does it, any other state calls `useDocumentTitle`. Do not put the language in a `key`.
+- **No English first.** `requireSession` awaits `ensureCatalog` before the first screen, and
+  `Login` waits for `GET /api/panel/bootstrap`. Each read has a 2 s deadline; a failure shows the
+  bundled English.
+- **The catalog store holds the session's catalog only**, or the bundled English when there is
+  no session. The sign-in texts are public and belong to the `Login` route: it keeps them in its
+  own state and gives them to its own `I18nProvider`, and names its language with
+  `useScreenLanguage` (`I18n.tsx`, the one writer of `html lang`). So a signed-in user who opens `/login` and
+  goes back finds the account's language as it was. The store exports no function that takes a
+  catalog from a caller (`catalogStore.interleaving.test.ts` holds the export list). A screen
+  that needs no session must not write the store or the session state of `@agento/api`.
+- **A screen test in a second language** uses `renderInLocale("pl", path, ui)` from
+  `panel/src/routes/admin/testing.tsx`: it renders with the shipped catalog of that language.
+  Assert a landmark (the heading) and `document.title`.
 
 ## Admin screens
 
@@ -409,6 +595,36 @@ devDependencies only, so none of them reaches the panel bundle. To use a pattern
 | `Markdown` renders a code fence and a table; raw HTML stays text; opt-in highlight; composer keys, tool row, Retry, thread list, menu button | `packages/ui/src/components/components.test.tsx` |
 | WCAG AA contrast, catalogue completeness, skill drift, kit immutability | `packages/miniapp-kit/kit.test.ts` |
 | The three date formats in a fixed zone, the provider, `Timestamp` with no provider | `packages/ui/src/components/Timestamp.test.tsx`, `panel/src/DisplayFormat.test.tsx` |
+| With no format set a language writes its own date, an operator's format wins, the zone stays | `panel/src/DisplayFormat.test.tsx`, `packages/ui/src/components/Timestamp.test.tsx` |
+| `format`, plural rules, the lookup order, an unknown language falls back to English, `useDocumentTitle` | `packages/ui/src/i18n.test.tsx` |
+| A language the browser has no data for (`qaa`) shows its own texts and writes numbers, plural forms and dates as English, whatever the default language of the runtime is; only `intl.ts` calls `Intl` | `packages/ui/src/intl.test.ts`, `packages/ui/src/i18n.test.tsx`, `numbers.test.ts` |
+| A catalog, session or save answer with status 200 that has another shape (not JSON, a missing field, a wrong type, a message or a language tag that the server's rules refuse, a body that never ends) is a failed read: bundled English on sign-in and in the store, no save sent, no session started | `panel/src/routes/Login.test.tsx`, `panel/src/catalogStore.test.ts`, `packages/api/src/api.test.ts` |
+| `@agento/ui` components in Polish | `packages/ui/src/components/polish.test.tsx` |
+| An error shows the text of its code, never the server's | `packages/api/src/errorText.test.tsx` |
+| One catalog body per (language, version) in a session; a switch to a held language whose new read fails saves nothing; the end of a session drops the catalogs, also with a read pending; the 2 s deadline | `panel/src/catalogStore.test.ts` |
+| Sign-in waits for its language, errors by code, a sign-in lands in the user's language | `panel/src/routes/Login.test.tsx` |
+| A signed-in user opens `/login` and goes back: the screen and the store keep the account's catalog (real routes) | `panel/src/loginRoundTrip.test.tsx` |
+| A sign-in during a pending logout is sent after the logout answer or failure; the new session cookie is the last one written; a logout with no answer is aborted at its deadline; a logout ends the tab's session only on a 2xx or a 401 | `packages/api/src/lateAnswers.test.ts` |
+| A failed sign-out shows its text and stays on the page; the next one leaves | `panel/src/Shell.test.tsx` |
+| A language save with no answer keeps the change pending; no second save starts | `panel/src/catalogStore.test.ts` |
+| The profile dialog: a language change keeps state with no remount and no title change, a failed save changes nothing, focus returns to the header button | `panel/src/ProfileDialog.test.tsx` |
+| A language change from the header keeps the route, the draft and the one stream of an open conversation, and translates a failed attachment (real router) | `panel/src/languageSwitch.test.tsx` |
+| No number is written as JSX text without a locale formatter | `numbers.test.ts` |
+| No text of `t`, `lookup`, `errorText` or a formatter goes into state or is made in a late callback | `storedTexts.test.ts` |
+| One language change at a time; a dialog that opens again during a save shows it as pending; a failure that came while it was closed | `panel/src/catalogStore.test.ts`, `panel/src/ProfileDialog.test.tsx` |
+| The fixed time-zone option in Polish with the IANA names as they are; the English source equals the Python label | `panel/src/routes/admin/Config.test.tsx`, `tests/unit/framework/harness/test_options_source.py` |
+| A next run of a schedule is the server's wall time, written the Polish way, also for a zone the browser does not know; a display zone the browser does not know is written in UTC and named | `modules/scheduler/panel/scheduler.test.tsx`, `packages/ui/src/components/Timestamp.test.tsx` |
+| The end of a session at each microtask after each answer of `ensureCatalog` and `switchLanguage` (the 409 retry too) leaves no copy, no shown whole catalog and no further request; an operation reaches the store's state and the requests only through `live(…)`; of two shows the one that started last wins | `panel/src/catalogStore.interleaving.test.ts`, `panel/src/catalogStore.test.ts` (real `apiFetch`) |
+| No function of `@agento/api` writes module state after an `await` with no session check between; `boot`, `saveLocale`, `logout` and `openLaunch` with the session ended at each microtask after the answer | `packages/api/src/lateAnswers.test.ts` |
+| A refusal with a `reason` shows the text of the reason with its params; the scheduler form says why an attachment was refused | `packages/api/src/errorText.test.tsx`, `modules/scheduler/panel/scheduler.test.tsx` |
+| A catalog that changed between the read and the save: one re-read, then a failed change with no session change; an answer in another language | `panel/src/catalogStore.test.ts`, `panel/src/ProfileDialog.test.tsx` |
+| Every route sets the tab title, also with every read failed and with its module off | `panel/src/titles.test.tsx` |
+| A cold load shows the first screen in the stored language | `panel/src/coldLoad.test.tsx` |
+| Polish holds every English key with equal parameters, plural forms match the language, every literal key exists, no English key is unused, each descriptor `nav` and `jobLink` has a translation | `catalog.test.ts` |
+| `withElements` puts an element in its hole | `packages/ui/src/i18n.test.tsx` |
+| Job status, duration and the job link in two languages | `panel/src/routes/admin/Jobs.test.tsx` |
+| A config test `error` result reads its text by code | `panel/src/routes/admin/Config.test.tsx` |
+| Every refusal code has a text in English and in Polish | `tests/unit/test_refusal_contract.py` |
 | Import boundaries, bundle budget | `boundaries.test.ts` |
 | Every story renders with no a11y violation; panel card = miniapp card in light and dark | `packages/ui/src/**/*.stories.tsx` |
 | Each Mantine component = its `.ag-*` twin (computed styles and layout), light and dark | `packages/ui/src/acceptance/Parity.stories.tsx` |

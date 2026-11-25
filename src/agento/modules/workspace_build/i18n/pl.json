@@ -1,0 +1,13 @@
+{
+  "module.title": "Budowanie obszaru roboczego",
+  "config.strategy/theme.label": "Strategia budowania źródeł motywu (globalna)",
+  "config.strategy/theme.option.copy": "Kopiuj pliki (domyślnie)",
+  "config.strategy/theme.option.symlink": "Dowiązanie symboliczne do źródeł motywu",
+  "config.strategy/modules.label": "Strategia budowania obszaru roboczego modułów (globalna)",
+  "config.strategy/modules.option.copy": "Kopiuj pliki (domyślnie)",
+  "config.strategy/modules.option.symlink": "Dowiązanie symboliczne do źródeł modułów",
+  "config.strategy/skills.label": "Strategia budowania umiejętności (globalna)",
+  "config.strategy/skills.option.copy": "Kopiuj pliki (domyślnie)",
+  "config.strategy/skills.option.symlink": "Dowiązanie symboliczne do źródeł umiejętności",
+  "config.retention/max_builds.label": "Maks. liczba buildów przechowywanych na widok agenta (starsze są usuwane)"
+}

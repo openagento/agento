@@ -3,7 +3,7 @@
 // staging route.
 import { useLayoutEffect, useRef, useState } from "react";
 import { apiFetch } from "./apiFetch";
-import { ApiError } from "./errors";
+import { useErrorText } from "./errorText";
 
 /** One file the form is carrying. Structurally an `@agento/ui` `Attachment`. */
 export interface StagedFile {
@@ -14,22 +14,27 @@ export interface StagedFile {
  *  that only names ids. A failed upload stays in the list as an `error` entry until the user
  *  removes it: it is never dropped without a word, and it is never in `ids`.
  *
- *  `endpoint` is the POST route that stages one file. `initial` are the files already there. */
-export function useUploads(endpoint: string, initial: StagedFile[] = []) {
+ *  `endpoint` is the POST route that stages one file. `initial` are the files already there.
+ *  `namespace` is the catalog that holds the route's own `error.<CODE>` texts. */
+interface HeldFile extends Omit<StagedFile, "error"> { failure?: unknown }
+
+export function useUploads(endpoint: string, initial: StagedFile[] = [], namespace = "panel") {
+  const errorText = useErrorText(namespace);
   // The endpoint is part of the state, not an effect that clears it: a change of owner must
   // not carry a picked file to another one, and a reset in an effect would show the old list
   // for one frame.
-  const [held, setHeld] = useState({ endpoint, list: initial });
-  const files = held.endpoint === endpoint ? held.list : [];
+  const [held, setHeld] = useState<{ endpoint: string; list: HeldFile[] }>({ endpoint, list: initial });
+  const files: StagedFile[] = (held.endpoint === endpoint ? held.list : []).map(({ failure, ...file }) =>
+    (file.status === "error" ? { ...file, error: errorText(failure, "error.UPLOAD_FAILED") } : file));
   // An upload answers late. Its callback carries the endpoint it started with, and a write for
   // an endpoint the user has left is dropped: it must not put that list over the open one.
   const shown = useRef(endpoint);
   useLayoutEffect(() => { shown.current = endpoint; }, [endpoint]);
-  const setFiles = (next: (list: StagedFile[]) => StagedFile[]) => {
+  const setFiles = (next: (list: HeldFile[]) => HeldFile[]) => {
     if (shown.current !== endpoint) return;
     setHeld((prev) => ({ endpoint, list: next(prev.endpoint === endpoint ? prev.list : []) }));
   };
-  const patch = (id: string, change: Partial<StagedFile>) =>
+  const patch = (id: string, change: Partial<HeldFile>) =>
     setFiles((list) => list.map((f) => (f.id === id ? { ...f, ...change } : f)));
   const add = (picked: File[]) => {
     for (const file of picked) {
@@ -39,7 +44,7 @@ export function useUploads(endpoint: string, initial: StagedFile[] = []) {
       form.append("file", file, file.name);
       apiFetch<{ upload_id: string }>(endpoint, { method: "POST", form })
         .then((res) => patch(id, { status: "ready", uploadId: res.upload_id }))
-        .catch((err: unknown) => patch(id, { status: "error", error: err instanceof ApiError ? err.message : "The request failed." }));
+        .catch((err: unknown) => patch(id, { status: "error", failure: err }));
     }
   };
   return {

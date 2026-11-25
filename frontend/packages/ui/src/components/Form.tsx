@@ -1,6 +1,7 @@
 import { Select, Textarea, TextInput } from "@mantine/core";
 import type { InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from "react";
 import contained from "./Contained.module.css";
+import { useT } from "../i18n";
 
 export function FormSection({ title, children, onSubmit, error }: {
   title: string; children: ReactNode; onSubmit: () => void; error?: string | null;
@@ -44,9 +45,10 @@ export function SelectField({ label, hint, error, contained: inside, hideLabel, 
   options: (Option | { group: string; items: Option[] })[]; value?: string; onChange?: (value: string) => void;
   name?: string; disabled?: boolean; searchable?: boolean; placeholder?: string;
 }) {
+  const t = useT("ui");
   return (
     <Select label={hideLabel ? undefined : label} aria-label={hideLabel ? label : undefined} description={hint} error={error} data={options} inputWrapperOrder={ORDER} name={name} classNames={inside ? contained : undefined}
       disabled={disabled} value={value || null} onChange={(v) => v !== null && onChange?.(v)} allowDeselect={false}
-      searchable={searchable} placeholder={placeholder} nothingFoundMessage={searchable ? "Nothing found" : undefined} />
+      searchable={searchable} placeholder={placeholder} nothingFoundMessage={searchable ? t("select.nothing_found") : undefined} />
   );
 }

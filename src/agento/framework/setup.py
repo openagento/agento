@@ -4,6 +4,7 @@ Runs the full setup sequence in order:
 0. Manifest validation and the modules' read-only ``upgrade_checks`` (abort before any change)
 1. Framework SQL migrations
 2. Module SQL migrations (dependency order)
+   then the account language backfill (``backfill_ui_locale``)
 3. Data patches (topological order by ``require()``)
 4. Module onboarding (interactive, skippable)
 
@@ -115,6 +116,17 @@ def run_upgrade_checks(manifests: list[ModuleManifest], conn, logger: logging.Lo
     raise UpgradeCheckError("upgrade refused, nothing was changed:\n  " + "\n  ".join(messages))
 
 
+def backfill_ui_locale(conn) -> None:
+    """Give every account with no stored language the tag a new account gets now. Not a data
+    patch: it reads the registry of the enabled modules (DECISIONS.md D16)."""
+    from . import i18n
+
+    tag = i18n.account_language(conn)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE `user` SET ui_locale = %s WHERE ui_locale IS NULL", (tag,))
+    conn.commit()
+
+
 def setup_upgrade(
     conn: pymysql.Connection,
     logger: logging.Logger,
@@ -164,6 +176,9 @@ def setup_upgrade(
             applied = migrate(conn, logger, module=m.name, sql_dir=sql_dir)
             if applied:
                 result.module_migrations[m.name] = applied
+
+    if not dry_run:
+        backfill_ui_locale(conn)
 
     # 3. Data patches (topological order by require())
     pending_patches = get_all_pending(manifests, conn)

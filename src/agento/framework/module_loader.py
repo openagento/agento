@@ -29,8 +29,8 @@ class ModuleManifest:
 
 
 def _read_json(path: Path) -> dict | list | None:
-    """Read a JSON file if it exists. Returns None if absent or malformed."""
-    if not path.exists():
+    """Read a regular JSON file. Returns None if absent, malformed, or a pipe or a device."""
+    if not path.is_file():
         return None
     try:
         return json.loads(path.read_text())
@@ -47,7 +47,7 @@ def parse_module_dir(entry: Path) -> ModuleManifest | None:
     if not entry.is_dir() or entry.name.startswith("_"):
         return None
     manifest_path = entry / "module.json"
-    if not manifest_path.exists():
+    if not manifest_path.is_file():
         return None
     data = json.loads(manifest_path.read_text())
 

@@ -2,12 +2,12 @@
 // checks the per-app rights (`edit`, `remove`) and `artifact.launch` in the view; this page is only the form.
 import { useState } from "react";
 import { useParams, useSearchParams } from "react-router";
-import { apiFetch, openLaunch, useCan, useMutation, useQuery, useQueryClient } from "@agento/api";
+import { apiFetch, openLaunch, useCan, useErrorText, useMutation, useQuery, useQueryClient, type Failure } from "@agento/api";
 import {
   AppIcon, AppLink, Button, ConfirmDialog, DataTable, DeleteAction, EditableTitle, ErrorState, IconPicker, LoadingState,
-  OpenAction, PageHeader, SectionHeader, SelectField, Timestamp, type Column,
+  OpenAction, PageHeader, SectionHeader, SelectField, Timestamp, useDocumentTitle, useT, withElements, type Column, type Translate,
 } from "@agento/ui";
-import { message, useArtifactsAvailable, useViews, ViewPicker } from "./common";
+import { useArtifactsAvailable, useViews, ViewPicker } from "./common";
 
 interface Member { id: number; user_id: number | null; username: string | null; role: string | null; can_edit: boolean; can_remove: boolean }
 interface AppData {
@@ -22,6 +22,8 @@ interface Options { users: string[]; roles: { code: string; label: string }[] }
 const appUrl = (code: string) => `/api/miniapps/apps/${encodeURIComponent(code)}`;
 
 export default function AppSettingsPage() {
+  const t = useT("miniapps");
+  const errorText = useErrorText("miniapps");
   const code = useParams().code ?? "";
   const app = useQuery({
     queryKey: ["miniapps", "app", code],
@@ -29,6 +31,7 @@ export default function AppSettingsPage() {
   });
   const a = app.data;
   const title = a ? a.title ?? a.default_title ?? code : code;
+  useDocumentTitle(title);
   const refresh = useRefresh();
   const artifacts = useArtifactsAvailable();
   // Saved in the background; an empty title goes back to the agent's.
@@ -41,14 +44,14 @@ export default function AppSettingsPage() {
       <PageHeader
         title={a?.can.edit
           ? <span className="ag-row"><IconPicker value={a.icon} onChange={(icon) => patch.mutate({ icon })} />
-            <EditableTitle value={title} maxLength={255} onSave={(t) => patch.mutate({ title: t })} /></span>
+            <EditableTitle value={title} maxLength={255} onSave={(next) => patch.mutate({ title: next })} /></span>
           : <span className="ag-row">{a && <AppIcon name={a.icon} size={24} />}{title}</span>}
-        description={<>App settings. <code>{code}</code>
-          {artifacts && <> · <AppLink to={`/artifacts/${code}`}>Versions and history</AppLink></>}</>} />
-      {patch.error && <p className="ag-field__error" role="alert">{message(patch.error)}</p>}
-      {app.error ? <ErrorState message={message(app.error)} onRetry={() => void app.refetch()} />
+        description={<>{t("settings.description")} <code>{code}</code>
+          {artifacts && <> · <AppLink to={`/artifacts/${code}`}>{t("settings.versions_link")}</AppLink></>}</>} />
+      {patch.error && <p className="ag-field__error" role="alert">{errorText(patch.error, "settings.save_failed")}</p>}
+      {app.error ? <ErrorState message={errorText(app.error, "settings.load_failed")} onRetry={() => void app.refetch()} />
         : !a ? <LoadingState />
-          : !a.can.edit ? <p className="ag-muted">You may open this app, but not change it.</p>
+          : !a.can.edit ? <p className="ag-muted">{t("settings.view_only")}</p>
             : (
               <>
                 <Members app={a} />
@@ -65,6 +68,8 @@ function useRefresh() {
 }
 
 function Members({ app }: { app: AppData }) {
+  const t = useT("miniapps");
+  const errorText = useErrorText("miniapps");
   const refresh = useRefresh();
   const url = `${appUrl(app.artifact_code)}/members`;
   const [pick, setPick] = useState("");
@@ -72,8 +77,8 @@ function Members({ app }: { app: AppData }) {
     queryKey: ["miniapps", "member-options", app.artifact_code],
     queryFn: ({ signal }) => apiFetch<Options>(`${appUrl(app.artifact_code)}/member-options`, { signal }),
   });
-  const [failure, setFailure] = useState<string | null>(null);
-  const done = { onSuccess: () => setFailure(null), onError: (e: unknown) => setFailure(message(e)), onSettled: () => void refresh() };
+  const [failure, setFailure] = useState<Failure | null>(null);
+  const done = { onSuccess: () => setFailure(null), onError: (e: unknown) => setFailure({ error: e, fallbackKey: "settings.members.save_failed" }), onSettled: () => void refresh() };
   const put = useMutation({
     mutationFn: (m: { username?: string; role?: string; can_edit: boolean; can_remove: boolean }) => apiFetch(url, { method: "PUT", json: m }),
     ...done,
@@ -86,18 +91,20 @@ function Members({ app }: { app: AppData }) {
       onChange={() => put.mutate({ ...who(m), can_edit: m.can_edit, can_remove: m.can_remove, [key]: !m[key] })} />
   );
   const columns: Column<Member>[] = [
-    { id: "who", header: "Member", cell: (m) => (m.user_id !== null ? m.username : <>Role <code>{m.role}</code></>) },
-    { id: "edit", header: "Edit", cell: (m) => flag(m, "can_edit", "Edit") },
-    { id: "remove", header: "Remove", cell: (m) => flag(m, "can_remove", "Remove") },
-    { id: "actions", header: "Actions", cell: (m) => <DeleteAction label="Remove member" onClick={() => drop.mutate(m.id)} /> },
+    { id: "who", header: t("settings.members.column.member"),
+      cell: (m) => (m.user_id !== null ? m.username : withElements(t("settings.members.role"), { role: <code>{m.role}</code> })) },
+    { id: "edit", header: t("settings.members.column.edit"), cell: (m) => flag(m, "can_edit", t("settings.members.column.edit")) },
+    { id: "remove", header: t("settings.members.column.remove"), cell: (m) => flag(m, "can_remove", t("settings.members.column.remove")) },
+    { id: "actions", header: t("settings.members.column.actions"),
+      cell: (m) => <DeleteAction label={t("settings.members.remove_member")} onClick={() => drop.mutate(m.id)} /> },
   ];
   return (
     <section className="ag-stack">
-      <SectionHeader>Members</SectionHeader>
-      <p className="ag-muted">A member sees the app. To run it, the member's role also needs artifact.launch and a tool grant for each of its actions in the view.</p>
-      {failure && <p className="ag-field__error" role="alert">{failure}</p>}
-      <DataTable caption="Members" columns={columns} rows={app.members ?? []} rowKey={(m) => String(m.id)}
-        emptyTitle="No members" emptyText="Only the creator and admins see this app." />
+      <SectionHeader>{t("settings.members.title")}</SectionHeader>
+      <p className="ag-muted">{t("settings.members.hint")}</p>
+      {failure && <p className="ag-field__error" role="alert">{errorText(failure.error, failure.fallbackKey)}</p>}
+      <DataTable caption={t("settings.members.title")} columns={columns} rows={app.members ?? []} rowKey={(m) => String(m.id)}
+        emptyTitle={t("settings.members.empty.title")} emptyText={t("settings.members.empty.text")} />
       <form className="ag-row" onSubmit={(e) => {
         e.preventDefault();
         // `username:<name>` or `role:<code>`: the field the API takes, then its value.
@@ -105,26 +112,28 @@ function Members({ app }: { app: AppData }) {
         put.mutate({ [key]: rest.join(":"), can_edit: false, can_remove: false });
         setPick("");
       }}>
-        <SelectField label="Add a user or a role" name="member" searchable placeholder="Search" value={pick} onChange={setPick}
-          options={memberChoices(options.data, app.members ?? [])} />
-        <Button type="submit" disabled={put.isPending || !pick}>Add member</Button>
+        <SelectField label={t("settings.members.add.label")} name="member" searchable placeholder={t("settings.members.add.placeholder")}
+          value={pick} onChange={setPick} options={memberChoices(t, options.data, app.members ?? [])} />
+        <Button type="submit" disabled={put.isPending || !pick}>{t("settings.members.add.submit")}</Button>
       </form>
     </section>
   );
 }
 
 /** The users and roles not yet members, grouped, as `username:<name>` / `role:<code>`. */
-function memberChoices(o: Options | undefined, members: Member[]) {
+function memberChoices(t: Translate, o: Options | undefined, members: Member[]) {
   if (!o) return [];
   const users = new Set(members.map((m) => m.username));
   const roles = new Set(members.map((m) => m.role));
   return [
-    { group: "Users", items: o.users.filter((u) => !users.has(u)).map((u) => ({ value: `username:${u}`, label: u })) },
-    { group: "Roles", items: o.roles.filter((r) => !roles.has(r.code)).map((r) => ({ value: `role:${r.code}`, label: r.label })) },
+    { group: t("settings.members.group.users"), items: o.users.filter((u) => !users.has(u)).map((u) => ({ value: `username:${u}`, label: u })) },
+    { group: t("settings.members.group.roles"), items: o.roles.filter((r) => !roles.has(r.code)).map((r) => ({ value: `role:${r.code}`, label: r.label })) },
   ];
 }
 
 function Approvals({ code }: { code: string }) {
+  const t = useT("miniapps");
+  const errorText = useErrorText("miniapps");
   const views = useViews();
   const [picked, setPicked] = useState("");
   // `?view=<id>` (from the artifact page) picks the view, if it is one of the user's.
@@ -139,42 +148,47 @@ function Approvals({ code }: { code: string }) {
   const p = page.data;
   return (
     <section className="ag-stack">
-      <SectionHeader>Approval</SectionHeader>
-      <p className="ag-muted">The app runs its actions with the tools and accounts of one agent view. Approve a version in each view where it may run.</p>
+      <SectionHeader>{t("settings.approval.title")}</SectionHeader>
+      <p className="ag-muted">{t("settings.approval.hint")}</p>
       <ViewPicker views={views.data} value={viewId} onChange={setPicked} />
-      {views.error || page.error ? <ErrorState message={message(views.error ?? page.error)} onRetry={() => void page.refetch()} />
-        : !p ? (views.data?.length === 0 ? <p className="ag-muted">You may not approve apps in any view.</p> : <LoadingState />)
+      {views.error || page.error ? <ErrorState message={errorText(views.error ?? page.error, "settings.approval.load_failed")} onRetry={() => void page.refetch()} />
+        : !p ? (views.data?.length === 0 ? <p className="ag-muted">{t("settings.approval.no_views")}</p> : <LoadingState />)
           : <Approve key={`${viewId}:${p.current.version_id}:${p.approval?.approved_version_id}`} code={code} viewId={viewId} url={url} page={p} />}
     </section>
   );
 }
 
 function Approve({ code, viewId, url, page }: { code: string; viewId: number; url: string; page: Page }) {
+  const t = useT("miniapps");
+  const errorText = useErrorText("miniapps");
   const refresh = useRefresh();
   const { approval, current } = page;
   const actions = current.actions ?? [];
   const [checked, setChecked] = useState(() => new Set(approval ? approval.allowed_actions : actions));
-  const [failure, setFailure] = useState<string | null>(null);
+  const [failure, setFailure] = useState<Failure | null>(null);
   const [revoking, setRevoking] = useState(false);
-  const done = { onSuccess: () => setFailure(null), onError: (e: unknown) => setFailure(message(e)), onSettled: () => { setRevoking(false); void refresh(); } };
+  const done = (failed: Failure) => ({
+    onSuccess: () => setFailure(null), onError: (e: unknown) => setFailure({ ...failed, error: e }),
+    onSettled: () => { setRevoking(false); void refresh(); },
+  });
   const approve = useMutation({
     mutationFn: () => apiFetch(url, { method: "POST", json: { expected_version_id: current.version_id, actions: actions.filter((a) => checked.has(a)) } }),
-    ...done,
+    ...done({ fallbackKey: "settings.approval.approve_failed" }),
   });
-  const revoke = useMutation({ mutationFn: () => apiFetch(url, { method: "DELETE" }), ...done });
+  const revoke = useMutation({ mutationFn: () => apiFetch(url, { method: "DELETE" }), ...done({ fallbackKey: "settings.approval.revoke_failed" }) });
   const canTools = useCan("admin.tools");
   const tools = useQuery({
     queryKey: ["admin", "tools", viewId],
     enabled: canTools,
     queryFn: ({ signal }) => apiFetch<Toolset[]>(`/api/admin/tools?scope=agent_view&scope_id=${viewId}`, { signal }),
   });
-  const enabled = new Map((tools.data ?? []).flatMap((t) => t.tools.map((x) => [x.name, x.enabled] as const)));
+  const enabled = new Map((tools.data ?? []).flatMap((set) => set.tools.map((x) => [x.name, x.enabled] as const)));
   const preview = () => {
     setFailure(null);
     // No await before openLaunch: it reserves the window inside this click.
     openLaunch({ agentViewId: viewId, artifactCode: code, preview: true }, new Set())
-      .then((r) => { if (r.kind === "blocked") setFailure("The browser blocked the window. Allow pop-ups for the panel and try again."); })
-      .catch((e) => setFailure(message(e)));
+      .then((r) => { if (r.kind === "blocked") setFailure({ fallbackKey: "launch.blocked" }); })
+      .catch((e: unknown) => setFailure({ error: e, fallbackKey: "launch.failed" }));
   };
   const toggle = (a: string) => setChecked((s) => {
     const n = new Set(s);
@@ -183,39 +197,44 @@ function Approve({ code, viewId, url, page }: { code: string; viewId: number; ur
   });
 
   const columns: Column<{ name: string }>[] = [
-    { id: "action", header: "Action", cell: ({ name }) => (
+    { id: "action", header: t("settings.actions.column.action"), cell: ({ name }) => (
       <label className="ag-row"><input type="checkbox" checked={checked.has(name)} onChange={() => toggle(name)} /><code>{name}</code></label>
     ) },
-    { id: "approved", header: "Approved now", cell: ({ name }) => (approval?.allowed_actions.includes(name) ? "yes" : "no") },
-    ...(tools.data ? [{ id: "tool", header: "Tool in view", cell: ({ name }: { name: string }) => (enabled.get(name) ? "on" : "off") }] : []),
+    { id: "approved", header: t("settings.actions.column.approved"),
+      cell: ({ name }) => (approval?.allowed_actions.includes(name) ? t("settings.actions.yes") : t("settings.actions.no")) },
+    ...(tools.data ? [{ id: "tool", header: t("settings.actions.column.tool"),
+      cell: ({ name }: { name: string }) => (enabled.get(name) ? t("settings.actions.on") : t("settings.actions.off")) }] : []),
   ];
 
   return (
     <>
       <div className="ag-row">
-        <OpenAction label="Preview current" onClick={preview} />
-        {approval && <DeleteAction label="Revoke" onClick={() => setRevoking(true)} disabled={revoke.isPending} />}
+        <OpenAction label={t("settings.approval.preview")} onClick={preview} />
+        {approval && <DeleteAction label={t("settings.approval.revoke")} onClick={() => setRevoking(true)} disabled={revoke.isPending} />}
       </div>
-      {failure && <p className="ag-field__error" role="alert">{failure}</p>}
+      {failure && <p className="ag-field__error" role="alert">{errorText(failure.error, failure.fallbackKey)}</p>}
       <p>
         {approval
-          ? <>Approved <code>{approval.approved_version_id}</code> by {approval.activated_by}, <Timestamp value={approval.activated_at} />.</>
-          : "Not approved for this view."}
-        {" "}Current <code>{current.version_id}</code>.
-        {approval && approval.approved_version_id !== current.version_id && " A new version is waiting."}
+          ? withElements(t("settings.approval.approved"), {
+            version: <code>{approval.approved_version_id}</code>, actor: approval.activated_by,
+            time: <Timestamp value={approval.activated_at} />,
+          })
+          : t("settings.approval.not_approved")}
+        {" "}{withElements(t("settings.approval.current"), { version: <code>{current.version_id}</code> })}
+        {approval && approval.approved_version_id !== current.version_id && ` ${t("settings.approval.waiting")}`}
       </p>
-      <SectionHeader>Actions in the current version</SectionHeader>
-      {current.actions === null ? <ErrorState title="The manifest is not valid" message="The current version cannot be approved." /> : (
+      <SectionHeader>{t("settings.actions.title")}</SectionHeader>
+      {current.actions === null ? <ErrorState title={t("settings.actions.manifest_invalid.title")} message={t("settings.actions.manifest_invalid.text")} /> : (
         <form className="ag-stack" onSubmit={(e) => { e.preventDefault(); approve.mutate(); }}>
-          <DataTable caption="Actions" columns={columns} rows={actions.map((name) => ({ name }))} rowKey={(a) => a.name}
-            emptyTitle="No actions" emptyText="The app opens with its files only." />
-          <p className="ag-muted">An action works only while its tool is on for this view (Tools).</p>
-          <div className="ag-row"><Button type="submit" variant="primary" disabled={approve.isPending}>Approve current</Button></div>
+          <DataTable caption={t("settings.actions.caption")} columns={columns} rows={actions.map((name) => ({ name }))} rowKey={(a) => a.name}
+            emptyTitle={t("settings.actions.empty.title")} emptyText={t("settings.actions.empty.text")} />
+          <p className="ag-muted">{t("settings.actions.hint")}</p>
+          <div className="ag-row"><Button type="submit" variant="primary" disabled={approve.isPending}>{t("settings.actions.approve")}</Button></div>
         </form>
       )}
-      <ConfirmDialog opened={revoking} title="Revoke approval" confirmLabel="Revoke" danger busy={revoke.isPending}
+      <ConfirmDialog opened={revoking} title={t("settings.revoke.title")} confirmLabel={t("settings.revoke.confirm")} danger busy={revoke.isPending}
         onCancel={() => setRevoking(false)} onConfirm={() => revoke.mutate()}>
-        <p>Are you sure you want to revoke the approval in this view? Its open launches stop working.</p>
+        <p>{t("settings.revoke.question")}</p>
       </ConfirmDialog>
     </>
   );

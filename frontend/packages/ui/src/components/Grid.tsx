@@ -8,6 +8,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useSearchParams } from "react-router";
 import { IconAction } from "./IconAction";
 import type { Sort } from "./DataTable";
+import { useT } from "../i18n";
 
 /** src/agento/web/grid.py MAX_PAGE: the server refuses a higher page. */
 export const MAX_PAGE = 100_000;
@@ -55,6 +56,7 @@ const positive = (v: string | null) => (v && /^[0-9]{1,6}$/.test(v) && Number(v)
 export function useGridParams({ defaultSort, sorts, filters = {} }: {
   defaultSort: Sort; sorts: readonly string[]; filters?: Record<string, readonly string[]>;
 }) {
+  const t = useT("ui");
   const [params, setParams] = useSearchParams();
   const page = Math.min(positive(params.get("page")), MAX_PAGE);
   // A shared URL with a longer search is cut to what the server accepts; the box refuses to send one.
@@ -108,7 +110,7 @@ export function useGridParams({ defaultSort, sorts, filters = {} }: {
     query: query.toString(),
     filtered: Boolean(q) || names.some((f) => filterValues[f] !== null),
     /** The box holds more than the server searches: show it, and nothing is sent until it fits. */
-    searchError: typed.more ? `Search at most ${MAX_Q} characters` : null,
+    searchError: typed.more ? t("grid.search_too_long", { max: MAX_Q }) : null,
     setSearch,
     setPage: (p: number, opts?: { replace?: boolean }) =>
       update((n) => (p > 1 ? n.set("page", String(p)) : n.delete("page")), { keepPage: true, ...opts }),
@@ -128,14 +130,13 @@ export function useGridParams({ defaultSort, sorts, filters = {} }: {
   };
 }
 
-const number = (n: number) => n.toLocaleString();
-
 /** "1–50 of 1,234" and Previous / Next. Nothing when everything fits on one page. Put it right
  *  after its grid: a page change scrolls that element's top back into view. */
 export function Pager({ page, pageSize, total, onPage }: {
   page: number; pageSize: number; total: number; onPage: (page: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const t = useT("ui");
   if (total <= pageSize) return null;
   const last = lastPage(total, pageSize);
   // A new page starts at its first row: bring the grid's top back into view, under a fixed header.
@@ -150,9 +151,9 @@ export function Pager({ page, pageSize, total, onPage }: {
   const to = Math.min(page * pageSize, total);
   return (
     <Group ref={ref} justify="flex-end" gap="xs" wrap="nowrap">
-      <Text size="sm" c="dimmed" aria-live="polite">{number(from)}–{number(to)} of {number(total)}</Text>
-      <IconAction label="Previous page" icon={<ChevronLeft size={16} />} disabled={page <= 1} onClick={() => go(page - 1)} />
-      <IconAction label="Next page" icon={<ChevronRight size={16} />} disabled={page >= last} onClick={() => go(page + 1)} />
+      <Text size="sm" c="dimmed" aria-live="polite">{t("grid.range", { from, to, total })}</Text>
+      <IconAction label={t("grid.previous")} icon={<ChevronLeft size={16} />} disabled={page <= 1} onClick={() => go(page - 1)} />
+      <IconAction label={t("grid.next")} icon={<ChevronRight size={16} />} disabled={page >= last} onClick={() => go(page + 1)} />
     </Group>
   );
 }

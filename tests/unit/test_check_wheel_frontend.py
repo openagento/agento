@@ -9,7 +9,7 @@ check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 KIT = json.loads((ROOT / "frontend/packages/miniapp-kit/package.json").read_text())["version"]
 FULL = {"agento/framework/web/panel/index.html", "agento/framework/web/panel/assets/index-x.js",
-        "agento/modules/miniapps/skills/miniapp-ui/SKILL.md",
+        "agento/modules/miniapps/skills/miniapp-ui/SKILL.md", *check.CATALOGS,
         *(f"agento/framework/web/miniapp-ui/{KIT}/{f}" for f in
           ("agento-ui.css", "agento-ui.js", "agento-bridge.js", "fonts/inter-latin-400-normal.woff2"))}
 
@@ -23,3 +23,7 @@ def test_a_wheel_without_the_kit_or_assets_fails():
     gaps = check.missing(names)
     assert f"agento/framework/web/miniapp-ui/{KIT}/agento-ui.css" in gaps
     assert "agento/framework/web/panel/assets/*.js" in gaps
+
+
+def test_a_wheel_without_a_built_in_catalog_fails():
+    assert check.missing(FULL - {"agento/framework/i18n/panel/pl.json"}) == ["agento/framework/i18n/panel/pl.json"]

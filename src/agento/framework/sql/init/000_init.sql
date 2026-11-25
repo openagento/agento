@@ -336,6 +336,7 @@ CREATE TABLE IF NOT EXISTS `user` (
     password_hash VARCHAR(255) NULL,
     -- No default: every user is given a role on purpose.
     role          VARCHAR(16)  NOT NULL,
+    ui_locale     VARCHAR(35)  NULL,
     is_active     TINYINT(1)   NOT NULL DEFAULT 1,
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -608,4 +609,5 @@ INSERT INTO schema_migration (version) VALUES
     ('057_job_attachments'),
     ('058_schedule_attachments'),
     ('059_job_search_index'),
-    ('060_tool_catalog');
+    ('060_tool_catalog'),
+    ('061_user_ui_locale');

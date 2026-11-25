@@ -202,10 +202,10 @@ def test_role_resources_tree_at_an_agent_view(web, monkeypatch):
     assert cur.execute.call_args.args[1] == ("support", 3, 4)  # the view's own rows and its workspace's
     assert body == {
         "operations": [
-            {"id": "artifact.launch", "title": "Launch a miniapp", "granted": False, "inherited": True,
-             "builtin": False},
-            {"id": "conversation.run_details", "title": "Run details", "granted": False, "inherited": False,
-             "builtin": False},
+            {"id": "artifact.launch", "title": "Launch a miniapp", "namespace": "panel", "granted": False,
+             "inherited": True, "builtin": False},
+            {"id": "conversation.run_details", "title": "Run details", "namespace": "conversation",
+             "granted": False, "inherited": False, "builtin": False},
         ],
         "toolsets": [{"toolset": "jira", "tools": [
             {"name": "jira_add_comment", "enabled": True, "granted": True, "inherited": False},
@@ -266,6 +266,9 @@ def test_role_resources_global_scope_is_the_admin_panel(web, monkeypatch):
     tree = _call(web, "GET", "/api/admin/roles/support/resources?scope=global").json()
     assert list(tree) == ["admin"]
     assert [s["screen"] for s in tree["admin"]] == [title for title, _ in acl.registry().screens]
+    namespaces = {s["leaves"][0]["id"]: s["namespace"] for s in tree["admin"]}
+    assert namespaces["admin.dashboard"] == "panel"
+    assert namespaces["scheduler.own"] == "scheduler"
     leaves = {leaf["id"]: leaf for s in tree["admin"] for leaf in s["leaves"]}
     assert set(leaves) == acl.registry().resources
     assert [k for k, v in leaves.items() if v["granted"]] == ["admin.jobs"]
@@ -789,12 +792,56 @@ def test_login_code_is_1_to_300_printable_characters(web, monkeypatch, code, sta
     assert put.called == (status == 204)
 
 
-@pytest.mark.parametrize(("refused", "status"), [("not_found", 404), ("unsupported", 400), ("disabled", 409),
-                                                 ("not_oauth", 409), ("active", 409)])
-def test_login_request_refusals(web, monkeypatch, refused, status):
+@pytest.mark.parametrize(("refused", "status", "code"), [
+    ("not_found", 404, "NOT_FOUND"), ("unsupported", 400, "LOGIN_UNSUPPORTED"),
+    ("disabled", 409, "CREDENTIAL_DISABLED"), ("not_oauth", 409, "LOGIN_NOT_OAUTH"),
+    ("active", 409, "LOGIN_ALREADY_RUNNING")])
+def test_login_request_refusals(web, monkeypatch, refused, status, code):
     from agento.framework.agent_manager import credential_login
 
     sign_in_as(monkeypatch, ADMIN)
     monkeypatch.setattr(credential_login, "request_login", lambda *a: refused)
     r = _call(web, "POST", "/api/admin/credentials/4/login")
-    assert r.status_code == status and set(r.json()) == {"error"}
+    assert r.status_code == status and set(r.json()) == {"error", "code"}
+    assert r.json()["code"] == code
+
+
+def test_every_namespace_the_panel_gets_for_a_module_is_its_catalog_namespace(web, monkeypatch, tmp_path):
+    from agento.framework import bootstrap, i18n
+    from agento.framework.module_loader import parse_module_dir
+    from tests.module_writer import write_module
+
+    module_dir = write_module(
+        tmp_path / "code", "demo_dir", module_json={"name": "demo"},
+        system_json={"mode": {"type": "string", "label": "Mode"}}, config_json={"mode": "a"},
+        acl_json={"screens": [{"title": "Demo", "leaves": [{"id": "demo_dir.page", "title": "Open the page"}]}],
+                  "operations": [{"id": "demo_dir.act", "title": "Act"}]})
+    (tmp_path / "core").mkdir()
+    monkeypatch.setattr(bootstrap, "CORE_MODULES_DIR", str(tmp_path / "core"))
+    monkeypatch.setattr(bootstrap, "USER_MODULES_DIR", str(tmp_path / "code"))
+    monkeypatch.setattr(data, "_module_schema_cache", None)
+    monkeypatch.setattr(acl, "_REGISTRY", acl.load((("demo_dir", module_dir),)))
+    catalogs = i18n.load(i18n.ordered_sources([parse_module_dir(module_dir)]))
+    monkeypatch.setattr(i18n, "_CATALOGS", catalogs)
+    english = catalogs.messages["en"]
+    sign_in_as(monkeypatch, ADMIN)
+    _roles(monkeypatch, SUPPORT)
+    monkeypatch.setattr(data, "get_tool_states", MagicMock(return_value=[]))
+    conn = MagicMock(name="conn")
+    conn.cursor.return_value.__enter__.return_value.fetchone.return_value = {"workspace_id": 4}
+    conn.cursor.return_value.__enter__.return_value.fetchall.return_value = []
+    from agento.web import server
+    monkeypatch.setattr(server, "connect", lambda: conn)
+
+    screens = _call(web, "GET", "/api/admin/roles/support/resources?scope=global").json()["admin"]
+    operations = _call(web, "GET", "/api/admin/roles/support/resources?scope=agent_view&scope_id=3").json()["operations"]
+    modules = _call(web, "GET", "/api/admin/config/modules").json()
+
+    screen = next(s for s in screens if s["leaves"][0]["id"] == "demo_dir.page")
+    operation = next(o for o in operations if o["id"] == "demo_dir.act")
+    assert (screen["namespace"], operation["namespace"]) == ("demo", "demo")
+    assert "demo" in [m["name"] for m in modules] and "demo_dir" not in [m["name"] for m in modules]
+    assert english["demo"] == {
+        "module.title": "Demo", "config.mode.label": "Mode", "acl.screen.demo_dir.page": "Demo",
+        "acl.demo_dir.page": "Open the page", "acl.demo_dir.act": "Act"}
+    assert "demo_dir" not in english

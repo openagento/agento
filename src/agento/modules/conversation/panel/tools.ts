@@ -2,6 +2,8 @@
 // string (claude, pi, codex MCP), a raw command (codex shell) or absent: a reader without
 // `conversation.run_details` gets no input, so the line is the verb alone.
 
+import { numberFormat, useT, type Translate } from "@agento/ui";
+
 const SHELL = new Set(["Bash", "bash", "shell", "local_shell", "exec_command"]);
 const READ = new Set(["Read", "read"]);
 const EDIT = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit", "write", "edit"]);
@@ -33,40 +35,61 @@ const pick = (args: Record<string, unknown>, ...keys: string[]) => {
   return "";
 };
 
-const said = (verb: string, what: string, fallback: string) => (what ? `${verb} ${line(what)}` : fallback);
+type Verb = "ran" | "read" | "edited" | "searched" | "listed" | "fetched" | "web_searched";
 
-export function toolSummary(name: string, input?: unknown): string {
+/** What a call did: the verb and its object. No verb: an MCP tool, `what` is its name and first argument. */
+function parts(name: string, input?: unknown): { verb: Verb | null; what: string } {
   const { args, raw } = parse(input);
-  if (SHELL.has(name)) return said("Ran", pick(args, "command", "cmd") || raw, "Ran a shell command");
-  if (READ.has(name)) return said("Read", pick(args, "file_path", "path"), "Read a file");
-  if (EDIT.has(name)) return said("Edited", pick(args, "file_path", "path", "notebook_path"), "Edited a file");
-  if (SEARCH.has(name)) return said("Searched", pick(args, "pattern", "query"), "Searched files");
-  if (name === "ls") return said("Listed", pick(args, "path"), "Listed files");
-  if (name === "WebFetch") return said("Fetched", pick(args, "url"), "Fetched a page");
-  if (name === "WebSearch") return said("Searched the web for", pick(args, "query"), "Searched the web");
+  if (SHELL.has(name)) return { verb: "ran", what: pick(args, "command", "cmd") || raw };
+  if (READ.has(name)) return { verb: "read", what: pick(args, "file_path", "path") };
+  if (EDIT.has(name)) return { verb: "edited", what: pick(args, "file_path", "path", "notebook_path") };
+  if (SEARCH.has(name)) return { verb: "searched", what: pick(args, "pattern", "query") };
+  if (name === "ls") return { verb: "listed", what: pick(args, "path") };
+  if (name === "WebFetch") return { verb: "fetched", what: pick(args, "url") };
+  if (name === "WebSearch") return { verb: "web_searched", what: pick(args, "query") };
   // mcp__<server>__<tool> (claude) or a bare MCP tool name (codex, pi): the tool and its first
   // short string argument.
   const tool = name.startsWith("mcp__") ? name.split("__").slice(2).join("__") || name : name || "tool";
   const first = Object.values(args).find((v): v is string => typeof v === "string" && v.trim() !== "" && v.length <= 80);
-  return first ? `${tool} ${line(first, 60)}` : tool;
+  return { verb: null, what: first ? `${tool} ${line(first, 60)}` : tool };
 }
 
-const LIVE: Record<string, string> = {
-  Ran: "Running", Read: "Reading", Edited: "Editing", Searched: "Searching", Listed: "Listing", Fetched: "Fetching",
-};
+/** Each verb done and while it runs, with its object and alone. */
+function texts(t: Translate, verb: Verb, what: string): { done: string; doneAlone: string; live: string; liveAlone: string } {
+  switch (verb) {
+    case "ran": return { done: t("tool.ran", { what }), doneAlone: t("tool.ran_alone"), live: t("tool.running", { what }), liveAlone: t("tool.running_alone") };
+    case "read": return { done: t("tool.read", { what }), doneAlone: t("tool.read_alone"), live: t("tool.reading", { what }), liveAlone: t("tool.reading_alone") };
+    case "edited": return { done: t("tool.edited", { what }), doneAlone: t("tool.edited_alone"), live: t("tool.editing", { what }), liveAlone: t("tool.editing_alone") };
+    case "searched": return { done: t("tool.searched", { what }), doneAlone: t("tool.searched_alone"), live: t("tool.searching", { what }), liveAlone: t("tool.searching_alone") };
+    case "listed": return { done: t("tool.listed", { what }), doneAlone: t("tool.listed_alone"), live: t("tool.listing", { what }), liveAlone: t("tool.listing_alone") };
+    case "fetched": return { done: t("tool.fetched", { what }), doneAlone: t("tool.fetched_alone"), live: t("tool.fetching", { what }), liveAlone: t("tool.fetching_alone") };
+    case "web_searched": return { done: t("tool.web_searched", { what }), doneAlone: t("tool.web_searched_alone"), live: t("tool.web_searching", { what }), liveAlone: t("tool.web_searching_alone") };
+  }
+}
 
-/** The same line while the call runs: "Running ls -1", "Reading a.py", "Running jira_get_issue DEMO-1". */
-export function liveSummary(summary: string): string {
-  const [verb, ...rest] = summary.split(" ");
-  return LIVE[verb] ? [LIVE[verb], ...rest].join(" ") : `Running ${summary}`;
+/** "Ran ls -1", "Read a.py", "jira_get_issue DEMO-1"; `live`, the same line while the call runs:
+ *  "Running ls -1", "Reading a.py", "Running jira_get_issue DEMO-1". */
+export function toolSummary(t: Translate, name: string, input?: unknown, live = false): string {
+  const { verb, what } = parts(name, input);
+  if (verb === null) return live ? t("tool.running", { what }) : what;
+  const said = texts(t, verb, line(what));
+  return what ? (live ? said.live : said.done) : (live ? said.liveAlone : said.doneAlone);
+}
+
+export type Summarize = (name: string, input?: unknown, live?: boolean) => string;
+
+export function useToolSummary(): Summarize {
+  const t = useT("conversation");
+  return (name, input, live) => toolSummary(t, name, input, live);
 }
 
 /** "0.4 s", "12 s", "2 min 5 s"; nothing when either end is unknown. */
-export function duration(from?: string | null, to?: string | null): string | undefined {
+export function duration(locale: string, from?: string | null, to?: string | null): string | undefined {
   if (!from || !to) return undefined;
   const ms = Date.parse(to) - Date.parse(from);
   if (!Number.isFinite(ms) || ms < 0) return undefined;
-  if (ms < 10_000) return `${(ms / 1000).toFixed(1)} s`;
+  if (ms < 10_000) return `${numberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(ms / 1000)} s`;
   const s = Math.round(ms / 1000);
-  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+  const whole = numberFormat(locale);
+  return s < 60 ? `${whole.format(s)} s` : `${whole.format(Math.floor(s / 60))} min ${whole.format(s % 60)} s`;
 }

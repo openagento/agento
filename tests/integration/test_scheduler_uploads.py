@@ -112,7 +112,18 @@ def test_a_file_over_the_cap_is_refused_with_the_upload_code(conn, world, worksp
                     "VALUES ('default', 0, 'core/uploads/max_bytes', '1024')")
     conn.commit()
     refused = routes.upload(_Upload(conn, world["owner"], sid, payload=b"x" * 2048))
-    assert (refused.status, refused.body["code"]) == (413, "upload")
+    assert (refused.status, refused.body) == (413, {
+        "error": "file too large (max 1 KB)", "code": "upload",
+        "reason": "UPLOAD_TOO_LARGE", "params": {"max_bytes": 1024}})
+
+
+def test_an_upload_refusal_with_no_params_names_its_reason_only(conn, world, workspace, grants):
+    sid = _create(conn, world["owner"], world["view"]).body["id"]
+
+    refused = routes.upload(_Upload(conn, world["owner"], sid, payload=b""))
+
+    assert (refused.status, refused.body) == (400, {
+        "error": "the file is empty", "code": "upload", "reason": "UPLOAD_EMPTY"})
 
 
 def test_the_draft_route_asks_for_the_create_right(conn, world, workspace):

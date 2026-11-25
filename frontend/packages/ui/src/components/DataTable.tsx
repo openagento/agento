@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-table";
 import { EmptyState, ErrorState, LoadingState } from "./States";
 import css from "./DataTable.module.css";
+import { useT } from "../i18n";
 
 export interface Column<T extends RowData> {
   id: string;
@@ -26,7 +27,7 @@ const features = tableFeatures({ rowSortingFeature, sortedRowModel: createSorted
 
 export interface Sort { id: string; desc: boolean }
 
-export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, error, onRetry, emptyTitle = "Nothing here yet",
+export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, error, onRetry, emptyTitle,
   emptyText, emptyAction, caption, onRowActivate, sort, onSortChange }: {
   columns: Column<T>[]; rows: T[] | undefined; rowKey: (row: T) => string;
   loading?: boolean; error?: string | null; onRetry?: () => void;
@@ -35,6 +36,7 @@ export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, e
    *  A header cycles through its first direction, the other one, and back to the page's default (`null`). */
   sort?: Sort; onSortChange?: (sort: Sort | null) => void;
 }) {
+  const t = useT("ui");
   const data = rows ?? (EMPTY as T[]);
   const [active, setActive] = useState(0);
   const body = useRef<HTMLTableSectionElement>(null);
@@ -62,7 +64,7 @@ export function DataTable<T extends RowData>({ columns, rows, rowKey, loading, e
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorState message={error} onRetry={onRetry} />;
-  if (!data.length) return <EmptyState title={emptyTitle} action={emptyAction}>{emptyText}</EmptyState>;
+  if (!data.length) return <EmptyState title={emptyTitle ?? t("table.empty")} action={emptyAction}>{emptyText}</EmptyState>;
 
   const tableRows = table.getRowModel().rows;
   const focusRow = (i: number) => {

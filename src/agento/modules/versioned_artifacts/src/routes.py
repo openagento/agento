@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from agento.framework.access import launches
 from agento.web import api, app_path
-from agento.web.api import Request, Response, error
+from agento.web.api import Request, Response, error, refusal
 
 from . import admin
 
@@ -18,9 +18,9 @@ def _run(req: Request, fn) -> Response:
     try:
         return fn(req.session.user)
     except admin.AdminError as exc:
-        return Response(exc.status, {"error": str(exc), **exc.extra})
+        return refusal(exc)
     except launches.RetentionBusy:
-        return error(503, "artifact busy, try again")
+        return error(503, "artifact busy, try again", code="ARTIFACT_BUSY")
 
 
 def list_artifacts(req: Request) -> Response:
@@ -39,7 +39,7 @@ def make_current(req: Request) -> Response:
         body = api._body(req)
         version, expected = body.get("version_id"), body.get("expected_current_version")
         if not all(isinstance(v, str) and app_path.VERSION_ID_RE.fullmatch(v) for v in (version, expected)):
-            return error(400, "version_id and expected_current_version are required")
+            return error(400, "version_id and expected_current_version are required", code="INVALID_REQUEST")
         return Response(200, admin.make_current(req.conn, user, req.params["code"], version, expected))
 
     return _run(req, go)

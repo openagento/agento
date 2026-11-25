@@ -1,14 +1,18 @@
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as pkg from "./index";
+import { isLanguageTag, LANGUAGE_TAG } from "./shape";
 import { apiFetch, sameOriginUrl } from "./apiFetch";
 import { ApiError, CsrfMissingError, SessionChangedError } from "./errors";
-import { boot, endSession, getCsrf, getDisplay, getUser, login, logout, onEndSession, onExpired } from "./session";
+import { boot, endSession, getCsrf, getDisplay, getLocale, getUser, login, logout, onEndSession, onExpired, saveLocale } from "./session";
+import { errorCode } from "./errorText";
 import { queryClient } from "./query";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
 const sessionBody = (id: number, csrf: string) =>
-  ({ user: { id, username: `u${id}`, role: "user", is_active: true }, csrf_token: csrf, expires_at: "x" });
+  ({ user: { id, username: `u${id}`, role: "user", is_active: true, ui_locale: null }, csrf_token: csrf, expires_at: "x" });
 
 let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
@@ -68,6 +72,36 @@ describe("apiFetch", () => {
   });
 });
 
+describe("the shape of an answer", () => {
+  // A type argument of `apiFetch` and an `as` on a parsed body give a type to data that nobody
+  // checked. The readers of the session and of the catalogs take `unknown` and use `shaped`.
+  // The three files below read other contracts, not checked today.
+  const UNCHECKED = ["jobLinks.tsx", "launch.ts", "useUploads.ts"];
+  const sources = readdirSync(__dirname).filter((name) => /\.tsx?$/.test(name) && !/\.test\./.test(name));
+
+  it("no reader gives a type to an answer without a check", () => {
+    const typed = sources.filter((name) => /apiFetch<|\.json\(\)[^;]*\bas\b|(?<!\.)\bbody as\b/.test(readFileSync(join(__dirname, name), "utf8")));
+    expect(sources).toEqual(expect.arrayContaining(["catalog.ts", "session.ts", ...UNCHECKED]));
+    expect(typed.filter((name) => name !== "apiFetch.ts")).toEqual(UNCHECKED);
+  });
+});
+
+describe("the rules the server has too", () => {
+  const python = readFileSync(join(__dirname, "../../../../src/agento/framework/i18n/__init__.py"), "utf8");
+
+  it("a language tag has the pattern of the server's TAG_RE", () => {
+    expect(/^TAG_RE = re\.compile\(r"(.+)"\)$/m.exec(python)?.[1]).toBe(LANGUAGE_TAG.source);
+  });
+
+  it.each(["pl", "en", "qaa", "zh-Hant", "pt-BR", "es-419", "zh-Hant-TW"])("%s is a language tag", (tag) => {
+    expect(isLanguageTag(tag)).toBe(true);
+  });
+
+  it.each(["x_y", "PL", "pl-pl", "p", "polski", "", "pl-", "en-US-x", 7, null])("%s is not a language tag", (tag) => {
+    expect(isLanguageTag(tag)).toBe(false);
+  });
+});
+
 describe("session", () => {
   it("does not export the CSRF-less login write", () => {
     expect(Object.keys(pkg)).not.toContain("sendLogin");
@@ -101,6 +135,82 @@ describe("session", () => {
     fetchMock.mockResolvedValueOnce(json(200, { ...sessionBody(1, "tok-D"), display: null }));
     await login("a", "pw");
     expect(getDisplay()).toBeNull();
+  });
+
+  it("keeps the language data of the session and drops it at its end; a session with none holds null", async () => {
+    const locale = { effective: "pl", instance: "en", available: [{ tag: "pl", name: "Polski" }], version: "v1" };
+    fetchMock.mockResolvedValueOnce(json(200, { ...sessionBody(1, "tok-L"), locale }));
+    await boot();
+    expect(getLocale()).toEqual(locale);
+    endSession();
+    expect(getLocale()).toBeNull();
+    fetchMock.mockResolvedValueOnce(json(200, sessionBody(1, "tok-L")));
+    await login("a", "pw");
+    expect(getLocale()).toBeNull();
+  });
+
+  const LOCALE = { effective: "pl", instance: "en", available: [{ tag: "pl", name: "Polski" }], version: "v1" };
+  const UNREADABLE_SESSIONS: [string, unknown][] = [
+    ["null", null],
+    ["an array", []],
+    ["no user", { csrf_token: "tok" }],
+    ["a stored language that is a number", { ...sessionBody(1, "tok"), user: { ...sessionBody(1, "tok").user, ui_locale: 1 } }],
+    ["a language block that is a string", { ...sessionBody(1, "tok"), locale: "pl" }],
+    ["a language block with no version", { ...sessionBody(1, "tok"), locale: { ...LOCALE, version: undefined } }],
+    ["a language block with no effective language", { ...sessionBody(1, "tok"), locale: { ...LOCALE, effective: null } }],
+    ["a list of languages that is a string", { ...sessionBody(1, "tok"), locale: { ...LOCALE, available: "pl" } }],
+    ["a language that is a string", { ...sessionBody(1, "tok"), locale: { ...LOCALE, available: ["pl"] } }],
+    ["a language with no name", { ...sessionBody(1, "tok"), locale: { ...LOCALE, available: [{ tag: "pl" }] } }],
+    ["a stored language that is not a tag", { ...sessionBody(1, "tok"), user: { ...sessionBody(1, "tok").user, ui_locale: "x_y" } }],
+    ["an effective language that is not a tag", { ...sessionBody(1, "tok"), locale: { ...LOCALE, effective: "x_y" } }],
+    ["an instance language that is not a tag", { ...sessionBody(1, "tok"), locale: { ...LOCALE, instance: "PL" } }],
+    ["a language of the list that is not a tag", { ...sessionBody(1, "tok"), locale: { ...LOCALE, available: [{ tag: "pl_PL", name: "Polski" }] } }],
+  ];
+
+  it.each(UNREADABLE_SESSIONS)("a session answer that is not readable (%s) starts no session: boot and login reject", async (_name, body) => {
+    fetchMock.mockResolvedValue(json(200, body));
+    await expect(boot()).rejects.toBeInstanceOf(TypeError);
+    await expect(login("a", "pw")).rejects.toBeInstanceOf(TypeError);
+    expect([getUser(), getCsrf(), getLocale()]).toEqual([null, null, null]);
+  });
+
+  it.each([
+    ["null", null],
+    ["no language block", { ui_locale: "pl" }],
+    ["a stored language that is a number", { ui_locale: 1, locale: LOCALE }],
+    ["a language block with no version", { ui_locale: "pl", locale: { ...LOCALE, version: undefined } }],
+    ["a language with no name", { ui_locale: "pl", locale: { ...LOCALE, available: [{ tag: "pl" }] } }],
+    ["a stored language that is not a tag", { ui_locale: "x_y", locale: LOCALE }],
+    ["an effective language that is not a tag", { ui_locale: "pl", locale: { ...LOCALE, effective: "x_y" } }],
+  ])("a save answer that is not readable (%s) rejects and changes nothing", async (_name, body) => {
+    fetchMock.mockResolvedValueOnce(json(200, { ...sessionBody(1, "tok-P"), locale: { ...LOCALE, effective: "en" } }));
+    await login("a", "pw");
+    fetchMock.mockResolvedValueOnce(json(200, body));
+    await expect(saveLocale("pl", "v1")).rejects.toBeInstanceOf(TypeError);
+    expect([getUser()?.ui_locale, getLocale()?.effective]).toEqual([null, "en"]);
+  });
+
+  it("a refused sign-in keeps the answer's code on its error", async () => {
+    fetchMock.mockResolvedValueOnce(json(401, { error: "invalid credentials", code: "AUTH_INVALID_CREDENTIALS" }));
+    const e = (await login("a", "wrong").catch((x) => x)) as ApiError;
+    expect([e.status, errorCode(e)]).toEqual([401, "AUTH_INVALID_CREDENTIALS"]);
+  });
+
+  it("saveLocale PATCHes the tag only, with the version of the held catalog in If-Match, and stores the answer; a refusal changes nothing", async () => {
+    const before = { effective: "en", instance: "en", available: [], version: "v1" };
+    const after = { ...before, effective: "pl", version: "v2" };
+    fetchMock.mockResolvedValueOnce(json(200, { ...sessionBody(1, "tok-P"), locale: before }));
+    await login("a", "pw");
+    fetchMock.mockResolvedValueOnce(json(200, { ui_locale: "pl", locale: after }));
+    await saveLocale("pl", "v2");
+    const [url, init] = fetchMock.mock.calls[1];
+    expect([new URL(url).pathname, init.method, init.body, init.headers["X-CSRF-Token"], init.headers["If-Match"]])
+      .toEqual(["/api/profile/locale", "PATCH", JSON.stringify({ ui_locale: "pl" }), "tok-P", '"v2"']);
+    expect(Object.keys(fetchMock.mock.calls[0][1].headers)).not.toContain("If-Match");
+    expect([getUser()?.ui_locale, getLocale()]).toEqual(["pl", after]);
+    fetchMock.mockResolvedValueOnce(json(400, { error: "unsupported", code: "LOCALE_UNSUPPORTED" }));
+    await expect(saveLocale("xx", "v2")).rejects.toBeInstanceOf(ApiError);
+    expect([getUser()?.ui_locale, getLocale()]).toEqual(["pl", after]);
   });
 
   it("stores nothing in browser storage or cookies", async () => {

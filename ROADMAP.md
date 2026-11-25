@@ -331,7 +331,13 @@ The admin panel, the TUI and the agent output in more than one language. Today t
 CLI speak English and the prompts that conversations and channels send to the agent are Polish
 (`=== WĄTEK ===`, `Użytkownik`/`Asystent` in `modules/conversation/src/workflow.py`); the owner
 keeps them Polish until this milestone (2026-10-06). Scope: message catalogues for the panel and
-`system.json` labels, a per-user UI locale, and prompt templates per locale. The agent's reply
+`system.json` labels, a per-user UI locale, and prompt templates per locale.
+
+Done (2026-11-24): the panel part. Message catalogs per module (`i18n.json`), English and Polish
+built in, language packs and overrides as modules, a per-user language (`user.ui_locale`) with the
+instance default `admin/locale/language`, and an error `code` on every panel API refusal
+([docs/development/i18n.md](docs/development/i18n.md)). Not done: the TUI and the CLI texts, the
+texts of `tools[].fields` in `module.json`, and the prompt templates per locale. The agent's reply
 language is the [Response locale policy](#-response-locale-policy) below.
 
 ### ⚪ Response locale policy

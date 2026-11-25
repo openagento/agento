@@ -277,6 +277,14 @@ SHA-256 hashes of session tokens, launch tokens and exchange codes. For each pan
 mints one single-use `user_session` capability and sends it to the toolbox; the raw token is never
 persisted or logged. See [panel.md](panel.md).
 
+`web` answers two routes with no session: `POST /api/session` (sign-in) and
+`GET /api/panel/bootstrap`. The second one returns only the instance language tag, the texts of
+the sign-in screen (`i18n.LOGIN_KEYS`) in that language, and a version hash of those texts alone
+(not of the full catalog). It returns no module name, no user data
+and no other config value, and the full catalog (`GET /api/panel/i18n/<tag>`) needs a session.
+Both use the `auth="login"` exemption, which only `api.ROUTES` can set
+([panel.md](panel.md#languages)).
+
 The panel in the browser (E8) holds no credential either: the session cookie is `HttpOnly`, the
 CSRF token lives only in a JavaScript closure (never storage, a URL or a log), and the panel never
 receives a capability or a bearer — the miniapp bridge relays only `{status, body}` of an action.

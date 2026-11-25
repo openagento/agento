@@ -2,9 +2,10 @@
 // the admin Jobs page and a module panel fetch the job and render it here, in a `SideDrawer`.
 import { Stack, Table, Text } from "@mantine/core";
 import type { ReactNode } from "react";
+import { useFormat, useT } from "../i18n";
 import { CodeBlock } from "./CodeBlock";
 import { SectionHeader } from "./Headers";
-import { jobTone, StatusBadge } from "./StatusBadge";
+import { jobTone, StatusBadge, useJobStatusText } from "./StatusBadge";
 import { Timestamp } from "./Timestamp";
 
 export interface JobDetailData {
@@ -20,38 +21,35 @@ export const durationOf = (j: { started_at?: string | null; finished_at?: string
   return Number.isFinite(ms) ? Math.round(ms / 1000) : null;
 };
 
-/** "42s", "3m 05s", "1h 02m"; "—" for none. */
-export function formatDuration(seconds: number | null): string {
-  if (seconds === null) return "—";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${pad(seconds % 60)}s`;
-  return `${Math.floor(seconds / 3600)}h ${pad(Math.floor(seconds / 60) % 60)}m`;
-}
-
 const when = (v: string | null) => (v ? <Timestamp value={v} /> : "—");
 
 export function JobDetail({ job: j }: { job: JobDetailData }) {
-  const facts: [string, ReactNode][] = [
-    ["Status", <StatusBadge key="s" tone={jobTone(j.status)}>{j.status}</StatusBadge>], ["Type", j.type], ["Source", j.source],
-    ["Agent view", j.agent_view_code ?? "—"], ["Reference", j.reference_id ?? "—"], ["Agent", j.agent_type ?? "—"],
-    ["Model", j.model ?? "—"], ["Tokens in / out", `${(j.input_tokens ?? 0).toLocaleString()} / ${(j.output_tokens ?? 0).toLocaleString()}`],
-    ["Created", when(j.created_at)], ["Started", when(j.started_at)], ["Finished", when(j.finished_at)],
-    ["Duration", formatDuration(durationOf(j))], ...(j.error_class ? [["Error class", j.error_class] as [string, ReactNode]] : []),
+  const t = useT("ui");
+  const format = useFormat();
+  const statusText = useJobStatusText();
+  const facts: [id: string, label: string, value: ReactNode][] = [
+    ["status", t("job.fact.status"), <StatusBadge key="s" tone={jobTone(j.status)}>{statusText(j.status)}</StatusBadge>],
+    ["type", t("job.fact.type"), j.type], ["source", t("job.fact.source"), j.source],
+    ["agent_view", t("job.fact.agent_view"), j.agent_view_code ?? "—"], ["reference", t("job.fact.reference"), j.reference_id ?? "—"],
+    ["agent", t("job.fact.agent"), j.agent_type ?? "—"], ["model", t("job.fact.model"), j.model ?? "—"],
+    ["tokens", t("job.fact.tokens"), `${format.number(j.input_tokens ?? 0)} / ${format.number(j.output_tokens ?? 0)}`],
+    ["created", t("job.fact.created"), when(j.created_at)], ["started", t("job.fact.started"), when(j.started_at)],
+    ["finished", t("job.fact.finished"), when(j.finished_at)], ["duration", t("job.fact.duration"), format.duration(durationOf(j))],
+    ...(j.error_class ? [["error_class", t("job.fact.error_class"), j.error_class] as [string, string, ReactNode]] : []),
   ];
   return (
     <Stack gap="md">
       <Table>
         <Table.Tbody>
-          {facts.map(([k, v]) => <Table.Tr key={k}><Table.Th scope="row">{k}</Table.Th><Table.Td>{v}</Table.Td></Table.Tr>)}
+          {facts.map(([id, label, value]) => <Table.Tr key={id}><Table.Th scope="row">{label}</Table.Th><Table.Td>{value}</Table.Td></Table.Tr>)}
         </Table.Tbody>
       </Table>
-      {j.error_message && <><SectionHeader>Error</SectionHeader><CodeBlock code={j.error_message} /></>}
-      {j.result_summary && <><SectionHeader>Result</SectionHeader><Text size="sm">{j.result_summary}</Text></>}
-      <SectionHeader>Prompt</SectionHeader><CodeBlock code={j.prompt || "—"} />
-      <SectionHeader>Output</SectionHeader><CodeBlock code={j.output || "—"} />
-      <SectionHeader>Replay</SectionHeader>
-      <Text size="sm" c="dimmed">Runs in the cron container. Use the TUI or the CLI.</Text>
+      {j.error_message && <><SectionHeader>{t("job.section.error")}</SectionHeader><CodeBlock code={j.error_message} /></>}
+      {j.result_summary && <><SectionHeader>{t("job.section.result")}</SectionHeader><Text size="sm">{j.result_summary}</Text></>}
+      <SectionHeader>{t("job.section.prompt")}</SectionHeader><CodeBlock code={j.prompt || "—"} />
+      <SectionHeader>{t("job.section.output")}</SectionHeader><CodeBlock code={j.output || "—"} />
+      <SectionHeader>{t("job.section.replay")}</SectionHeader>
+      <Text size="sm" c="dimmed">{t("job.replay_hint")}</Text>
       <CodeBlock code={`bin/agento replay ${j.id}`} copy />
     </Stack>
   );

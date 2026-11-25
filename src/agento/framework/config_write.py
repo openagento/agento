@@ -22,7 +22,11 @@ _USE_CLI = "set this field with bin/agento config:set"
 
 
 class ConfigWriteError(ValueError):
-    """A refused config write; the message is safe to show an admin."""
+    """A refused config write; the message is safe to show an admin. ``code`` is what the panel translates."""
+
+    def __init__(self, message: str, *, code: str | None = None, params: dict | None = None) -> None:
+        super().__init__(message)
+        self.code, self.params = code, params
 
 
 def _read_json(path):
@@ -36,19 +40,22 @@ def validate_config_path(path: str, scope: str = Scope.DEFAULT) -> None:
 
     parsed = _parse_config_path(path)
     if parsed is None:
-        raise ConfigWriteError(f"Error: Invalid config path '{path}'.")
+        raise ConfigWriteError(f"Error: Invalid config path '{path}'.",
+                               code="CONFIG_PATH_INVALID", params={"path": path})
     module_name, tool_name, field_name = parsed
 
     module_dir = _find_module_dir(module_name)
     if module_dir is None:
-        raise ConfigWriteError(f"Error: Module '{module_name}' not found.")
+        raise ConfigWriteError(f"Error: Module '{module_name}' not found.",
+                               code="CONFIG_MODULE_UNKNOWN", params={"module": module_name})
 
     if tool_name is not None:
         field_def = load_tool_field_schema(module_dir, tool_name, field_name)
         if field_def is not None and not is_scope_allowed(field_def, scope):
             scopes = ", ".join(allowed_scopes(field_def)) or "none"
             raise ConfigWriteError(
-                f"Error: Field '{field_name}' cannot be set at scope '{scope}' (allowed: {scopes})"
+                f"Error: Field '{field_name}' cannot be set at scope '{scope}' (allowed: {scopes})",
+                code="CONFIG_SCOPE_NOT_ALLOWED", params={"field": field_name, "scope": scope}
             )
         return
 
@@ -64,13 +71,14 @@ def validate_config_path(path: str, scope: str = Scope.DEFAULT) -> None:
         known = ", ".join(sorted(system.keys()))
         raise ConfigWriteError(
             f"Error: Field '{field_name}' not found in {module_name}/system.json\n"
-            f"  Available fields: {known}"
+            f"  Available fields: {known}", code="CONFIG_FIELD_UNKNOWN", params={"field": field_name}
         )
     field_def = system[field_name]
     if isinstance(field_def, dict) and not is_scope_allowed(field_def, scope):
         scopes = ", ".join(allowed_scopes(field_def)) or "none"
         raise ConfigWriteError(
-            f"Error: Field '{field_name}' cannot be set at scope '{scope}' (allowed: {scopes})"
+            f"Error: Field '{field_name}' cannot be set at scope '{scope}' (allowed: {scopes})",
+            code="CONFIG_SCOPE_NOT_ALLOWED", params={"field": field_name, "scope": scope}
         )
 
 
@@ -146,7 +154,8 @@ def validate_config_value(path: str, value: str, *, conn=None, scope: str | None
 
     generic_error = validate_field_value(field_def, value)
     if generic_error is not None:
-        raise ConfigWriteError(f"Error: {generic_error} ('{field_name}')")
+        raise ConfigWriteError(f"Error: {generic_error} ('{field_name}')",
+                               code="CONFIG_VALUE_INVALID", params={"field": field_name})
 
     if is_private_key_field(field_name, field_def):
         _validate_private_key(field_name, value)
@@ -177,14 +186,14 @@ def validate_config_value(path: str, value: str, *, conn=None, scope: str | None
     if len(set(members)) != len(members) or any(m not in allowed for m in members):
         raise ConfigWriteError(
             f"Error: Invalid value '{value}' for {field_type} field '{field_name}'\n"
-            f"  Allowed values: {', '.join(allowed)}"
+            f"  Allowed values: {', '.join(allowed)}", code="CONFIG_VALUE_NOT_ALLOWED", params={"field": field_name}
         )
 
 
 def _validate_numeric_bounds(field_name: str, field_def: dict, value: str) -> None:
     error = numeric_bound_error(field_name, field_def, value)
     if error is not None:
-        raise ConfigWriteError(f"Error: {error}")
+        raise ConfigWriteError(f"Error: {error}", code="CONFIG_VALUE_INVALID", params={"field": field_name})
 
 
 def is_private_key_field(field_name: str, field_def: dict) -> bool:
@@ -216,13 +225,14 @@ def _validate_private_key(field_name: str, value: str) -> None:
         raise ConfigWriteError(
             f"Error: value for '{field_name}' is a passphrase-protected private "
             f"key. The agent runs unattended and cannot unlock it — store an "
-            f"unencrypted key."
+            f"unencrypted key.", code="CONFIG_KEY_PASSPHRASE", params={"field": field_name}
         ) from None
     except ValueError as e:
         raise ConfigWriteError(
             f"Error: value for '{field_name}' does not parse as an SSH private key: {e}\n"
             "  Set it from a file rather than an interactive paste:\n"
-            "    agento config:set <path> --agent-view <code> < id_rsa"
+            "    agento config:set <path> --agent-view <code> < id_rsa",
+            code="CONFIG_KEY_INVALID", params={"field": field_name}
         ) from None
 
 
@@ -258,9 +268,9 @@ def _is_gate_key(conn, path: str) -> bool:
         return False
     tool, skill = gate.group(2), gate.group(4)
     if tool is not None and tool not in _gate_key_names():
-        raise ConfigWriteError(f"no module declares tool {tool!r}")
+        raise ConfigWriteError(f"no module declares tool {tool!r}", code="TOOL_UNKNOWN", params={"tool": tool})
     if skill is not None and not _skill_registered(conn, skill):
-        raise ConfigWriteError(f"no skill {skill!r} is registered")
+        raise ConfigWriteError(f"no skill {skill!r} is registered", code="SKILL_UNKNOWN", params={"skill": skill})
     return True
 
 
@@ -268,7 +278,7 @@ def validate_web_path(conn, path: str) -> bool:
     """The web form's path check, for a write and a delete alike: a gate key, or a field provably
     not a secret. Returns True for a gate key, whose value is then ``0`` or ``1`` only."""
     if not isinstance(path, str):
-        raise ConfigWriteError("path must be a string")
+        raise ConfigWriteError("path must be a string", code="INVALID_REQUEST")
     if _is_gate_key(conn, path):
         return True
     _prove_not_secret(path)
@@ -283,28 +293,28 @@ def _prove_not_secret(path: str) -> None:
     parsed = _parse_config_path(path)
     module_dir = _find_module_dir(parsed[0]) if parsed else None
     if parsed is None or module_dir is None:
-        raise ConfigWriteError(_USE_CLI)
+        raise ConfigWriteError(_USE_CLI, code="CONFIG_USE_CLI")
     _module, tool_name, field_name = parsed
     try:
         manifest = _read_json(module_dir / "module.json")
         system = _read_json(module_dir / "system.json") if (module_dir / "system.json").exists() else {}
     except (ValueError, OSError):
-        raise ConfigWriteError(_USE_CLI) from None
+        raise ConfigWriteError(_USE_CLI, code="CONFIG_USE_CLI") from None
     if tool_name is not None:
         tool = next((t for t in manifest.get("tools", []) if t.get("name") == tool_name), None)
         schema = ((tool or {}).get("fields") or {}).get(field_name)
     else:
         schema = system.get(field_name) if isinstance(system, dict) else None
     if is_secret_field(schema):
-        raise ConfigWriteError(_USE_CLI)
+        raise ConfigWriteError(_USE_CLI, code="CONFIG_USE_CLI")
 
 
 def validate_config_write(conn, path: str, value: str, scope: str, scope_id: int, *, allow_secret: bool) -> None:
     if not isinstance(path, str) or not isinstance(value, str):
-        raise ConfigWriteError("path and value must be strings")
+        raise ConfigWriteError("path and value must be strings", code="INVALID_REQUEST")
     if not allow_secret and validate_web_path(conn, path):
         if value not in ("0", "1"):
-            raise ConfigWriteError("is_enabled must be 0 or 1")
+            raise ConfigWriteError("is_enabled must be 0 or 1", code="INVALID_REQUEST")
         return
     validate_config_path(path, scope)
     validate_config_value(path, value, conn=conn, scope=scope, scope_id=scope_id)
@@ -331,7 +341,7 @@ def write_config(conn, path: str, value: str, *, scope: str, scope_id: int,
                 with conn.cursor() as cur:
                     _lock_actor_and(cur, actor)
             except AccessError as exc:
-                raise ConfigWriteError(str(exc)) from None
+                raise ConfigWriteError(str(exc), code=exc.code, params=exc.params) from None
         encrypted, reset = set_config_with_dependents(conn, path, value, scope=scope, scope_id=scope_id)
         conn.commit()
     except BaseException:

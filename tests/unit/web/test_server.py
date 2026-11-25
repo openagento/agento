@@ -93,6 +93,52 @@ def test_a_request_to_an_unknown_path_is_still_counted(web, counted):
     assert [b.kind for b in counted[-1]] == ["address"]
 
 
+_LOOSE_HEADERS = [("Cache-Control", "public, max-age=600"), ("cache-control", "private, max-age=0"),
+                  ("X-Content-Type-Options", "sniff"), ("Referrer-Policy", "unsafe-url"), ("ETag", '"v"')]
+
+
+def _route_answering(monkeypatch, status: int, *, revalidates: bool) -> None:
+    from agento.web import api
+
+    route = api.Route("GET", re.compile(r"/api/loose"), lambda req: api.Response(status, None, list(_LOOSE_HEADERS)),
+                      auth="login", acl="anonymous", revalidates=revalidates)
+    monkeypatch.setattr(api, "ROUTES", [*api.ROUTES, route])
+
+
+@pytest.mark.parametrize(("status", "revalidates", "cache_control"), [
+    (200, False, "no-store"),
+    (304, False, "no-store"),
+    (200, True, "private, max-age=0"),
+    (304, True, "private, max-age=0"),
+    (404, True, "no-store"),
+    (500, True, "no-store"),
+])
+def test_no_handler_header_replaces_a_security_header(web, monkeypatch, status, revalidates, cache_control):
+    _route_answering(monkeypatch, status, revalidates=revalidates)
+
+    r = httpx.get(f"{web}/api/loose")
+
+    assert r.status_code == status
+    assert r.headers.get_list("cache-control") == [cache_control]
+    assert r.headers.get_list("x-content-type-options") == ["nosniff"]
+    assert r.headers.get_list("referrer-policy") == ["no-referrer"]
+    assert r.headers["etag"] == '"v"'
+    assert ("content-length" in r.headers) is (status != 304)
+
+
+def test_only_the_catalog_route_is_revalidated_and_no_manifest_can_declare_it():
+    import ast
+    from pathlib import Path
+
+    from agento.web import api, routes_registry
+
+    manifest_loader = ast.parse(Path(routes_registry.__file__).read_text())
+    keywords = {kw.arg for node in ast.walk(manifest_loader) if isinstance(node, ast.Call) for kw in node.keywords}
+
+    assert [route.handler for route in api.ROUTES if route.revalidates] == [api.panel_catalog]
+    assert "revalidates" not in keywords and {"json_body", "multipart_bytes"} <= keywords
+
+
 def test_health_is_not_counted(web, counted):
     assert httpx.get(f"{web}/health").status_code == 200
     assert counted == []

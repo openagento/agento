@@ -1,7 +1,8 @@
-// The scheduler API contract (scheduler/src/routes.py) and its refusal messages.
+// The scheduler API contract (scheduler/src/routes.py) and the texts whose key the server names.
 // `starts_at` and a preview's `local` are naive local times in the row's zone: never parse them
 // with `Date`. `next_fire_at`, `last_fire_at` and a preview's `at` are UTC (`Z`): show them with `Timestamp`.
-import { apiFetch, ApiError, LIVE_REFETCH_MS, useQuery } from "@agento/api";
+import { apiFetch, LIVE_REFETCH_MS, useQuery } from "@agento/api";
+import { useLookup } from "@agento/ui";
 
 export interface Can { read: boolean; write: boolean; share: boolean; delete: boolean; change_owner: boolean }
 export interface Member { user_id: number; username: string }
@@ -37,56 +38,10 @@ export interface Run {
 export const BASE = "/api/scheduler";
 export const scheduleUrl = (id: number | string) => `${BASE}/schedules/${id}`;
 
-/** Every refusal code of the API and every `last_error` value, as a sentence for the user. */
-const MESSAGES = {
-  unknown_field: "The form sent a field the server does not know. Reload the page.",
-  missing_field: "Title, prompt, agent view and recurrence are required.",
-  bad_title: "The title must be 1 to 500 characters.",
-  bad_prompt: "The prompt is empty or too long.",
-  bad_harness: "Pick a harness from the list.",
-  bad_model: "The model name is not valid (at most 128 characters).",
-  bad_enabled: "Enabled must be on or off.",
-  bad_start: "The start must be a local date and time.",
-  bad_rule: "The recurrence is not a valid RRULE.",
-  too_frequent: "The runs are too close together. Leave more minutes between them.",
-  no_occurrence: "The recurrence never fires.",
-  too_complex: "The recurrence is too complex to check. Make it simpler.",
-  too_far_back: "The start is too far in the past. Move the start forward.",
-  bad_timezone: "The time zone is not known. Use an IANA name, such as Europe/Warsaw.",
-  ended: "The recurrence has ended. It does not fire again.",
-  no_agent_view: "The agent view of this schedule is gone. It does not fire.",
-  no_view: "You may not use that agent view.",
-  view_fixed: "The agent view is set at create. To move the schedule, delete it and create it again.",
-  limit: "You have reached the maximum number of schedules.",
-  vetoed: "A module refused this change.",
-  changed: "The schedule changed meanwhile. Reload it and try again.",
-  busy: "The server is busy. Try again.",
-  no_reach: "The owner cannot reach the agent view of this schedule, so it cannot run.",
-  overlap: "The previous run has not ended yet.",
-  too_soon: "The schedule ran a short time ago. Try again later.",
-  no_user: "That user does not exist or is not active.",
-  owner: "The owner already has access.",
-  bad_user: "Pick a user.",
-  read_only: "This schedule is read-only.",
-  not_found: "The schedule was not found.",
-  bad_uploads: "The schedule has too many files. Remove some.",
-  upload_gone: "A file is no longer available. Remove it and attach it again.",
-} as const;
-export const CODES = Object.keys(MESSAGES);
-
 /** A `last_error` value as a sentence; an unknown value as is. */
-export const explain = (code: string) => (MESSAGES as Record<string, string>)[code] ?? code;
-
-/** The refusal code of a failed request, or null. */
-export function codeOf(e: unknown): string | null {
-  const code = e instanceof ApiError ? (e.body as { code?: unknown } | undefined)?.code : undefined;
-  return typeof code === "string" ? code : null;
-}
-
-export function message(e: unknown): string {
-  if (!(e instanceof ApiError)) return "The request failed.";
-  const code = codeOf(e);
-  return code !== null && code in MESSAGES ? explain(code) : e.message;
+export function useExplain(): (code: string) => string {
+  const lookup = useLookup();
+  return (code) => lookup("scheduler", `error.${code}`) ?? code;
 }
 
 /** The list polls: the tick, a run and other users change it (UI-8). */

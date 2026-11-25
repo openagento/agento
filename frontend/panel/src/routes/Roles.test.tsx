@@ -2,7 +2,7 @@ import { fireEvent, screen, within } from "@testing-library/react";
 import { Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Users } from "./Users";
-import { renderAt, stubApi, teardown } from "./admin/testing";
+import { renderAt, renderInLocale, stubApi, teardown } from "./admin/testing";
 
 const ROLES = [
   { code: "admin", label: "Administrator", builtin: true, users: 1, scopes: 0 },
@@ -13,13 +13,15 @@ const ROLES = [
 const base = { "/api/admin/roles": ROLES, "/api/admin/users": [] as object[] };
 afterEach(teardown);
 
-const at = (path: string) => renderAt(path, (
+const ROUTES = (
   <Routes>
     <Route path="/users" element={<Users />} />
     <Route path="/users/roles" element={<Users />} />
     <Route path="/users/roles/:code" element={<p>role page</p>} />
   </Routes>
-));
+);
+const at = (path: string) => renderAt(path, ROUTES);
+const refused = (code: string) => () => new Response(JSON.stringify({ error: "server words", code }), { status: 409 });
 const row = (label: string) => screen.getAllByText(label).map((e) => e.closest("tr")).find(Boolean) as HTMLElement;
 
 describe("Roles", () => {
@@ -45,6 +47,13 @@ describe("Roles", () => {
     expect(within(row("User")).getByText("2 places")).toBeInTheDocument();
     expect(within(row("Support")).getByText("No access yet")).toBeInTheDocument();
     expect(within(row("Administrator")).getByText("Built-in")).toBeInTheDocument();
+  });
+
+  it("writes a user count the way the Polish panel groups a number", async () => {
+    await stubApi({ ...base, "/api/admin/roles": [{ code: "crowd", label: "Crowd", builtin: false, users: 12345, scopes: 1 }] });
+    renderInLocale("pl", "/users/roles", ROUTES);
+    await screen.findByRole("table");
+    expect(within(row("Crowd")).getAllByRole("cell")[1].textContent).toBe(`12${String.fromCharCode(0xa0)}345`);
   });
 
   it("Delete is disabled, with the reason, for a built-in or a used role", async () => {
@@ -82,5 +91,47 @@ describe("Roles", () => {
     expect(await screen.findByDisplayValue("Support")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("combobox", { name: "Role of bob" }));
     expect(await screen.findByRole("option", { name: "Ops" })).toBeInTheDocument();
+  });
+
+  it.each([["en", "Users", "Users · Agento", "Add a user", "Active"], ["pl", "Użytkownicy", "Użytkownicy · Agento", "Dodawanie użytkownika", "Aktywny"]])(
+    "shows the Users screen in %s", async (tag, title, tab, form, status) => {
+      await stubApi({ ...base, "/api/admin/users": [{ id: 2, username: "bob", role: "ops", is_active: true }] });
+      renderInLocale(tag, "/users", ROUTES);
+      expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+      expect(document.title).toBe(tab);
+      expect(screen.getByText(form)).toBeInTheDocument();
+      expect(await screen.findByText(status)).toBeInTheDocument();
+    });
+
+  it.each([["en", "Roles", "2 places", "Add role", "No access yet", "Users · Agento"],
+    ["pl", "Role", "2 miejsca", "Dodaj rolę", "Brak dostępu", "Użytkownicy · Agento"]])(
+    "shows the Roles tab in %s", async (tag, tab, places, add, none, title) => {
+      await stubApi(base);
+      renderInLocale(tag, "/users/roles", ROUTES);
+      expect(await screen.findByText(places)).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: tab })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("button", { name: add })).toBeInTheDocument();
+      expect(within(row("Support")).getByText(none)).toBeInTheDocument();
+      expect(document.title).toBe(title);
+    });
+
+  it("a refused new user reads the Polish text of its code, never the server's words", async () => {
+    await stubApi({ ...base, "POST /api/admin/users": refused("USERNAME_TAKEN") });
+    renderInLocale("pl", "/users", ROUTES);
+    fireEvent.change(screen.getByRole("textbox", { name: "Nazwa użytkownika" }), { target: { value: "bob" } });
+    fireEvent.click(screen.getByRole("button", { name: "Dodaj użytkownika" }));
+    expect(await screen.findByText("Użytkownik o tej nazwie już istnieje.")).toBeInTheDocument();
+    expect(screen.queryByText("server words")).toBeNull();
+  });
+
+  it("a refused new role reads the Polish text of its code, never the server's words", async () => {
+    await stubApi({ ...base, "POST /api/admin/roles": refused("ROLE_CODE_TAKEN") });
+    renderInLocale("pl", "/users/roles", ROUTES);
+    fireEvent.click(await screen.findByRole("button", { name: "Dodaj rolę" }));
+    const dialog = await screen.findByRole("dialog", { name: "Dodaj rolę" });
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Nazwa" }), { target: { value: "Ops two" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Dodaj rolę" }));
+    expect(await screen.findByText("Rola o tym kodzie już istnieje.")).toBeInTheDocument();
+    expect(screen.queryByText("server words")).toBeNull();
   });
 });

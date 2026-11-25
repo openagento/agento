@@ -5,7 +5,7 @@ import { LIVE_REFETCH_MS, PanelModulesProvider } from "@agento/api";
 import { SEARCH_DEBOUNCE_MS } from "@agento/ui";
 import { MODULES } from "../../generated/registry";
 import { Jobs } from "./Jobs";
-import { renderAt, stubApi, teardown } from "./testing";
+import { renderAt, renderInLocale, stubApi, teardown } from "./testing";
 
 const row = (id: number, status: string, ref: string) => ({
   id, type: "cron", status, source: "jira", reference_id: ref, agent_type: "claude", agent_view_code: "av",
@@ -35,6 +35,43 @@ const url = () => screen.getByRole("status", { hidden: true, name: "url" }).text
 const sent = (api: Awaited<ReturnType<typeof stubApi>>) => api.calls("GET", "/api/admin/jobs").map((c) => c.url.search);
 
 describe("Jobs", () => {
+  it.each([
+    ["en", "Jobs", "Reference", "All", "FAILED", "Details", "3s", "Jobs · Agento"],
+    ["pl", "Zadania", "Odniesienie", "Wszystkie", "Nieudane", "Szczegóły", "3 s", "Zadania · Agento"],
+  ])("shows the screen in %s", async (tag, title, column, all, status, action, duration, tab) => {
+    await stubApi({ "/api/admin/jobs": pageOf([row(2, "FAILED", "AG-2")]) });
+    renderInLocale(tag, "/admin/jobs", <Jobs />);
+    expect(await screen.findByRole("button", { name: action })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: column })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: all })).toBeChecked();
+    expect(screen.getByRole("radio", { name: status })).toBeInTheDocument();
+    expect(within(screen.getByRole("table")).getByText(status)).toBeInTheDocument();
+    expect(screen.getByText(duration)).toBeInTheDocument();
+    expect(document.title).toBe(tab);
+  });
+
+  it.each([
+    ["a known code", { error: "server words", code: "FORBIDDEN" }, "Nie masz uprawnień do tej operacji."],
+    ["no code", { error: "server words" }, "Nie udało się wczytać zadań."],
+  ])("a list refused with %s shows Polish text, never the server's", async (_name, body, text) => {
+    await stubApi({ "/api/admin/jobs": () => new Response(JSON.stringify(body), { status: 403 }) });
+    renderInLocale("pl", "/admin/jobs", <Jobs />);
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.queryByText(/server words/)).toBeNull();
+  });
+
+  it.each([
+    ["?status=FAILED", "Żadne zadanie nie ma statusu „Nieudane”."],
+    ["?q=abc", "Żadne zadanie nie pasuje do frazy „abc”."],
+    ["?status=DEAD&q=abc", "Żadne zadanie nie pasuje do statusu „Porzucone” i frazy „abc”."],
+  ])("names in Polish what an empty result (%s) was filtered by", async (search, text) => {
+    await stubApi({ "/api/admin/jobs": pageOf([]) });
+    renderInLocale("pl", `/admin/jobs${search}`, <Jobs />);
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Wyczyść filtry" })).toBeInTheDocument();
+  });
+
   it("asks the server for one page with the status, search and sort from the URL", async () => {
     const api = await stubApi({ "/api/admin/jobs": pageOf([row(2, "FAILED", "AG-2")]) });
     renderAt("/admin/jobs?status=FAILED&q=ag&sort=type&dir=asc", <Jobs />);
@@ -273,6 +310,12 @@ describe("Jobs", () => {
       const drawer = await open(() => ({ id: 41 }));
       fireEvent.click(await drawer.findByRole("button", { name: "Open conversation" }));
       await waitFor(() => expect(screen.getByRole("status", { hidden: true, name: "path" })).toHaveTextContent("/conversations/41"));
+    });
+
+    it("names the link in the panel's language", async () => {
+      await stubApi({ "/api/admin/jobs": pageOf([]), "/api/admin/jobs/9": job, "/api/conversation/jobs/9": { id: 41 } });
+      renderInLocale("pl", "/admin/jobs?job=9", <PanelModulesProvider modules={MODULES}><Jobs /></PanelModulesProvider>);
+      expect(await within(await screen.findByRole("dialog")).findByRole("button", { name: "Otwórz rozmowę" })).toBeInTheDocument();
     });
 
     it.each([[{}], [{ id: "41/../../admin" }], [{ id: 0 }], [{ id: 4.5 }], [null]])(

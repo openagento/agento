@@ -5,6 +5,7 @@ import { useDisclosure, useLocalStorage, useMediaQuery } from "@mantine/hooks";
 import { ChevronDown, ChevronRight, PinOff, Search, SquarePen, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import classes from "./Chat.module.css";
+import { useT } from "../i18n";
 import { EditableTitle } from "./Headers";
 import { IconAction } from "./IconAction";
 import { RowMenu, type RowAction } from "./RowMenu";
@@ -19,6 +20,7 @@ export const clampRail = (w: number) => Math.min(RAIL_MAX, Math.max(RAIL_MIN, Ma
 function RailResizer({ width, onWidth, pageRef }: {
   width: number; onWidth: (w: number) => void; pageRef: RefObject<HTMLDivElement | null>;
 }) {
+  const t = useT("ui");
   const widthAt = (clientX: number) => clampRail(clientX - (pageRef.current?.getBoundingClientRect().left ?? 0));
   const onPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
@@ -42,7 +44,7 @@ function RailResizer({ width, onWidth, pageRef }: {
   return (
     /* A slider, not a `separator`: it is focusable and the arrow keys resize it. */
     <UnstyledButton className={classes.railResizer} role="slider"
-      aria-label="Resize the conversation list" aria-valuenow={width} aria-valuemin={RAIL_MIN}
+      aria-label={t("threads.resize")} aria-valuenow={width} aria-valuemin={RAIL_MIN}
       aria-valuemax={RAIL_MAX} onPointerDown={onPointerDown} onKeyDown={onKeyDown} />
   );
 }
@@ -90,8 +92,9 @@ export function Rail({ top, children }: { top: ReactNode; children: ReactNode })
 
 /** The rail's search toggle. The icon lives here, not in the module panel (UI-4 in spirit). */
 export function SearchToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const t = useT("ui");
   return (
-    <IconAction label={open ? "Close search" : "Search conversations"}
+    <IconAction label={open ? t("threads.search.close") : t("threads.search.open")}
       icon={open ? <X size={16} /> : <Search size={16} />} onClick={onToggle} />
   );
 }
@@ -123,9 +126,10 @@ export interface ThreadLink {
  *  The open conversation's chevron trails its title, which stays in line with the other rows. */
 function ThreadRow({ thread, depth = 0 }: { thread: ThreadLink; depth?: number }) {
   const [renaming, setRenaming] = useState(false);
+  const t = useT("ui");
   const actions: RowAction[] = [
-    ...(thread.onRename ? [{ label: "Rename", icon: "rename" as const, onClick: () => setRenaming(true) }] : []),
-    ...(thread.onPin ? [{ label: thread.pinned ? "Unpin" : "Pin", icon: thread.pinned ? ("unpin" as const) : ("pin" as const),
+    ...(thread.onRename ? [{ id: "rename", label: t("threads.rename"), icon: "rename" as const, onClick: () => setRenaming(true) }] : []),
+    ...(thread.onPin ? [{ id: "pin", label: thread.pinned ? t("threads.unpin") : t("threads.pin"), icon: thread.pinned ? ("unpin" as const) : ("pin" as const),
          onClick: () => thread.onPin!(!thread.pinned) }] : []),
     ...(thread.actions ?? []),
   ];
@@ -138,7 +142,7 @@ function ThreadRow({ thread, depth = 0 }: { thread: ThreadLink; depth?: number }
     <div className={`${classes.threadRow} ${thread.active ? classes.threadActive : ""}`} data-depth={depth || undefined}>
       {renaming && thread.onRename ? (
         <div className={classes.threadTitle}>
-          <EditableTitle value={thread.title} label="Conversation title" maxLength={255} startEditing
+          <EditableTitle value={thread.title} label={t("threads.title")} maxLength={255} startEditing
             onDone={() => setRenaming(false)} onSave={thread.onRename} />
         </div>
       ) : (
@@ -154,13 +158,13 @@ function ThreadRow({ thread, depth = 0 }: { thread: ThreadLink; depth?: number }
       )}
       {/* A running conversation is always marked, not only on hover: the dot sits outside
           `.threadActions`, and pulses through the same halo a running job row uses. */}
-      {thread.live && <span className={classes.statusDot} data-tone="running" aria-label="running" role="img" />}
+      {thread.live && <span className={classes.statusDot} data-tone="running" aria-label={t("threads.running")} role="img" />}
       {/* While the menu is open its target keeps focus, so `:focus-within` holds the row open. */}
       <div className={classes.threadActions}>
         {thread.pinned && thread.onPin && (
-          <IconAction label="Unpin" icon={<PinOff size={14} />} onClick={() => thread.onPin!(false)} />
+          <IconAction label={t("threads.unpin")} icon={<PinOff size={14} />} onClick={() => thread.onPin!(false)} />
         )}
-        <RowMenu actions={actions} label="Conversation actions" />
+        <RowMenu actions={actions} label={t("threads.actions")} />
       </div>
     </div>
     {nested && !thread.collapsed && thread.children!.map((c) => <ThreadRow key={c.id} thread={c} depth={depth + 1} />)}
@@ -169,17 +173,18 @@ function ThreadRow({ thread, depth = 0 }: { thread: ThreadLink; depth?: number }
 }
 
 /** Threads in groups ("Pinned", "Today", …). The open one is `aria-current`. */
-export function ThreadList({ groups, empty = "No conversations yet." }: {
-  groups: { label: string; threads: ThreadLink[] }[]; empty?: ReactNode;
+export function ThreadList({ groups, empty }: {
+  groups: { id: string; label: string; threads: ThreadLink[] }[]; empty?: ReactNode;
 }) {
+  const t = useT("ui");
   const shown = groups.filter((g) => g.threads.length > 0);
-  if (shown.length === 0) return <Text size="sm" c="dimmed">{empty}</Text>;
+  if (shown.length === 0) return <Text size="sm" c="dimmed">{empty ?? t("threads.empty")}</Text>;
   return (
     <>
       {shown.map((g) => (
-        <Box key={g.label} className={classes.threadGroup}>
+        <Box key={g.id} className={classes.threadGroup}>
           <Text size="xs" c="dimmed" fw={600} className={classes.groupLabel}>{g.label}</Text>
-          {g.threads.map((t) => <ThreadRow key={t.id} thread={t} />)}
+          {g.threads.map((thread) => <ThreadRow key={thread.id} thread={thread} />)}
         </Box>
       ))}
     </>

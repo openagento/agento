@@ -1,0 +1,21 @@
+{
+  "module.title": "Widok agenta",
+  "config.harness.label": "Harness agenta",
+  "config.harness.description": "Program agenta, który obsługuje ten widok. Opcje pochodzą z deklaracji agent_harnesses włączonych modułów.",
+  "config.provider.label": "Dostawca modelu",
+  "config.provider.description": "Dostawca modelu/API, z którym łączy się harness. Opcje zależą od wybranego harnessu.",
+  "config.model.label": "Model agenta",
+  "config.model.description": "Identyfikator modelu przekazywany do CLI harnessu. Claude: claude-opus-4-7 | claude-sonnet-4-6 | claude-haiku-4-5 (aliasy: opus, sonnet, haiku). Codex: gpt-5.4 | gpt-5.4-mini. Pi: DOKŁADNY identyfikator z katalogu (np. anthropic/claude-sonnet-4.5) — Pi dopasowuje nieznaną nazwę po cichu, po fragmencie tekstu, więc Agento przerywa uruchomienie przy każdej niezgodności; zobacz docs/modules/pi.md. Naciśnij t (albo uruchom config:test agent_view/model), aby sprawdzić razem harness, jego zainstalowane CLI, dostawcę, poświadczenie i model.",
+  "config.provider_options/base_url.label": "Bazowy URL dostawcy",
+  "config.provider_options/base_url.description": "Punkt końcowy API dostawcy hostowanego samodzielnie (np. http://ollama:11434/v1). Widoczne tylko dla dostawców, których di.json deklaruje opcję dostawcy „base_url”; dostawcy hostowani jej nie używają.",
+  "config.scheduling/priority.label": "Priorytet zadania (0-100)",
+  "config.mcp/servers.label": "Dodatkowe serwery MCP (słownik JSON; scalany z automatycznie dodanym wpisem toolboxa)",
+  "config.instructions/agents_md.label": "Treść AGENTS.md (zastępuje motyw)",
+  "config.instructions/soul_md.label": "Treść SOUL.md (zastępuje motyw)",
+  "config.identity/ssh_private_key.label": "Klucz prywatny SSH (id_rsa, przechowywany w postaci zaszyfrowanej)",
+  "config.identity/ssh_public_key.label": "Klucz publiczny SSH (id_rsa.pub)",
+  "config.identity/ssh_config.label": "Opcjonalna treść ~/.ssh/config (dyrektywy Host/IdentityFile)",
+  "config.identity/ssh_known_hosts.label": "Opcjonalna treść ~/.ssh/known_hosts (zaufane hosty podane z góry)",
+  "config.identity/git_author_name.label": "Nazwa autora commitów Git (user.name)",
+  "config.identity/git_author_email.label": "E-mail autora commitów Git (user.email) — MUSI być zweryfikowanym adresem e-mail na docelowym koncie Bitbucket, inaczej commity nie zostaną z nim powiązane"
+}

@@ -212,3 +212,12 @@ def test_invalid_share_host_stops_the_proxy(tmp_path, host):
     assert r.returncode != 0
     assert "ARGS=" not in r.stdout  # caddy never started
     assert "not a valid host name" in r.stderr
+
+
+def test_the_panel_api_gets_every_request_header_but_the_identity_ones():
+    blocks = _blocks()
+    panel = "{$AGENTO_PANEL_HOST}"
+    removed = {s.removeprefix("request_header -") for _stack, s in blocks if s.startswith("request_header")}
+    assert removed == {"X-Agento-*", "X-Forwarded-User", "X-Remote-User", "Remote-User", "X-Agento-Upstream-Path"}
+    assert [s for stack, s in blocks if stack == [panel, "handle /api/*"]] == ["reverse_proxy web:8000"]
+    assert not [s for stack, s in blocks if stack[:1] == [panel] and s.startswith(("header_up", "header_down"))]

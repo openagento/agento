@@ -1,7 +1,7 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Credentials, freeColor, isStale } from "./Credentials";
-import { renderAt, stubApi, teardown } from "./testing";
+import { renderAt, renderInLocale, stubApi, teardown } from "./testing";
 
 const cred = (id: number, over: object = {}) => ({
   id, scope: "claude", label: `c${id}`, status: "ok", enabled: true, error_source: null,
@@ -112,6 +112,19 @@ describe("Credentials", () => {
     expect(screen.queryByText("90%")).toBeNull();
   });
 
+  it("in a language with its own digits, no number of the grid or the drawer keeps an ASCII digit", async () => {
+    await stubApi({ "/api/admin/credentials": [cred(1, { label: "main", tokens_used: 1234567, limits: two, limits_at: new Date().toISOString() })] });
+    renderInLocale("fa", "/admin/credentials", <Credentials />);
+    const numericCells = (await screen.findAllByRole("cell")).slice(5, 7).map((cell) => cell.textContent);
+    expect(numericCells).toEqual(["۱٬۲۳۴٬۵۶۷", "5h۷۵٪Week۸٪"]);
+    fireEvent.click(screen.getByRole("button", { name: "Usage" }));
+    const d = within(await screen.findByRole("dialog"));
+    const fact = (name: string) => d.getByRole("rowheader", { name }).nextElementSibling?.textContent;
+    expect([fact("Token limit (24h)"), fact("Tokens used (24h)"), fact("Calls (24h)"), fact("Local limit (24h)")])
+      .toEqual(["۱٬۰۰۰", "۱٬۲۳۴٬۵۶۷", "۳", "۹۰٪"]);
+    expect(fact("Week")).toBe("۸٪ free, reset time unknown");
+  });
+
   it("the drawer shows the local limit, each window with its reset, and when it was checked", async () => {
     await stubApi({ "/api/admin/credentials": [cred(1, { limits: two, limits_at: "2026-10-04T12:00:00Z" })] });
     renderAt("/admin/credentials", <Credentials />);
@@ -203,14 +216,46 @@ describe("Credentials", () => {
     await vi.waitFor(() => expect(api.calls("POST", "/api/admin/credentials/1/login")).toHaveLength(2));
   });
 
-  it("a refused start shows the server message", async () => {
+  it.each([
+    ["en", "a known code", { error: "server words", code: "LOGIN_ALREADY_RUNNING" }, "Re-login", "A sign-in for this credential is already in progress."],
+    ["pl", "a known code", { error: "server words", code: "LOGIN_ALREADY_RUNNING" }, "Zaloguj ponownie", "Logowanie tego poświadczenia już trwa."],
+    ["pl", "no code", { error: "server words" }, "Zaloguj ponownie", "Nie udało się rozpocząć logowania."],
+  ])("a refused start shows in %s the text of %s, never the server's", async (tag, _name, body, relogin, text) => {
     await stubApi({
       "/api/admin/credentials": [cred(1)],
-      "POST /api/admin/credentials/1/login": new Response(JSON.stringify({ error: "A login is already running." }), { status: 409 }),
+      "POST /api/admin/credentials/1/login": () => new Response(JSON.stringify(body), { status: 409 }),
     });
-    renderAt("/admin/credentials", <Credentials />);
-    fireEvent.click(await screen.findByRole("button", { name: "Re-login" }));
-    expect(await within(await screen.findByRole("dialog")).findByText("A login is already running.")).toBeInTheDocument();
+    renderInLocale(tag, "/admin/credentials", <Credentials />);
+    fireEvent.click(await screen.findByRole("button", { name: relogin }));
+    const dialog = within(await screen.findByRole("dialog"));
+    expect(await dialog.findByText(text)).toBeInTheDocument();
+    expect(dialog.queryByText(/server words/)).toBeNull();
+  });
+
+  it.each([
+    ["en", "Credentials", "Last used", "Usage", "Credentials · Agento"],
+    ["pl", "Poświadczenia", "Ostatnie użycie", "Użycie", "Poświadczenia · Agento"],
+  ])("shows the screen in %s", async (tag, title, column, action, tab) => {
+    await stubApi({ "/api/admin/credentials": [cred(1)] });
+    renderInLocale(tag, "/admin/credentials", <Credentials />);
+    expect(await screen.findByRole("button", { name: action })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: column })).toBeInTheDocument();
+    expect(document.title).toBe(tab);
+  });
+
+  it("shows the limits and a failed login in Polish", async () => {
+    await stubApi({
+      "/api/admin/credentials": [cred(1, { limits: two, limits_at: "2026-10-04T12:00:00Z" })],
+      "POST /api/admin/credentials/1/login": { id: 31 },
+      "/api/admin/credential-logins/31": login({ status: "failed", error_code: "expired" }),
+    });
+    renderInLocale("pl", "/admin/credentials", <Credentials />);
+    expect(await screen.findByRole("progressbar", { name: "c1 Tydzień: wolne" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Zaloguj ponownie" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "Ponowne logowanie: c1" }));
+    expect(await dialog.findByText("Logowanie trwało zbyt długo i wygasło.")).toBeInTheDocument();
+    expect(dialog.getByRole("button", { name: "Spróbuj ponownie" })).toBeInTheDocument();
   });
 
   it("closing while active cancels the login", async () => {
@@ -250,7 +295,7 @@ describe("Credentials", () => {
       "/api/admin/credentials": [cred(1)],
       "POST /api/admin/credentials/1/login": () => (++starts === 1
         ? new Promise((resolve) => { first = resolve; })
-        : new Response(JSON.stringify({ error: "A login is already running." }), { status: 409 })),
+        : new Response(JSON.stringify({ error: "server words", code: "LOGIN_ALREADY_RUNNING" }), { status: 409 })),
       "POST /api/admin/credential-logins/21/cancel": null,
     });
     renderAt("/admin/credentials", <Credentials />);
@@ -258,7 +303,7 @@ describe("Credentials", () => {
     fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Close" }));
     await vi.waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Re-login" }));
-    await within(await screen.findByRole("dialog")).findByText("A login is already running.");
+    await within(await screen.findByRole("dialog")).findByText("A sign-in for this credential is already in progress.");
     first({ id: 21 });
     await vi.waitFor(() => expect(api.calls("POST", "/api/admin/credential-logins/21/cancel")).toHaveLength(1));
   });

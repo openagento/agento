@@ -131,7 +131,7 @@ export type Item =
   | Text
   | Thought
   | { type: "answer"; key: string; content: string }
-  | { type: "error"; key: string; text: string; attempt?: number }
+  | { type: "error"; key: string; text: string; attempt?: number; failedKind?: string }
   | { type: "marker"; key: string; kind: "gap" | "truncated" }
   | Tool
   | Run;
@@ -239,7 +239,7 @@ export function buildItems(events: StreamEvent[]): Item[] {
         break;
       case "job.failed":
         into.push({
-          type: "error", key, text: `The run failed${e.payload.kind ? ` (${str(e.payload.kind)})` : ""}.`,
+          type: "error", key, text: "", failedKind: e.payload.kind ? str(e.payload.kind) : "",
           ...(typeof e.payload.attempt === "number" ? { attempt: e.payload.attempt } : {}),
         });
         break;
@@ -335,8 +335,10 @@ export function foldTools(items: Item[]): Shown[] {
 }
 
 export interface Failure {
-  /** The newest error text of the turn. */
+  /** The newest error text of the turn; empty when the run failed with no error text. */
   text: string;
+  /** No text: the kind `job.failed` named, or empty. The view says "The run failed (kind)." */
+  failedKind?: string;
   /** How many error items the turn's attempts carried. */
   count: number;
   /** The run failed (job.failed or a failed outcome), not only reported an error. */
@@ -397,6 +399,7 @@ function turnOf(runs: Run[]): Turn {
   const isErr = (x: Item): x is Err => x.type === "error";
   const errors = runs.flatMap((r) => r.items.filter(isErr));
   const mine = newest.items.filter(isErr);
+  const last = mine.at(-1);
   const attempt = num(newest.started?.attempt) ?? mine.reduce<number | null>((a, e) => e.attempt ?? a, null);
   const maxAttempts = num(newest.started?.max_attempts) ?? num(runs[0].started?.max_attempts);
   const outcome = newest.finished ? str(newest.finished.outcome) : "";
@@ -405,7 +408,8 @@ function turnOf(runs: Run[]): Turn {
     type: "turn", key: runs[0].key, executionId: newest.executionId, first: runs[0].started, started: newest.started, finished: newest.finished,
     items: foldTools(newest.items.filter((x) => !isErr(x))),
     failure: mine.length || failed ? {
-      text: mine.at(-1)?.text ?? "The run failed.",
+      text: last?.text ?? "",
+      ...(last === undefined ? { failedKind: "" } : last.failedKind === undefined ? {} : { failedKind: last.failedKind }),
       count: errors.length,
       failed,
       retrying: failed && outcome !== "dead" && attempt !== null && maxAttempts !== null && attempt < maxAttempts,

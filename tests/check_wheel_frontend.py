@@ -1,4 +1,4 @@
-"""A real wheel ships the built panel and the versioned kit (PRD E8 §11).
+"""A real wheel ships the built panel, the versioned kit (PRD E8 §11) and the built-in catalogs.
 
 Not a pytest test: it needs the frontend build, so it runs after it (bin/test step 9, CI
 test-js, the release build job). `python3 tests/check_wheel_frontend.py [wheel]` builds a wheel
@@ -12,6 +12,8 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
+CATALOGS = [f"agento/framework/i18n/{namespace}/{name}.json"
+            for namespace in ("ui", "panel") for name in ("i18n", "en", "pl")]
 
 
 def missing(names: set[str]) -> list[str]:
@@ -19,7 +21,7 @@ def missing(names: set[str]) -> list[str]:
     want = ["agento/framework/web/panel/index.html", "agento/modules/miniapps/skills/miniapp-ui/SKILL.md"]
     want += [f"agento/framework/web/miniapp-ui/{kit}/{f}" for f in
              ("agento-ui.css", "agento-ui.js", "agento-bridge.js", "fonts/inter-latin-400-normal.woff2")]
-    out = [n for n in want if n not in names]
+    out = [n for n in [*want, *CATALOGS] if n not in names]
     if not any(n.startswith("agento/framework/web/panel/assets/") and n.endswith(".js") for n in names):
         out.append("agento/framework/web/panel/assets/*.js")
     return out

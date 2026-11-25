@@ -2,7 +2,7 @@ import { fireEvent, screen, within } from "@testing-library/react";
 import { Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RoleEdit } from "./RoleEdit";
-import { renderAt, stubApi, teardown } from "./admin/testing";
+import { renderAt, renderInLocale, stubApi, teardown } from "./admin/testing";
 
 const SCOPES = {
   workspaces: [{ id: 2, code: "ws", label: "WS", is_active: true }],
@@ -32,7 +32,8 @@ const base = {
 };
 afterEach(teardown);
 
-const at = (path: string) => renderAt(path, <Routes><Route path="/users/roles/:code" element={<RoleEdit />} /></Routes>);
+const ROUTES = <Routes><Route path="/users/roles/:code" element={<RoleEdit />} /></Routes>;
+const at = (path: string) => renderAt(path, ROUTES);
 const box = (name: string) => screen.findByRole("checkbox", { name });
 const save = () => fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -182,5 +183,45 @@ describe("RoleEdit", () => {
     expect(await box("View")).toBeChecked();
     expect(await box("View")).toBeDisabled();
     expect(screen.getByText("Built in")).toBeInTheDocument();
+  });
+
+  it.each([["en", "Role Support · Agento", "Role info", "Role resources", "Name"],
+    ["pl", "Rola Support · Agento", "Informacje o roli", "Zasoby roli", "Nazwa"]])(
+    "shows the role in %s", async (tag, tab, info, resources, name) => {
+      await stubApi(base);
+      renderInLocale(tag, "/users/roles/support", ROUTES);
+      expect(await screen.findByRole("heading", { name: /Support/ })).toBeInTheDocument();
+      expect(document.title).toBe(tab);
+      expect(screen.getByRole("tab", { name: info })).toHaveAttribute("aria-selected", "true");
+      expect(screen.getByRole("tab", { name: resources })).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name })).toHaveValue("Support");
+    });
+
+  it("in Polish a resource reads its catalog title, and one with no key keeps the server's title", async () => {
+    const titled = { admin: [
+      { screen: "Jobs", namespace: "panel", leaves: [view("admin.jobs", true)] },
+      { screen: "Users", namespace: "panel", leaves: [view("admin.users"), { id: "admin.users.edit", title: "Edit", granted: false, builtin: false }] },
+      { screen: "Reports", namespace: "app_reports", leaves: [view("app_reports.read")] },
+    ] };
+    await stubApi({ ...base, "/api/admin/roles/support/resources": titled });
+    renderInLocale("pl", "/users/roles/support?tab=resources&scope=global&scope_id=0", ROUTES);
+    expect(await box("Użytkownicy")).not.toBeChecked();
+    for (const name of ["Administracja", "Zadania", "Edycja", "Reports", "View"]) expect(await box(name)).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox", { name: "Podgląd" })).toHaveLength(2);
+    expect(screen.getByRole("combobox", { name: "Zakres" })).toHaveValue("Panel administracyjny (wszędzie)");
+    expect(screen.getByRole("textbox", { name: "Szukaj zasobów" })).toHaveAttribute("placeholder", "Szukaj");
+    for (const name of ["Zwiń wszystko", "Zaznacz wszystko", "Wyczyść", "Zwiń Użytkownicy"]) expect(screen.getByRole("button", { name })).toBeInTheDocument();
+    fireEvent.click(await box("Użytkownicy"));
+    expect(screen.getByText("2 niezapisane zmiany")).toBeInTheDocument();
+  });
+
+  it("a refused rename reads the Polish text of its code, never the server's words", async () => {
+    await stubApi({ ...base,
+      "PATCH /api/admin/roles/support": () => new Response(JSON.stringify({ error: "server words", code: "ROLE_LABEL_TAKEN" }), { status: 409 }) });
+    renderInLocale("pl", "/users/roles/support", ROUTES);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Nazwa" }), { target: { value: "Ops" } });
+    fireEvent.click(screen.getByRole("button", { name: "Zapisz" }));
+    expect(await screen.findByText("Rola o tej nazwie już istnieje.")).toBeInTheDocument();
+    expect(screen.queryByText("server words")).toBeNull();
   });
 });

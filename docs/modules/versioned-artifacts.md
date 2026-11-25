@@ -378,6 +378,11 @@ through the toolbox `/admin` endpoint above, as `service:web:user:<id>`. Each ro
 its leaf in `di.json` `acl`, and `web` checks it before the handler (`403`). The module's
 `acl.json` declares the leaves (screen "Artifacts").
 
+**Languages.** The screen texts are in `versioned_artifacts/i18n/en.json` and `pl.json`, namespace
+`versioned_artifacts`: the screen keys, `error.<code>` for each refusal code, and the menu entry `nav.<path>`.
+The catalog has a text for every store code
+([i18n.md](../development/i18n.md)).
+
 | Route | Leaf | Does |
 |---|---|---|
 | `GET /api/versioned_artifacts/artifacts` | `versioned_artifacts` | Every artifact in the store |

@@ -6,24 +6,24 @@
 // return; it dies with the page, like any other unsaved form.
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Badge, Group, Tooltip } from "@mantine/core";
-import { apiFetch, useQuery, useQueryClient, useSession } from "@agento/api";
-import { EmptyState, ErrorState, LabelBadge, LoadingState } from "@agento/ui";
+import { apiFetch, useErrorText, useQuery, useQueryClient, useSession } from "@agento/api";
+import { EmptyState, ErrorState, LabelBadge, LoadingState, useT, type Translate } from "@agento/ui";
 import type { TreeNodeData } from "@mantine/core";
 import { ResourceTree, UnsavedBar } from "../ResourceTree";
 import { changeCount } from "../roleTree";
 import { initialChecked, lockedLeaves, toTreeData, toWrites, type EnablementInfo, type Groups } from "../enablementTree";
 import { trifecta } from "../trifecta";
-import { message, useConfigWrite, useScope } from "./shared";
+import { useConfigWrite, useScope } from "./shared";
 import { useToolLabels } from "./ToolLabels";
 import { TrifectaAlert } from "./TrifectaAlert";
 import { TIGHT } from "../layout";
 
 /** `names`: label key → name, for the admin role only; without it no label shows. */
-function info(node: TreeNodeData, names: Map<string, string> | null): ReactNode {
+function info(t: Translate, node: TreeNodeData, names: Map<string, string> | null): ReactNode {
   const { blockedBy, inherited, labels } = (node.nodeProps ?? {}) as EnablementInfo;
   const state = blockedBy
-    ? <Tooltip label={`Blocked by ${blockedBy}`} withArrow><Badge variant="light" color="gray" size="sm" tt="none">Blocked</Badge></Tooltip>
-    : inherited ? <Badge variant="light" color="gray" size="sm" tt="none">Inherited</Badge> : null;
+    ? <Tooltip label={t("enablement.blocked_by", { name: blockedBy })} withArrow><Badge variant="light" color="gray" size="sm" tt="none">{t("enablement.blocked")}</Badge></Tooltip>
+    : inherited ? <Badge variant="light" color="gray" size="sm" tt="none">{t("enablement.inherited")}</Badge> : null;
   if (!names || !labels?.length) return state;
   // One wrapping group: when it does not fit beside the name, the tree row puts it on its own line.
   return (
@@ -45,6 +45,9 @@ export function EnablementTree<T>({ listKey, url, groupsOf, emptyTitle, emptyTex
   const names = useMemo(() => (risk ? new Map((labels.data ?? []).map((l) => [l.key, l.name])) : null), [risk, labels.data]);
   const { ready, query } = useScope();
   const qc = useQueryClient();
+  const t = useT("panel");
+  const errorText = useErrorText("panel");
+  const renderInfo = useCallback((node: TreeNodeData) => info(t, node, names), [t, names]);
   const list = useQuery({
     queryKey: [listKey, query], enabled: ready,
     queryFn: ({ signal }) => apiFetch<T>(`${url}?${query}`, { signal }),
@@ -82,15 +85,15 @@ export function EnablementTree<T>({ listKey, url, groupsOf, emptyTitle, emptyTex
     });
   };
 
-  if (!ready) return <EmptyState title="Choose a scope" />;
+  if (!ready) return <EmptyState title={t("enablement.choose_scope")} />;
   if (list.isPending) return <LoadingState />;
-  if (list.error) return <ErrorState message={message(list.error)} onRetry={() => void list.refetch()} />;
+  if (list.error) return <ErrorState message={errorText(list.error, "enablement.load_failed")} onRetry={() => void list.refetch()} />;
   if (!groups.length) return <EmptyState title={emptyTitle}>{emptyText}</EmptyState>;
   return (
     <>
       {warning?.complete && <TrifectaAlert categories={warning.categories} />}
       <ResourceTree key={query} toData={toData} checked={checked} locked={locked} busy={write.isPending}
-        onChange={(set) => setEdits((e) => ({ ...e, [query]: set }))} renderInfo={(node) => info(node, names)}
+        onChange={(set) => setEdits((e) => ({ ...e, [query]: set }))} renderInfo={renderInfo}
         emptyTitle={emptyTitle} emptyText={emptyText} />
       {changes > 0 && (
         <UnsavedBar changes={changes} busy={write.isPending} onSave={save}

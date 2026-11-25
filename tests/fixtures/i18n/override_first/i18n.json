@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "overrides": {
+    "pl": "i18n/override/pl.json"
+  }
+}

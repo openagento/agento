@@ -376,7 +376,7 @@ def test_the_replay_route_answers_409_cursor_expired(conn, world, thread):
     response = routes.events(_QReq(conn, world["owner"], params={"id": str(thread)},
                                    query={"after": str(removed)}))
 
-    assert (response.status, response.body) == (409, {"error": "cursor_expired"})
+    assert (response.status, response.body) == (409, {"error": "cursor_expired", "code": "CURSOR_EXPIRED"})
 
 
 def test_the_replay_route_still_serves_a_live_cursor(conn, world, thread):

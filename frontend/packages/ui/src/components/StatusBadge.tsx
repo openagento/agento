@@ -1,5 +1,6 @@
 import { Badge, type MantineColor } from "@mantine/core";
-import type { ReactNode } from "react";
+import { useCallback, type ReactNode } from "react";
+import { useLookup } from "../i18n";
 
 export type BadgeTone =
   | "pending" | "published" | "running" | "succeeded" | "failed" | "blocked" | "neutral" | "info";
@@ -18,3 +19,8 @@ export function StatusBadge({ tone, children }: { tone: BadgeTone; children: Rea
 const JOB_TONE: Record<string, BadgeTone> = { TODO: "pending", RUNNING: "running", SUCCESS: "succeeded", FAILED: "failed", DEAD: "failed" };
 /** A `job.status` as a tone: the Jobs page and the conversation rail colour it alike. */
 export const jobTone = (status: string): BadgeTone => JOB_TONE[status] ?? "neutral";
+
+export function useJobStatusText(): (status: string) => string {
+  const lookup = useLookup();
+  return useCallback((status) => lookup("ui", `job.status.${status}`) ?? status, [lookup]);
+}

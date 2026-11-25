@@ -1,4 +1,11 @@
 {
+  "locale/language": {
+    "type": "select",
+    "label": "Language",
+    "description": "The default language of the panel. A user can set another language for the account.",
+    "options_source": "panel_languages",
+    "showInDefault": true, "showInWorkspace": false, "showInAgentView": false
+  },
   "locale/date_format": {
     "type": "select",
     "label": "Date format",

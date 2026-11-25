@@ -1,0 +1,7 @@
+{
+  "module.title": "Zadania okresowe Jira",
+  "config.jira_status.label": "Status zgłoszenia Jira oznaczający zadania okresowe",
+  "config.jira_frequency_field.label": "Klucz pola niestandardowego Jira z częstotliwością zadania",
+  "config.frequency_map.label": "Mapa etykiet częstotliwości na RRULE (na przykład FREQ=DAILY;BYHOUR=8;BYMINUTE=0). Wyrażenie cron jest odrzucane (AG-67).",
+  "config.resume_session.label": "Wznów poprzednią sesję zadania (1, domyślnie) albo zaczynaj każde uruchomienie zadania okresowego od nowej sesji (0). W obu przypadkach uruchomienie pozostaje w wątku zadania."
+}

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { createElement, useState, type ReactNode } from "react";
 import css from "./Editable.module.css";
+import { useT } from "../i18n";
 import { IconAction } from "./IconAction";
 
 const ICONS: Record<string, LucideIcon> = {
@@ -33,16 +34,17 @@ export function IconPicker({ value, onChange, size = 24 }: {
   value: string | null; onChange: (name: string | null) => void; size?: number;
 }) {
   const [opened, setOpened] = useState(false);
+  const t = useT("ui");
   return (
     <Popover opened={opened} onChange={setOpened} position="bottom-start" withArrow trapFocus>
       <Popover.Target>
-        <UnstyledButton className={css.iconButton} aria-label="Change icon" aria-haspopup="dialog"
+        <UnstyledButton className={css.iconButton} aria-label={t("tiles.change_icon")} aria-haspopup="dialog"
           onClick={() => setOpened((o) => !o)}><AppIcon name={value} size={size} /></UnstyledButton>
       </Popover.Target>
       <Popover.Dropdown>
-        <div role="radiogroup" aria-label="Icon" className={css.iconGrid}>
+        <div role="radiogroup" aria-label={t("tiles.icon")} className={css.iconGrid}>
           {[null, ...APP_ICON_NAMES].map((n) => (
-            <IconAction key={n ?? "none"} label={n ?? "default"} role="radio" aria-checked={value === n}
+            <IconAction key={n ?? "none"} label={n ?? t("tiles.icon_default")} role="radio" aria-checked={value === n}
               icon={<AppIcon name={n} size={20} />}
               onClick={() => { setOpened(false); if (n !== value) onChange(n); }} />
           ))}
@@ -55,9 +57,10 @@ export function IconPicker({ value, onChange, size = 24 }: {
 export type TileMode = "tiles" | "list";
 
 export function ViewToggle({ value, onChange }: { value: TileMode; onChange: (v: TileMode) => void }) {
+  const t = useT("ui");
   return (
-    <SegmentedControl aria-label="Show as" value={value} onChange={(v) => onChange(v as TileMode)}
-      data={[{ value: "tiles", label: "Tiles" }, { value: "list", label: "List" }]} />
+    <SegmentedControl aria-label={t("tiles.show_as")} value={value} onChange={(v) => onChange(v as TileMode)}
+      data={[{ value: "tiles", label: t("tiles.mode.tiles") }, { value: "list", label: t("tiles.mode.list") }]} />
   );
 }
 
@@ -65,15 +68,14 @@ export function TileGrid({ label, children }: { label: string; children: ReactNo
   return <SimpleGrid role="list" aria-label={label} cols={{ base: 2, sm: 3, md: 4, lg: 6 }} spacing="md">{children}</SimpleGrid>;
 }
 
-export const TILE_DISABLED = "You may view this app but not run it";
-
 /** One app. `choices` (two or more) make the tile a menu: `onOpen` gets the picked value. */
 export function AppTile({ icon, title, disabled = false, badge, onOpen, choices, actions }: {
   icon: string | null | undefined; title: string; disabled?: boolean; badge?: ReactNode;
   onOpen: (choice?: string) => void; choices?: { value: string; label: string }[]; actions?: ReactNode;
 }) {
+  const t = useT("ui");
   const face = (
-    <UnstyledButton className="ag-stack" aria-disabled={disabled || undefined} title={disabled ? TILE_DISABLED : undefined}
+    <UnstyledButton className="ag-stack" aria-disabled={disabled || undefined} title={disabled ? t("tiles.disabled") : undefined}
       aria-haspopup={!disabled && choices && choices.length > 1 ? "menu" : undefined} p="md" ta="center"
       onClick={disabled || (choices && choices.length > 1) ? undefined : () => onOpen(choices?.[0]?.value)}>
       <Group justify="center" c={disabled ? "dimmed" : undefined}><AppIcon name={icon} size={40} /></Group>

@@ -5,6 +5,8 @@ toolbox ``/admin`` endpoint, as the panel user (``toolbox_client.web_subject``).
 """
 from __future__ import annotations
 
+import re
+
 from agento.framework.access import accounts, launches
 from agento.framework.event_manager import get_event_manager
 from agento.framework.events import ArtifactDeleteAfterEvent
@@ -17,10 +19,18 @@ _HISTORY_SQL = (
 )
 
 
+_CODE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+
+
+def _code(store_code: object) -> str:
+    """The store's own code when it has the shape of one; the store never sends another shape."""
+    return store_code if isinstance(store_code, str) and _CODE.fullmatch(store_code) else "ARTIFACT_REFUSED"
+
+
 class AdminError(Exception):
-    def __init__(self, status: int, message: str, **extra):
+    def __init__(self, status: int, message: str, *, code: str | None = None, **extra):
         super().__init__(message)
-        self.status, self.extra, self.error_code = status, extra, None
+        self.status, self.code, self.extra = status, code, extra
 
 
 def _store(conn, user: accounts.User, method: str, path: str, body: dict | None = None) -> dict:
@@ -30,17 +40,16 @@ def _store(conn, user: accounts.User, method: str, path: str, body: dict | None 
         return r.body
     if r.status in (400, 404, 409):
         extra = {"current_version": r.body["current_version"]} if "current_version" in r.body else {}
-        err = AdminError(r.status, str(r.body.get("message") or "refused"), **extra)
-        err.error_code = r.body.get("error_code")
-        raise err
-    raise AdminError(503, "toolbox unavailable")
+        raise AdminError(r.status, str(r.body.get("message") or "refused"),
+                         code=_code(r.body.get("error_code")), **extra)
+    raise AdminError(503, "toolbox unavailable", code="TOOLBOX_UNAVAILABLE")
 
 
 def list_artifacts(conn, user: accounts.User) -> list[dict]:
     """Every artifact of the store (global: the leaf ``versioned_artifacts`` is not scoped)."""
     listed = _store(conn, user, "GET", "").get("artifacts")
     if not isinstance(listed, list):
-        raise AdminError(503, "toolbox unavailable")
+        raise AdminError(503, "toolbox unavailable", code="TOOLBOX_UNAVAILABLE")
     return listed
 
 
@@ -48,7 +57,7 @@ def history(conn, user: accounts.User, code: str) -> list[dict]:
     """The versions (newest first, from the store), each with its audit rows (one query)."""
     versions = _store(conn, user, "GET", f"/{code}/versions").get("versions")
     if not isinstance(versions, list):
-        raise AdminError(503, "toolbox unavailable")
+        raise AdminError(503, "toolbox unavailable", code="TOOLBOX_UNAVAILABLE")
     ids = [v["version_id"] for v in versions]
     events: dict[str, list[dict]] = {v: [] for v in ids}
     if ids:
@@ -77,7 +86,7 @@ def delete_artifact(conn, user: accounts.User, code: str) -> None:
         try:
             _store(conn, user, "DELETE", f"/{code}")
         except AdminError as exc:
-            if exc.error_code != "ARTIFACT_NOT_FOUND":  # already gone: finish the cleanup
+            if exc.code != "ARTIFACT_NOT_FOUND":  # already gone: finish the cleanup
                 raise
         with conn.cursor() as cur:
             cur.execute("DELETE FROM versioned_artifact WHERE artifact_code = %s", (code,))

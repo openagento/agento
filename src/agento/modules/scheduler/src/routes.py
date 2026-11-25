@@ -26,8 +26,8 @@ from agento.web.toolbox_client import web_subject
 from . import rights, store
 from .rights import Rights
 
-_NOT_FOUND = error(404, "not found")
-_FORBIDDEN = error(403, "forbidden")
+_NOT_FOUND = error(404, "not found", code="NOT_FOUND")
+_FORBIDDEN = error(403, "forbidden", code="FORBIDDEN")
 _FIELDS = ("title", "prompt", "agent_view_id", "rrule", "starts_at", "timezone", "harness", "model", "enabled",
            "upload_ids")
 MAX_TITLE = 500
@@ -40,7 +40,7 @@ def _user(req: Request) -> accounts.User:
 
 
 def _refuse(status: int, code: str, message: str | None = None) -> Response:
-    return Response(status, {"error": message or code, "code": code})
+    return error(status, message or code, code=code)
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -347,7 +347,7 @@ def _stage(req: Request, owner: str) -> Response:
         uploads.check_bytes(req.conn, data)
         upload_id, stored = uploads.store(owner, _user(req).id, name, data)
     except uploads.UploadError as exc:
-        return _refuse(exc.status, "upload", str(exc))
+        return error(exc.status, str(exc), code="upload", params=exc.params, extra={"reason": exc.code})
     return Response(201, {"upload_id": upload_id, "name": stored, "bytes": len(data)})
 
 

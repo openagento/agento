@@ -1,0 +1,13 @@
+{
+  "pl": {
+    "lethal trifecta": "śmierteln\\p{L}* trójk",
+    "agent view": "widok\\p{L}* agent",
+    "workspace": "obszar\\p{L}* robocz",
+    "toolbox": "toolbox",
+    "credential": "poświadcze",
+    "schedule": "harmonogram",
+    "artifact": "artefakt",
+    "conversation": "rozm[oó]w",
+    "skill": "umiejętnoś"
+  }
+}

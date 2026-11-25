@@ -8,12 +8,14 @@ import { useDisclosure } from "@mantine/hooks";
 import { Bot, Brain, ChevronRight, CircleAlert, Info, Layers, Paperclip, RotateCcw, SendHorizontal, Square, Wrench, X } from "lucide-react";
 import type { ChangeEvent, ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, ReactNode, Ref, UIEvent } from "react";
 import { useEffect, useRef, useState } from "react";
+import { SOURCE_LOCALE, useLocale, useT } from "../i18n";
+import { numberFormat } from "../intl";
 import { fileIcon } from "./FileIcon";
 import { IconAction } from "./IconAction";
 import { DayTime } from "./Timestamp";
 import classes from "./Chat.module.css";
 import { CopyButton } from "./CopyButton";
-import { JOB_STATE_LABEL, type JobState } from "./JobStatusCard";
+import { jobStateLabels, type JobState } from "./JobStatusCard";
 import { Markdown } from "./Markdown";
 import { StatusBadge } from "./StatusBadge";
 import { Timestamp } from "./Timestamp";
@@ -31,6 +33,7 @@ export function FileDrop({ onFiles, hint, as: Tag = "div", className, children, 
   // A counter, not a boolean: dragging over a child fires `dragleave` on the parent, and a
   // boolean makes the overlay flicker on every inner element the pointer crosses.
   const [over, setOver] = useState(0);
+  const t = useT("ui");
   // Only a drag of FILES: a dragged link or a text selection has nothing to attach.
   const files = (e: DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
   const drag = onFiles && {
@@ -53,7 +56,7 @@ export function FileDrop({ onFiles, hint, as: Tag = "div", className, children, 
               so the drag reads as "this is where it lands", not as a page that broke. */}
           <div className={classes.dropCard}>
             <Paperclip size={18} />
-            <Text size="sm" fw={500}>Drop files to attach</Text>
+            <Text size="sm" fw={500}>{t("chat.drop_title")}</Text>
             <Text size="xs" c="dimmed">{hint}</Text>
           </div>
         </div>
@@ -65,23 +68,24 @@ export function FileDrop({ onFiles, hint, as: Tag = "div", className, children, 
 
 /** A timeline that fills the screen: a title row, one scroll region and a footer pinned at the
  *  bottom (the composer). `overlay` floats over the bottom of the region ("N new events ↓"). */
-export function ChatLayout({ title, actions, children, footer, overlay, viewportRef, onScroll, label = "Timeline", onFiles }: {
+export function ChatLayout({ title, actions, children, footer, overlay, viewportRef, onScroll, label, onFiles }: {
   title: ReactNode; actions?: ReactNode; children: ReactNode; footer?: ReactNode; overlay?: ReactNode;
   viewportRef?: Ref<HTMLDivElement>; onScroll?: (e: UIEvent<HTMLDivElement>) => void; label?: string;
   /** Files dropped anywhere on the conversation. The whole pane is the target: a drag that
    *  has to find the composer is a drag the user aims, and the history is where the eye is. */
   onFiles?: (files: File[]) => void;
 }) {
+  const t = useT("ui");
   return (
-    <FileDrop as="section" className={classes.layout} aria-label="Conversation" onFiles={onFiles}
-      hint="They go with your next message.">
+    <FileDrop as="section" className={classes.layout} aria-label={t("chat.conversation")} onFiles={onFiles}
+      hint={t("chat.drop_hint")}>
       <Group justify="space-between" wrap="nowrap" pb="xs">
         <Title order={2} size="h4" lineClamp={1}>{title}</Title>
         {actions && <Group gap="xs" wrap="nowrap">{actions}</Group>}
       </Group>
       <div className={classes.body}>
         <ScrollArea className={classes.scroll} type="auto" scrollbars="y" viewportRef={viewportRef}
-          viewportProps={{ role: "region", "aria-label": label, tabIndex: 0, onScroll }}>
+          viewportProps={{ role: "region", "aria-label": label ?? t("chat.timeline"), tabIndex: 0, onScroll }}>
           <div className={classes.column}>{children}</div>
         </ScrollArea>
         {overlay && <div className={classes.overlay}>{overlay}</div>}
@@ -116,10 +120,11 @@ export function ChatMessage({ author, text, time, label, actions: extra, attachm
   /** The names of the files this message carried. A message may be files and nothing else. */
   attachments?: string[];
 }) {
+  const t = useT("ui");
   const actions = (
     <Group gap={TIGHT} className={classes.actions}>
       {time && <Text size="xs" c="dimmed"><Timestamp value={time} /></Text>}
-      <CopyButton value={text} label="Copy message" />
+      <CopyButton value={text} label={t("chat.copy_message")} />
       {extra}
     </Group>
   );
@@ -172,18 +177,19 @@ function Disclosure({ icon, label, trailing, children, defaultOpen = false }: {
 export function ToolCall({ summary, running, isError = false, duration, input, output }: {
   summary: string; running: boolean; isError?: boolean; duration?: string; input?: string; output?: string;
 }) {
+  const t = useT("ui");
   const icon = running ? <Loader size={14} /> : isError
-    ? <CircleAlert size={14} color="var(--mantine-color-red-text)" aria-label="failed" /> : <Wrench size={14} aria-hidden />;
+    ? <CircleAlert size={14} color="var(--mantine-color-red-text)" aria-label={t("chat.tool.failed")} /> : <Wrench size={14} aria-hidden />;
   return (
     <Disclosure icon={icon} label={summary}
       trailing={duration && <Text size="xs" c="dimmed">{duration}</Text>}>
       {(input !== undefined || output !== undefined) && (
         <Stack gap={TIGHT}>
-          {input !== undefined && <><Text size="xs" c="dimmed">Input</Text><Code block>{input}</Code></>}
+          {input !== undefined && <><Text size="xs" c="dimmed">{t("chat.tool.input")}</Text><Code block>{input}</Code></>}
           {output !== undefined && (
             <>
-              <Text size="xs" c="dimmed">Output</Text>
-              <Spoiler maxHeight={160} showLabel="Show more" hideLabel="Show less"><Code block>{output}</Code></Spoiler>
+              <Text size="xs" c="dimmed">{t("chat.tool.output")}</Text>
+              <Spoiler maxHeight={160} showLabel={t("chat.tool.show_more")} hideLabel={t("chat.tool.show_less")}><Code block>{output}</Code></Spoiler>
             </>
           )}
         </Stack>
@@ -194,8 +200,9 @@ export function ToolCall({ summary, running, isError = false, duration, input, o
 
 /** Several tool calls in a row, folded into "Used N tools". */
 export function ToolGroup({ count, running, children }: { count: number; running: boolean; children: ReactNode }) {
+  const t = useT("ui");
   return (
-    <Disclosure icon={running ? <Loader size={14} /> : <Layers size={14} aria-hidden />} label={`Used ${count} tools`}>
+    <Disclosure icon={running ? <Loader size={14} /> : <Layers size={14} aria-hidden />} label={t("chat.tools_used", { count })}>
       <div className={classes.group}>{children}</div>
     </Disclosure>
   );
@@ -204,9 +211,10 @@ export function ToolGroup({ count, running, children }: { count: number; running
 /** A sub-agent's job inside its parent's turn: one line with its state, collapsed; open, its
  *  own turn (`children`, a `ChatList`). */
 export function SubagentRun({ label, state, children }: { label: string; state: JobState; children?: ReactNode }) {
+  const t = useT("ui");
   return (
     <Disclosure icon={state === "running" ? <Loader size={14} /> : <Bot size={14} aria-hidden />} label={label}
-      trailing={<StatusBadge tone={state}>{JOB_STATE_LABEL[state]}</StatusBadge>}>
+      trailing={<StatusBadge tone={state}>{jobStateLabels(t)[state]}</StatusBadge>}>
       {children}
     </Disclosure>
   );
@@ -214,7 +222,8 @@ export function SubagentRun({ label, state, children }: { label: string; state: 
 
 /** The agent's reasoning, collapsed: "Thinking…" while it streams, then "Thought". */
 export function Reasoning({ text, live, seconds }: { text: string; live: boolean; seconds?: number }) {
-  const label = live ? "Thinking…" : seconds ? `Thought for ${seconds} s` : "Thought";
+  const t = useT("ui");
+  const label = live ? t("chat.thinking") : seconds ? t("chat.thought_for", { seconds }) : t("chat.thought");
   return (
     <Disclosure icon={live ? <Loader type="dots" size="xs" /> : <Brain size={14} aria-hidden />} label={label}>
       {text ? <Text size="sm" c="dimmed" className={classes.pre}>{text}</Text> : undefined}
@@ -237,18 +246,19 @@ export function ChatStatus({ children, busy = true, action }: { children: ReactN
 export function ChatError({ title, children, details, onRetry }: {
   title: string; children?: ReactNode; details?: string; onRetry?: () => void;
 }) {
+  const t = useT("ui");
   return (
     <Alert color="red" variant="light" title={title} icon={<CircleAlert size={18} />}>
       <Stack gap="xs">
         {children && <Text size="sm">{children}</Text>}
         {details && (
-          <Disclosure icon={<Info size={14} aria-hidden />} label="Details">
+          <Disclosure icon={<Info size={14} aria-hidden />} label={t("chat.error.details")}>
             <Code block>{details}</Code>
           </Disclosure>
         )}
         {onRetry && (
           <Group>
-            <Button size="xs" variant="light" color="red" leftSection={<RotateCcw size={14} />} onClick={onRetry}>Retry</Button>
+            <Button size="xs" variant="light" color="red" leftSection={<RotateCcw size={14} />} onClick={onRetry}>{t("chat.error.retry")}</Button>
           </Group>
         )}
       </Stack>
@@ -272,11 +282,13 @@ export interface Attachment {
 }
 
 /** A size a person reads at a glance: 1 KB = 1024 B, one decimal below 10 units. */
-export function fileSize(bytes: number): string {
+export function fileSize(bytes: number, locale: string = SOURCE_LOCALE): string {
   const units = ["B", "KB", "MB", "GB"];
   let n = bytes, i = 0;
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
-  return `${i === 0 || n >= 10 ? Math.round(n) : n.toFixed(1)} ${units[i]}`;
+  const digits = i === 0 || n >= 10 ? 0 : 1;
+  const number = numberFormat(locale, { minimumFractionDigits: digits, maximumFractionDigits: digits, useGrouping: false });
+  return `${number.format(n)} ${units[i]}`;
 }
 
 /** A long name keeps its extension: `a-very-long-report-name.pdf` reads as `a-very-l….pdf`,
@@ -293,12 +305,13 @@ export function middleEllipsis(name: string, max = 24): string {
 function FileChip({ name, icon, tone, reason, size, action }: {
   name: string; icon?: ReactNode; tone?: "error"; reason?: string; size?: number; action?: ReactNode;
 }) {
+  const locale = useLocale();
   return (
     <div className={tone === "error" ? `${classes.chip} ${classes.chipError}` : classes.chip}
       title={reason ? `${name} — ${reason}` : name}>
       {icon ?? fileIcon(name)}
       <Text span size="xs">{middleEllipsis(name)}</Text>
-      {size !== undefined && <Text span size="xs" className={classes.chipSize}>{fileSize(size)}</Text>}
+      {size !== undefined && <Text span size="xs" className={classes.chipSize}>{fileSize(size, locale)}</Text>}
       {/* The reason is TEXT, not a hover title: a file that did not arrive has to say so to
           someone who never hovers, and to a screen reader. */}
       {reason && <Text span size="xs" className={classes.chipReason}>{reason}</Text>}
@@ -309,12 +322,13 @@ function FileChip({ name, icon, tone, reason, size, action }: {
 
 function AttachmentChip({ file, onRemove }: { file: Attachment; onRemove?: (id: string) => void }) {
   const failed = file.status === "error";
+  const t = useT("ui");
   return (
     <FileChip name={file.name} tone={failed ? "error" : undefined} size={file.bytes}
-      reason={failed ? (file.error ?? "upload failed") : undefined}
+      reason={failed ? (file.error ?? t("chat.upload_failed")) : undefined}
       icon={file.status === "uploading" ? <Loader size={12} /> : fileIcon(file.name)}
       action={onRemove && (
-        <IconAction label={`Remove ${file.name}`} icon={<X size={12} />}
+        <IconAction label={t("chat.remove_file", { name: file.name })} icon={<X size={12} />}
           onClick={() => onRemove(file.id)} />
       )} />
   );
@@ -322,9 +336,10 @@ function AttachmentChip({ file, onRemove }: { file: Attachment; onRemove?: (id: 
 
 /** The files a form carries, as chips. With `onRemove` each chip has its remove button. */
 export function AttachmentChips({ files, onRemove }: { files: Attachment[]; onRemove?: (id: string) => void }) {
+  const t = useT("ui");
   if (files.length === 0) return null;
   return (
-    <div className={classes.chips} aria-live="polite" aria-label="Attached files">
+    <div className={classes.chips} aria-live="polite" aria-label={t("chat.attached_files")}>
       {files.map((f) => <AttachmentChip key={f.id} file={f} onRemove={onRemove} />)}
     </div>
   );
@@ -333,6 +348,7 @@ export function AttachmentChips({ files, onRemove }: { files: Attachment[]; onRe
 /** The paperclip: opens the file picker and hands over what the user picked. */
 export function AttachButton({ onFiles, tip }: { onFiles: (files: File[]) => void; tip?: "bottom" }) {
   const input = useRef<HTMLInputElement>(null);
+  const t = useT("ui");
   const onPick = (e: ChangeEvent<HTMLInputElement>) => {
     const picked = Array.from(e.currentTarget.files ?? []);
     e.currentTarget.value = "";
@@ -344,7 +360,7 @@ export function AttachButton({ onFiles, tip }: { onFiles: (files: File[]) => voi
           real control, so the input is hidden from the a11y tree and the tab order. */}
       <input ref={input} type="file" multiple className={classes.fileInput} tabIndex={-1}
         aria-hidden="true" onChange={onPick} />
-      <IconAction label="Add files" tip={tip} size="lg" icon={<Paperclip size={16} />}
+      <IconAction label={t("chat.add_files")} tip={tip} size="lg" icon={<Paperclip size={16} />}
         onClick={() => input.current?.click()} />
     </>
   );
@@ -367,7 +383,7 @@ export function FilesField({ label, hint, error, files, onFiles, onRemove, empty
   );
 }
 
-export function ChatComposer({ value, onChange, onSend, canSend, hint, error, placeholder = "Ask the agent…",
+export function ChatComposer({ value, onChange, onSend, canSend, hint, error, placeholder,
   stoppable = false, onStop, stopping = false, attachments, onFiles, onRemoveAttachment, focusOnMount = false }: {
   value: string; onChange: (v: string) => void; onSend: () => void; canSend: boolean; hint?: ReactNode;
   error?: ReactNode; placeholder?: string; stoppable?: boolean; onStop?: () => void; stopping?: boolean;
@@ -377,7 +393,9 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error, pl
    *  call on mount, not the `autoFocus` attribute, which a11y lint bans outright. */
   focusOnMount?: boolean;
 }) {
+  const t = useT("ui");
   const stop = stoppable && onStop !== undefined;
+  const submitLabel = stop ? t("chat.stop") : t("chat.send");
   const line = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { if (focusOnMount) line.current?.focus(); }, [focusOnMount]);
   const files = attachments ?? [];
@@ -403,13 +421,13 @@ export function ChatComposer({ value, onChange, onSend, canSend, hint, error, pl
           <div className={classes.pillRow}>
             {/* `bottom`: the chips this button fills sit directly above it. */}
             {onFiles && <AttachButton onFiles={onFiles} tip="bottom" />}
-            <Textarea className={classes.pillInput} variant="unstyled" aria-label="Message" ref={line}
-              placeholder={placeholder} autosize minRows={1} maxRows={8} value={value}
+            <Textarea className={classes.pillInput} variant="unstyled" aria-label={t("chat.message")} ref={line}
+              placeholder={placeholder ?? t("chat.placeholder")} autosize minRows={1} maxRows={8} value={value}
               onChange={(e) => onChange(e.currentTarget.value)} onKeyDown={onKey}
               aria-describedby={hint ? "composer-hint" : undefined} />
-            <Tooltip label={stop ? "Stop" : "Send"} withArrow>
+            <Tooltip label={submitLabel} withArrow>
               <ActionIcon type={stop ? "button" : "submit"} size="lg" radius="xl" variant="filled"
-                aria-label={stop ? "Stop" : "Send"} disabled={stop ? stopping : !ready}
+                aria-label={submitLabel} disabled={stop ? stopping : !ready}
                 onClick={stop ? onStop : undefined}>
                 {stop ? <Square size={14} fill="currentColor" /> : <SendHorizontal size={16} />}
               </ActionIcon>

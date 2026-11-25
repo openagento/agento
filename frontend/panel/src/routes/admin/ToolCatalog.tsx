@@ -5,10 +5,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, Tags } from "lucide-react";
 import { Alert, Group, MultiSelect, SegmentedControl, Select, Stack, Text, TextInput } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { apiFetch, useQuery } from "@agento/api";
-import { Button, CodeBlock, DataTable, EmptyState, IconAction, LabelBadge, labelIcon, ReviewState, type Column } from "@agento/ui";
+import { apiFetch, useErrorText, useQuery } from "@agento/api";
+import { Button, CodeBlock, DataTable, EmptyState, IconAction, LabelBadge, labelIcon, ReviewState, useT, type Column } from "@agento/ui";
 import { TIGHT, wrapAnywhere, wrapPill } from "../layout";
-import { message } from "./shared";
 import { moduleOf, ToolClassifyDrawer, type CatalogRow, type Saved } from "./ToolClassifyDrawer";
 import { CATALOG_KEY, CATALOG_POLL_MS, useToolLabels } from "./ToolLabels";
 import type { Toolsets } from "./Tools";
@@ -20,9 +19,10 @@ type Status = "all" | "to_review" | "reviewed";
 /** `saved`: tool id → the revision a save in this run marked reviewed. A later sync that moves the
  *  revision past it (a changed contract) puts the tool back in the count. */
 interface Queue { visited: ReadonlySet<number>; saved: ReadonlyMap<number, number> }
-const toolCount = (n: number) => (n === 1 ? "1 tool" : `${n} tools`);
 
 export function ToolCatalog() {
+  const t = useT("panel");
+  const errorText = useErrorText("panel");
   const list = useQuery({
     queryKey: CATALOG_KEY, refetchInterval: CATALOG_POLL_MS,
     queryFn: ({ signal }) => apiFetch<Toolsets>("/api/admin/tools?scope=default&scope_id=0", { signal }),
@@ -39,7 +39,7 @@ export function ToolCatalog() {
   // A new key remounts the table, so a header sort goes back to catalog order, the queue's order.
   const [tableKey, setTableKey] = useState(0);
 
-  const all = useMemo(() => (list.data ?? []).flatMap((t) => t.tools.map((i) => ({ ...i, toolset: t.toolset }))), [list.data]);
+  const all = useMemo(() => (list.data ?? []).flatMap((set) => set.tools.map((i) => ({ ...i, toolset: set.toolset }))), [list.data]);
   const rows = useMemo(() => all.filter((i): i is typeof i & CatalogRow => Boolean(i.catalog)), [all]);
   const unsynced = all.length - rows.length;
   const sources = [...new Set(rows.map((r) => moduleOf(r.catalog.source)))].sort();
@@ -82,34 +82,34 @@ export function ToolCatalog() {
     }
     const left = todo.filter((r) => !isSaved(after, r)).length;
     close();
-    notifications.show({ message: left ? `Review paused. ${toolCount(left)} to review.` : "All tools are reviewed." });
+    notifications.show({ message: left ? t("catalog.review_paused", { count: left }) : t("catalog.all_reviewed") });
   };
 
   // The review state, the module and the labels sit in the Tool cell, so a phone shows the whole
   // row with its Classify action (no side scroll). The status filter sorts out the review state.
   const columns: Column<CatalogRow>[] = [
-    { id: "tool", header: "Tool", sortValue: (r) => r.name, cell: (r) => (
+    { id: "tool", header: t("catalog.column.tool"), sortValue: (r) => r.name, cell: (r) => (
       <Stack gap={TIGHT}>
         <Group justify="space-between" gap="xs">
           <Text fz="sm" fw={500}>{r.name}</Text>
           <ReviewState reviewed={r.catalog.reviewed} />
         </Group>
-        <Text fz="xs" c="dimmed">{moduleOf(r.catalog.source)}{r.catalog.labels.length ? "" : " · No labels"}</Text>
+        <Text fz="xs" c="dimmed">{moduleOf(r.catalog.source)}{r.catalog.labels.length ? "" : ` · ${t("catalog.no_labels")}`}</Text>
         {r.catalog.labels.length > 0 && (
           <Group gap={TIGHT}>{r.catalog.labels.map((k) => <LabelBadge key={k} labelKey={k} name={names.get(k) ?? k} />)}</Group>
         )}
       </Stack>
     ) },
-    { id: "actions", header: "Actions", cell: (r) => (
-      <IconAction label="Classify" icon={<Tags size={16} />} onClick={() => setOpen(r)} />
+    { id: "actions", header: t("catalog.column.actions"), cell: (r) => (
+      <IconAction label={t("catalog.classify")} icon={<Tags size={16} />} onClick={() => setOpen(r)} />
     ) },
   ];
 
   if (list.isSuccess && all.length > 0 && rows.length === 0) {
     return (
-      <EmptyState title="The catalog is empty">
+      <EmptyState title={t("catalog.unsynced.title")}>
         <Stack gap="xs" align="center">
-          <Text size="sm">The catalog fills on its next sync, within a minute. To fill it now, run:</Text>
+          <Text size="sm">{t("catalog.unsynced.text")}</Text>
           <CodeBlock code={SYNC_COMMAND} copy />
         </Stack>
       </EmptyState>
@@ -118,40 +118,38 @@ export function ToolCatalog() {
   return (
     <Stack gap="md">
       {list.isSuccess && toReview > 0 && (
-        <Alert color="blue" variant="light" title={`${toolCount(toReview)} to review`}>
+        <Alert color="blue" variant="light" title={t("catalog.to_review.title", { count: toReview })}>
           <Group justify="space-between" gap="sm">
-            <Text size="sm">Check each tool's labels. The trifecta warning is only as good as the labels.</Text>
-            <Button variant="primary" onClick={startReview}>Start review</Button>
+            <Text size="sm">{t("catalog.to_review.text")}</Text>
+            <Button variant="primary" onClick={startReview}>{t("catalog.start_review")}</Button>
           </Group>
         </Alert>
       )}
       <Group gap="sm" align="flex-end">
-        <TextInput aria-label="Search tools" placeholder="Search tools" w={240} leftSection={<Search size={16} aria-hidden />}
+        <TextInput aria-label={t("catalog.search")} placeholder={t("catalog.search")} w={240} leftSection={<Search size={16} aria-hidden />}
           value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
-        <Select aria-label="Module" placeholder="All modules" data={sources} value={source} onChange={setSource} clearable
+        <Select aria-label={t("catalog.filter.module")} placeholder={t("catalog.filter.all_modules")} data={sources} value={source} onChange={setSource} clearable
           searchable w={180} />
-        <SegmentedControl aria-label="Status" value={status} onChange={(v) => setStatus(v as Status)}
-          data={[{ value: "all", label: "All" }, { value: "to_review", label: `To review · ${toReview}` },
-            { value: "reviewed", label: `Reviewed · ${rows.length - toReview}` }]} />
-        <MultiSelect aria-label="Labels" placeholder={wanted.length ? undefined : "With all of these labels"} miw={240}
+        <SegmentedControl aria-label={t("catalog.filter.status")} value={status} onChange={(v) => setStatus(v as Status)}
+          data={[{ value: "all", label: t("catalog.filter.all") }, { value: "to_review", label: t("catalog.filter.to_review", { count: toReview }) },
+            { value: "reviewed", label: t("catalog.filter.reviewed", { count: rows.length - toReview }) }]} />
+        <MultiSelect aria-label={t("catalog.filter.labels")} placeholder={wanted.length ? undefined : t("catalog.filter.labels_placeholder")} miw={240}
           data={(labels.data ?? []).map((l) => ({ value: l.key, label: l.name }))} value={wanted} onChange={setWanted}
           clearable searchable classNames={{ pill: wrapPill }} renderOption={({ option }) => (
             <Group gap="xs" wrap="nowrap">{labelIcon(option.value)}<Text size="sm" className={wrapAnywhere}>{option.label}</Text></Group>
           )} />
       </Group>
-      <DataTable key={tableKey} caption="Tool catalog" columns={columns} rows={list.data ? shown : undefined} rowKey={(r) => String(r.catalog.id)}
+      <DataTable key={tableKey} caption={t("catalog.caption")} columns={columns} rows={list.data ? shown : undefined} rowKey={(r) => String(r.catalog.id)}
         onRowActivate={setOpen}
-        loading={list.isPending} error={list.error ? message(list.error) : null} onRetry={() => void list.refetch()}
-        emptyTitle={filtered ? "No matching tools" : "No tools"}
-        emptyText={filtered ? "No tool matches every filter." : "No enabled module declares a tool."}
-        emptyAction={filtered ? <Button onClick={clear}>Clear filters</Button> : undefined} />
+        loading={list.isPending} error={list.error ? errorText(list.error, "catalog.load_failed") : null} onRetry={() => void list.refetch()}
+        emptyTitle={filtered ? t("catalog.no_match.title") : t("tools.empty.title")}
+        emptyText={filtered ? t("catalog.no_match.text") : t("tools.empty.text")}
+        emptyAction={filtered ? <Button onClick={clear}>{t("catalog.clear_filters")}</Button> : undefined} />
       {unsynced > 0 && (
-        <Text size="sm" c="dimmed">
-          {unsynced === 1 ? "1 tool is" : `${unsynced} tools are`} not in the catalog yet. The next sync, within a minute, adds them.
-        </Text>
+        <Text size="sm" c="dimmed">{t("catalog.not_synced", { count: unsynced })}</Text>
       )}
       <ToolClassifyDrawer opened={open} live={open ? rows.find((r) => r.catalog.id === open.catalog.id) : undefined}
-        labels={labels.data} labelsError={labels.error ? message(labels.error) : null} onRetryLabels={() => void labels.refetch()}
+        labels={labels.data} labelsError={labels.error ? errorText(labels.error, "labels.load_failed") : null} onRetryLabels={() => void labels.refetch()}
         queue={queue && { left: leftIn(queue), onNext: (saved) => advance(saved.id, saved), onSkip: (id) => advance(id, null) }} onClose={close} />
     </Stack>
   );

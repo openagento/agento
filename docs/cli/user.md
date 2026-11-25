@@ -18,6 +18,10 @@ Shortcuts: `us:cr`, `us:li`, `us:sr`, `us:de`, `us:ac`, `us:pa`.
 A username matches `^[a-z0-9][a-z0-9._-]{0,63}$`. A password has 12 to 1024 characters. A role is
 any code in the `role` table (`role:list`, [role.md](role.md)); an unknown code is refused.
 
+A new user gets the instance language of the panel (`admin/locale/language`) as the account
+language. The user changes it in the profile dialog of the panel (the user name in the header); there is no CLI command for it
+([i18n.md](../development/i18n.md#languages)).
+
 ## Passwords never come from argv
 
 `user:create` and `user:password` have no password argument. On a terminal they ask twice with

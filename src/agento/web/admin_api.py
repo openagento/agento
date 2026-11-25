@@ -10,7 +10,7 @@ import logging
 import re
 from datetime import datetime
 
-from agento.framework import tool_catalog
+from agento.framework import i18n, tool_catalog
 from agento.framework.access import accounts, acl
 from agento.framework.admin import data
 
@@ -36,15 +36,15 @@ def config_scope(req: Request, src: dict) -> tuple[str, int] | Response:
     """``(scope, scope_id)`` from a JSON body or a query string; an unknown id is 404 (SEC-7)."""
     scope, scope_id = src.get("scope", "default"), src.get("scope_id", 0)
     if scope not in _SCOPES:
-        return error(400, f"scope must be one of {', '.join(_SCOPES)}")
+        return error(400, f"scope must be one of {', '.join(_SCOPES)}", code="INVALID_REQUEST")
     if scope == "default":
         return scope, 0
     if isinstance(scope_id, str) and _ID.fullmatch(scope_id):
         scope_id = int(scope_id)  # a query string carries text
     if not _positive_int(scope_id):
-        return error(400, "scope_id must be a positive integer")
+        return error(400, "scope_id must be a positive integer", code="INVALID_REQUEST")
     if not _scope_exists(req.conn, scope, scope_id):
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     return scope, scope_id
 
 
@@ -101,7 +101,7 @@ def _cut(value):
 def jobs(req: Request) -> Response:
     status = req.query.get("status")
     if status is not None and status not in JOB_STATUSES:
-        return error(400, f"status must be one of {', '.join(JOB_STATUSES)}")
+        return error(400, f"status must be one of {', '.join(JOB_STATUSES)}", code="INVALID_REQUEST")
     if "page" not in req.query:
         return Response(200, [_job(j) for j in data.get_jobs(req.conn, status=status, strict=True)])
     g = grid.parse_grid(req.query, sorts=data.JOB_ORDERS, default_sort="id")
@@ -116,7 +116,7 @@ def jobs(req: Request) -> Response:
 def job_detail(req: Request) -> Response:
     row = data.get_job_detail(req.conn, int(req.params["id"]))
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     return Response(200, {**_job(row), "model": row.get("model"),
                           **{k: _cut(row.get(k)) for k in _JOB_CONTENT}})
 
@@ -144,7 +144,7 @@ def _credential_exists(conn, credential_id: int) -> bool:
 def _credential_write(req: Request, write) -> Response:
     credential_id = int(req.params["id"])
     if not _credential_exists(req.conn, credential_id):
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     write(req.conn, credential_id)
     return Response(204)
 
@@ -168,11 +168,11 @@ def _interactive_oauth_scopes() -> set[str]:
 
 
 _LOGIN_REFUSED = {
-    "not_found": (404, "not found"),
-    "unsupported": (400, "this credential cannot sign in from the panel"),
-    "disabled": (409, "the credential is disabled"),
-    "not_oauth": (409, "only a subscription (OAuth) credential can sign in again"),
-    "active": (409, "a sign-in for this credential is already running"),
+    "not_found": (404, "not found", "NOT_FOUND"),
+    "unsupported": (400, "this credential cannot sign in from the panel", "LOGIN_UNSUPPORTED"),
+    "disabled": (409, "the credential is disabled", "CREDENTIAL_DISABLED"),
+    "not_oauth": (409, "only a subscription (OAuth) credential can sign in again", "LOGIN_NOT_OAUTH"),
+    "active": (409, "a sign-in for this credential is already running", "LOGIN_ALREADY_RUNNING"),
 }
 # Printable ASCII with no space; encrypted, it fits credential_login.code_box.
 _LOGIN_CODE = re.compile(r"[!-~]{1,300}")
@@ -184,7 +184,8 @@ def start_credential_login(req: Request) -> Response:
     result = credential_login.request_login(req.conn, int(req.params["id"]), req.session.user.id,
                                             _interactive_oauth_scopes())
     if isinstance(result, str):
-        return error(*_LOGIN_REFUSED[result])
+        status, message, code = _LOGIN_REFUSED[result]
+        return error(status, message, code=code)
     return Response(201, {"id": result})
 
 
@@ -193,7 +194,7 @@ def credential_login_state(req: Request) -> Response:
 
     row = credential_login.get_login(req.conn, int(req.params["id"]))
     if row is None:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     return Response(200, {"status": row["status"], "verify_url": row["verify_url"], "user_code": row["user_code"],
                           "needs_code": bool(row["needs_code"]), "error_code": row["error_code"],
                           "expires_at": _ts(row["expires_at"])})
@@ -204,12 +205,12 @@ def credential_login_code(req: Request) -> Response:
 
     code = _body(req).get("code")
     if not isinstance(code, str) or not _LOGIN_CODE.fullmatch(code):
-        return error(400, "the code must be 1 to 300 printable characters with no space")
+        return error(400, "the code must be 1 to 300 printable characters with no space", code="LOGIN_CODE_INVALID")
     refused = credential_login.put_code(req.conn, int(req.params["id"]), code)
     if refused == "not_found":
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     if refused:
-        return error(409, "this sign-in does not wait for a code")
+        return error(409, "this sign-in does not wait for a code", code="LOGIN_NOT_WAITING_FOR_CODE")
     return Response(204)
 
 
@@ -217,7 +218,7 @@ def cancel_credential_login(req: Request) -> Response:
     from agento.framework.agent_manager import credential_login
 
     if not credential_login.cancel_login(req.conn, int(req.params["id"])):
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     return Response(204)
 
 
@@ -240,14 +241,16 @@ def tools(req: Request) -> Response:
 
 
 def _catalog_error(exc: accounts.AccessError) -> Response:
-    return error(409, str(exc)) if isinstance(exc, tool_catalog.CatalogConflict) else _access_error(exc)
+    if isinstance(exc, tool_catalog.CatalogConflict):
+        return error(409, str(exc), code=exc.code, params=exc.params)
+    return _access_error(exc)
 
 
 def _admin_only(handler):
     @functools.wraps(handler)
     def guarded(req: Request) -> Response:
         if not _is_admin(req):
-            return error(403, "forbidden")
+            return error(403, "forbidden", code="FORBIDDEN")
         try:
             return handler(req)
         except accounts.AccessError as exc:
@@ -282,13 +285,13 @@ def classify_tool(req: Request) -> Response:
     revision, labels = body.get("revision"), body.get("labels")
     new_label, review = body.get("new_label"), body.get("review")
     if not isinstance(revision, int) or isinstance(revision, bool):
-        return error(400, "revision must be an integer")
+        return error(400, "revision must be an integer", code="INVALID_REQUEST")
     if not isinstance(labels, list) or not all(isinstance(k, str) for k in labels):
-        return error(400, "labels must be a list of label keys")
+        return error(400, "labels must be a list of label keys", code="INVALID_REQUEST")
     if new_label is not None and not isinstance(new_label, str):
-        return error(400, "new_label must be a string or null")
+        return error(400, "new_label must be a string or null", code="INVALID_REQUEST")
     if review not in ("reviewed", "to_review", None):
-        return error(400, "review must be reviewed, to_review or null")
+        return error(400, "review must be reviewed, to_review or null", code="INVALID_REQUEST")
     return Response(200, tool_catalog.classify_tool(req.conn, int(req.params["id"]), revision=revision,
                                                     labels=labels, new_label=new_label, review=review))
 
@@ -321,7 +324,7 @@ def get_config(req: Request) -> Response:
         return scope
     module = req.query.get("module")
     if module not in {m.name for m in data.get_module_schemas()}:
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     return Response(200, [_config_field(f) for f in data.get_resolved_fields(req.conn, module, *scope)])
 
 
@@ -336,9 +339,9 @@ def delete_config(req: Request) -> Response:
     try:
         config_write.validate_web_path(req.conn, path)  # the check PUT makes: never a secret path
     except config_write.ConfigWriteError as exc:
-        return error(400, str(exc))
+        return error(400, str(exc), code=exc.code, params=exc.params)
     if not data.delete_config_override(req.conn, path, *scope):
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     return Response(204)
 
 
@@ -379,7 +382,7 @@ def run_tester(req: Request) -> Response:
     path = body.get("path")
     ref = config_test.tester_for_field(path) if isinstance(path, str) else None
     if ref is None:
-        return error(400, "this field declares no tester")
+        return error(400, "this field declares no tester", code="CONFIG_NO_TESTER")
     if ref.kind == config_test.KIND_LOCAL:
         # In-process, as config:test does in cron (D-BACKEND-2). The registry follows
         # modules.json, so module:enable needs no web restart.
@@ -409,7 +412,9 @@ def set_config(req: Request) -> Response:
             allow_secret=False, actor=_actor(req),
         )
     except ConfigWriteError as exc:
-        return error(403, "forbidden") if str(exc) == "not allowed" else error(400, str(exc))
+        if str(exc) == "not allowed":
+            return error(403, "forbidden", code="FORBIDDEN")
+        return error(400, str(exc), code=exc.code, params=exc.params)
     # No admin route returns a secret value; a repaired dependent is named, not shown.
     return Response(200, {"path": body.get("path"), "reset": [p for p, _v in reset]})
 
@@ -425,7 +430,7 @@ def roles(req: Request) -> Response:
 def role_detail(req: Request) -> Response:
     code = req.params["code"]
     if not (role := _role(req.conn, code)):
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     return Response(200, {**role, "scopes": accounts.role_scopes(req.conn, code)})
 
 
@@ -441,7 +446,7 @@ def create_role(req: Request) -> Response:
 def update_role(req: Request) -> Response:
     code, body = req.params["code"], _body(req)
     if "label" not in body:
-        return error(400, "nothing to change")
+        return error(400, "nothing to change", code="INVALID_REQUEST")
     try:
         accounts.rename_role(req.conn, code, body["label"], actor=_actor(req))
     except accounts.AccessError as exc:
@@ -460,13 +465,20 @@ def delete_role(req: Request) -> Response:
 def _role_scope(req: Request, src: dict) -> tuple[str, int] | Response:
     """A known role and one grant scope: ``global`` (the admin panel), a workspace or a view."""
     if not _role(req.conn, req.params["code"]):
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     if src.get("scope") == "global":
         return "global", 0
     scope = config_scope(req, src)
     if not isinstance(scope, Response) and scope[0] == "default":
-        return error(400, "scope must be one of global, workspace, agent_view")
+        return error(400, "scope must be one of global, workspace, agent_view", code="INVALID_REQUEST")
     return scope
+
+
+def _namespace(registry: acl.Acl, resource: str) -> str:
+    """The catalog namespace of a resource title: that of its module, or ``panel`` for the
+    framework file. The registry names a module by its directory; the catalog knows its namespace."""
+    owner = registry.owner(resource)
+    return i18n.current().namespaces.get(owner, owner) if owner else i18n.PANEL_NAMESPACE
 
 
 def role_resources(req: Request) -> Response:
@@ -477,12 +489,14 @@ def role_resources(req: Request) -> Response:
     if isinstance(scope, Response):
         return scope
     code, (kind, scope_id) = req.params["code"], scope
+    registry = acl.registry()
     if kind == "global":
         held = set(accounts.held_admin(req.conn, code))
         return Response(200, {"admin": [
-            {"screen": screen, "leaves": [{"id": leaf, "title": title, "granted": leaf in held,
-                                           "builtin": code == "admin"} for leaf, title in leaves]}
-            for screen, leaves in acl.registry().screens]})
+            {"screen": screen, "namespace": _namespace(registry, leaves[0][0]),
+             "leaves": [{"id": leaf, "title": title, "granted": leaf in held,
+                         "builtin": code == "admin"} for leaf, title in leaves]}
+            for screen, leaves in registry.screens]})
     view_id, workspace_id = (scope_id, None) if kind == "agent_view" else (None, scope_id)
     with req.conn.cursor() as cur:
         if view_id is not None:
@@ -500,7 +514,7 @@ def role_resources(req: Request) -> Response:
         return {"granted": (kind_, name) in granted, "inherited": (kind_, name) in inherited}
 
     return Response(200, {
-        "operations": [{"id": op, "title": title, **flags("operation", op),
+        "operations": [{"id": op, "title": title, "namespace": _namespace(registry, op), **flags("operation", op),
                         "builtin": accounts.is_builtin_resource(code, op)}
                        for op, title in sorted(accounts.grantable_operations().items())],
         # `enabled` is effective here: a tool whose `requires` master is off is off.

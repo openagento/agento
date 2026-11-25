@@ -176,6 +176,10 @@ with rights rows that is not in the store any more is left out and logged.
 
 ## Panel
 
+**Languages.** The screen texts are in `miniapps/i18n/en.json` and `pl.json`, namespace
+`miniapps`: the screen keys, `error.<code>` for each refusal code, and the menu entry `nav.<path>`
+([i18n.md](../development/i18n.md)).
+
 The module ships `panel/` (probe `GET /api/miniapps/apps`):
 
 * `/apps` — the apps as **tiles** (default) or a **list** (the choice stays in the browser,

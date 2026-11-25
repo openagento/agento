@@ -6,6 +6,10 @@ import "@mantine/carousel/styles.css";
 import "@mantine/dropzone/styles.css";
 import type { Preview } from "@storybook/react-vite";
 import { AgentoUiProvider } from "../packages/ui/src/Provider";
+import { installSourceMessages } from "../packages/ui/src/i18n";
+import { SOURCE_MESSAGES } from "../panel/src/generated/messages";
+
+installSourceMessages(SOURCE_MESSAGES);
 
 const preview: Preview = {
   globalTypes: {

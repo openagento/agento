@@ -39,19 +39,19 @@ def parse_grid(query: Mapping[str, str], *, sorts: Collection[str], default_sort
                default_desc: bool = True) -> GridQuery | Response:
     page = _int(query.get("page", "1"))
     if page is None or not 1 <= page <= MAX_PAGE:
-        return error(400, f"page must be an integer from 1 to {MAX_PAGE}")
+        return error(400, f"page must be an integer from 1 to {MAX_PAGE}", code="INVALID_REQUEST")
     page_size = _int(query.get("page_size", str(DEFAULT_PAGE_SIZE)))
     if page_size not in PAGE_SIZES:
-        return error(400, f"page_size must be one of {', '.join(map(str, PAGE_SIZES))}")
+        return error(400, f"page_size must be one of {', '.join(map(str, PAGE_SIZES))}", code="INVALID_REQUEST")
     q = query.get("q", "").strip()
     if len(q) > MAX_Q:
-        return error(400, f"q must be at most {MAX_Q} characters")
+        return error(400, f"q must be at most {MAX_Q} characters", code="INVALID_REQUEST")
     sort = query.get("sort", default_sort)
     if sort not in sorts:
-        return error(400, f"sort must be one of {', '.join(sorts)}")
+        return error(400, f"sort must be one of {', '.join(sorts)}", code="INVALID_REQUEST")
     direction = query.get("dir")
     if direction not in (None, "asc", "desc"):
-        return error(400, "dir must be asc or desc")
+        return error(400, "dir must be asc or desc", code="INVALID_REQUEST")
     desc = default_desc if direction is None else direction == "desc"
     return GridQuery(page=page, page_size=page_size, q=q or None, sort=sort, desc=desc)
 

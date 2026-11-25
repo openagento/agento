@@ -151,6 +151,21 @@ class TestSetupUpgrade:
         mock_migrate.assert_not_called()
         assert not result.has_work
 
+    @pytest.mark.parametrize("dry_run", [True, False])
+    @patch("agento.framework.setup.get_pending", return_value=[("061_user_ui_locale", Path("061_user_ui_locale.sql"))])
+    def test_the_language_backfill_runs_after_the_migrations_and_never_in_a_dry_run(
+            self, mock_pending, tmp_path, dry_run):
+        conn, _ = _mock_conn()
+        core_dir, user_dir = _setup_modules(tmp_path)
+        steps = []
+
+        with patch("agento.framework.setup.migrate", side_effect=lambda *a, **kw: steps.append("migrate") or []), \
+             patch("agento.framework.setup.backfill_ui_locale", side_effect=lambda c: steps.append("backfill")), \
+             patch("agento.framework.setup.get_all_pending", side_effect=lambda *a: steps.append("patches") or []):
+            setup_upgrade(conn, logging.getLogger("test"), dry_run=dry_run, core_dir=core_dir, user_dir=user_dir)
+
+        assert steps == (["patches"] if dry_run else ["migrate", "backfill", "patches"])
+
     @patch("agento.framework.setup.migrate", return_value=[])
     def test_setup_upgrade_installs_no_crontab(self, mock_migrate, tmp_path):
         """The crontab belongs to root now — setup must not invoke the binary."""

@@ -1,0 +1,17 @@
+{
+  "module.title": "Jira",
+  "config.enabled.label": "Włącz kanał Jira",
+  "config.user.label": "Użytkownik AI",
+  "config.jira_projects.label": "Projekty Jira (tablica JSON)",
+  "config.jira_assignee.label": "Nazwa użytkownika agenta w Jira",
+  "config.jira_assignee_account_id.label": "Identyfikator konta Jira agenta (do wykrywania wzmianek)",
+  "config.jira_host.label": "URL Jira Cloud",
+  "config.jira_user.label": "E-mail użytkownika API Jira",
+  "config.jira_token.label": "Token API Jira",
+  "config.jira_admin_token.label": "Token API administratora Jira (opcjonalny, włącza automatyczną konfigurację statusów, pól i ekranów)",
+  "config.jira_admin_user.label": "E-mail administratora Jira (właściciel jira_admin_token; gdy pusty, używany jest jira_user)",
+  "config.todo_statuses.label": "Statusy Jira traktowane jako To Do (tablica JSON)",
+  "config.create_issue_limit_per_hour.label": "Maks. liczba zgłoszeń tworzonych na godzinę",
+  "config.attachment_download_limit.label": "Maks. liczba najnowszych załączników pobieranych automatycznie przez jira_get_issue (0 = wszystkie)",
+  "config.resume_session.label": "Wznów poprzednią sesję zgłoszenia (1, domyślnie) albo zaczynaj każde uruchomienie Jira TODO i follow-up od nowej sesji (0). W obu przypadkach uruchomienie pozostaje w wątku zgłoszenia."
+}

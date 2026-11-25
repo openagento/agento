@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
-import { renderAt, stubApi, teardown } from "../../../../../frontend/panel/src/routes/admin/testing";
+import { renderAt, renderInLocale, stubApi, teardown } from "../../../../../frontend/panel/src/routes/admin/testing";
 import ArtifactsPage from "./ArtifactsPage";
 import ArtifactPage from "./ArtifactPage";
 
@@ -48,11 +48,39 @@ describe("the artifacts list", () => {
     expect(await screen.findByRole("menuitem", { name: "Open" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "Delete" })).toBeNull();
   });
+
+  it.each([["en", "Artifacts", "Open drafts", "on", "Artifacts · Agento"], ["pl", "Artefakty", "Otwarte wersje robocze", "włączone", "Artefakty · Agento"]])(
+    "shows the list in %s", async (tag, title, drafts, share, tab) => {
+      await stubApi({ [BASE]: LIST });
+      renderInLocale(tag, "/artifacts", <ArtifactsPage />);
+      expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+      const row = (await screen.findByRole("link", { name: "approver" })).closest("tr")!;
+      expect(screen.getByRole("columnheader", { name: drafts })).toBeInTheDocument();
+      expect(within(row).getByText(share)).toBeInTheDocument();
+      expect(document.title).toBe(tab);
+    });
+
+  it.each([
+    ["a code of the module", { error: "server words", code: "TOOLBOX_UNAVAILABLE" }, "Usługa jest niedostępna. Spróbuj ponownie."],
+    ["no code", { error: "server words" }, "Nie udało się usunąć artefaktu."],
+  ])("a refused delete shows the Polish text for %s, never the server's", async (_case, body, text) => {
+    await stubApi({ [BASE]: LIST, [`DELETE ${BASE}/approver`]: () => new Response(JSON.stringify(body), { status: 503 }) });
+    renderInLocale("pl", "/artifacts", <ArtifactsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Akcje" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Usuń" }));
+    fireEvent.change(await screen.findByLabelText("Wpisz kod, aby potwierdzić"), { target: { value: "approver" } });
+    fireEvent.click(screen.getByRole("button", { name: "Usuń artefakt" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(text);
+    expect(screen.queryByText("server words")).toBeNull();
+  });
 });
 
-const detailAt = () => renderAt("/artifacts/approver", <Routes>
-  <Route path="/artifacts/:code" element={<ArtifactPage />} /><Route path="/artifacts" element={<p>list page</p>} />
-</Routes>);
+const DETAIL = (
+  <Routes>
+    <Route path="/artifacts/:code" element={<ArtifactPage />} /><Route path="/artifacts" element={<p>list page</p>} />
+  </Routes>
+);
+const detailAt = () => renderAt("/artifacts/approver", DETAIL);
 
 
 describe("the artifact page", () => {
@@ -67,11 +95,12 @@ describe("the artifact page", () => {
   it("Make current is a compare-and-set on the current version; a 409 is shown", async () => {
     const api = await stubApi({
       [BASE]: LIST, [`${BASE}/approver/versions`]: VERSIONS,
-      [`POST ${BASE}/approver/publish`]: new Response(JSON.stringify({ error: "current changed" }), { status: 409 }),
+      [`POST ${BASE}/approver/publish`]: new Response(JSON.stringify({ error: "current changed", code: "CURRENT_VERSION_CHANGED" }), { status: 409 }),
     });
     detailAt();
     fireEvent.click(await screen.findByRole("button", { name: "Make current" }));
-    expect(await screen.findByText("current changed")).toBeInTheDocument();
+    expect(await screen.findByText("The current version changed. Reload the page.")).toBeInTheDocument();
+    expect(screen.queryByText("current changed")).toBeNull();
     expect(api.calls("POST", `${BASE}/approver/publish`)[0].body).toEqual({ version_id: V1, expected_current_version: V2 });
   });
 
@@ -128,5 +157,49 @@ describe("the artifact page", () => {
     await screen.findByText("Adds CSV export");
     await waitFor(() => expect(screen.queryByRole("button", { name: "Make current" })).toBeNull());
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+  });
+
+  it.each([
+    ["en", "Versions", "current", "view 3 job 812 agent", "Approvals", "view 3"],
+    ["pl", "Wersje", "bieżąca", "widok 3 zadanie 812 agent", "Zatwierdzenia", "widok 3"],
+  ])("shows the artifact in %s", async (tag, versions, badge, history, approvals, view) => {
+    await stubApi({
+      [BASE]: LIST, [`${BASE}/approver/versions`]: VERSIONS,
+      "/api/miniapps/apps/approver/approvals": [{ agent_view_id: 3, approved_version_id: V1, allowed_actions: ["jira_add_comment"],
+        activated_by: "service:web:user:1", activated_at: "2026-10-09T10:00:00Z" }],
+    });
+    renderInLocale(tag, "/artifacts/approver", DETAIL);
+    expect(screen.getByRole("heading", { name: "approver" })).toBeInTheDocument();
+    expect(await screen.findByRole("table", { name: versions })).toBeInTheDocument();
+    expect(await screen.findByText(badge)).toBeInTheDocument();
+    expect(screen.getByText("Adds CSV export").closest("li")).toHaveTextContent(history);
+    expect(await screen.findByRole("heading", { name: approvals })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: view })).toBeInTheDocument();
+    expect(document.title).toBe("approver · Agento");
+  });
+
+  it.each([
+    ["a code of the module", { error: "server words", code: "CURRENT_VERSION_CHANGED" }, "Bieżąca wersja się zmieniła. Odśwież stronę."],
+    ["no code", { error: "server words" }, "Nie udało się ustawić wersji jako bieżącej."],
+  ])("a refused Make current shows the Polish text for %s, never the server's", async (_case, body, text) => {
+    await stubApi({
+      [BASE]: LIST, [`${BASE}/approver/versions`]: VERSIONS,
+      [`POST ${BASE}/approver/publish`]: () => new Response(JSON.stringify(body), { status: 409 }),
+    });
+    renderInLocale("pl", "/artifacts/approver", DETAIL);
+    fireEvent.click(await screen.findByRole("button", { name: "Ustaw jako bieżącą" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(text);
+    expect(screen.queryByText("server words")).toBeNull();
+  });
+
+  it("a stale preview names the version inside the Polish sentence", async () => {
+    await stubApi({
+      [BASE]: LIST, [`${BASE}/approver/versions`]: VERSIONS,
+      [`POST ${BASE}/approver/publish`]: { current_version: V1, preview_stale: true },
+    });
+    renderInLocale("pl", "/artifacts/approver", DETAIL);
+    fireEvent.click(await screen.findByRole("button", { name: "Ustaw jako bieżącą" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(`Wersja ${V1} jest bieżąca, ale witryna nadal pokazuje poprzednią.`);
+    expect(screen.getByRole("button", { name: "Napraw" })).toBeInTheDocument();
   });
 });

@@ -150,10 +150,10 @@ All routes need a session; times are `starts_at` naive local in the row's `timez
 | `GET /api/scheduler/options` | as the probe | `{presets: [{label, rrule}], harnesses: [{value, label}], default_timezone, min_interval_minutes, agent_views: [{id, code, label, workspace_id}], max_uploads}` |
 | `POST /api/scheduler/preview` | as the probe | body `{rrule, starts_at?, timezone?}` → `{fires: [{at, local}]}` (next 5) |
 | `POST /api/scheduler/schedules` | `scheduler.own` | body `{title, prompt, agent_view_id, rrule, starts_at?, timezone?, harness?, model?, enabled?, upload_ids?}` → 201 `{id}`. `upload_ids`: the caller's draft uploads; 400 `bad_uploads` (not a list of at most `limits/uploads_per_schedule` distinct ids) or `upload_gone` |
-| `POST /api/scheduler/uploads` | `scheduler.own` | one `multipart/form-data` file for a schedule not saved yet → 201 `{upload_id, name, bytes}`; a refusal has code `upload` |
+| `POST /api/scheduler/uploads` | `scheduler.own` | one `multipart/form-data` file for a schedule not saved yet → 201 `{upload_id, name, bytes}`; a refusal is `{error, code: "upload", reason, params?}`: `reason` is the framework upload code (`UPLOAD_EMPTY`, `UPLOAD_TOO_LARGE`, `UPLOAD_NAME_EXHAUSTED`, `UPLOAD_NOT_AVAILABLE`, `UPLOAD_FAILED`, `INVALID_REQUEST`) and `params` are its params (`max_bytes` for `UPLOAD_TOO_LARGE`) |
 | `GET /api/scheduler/schedules/<id>` | read | the row, plus `members: [{user_id, username}]` (null without the share right) and `attachments: [{upload_id, name, bytes}]` (`bytes` null when the staged file is gone; never a path) |
 | `PATCH /api/scheduler/schedules/<id>` | write | any create field, none required → 204. A different `agent_view_id` → 400 `view_fixed` (the same value does nothing) |
-| `POST /api/scheduler/schedules/<id>/uploads` | write | one `multipart/form-data` file → 201 `{upload_id, name, bytes}`; 413 over `core/uploads/max_bytes` |
+| `POST /api/scheduler/schedules/<id>/uploads` | write | one `multipart/form-data` file → 201 `{upload_id, name, bytes}`; 413 over `core/uploads/max_bytes`; the refusal body is that of the draft upload route |
 | `DELETE /api/scheduler/schedules/<id>` | delete | 204. The staged files go at a later sweep |
 | `POST /api/scheduler/schedules/<id>/run` | write | 201 `{job_id, conversation_id}` or 409 |
 | `GET /api/scheduler/schedules/<id>/runs` | read | the newest 10 jobs: `[{id, status, created_at, started_at, finished_at, answer}]`; `answer` is what the last attempt wrote into the conversation (null while it runs, or none). The job's prompt, model and tokens stay behind `GET /api/admin/jobs/<id>` (`admin.jobs`) |
@@ -168,6 +168,11 @@ enabled, next_fire_at, last_fire_at, last_error, created_at, last_run_status, co
 can: {read, write, share, delete, change_owner}`.
 
 ## Panel
+
+**Languages.** The screen texts are in `scheduler/i18n/en.json` and `pl.json`, namespace
+`scheduler`: the screen keys, `error.<code>` for each refusal code, and the menu entry `nav.<path>`.
+A preset label is operator data (`scheduler/presets`): the list, the form summary and the selector
+show it as written, in every language ([i18n.md](../development/i18n.md)).
 
 `scheduler/panel/` adds **Schedules** (`/schedules`), shown when the probe `GET /api/scheduler/schedules`
 answers 2xx. The list shows the groups that have rows (My schedules also when the user may create

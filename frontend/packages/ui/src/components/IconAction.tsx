@@ -2,6 +2,7 @@ import { ActionIcon, Menu, Tooltip } from "@mantine/core";
 import type { ActionIconProps } from "@mantine/core";
 import { Archive, CircleCheck, CircleStop, ExternalLink, Eye, FileText, RefreshCw, Settings, Trash2 } from "lucide-react";
 import type { ComponentPropsWithRef, ReactNode } from "react";
+import { useT } from "../i18n";
 
 /** An action as an icon. `label` is its hover title and its accessible name (RULES.md UI-7).
  *  The rest props reach the button, so a Popover.Target or Menu.Target can wrap it. */
@@ -21,49 +22,59 @@ export function IconAction({ label, icon, danger = false, tip = "top", size, ...
 }
 
 export function ArchiveAction(props: Omit<ComponentPropsWithRef<"button">, "children" | "color">) {
-  return <IconAction label="Archive" icon={<Archive size={16} />} {...props} />;
+  const t = useT("ui");
+  return <IconAction label={t("action.archive")} icon={<Archive size={16} />} {...props} />;
 }
 
 export function RegenerateAction(props: Omit<ComponentPropsWithRef<"button">, "children" | "color">) {
-  return <IconAction label="Regenerate" icon={<RefreshCw size={16} />} {...props} />;
+  const t = useT("ui");
+  return <IconAction label={t("action.regenerate")} icon={<RefreshCw size={16} />} {...props} />;
 }
 
 type Named = Omit<ComponentPropsWithRef<"button">, "children" | "color"> & { label?: string };
 
-export function OpenAction({ label = "Open", ...p }: Named) {
-  return <IconAction label={label} icon={<ExternalLink size={16} />} {...p} />;
+export function OpenAction({ label, ...p }: Named) {
+  const t = useT("ui");
+  return <IconAction label={label ?? t("action.open")} icon={<ExternalLink size={16} />} {...p} />;
 }
 
 /** A quick look, in a drawer, that keeps the page. */
-export function PreviewAction({ label = "Preview", ...p }: Named) {
-  return <IconAction label={label} icon={<Eye size={16} />} {...p} />;
+export function PreviewAction({ label, ...p }: Named) {
+  const t = useT("ui");
+  return <IconAction label={label ?? t("action.preview")} icon={<Eye size={16} />} {...p} />;
 }
 
 /** The full record behind a row. */
-export function DetailsAction({ label = "Details", ...p }: Named) {
-  return <IconAction label={label} icon={<FileText size={16} />} {...p} />;
+export function DetailsAction({ label, ...p }: Named) {
+  const t = useT("ui");
+  return <IconAction label={label ?? t("action.details")} icon={<FileText size={16} />} {...p} />;
 }
 
-export function MakeCurrentAction({ label = "Make current", ...p }: Named) {
-  return <IconAction label={label} icon={<CircleCheck size={16} />} {...p} />;
+export function MakeCurrentAction({ label, ...p }: Named) {
+  const t = useT("ui");
+  return <IconAction label={label ?? t("action.make_current")} icon={<CircleCheck size={16} />} {...p} />;
 }
 
-export function EndAction({ label = "End", ...p }: Named) {
-  return <IconAction danger label={label} icon={<CircleStop size={16} />} {...p} />;
+export function EndAction({ label, ...p }: Named) {
+  const t = useT("ui");
+  return <IconAction danger label={label ?? t("action.end")} icon={<CircleStop size={16} />} {...p} />;
 }
 
-export function DeleteAction({ label = "Delete", ...p }: Named) {
-  return <IconAction danger label={label} icon={<Trash2 size={16} />} {...p} />;
+export function DeleteAction({ label, ...p }: Named) {
+  const t = useT("ui");
+  return <IconAction danger label={label ?? t("action.delete")} icon={<Trash2 size={16} />} {...p} />;
 }
 
-export function SettingsAction({ label = "Settings", ...p }: Named) {
-  return <IconAction label={label} icon={<Settings size={16} />} {...p} />;
+export function SettingsAction({ label, ...p }: Named) {
+  const t = useT("ui");
+  return <IconAction label={label ?? t("action.settings")} icon={<Settings size={16} />} {...p} />;
 }
 
 /** Open, as an icon. With two or more `items` (e.g. the agent views an app runs in) it opens a menu. */
-export function OpenMenuAction({ label = "Open", items, onSelect, disabled }: {
+export function OpenMenuAction({ label, items, onSelect, disabled }: {
   label?: string; items: { value: string; label: string }[]; onSelect: (value: string) => void; disabled?: boolean;
 }) {
+  const t = useT("ui");
   if (items.length <= 1) {
     return <OpenAction label={label} disabled={disabled || items.length === 0} onClick={() => items[0] && onSelect(items[0].value)} />;
   }
@@ -71,7 +82,7 @@ export function OpenMenuAction({ label = "Open", items, onSelect, disabled }: {
     <Menu position="bottom-end">
       <Menu.Target><OpenAction label={label} aria-haspopup="menu" disabled={disabled} /></Menu.Target>
       <Menu.Dropdown>
-        <Menu.Label>Open in</Menu.Label>
+        <Menu.Label>{t("action.open_in")}</Menu.Label>
         {items.map((i) => <Menu.Item key={i.value} onClick={() => onSelect(i.value)}>{i.label}</Menu.Item>)}
       </Menu.Dropdown>
     </Menu>

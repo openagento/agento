@@ -1,5 +1,7 @@
-import { EmptyState } from "@agento/ui";
+import { EmptyState, useDocumentTitle, useT } from "@agento/ui";
 
 export function NotFound() {
-  return <EmptyState title="Page not found">Check the address, or use the navigation.</EmptyState>;
+  const t = useT("panel");
+  useDocumentTitle(t("not_found.title"));
+  return <EmptyState title={t("not_found.title")}>{t("not_found.text")}</EmptyState>;
 }

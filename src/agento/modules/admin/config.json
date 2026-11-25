@@ -1,4 +1,5 @@
 {
+  "locale/language": "en",
   "locale/date_format": "us",
   "locale/timezone": "browser"
 }

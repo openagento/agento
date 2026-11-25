@@ -14,6 +14,10 @@ export interface ApiOptions {
   signal?: AbortSignal;
   /** A 401 is the expected "signed out" answer here; it does not end the session. */
   quiet401?: boolean;
+  /** The version the caller holds: the server answers 304 (an `ApiError`) when it is still current. */
+  ifNoneMatch?: string;
+  /** The version the write was made for: the server refuses the write when it has another one. */
+  ifMatch?: string;
 }
 
 /** `path` must be a same-origin path (`/api/...`); an absolute or cross-origin URL throws. */
@@ -34,6 +38,8 @@ export async function apiFetch<T = unknown>(path: string, opts: ApiOptions = {})
     headers["X-CSRF-Token"] = token;
   }
   if (opts.json !== undefined) headers["Content-Type"] = "application/json";
+  if (opts.ifNoneMatch !== undefined) headers["If-None-Match"] = `"${opts.ifNoneMatch}"`;
+  if (opts.ifMatch !== undefined) headers["If-Match"] = `"${opts.ifMatch}"`;
   const at = getEpoch();
   const res = await fetch(url, {
     method,

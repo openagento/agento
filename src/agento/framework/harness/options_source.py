@@ -13,8 +13,12 @@ HARNESS_REGISTRY = "agent_harness_registry"
 HARNESS_PROVIDERS = "agent_harness_providers"
 # Not harness data, but this is the one options_source registry (the validator reads it).
 TIMEZONES = "timezones"
+# An option is data and shows as sent. The one fixed option is a text: its message is
+# ``config.option.<label_key>`` in the ``panel`` catalog, and ``label`` is the English source.
+BROWSER_TIMEZONE = {"value": "browser", "label": "Browser time zone", "label_key": "browser_timezone"}
+PANEL_LANGUAGES = "panel_languages"
 
-SUPPORTED_SOURCES = (HARNESS_REGISTRY, HARNESS_PROVIDERS, TIMEZONES)
+SUPPORTED_SOURCES = (HARNESS_REGISTRY, HARNESS_PROVIDERS, TIMEZONES, PANEL_LANGUAGES)
 
 
 @functools.cache
@@ -23,7 +27,7 @@ def _timezone_options() -> tuple[dict[str, str], ...]:
     import zoneinfo
 
     return (
-        {"value": "browser", "label": "Browser time zone"},
+        BROWSER_TIMEZONE,
         *({"value": z, "label": z} for z in sorted(zoneinfo.available_timezones())),
     )
 
@@ -35,6 +39,8 @@ def resolve_options(
     depends_on_value: str | None = None,
 ) -> list[dict[str, str]]:
     """Return ``[{"value":..., "label":...}]`` for a supported ``options_source``.
+
+    A fixed option of a source (``BROWSER_TIMEZONE``) also has ``label_key``.
 
     ``depends_on_value`` is the current value of the field named by ``depends_on`` —
     for provider options that is the selected harness. When it is unknown, every
@@ -50,6 +56,10 @@ def resolve_options(
         )
     if source == TIMEZONES:
         return [dict(o) for o in _timezone_options()]
+    if source == PANEL_LANGUAGES:
+        from .. import i18n
+
+        return [{"value": tag, "label": name} for tag, name in i18n.languages().items()]
 
     # Default to the ambient root rather than "core modules only" — an explicit
     # project_root (tests, install-time) still wins.

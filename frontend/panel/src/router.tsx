@@ -1,6 +1,7 @@
 import { lazy } from "react";
 import { createBrowserRouter, redirect, type RouteObject } from "react-router";
-import { boot, getUser, onExpired, type PanelModule } from "@agento/api";
+import { boot, getLocale, getUser, onExpired, type PanelModule } from "@agento/api";
+import { ensureCatalog } from "./catalogStore";
 import { MODULES } from "./generated/registry";
 import { Shell } from "./Shell";
 import { ModuleRoute } from "./ModuleRoute";
@@ -8,9 +9,10 @@ import { safeNext } from "./safeNext";
 
 let booted: Promise<unknown> | null = null;
 
-/** Every page but /login needs a session; the first visit asks `GET /api/session`. */
+/** Every page but /login needs a session; the first visit asks `GET /api/session`, then loads the
+ *  catalog of the session's language, so the first screen is not shown in English first. */
 async function requireSession({ request }: { request: Request }) {
-  booted ??= boot().catch(() => null);
+  booted ??= boot().then(() => ensureCatalog(getLocale())).catch(() => null);
   await booted;
   if (getUser()) return null;
   const url = new URL(request.url);
