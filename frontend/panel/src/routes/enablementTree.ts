@@ -10,7 +10,7 @@ export interface EnablementItem {
   name: string; path: string; enabled: boolean; explicit_here: boolean; blocked_by?: string | null;
   requires?: string | null; catalog?: CatalogEntry | null;
 }
-export type Groups = { group: string; items: EnablementItem[] }[];
+export type Groups = { group: string; label?: string; items: EnablementItem[] }[];
 
 /** What a leaf row shows beside its label. */
 export interface EnablementInfo { blockedBy?: string | null; inherited?: boolean; labels?: string[] }
@@ -19,11 +19,11 @@ export interface EnablementInfo { blockedBy?: string | null; inherited?: boolean
 export function toTreeData(groups: Groups, search: string): TreeNodeData[] {
   const q = search.trim().toLowerCase();
   const hit = (text: string) => !q || text.toLowerCase().includes(q);
-  return groups.flatMap(({ group, items }) => {
-    const kept = hit(group) ? items : items.filter((i) => hit(i.name));
+  return groups.flatMap(({ group, label = group, items }) => {
+    const kept = hit(label) ? items : items.filter((i) => hit(i.name));
     if (!kept.length) return [];
     return [{
-      value: `grp:${group}`, label: group,
+      value: `grp:${group}`, label,
       children: kept.map((i): TreeNodeData => ({
         value: i.path, label: i.name,
         nodeProps: {

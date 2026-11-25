@@ -32,7 +32,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(async () => {
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
-  fetchMock.mockResolvedValueOnce(json(200, { user: { id: 1 }, csrf_token: "t", expires_at: "x" }));
+  fetchMock.mockResolvedValueOnce(json(200, { user: { id: 1, ui_locale: null }, csrf_token: "t", expires_at: "x" }));
   await login("a", "b");
   bridge.create.mockReset();
   bridge.close.mockReset();

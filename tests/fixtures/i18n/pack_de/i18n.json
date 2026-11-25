@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "languages": [
+    {
+      "tag": "de",
+      "name": "Deutsch"
+    }
+  ],
+  "packs": {
+    "de": "i18n/pack/de.json"
+  }
+}

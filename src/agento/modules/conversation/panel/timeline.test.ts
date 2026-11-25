@@ -212,7 +212,7 @@ describe("foldTools and turns", () => {
 
   it("a failed attempt with attempts left is retrying; the last one is a failure with every error counted", () => {
     expect(turn([started(1, "a", 1), ev(2, "error", "a", { text: "boom" }), failed(3, "a", 1)]).failure)
-      .toEqual({ text: "The run failed (harness).", count: 2, failed: true, retrying: true });
+      .toEqual({ text: "", failedKind: "harness", count: 2, failed: true, retrying: true });
     const last = turn([started(1, "a", 1), failed(2, "a", 1), started(3, "b", 3), ev(4, "error", "b", { text: "boom" }), failed(5, "b", 3)]);
     expect(last.failure).toMatchObject({ failed: true, retrying: false, count: 3 });
     expect(last.items).toEqual([]);

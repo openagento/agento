@@ -87,10 +87,26 @@ class TestTimezoneOptions:
         import zoneinfo
 
         options = resolve_options("timezones")
-        assert options[0] == {"value": "browser", "label": "Browser time zone"}
+        assert options[0] == {
+            "value": "browser", "label": "Browser time zone", "label_key": "browser_timezone",
+        }
+        assert all(set(o) == {"value", "label"} and o["label"] == o["value"] for o in options[1:])
         zones = [o["value"] for o in options[1:]]
         assert zones == sorted(zoneinfo.available_timezones())
         assert "Europe/Warsaw" in zones
+
+    def test_the_fixed_option_is_a_panel_message_in_every_shipped_language(self):
+        """``label`` is the English source of ``config.option.<label_key>``; an IANA name has no message."""
+        from agento.framework import i18n
+
+        fixed = [o for o in resolve_options("timezones") if "label_key" in o]
+        assert [o["value"] for o in fixed] == ["browser"]
+        catalogs = Path(i18n.__file__).parent / "panel"
+        files = json.loads((catalogs / "i18n.json").read_text())["catalog"]
+        key = f"config.option.{fixed[0]['label_key']}"
+        assert json.loads((catalogs / files["en"]).read_text())[key] == fixed[0]["label"]
+        for language, name in files.items():
+            assert key in json.loads((catalogs / name).read_text()), language
 
     def test_reads_no_harness_declaration(self, monkeypatch):
         """A time zone list is not harness work: it must not scan module manifests."""
@@ -101,14 +117,24 @@ class TestTimezoneOptions:
         assert resolve_options("timezones")[0]["value"] == "browser"
 
 
+class TestPanelLanguageOptions:
+    def test_each_registered_language_is_an_option_with_its_own_name(self, monkeypatch):
+        from agento.framework import i18n
+
+        monkeypatch.setattr(i18n, "languages", lambda: {"en": "English", "de": "Deutsch"})
+
+        assert resolve_options("panel_languages") == [
+            {"value": "en", "label": "English"}, {"value": "de", "label": "Deutsch"}]
+
+
 class TestSourceValidation:
     def test_unknown_source_is_rejected_and_names_the_supported_ones(self):
         with pytest.raises(ValueError, match="Unknown options_source"):
             resolve_options("agent_something_else")
 
-    def test_supported_sources_are_exactly_the_three_declared(self):
+    def test_supported_sources_are_exactly_the_declared_ones(self):
         assert set(SUPPORTED_SOURCES) == {
-            "agent_harness_registry", "agent_harness_providers", "timezones",
+            "agent_harness_registry", "agent_harness_providers", "timezones", "panel_languages",
         }
 
     def test_core_modules_ship_system_json(self):

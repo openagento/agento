@@ -1,5 +1,7 @@
-import { EmptyState } from "@agento/ui";
+import { EmptyState, useDocumentTitle, useT } from "@agento/ui";
 
 export function NotAvailable() {
-  return <EmptyState title="Not available">This screen's module is turned off, or you cannot use it.</EmptyState>;
+  const t = useT("panel");
+  useDocumentTitle(t("not_available.title"));
+  return <EmptyState title={t("not_available.title")}>{t("not_available.text")}</EmptyState>;
 }

@@ -9,7 +9,7 @@ import {
   ActionIcon, Badge, Box, Checkbox, Divider, Group, Highlight, Paper, Stack, Text, TextInput, Tree,
   getTreeExpandedState, useTree, type RenderTreeNodePayload, type TreeNodeData,
 } from "@mantine/core";
-import { EmptyState, IconAction } from "@agento/ui";
+import { EmptyState, IconAction, useT } from "@agento/ui";
 import { TIGHT } from "./layout";
 import { leavesOf, nodeState, toggle } from "./roleTree";
 
@@ -28,6 +28,7 @@ export function ResourceTree({ toData, checked, locked, onChange, busy, renderIc
   emptyTitle: string; emptyText: ReactNode;
 }) {
   const [search, setSearch] = useState("");
+  const t = useT("panel");
   const full = useMemo(() => toData(""), [toData]);
   // Tree re-initializes on every new `data`: it must be memoized.
   const data = useMemo(() => (search ? toData(search) : full), [toData, search, full]);
@@ -50,7 +51,7 @@ export function ResourceTree({ toData, checked, locked, onChange, busy, renderIc
     const info = renderInfo(node, search);
     const count = hasChildren && (
       <Badge variant="default" size="sm" radius="sm">
-        {leaves.filter((v) => checked.has(v)).length} of {leaves.length}
+        {t("resources.count", { checked: leaves.filter((v) => checked.has(v)).length, total: leaves.length })}
       </Badge>
     );
     const box = (
@@ -64,7 +65,7 @@ export function ResourceTree({ toData, checked, locked, onChange, busy, renderIc
     return (
       <Group gap="xs" wrap="nowrap" align="flex-start" py={narrow ? TIGHT : undefined} {...elementProps}>
         {hasChildren && (
-          <ActionIcon variant="subtle" color="gray" size="sm" aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
+          <ActionIcon variant="subtle" color="gray" size="sm" aria-label={open ? t("resources.collapse", { name: label }) : t("resources.expand", { name: label })}
             aria-expanded={open} onClick={() => tree.toggleExpanded(node.value)}>
             {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </ActionIcon>
@@ -89,17 +90,17 @@ export function ResourceTree({ toData, checked, locked, onChange, busy, renderIc
   return (
     <Stack gap="sm">
       <Group gap="xs" wrap="nowrap">
-        <TextInput flex={1} aria-label="Search resources" placeholder="Search" leftSection={<Search size={16} />}
+        <TextInput flex={1} aria-label={t("resources.search.label")} placeholder={t("resources.search.placeholder")} leftSection={<Search size={16} />}
           value={search} onChange={(e) => setSearch(e.currentTarget.value)} />
-        {!allOpen && <IconAction label="Expand all" icon={<ChevronsUpDown size={16} />} onClick={() => setExpanded(getTreeExpandedState(full, "*"))} />}
-        {anyOpen && <IconAction label="Collapse all" icon={<ChevronsDownUp size={16} />} onClick={() => setExpanded({})} />}
+        {!allOpen && <IconAction label={t("resources.expand_all")} icon={<ChevronsUpDown size={16} />} onClick={() => setExpanded(getTreeExpandedState(full, "*"))} />}
+        {anyOpen && <IconAction label={t("resources.collapse_all")} icon={<ChevronsDownUp size={16} />} onClick={() => setExpanded({})} />}
         <Divider orientation="vertical" />
-        <IconAction label="Select all" icon={<ListChecks size={16} />} disabled={busy} onClick={() => setAll(true)} />
-        <IconAction label="Clear" icon={<ListX size={16} />} disabled={busy} onClick={() => setAll(false)} />
+        <IconAction label={t("resources.select_all")} icon={<ListChecks size={16} />} disabled={busy} onClick={() => setAll(true)} />
+        <IconAction label={t("resources.clear")} icon={<ListX size={16} />} disabled={busy} onClick={() => setAll(false)} />
       </Group>
       {data.length
         ? <Tree data={data} tree={tree} expandOnClick={false} expandOnSpace={false} levelOffset="xl" renderNode={renderNode} />
-        : <EmptyState title={search ? "Nothing matches" : emptyTitle}>{search ? "No row matches the search." : emptyText}</EmptyState>}
+        : <EmptyState title={search ? t("resources.no_match.title") : emptyTitle}>{search ? t("resources.no_match.text") : emptyText}</EmptyState>}
     </Stack>
   );
 }
@@ -108,13 +109,14 @@ export function ResourceTree({ toData, checked, locked, onChange, busy, renderIc
 export function UnsavedBar({ changes, busy, onReset, onSave }: {
   changes: number; busy: boolean; onReset: () => void; onSave: () => void;
 }) {
+  const t = useT("panel");
   return (
     <Paper withBorder shadow="md" radius="md" p="sm" pos="sticky" bottom={0}>
       <Group justify="space-between">
-        <Text fz="sm" fw={500}>{changes === 1 ? "1 change" : `${changes} changes`} not saved</Text>
+        <Text fz="sm" fw={500}>{t("resources.unsaved", { count: changes })}</Text>
         <Group gap="xs">
-          <IconAction label="Reset" icon={<RotateCcw size={16} />} disabled={busy} onClick={onReset} />
-          <IconAction label="Save" icon={<Save size={16} />} disabled={busy} onClick={onSave} />
+          <IconAction label={t("resources.reset")} icon={<RotateCcw size={16} />} disabled={busy} onClick={onReset} />
+          <IconAction label={t("action.save")} icon={<Save size={16} />} disabled={busy} onClick={onSave} />
         </Group>
       </Group>
     </Paper>

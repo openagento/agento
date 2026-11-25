@@ -26,7 +26,7 @@ def _write(conn, work):
         return accounts._in_transaction(conn, work)
     except pymysql.err.IntegrityError as exc:
         if exc.args[0] == _ER_NO_REFERENCED_ROW:  # no versioned_artifact row (a best-effort INSERT failed)
-            raise ActivationError(409, "app metadata missing") from exc
+            raise ActivationError(409, "app metadata missing", code="APP_METADATA_MISSING") from exc
         raise
 
 
@@ -76,7 +76,7 @@ def put_member(conn, user: accounts.User, code: str, *, user_id: int | None, rol
     ``can_remove`` changes only for a caller who holds ``remove`` (no escalation). A flag
     change keeps ``view``, so it drops nobody's ``execute``: no launch is revoked."""
     if (user_id is None) == (role is None):
-        raise ActivationError(400, "set exactly one of username or role")
+        raise ActivationError(400, "set exactly one of username or role", code="INVALID_REQUEST")
     key, value = ("user_id", user_id) if user_id is not None else ("role", role)
 
     def work(cur):
@@ -84,7 +84,8 @@ def put_member(conn, user: accounts.User, code: str, *, user_id: int | None, rol
                     (code, value))
         row = cur.fetchone()
         if bool(row and row["can_remove"]) != can_remove and not may_set_remove:
-            raise ActivationError(403, "only a user who may remove the app may change remove")
+            raise ActivationError(403, "only a user who may remove the app may change remove",
+                                  code="REMOVE_RIGHT_REQUIRED")
         cur.execute(f"INSERT INTO miniapp_member (artifact_code, {key}, can_edit, can_remove) VALUES (%s, %s, %s, %s)"
                     " ON DUPLICATE KEY UPDATE can_edit = VALUES(can_edit), can_remove = VALUES(can_remove)",
                     (code, value, int(can_edit), int(can_remove)))

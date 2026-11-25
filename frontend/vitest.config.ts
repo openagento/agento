@@ -11,7 +11,7 @@ export default defineConfig({
   plugins: [react()],
   // Module panel tests live outside frontend/: point their test-only imports at this workspace.
   resolve: { alias: { ...aliases, "@testing-library/react": here("node_modules/@testing-library/react") } },
-  server: { fs: { allow: [here("."), here("../src/agento/modules")] } },
+  server: { fs: { allow: [here("."), here("../src/agento/modules"), here("../src/agento/framework/i18n")] } },
   test: {
     projects: [
       {

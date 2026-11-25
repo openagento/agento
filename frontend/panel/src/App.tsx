@@ -4,6 +4,7 @@ import { AgentoUiProvider } from "@agento/ui";
 import { RouterProvider } from "react-router";
 import { router } from "./router";
 import { SessionDisplayFormat } from "./DisplayFormat";
+import { SessionI18n } from "./I18n";
 import { MODULES } from "./generated/registry";
 
 export function App() {
@@ -11,11 +12,13 @@ export function App() {
     <AgentoUiProvider defaultColorScheme="auto">
       <Notifications />
       <QueryClientProvider client={queryClient}>
-        <SessionDisplayFormat>
-          <PanelModulesProvider modules={MODULES}>
-            <RouterProvider router={router} />
-          </PanelModulesProvider>
-        </SessionDisplayFormat>
+        <SessionI18n>
+          <SessionDisplayFormat>
+            <PanelModulesProvider modules={MODULES}>
+              <RouterProvider router={router} />
+            </PanelModulesProvider>
+          </SessionDisplayFormat>
+        </SessionI18n>
       </QueryClientProvider>
     </AgentoUiProvider>
   );

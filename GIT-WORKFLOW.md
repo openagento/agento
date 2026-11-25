@@ -12,3 +12,4 @@ For github interactions use gh cli tool or github mcp tools if available.
 6. Merge - always `--ff-only`, no merge commits. Never merge automatically: merge only when a human asks.
 7. Stage - stage explicit paths. Never `git add -A` or `git add .`.
 8. Before commit - remove `docs/superpowers/` (specs and plans from the superpowers skills). It never goes into the repo: `git rm -r --cached --ignore-unmatch docs/superpowers && rm -rf docs/superpowers`.
+9. One PR, one commit - a PR branch holds one commit: the feature and all its fixes. To add a fix (a review finding, a failed check, a rebase), use `git commit --amend --no-edit`, then `git push --force-with-lease`. Never add a second commit, and never use plain `--force`.

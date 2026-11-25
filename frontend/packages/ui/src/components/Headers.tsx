@@ -2,10 +2,12 @@ import { Pencil } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 import css from "./Editable.module.css";
 import { IconAction } from "./IconAction";
+import { useDocumentTitle, useT } from "../i18n";
 
 export function PageHeader({ title, description, actions }: {
   title: ReactNode; description?: ReactNode; actions?: ReactNode;
 }) {
+  useDocumentTitle(typeof title === "string" ? title : undefined);
   return (
     <header className="ag-page-header">
       <div>
@@ -26,10 +28,12 @@ export function SectionHeader({ children }: { children: ReactNode }) {
  *
  *  `startEditing` mounts it already in the field, for a caller that opened the edit itself (the
  *  Rename item of a thread's row menu); `onDone` then tells that caller the edit is over. */
-export function EditableTitle({ value, label = "Title", maxLength, onSave, startEditing = false, onDone }: {
+export function EditableTitle({ value, label: given, maxLength, onSave, startEditing = false, onDone }: {
   value: string; label?: string; maxLength?: number; onSave: (value: string) => void;
   startEditing?: boolean; onDone?: () => void;
 }) {
+  const t = useT("ui");
+  const label = given ?? t("editable_title.label");
   const [draft, setDraft] = useState<string | null>(startEditing ? value : null);
   // A menu that opened this field returns focus to its own trigger as it closes, which
   // blurs the input the instant it mounts and would close the rename before the user types
@@ -57,7 +61,7 @@ export function EditableTitle({ value, label = "Title", maxLength, onSave, start
   return (
     <span className={css.editable}>
       {value}
-      <IconAction size="sm" className={css.pencil} label={`Edit ${label.toLowerCase()}`} icon={<Pencil size={14} />}
+      <IconAction size="sm" className={css.pencil} label={t("editable_title.edit", { label: label.toLowerCase() })} icon={<Pencil size={14} />}
         onClick={() => setDraft(value)} />
     </span>
   );

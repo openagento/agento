@@ -2,6 +2,7 @@
 // panel App passes its registry here: a module's panel cannot import the panel app.
 import { createContext, useContext, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
+import { useLookup } from "@agento/ui";
 import { apiFetch } from "./apiFetch";
 import type { PanelModule } from "./contract";
 import { LIVE_REFETCH_MS } from "./query";
@@ -14,9 +15,11 @@ export function PanelModulesProvider({ modules, children }: { modules: PanelModu
 
 export interface JobLinkTarget { label: string; to: string }
 
-/** Asked again every LIVE_REFETCH_MS while the detail is open: a conversation made by the job's first
+/** The label is `<module>:joblink` in the panel's language; the descriptor's label is its English source.
+ *  Asked again every LIVE_REFETCH_MS while the detail is open: a conversation made by the job's first
  *  run appears, and a lost right or a disabled module (404) removes the link. */
 export function useJobLinks(jobId: number | null): JobLinkTarget[] {
+  const lookup = useLookup();
   const linked = useContext(Modules).filter((m) => m.jobLink);
   const answers = useQueries({
     queries: linked.map((m) => ({
@@ -35,7 +38,7 @@ export function useJobLinks(jobId: number | null): JobLinkTarget[] {
     const answer = answers[i];
     const id = answer.status === "success" ? answer.data?.id : undefined;
     return typeof id === "number" && Number.isSafeInteger(id) && id > 0
-      ? [{ label: m.jobLink!.label, to: m.jobLink!.to.replace("{id}", String(id)) }]
+      ? [{ label: lookup(m.id, "joblink") ?? m.jobLink!.label, to: m.jobLink!.to.replace("{id}", String(id)) }]
       : [];
   });
 }

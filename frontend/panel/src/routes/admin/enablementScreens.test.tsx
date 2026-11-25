@@ -6,7 +6,7 @@ import { fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Skills } from "./Skills";
 import { Tools } from "./Tools";
-import { renderAt, stubApi, teardown } from "./testing";
+import { renderAt, renderInLocale, stubApi, teardown } from "./testing";
 
 afterEach(teardown);
 
@@ -20,11 +20,13 @@ const row = (name: string, path: string, enabled: boolean): Row => ({ name, path
 const SCREENS = [
   {
     name: "Tools", ui: <Tools />, url: "/admin/tools", api: "/api/admin/tools",
+    languages: [["en", "Tools", "jira"], ["pl", "Narzędzia", "jira"]],
     rows: () => [row("jira_search", "tools/jira_search/is_enabled", false), row("jira_get", "tools/jira_get/is_enabled", true)],
     wire: (rows: Row[]) => [{ toolset: "jira", tools: rows }],
   },
   {
     name: "Skills", ui: <Skills />, url: "/admin/skills", api: "/api/admin/skills",
+    languages: [["en", "Skills", "Skills"], ["pl", "Umiejętności", "Umiejętności"]],
     rows: () => [row("pdf", "skill/pdf/is_enabled", false), row("xlsx", "skill/xlsx/is_enabled", true)],
     wire: (rows: Row[]) => rows,
   },
@@ -40,7 +42,7 @@ const pick = async (kind: "Workspace" | "Agent view", option: string) => {
   fireEvent.click(await screen.findByRole("option", { name: option }));
 };
 
-describe.each(SCREENS)("$name save contract", ({ ui, url, api, rows, wire }) => {
+describe.each(SCREENS)("$name save contract", ({ ui, url, api, rows, wire, languages }) => {
   const first = () => rows()[0].name;
   const second = () => rows()[1].name;
   const firstPath = () => rows()[0].path;
@@ -67,7 +69,7 @@ describe.each(SCREENS)("$name save contract", ({ ui, url, api, rows, wire }) => 
         [api]: (_b: unknown, u: URL) => {
           const search = u.search.slice(1);
           const answer = () => breaks.has(search)
-            ? new Response(JSON.stringify({ error: "Gone" }), { status: 400 })
+            ? new Response(JSON.stringify({ error: "server words" }), { status: 400 })
             : wire(of(search));
           const g = gate(`GET ${search}`);
           return g ? g.then(answer) : answer();
@@ -94,6 +96,33 @@ describe.each(SCREENS)("$name save contract", ({ ui, url, api, rows, wire }) => 
       enabled: (search: string, path: string) => of(search).find((r) => r.path === path)?.enabled,
     };
   };
+
+  it.each(languages)("shows the screen in %s", async (tag, title, group) => {
+    await stubApi(server().answers);
+    renderInLocale(tag, url, ui);
+    expect(await screen.findByRole("checkbox", { name: group })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+    expect(document.title).toBe(`${title} · Agento`);
+  });
+
+  it.each([
+    ["a known code", { error: "server words", code: "FORBIDDEN" }, "Nie masz uprawnień do tej operacji."],
+    ["no code", { error: "server words" }, "Nie udało się wczytać listy."],
+  ])("a list refused with %s shows Polish text, never the server's", async (_name, body, text) => {
+    await stubApi({ ...server().answers, [api]: () => new Response(JSON.stringify(body), { status: 403 }) });
+    renderInLocale("pl", url, ui);
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.queryByText(/server words/)).toBeNull();
+  });
+
+  it("marks a blocked and an inherited item in Polish", async () => {
+    const blocked = { ...rows()[0], enabled: true, explicit_here: false, blocked_by: "jira" };
+    const inherited = { ...rows()[1], enabled: true, explicit_here: false };
+    await stubApi({ ...server().answers, [api]: wire([blocked, inherited]) });
+    renderInLocale("pl", url, ui);
+    expect(await screen.findByText("Zablokowane")).toBeInTheDocument();
+    expect(screen.getByText("Odziedziczone")).toBeInTheDocument();
+  });
 
   it("reads the scope from the URL, so a reload keeps it", async () => {
     const api2 = await stubApi(server().answers);
@@ -230,7 +259,8 @@ describe.each(SCREENS)("$name save contract", ({ ui, url, api, rows, wire }) => 
     await vi.waitFor(() => expect(s.enabled(DEFAULT, firstPath())).toBe(true));
     // The write landed, the refresh did not. The screen cannot show what is stored, so the draft is
     // the only record of what the user did — it must survive until a refresh actually succeeds.
-    expect(await screen.findByText("Gone")).toBeInTheDocument();
+    expect(await screen.findByText("The list could not be loaded.")).toBeInTheDocument();
+    expect(screen.queryByText(/server words/)).toBeNull();
     // Someone else puts the value back before this screen could read it, so the next successful
     // refresh disagrees with the save — only a draft that was NOT cleared can still show the intent.
     s.set(DEFAULT, firstPath(), false);

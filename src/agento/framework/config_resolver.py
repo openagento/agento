@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -74,9 +75,12 @@ def read_config_defaults(module_path: Path) -> dict:
     """
     config_path = module_path / "config.json"
     try:
-        mtime = config_path.stat().st_mtime
+        status = config_path.stat()
     except OSError:
         return {}
+    if not stat.S_ISREG(status.st_mode):
+        return {}
+    mtime = status.st_mtime
 
     cached = _config_defaults_cache.get(config_path)
     if cached is not None and cached[0] == mtime:

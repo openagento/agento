@@ -245,7 +245,8 @@ A `select` or `multiselect` field declares exactly one of literal `options` or a
 |---|---|
 | `agent_harness_registry` | every installed harness ([harness-contract.md](../architecture/harness-contract.md#scoped-config)) |
 | `agent_harness_providers` | the providers of the harness named by `depends_on` |
-| `timezones` | `browser` ("Browser time zone"), then every IANA zone, sorted (`zoneinfo.available_timezones()`) |
+| `timezones` | `browser` ("Browser time zone", with `label_key: browser_timezone`, so the panel shows the message `panel:config.option.browser_timezone`; [i18n.md](../development/i18n.md#derived-keys)), then every IANA zone, sorted (`zoneinfo.available_timezones()`) |
+| `panel_languages` | every registered panel language, the tag as the value and the language's own name as the label ([i18n.md](../development/i18n.md#languages)) |
 
 ## `maxLength` on text fields
 

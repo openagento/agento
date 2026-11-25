@@ -1,0 +1,12 @@
+{
+  "module.title": "Administracja",
+  "config.locale/language.label": "Język",
+  "config.locale/language.description": "Domyślny język panelu. Użytkownik może ustawić inny język dla swojego konta.",
+  "config.locale/date_format.label": "Format daty",
+  "config.locale/date_format.description": "Sposób, w jaki panel pokazuje datę i godzinę.",
+  "config.locale/date_format.option.us": "USA — 10/5/2026, 8:23:44 AM",
+  "config.locale/date_format.option.eu": "Europejski — 5.10.2026, 8:23:44 AM",
+  "config.locale/date_format.option.iso": "ISO / MySQL — 2026-10-05 08:23:44",
+  "config.locale/timezone.label": "Strefa czasowa",
+  "config.locale/timezone.description": "Strefa czasowa, w której panel pokazuje godzinę. „Strefa czasowa przeglądarki” używa strefy przeglądarki każdego użytkownika."
+}

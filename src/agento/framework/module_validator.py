@@ -7,6 +7,7 @@ import re
 from collections.abc import Collection, Iterable
 from pathlib import Path
 
+from . import i18n
 from .access import acl
 from .config_validation import MAX_LENGTH_TYPES
 
@@ -626,6 +627,13 @@ def validate_module(module_dir: Path) -> list[str]:
     return errors
 
 
+def _discovered_dirs() -> dict[str, Path]:
+    from .bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
+    from .module_discovery import module_dirs_by_name
+
+    return dict(module_dirs_by_name(CORE_MODULES_DIR, USER_MODULES_DIR))
+
+
 def _acl_checks(module_dir: Path, manifest: dict,
                 dirs: dict[str, Path] | None) -> tuple[list[str], frozenset[str]]:
     """The module's ``acl.json`` errors, and the leaves its routes may name: its own, core,
@@ -638,10 +646,7 @@ def _acl_checks(module_dir: Path, manifest: dict,
     sequence = manifest.get("sequence", [])
     sequence = [s for s in sequence if isinstance(s, str)] if isinstance(sequence, list) else []
     if dirs is None:
-        from .bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
-        from .module_discovery import module_dirs_by_name
-
-        dirs = dict(module_dirs_by_name(CORE_MODULES_DIR, USER_MODULES_DIR))
+        dirs = _discovered_dirs()
     found = [(name, module_dir), *((s, dirs[s]) for s in sequence if s in dirs and s != name)]
     try:
         registry = acl.load(found)
@@ -867,6 +872,7 @@ def _validate_module(module_dir: Path, dirs: dict[str, Path] | None = None) -> t
     errors.extend(validate_job_type_grammar(job_type_declarations(module_dir, manifest)))
     acl_errors, acl_ids = _acl_checks(module_dir, manifest, dirs)
     errors.extend(acl_errors)
+    errors.extend(i18n.module_errors(module_dir, list((dirs if dirs is not None else _discovered_dirs()).values())))
     errors.extend(
         validate_route_grammar(module_dir.name, route_declarations(module_dir, manifest), acl_ids)
     )

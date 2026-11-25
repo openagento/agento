@@ -1,0 +1,4 @@
+{
+  "module.title": "Web",
+  "config.launch/max_concurrent.label": "Aktywne uruchomienia miniaplikacji na użytkownika (twardy limit 20; ponad limit najstarsze jest unieważniane)"
+}

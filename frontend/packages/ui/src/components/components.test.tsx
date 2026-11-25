@@ -306,8 +306,8 @@ describe("icon actions (RULES.md UI-7)", () => {
   });
 
   it("one menu holds the run details and the actions", async () => {
-    render(<RowMenu label="Conversation actions" actions={[{ label: "Archive", onClick: () => {} }]}
-      details={[{ label: "Harness", value: "codex · openai" }, { label: "Credential", value: "team-1" }]} />,
+    render(<RowMenu label="Conversation actions" actions={[{ id: "archive", label: "Archive", onClick: () => {} }]}
+      details={[{ id: "harness", label: "Harness", value: "codex · openai" }, { id: "credential", label: "Credential", value: "team-1" }]} />,
       { wrapper: AgentoUiProvider });
     fireEvent.click(screen.getByRole("button", { name: "Conversation actions" }));
     expect(await screen.findByRole("menuitem", { name: "Archive" })).toBeInTheDocument();
@@ -320,8 +320,8 @@ describe("ThreadList and MenuButton", () => {
   it("shows day groups that have threads; the open thread is aria-current", () => {
     const onSelect = vi.fn();
     render(<ThreadList groups={[
-      { label: "Today", threads: [{ id: 1, title: "First", active: true, onSelect }, { id: 2, title: "Second", onSelect }] },
-      { label: "Older", threads: [] },
+      { id: "today", label: "Today", threads: [{ id: 1, title: "First", active: true, onSelect }, { id: 2, title: "Second", onSelect }] },
+      { id: "older", label: "Older", threads: [] },
     ]} />, { wrapper: AgentoUiProvider });
     expect(screen.getByText("Today")).toBeInTheDocument();
     expect(screen.queryByText("Older")).toBeNull();
@@ -389,11 +389,38 @@ describe("AppLink", () => {
 describe("RowMenu", () => {
   it("opens from a 3-dots button named Actions and runs the item", async () => {
     const onClick = vi.fn();
-    render(<RowMenu actions={[{ label: "Open", onClick }, { label: "Delete", danger: true, onClick: () => {} }]} />,
+    render(<RowMenu actions={[{ id: "open", label: "Open", onClick }, { id: "delete", label: "Delete", danger: true, onClick: () => {} }]} />,
       { wrapper: AgentoUiProvider });
     fireEvent.click(screen.getByRole("button", { name: "Actions" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Open" }));
     expect(onClick).toHaveBeenCalledOnce();
+  });
+
+  it("keeps two actions and two details apart when their texts are equal", async () => {
+    const complaints = vi.spyOn(console, "error").mockImplementation(() => {});
+    const [first, second] = [vi.fn(), vi.fn()];
+    render(<RowMenu actions={[{ id: "open", label: "Same", onClick: first }, { id: "share", label: "Same", onClick: second }]}
+      details={[{ id: "harness", label: "Same", value: "a" }, { id: "model", label: "Same", value: "b" }]} />, { wrapper: AgentoUiProvider });
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    const items = await screen.findAllByRole("menuitem", { name: "Same" });
+    expect(items).toHaveLength(2);
+    fireEvent.click(items[1]);
+    expect([first.mock.calls.length, second.mock.calls.length]).toEqual([0, 1]);
+    expect(screen.getByText("a")).toBeInTheDocument();
+    expect(screen.getByText("b")).toBeInTheDocument();
+    expect(complaints).not.toHaveBeenCalled();
+    complaints.mockRestore();
+  });
+
+  it("two thread groups with one text are two groups", () => {
+    const complaints = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<ThreadList groups={[
+      { id: "today", label: "Same", threads: [{ id: 1, title: "First", onSelect: () => {} }] },
+      { id: "older", label: "Same", threads: [{ id: 2, title: "Second", onSelect: () => {} }] },
+    ]} />, { wrapper: AgentoUiProvider });
+    expect(screen.getAllByText("Same")).toHaveLength(2);
+    expect(complaints).not.toHaveBeenCalled();
+    complaints.mockRestore();
   });
 
   it("renders nothing when the row has no action", () => {
@@ -404,7 +431,7 @@ describe("RowMenu", () => {
 
 describe("ThreadList running dot", () => {
   it("marks a running conversation outside the hover-only actions", () => {
-    render(<ThreadList groups={[{ label: "Today", threads: [
+    render(<ThreadList groups={[{ id: "today", label: "Today", threads: [
       { id: 1, title: "Live one", live: true, onSelect: () => {} },
       { id: 2, title: "Quiet one", onSelect: () => {} }] }]} />, { wrapper: AgentoUiProvider });
     const dot = screen.getByLabelText("running");
@@ -545,7 +572,7 @@ describe("Pager", () => {
 
   it("says where it is, in locale numbers, and moves one page", () => {
     const onPage = pager(2, 1234);
-    expect(screen.getByText(`51–100 of ${(1234).toLocaleString()}`)).toBeInTheDocument();
+    expect(screen.getByText("51–100 of 1,234")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     fireEvent.click(screen.getByRole("button", { name: "Next page" }));
     expect(onPage.mock.calls).toEqual([[1], [3]]);

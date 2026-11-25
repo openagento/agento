@@ -1,0 +1,6 @@
+{
+  "module.title": "Podagent",
+  "config.allowed_agent_views.label": "Inne widoki agenta, do których ten zakres może delegować (kody oddzielone przecinkami; puste = tylko własny widok)",
+  "config.max_children_per_job.label": "Maks. liczba podagentów, które może uruchomić jeden agent (na zadanie na głębokości 0, głębiej na linię agenta)",
+  "config.wake_parent.label": "Wznów zadanie nadrzędne, gdy zakończą się wszystkie jego zadania podrzędne"
+}

@@ -3,19 +3,24 @@
 // one drops the leaves a search hides (Mantine Tree re-initializes it on every `data` change).
 import type { TreeNodeData } from "@mantine/core";
 
-export interface OperationResource { id: string; title: string; granted: boolean; inherited: boolean; builtin: boolean }
+export interface OperationResource { id: string; title: string; namespace?: string; granted: boolean; inherited: boolean; builtin: boolean }
 export interface ToolResource { name: string; enabled: boolean; granted: boolean; inherited: boolean }
 /** An admin panel leaf (global scope only); `builtin` for the admin role. */
 export interface AdminLeaf { id: string; title: string; granted: boolean; builtin: boolean }
 /** The API sends `admin` for the global scope and `operations` + `toolsets` for a place; the page fills the rest with []. */
 export interface RoleResources {
-  operations: OperationResource[]; toolsets: { toolset: string; tools: ToolResource[] }[]; admin: { screen: string; leaves: AdminLeaf[] }[];
+  operations: OperationResource[]; toolsets: { toolset: string; tools: ToolResource[] }[]; admin: { screen: string; namespace?: string; leaves: AdminLeaf[] }[];
 }
 
 /** What a leaf row shows beside its label: `id` dimmed, then the badges. */
 export interface LeafInfo { id?: string; off?: boolean; via?: boolean; builtin?: boolean }
 
 export type NodeState = "checked" | "indeterminate" | "none";
+
+export interface TreeTexts {
+  admin: string; operations: string; tools: string;
+  title: (namespace: string | undefined, key: string, serverTitle: string) => string;
+}
 
 const opValue = (id: string) => `op:${id}`;
 const toolValue = (name: string) => `tool:${name}`;
@@ -25,27 +30,30 @@ const leafOf = (value: string, label: string, info: LeafInfo): TreeNodeData => (
 
 /** A group whose own name matches keeps all its leaves; otherwise only the leaves that match.
  *  Groups left empty are dropped. */
-export function toTreeData(res: RoleResources, search: string): TreeNodeData[] {
+export function toTreeData(res: RoleResources, search: string, texts: TreeTexts): TreeNodeData[] {
   const q = search.trim().toLowerCase();
-  const hit = (...texts: string[]) => !q || texts.some((t) => t.toLowerCase().includes(q));
+  const hit = (...candidates: string[]) => !q || candidates.some((t) => t.toLowerCase().includes(q));
   const group = (value: string, label: string, children: TreeNodeData[]): TreeNodeData[] =>
     children.length ? [{ value, label, children }] : [];
 
-  const ops = hit("Operations") ? res.operations : res.operations.filter((o) => hit(o.title, o.id));
+  const operationTitle = (o: OperationResource) => texts.title(o.namespace, `acl.${o.id}`, o.title);
+  const ops = hit(texts.operations) ? res.operations : res.operations.filter((o) => hit(operationTitle(o), o.id));
   const toolsets = res.toolsets.flatMap((ts) => {
-    const tools = hit("Tools", ts.toolset) ? ts.tools : ts.tools.filter((t) => hit(t.name));
+    const tools = hit(texts.tools, ts.toolset) ? ts.tools : ts.tools.filter((t) => hit(t.name));
     return group(`grp:ts:${ts.toolset}`, ts.toolset, tools.map((t) =>
       leafOf(toolValue(t.name), t.name, { off: !t.enabled, via: t.inherited })));
   });
   const screens = res.admin.flatMap((s) => {
-    const leaves = hit("Admin", s.screen) ? s.leaves : s.leaves.filter((l) => hit(l.title, l.id));
-    return group(`grp:admin:${s.screen}`, s.screen, leaves.map((l) => leafOf(admValue(l.id), l.title, { id: l.id, builtin: l.builtin })));
+    const screen = s.leaves.length ? texts.title(s.namespace, `acl.screen.${s.leaves[0].id}`, s.screen) : s.screen;
+    const leafTitle = (l: AdminLeaf) => texts.title(s.namespace, `acl.${l.id}`, l.title);
+    const leaves = hit(texts.admin, screen) ? s.leaves : s.leaves.filter((l) => hit(leafTitle(l), l.id));
+    return group(`grp:admin:${s.screen}`, screen, leaves.map((l) => leafOf(admValue(l.id), leafTitle(l), { id: l.id, builtin: l.builtin })));
   });
   return [
-    ...group("grp:admin", "Admin", screens),
-    ...group("grp:ops", "Operations", ops.map((o) =>
-      leafOf(opValue(o.id), o.title, { id: o.id, via: o.inherited, builtin: o.builtin }))),
-    ...group("grp:tools", "Tools", toolsets),
+    ...group("grp:admin", texts.admin, screens),
+    ...group("grp:ops", texts.operations, ops.map((o) =>
+      leafOf(opValue(o.id), operationTitle(o), { id: o.id, via: o.inherited, builtin: o.builtin }))),
+    ...group("grp:tools", texts.tools, toolsets),
   ];
 }
 

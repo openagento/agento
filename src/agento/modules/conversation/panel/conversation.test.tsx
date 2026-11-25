@@ -1,8 +1,13 @@
 import { act, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
+import { Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { hub, queryClient as qc, type StreamEvent, type StreamHandlers } from "@agento/api";
-import { Providers as wrapper, stubApi, teardown } from "../../../../../frontend/panel/src/routes/admin/testing";
-import { Composer, Rail, View } from "./ConversationsPage";
+import { switchLanguage } from "../../../../../frontend/panel/src/catalogStore";
+import { SessionI18n } from "../../../../../frontend/panel/src/I18n";
+import {
+  Providers as wrapper, renderInLocale, servedCatalog, sessionLocale, stubApi, teardown,
+} from "../../../../../frontend/panel/src/routes/admin/testing";
+import ConversationsPage, { Composer, Rail, View } from "./ConversationsPage";
 import { IDLE_POLL_MS, RUN_POLL_MS, type Message } from "./model";
 import { MAX_EVENTS } from "./timeline";
 
@@ -423,7 +428,7 @@ describe("a reload held while the operator scrolls up again", () => {
     expect(screen.queryByText("m13")).toBeNull();
     // A later resume still resets to the newest page.
     net.setNewest([10, 11, 12, 13].map(user));
-    fireEvent.click(screen.getByRole("button", { name: /new events ↓/ }));
+    fireEvent.click(screen.getByRole("button", { name: /new events? ↓/ }));
     await screen.findByText("m13");
     expect(screen.queryByText("m8")).toBeNull();
   }
@@ -438,7 +443,7 @@ describe("a reload held while the operator scrolls up again", () => {
     fireEvent.scroll(box);
     act(() => { opened[0].handlers.onEvent(user(12)); });
     net.hold();
-    fireEvent.click(screen.getByRole("button", { name: "1 new events ↓" }));
+    fireEvent.click(screen.getByRole("button", { name: "1 new event ↓" }));
     await vi.waitFor(() => expect(net.held()).toBe(true));
     await scrollUpAndLoadOlder(box);
     await expectUnchanged(box, opened, net);
@@ -1142,5 +1147,119 @@ describe("staged uploads and the thread they belong to", () => {
     await act(async () => { settle[0](json({ upload_id: "u1" })); });
     expect(screen.getByText("second.pdf")).toBeInTheDocument();
     expect(screen.queryByText("first.pdf")).not.toBeInTheDocument();
+  });
+});
+
+describe("the conversation screen in two languages", () => {
+  const open = () => ({
+    "/api/agent-views": () => [{ id: 1, code: "ops", label: "Ops" }],
+    "/api/conversation/threads": () => [],
+    "/api/conversation/threads/5/timeline": () => page([ev("message.created", null, { message_id: 1, content: "hi" }, 1)]),
+    "/api/conversation/threads/5/messages": () => [{
+      id: 1, role: "user", content: "hi", client_message_id: null, job_id: 7, job_state: "pending", created_at: null,
+      blocked: false, blocked_reason: null,
+    }],
+    "/api/conversation/threads/5": () => thread(),
+  });
+
+  it.each([
+    ["en", "Conversation 5", "Ask the agent…", "New conversation", "Queued…", "Conversations · Agento"],
+    ["pl", "Rozmowa 5", "Zapytaj agenta…", "Nowa rozmowa", "W kolejce…", "Rozmowy · Agento"],
+  ])("shows the rail and the open conversation in %s and names the tab", async (tag, title, placeholder, create, queued, tab) => {
+    captureHub();
+    await stubApi(open(), []);
+    renderInLocale(tag, "/conversations/5", <Routes><Route path="/conversations/:threadId" element={<ConversationsPage />} /></Routes>);
+    expect(await screen.findByRole("heading", { name: title })).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveAttribute("placeholder", placeholder);
+    expect(screen.getByRole("button", { name: create })).toBeInTheDocument();
+    expect(screen.getByText(queued)).toBeInTheDocument();
+    expect(document.title).toBe(tab);
+  });
+
+  it.each([
+    ["MESSAGE_TOO_LARGE", "Wiadomość jest zbyt długa."],
+    ["A_CODE_FROM_TOMORROW", "Żądanie nie powiodło się."],
+  ])("a refused send (%s) says why in Polish, never in the server's words", async (code, text) => {
+    await stubApi({ "POST /api/conversation/threads/3/messages": () => json({ error: "server words", code }, 413) });
+    renderInLocale("pl", "/", <Composer threadId={3} busy={false} />);
+    const box = screen.getByRole("textbox");
+    fireEvent.change(box, { target: { value: "hello" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.queryByText(/server words/)).toBeNull();
+    expect(box).toHaveValue("hello");
+  });
+
+  it.each([
+    ["en", "Pick a conversation", "Conversations · Agento"],
+    ["pl", "Wybierz rozmowę", "Rozmowy · Agento"],
+  ])("asks for a pick in %s when no conversation is open", async (tag, pick, tab) => {
+    await stubApi(open(), []);
+    renderInLocale(tag, "/conversations", <Routes><Route path="/conversations" element={<ConversationsPage />} /></Routes>);
+    expect(await screen.findByText(pick)).toBeInTheDocument();
+    expect(document.title).toBe(tab);
+  });
+
+  it("a refused pin says the limit in Polish, with the number the server sent", async () => {
+    await stubApi({
+      ...open(),
+      "/api/conversation/threads": () => [{ ...thread(), id: 1, title: "Invoice mail", last_activity_at: new Date().toISOString(), live: false, pinned: false }],
+      "PATCH /api/conversation/threads/1": () => json({ error: "server words", code: "PIN_LIMIT", params: { max: 50 } }, 409),
+    }, []);
+    renderInLocale("pl", "/", <Rail current={null} close={() => {}} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Akcje rozmowy" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Przypnij" }));
+    expect(await screen.findByText("Liczba przypiętych rozmów nie może przekraczać 50.")).toBeInTheDocument();
+    expect(screen.queryByText(/server words/)).toBeNull();
+  });
+
+  it("a running tool and a failed run are said in Polish", async () => {
+    const opened = captureHub();
+    await stubApi(open(), []);
+    renderInLocale("pl", "/", <View threadId={5} />);
+    await screen.findByText("W kolejce…");
+    act(() => {
+      opened[0].handlers.onEvent(ev("run.started", "x", { job_id: 7, attempt: 3, max_attempts: 3 }, 2));
+      opened[0].handlers.onEvent(ev("tool.started", "x", { tool_name: "Bash", data: { call_id: "c1", input: JSON.stringify({ command: "ls -1" }) } }, 3));
+    });
+    expect(await screen.findByText("Uruchamianie ls -1…")).toBeInTheDocument();
+    act(() => { opened[0].handlers.onEvent(ev("job.failed", "x", { job_id: 7, attempt: 3, kind: "harness" }, 4)); });
+    expect(await screen.findByText("Agent nie mógł odpowiedzieć.")).toBeInTheDocument();
+    expect(screen.getByText("Uruchomienie nie powiodło się po 3 z 3 prób.")).toBeInTheDocument();
+  });
+});
+
+describe("a language change while a conversation is open", () => {
+  it("shows the new language and remounts nothing: the draft, the stream and the timeline stay", async () => {
+    const opened = captureHub();
+    const api = await stubApi({
+      "/api/conversation/threads/5/timeline": () => page([ev("message.created", null, { message_id: 1, content: "hi" }, 1)]),
+      "/api/conversation/threads/5/messages": () => [],
+      "/api/conversation/threads/5": () => thread(),
+      "/api/panel/i18n/pl": servedCatalog("pl"),
+      "PATCH /api/profile/locale": () => ({ ui_locale: "pl", locale: sessionLocale("pl") }),
+    }, [], { ui_locale: null, locale: sessionLocale("en") });
+    render(<SessionI18n><View threadId={5} /></SessionI18n>, { wrapper });
+    const box = await screen.findByRole("textbox");
+    expect(box).toHaveAttribute("placeholder", "Ask the agent…");
+    fireEvent.change(box, { target: { value: "half a sentence" } });
+    const timeline = screen.getByRole("region", { name: "Timeline" });
+    const said = screen.getByText("hi");
+    timeline.scrollTop = 40;
+    const close = vi.spyOn(hub, "close");
+
+    await act(() => switchLanguage("pl"));
+
+    expect(screen.getByRole("heading", { name: "Rozmowa 5" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toBe(box);
+    expect(box).toHaveAttribute("placeholder", "Zapytaj agenta…");
+    expect(box).toHaveValue("half a sentence");
+    expect(timeline.isConnected).toBe(true);
+    expect(timeline.scrollTop).toBe(40);
+    expect(said.isConnected).toBe(true);
+    expect(opened).toHaveLength(1);
+    expect(close).not.toHaveBeenCalled();
+    expect(api.calls("GET", "/api/conversation/threads/5/timeline")).toHaveLength(1);
+    expect(document.documentElement.lang).toBe("pl");
   });
 });

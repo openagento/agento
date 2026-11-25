@@ -1,0 +1,11 @@
+{
+  "module.title": "Monitor aplikacji",
+  "config.send_alert_on_mcp_issues.label": "Wyślij alert SMTP, gdy zadanie z rc=0 nie wykonało żadnego wywołania toolboxa ALBO CLI zgłosiło, że serwer MCP toolboxa nie jest połączony / nie istnieje (nieokreślony stan inicjalizacji „pending” nigdy nie wywołuje alertu)",
+  "config.alerts/email_to.label": "Odbiorca e-maili z alertami (puste = alerty wyłączone)",
+  "config.alerts/smtp_host.label": "Host SMTP (puste = alerty wyłączone)",
+  "config.alerts/smtp_port.label": "Port SMTP",
+  "config.alerts/smtp_user.label": "Użytkownik SMTP (puste = bez uwierzytelniania)",
+  "config.alerts/smtp_password.label": "Hasło SMTP",
+  "config.alerts/smtp_from.label": "Adres nadawcy SMTP (From)",
+  "config.alerts/smtp_tls.label": "Użyj STARTTLS"
+}

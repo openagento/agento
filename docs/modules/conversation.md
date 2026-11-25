@@ -118,6 +118,11 @@ Tool names, statuses and the fact of an error stay visible to everyone who reads
 
 ### Turns and sub-agents in the panel
 
+**Languages.** The screen texts are in `conversation/i18n/en.json` and `pl.json`, namespace
+`conversation`: the screen keys, `error.<CODE>` for each refusal code, the menu entry
+`nav./conversations` and the job link `joblink`. A staging refusal that `framework/uploads.py`
+makes (`UPLOAD_TOO_LARGE`, …) has its text in `panel` ([i18n.md](../development/i18n.md)).
+
 A conversation is one thread, and each job of the thread is one turn: a Jira issue that had
 seven rounds shows seven turns. A run with `depth > 0` (a sub-agent job) is not a turn. It is a
 collapsed card inside its parent's turn — "Sub-agent #id · view · harness · resumes #id" and

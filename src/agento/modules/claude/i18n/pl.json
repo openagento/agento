@@ -1,0 +1,6 @@
+{
+  "module.title": "Claude",
+  "config.settings.label": "Przekazywane ustawienia settings.json Claude Code (JSON)",
+  "config.settings.description": "Surowe ustawienia Claude Code, głęboko scalane z blokiem, który Agento generuje w .claude/settings.json (wygrywa operator). Przykłady: {\"permissions\":{\"deny\":[\"WebSearch\",\"WebFetch\"]}} blokuje wbudowane narzędzia sieciowe nawet z --dangerously-skip-permissions; {\"advisorModel\":\"fable\"} wybiera model dla /advisor. Niepoprawny JSON przerywa budowanie obszaru roboczego. Nigdy nie wpisuj tu poświadczenia: ta wartość jest przechowywana bez szyfrowania i zapisywana w kontenerze agenta.",
+  "limit.Week": "Tydzień"
+}

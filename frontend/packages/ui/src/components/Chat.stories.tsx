@@ -87,7 +87,7 @@ function Screen() {
   return (
     <SplitView navLabel="Conversations" nav={() => (
       <Rail top={<MenuButton label="New conversation" icon="new" variant="subtle" items={[{ value: "a", label: "Support" }]} onSelect={() => undefined} />}>
-        <ThreadList groups={[{ label: "Today", threads: [{ id: 1, title: "List the files", description: "Support", live: true, active: true, onSelect: () => undefined,
+        <ThreadList groups={[{ id: "today", label: "Today", threads: [{ id: 1, title: "List the files", description: "Support", live: true, active: true, onSelect: () => undefined,
           children: [{ id: "job-2", title: "Sub-agent #2", status: "succeeded", onSelect: () => undefined,
             children: [{ id: "job-3", title: "Sub-agent #3", status: "running", onSelect: () => undefined },
               { id: "job-4", title: "Sub-agent #4", status: "pending", onSelect: () => undefined }] }] },
@@ -96,7 +96,7 @@ function Screen() {
         ] }]} />
       </Rail>
     )}>
-      <ChatLayout title="List the files" actions={<RowMenu label="Conversation actions" details={[{ label: "Attempt", value: "1 of 3" }]} actions={[]} />}
+      <ChatLayout title="List the files" actions={<RowMenu label="Conversation actions" details={[{ id: "attempt", label: "Attempt", value: "1 of 3" }]} actions={[]} />}
         footer={<ChatComposer value={text} onChange={setText} onSend={() => setText("")} canSend hint="Enter sends." />}>
         <Turn />
       </ChatLayout>

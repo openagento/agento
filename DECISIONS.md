@@ -69,6 +69,130 @@ stubs a group of tools.
   independent observer: the panel, the resolution and the assessment read the catalog directly
   (EVT-1). The assessment is run metadata on the existing `execution` row.
 
+## 2026-11-24 — Panel languages: catalogs, account language, error codes (proposals)
+
+These four choices are **proposals**. They stay proposals until the owner approves them.
+
+- **No i18n library, on the server or in the panel (SEC-11, CODE-1).** A message is a text with
+  `{param}` holes or a plural object, and the browser's `Intl.PluralRules` and `Intl.NumberFormat`
+  select and format. The loader (`framework/i18n`) is JSON reads and three dict merges. A library
+  (i18next, FormatJS, Babel, gettext) adds a dependency and a second message grammar for what the
+  platform already does, and the panel's entry chunk has a 120 kB budget. Cost: no ICU `select`,
+  no nested plural, no date pattern in a message. Add a library when a real text needs one.
+- **Derived keys, not keys in the manifests (CODE-5).** A `system.json` label or an `acl.json`
+  title stays plain English text, and its key is computed (`config.<path>.label`, `acl.<id>`). The
+  other way, a `label_key` in each manifest, changes two manifest schemas, every module, and every
+  extension that exists, for no gain: the field path and the ACL id are already stable and
+  unique. Cost: a renamed field path loses its translation, as it loses its stored value.
+- **The account language backfill is a `setup:upgrade` step, not a data patch (D16, MOD-3).**
+  `backfill_ui_locale` gives each account with no language the instance language, after the SQL
+  migrations. That value depends on the enabled modules (the language registry) and on config. A
+  data patch is frozen and must not read either. The step is idempotent (`WHERE ui_locale IS
+  NULL`), does not run with `--dry-run`, and uses the same function as `create_user`
+  (`i18n.account_language`), so the two cannot disagree. A config read that fails stops the
+  upgrade; it does not store a guess.
+- **`GET /api/panel/bootstrap` reuses the `auth="login"` exemption.** The sign-in screen needs its
+  language before a session exists. The route is in `api.ROUTES`, and `route_rules` still refuses
+  `auth: "login"` and `acl: "anonymous"` in a manifest, so no module gets an open route. The answer
+  is a fixed list of keys (`i18n.LOGIN_KEYS`) and the language tag. The full catalog needs a
+  session, because it names the enabled modules and their config fields. A new `auth` value for
+  this one route was not chosen: one more auth mode is one more branch in the dispatcher to keep
+  correct.
+
+Also decided in the same change:
+
+- **Every refusal has a `code`, and the panel never shows the server's text.** The English `error`
+  text and each HTTP status are unchanged, so the CLI and API clients see no difference. A class
+  guard (`tests/unit/test_refusal_contract.py`) reads the source of every file that answers the
+  panel. The `scheduler` module's lower-case codes shipped before the contract and stay.
+- **`Sec12` owns the security headers; one route is revalidated.** `Sec12` sets
+  `Cache-Control: no-store`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`
+  on every answer, and drops a value that a handler gives for one of these names. The catalog
+  route needs `private, max-age=0` with its `ETag`, so there is one narrow exception: a route with
+  `Route.revalidates` gets that `Cache-Control` value on its 200 and 304 answers. `Sec12` writes
+  the value; the handler gives only the `ETag`. The flag is code-only, as `auth="login"`:
+  `routes_registry` never sets it from a manifest, and only `GET /api/panel/i18n/<tag>` has it.
+  Where each invariant is enforced (SEC-9): `nosniff` and `no-referrer` on every answer, and
+  `no-store` on every answer but the catalog's 200 and 304, in `server._secured`; a refusal of the
+  catalog route (401, 404, 429, 503) is `no-store` by the status check in `RegexRoute.handle`.
+  `test_no_handler_header_replaces_a_security_header` and
+  `test_only_the_catalog_route_is_revalidated_and_no_manifest_can_declare_it` guard both.
+- **The anonymous bootstrap has its own version.** `version` of `GET /api/panel/bootstrap` is the
+  hash of the sign-in texts it answers, not the version of the whole catalog. The catalog version
+  changes with every private module text and override, so it told a caller with no session that
+  two deployments differ in what they have installed (SEC-7).
+- **`display: null` no longer means the browser's locale.** The 2026-10-05 entry says that with
+  `admin` disabled the panel falls back to `toLocaleString()`. Since the panel has a language, it
+  uses the shipped display settings there: the date format follows the active panel language, and
+  the time zone is the browser's.
+- **A 304 has no `Content-Length`.** `web` sent `Content-Length: 0` on the catalog's 304; a length
+  on a 304 must equal that of the 200 answer (RFC 9110 §8.6), so `server._write` sends none.
+- **The limiter's 503 is a coded refusal.** A limiter that cannot count answers
+  `{"error": "service unavailable", "code": "SERVICE_UNAVAILABLE"}` through `api.error`, on every
+  path, where it sent a plain-text body before. The status is unchanged.
+- **A translation with no English source in JSON takes no `{param}`.** The English text of
+  `nav.<route path>`, `joblink` and `limit.<label>` is in the panel descriptor or in the harness
+  code, and the panel gives these keys no params. The rule has no list of key families: a key
+  with no English source is checked against a source with no hole (`i18n.translation_error`, one
+  function for `module:validate` and for the loader). A new derived family is closed by default.
+- **The catalog snapshot opens only regular files.** `web` composes the snapshot at start from
+  `module.json`, its companion manifests and the owner module's `config.json`, not only from
+  catalog files. `module_loader` (`module.json`, `_read_json`) and
+  `config_resolver.read_config_defaults` now skip a path that is not a regular file, as the
+  catalog reader does: a named pipe there made `web` wait with no end before sign-in.
+- **One reader for every file of the catalog loader and validator, with containment.** A file
+  that `i18n.json` names was checked for containment; `i18n.json` itself, `system.json` and
+  `acl.json` were opened at fixed names with no check, so a link at one of those names served
+  text from outside the module (SEC-5). `i18n._json(root, relative)` is now the only reader: it
+  resolves the module directory first (a linked `app/code/<name>` or a PyPI package directory is
+  the module directory), then the file, and reads only a regular file inside that directory.
+- **The session's display settings read no file.** `display_settings()` read module status, the
+  module schemas and `config.json` for each session answer. `web` now reads the options and the
+  file defaults of the two fields once at start (`api.display_schema`, installed beside the
+  catalogs) and reads ENV and the default-scope rows per request. Enablement of `admin` is still
+  read per request from `app/etc/modules.json` (2026-10-05, "as for `miniapps`"): a first form
+  put it in the start snapshot and was withdrawn, because `module:disable` of a core module does
+  not restart `web` by itself. `modules.json` is not a module file.
+- **One enablement rule for the catalogs.** `web` gates routes and ACL by the directory name and
+  `bootstrap` gates modules by the manifest name; both are base behaviour and stay. For texts and
+  languages, `web` and a CLI process call one function, `i18n.enabled_manifests`: a module that
+  `modules.json` disables by either name gives none. So no process stores a language that
+  another does not serve.
+- **A language save may name the catalog version, in `If-Match`.** The body of
+  `PATCH /api/profile/locale` is exactly `{"ui_locale"}` (plan §3.4, PRD §5); a first form with
+  `version` in the body was withdrawn. The header holds the catalog ETag; when it is not the served
+  ETag of the language the account will show, the answer
+  is 409 `CATALOG_CHANGED` and nothing is written. A `web` restart between the catalog GET and the
+  save no longer leaves the account on texts the screen does not hold.
+- **The scheduler's `_refuse` calls `api.error`.** It built its own body, and the refusal guard
+  named it as a second serializer. Its lower-case codes, statuses and texts are the same.
+- **The module name is the namespace, from one function.** The framework has two module identities:
+  the directory name (routes, ACL, `module_dirs_by_name`) and the manifest `name` (`ModuleManifest`,
+  enablement, the config schema). The catalog loader used the second and the validator the first.
+  `i18n.module_name` (manifest `name`, else the directory name) now serves both and the derived
+  `module.title`. A validator rule "the name must equal the directory" was not added: no other
+  part of the framework has it, and it would refuse modules that are valid today. The Roles
+  answer maps the ACL owner (a directory name) to the namespace with `Catalogs.namespaces`; the
+  ACL ids are not changed.
+- **The start snapshots read the `admin` files with the contained reader and check the defaults.**
+  `read_config_defaults` follows a link out of the module and does no schema check. That is correct
+  for the config resolver, which checks at the point of use, so it is not changed. A default the
+  schema does not allow is dropped with a log line that shows no value.
+- **No base reader fails more open than before.** `read_module_status` is the base text again: a
+  present `modules.json` that is not a JSON object stops the composition, as on the base. A first
+  form turned it into "all enabled". `module_loader._read_json` again raises for JSON nested too
+  deep and for bytes that are not UTF-8. The one change kept in the base readers is `is_file()`
+  before a read, so a pipe is not opened.
+- **The contained reader has three states: absent, unusable, data.** An entry that is present but
+  is not a regular file inside the module is one `i18n skip` log line in the loader, for every
+  file it reads. `module:validate` has an error only for `i18n.json` and the files it names. It
+  has none for `module.json`, `system.json`, `acl.json` and `config.json`: the base readers
+  accept a link out of the module, and an error would fail `setup:upgrade` for a deployment that
+  works on the base (CODE-5).
+- **`api.error` has an `extra` slot.** A scheduler upload refusal keeps its shipped code `upload`
+  and adds `reason` (the `UploadError` code) and `params`, so the panel can show the cause and the
+  limit. A second code vocabulary for the scheduler was not added.
+
 ---
 
 ## 2026-11-23 — Jobs grid: search and sort in SQL, a narrow search index

@@ -1,7 +1,7 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Config } from "./Config";
-import { renderAt, stubApi, teardown } from "./testing";
+import { renderAt, renderInLocale, stubApi, teardown } from "./testing";
 
 const field = (over: object) => ({
   path: "jira/url", label: "URL", description: "", type: "string", source: "db", editable: true,
@@ -18,9 +18,9 @@ const base = {
   "/api/admin/config/modules": [{ name: "jira", tools: ["jira_search"] }, { name: "smtp", tools: [] }],
   "/api/admin/config": FIELDS,
 };
-const editOf = (label: string) => {
+const editOf = (label: string, edit = "Edit") => {
   const row = screen.getByText(label).closest("tr")!;
-  fireEvent.click(within(row).getByRole("button", { name: "Edit" }));
+  fireEvent.click(within(row).getByRole("button", { name: edit }));
 };
 afterEach(teardown);
 
@@ -93,6 +93,21 @@ describe("Config", () => {
     expect(within(dialog).getByRole("combobox", { name: "Value" })).not.toHaveAttribute("readonly");
   });
 
+  it("shows the fixed option of a time zone list in Polish, and an IANA name as it is", async () => {
+    const zones = [{ value: "browser", label: "Browser time zone", label_key: "browser_timezone" }, { value: "Europe/Warsaw", label: "Europe/Warsaw" }];
+    await stubApi({ ...base, "/api/admin/config": [field({ path: "admin/locale/timezone", label: "Time zone", type: "select",
+      options: zones, value: "browser" })] });
+    renderInLocale("pl", "/admin/config", <Config />);
+    await screen.findByText("Strefa czasowa");
+    fireEvent.click(screen.getByRole("button", { name: "Edytuj" }));
+    const dialog = await screen.findByRole("dialog");
+    const select = within(dialog).getByRole("combobox", { name: "Wartość" });
+    expect(select).toHaveValue("Strefa czasowa przeglądarki");
+    fireEvent.click(select);
+    expect(await screen.findByRole("option", { name: "Europe/Warsaw", hidden: true })).toBeInTheDocument();
+    expect(screen.queryByText("Browser time zone")).toBeNull();
+  });
+
   it("Remove override asks first, then DELETEs the path at the scope", async () => {
     const api = await stubApi({ ...base, "DELETE /api/admin/config": null });
     renderAt("/admin/config", <Config />);
@@ -118,6 +133,20 @@ describe("Config", () => {
     expect(await within(screen.getByRole("dialog")).findByText(/Last test:/)).toBeInTheDocument();
   });
 
+  it.each([
+    ["en", "TOOLBOX_UNREACHABLE", "Edit", "Test", "The toolbox is not reachable."],
+    ["pl", "TOOLBOX_UNREACHABLE", "Edytuj", "Testuj", "Toolbox jest nieosiągalny."],
+    ["pl", "A_CODE_NO_CATALOG_HOLDS", "Edytuj", "Testuj", "Test nie mógł sprawdzić tej wartości. Szczegóły pokaże polecenie bin/agento config:test."],
+  ])("an error result reads its text by code in %s (%s), never the server's words", async (tag, code, edit, run, text) => {
+    await stubApi({ ...base, "POST /api/admin/config/test": { status: "error", code, message: "server words" } });
+    renderInLocale(tag, "/admin/config", <Config />);
+    await screen.findByText("Token");
+    editOf("Token", edit);
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: run }));
+    expect((await screen.findAllByText(text, { exact: false })).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/server words/)).not.toBeInTheDocument();
+  });
+
   it("a local tester (the model check) has a Test button and its result shows like any other", async () => {
     const model = field({ path: "agent_view/model", label: "Model", value: "gpt-5", tester: "local" });
     const api = await stubApi({ ...base, "/api/admin/config": [model],
@@ -129,5 +158,70 @@ describe("Config", () => {
     await vi.waitFor(() => expect(api.calls("POST", "/api/admin/config/test")).toHaveLength(1));
     expect(api.calls("POST", "/api/admin/config/test")[0].body).toEqual({ path: "agent_view/model", scope: "default", scope_id: 0 });
     expect(await within(screen.getByRole("dialog")).findByText(/in the account's model list/)).toBeInTheDocument();
+  });
+
+  it.each([
+    ["en", "Config", "Modules", "Field", "Edit", "Config · Agento"],
+    ["pl", "Konfiguracja", "Moduły", "Pole", "Edytuj", "Konfiguracja · Agento"],
+  ])("shows the screen in %s and names the tab", async (tag, title, modules, column, edit, tab) => {
+    await stubApi(base);
+    renderInLocale(tag, "/admin/config", <Config />);
+    expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+    expect(await screen.findByRole("navigation", { name: modules })).toBeInTheDocument();
+    expect(await screen.findByRole("columnheader", { name: column })).toBeInTheDocument();
+    expect(within((await screen.findByText("URL")).closest("tr")!).getByRole("button", { name: edit })).toBeInTheDocument();
+    expect(document.title).toBe(tab);
+  });
+
+  it("a field, its options and a module show their catalog text, and the manifest text where the catalog has none", async () => {
+    const options = [{ value: "cloud", label: "Cloud" }, { value: "server", label: "Server" }];
+    await stubApi({ ...base, "/api/admin/config": [
+      field({ description: "The site address" }),
+      field({ path: "jira/tools/jira_search/limit", label: "Limit", description: "Rows per search" }),
+      field({ path: "jira/kind", label: "Kind", type: "select", options, value: "cloud" }),
+    ] });
+    renderInLocale("pl", "/admin/config", <Config />, { jira: {
+      "module.title": "Dżira",
+      "config.url.label": "Adres", "config.url.description": "Adres witryny",
+      "config.kind.label": "Rodzaj", "config.kind.option.cloud": "Chmura",
+    } });
+    expect(await screen.findByText("Adres")).toBeInTheDocument();
+    expect(screen.getByText("Dżira")).toBeInTheDocument();
+    expect(screen.getByText("Smtp")).toBeInTheDocument();
+    expect(screen.queryByText("URL")).toBeNull();
+    expect(screen.getByText("Limit")).toBeInTheDocument();
+
+    editOf("Adres", "Edytuj");
+    expect(within(await screen.findByRole("dialog")).getByText("Adres witryny")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Anuluj" }));
+
+    editOf("Rodzaj", "Edytuj");
+    const dialog = await screen.findByRole("dialog", { name: /Rodzaj/ });
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Wartość" }));
+    expect(await screen.findByRole("option", { name: "Chmura", hidden: true })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Server", hidden: true })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["a known code", { error: "server words", code: "FORBIDDEN" }, "Zapisano 0 z 1. jira/url: Nie masz uprawnień do tej operacji."],
+    ["a code the panel does not know", { error: "server words", code: "BRAND_NEW_CODE" }, "Zapisano 0 z 1. jira/url: Żądanie nie powiodło się."],
+    ["no code", { error: "server words" }, "Zapisano 0 z 1. jira/url: Żądanie nie powiodło się."],
+  ])("a refused save with %s shows Polish text, never the server's", async (_name, body, text) => {
+    await stubApi({ ...base, "PUT /api/admin/config": () => new Response(JSON.stringify(body), { status: 403 }) });
+    renderInLocale("pl", "/admin/config", <Config />);
+    await screen.findByText("URL");
+    editOf("URL", "Edytuj");
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByRole("textbox", { name: "Wartość" }), { target: { value: "https://y" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Zapisz" }));
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.queryByText(/server words/)).toBeNull();
+  });
+
+  it("a list that cannot be read shows the screen's Polish text", async () => {
+    await stubApi({ ...base, "/api/admin/config": () => new Response(JSON.stringify({ error: "server words" }), { status: 403 }) });
+    renderInLocale("pl", "/admin/config", <Config />);
+    expect(await screen.findByText("Nie udało się wczytać konfiguracji.")).toBeInTheDocument();
+    expect(screen.queryByText(/server words/)).toBeNull();
   });
 });

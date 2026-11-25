@@ -183,7 +183,7 @@ def open_stream(req):
                                user=req.session.user)
     if row is None:
         from agento.web.api import error
-        return error(404, "not found")
+        return error(404, "not found", code="NOT_FOUND")
     # The header WINS whenever the client sent one, even when it is garbled: a resume the
     # browser mangled is "no cursor" (live), never a silent fall-through to `?after`, which
     # on `?after=0` would replay the whole thread to a client that only meant to resume.

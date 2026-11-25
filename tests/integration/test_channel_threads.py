@@ -376,7 +376,7 @@ def test_a_reply_is_refused_when_the_thread_has_nothing_to_reply_to(conn, world)
 
     sent = _reply(conn, world["admin"], cid)
 
-    assert (sent.status, sent.body) == (409, {"error": "read_only"})
+    assert (sent.status, sent.body) == (409, {"error": "read_only", "code": "CONVERSATION_READ_ONLY"})
 
 
 def test_a_repeated_reply_yields_one_job_and_one_message(conn, world):
@@ -599,7 +599,7 @@ def test_a_bare_before_whose_event_is_gone_is_409_and_never_a_guess(conn, world)
     pair = _page(conn, world["owner"], cid, before=str(held["id"]),
                  before_at=held["created_at"])
 
-    assert (bare.status, bare.body) == (409, {"error": "cursor_expired"})
+    assert (bare.status, bare.body) == (409, {"error": "cursor_expired", "code": "CURSOR_EXPIRED"})
     assert [e["id"] for e in pair["events"]] == ids[:1]
 
 

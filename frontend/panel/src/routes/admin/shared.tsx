@@ -4,9 +4,8 @@ import type { ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { Box } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { apiFetch, ApiError, refreshDisplay, useMutation, useQueryClient } from "@agento/api";
-
-export const message = (e: unknown) => (e instanceof ApiError ? e.message : "The request failed.");
+import { apiFetch, refreshDisplay, useErrorText, useMutation, useQueryClient } from "@agento/api";
+import { useT } from "@agento/ui";
 
 export type ScopeKind = "default" | "workspace" | "agent_view";
 export interface Scope { scope: ScopeKind; scopeId: number }
@@ -21,7 +20,7 @@ export function useScope(): Scope & { ready: boolean; query: string } {
   return { scope, scopeId, ready: scope === "default" || scopeId > 0, query: `scope=${scope}&scope_id=${scopeId}` };
 }
 
-/** Some writes of a batch failed; the text names each one, built only from `message()`. */
+/** Some writes of a batch failed; the text names each one, built only from local texts. */
 class WriteError extends Error {}
 
 /** `PUT /api/admin/config`: one value at one scope. A repaired dependent is named in `reset`.
@@ -31,6 +30,8 @@ class WriteError extends Error {}
 export function useConfigWrite(invalidate: string) {
   const qc = useQueryClient();
   const { scope, scopeId } = useScope();
+  const t = useT("panel");
+  const errorText = useErrorText("panel");
   const write = useMutation({
     // allSettled, not all: the list refreshes and the toggles unlock only after every write is done.
     mutationFn: async ({ writes, scope, scopeId }: { writes: { path: string; value: string }[]; scope: string; scopeId: number }) => {
@@ -38,18 +39,22 @@ export function useConfigWrite(invalidate: string) {
         apiFetch<{ path: string; reset: string[] }>("/api/admin/config", {
           method: "PUT", json: { path: w.path, value: w.value, scope, scope_id: scopeId },
         })));
-      const failed = settled.flatMap((r, i) => r.status === "rejected" ? [`${writes[i].path}: ${message(r.reason)}`] : []);
+      const failed = settled.flatMap((r, i) => r.status === "rejected" ? [`${writes[i].path}: ${errorText(r.reason, "error.generic")}`] : []);
       if (failed.length) {
-        throw new WriteError(`Saved ${writes.length - failed.length} of ${writes.length}. ${failed.join("; ")}`);
+        throw new WriteError(t("config.partly_saved", {
+          saved: writes.length - failed.length, total: writes.length, failures: failed.join("; "),
+        }));
       }
       return settled.map((r) => (r as PromiseFulfilledResult<{ path: string; reset: string[] }>).value);
     },
     onSuccess: (results) => {
       const reset = results.flatMap((r) => r.reset ?? []);
-      notifications.show({ message: results.length === 1 ? `Saved ${results[0].path}.` : `Saved ${results.length} values.` });
-      if (reset.length) notifications.show({ color: "yellow", message: `Also reset: ${reset.join(", ")}` });
+      const onlyResult = results.length === 1 ? results[0] : null;
+      notifications.show({ message: onlyResult
+        ? t("config.saved_path", { path: onlyResult.path }) : t("config.saved_values", { count: results.length }) });
+      if (reset.length) notifications.show({ color: "yellow", message: t("config.also_reset", { paths: reset.join(", ") }) });
     },
-    onError: (e) => notifications.show({ color: "red", message: e instanceof WriteError ? e.message : message(e) }),
+    onError: (e) => notifications.show({ color: "red", message: e instanceof WriteError ? e.message : errorText(e, "error.generic") }),
     // Any write may be an `admin/locale/*` field: the session re-reads its display settings.
     onSettled: () => { void qc.invalidateQueries({ queryKey: [invalidate] }); void refreshDisplay(); },
   });
@@ -69,9 +74,6 @@ export interface JobRow extends JobHead {
   source: string; agent_type: string | null; started_at: string | null;
   input_tokens: number | null; output_tokens: number | null; error_class: string | null;
 }
-
-/** `credential.error_msg` never reaches the browser (SEC-6): the panel names where to read it. */
-export const CREDENTIAL_ERROR_HINT = "See the message with bin/agento credential:list.";
 
 /** A badge in a table cell, kept whole: auto layout would cut it to "S…". The badge itself stays
  * equal to its kit twin (UI-2); the cell keeps it whole. */

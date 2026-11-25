@@ -1,18 +1,20 @@
 import { useCallback } from "react";
-import { PageHeader } from "@agento/ui";
+import { PageHeader, useT } from "@agento/ui";
 import type { EnablementItem, Groups } from "../enablementTree";
 import { EnablementTree } from "./EnablementTree";
 import { ScopePicker } from "./ScopePicker";
 
 export function Skills() {
+  const t = useT("panel");
+  const title = t("skills.title");
   const groupsOf = useCallback((data: EnablementItem[]): Groups =>
-    data.length ? [{ group: "Skills", items: data }] : [], []);
+    data.length ? [{ group: "skills", label: title, items: data }] : [], [title]);
   return (
     <div className="ag-stack">
-      <PageHeader title="Skills" description="Which skills an agent gets. A skill is off unless it is enabled." />
+      <PageHeader title={title} description={t("skills.description")} />
       <ScopePicker />
       <EnablementTree listKey="admin-skills" url="/api/admin/skills" groupsOf={groupsOf}
-        emptyTitle="No skills" emptyText="No enabled module declares a skill." />
+        emptyTitle={t("skills.empty.title")} emptyText={t("skills.empty.text")} />
     </div>
   );
 }

@@ -323,11 +323,13 @@ def _in_transaction(conn, work):
 def _label_names(name: object) -> tuple[str, str]:
     """``(display name, name_norm)``: NFKC, casefold, trimmed, inner whitespace collapsed."""
     if not isinstance(name, str):
-        raise AccessError(f"label name must have 1 to {LABEL_NAME_MAX} characters")
+        raise AccessError(f"label name must have 1 to {LABEL_NAME_MAX} characters", code="LABEL_NAME_INVALID",
+                          params={"max": LABEL_NAME_MAX})
     display = " ".join(name.split())
     norm = " ".join(unicodedata.normalize("NFKC", name).casefold().split())
     if not display or len(display) > LABEL_NAME_MAX or len(norm) > LABEL_NAME_MAX:
-        raise AccessError(f"label name must have 1 to {LABEL_NAME_MAX} characters")
+        raise AccessError(f"label name must have 1 to {LABEL_NAME_MAX} characters", code="LABEL_NAME_INVALID",
+                          params={"max": LABEL_NAME_MAX})
     return display, norm
 
 
@@ -349,10 +351,10 @@ def _insert_label(cur, name: object, *, reuse: bool) -> dict:
     if existing:
         if reuse:
             return _label_json(existing)
-        raise CatalogConflict("a label with this name already exists")
+        raise CatalogConflict("a label with this name already exists", code="LABEL_NAME_TAKEN")
     cur.execute("SELECT COUNT(*) AS n FROM tool_label")
     if cur.fetchone()["n"] >= MAX_LABELS:
-        raise AccessError(f"there can be at most {MAX_LABELS} labels")
+        raise AccessError(f"there can be at most {MAX_LABELS} labels", code="LABEL_LIMIT", params={"max": MAX_LABELS})
     stem = _key_stem(norm)
     cur.execute("SELECT label_key FROM tool_label WHERE label_key = %s OR label_key LIKE %s", (stem, f"{stem}-%"))
     taken = {r["label_key"] for r in cur.fetchall()}
@@ -360,7 +362,7 @@ def _insert_label(cur, name: object, *, reuse: bool) -> dict:
     try:
         cur.execute("INSERT INTO tool_label (label_key, name, name_norm) VALUES (%s, %s, %s)", (key, display, norm))
     except pymysql.err.IntegrityError:
-        raise CatalogConflict("a label with this name already exists") from None
+        raise CatalogConflict("a label with this name already exists", code="LABEL_NAME_TAKEN") from None
     return {"id": cur.lastrowid, "key": key, "name": display, "protected": False, "usage": 0}
 
 
@@ -400,9 +402,9 @@ def _lock_custom_label(cur, label_id: int) -> None:
     cur.execute("SELECT id, is_protected FROM tool_label WHERE id = %s FOR UPDATE", (label_id,))
     row = cur.fetchone()
     if not row:
-        raise AccessError("label not found")
+        raise AccessError("label not found", code="LABEL_NOT_FOUND")
     if row["is_protected"]:
-        raise AccessError("a built-in label cannot be renamed or deleted")
+        raise AccessError("a built-in label cannot be renamed or deleted", code="LABEL_BUILTIN")
 
 
 def rename_label(conn, label_id: int, name: str) -> dict:
@@ -413,11 +415,11 @@ def rename_label(conn, label_id: int, name: str) -> dict:
         _lock_custom_label(cur, label_id)
         cur.execute("SELECT id FROM tool_label WHERE name_norm = %s AND id <> %s", (norm, label_id))
         if cur.fetchone():
-            raise CatalogConflict("a label with this name already exists")
+            raise CatalogConflict("a label with this name already exists", code="LABEL_NAME_TAKEN")
         try:
             cur.execute("UPDATE tool_label SET name = %s, name_norm = %s WHERE id = %s", (display, norm, label_id))
         except pymysql.err.IntegrityError:
-            raise CatalogConflict("a label with this name already exists") from None
+            raise CatalogConflict("a label with this name already exists", code="LABEL_NAME_TAKEN") from None
 
     _in_transaction(conn, work)
     return next(label for label in list_labels(conn) if label["id"] == label_id)
@@ -441,10 +443,10 @@ def classify_tool(conn, tool_id: int, *, revision: int, labels: Iterable[str], n
     than the row's is a conflict. Returns ``{id, source, labels, reviewed, revision}``.
     """
     if review not in _REVIEW_SQL:
-        raise AccessError("review must be reviewed, to_review or null")
+        raise AccessError("review must be reviewed, to_review or null", code="INVALID_REQUEST")
     wanted = set(labels)
     if len(wanted) > MAX_LABELS:
-        raise AccessError(f"there can be at most {MAX_LABELS} labels")
+        raise AccessError(f"there can be at most {MAX_LABELS} labels", code="LABEL_LIMIT", params={"max": MAX_LABELS})
 
     def work(cur):
         cur.execute(
@@ -453,9 +455,9 @@ def classify_tool(conn, tool_id: int, *, revision: int, labels: Iterable[str], n
         )
         tool = cur.fetchone()
         if not tool:
-            raise AccessError("tool not found")
+            raise AccessError("tool not found", code="TOOL_NOT_FOUND")
         if tool["revision"] != revision:
-            raise CatalogConflict("the tool was changed since it was read; reload it")
+            raise CatalogConflict("the tool was changed since it was read; reload it", code="TOOL_CHANGED")
         if new_label is not None:
             wanted.add(_insert_label(cur, new_label, reuse=True)["key"])
         defaults = _labels_of(tool["default_labels"])
@@ -470,7 +472,8 @@ def classify_tool(conn, tool_id: int, *, revision: int, labels: Iterable[str], n
                 ids = {r["label_key"]: r["id"] for r in cur.fetchall()}
                 unknown = sorted(set(changed) - ids.keys())
             if unknown:
-                raise AccessError(f"unknown label: {', '.join(unknown)}")
+                raise AccessError(f"unknown label: {', '.join(unknown)}", code="LABEL_UNKNOWN",
+                                  params={"labels": ", ".join(unknown)})
         cur.execute("DELETE FROM tool_label_assignment WHERE tool_id = %s", (tool_id,))
         if changed:
             cur.executemany("INSERT INTO tool_label_assignment (tool_id, label_id, mode) VALUES (%s, %s, %s)",

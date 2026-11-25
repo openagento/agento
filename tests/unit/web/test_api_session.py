@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 import httpx
 import pytest
 
 from agento.framework.access import accounts, sessions
+from agento.framework.bootstrap import CORE_MODULES_DIR
+from agento.framework.module_loader import parse_module_dir
 from agento.web import api, server
+from tests.module_writer import write_module
 
 from .conftest import APPS, TOKEN, a_session, panel_headers, sign_in_as
 
@@ -54,7 +59,7 @@ def test_bad_credentials_get_one_body(web, auth):
     wrong = _login(web, password="wrong password!!")
     unknown = _login(web, username="nobody")
     assert wrong.status_code == unknown.status_code == 401
-    assert wrong.json() == unknown.json() == {"error": "invalid credentials"}
+    assert wrong.json() == unknown.json() == {"error": "invalid credentials", "code": "AUTH_INVALID_CREDENTIALS"}
 
 
 def test_username_outside_the_grammar_is_not_queried_nor_throttled(web, auth):
@@ -138,22 +143,22 @@ def test_access_log_has_no_password_or_cookie(web, auth, capfd):
     assert "wrong password" not in err and TOKEN not in err and "x=1" not in err
 
 
+ADMIN_MODULE = parse_module_dir(Path(CORE_MODULES_DIR) / "admin")
+
+
 @pytest.fixture
-def config_rows(monkeypatch):
+def config_rows(monkeypatch, tmp_path):
     """`core_config_data` rows at the default scope, as {path: value}; no database."""
+    monkeypatch.chdir(tmp_path)
     from agento.framework import scoped_config
-    from agento.framework.admin import data
 
     rows: dict[str, str] = {}
-    monkeypatch.setattr(scoped_config, "build_scoped_overrides",
-                        lambda conn, **kw: {p: (v, False) for p, v in rows.items()})
     monkeypatch.setattr(scoped_config, "load_scoped_db_overrides",
                         lambda conn, scope, scope_id, **kw: {p: (v, False) for p, v in rows.items()})
     for name in ("CONFIG__ADMIN__LOCALE__DATE_FORMAT", "CONFIG__ADMIN__LOCALE__TIMEZONE"):
         monkeypatch.delenv(name, raising=False)
-    data.clear_module_schema_cache()
-    yield rows
-    data.clear_module_schema_cache()
+    monkeypatch.setattr(api, "_DISPLAY", api.display_schema([ADMIN_MODULE]))
+    return rows
 
 
 def _display(web):
@@ -163,35 +168,61 @@ def _display(web):
 
 
 def test_session_display_defaults_come_from_the_admin_config_json(web, signed_in, config_rows):
-    assert _display(web) == {"date_format": "us", "timezone": "browser"}
+    assert _display(web) == {"date_format": "us", "timezone": "browser", "date_format_explicit": False}
 
 
 def test_session_display_reads_the_default_scope_db_value(web, signed_in, config_rows):
     config_rows.update({"admin/locale/date_format": "eu", "admin/locale/timezone": "Europe/Warsaw"})
-    assert _display(web) == {"date_format": "eu", "timezone": "Europe/Warsaw"}
+    assert _display(web) == {"date_format": "eu", "timezone": "Europe/Warsaw", "date_format_explicit": True}
 
 
 def test_session_display_env_wins_over_db(web, signed_in, config_rows, monkeypatch):
     config_rows["admin/locale/date_format"] = "eu"
     monkeypatch.setenv("CONFIG__ADMIN__LOCALE__DATE_FORMAT", "iso")
-    assert _display(web)["date_format"] == "iso"
+    display = _display(web)
+    assert (display["date_format"], display["date_format_explicit"]) == ("iso", True)
 
 
 def test_session_display_unknown_value_falls_back_to_the_default(web, signed_in, config_rows):
     config_rows.update({"admin/locale/date_format": "dd/mm", "admin/locale/timezone": "Mars/Olympus"})
-    assert _display(web) == {"date_format": "us", "timezone": "browser"}
+    assert _display(web) == {"date_format": "us", "timezone": "browser", "date_format_explicit": False}
+
+
+def test_disabling_the_admin_module_ends_the_display_at_the_next_session_read(web, signed_in, config_rows,
+                                                                              monkeypatch, tmp_path):
+    (tmp_path / "app" / "etc").mkdir(parents=True)
+    status = tmp_path / "app" / "etc" / "modules.json"
+    monkeypatch.chdir(tmp_path)
+    shown = []
+    for content in ({"admin": True}, {"admin": False}, {"admin": True}):
+        status.write_text(json.dumps(content))
+        shown.append(_display(web) is not None)
+
+    assert shown == [True, False, True]
 
 
 def test_session_display_is_null_when_the_admin_module_is_disabled(web, signed_in, config_rows, monkeypatch):
-    """Read per request, like miniapps: the module schema list is cached for the process."""
-    from agento.framework import module_status
-
-    assert _display(web) is not None  # fills the schema cache while enabled
-    monkeypatch.setattr(module_status, "read_module_status", lambda *a, **kw: {"admin": False})
+    """No `admin` module in the module set of the start: no display."""
+    assert _display(web) is not None
+    monkeypatch.setattr(api, "_DISPLAY", api.display_schema([]))
     assert _display(web) is None
+
+
+@pytest.mark.parametrize("broken", ["system.json", "config.json"])
+def test_an_admin_module_whose_display_files_lack_a_field_gives_no_display_and_does_not_stop_the_start(
+        tmp_path, broken):
+    files = {"system.json": {"locale/date_format": {"type": "select", "options": [{"value": "us", "label": "US"}]},
+                             "locale/timezone": {"type": "select", "options_source": "timezones"}},
+             "config.json": {"locale/date_format": "us", "locale/timezone": "browser"}}
+    whole = parse_module_dir(write_module(tmp_path / "whole", "admin", **files))
+    lacking = parse_module_dir(write_module(tmp_path / "lacking", "admin", **{**files, broken: {}}))
+
+    assert set(api.display_schema([whole])) == {"date_format", "timezone"}
+    assert api.display_schema([lacking]) is None
 
 
 def test_login_carries_the_display_too(web, auth, config_rows):
     """The panel boots once; after a login it does not GET the session again."""
     config_rows["admin/locale/date_format"] = "iso"
-    assert _login(web).json()["display"] == {"date_format": "iso", "timezone": "browser"}
+    assert _login(web).json()["display"] == {"date_format": "iso", "timezone": "browser",
+                                             "date_format_explicit": True}

@@ -25,6 +25,7 @@ from fastapi import FastAPI
 from starlette.datastructures import Headers
 from starlette.routing import BaseRoute, Match
 
+from agento.framework import i18n
 from agento.framework.access import accounts, acl, sessions
 
 from . import api, rate_limit, security
@@ -51,7 +52,9 @@ _SECURITY_HEADERS = (
     ("X-Content-Type-Options", "nosniff"),
     ("Referrer-Policy", "no-referrer"),
 )
-_UNAVAILABLE = api.Response(503, b"service unavailable")
+_REVALIDATED = ("Cache-Control", "private, max-age=0")
+_NOT_MODIFIED = 304
+_REVALIDATED_STATUSES = (200, _NOT_MODIFIED)
 # Streams sleep in their generator between polls, so they get their own thread budget: on the
 # request pool 40 idle streams would stop every other request.
 # ponytail: one thread per open stream; an async poll loop in conversation/src/stream.py past it.
@@ -67,13 +70,27 @@ def connect():
 
 
 def _too_many(retry) -> api.Response:
-    return api.Response(429, {"error": "too many requests"}, [("Retry-After", str(retry))])
+    refused = api.error(429, "too many requests", code="RATE_LIMITED")
+    refused.headers.append(("Retry-After", str(retry)))
+    return refused
 
 
-def _unavailable(exc: Exception) -> api.Response:
+def _unavailable() -> api.Response:
+    return api.error(503, "service unavailable", code="SERVICE_UNAVAILABLE")
+
+
+def _not_the_proxy() -> api.Response:
+    return api.Response(401, b"")
+
+
+def _outside_the_api() -> api.Response:
+    return api.Response(404, b"")
+
+
+def _limiter_unavailable(exc: Exception) -> api.Response:
     # Fail closed: a limiter that cannot count is not a limiter (SEC-12).
     sys.stderr.write(f"rate limiter unavailable: {type(exc).__name__}\n")
-    return _UNAVAILABLE
+    return _unavailable()
 
 
 def acl_allows(conn, user: accounts.User, route_acl) -> bool:
@@ -111,6 +128,7 @@ class Call:
         # of its own; nothing derived from an identity may read `_proxy_trusted`.
         self._authenticated, self._proxy_trusted, self._session = False, False, None
         self._launch_presented = False
+        self.revalidated = False
 
     def _db(self):
         if self._conn is None:
@@ -125,7 +143,7 @@ class Call:
             refusal = self._refused_as_a_stranger()
         if refusal is None and self.command == "OPTIONS":
             # No preflight is ever answered: no credentialed CORS anywhere.
-            refusal = api.error(405, "method not allowed")
+            refusal = api.error(405, "method not allowed", code="METHOD_NOT_ALLOWED")
         return refusal
 
     def _limited(self) -> api.Response | None:
@@ -148,7 +166,7 @@ class Call:
         try:
             decision = rate_limit.check(self._db(), [b for b in self._buckets if b.private])
         except Exception as exc:
-            return _unavailable(exc)
+            return _limiter_unavailable(exc)
         return None if decision.allowed else _too_many(decision.retry_after)
 
     def _prove_identity(self) -> None:
@@ -195,14 +213,14 @@ class Call:
                 retry = decision.shared_refusal or (
                     0 if decision.allowed else decision.retry_after)
         except Exception as exc:
-            return _unavailable(exc)
+            return _limiter_unavailable(exc)
         return _too_many(retry) if retry else None
 
     def _api(self, route: api.Route, body: bytes | api.Response):
         origins = security.Origins.from_env()
         write = self.command in _WRITES
         if write and not security.write_allowed(self.headers, origins):
-            return api.error(403, "forbidden")
+            return api.error(403, "forbidden", code="FORBIDDEN")
         if isinstance(body, api.Response):
             return body
         req = api.Request(
@@ -217,7 +235,7 @@ class Call:
             try:
                 req.json = json.loads(body)
             except ValueError:
-                return api.error(400, "invalid JSON")
+                return api.error(400, "invalid JSON", code="INVALID_REQUEST")
         return self._run(route.handler, req, session=route.auth == "session", write=write, route_acl=route.acl)
 
     def _internal(self, handler, body: bytes):
@@ -232,21 +250,21 @@ class Call:
                 # Resolved once, in `_prove_identity`: a second lookup could answer otherwise.
                 req.session = self._session
                 if req.session is None:
-                    return api.error(401, "not signed in")
+                    return api.error(401, "not signed in", code="AUTH_REQUIRED")
                 # Per user, not per token: signing in again does not reset the budget.
                 identity = rate_limit.count_identity(conn, req.session.user.id)
                 if not identity.allowed:
                     return _too_many(identity.retry_after)
                 req.session_token = token = req.cookies.get(security.SESSION_COOKIE)
                 if write and not sessions.csrf_valid(token, self.headers.get("X-CSRF-Token")):
-                    return api.error(403, "forbidden")
+                    return api.error(403, "forbidden", code="FORBIDDEN")
                 # The role comes from this request's session lookup (the DB), never from the cookie.
                 if not acl_allows(conn, req.session.user, route_acl):
-                    return api.error(403, "forbidden")
+                    return api.error(403, "forbidden", code="FORBIDDEN")
             return handler(req)
         except Exception as exc:
             sys.stderr.write(f"{self.command} {self.path} failed: {type(exc).__name__}\n")
-            return api.error(500, "internal error")
+            return api.error(500, "internal error", code="INTERNAL_ERROR")
 
     def _failed_auth(self, status: int) -> bool:
         """Every 401/403 this listener sends feeds the hold, wherever it was decided (SEC-12).
@@ -273,21 +291,21 @@ async def _read_body(receive, headers, limit: int, json_body: bool,
     try:
         length = int(headers.get("Content-Length") or 0)
     except ValueError:
-        return api.error(400, "bad Content-Length")
+        return api.error(400, "bad Content-Length", code="INVALID_REQUEST")
     if length > limit:
-        return api.error(413, "body too large")
+        return api.error(413, "body too large", code="BODY_TOO_LARGE")
     ctype = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
     if json_body:
         if ctype != "application/json":
-            return api.error(400, "Content-Type must be application/json")
+            return api.error(400, "Content-Type must be application/json", code="INVALID_REQUEST")
     elif multipart and ctype != "multipart/form-data":
-        return api.error(400, "Content-Type must be multipart/form-data")
+        return api.error(400, "Content-Type must be multipart/form-data", code="INVALID_REQUEST")
     body = b""
     while True:                       # bounded too when the body is chunked, with no length
         message = await receive()
         body += message.get("body", b"")
         if len(body) > limit:
-            return api.error(413, "body too large")
+            return api.error(413, "body too large", code="BODY_TOO_LARGE")
         if not message.get("more_body"):
             return body
 
@@ -302,7 +320,8 @@ async def _write(send, resp: api.Response) -> None:
         ctype, body = "text/plain", resp.body
     else:
         ctype, body = "application/json", b"" if resp.body is None else json.dumps(resp.body).encode()
-    headers = [*resp.headers, ("Content-Type", ctype), ("Content-Length", str(len(body)))]
+    length = [] if resp.status == _NOT_MODIFIED else [("Content-Length", str(len(body)))]
+    headers = [*resp.headers, ("Content-Type", ctype), *length]
     await send({"type": "http.response.start", "status": resp.status, "headers": _raw(headers)})
     await send({"type": "http.response.body", "body": body})
 
@@ -351,16 +370,17 @@ class RegexRoute(BaseRoute):
             if call._proxy_trusted:             # only the proxy may ask this question
                 resp = await anyio.to_thread.run_sync(call._internal, api.authorize_app, b"")
             else:
-                resp = api.Response(401, b"")
+                resp = _not_the_proxy()
         elif path == REDEEM_PATH:
             body = (await _read_body(receive, call.headers, api.MAX_FORM_BODY, False)
-                    if call.command == "POST" else api.error(405, "method not allowed"))
+                    if call.command == "POST" else api.error(405, "method not allowed", code="METHOD_NOT_ALLOWED"))
             resp = body if isinstance(body, api.Response) else await anyio.to_thread.run_sync(
                 call._internal, api.redeem_launch, body)
         elif path.startswith("/api/"):
             route, known = _match(call.command, path)
             if route is None:
-                resp = api.error(405 if known else 404, "method not allowed" if known else "not found")
+                resp = api.error(405 if known else 404, "method not allowed" if known else "not found",
+                                 code="METHOD_NOT_ALLOWED" if known else "NOT_FOUND")
             else:
                 # A multipart route brings its own cap; every other route is JSON-only at
                 # MAX_JSON_BODY, unchanged (SEC-9).
@@ -369,12 +389,21 @@ class RegexRoute(BaseRoute):
                     route.multipart_bytes or MAX_JSON_BODY,
                     route.json_body, multipart=route.multipart_bytes > 0)
                 resp = await anyio.to_thread.run_sync(call._api, route, body)
+                call.revalidated = route.revalidates and resp.status in _REVALIDATED_STATUSES
         else:
-            resp = api.Response(404, b"")
+            resp = _outside_the_api()
         if isinstance(resp, StreamingResponse):
             await _stream(receive, send, resp)
         else:
             await _write(send, resp)
+
+
+def _secured(headers: list[tuple[bytes, bytes]], *, revalidated: bool) -> list[tuple[bytes, bytes]]:
+    """The response headers with the security headers as this listener sets them: a value a
+    handler gave for one of them is dropped, so no route can weaken them (SEC-9)."""
+    enforced = _raw([_REVALIDATED if revalidated else _SECURITY_HEADERS[0], *_SECURITY_HEADERS[1:]])
+    names = {name for name, _ in enforced}
+    return [*(header for header in headers if header[0].lower() not in names), *enforced]
 
 
 class Sec12:
@@ -396,7 +425,7 @@ class Sec12:
 
         async def secured(message) -> None:
             if message["type"] == "http.response.start":
-                message = {**message, "headers": [*message["headers"], *_raw(_SECURITY_HEADERS)]}
+                message = {**message, "headers": _secured(message["headers"], revalidated=call.revalidated)}
             await send(message)
 
         async def guarded(message) -> None:
@@ -407,7 +436,8 @@ class Sec12:
                 status = message["status"]
                 if not await anyio.to_thread.run_sync(call._failed_auth, status):
                     status, replaced = 503, True
-                    await _write(secured, _UNAVAILABLE)
+                    call.revalidated = False
+                    await _write(secured, _unavailable())
                     return
             await secured(message)
 
@@ -436,6 +466,7 @@ def compose_routes() -> None:
     stops `web` here, not at the first request (D-ADMIN-ACL-2, SEC-9)."""
     from agento.framework.bootstrap import CORE_MODULES_DIR, USER_MODULES_DIR
     from agento.framework.module_discovery import module_dirs_by_name
+    from agento.framework.module_status import read_module_status
     from agento.framework.route_rules import RouteDeclarationError, acl_error
 
     from .routes_registry import enabled_dirs, load_module_observers, load_module_routes
@@ -449,6 +480,9 @@ def compose_routes() -> None:
         if problem := acl_error(route.acl, registry.resources, auth=route.auth):
             raise RouteDeclarationError(f"route {route.method} {route.pattern.pattern}: {problem}")
     acl.install(registry)
+    manifests = i18n.enabled_manifests(dirs, read_module_status(etc / "modules.json"))
+    i18n.install(i18n.load(i18n.ordered_sources(manifests)))
+    api.install_display(api.display_schema(manifests))
     api.ROUTES[:] = routes
     load_module_observers(etc, dirs)
 

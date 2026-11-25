@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { APP_ICON_NAMES } from "@agento/ui";
-import { renderAt, stubApi, teardown } from "../../../../../frontend/panel/src/routes/admin/testing";
+import { renderAt, renderInLocale, stubApi, teardown } from "../../../../../frontend/panel/src/routes/admin/testing";
 import AppsPage, { type App } from "./AppsPage";
 import AppSettingsPage from "./AppSettingsPage";
 import icons from "./icons.json";
@@ -103,9 +103,35 @@ describe("the apps catalogue", () => {
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(api.calls("DELETE", "/api/miniapps/apps/approver")).toHaveLength(1));
   });
+
+  it.each([["en", "Apps", "Open launches", "Apps · Agento"], ["pl", "Aplikacje", "Otwarte uruchomienia", "Aplikacje · Agento"]])(
+    "shows the catalogue in %s", async (tag, title, section, tab) => {
+      await appsApi();
+      renderInLocale(tag, "/apps", <AppsPage />);
+      expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: section })).toBeInTheDocument();
+      expect(await screen.findByRole("list", { name: title })).toBeInTheDocument();
+      expect(document.title).toBe(tab);
+    });
+
+  it.each([
+    ["a code of the module", { error: "server words", code: "ARTIFACT_BUSY" }, "Aplikacja jest zajęta. Spróbuj ponownie."],
+    ["a code of the panel", { error: "server words", code: "FORBIDDEN" }, "Nie masz uprawnień do tej operacji."],
+    ["no code", { error: "server words" }, "Nie udało się usunąć aplikacji."],
+  ])("a refused delete shows the Polish text for %s, never the server's", async (_case, body, text) => {
+    await appsApi({ "DELETE /api/miniapps/apps/approver": () => new Response(JSON.stringify(body), { status: 503 }) });
+    renderInLocale("pl", "/apps", <AppsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Usuń" }));
+    expect(await screen.findByText("Czy na pewno usunąć aplikację Jira approver? Zostanie usunięta razem ze wszystkimi wersjami."))
+      .toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Usuń" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(text);
+    expect(screen.queryByText("server words")).toBeNull();
+  });
 });
 
-const settingsAt = (path = "/apps/approver") => renderAt(path, <Routes><Route path="/apps/:code" element={<AppSettingsPage />} /></Routes>);
+const SETTINGS = <Routes><Route path="/apps/:code" element={<AppSettingsPage />} /></Routes>;
+const settingsAt = (path = "/apps/approver") => renderAt(path, SETTINGS);
 const settingsApi = (extra: Record<string, unknown> = {}) => stubApi({
   "/api/miniapps/apps/approver": APP, "/api/miniapps/agent-views": VIEWS,
   "/api/miniapps/apps/approver/views/3/approval": APPROVAL, "/api/admin/tools": TOOLS,
@@ -185,12 +211,14 @@ describe("the app settings page", () => {
 
   it("Approve sends current's id and the checked actions; a 409 is shown", async () => {
     const api = await settingsApi({
-      "POST /api/miniapps/apps/approver/views/3/approval": new Response(JSON.stringify({ error: "current version changed, reload" }), { status: 409 }),
+      "POST /api/miniapps/apps/approver/views/3/approval": new Response(
+        JSON.stringify({ error: "current version changed, reload", code: "CURRENT_VERSION_CHANGED" }), { status: 409 }),
     });
     settingsAt();
     fireEvent.click(await screen.findByRole("checkbox", { name: "csv_export" }));
     fireEvent.click(screen.getByRole("button", { name: "Approve current" }));
-    expect(await screen.findByText("current version changed, reload")).toBeInTheDocument();
+    expect(await screen.findByText("The current version changed. Reload the page.")).toBeInTheDocument();
+    expect(screen.queryByText("current version changed, reload")).toBeNull();
     expect(api.calls("POST", "/api/miniapps/apps/approver/views/3/approval")[0].body)
       .toEqual({ expected_version_id: V2, actions: ["jira_add_comment", "csv_export"] });
   });
@@ -211,6 +239,32 @@ describe("the app settings page", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Preview current" }));
     await waitFor(() => expect(api.calls("POST", "/api/miniapps/previews")[0]?.body)
       .toEqual({ agent_view_id: 3, artifact_code: "approver" }));
+  });
+
+  it.each([
+    ["en", "Members", "Approval", "Approved {v} by service:web:user:1, {t}. Current {c}. A new version is waiting."],
+    ["pl", "Członkowie", "Zatwierdzenie",
+      "Wersja {v} zatwierdzona przez service:web:user:1, {t}. Bieżąca wersja: {c}. Nowa wersja czeka na zatwierdzenie."],
+  ])("shows the settings in %s", async (tag, members, approval, line) => {
+    await settingsApi();
+    renderInLocale(tag, "/apps/approver", SETTINGS);
+    expect(await screen.findByRole("heading", { name: members })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: approval })).toBeInTheDocument();
+    const sentence = (await screen.findByText(V2)).closest("p") as HTMLElement;
+    const stamp = within(sentence).getByRole("time").textContent ?? "";
+    expect(sentence).toHaveTextContent(line.replace("{v}", V1).replace("{t}", stamp).replace("{c}", V2), { normalizeWhitespace: false });
+    expect(document.title).toBe("Jira approver · Agento");
+  });
+
+  it.each([
+    ["a code of the module", { error: "server words", code: "CURRENT_VERSION_CHANGED" }, "Bieżąca wersja się zmieniła. Odśwież stronę."],
+    ["no code", { error: "server words" }, "Nie udało się zatwierdzić wersji."],
+  ])("a refused approval shows the Polish text for %s, never the server's", async (_case, body, text) => {
+    await settingsApi({ "POST /api/miniapps/apps/approver/views/3/approval": () => new Response(JSON.stringify(body), { status: 409 }) });
+    renderInLocale("pl", "/apps/approver", SETTINGS);
+    fireEvent.click(await screen.findByRole("button", { name: "Zatwierdź bieżącą wersję" }));
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.queryByText("server words")).toBeNull();
   });
 });
 

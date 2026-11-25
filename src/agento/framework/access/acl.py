@@ -42,6 +42,12 @@ class Acl:
     operations: dict[str, str]
     # Operations of the framework file: a grant for every role, admin included.
     core_operations: frozenset[str]
+    # operation id -> owner module ("" for core).
+    operation_owners: dict[str, str]
+
+    def owner(self, resource: str) -> str:
+        """The module that declares a leaf or an operation; "" for the framework file or an unknown id."""
+        return self.leaf_owners.get(resource) or self.operation_owners.get(resource, "")
 
     @property
     def resources(self) -> frozenset[str]:
@@ -159,14 +165,16 @@ def load(module_dirs: Sequence[tuple[str, Path]]) -> Acl:
     problems += [f"module {name}: {msg}" for name, msg in duplicates(sorted(module_dirs))]
     if problems:
         raise AclError("; ".join(problems))
-    screens, owners, operations = [], {}, {}
+    screens, owners, operations, operation_owners = [], {}, {}, {}
     for owner, data in [("", core), *found]:
         for s in data.get("screens", []):
             screens.append((s["title"], tuple((leaf["id"], leaf["title"]) for leaf in s["leaves"])))
             owners.update((leaf["id"], owner) for leaf in s["leaves"])
         operations.update((op["id"], op["title"]) for op in data.get("operations", []))
+        operation_owners.update((op["id"], owner) for op in data.get("operations", []))
     return Acl(screens=tuple(screens), leaf_owners=owners, operations=operations,
-               core_operations=frozenset(op["id"] for op in core.get("operations", [])))
+               core_operations=frozenset(op["id"] for op in core.get("operations", [])),
+               operation_owners=operation_owners)
 
 
 @cache

@@ -1,10 +1,11 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { Route, Routes } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
-import { ApiError, PanelModulesProvider, queryClient } from "@agento/api";
+import { ApiError, PanelModulesProvider, queryClient, useErrorText } from "@agento/api";
+import { I18nProvider } from "@agento/ui";
 import { MODULES } from "../../../../../frontend/panel/src/generated/registry";
-import { renderAt, stubApi, teardown } from "../../../../../frontend/panel/src/routes/admin/testing";
-import { CODES, message } from "./api";
+import { SessionDisplayFormat } from "../../../../../frontend/panel/src/DisplayFormat";
+import { builtInMessages, renderAt, renderInLocale, sessionLocale, stubApi, teardown } from "../../../../../frontend/panel/src/routes/admin/testing";
 import { buildRrule, type Spec } from "./RecurrenceDialog";
 import SchedulesPage from "./SchedulesPage";
 import SchedulePage from "./ScheduleForm";
@@ -66,14 +67,33 @@ describe("the recurrence builder (D-16)", () => {
 });
 
 describe("refusal messages", () => {
-  it("knows the fixed target view", () => expect(CODES).toContain("view_fixed"));
-  it.each(CODES)("%s has a human message", (code) => {
-    const text = message(new ApiError(400, code, undefined, { error: code, code }));
-    expect(text).not.toBe(code);
-    expect(text.length).toBeGreaterThan(10);
+  const SOURCES = Object.values(import.meta.glob<string>("../src/*.py", { eager: true, query: "?raw", import: "default" })).join("\n");
+  const LITERAL = [...SOURCES.matchAll(/(?:_refuse|StoreError)\(\s*\d+,\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  // The codes the Python passes on by value: the engine's, a tick's `last_error`, a Run now outcome.
+  const PASSED = ["too_frequent", "too_complex", "too_far_back", "ended", "no_agent_view", "no_reach", "overlap", "too_soon"];
+  const CODES = [...new Set([...LITERAL, ...PASSED])];
+  const said = (tag: string, e: unknown) => renderHook(() => useErrorText("scheduler"), {
+    wrapper: ({ children }) => <I18nProvider locale={tag} messages={builtInMessages(tag)}>{children}</I18nProvider>,
+  }).result.current(e, "error.generic");
+  const refusal = (code: string) => new ApiError(400, "server says no", undefined, { error: "server says no", code });
+
+  it("reads the codes from the Python source", () => {
+    expect(LITERAL).toEqual(expect.arrayContaining(["view_fixed", "bad_title", "changed", "upload_gone"]));
   });
-  it("an unknown code shows the server text", () =>
-    expect(message(new ApiError(400, "server says no", undefined, { error: "server says no", code: "new_code" }))).toBe("server says no"));
+  it.each(CODES)("%s has a human message in English and in Polish", (code) => {
+    const [english, polish] = [said("en", refusal(code)), said("pl", refusal(code))];
+    for (const text of [english, polish]) {
+      expect(text).not.toBe("error.generic");
+      expect(text).not.toBe(said("en", refusal("new_code")));
+      expect(text).not.toBe(said("pl", refusal("new_code")));
+      expect(text.length).toBeGreaterThan(10);
+    }
+    expect(polish).not.toBe(english);
+  });
+  it("an unknown code shows the screen's own text, never the server's", () => {
+    expect(said("en", refusal("new_code"))).toBe("The request failed.");
+    expect(said("pl", refusal("new_code"))).toBe("Żądanie nie powiodło się.");
+  });
 });
 
 describe("the schedules list", () => {
@@ -444,5 +464,107 @@ describe("the schedule form", { timeout: 20_000 }, () => {
     const runs = await screen.findByRole("table", { name: "Last runs" });
     expect(await within(runs).findByRole("button", { name: "Preview run 77" })).toBeInTheDocument();
     expect(within(runs).queryByRole("button", { name: /details/ })).toBeNull();
+  });
+});
+
+describe("the scheduler in two languages", { timeout: 20_000 }, () => {
+  const atIn = (tag: string, path: string) => renderInLocale(tag, path, <Routes>
+    <Route path="/schedules" element={<SchedulesPage />} />
+    <Route path="/schedules/:id" element={<SchedulePage />} />
+  </Routes>);
+  const LIST = { groups: { mine: [row(1, "Daily digest")], shared: [], agent: [JIRA], user: [] } };
+
+  it.each([
+    ["en", "Schedules", "My schedules", "Every day at 9:00", "Custom", "Schedules · Agento"],
+    ["pl", "Harmonogramy", "Moje harmonogramy", "Every day at 9:00", "Niestandardowe", "Harmonogramy · Agento"],
+  ])("shows the list in %s, with the operator's preset label as written, and names the tab", async (tag, title, group, preset, custom, tab) => {
+    await stubApi({ [`${B}/schedules`]: LIST, [`${B}/options`]: OPTIONS });
+    atIn(tag, "/schedules");
+    const mine = await screen.findByRole("table", { name: group });
+    expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+    expect(within(mine).getByText(preset)).toBeInTheDocument();
+    expect(within(screen.getByRole("link", { name: "PROJ-7 weekly" }).closest("tr")!).getByText(custom)).toBeInTheDocument();
+    expect(document.title).toBe(tab);
+  });
+
+  it("a refused switch on the Polish list says why in Polish, never in the server's words", async () => {
+    await stubApi({ [`${B}/schedules`]: LIST, [`${B}/options`]: OPTIONS, [`PATCH ${B}/schedules/1`]: () => refuse(409, "changed") });
+    atIn("pl", "/schedules");
+    fireEvent.click(await screen.findByRole("switch", { name: "Włączony: Daily digest" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Harmonogram zmienił się w międzyczasie. Wczytaj go ponownie i spróbuj jeszcze raz.");
+  });
+
+  it.each([
+    ["en", "New schedule", "Repeats", "Create schedule", "At least 5 minutes between runs.", "New schedule · Agento"],
+    ["pl", "Nowy harmonogram", "Powtarzanie", "Utwórz harmonogram", "Co najmniej 5 minut między uruchomieniami.", "Nowy harmonogram · Agento"],
+  ])("shows the form in %s and names the tab", async (tag, title, repeats, create, interval, tab) => {
+    await stubApi({ [`${B}/options`]: OPTIONS });
+    atIn(tag, "/schedules/new");
+    expect(await screen.findByRole("heading", { name: title })).toBeInTheDocument();
+    expect(screen.getByLabelText(repeats, { selector: "input" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: create })).toBeInTheDocument();
+    expect(screen.getByText(interval, { exact: false })).toBeInTheDocument();
+    expect(document.title).toBe(tab);
+  });
+
+  it("the Polish form shows an operator's preset label as written, in the selector and in the summary", async () => {
+    await stubApi({ [`${B}/options`]: OPTIONS, [`POST ${B}/preview`]: FIRES });
+    atIn("pl", "/schedules/new");
+    fireEvent.click(await screen.findByLabelText("Powtarzanie", { selector: "input" }));
+    expect((await screen.findAllByRole("option", { hidden: true })).map((o) => o.textContent))
+      .toEqual(expect.arrayContaining(["Every hour", "Every day at 9:00"]));
+    fireEvent.click(screen.getByRole("option", { name: "Every hour", hidden: true }));
+    expect(await screen.findByText("Every hour · Europe/Warsaw")).toBeInTheDocument();
+    expect(screen.queryByText(/Co godzinę/)).toBeNull();
+  });
+
+  it("the Polish form shows the server's wall time of a next run, also for a zone the browser does not know", async () => {
+    const zone = "America/Coyhaique";
+    const fires = { fires: [{ at: "2026-11-14T08:00:00Z", local: "2026-11-14T05:00:00" }] };
+    await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/1`]: row(1, "Digest", { timezone: zone }), [`POST ${B}/preview`]: fires,
+      [`${B}/schedules/1/runs`]: [] }, undefined, { display: { date_format: "us", timezone: "UTC" }, locale: sessionLocale("pl") });
+    renderInLocale("pl", "/schedules/1", <SessionDisplayFormat><Routes><Route path="/schedules/:id" element={<SchedulePage />} /></Routes></SessionDisplayFormat>);
+    const next = within(await screen.findByRole("table", { name: "Następne uruchomienia" }));
+    expect(next.getByRole("columnheader", { name: `Czas lokalny (${zone})` })).toBeInTheDocument();
+    const [when, local] = within(next.getAllByRole("row")[1]).getAllByRole("time");
+    expect([when.textContent, local.textContent]).toEqual(["14.11.2026, 08:00:00", "14.11.2026, 05:00:00"]);
+    expect(local).toHaveAttribute("datetime", "2026-11-14T08:00:00Z");
+  });
+
+  it.each([
+    ["an oversized file, with the limit", { reason: "UPLOAD_TOO_LARGE", params: { max_bytes: 26214400 } }, "Plik jest zbyt duży (najwyżej 26 214 400 B)."],
+    ["an empty file", { reason: "UPLOAD_EMPTY" }, "Plik jest pusty."],
+    ["a refusal with no reason", {}, "Nie udało się przesłać pliku."],
+  ])("the Polish form says why an attachment was refused: %s", async (_name, extra, text) => {
+    await stubApi({ [`${B}/options`]: OPTIONS, [`POST ${B}/preview`]: FIRES,
+      [`POST ${B}/uploads`]: () => new Response(JSON.stringify({ error: "server words", code: "upload", ...extra }), { status: 413 }) });
+    atIn("pl", "/schedules/new");
+    fireEvent.drop(await screen.findByLabelText("Tytuł"), { dataTransfer: { files: [new File(["12345"], "report.pdf")], types: ["Files"] } });
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(screen.queryByText("server words")).toBeNull();
+  });
+
+  it("a refused save on the Polish form shows the Polish text under its field", async () => {
+    await stubApi({ [`${B}/options`]: OPTIONS, [`${B}/schedules/1`]: row(1, "Digest"), [`POST ${B}/preview`]: FIRES,
+      [`${B}/schedules/1/runs`]: [], [`PATCH ${B}/schedules/1`]: () => refuse(400, "bad_title") });
+    atIn("pl", "/schedules/1");
+    fireEvent.change(await screen.findByLabelText("Tytuł"), { target: { value: "x" } });
+    fireEvent.click(screen.getByRole("button", { name: "Zapisz zmiany" }));
+    expect(await screen.findByText("Tytuł musi mieć od 1 do 500 znaków.")).toBeInTheDocument();
+    expect(screen.queryByText("bad_title")).toBeNull();
+  });
+
+  it("the Custom dialog names the weekdays and the units in Polish and writes the same RRULE", async () => {
+    await stubApi({ [`${B}/options`]: OPTIONS, [`POST ${B}/preview`]: FIRES });
+    atIn("pl", "/schedules/new");
+    fireEvent.click(await screen.findByLabelText("Powtarzanie", { selector: "input" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Niestandardowe…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Powtarzanie niestandardowe" });
+    fireEvent.click(within(dialog).getByLabelText("Jednostka", { selector: "input" }));
+    fireEvent.click(await screen.findByRole("option", { name: "tygodnie" }));
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "poniedziałek" }));
+    fireEvent.click(within(dialog).getByRole("checkbox", { name: "czwartek" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Gotowe" }));
+    expect(screen.getByLabelText("RRULE")).toHaveValue("FREQ=WEEKLY;BYDAY=MO,TH;BYHOUR=9;BYMINUTE=0");
   });
 });

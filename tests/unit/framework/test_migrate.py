@@ -232,6 +232,7 @@ class TestApplyMigration:
                       "CONSTRAINT fk_tla_tool FOREIGN KEY (tool_id) REFERENCES tool_catalog(id) ON DELETE CASCADE",
                       "('stub-in-test', 'Stub in test', 'stub in test', 1)", "('060_tool_catalog')"),
                      id="060-tool-catalog"),
+        pytest.param(("ui_locale VARCHAR(35) NULL,", "('061_user_ui_locale')"), id="061-user-ui-locale"),
     ])
     def test_fresh_init_includes_the_migration_effect(self, needles):
         # Column alignment in the init DDL is cosmetic, so collapse runs of spaces.

@@ -1,0 +1,11 @@
+{
+  "module.title": "Bitbucket",
+  "config.enabled.label": "Włącz kanał Bitbucket",
+  "config.bitbucket_workspace.label": "Slug workspace'u Bitbucket Cloud",
+  "config.bitbucket_email.label": "E-mail konta Atlassian agenta (nazwa użytkownika Basic auth)",
+  "config.bitbucket_api_token.label": "Token API Atlassian (przechowywany w postaci zaszyfrowanej; tylko toolbox)",
+  "config.bitbucket_account_uuid.label": "UUID konta Bitbucket agenta (dopasowanie author.uuid)",
+  "config.repo_allowlist.label": "Slugi obserwowanych repozytoriów, same — bez prefiksu workspace/ (oddzielone przecinkami; puste blokuje wszystkie)",
+  "config.repo_allowlist.description": "Tylko slugi, np. „agento,agento-docs”: workspace pochodzi z bitbucket_workspace, więc wpis „workspace/repo” nie pasuje do niczego.",
+  "config.poll_top.label": "Maks. liczba otwartych PR pobieranych na repozytorium w jednym odpytaniu (<=50)"
+}

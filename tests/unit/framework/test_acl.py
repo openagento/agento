@@ -28,6 +28,8 @@ def test_core_first_then_modules_by_name(tmp_path):
     assert registry.leaf_owners["alpha.edit"] == "alpha"
     assert registry.leaf_owners["admin.jobs"] == ""
     assert registry.operations["beta.run"] == "Run"
+    assert (registry.owner("beta.run"), registry.owner("alpha.edit"), registry.owner("artifact.launch")) == \
+        ("beta", "alpha", "")
     assert registry.core_operations == {"artifact.launch"}
     assert "beta.run" not in registry.resources  # an operation is not a panel leaf
 

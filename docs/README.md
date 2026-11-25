@@ -16,6 +16,7 @@ Agento is an AI agent framework that automates Jira tasks using AI coding agents
 | [Tools](tools/) | MCP tool adapters: built-in (MySQL, MSSQL, OpenSearch) and custom |
 | [Architecture](architecture/) | Docker containers, zero-trust security, job queue |
 | [Frontend](development/frontend.md) | The panel app, the UI kit and the miniapp kit |
+| [Panel languages](development/i18n.md) | Message catalogs, `i18n.json`, language packs |
 
 ## Key Concepts
 

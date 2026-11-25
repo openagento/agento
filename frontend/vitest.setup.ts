@@ -1,6 +1,10 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach } from "vitest";
+import { installSourceMessages } from "@agento/ui";
+import { SOURCE_MESSAGES } from "./panel/src/generated/messages";
+
+installSourceMessages(SOURCE_MESSAGES);
 
 // jsdom has no matchMedia; Mantine reads it for the color scheme and transitions.
 if (!window.matchMedia) {

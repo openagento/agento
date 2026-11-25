@@ -3,6 +3,7 @@
 import { Group, Menu, Text } from "@mantine/core";
 import type { ReactNode } from "react";
 import { Archive, EllipsisVertical, Pencil, Pin, PinOff, RefreshCw } from "lucide-react";
+import { useT } from "../i18n";
 import { IconAction } from "./IconAction";
 import css from "./Chat.module.css";
 
@@ -14,23 +15,24 @@ const ICONS: Record<RowActionIcon, ReactNode> = {
 };
 
 export interface RowAction {
-  label: string; onClick: () => void; danger?: boolean; disabled?: boolean; icon?: RowActionIcon;
+  id: string; label: string; onClick: () => void; danger?: boolean; disabled?: boolean; icon?: RowActionIcon;
 }
 
 /** Read-only rows shown above the actions, so one row (or one header) needs ONE menu. */
-export interface RowDetail { label: string; value: ReactNode }
+export interface RowDetail { id: string; label: string; value: ReactNode }
 
-export function RowMenu({ actions, details = [], label = "Actions" }:
+export function RowMenu({ actions, details = [], label }:
   { actions: RowAction[]; details?: RowDetail[]; label?: string }) {
+  const t = useT("ui");
   if (!actions.length && !details.length) return null;
   return (
     <Menu position="bottom-end" withinPortal>
       <Menu.Target>
-        <IconAction label={label} icon={<EllipsisVertical size={16} />} />
+        <IconAction label={label ?? t("row_menu.actions")} icon={<EllipsisVertical size={16} />} />
       </Menu.Target>
       <Menu.Dropdown>
         {details.map((d) => (
-          <Menu.Item key={d.label} component="div" className={css.menuDetail}>
+          <Menu.Item key={d.id} component="div" className={css.menuDetail}>
             <Group justify="space-between" gap="md" wrap="nowrap">
               <Text size="sm" c="dimmed">{d.label}</Text>
               <Text size="sm">{d.value}</Text>
@@ -39,7 +41,7 @@ export function RowMenu({ actions, details = [], label = "Actions" }:
         ))}
         {details.length > 0 && actions.length > 0 && <Menu.Divider />}
         {actions.map((a) => (
-          <Menu.Item key={a.label} color={a.danger ? "red" : undefined} disabled={a.disabled}
+          <Menu.Item key={a.id} color={a.danger ? "red" : undefined} disabled={a.disabled}
             leftSection={a.icon ? ICONS[a.icon] : undefined} onClick={a.onClick}>
             {a.label}
           </Menu.Item>

@@ -1,0 +1,12 @@
+{
+  "module.title": "GitHub",
+  "config.enabled.label": "Włącz kanał GitHub",
+  "config.github_owner.label": "Właściciel w GitHub (użytkownik lub organizacja), do którego należą obserwowane repozytoria",
+  "config.github_login.label": "Login agenta w GitHub (dopasowanie autora pull requesta)",
+  "config.github_login.description": "Tylko zakres agent_view — wspólny login rozesłałby ten sam PR do wielu widoków.",
+  "config.github_token.label": "Osobisty token dostępu GitHub (przechowywany w postaci zaszyfrowanej; tylko toolbox)",
+  "config.github_token.description": "Tylko zakres agent_view. bootstrap() rozwiązuje ukrytą konfigurację zakresu DEFAULT w procesie cron i odszyfrowałby tam token.",
+  "config.repo_allowlist.label": "Nazwy obserwowanych repozytoriów, same — bez prefiksu owner/ (oddzielone przecinkami; puste blokuje wszystkie)",
+  "config.repo_allowlist.description": "Tylko zakres agent_view — zobacz github_login. Tylko nazwy, np. „agento,agento-docs”: właściciel pochodzi z github_owner, więc wpis „owner/repo” nie pasuje do niczego.",
+  "config.poll_top.label": "Maks. liczba otwartych PR autorstwa agenta obsługiwanych na repozytorium w jednym odpytaniu (<=100)"
+}

@@ -4,11 +4,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Alert, Group, SegmentedControl, Stack, TagsInput, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { apiFetch, ApiError, useMutation } from "@agento/api";
-import { Button, ErrorState, labelIcon, LoadingState, ReviewState, RISK_NAMES, SideDrawer } from "@agento/ui";
+import { apiFetch, ApiError, useErrorText, useMutation } from "@agento/api";
+import { Button, ErrorState, labelIcon, LoadingState, ReviewState, SideDrawer, useRiskNames, useT, withElements } from "@agento/ui";
 import type { CatalogEntry } from "../enablementTree";
 import { wrapAnywhere, wrapPill } from "../layout";
-import { message } from "./shared";
 import { useRefreshTools, type ToolLabel } from "./ToolLabels";
 
 export interface CatalogRow { name: string; toolset: string; catalog: CatalogEntry }
@@ -44,11 +43,15 @@ function split(chips: Chip[]) {
   return { keys: [...keys], fresh: [...fresh.values()] };
 }
 
+const STUB_FLAG = "--stub-tools";
 class Conflict extends Error {}
 
 function ClassifyForm({ opened, live, labels, queue, onDone }: {
   opened: CatalogRow; live: CatalogRow | undefined; labels: ToolLabel[]; queue: ReviewQueue | null; onDone: () => void;
 }) {
+  const t = useT("panel");
+  const errorText = useErrorText("panel");
+  const riskNames = useRiskNames();
   const refresh = useRefreshTools();
   const nameOf = (key: string) => labels.find((l) => l.key === key)?.name ?? key;
   const [base, setBase] = useState(opened);
@@ -101,54 +104,53 @@ function ClassifyForm({ opened, live, labels, queue, onDone }: {
   const submit = () => save.mutate({ review: reviewChange }, {
     onSuccess: (saved) => {
       if (queue) return queue.onNext({ id: base.catalog.id, reviewed: saved.reviewed, revision: saved.revision });
-      notifications.show({ message: `Saved ${base.name}.` });
+      notifications.show({ message: t("classify.saved", { name: base.name }) });
       onDone();
     },
     onError: (e) => notifications.show({
       color: "red",
-      message: e instanceof Conflict ? `${base.name} was changed since you opened it. Reload it, then save again.` : message(e),
+      message: e instanceof Conflict ? t("classify.conflict", { name: base.name }) : errorText(e, "classify.save_failed"),
     }),
   });
 
   return (
     <Stack gap="lg" ref={root}>
       <Group gap="sm">
-        <Text size="sm" c="dimmed">Module {moduleOf(base.catalog.source)} · toolset {base.toolset}</Text>
+        <Text size="sm" c="dimmed">{t("classify.source", { module: moduleOf(base.catalog.source), toolset: base.toolset })}</Text>
         <ReviewState reviewed={base.catalog.reviewed} />
       </Group>
-      {queue && <Text size="sm" fw={500}>{queue.left} left</Text>}
+      {queue && <Text size="sm" fw={500}>{t("classify.left", { count: queue.left })}</Text>}
       {moved && (
-        <Alert color="yellow" variant="light" title="Changed on the server — reload">
+        <Alert color="yellow" variant="light" title={t("classify.moved.title")}>
           <Stack gap="xs" align="flex-start">
-            <Text size="sm">This tool changed after you opened it. Reload to start from the new version; your edits here are dropped.</Text>
-            <Button onClick={() => reload(live)}>Reload</Button>
+            <Text size="sm">{t("classify.moved.text")}</Text>
+            <Button onClick={() => reload(live)}>{t("classify.reload")}</Button>
           </Stack>
         </Alert>
       )}
       {live === undefined && (
-        <Alert color="yellow" variant="light" title="No longer in the catalog">
-          <Text size="sm">Its module was disabled or no longer declares it. Its labels are kept for when it comes back.</Text>
+        <Alert color="yellow" variant="light" title={t("classify.gone.title")}>
+          <Text size="sm">{t("classify.gone.text")}</Text>
         </Alert>
       )}
       <Stack gap="xs">
-        <Text size="sm" fw={500} id="review-label">Review</Text>
+        <Text size="sm" fw={500} id="review-label">{t("classify.review")}</Text>
         <SegmentedControl aria-labelledby="review-label" value={review} onChange={(v) => setReview(v as Review)} disabled={save.isPending}
-          data={[{ value: "to_review", label: "To review" }, { value: "reviewed", label: "Reviewed" }]} />
-        <Text size="xs" c="dimmed">Reviewed means you checked the labels for this version of the tool. A change to the tool sends it back to review.</Text>
+          data={[{ value: "to_review", label: t("classify.to_review") }, { value: "reviewed", label: t("classify.reviewed") }]} />
+        <Text size="xs" c="dimmed">{t("classify.review_hint")}</Text>
       </Stack>
       {/* The input comes last, with its hints above it: its open dropdown covers whatever is below,
           so the review decision sits above it too. No autofocus, so the dropdown does not open by itself.
           A label is added only by Enter or by picking an option (the hint's words): no comma split, no
           add on blur, and a paste goes into the text (Mantine's own paste handler would add it). */}
       <div onPasteCapture={(e) => e.stopPropagation()}>
-        <TagsInput label="Labels" data={labels.map((l) => l.name)} value={shown} onChange={change} acceptValueOnBlur={false} splitChars={[]} clearable disabled={save.isPending} classNames={{ pill: wrapPill }}
+        <TagsInput label={t("classify.labels")} data={labels.map((l) => l.name)} value={shown} onChange={change} acceptValueOnBlur={false} splitChars={[]} clearable disabled={save.isPending} classNames={{ pill: wrapPill }}
           description={<>
-            Pick a label, or type a new name and press Enter.{" "}
-            {Object.values(RISK_NAMES).join(", ")}: an agent with all three can be made to leak private data.
+            {t("classify.labels_hint", { names: Object.values(riskNames).join(", ") })}
             {(keys.length > 0 || fresh.length > 0) && <>
-              <br />Keys for <Text span ff="monospace" inherit>--stub-tools</Text>:{" "}
+              <br />{withElements(t("classify.keys"), { flag: <Text span ff="monospace" inherit>{STUB_FLAG}</Text> })}{" "}
               <Text span ff="monospace" inherit>{keys.join(", ")}</Text>
-              {fresh.length > 0 && `${keys.length ? ", " : ""}${fresh.length === 1 ? "1 new label" : `${fresh.length} new labels`} (key on save)`}
+              {fresh.length > 0 && `${keys.length ? ", " : ""}${t("classify.new_labels", { count: fresh.length })}`}
             </>}
           </>}
           renderOption={({ option }) => {
@@ -163,9 +165,9 @@ function ClassifyForm({ opened, live, labels, queue, onDone }: {
           }} />
       </div>
       <Group justify="flex-end">
-        {queue ? <Button onClick={() => queue.onSkip(base.catalog.id)} disabled={save.isPending}>Skip</Button> : <Button onClick={onDone}>Cancel</Button>}
+        {queue ? <Button onClick={() => queue.onSkip(base.catalog.id)} disabled={save.isPending}>{t("classify.skip")}</Button> : <Button onClick={onDone}>{t("action.cancel")}</Button>}
         <Button variant="primary" onClick={submit} disabled={!dirty || save.isPending}>
-          {queue ? "Save and next" : "Save"}
+          {queue ? t("classify.save_next") : t("action.save")}
         </Button>
       </Group>
     </Stack>

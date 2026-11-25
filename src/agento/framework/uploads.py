@@ -38,9 +38,9 @@ _FALLBACK_NAME = "file"
 class UploadError(RuntimeError):
     """A staging operation the caller must answer with `status`. It names no path (SEC-6)."""
 
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: int, message: str, *, code: str | None = None, params: dict | None = None) -> None:
         super().__init__(message)
-        self.status = status
+        self.status, self.code, self.params = status, code, params
 
 
 def user_dir(owner: str, user_id: int) -> Path:
@@ -49,7 +49,7 @@ def user_dir(owner: str, user_id: int) -> Path:
     The ONE place an owner becomes a path: every function below builds its path here, so an
     owner that is not `t<digits>` or `s<digits>` reaches no directory (SEC-5)."""
     if not isinstance(owner, str) or not OWNER.fullmatch(owner):
-        raise UploadError(500, "upload failed")
+        raise UploadError(500, "upload failed", code="UPLOAD_FAILED")
     return Path(UPLOADS_DIR) / owner / f"u{int(user_id)}"
 
 
@@ -83,7 +83,7 @@ def unique_name(name: str, taken: set[str]) -> str:
         candidate = f"{stem}-{n}{'.' + ext if ext else ''}"
         if candidate not in taken:
             return candidate
-    raise UploadError(400, "too many files with that name")
+    raise UploadError(400, "too many files with that name", code="UPLOAD_NAME_EXHAUSTED")
 
 
 def _open_dir(parent: Path, name: str, mode: int) -> Path:
@@ -99,10 +99,10 @@ def _open_dir(parent: Path, name: str, mode: int) -> Path:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError as exc:
-        raise UploadError(500, "upload failed") from exc
+        raise UploadError(500, "upload failed", code="UPLOAD_FAILED") from exc
     try:
         if os.fstat(fd).st_uid != os.geteuid():
-            raise UploadError(500, "upload failed")
+            raise UploadError(500, "upload failed", code="UPLOAD_FAILED")
     finally:
         os.close(fd)
     return path
@@ -122,7 +122,7 @@ def store(owner: str, user_id: int, name: str, data: bytes) -> tuple[str, str]:
     # The root gets the same check as every component below it: it lives in the workspace, and
     # a link planted there would steer every staged file somewhere else (SEC-5).
     if root.is_symlink() or not root.is_dir():
-        raise UploadError(500, "upload failed")
+        raise UploadError(500, "upload failed", code="UPLOAD_FAILED")
     parent = _open_dir(root, base.parent.name, 0o700)
     parent = _open_dir(parent, base.name, 0o700)
     target = _open_dir(parent, upload_id, 0o700)
@@ -142,7 +142,7 @@ def _staged_file(owner: str, user_id: int, upload_id: str, *, read: bool = False
     """
     base = user_dir(owner, user_id)
     if not UPLOAD_ID.fullmatch(upload_id):
-        raise UploadError(400, "upload not available")
+        raise UploadError(400, "upload not available", code="UPLOAD_NOT_AVAILABLE")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     fd = -1
     try:
@@ -153,14 +153,14 @@ def _staged_file(owner: str, user_id: int, upload_id: str, *, read: bool = False
             fd = below
         entries = [e for e in os.listdir(fd) if not e.startswith(".")]
         if len(entries) != 1:
-            raise UploadError(400, "upload not available")
+            raise UploadError(400, "upload not available", code="UPLOAD_NOT_AVAILABLE")
         data = b""
         if read:
             with os.fdopen(os.open(entries[0], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd), "rb") as fh:
                 data = fh.read()
         return entries[0], data
     except OSError as exc:
-        raise UploadError(400, "upload not available") from exc
+        raise UploadError(400, "upload not available", code="UPLOAD_NOT_AVAILABLE") from exc
     finally:
         if fd >= 0:
             os.close(fd)
@@ -225,18 +225,18 @@ def parse_one_file(body: bytes, content_type: str) -> tuple[str, bytes]:
     accepted - a body with none, or with several, is a bad request.
     """
     if "multipart/form-data" not in content_type.lower():
-        raise UploadError(400, "Content-Type must be multipart/form-data")
+        raise UploadError(400, "Content-Type must be multipart/form-data", code="INVALID_REQUEST")
     try:
         message = email.parser.BytesParser(policy=email.policy.HTTP).parsebytes(
             b"Content-Type: " + content_type.encode("latin-1", "replace") + b"\r\n\r\n" + body)
         parts = [p for p in message.iter_parts() if p.get_filename() is not None]
     except Exception as exc:                        # a malformed body is the caller's fault
-        raise UploadError(400, "upload failed") from exc
+        raise UploadError(400, "upload failed", code="UPLOAD_FAILED") from exc
     if len(parts) != 1:
-        raise UploadError(400, "send exactly one file")
+        raise UploadError(400, "send exactly one file", code="INVALID_REQUEST")
     payload = parts[0].get_payload(decode=True)
     if not isinstance(payload, bytes) or not payload:
-        raise UploadError(400, "the file is empty")
+        raise UploadError(400, "the file is empty", code="UPLOAD_EMPTY")
     return safe_name(parts[0].get_filename()), payload
 
 
@@ -312,4 +312,5 @@ def check_bytes(conn, data: bytes) -> None:
     cap = max_bytes(conn)
     if len(data) > cap:
         raise UploadError(413, f"file too large (max {cap // (1024 * 1024)} MB)"
-                          if cap >= 1024 * 1024 else f"file too large (max {cap // 1024} KB)")
+                          if cap >= 1024 * 1024 else f"file too large (max {cap // 1024} KB)",
+                          code="UPLOAD_TOO_LARGE", params={"max_bytes": cap})

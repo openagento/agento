@@ -14,8 +14,9 @@ from dataclasses import dataclass
 
 import pymysql
 
+from .. import i18n
 from . import acl
-from .passwords import dummy_verify, hash_password, verify_password
+from .passwords import MAX_PASSWORD, MIN_PASSWORD, dummy_verify, hash_password, verify_password
 
 BUILTIN_ROLES = ("admin", "user")
 ROLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{1,15}$")
@@ -42,14 +43,23 @@ class User:
     username: str
     role: str
     is_active: bool
+    ui_locale: str | None = None
 
 
 class AccessError(ValueError):
-    """A refused access change; the message is safe to show an admin."""
+    """A refused access change; the message is safe to show an admin. ``code`` is what the panel translates."""
+
+    def __init__(self, message: str, *, code: str | None = None, params: dict | None = None) -> None:
+        super().__init__(message)
+        self.code, self.params = code, params
+
+
+_USER_COLUMNS = "id, username, role, is_active, ui_locale"
 
 
 def _user(row: dict) -> User:
-    return User(id=row["id"], username=row["username"], role=row["role"], is_active=bool(row["is_active"]))
+    return User(id=row["id"], username=row["username"], role=row["role"], is_active=bool(row["is_active"]),
+                ui_locale=row["ui_locale"])
 
 
 def _lock_users(cur, where: str, params: tuple) -> dict[int, dict]:
@@ -68,13 +78,13 @@ def _check_actor(locked: dict[int, dict], actor: Actor | None) -> None:
         return
     row = locked.get(actor[0])
     if not row or row["role"] != actor[1] or not row["is_active"]:
-        raise AccessError("not allowed")
+        raise AccessError("not allowed", code="FORBIDDEN")
 
 
 def _admin_only(actor: Actor | None) -> None:
     """Only admin creates, edits or assigns an admin account (SEC-7)."""
     if actor is not None and actor[1] != "admin":
-        raise AccessError("not allowed")
+        raise AccessError("not allowed", code="FORBIDDEN")
 
 
 def _lock_actor_and(cur, actor: Actor | None, *user_ids: int) -> dict[int, dict]:
@@ -108,7 +118,7 @@ def _revoke_launches(cur, user_id: int) -> None:
 
 def _check_username(username: str) -> None:
     if not isinstance(username, str) or not USERNAME_RE.fullmatch(username):
-        raise AccessError("username must match ^[a-z0-9][a-z0-9._-]{0,63}$")
+        raise AccessError("username must match ^[a-z0-9][a-z0-9._-]{0,63}$", code="USERNAME_INVALID")
 
 
 def _check_role(cur, role: str) -> None:
@@ -117,19 +127,21 @@ def _check_role(cur, role: str) -> None:
         cur.execute("SELECT 1 FROM role WHERE code = %s", (role,))
         if cur.fetchone():
             return
-    raise AccessError("unknown role")
+    raise AccessError("unknown role", code="ROLE_UNKNOWN")
 
 
 def _hash(password: str) -> str:
     try:
         return hash_password(password)
     except ValueError as exc:
-        raise AccessError(str(exc)) from None
+        raise AccessError(str(exc),
+                          code="PASSWORD_INVALID", params={"min": MIN_PASSWORD, "max": MAX_PASSWORD}) from None
 
 
 def create_user(conn, username: str, role: str, password: str | None, *, actor: Actor | None = None) -> User:
     _check_username(username)
     password_hash = _hash(password) if password is not None else None
+    ui_locale = i18n.account_language(conn)
 
     def work(cur):
         _lock_actor_and(cur, actor)
@@ -138,21 +150,21 @@ def create_user(conn, username: str, role: str, password: str | None, *, actor: 
             _admin_only(actor)
         try:
             cur.execute(
-                "INSERT INTO `user` (username, password_hash, role) VALUES (%s, %s, %s)",
-                (username, password_hash, role),
+                "INSERT INTO `user` (username, password_hash, role, ui_locale) VALUES (%s, %s, %s, %s)",
+                (username, password_hash, role, ui_locale),
             )
         except pymysql.err.IntegrityError as exc:
             if exc.args[0] == _ER_NO_REFERENCED_ROW:
-                raise AccessError("unknown role") from None
-            raise AccessError("username already exists") from None
-        return User(id=cur.lastrowid, username=username, role=role, is_active=True)
+                raise AccessError("unknown role", code="ROLE_UNKNOWN") from None
+            raise AccessError("username already exists", code="USERNAME_TAKEN") from None
+        return User(id=cur.lastrowid, username=username, role=role, is_active=True, ui_locale=ui_locale)
 
     return _in_transaction(conn, work)
 
 
 def get_user(conn, user_id: int) -> User | None:
     with conn.cursor() as cur:
-        cur.execute("SELECT id, username, role, is_active FROM `user` WHERE id = %s", (user_id,))
+        cur.execute(f"SELECT {_USER_COLUMNS} FROM `user` WHERE id = %s", (user_id,))
         row = cur.fetchone()
     return _user(row) if row else None
 
@@ -161,7 +173,7 @@ def get_user_by_username(conn, username: str) -> User | None:
     if not isinstance(username, str) or not USERNAME_RE.fullmatch(username):
         return None
     with conn.cursor() as cur:
-        cur.execute("SELECT id, username, role, is_active FROM `user` WHERE username = %s", (username,))
+        cur.execute(f"SELECT {_USER_COLUMNS} FROM `user` WHERE username = %s", (username,))
         row = cur.fetchone()
     return _user(row) if row else None
 
@@ -177,7 +189,7 @@ def authenticate_in(cur, username: str, password: str, *, lock: bool = False) ->
         dummy_verify(password)
         return None
     cur.execute(
-        "SELECT id, username, role, is_active, password_hash FROM `user` WHERE username = %s"
+        f"SELECT {_USER_COLUMNS}, password_hash FROM `user` WHERE username = %s"
         + (" FOR UPDATE" if lock else ""), (username,),
     )
     row = cur.fetchone()
@@ -189,13 +201,13 @@ def authenticate_in(cur, username: str, password: str, *, lock: bool = False) ->
 
 def list_users(conn) -> list[User]:
     with conn.cursor() as cur:
-        cur.execute("SELECT id, username, role, is_active FROM `user` ORDER BY username")
+        cur.execute(f"SELECT {_USER_COLUMNS} FROM `user` ORDER BY username")
         return [_user(r) for r in cur.fetchall()]
 
 
 def _require_target(locked: dict[int, dict], user_id: int) -> dict:
     if user_id not in locked:
-        raise AccessError("user not found")
+        raise AccessError("user not found", code="USER_NOT_FOUND")
     return locked[user_id]
 
 
@@ -203,7 +215,7 @@ def update_user(conn, user_id: int, *, role: str | None = None, active: bool | N
                 password: str | None = None, actor: Actor | None = None) -> None:
     """Apply every given field in one transaction: all of them or none."""
     if active is not None and not isinstance(active, bool):
-        raise AccessError("is_active must be a boolean")
+        raise AccessError("is_active must be a boolean", code="INVALID_REQUEST")
     password_hash = _hash(password) if password is not None else None
 
     def work(cur):
@@ -214,7 +226,7 @@ def update_user(conn, user_id: int, *, role: str | None = None, active: bool | N
             try:
                 cur.execute("UPDATE `user` SET role = %s WHERE id = %s", (role, user_id))
             except pymysql.err.IntegrityError:
-                raise AccessError("unknown role") from None
+                raise AccessError("unknown role", code="ROLE_UNKNOWN") from None
         if active is not None:
             cur.execute("UPDATE `user` SET is_active = %s WHERE id = %s", (1 if active else 0, user_id))
         if password_hash is not None:
@@ -225,6 +237,13 @@ def update_user(conn, user_id: int, *, role: str | None = None, active: bool | N
             _revoke_launches(cur, user_id)
 
     _in_transaction(conn, work)
+
+
+def set_ui_locale(conn, user_id: int, tag: str) -> None:
+    """The account's own display language. It changes no access, so no session is revoked."""
+    with conn.cursor() as cur:
+        cur.execute("UPDATE `user` SET ui_locale = %s WHERE id = %s", (tag, user_id))
+    conn.commit()
 
 
 def set_role(conn, user_id: int, role: str, *, actor: Actor | None = None) -> None:
@@ -267,21 +286,22 @@ def is_builtin_resource(role: str, operation: str) -> bool:
 
 def _check_scope(workspace_id, agent_view_id) -> None:
     if (workspace_id is None) == (agent_view_id is None):
-        raise AccessError("set exactly one of workspace or agent_view")
+        raise AccessError("set exactly one of workspace or agent_view", code="INVALID_REQUEST")
 
 
 def _check_grant(kind: str, name: str, workspace_id, agent_view_id) -> None:
     if kind not in GRANT_KINDS:
-        raise AccessError(f"grant kind must be one of {', '.join(GRANT_KINDS)}")
+        raise AccessError(f"grant kind must be one of {', '.join(GRANT_KINDS)}", code="INVALID_REQUEST")
     if name in acl.registry().resources:
         if kind != "operation" or workspace_id is not None or agent_view_id is not None:
-            raise AccessError(f"{name} is an admin panel operation: it takes no workspace or agent_view")
+            raise AccessError(f"{name} is an admin panel operation: it takes no workspace or agent_view",
+                              code="GRANT_SCOPE_INVALID", params={"name": name})
         return
     _check_scope(workspace_id, agent_view_id)
     if kind == "operation" and name not in (operations := grantable_operations()):
-        raise AccessError(f"operation must be one of {', '.join(sorted(operations))}")
+        raise AccessError(f"operation must be one of {', '.join(sorted(operations))}", code="OPERATION_UNKNOWN")
     if kind == "tool" and name not in declared_tools():
-        raise AccessError(f"no module declares tool {name!r}")
+        raise AccessError(f"no module declares tool {name!r}", code="TOOL_UNKNOWN", params={"tool": name})
 
 
 def add_grant(conn, role: str, kind: str, name: str, *, workspace_id: int | None = None,
@@ -307,7 +327,7 @@ def add_grant(conn, role: str, kind: str, name: str, *, workspace_id: int | None
                 (role, kind, name, workspace_id, agent_view_id),
             )
         except pymysql.err.IntegrityError:
-            raise AccessError("unknown role, workspace or agent_view") from None
+            raise AccessError("unknown role, workspace or agent_view", code="GRANT_TARGET_UNKNOWN") from None
         return cur.lastrowid
 
     try:
@@ -321,7 +341,7 @@ def _grant_lock(cur) -> None:
     # stops two writers from both seeing no duplicate and both inserting.
     cur.execute("SELECT GET_LOCK(%s, 5) AS got", (_GRANT_LOCK,))
     if cur.fetchone()["got"] != 1:
-        raise AccessError("busy, retry")
+        raise AccessError("busy, retry", code="BUSY")
 
 
 def _release_grant_lock(conn) -> None:
@@ -346,11 +366,11 @@ def remove_grant(conn, grant_id: int) -> None:
         cur.execute("SELECT role, workspace_id, agent_view_id FROM role_grant WHERE id = %s", (grant_id,))
         grant = cur.fetchone()
         if not grant:
-            raise AccessError("grant not found")
+            raise AccessError("grant not found", code="GRANT_NOT_FOUND")
         _lock_users(cur, "role = %s", (grant["role"],))
         cur.execute("DELETE FROM role_grant WHERE id = %s", (grant_id,))
         if cur.rowcount != 1:
-            raise AccessError("grant not found")
+            raise AccessError("grant not found", code="GRANT_NOT_FOUND")
         _revoke_role_launches(cur, grant["role"], grant["workspace_id"], grant["agent_view_id"])
 
     _in_transaction(conn, work)
@@ -358,7 +378,7 @@ def remove_grant(conn, grant_id: int) -> None:
 
 def _names(value, what: str) -> set[str]:
     if not isinstance(value, list) or not all(isinstance(n, str) for n in value):
-        raise AccessError(f"{what} must be a list of names")
+        raise AccessError(f"{what} must be a list of names", code="INVALID_REQUEST")
     return set(value)
 
 
@@ -377,14 +397,15 @@ def set_role_grants(conn, role: str, *, workspace_id: int | None = None, agent_v
         _check_scope(workspace_id, agent_view_id)
     want_tools, want_ops = _names(tools, "tools"), _names(operations, "operations")
     if len(want_tools) + len(want_ops) > MAX_GRANT_NAMES:
-        raise AccessError(f"at most {MAX_GRANT_NAMES} names per scope")
+        raise AccessError(f"at most {MAX_GRANT_NAMES} names per scope",
+                          code="GRANT_TOO_MANY", params={"max": MAX_GRANT_NAMES})
     operations_known = set(acl.registry().resources) if is_global else set(grantable_operations())
     if unknown := want_ops - operations_known:
-        raise AccessError(f"operation must be one of {', '.join(sorted(operations_known))}")
+        raise AccessError(f"operation must be one of {', '.join(sorted(operations_known))}", code="OPERATION_UNKNOWN")
     if is_global and want_tools:
-        raise AccessError("the admin panel scope takes no tools")
+        raise AccessError("the admin panel scope takes no tools", code="INVALID_REQUEST")
     if not is_global and (unknown := sorted(want_tools - declared_tools())):
-        raise AccessError(f"no module declares tool {unknown[0]!r}")
+        raise AccessError(f"no module declares tool {unknown[0]!r}", code="TOOL_UNKNOWN", params={"tool": unknown[0]})
     # ponytail: the tree lists the tools of enabled modules only, so a row for a tool of a
     # disabled module is outside this write and kept (it works again when the module does).
     replaceable = {("operation", n) for n in operations_known}
@@ -402,7 +423,7 @@ def set_role_grants(conn, role: str, *, workspace_id: int | None = None, agent_v
             cur.execute("SELECT workspace_id FROM agent_view WHERE id = %s", (agent_view_id,))
             view = cur.fetchone()
             if not view:
-                raise AccessError("agent_view not found")
+                raise AccessError("agent_view not found", code="AGENT_VIEW_NOT_FOUND")
             cur.execute(
                 "SELECT grant_kind, name FROM role_grant WHERE role = %s AND workspace_id = %s"
                 " AND agent_view_id IS NULL", (role, view["workspace_id"]),
@@ -424,7 +445,7 @@ def set_role_grants(conn, role: str, *, workspace_id: int | None = None, agent_v
         # Under the grant lock, so the actor's own leaves cannot change while this checks them.
         if is_global and actor is not None and actor[1] != "admin" and \
                 ({n for _k, n in add} | {r["name"] for r in dropped}) - _held(cur, actor[1]):
-            raise AccessError("not allowed")
+            raise AccessError("not allowed", code="FORBIDDEN")
         if drop:
             cur.execute("DELETE FROM role_grant WHERE id IN (" + ",".join(["%s"] * len(drop)) + ")", drop)
             _revoke_role_launches(cur, role, workspace_id, agent_view_id)
@@ -436,7 +457,7 @@ def set_role_grants(conn, role: str, *, workspace_id: int | None = None, agent_v
                     [v for kind, name in add for v in (role, kind, name, workspace_id, agent_view_id)],
                 )
             except pymysql.err.IntegrityError:
-                raise AccessError("unknown role, workspace or agent_view") from None
+                raise AccessError("unknown role, workspace or agent_view", code="GRANT_TARGET_UNKNOWN") from None
         return {"added": len(add), "removed": len(drop)}
 
     try:
@@ -478,18 +499,19 @@ def role_scopes(conn, role: str) -> list[dict]:
 
 def _check_label(label) -> str:
     if not isinstance(label, str) or not 1 <= len(label.strip()) <= 64:
-        raise AccessError("label must have 1 to 64 characters")
+        raise AccessError("label must have 1 to 64 characters", code="ROLE_LABEL_INVALID")
     return label.strip()
 
 
 def _duplicate_role(exc: pymysql.err.IntegrityError) -> AccessError:
     return AccessError("a role with this label already exists" if "uk_role_label" in str(exc)
-                       else "a role with this code already exists")
+                       else "a role with this code already exists",
+                       code="ROLE_LABEL_TAKEN" if "uk_role_label" in str(exc) else "ROLE_CODE_TAKEN")
 
 
 def create_role(conn, code: str, label: str, *, actor: Actor | None = None) -> dict:
     if not isinstance(code, str) or not ROLE_CODE_RE.fullmatch(code):
-        raise AccessError("code must match ^[a-z][a-z0-9_]{1,15}$")
+        raise AccessError("code must match ^[a-z][a-z0-9_]{1,15}$", code="ROLE_CODE_INVALID")
     label = _check_label(label)
 
     def work(cur):
@@ -506,10 +528,10 @@ def create_role(conn, code: str, label: str, *, actor: Actor | None = None) -> d
 def _lock_role(cur, code: str) -> None:
     # The grammar first: the column collation is case-insensitive, so 'Admin' would match admin.
     if not isinstance(code, str) or not ROLE_CODE_RE.fullmatch(code):
-        raise AccessError("role not found")
+        raise AccessError("role not found", code="ROLE_NOT_FOUND")
     cur.execute("SELECT code FROM role WHERE code = %s FOR UPDATE", (code,))
     if not cur.fetchone():
-        raise AccessError("role not found")
+        raise AccessError("role not found", code="ROLE_NOT_FOUND")
 
 
 def rename_role(conn, code: str, label: str, *, actor: Actor | None = None) -> None:
@@ -528,14 +550,15 @@ def rename_role(conn, code: str, label: str, *, actor: Actor | None = None) -> N
 
 
 def _in_use(n: int) -> AccessError:
-    return AccessError("1 user has this role" if n == 1 else f"{n} users have this role")
+    return AccessError("1 user has this role" if n == 1 else f"{n} users have this role",
+                       code="ROLE_IN_USE", params={"count": n})
 
 
 def delete_role(conn, code: str, *, actor: Actor | None = None) -> None:
     """A built-in role or a role with users is refused. Its grants go with it (FK cascade);
     no launch needs a revoke, because no user holds the role."""
     if code in BUILTIN_ROLES:
-        raise AccessError("a built-in role cannot be deleted")
+        raise AccessError("a built-in role cannot be deleted", code="ROLE_BUILTIN")
 
     def work(cur):
         _lock_actor_and(cur, actor)

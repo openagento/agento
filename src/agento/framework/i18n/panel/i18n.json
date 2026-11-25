@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "languages": [
+    {
+      "tag": "en",
+      "name": "English"
+    },
+    {
+      "tag": "pl",
+      "name": "Polski"
+    }
+  ],
+  "catalog": {
+    "en": "en.json",
+    "pl": "pl.json"
+  }
+}

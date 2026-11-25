@@ -71,9 +71,9 @@ def iso(value: datetime | None) -> str | None:
 class SubmissionError(ValueError):
     """A refused submission. `status` is what the route answers."""
 
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: int, message: str, *, code: str | None = None, params: dict | None = None) -> None:
         super().__init__(message)
-        self.status = status
+        self.status, self.code, self.params = status, code, params
 
 
 def config(conn, path: str) -> int:
@@ -471,11 +471,11 @@ def write_refusal(conn, user: User, conversation: dict) -> SubmissionError | Non
     `submit_message` asks again under the locks (SEC-7)."""
     if conversation["channel"] != PANEL_CHANNEL:
         if not can_write_channel(conn, user, conversation):
-            return SubmissionError(403, "forbidden")
+            return SubmissionError(403, "forbidden", code="FORBIDDEN")
         if not conversation["external_ref"]:
-            return SubmissionError(409, "read_only")
+            return SubmissionError(409, "read_only", code="CONVERSATION_READ_ONLY")
     if conversation["agent_view_id"] is None:
-        return SubmissionError(404, "not found")
+        return SubmissionError(404, "not found", code="NOT_FOUND")
     return None
 
 
@@ -500,13 +500,13 @@ def _recheck_writer(conn, cur, writer: User, seen: dict) -> None:
             except Exception as exc:  # a member that raises grants nothing (SEC-9)
                 logger.warning("conversation_lock failed: channel=%s conversation=%s %s",
                                seen["channel"], seen["id"], type(exc).__name__)
-                raise SubmissionError(403, "forbidden") from None
+                raise SubmissionError(403, "forbidden", code="FORBIDDEN") from None
     cur.execute("SELECT id FROM `user` WHERE id = %s FOR SHARE", (writer.id,))
     fresh = get_user(conn, writer.id)
     row = (load_visible(conn, conversation_id=seen["id"], user=fresh)
            if fresh is not None and fresh.is_active else None)
     if row is None:
-        raise SubmissionError(404, "not found")
+        raise SubmissionError(404, "not found", code="NOT_FOUND")
     refusal = write_refusal(conn, fresh, row)
     if refusal is not None:
         raise refusal
@@ -656,13 +656,14 @@ def update_thread(conn, conversation_id: int, *, user_id: int,
                         "AND id <> %s FOR UPDATE", (user_id, conversation_id))
             if len(cur.fetchall()) >= MAX_PINNED:
                 conn.rollback()
-                raise SubmissionError(409, f"at most {MAX_PINNED} pinned conversations")
+                raise SubmissionError(409, f"at most {MAX_PINNED} pinned conversations",
+                                      code="PIN_LIMIT", params={"max": MAX_PINNED})
         # SEC-7: the route checked the owner before any lock; an owner change since refuses.
         cur.execute("SELECT user_id FROM conversation WHERE id = %s FOR UPDATE", (conversation_id,))
         locked = cur.fetchone()
         if locked is None or locked["user_id"] != user_id:
             conn.rollback()
-            raise SubmissionError(403, "forbidden")
+            raise SubmissionError(403, "forbidden", code="FORBIDDEN")
         sets, params = [], []
         if title is not KEEP:
             sets.append("title = %s")
@@ -694,7 +695,7 @@ def archive(conn, conversation_id: int, *, actor_id: int | None = None,
             locked = cur.fetchone()
             if locked is None or locked["user_id"] != owner_id:
                 conn.rollback()
-                raise SubmissionError(403, "forbidden")
+                raise SubmissionError(403, "forbidden", code="FORBIDDEN")
         cur.execute("UPDATE conversation SET status = 'archived' WHERE id = %s "
                     "AND status <> 'archived'", (conversation_id,))
         changed = cur.rowcount == 1
@@ -717,7 +718,7 @@ def _reactivate_locked(cur, conversation_id: int) -> bool:
                 (conversation_id,))
     row = cur.fetchone()
     if row is None:
-        raise SubmissionError(404, "not found")
+        raise SubmissionError(404, "not found", code="NOT_FOUND")
     if row["status"] == "active":
         return False
     cur.execute("UPDATE conversation SET status = 'active' WHERE id = %s", (conversation_id,))
@@ -782,13 +783,13 @@ def unblock(conn, *, conversation_id: int, message_id: int, actor_id: int) -> bo
 
         refusal = None
         if message is None or message["role"] != "user":
-            refusal = UnblockRefused(404, "message not found")
+            refusal = UnblockRefused(404, "message not found", code="MESSAGE_NOT_FOUND")
         elif message["job_state"] == "terminal":
             refusal = None                      # already free: a no-op, not an error
         elif message["job_status"] != "PAUSED" or message["session_id"] is not None:
             refusal = UnblockRefused(
                 409, "the turn is not stuck: only a paused turn with no "
-                     "session can be unblocked")
+                     "session can be unblocked", code="TURN_NOT_STUCK")
         else:
             cur.execute(
                 "SELECT status FROM execution WHERE job_id = %s ORDER BY id DESC LIMIT 1",
@@ -796,7 +797,7 @@ def unblock(conn, *, conversation_id: int, message_id: int, actor_id: int) -> bo
             execution = cur.fetchone()
             if execution is not None and execution["status"] == "running":
                 refusal = UnblockRefused(
-                    409, "the run has not been finalized yet; try again shortly")
+                    409, "the run has not been finalized yet; try again shortly", code="RUN_NOT_FINALIZED")
 
         changed = False
         if refusal is None and message is not None and message["job_state"] != "terminal":
@@ -852,16 +853,16 @@ def stop(conn, *, conversation_id: int) -> int:
 
     turn = open_turn(conn, conversation_id)
     if turn is None:
-        raise SubmissionError(409, "no turn of this thread is running")
+        raise SubmissionError(409, "no turn of this thread is running", code="NO_RUNNING_TURN")
     if turn["status"] == "RUNNING":
         try:
             pause_job(conn, turn["id"])
         except ValueError as exc:
-            raise SubmissionError(409, str(exc)) from exc
+            raise SubmissionError(409, str(exc), code="TURN_NOT_RUNNING") from exc
     job = fetch_job(conn, turn["id"])
     conn.commit()
     if runner_client.alive(job.runner_ref, f"job:{job.id}") != "dead":
-        raise SubmissionError(409, "the run is still stopping; try again shortly")
+        raise SubmissionError(409, "the run is still stopping; try again shortly", code="RUN_STILL_STOPPING")
     with conn.cursor() as cur:
         cur.execute("UPDATE job SET status = 'DEAD', error_message = %s, error_class = %s, "
                     "updated_at = NOW() WHERE id = %s AND status = 'PAUSED'",
@@ -1044,13 +1045,13 @@ def _utf8(value: str, what: str) -> bytes:
     try:
         return value.encode("utf-8")
     except UnicodeEncodeError:
-        raise SubmissionError(400, f"{what} must be valid UTF-8") from None
+        raise SubmissionError(400, f"{what} must be valid UTF-8", code="INVALID_REQUEST") from None
 
 
 def check_client_message_id(value: object) -> str:
     if not isinstance(value, str) or not value or len(value) > MAX_CLIENT_MESSAGE_ID:
         raise SubmissionError(
-            400, f"client_message_id must be 1..{MAX_CLIENT_MESSAGE_ID} characters")
+            400, f"client_message_id must be 1..{MAX_CLIENT_MESSAGE_ID} characters", code="INVALID_REQUEST")
     _utf8(value, "client_message_id")
     return value
 
@@ -1059,10 +1060,10 @@ def check_content(conn, value: object, *, allow_empty: bool = False) -> str:
     """`allow_empty` is a submission that carries files: the files ARE the message, and the
     run's prompt then names them alone (`Workflow.execute`)."""
     if not isinstance(value, str) or (not value and not allow_empty):
-        raise SubmissionError(400, "content must be a non-empty string")
+        raise SubmissionError(400, "content must be a non-empty string", code="INVALID_REQUEST")
     # Bytes, not characters: the column and every relay downstream count bytes.
     if len(_utf8(value, "content")) > config(conn, "limits/max_message_bytes"):
-        raise SubmissionError(413, "message too large")
+        raise SubmissionError(413, "message too large", code="MESSAGE_TOO_LARGE")
     return value
 
 
@@ -1071,13 +1072,13 @@ def check_upload_ids(conn, value: object) -> list[str] | None:
     if value is None:
         return None
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
-        raise SubmissionError(400, "upload_ids must be a list of strings")
+        raise SubmissionError(400, "upload_ids must be a list of strings", code="INVALID_REQUEST")
     if not value:
         return None
     if len(value) > config(conn, "limits/uploads_per_message"):
-        raise SubmissionError(400, "too many files for one message")
+        raise SubmissionError(400, "too many files for one message", code="TOO_MANY_FILES")
     if len(set(value)) != len(value):
-        raise SubmissionError(400, "upload_ids must be unique")
+        raise SubmissionError(400, "upload_ids must be unique", code="INVALID_REQUEST")
     return value
 
 
@@ -1102,7 +1103,7 @@ def uploads_lock(conn, conversation_id: int):
         cur.execute("SELECT GET_LOCK(%s, %s) AS got", (name, UPLOAD_LOCK_WAIT_SECONDS))
         row = cur.fetchone()
     if not row or row["got"] != 1:
-        raise uploads.UploadError(503, "uploads are busy, try again")
+        raise uploads.UploadError(503, "uploads are busy, try again", code="UPLOAD_BUSY")
     try:
         yield
     finally:
@@ -1115,7 +1116,8 @@ def check_title(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or len(value) > MAX_TITLE:
-        raise SubmissionError(400, f"title must be a string of at most {MAX_TITLE} characters")
+        raise SubmissionError(400, f"title must be a string of at most {MAX_TITLE} characters",
+                              code="TITLE_INVALID", params={"max": MAX_TITLE})
     _utf8(value, "title")
     return value
 
@@ -1125,7 +1127,7 @@ def check_panel_thread(row: dict) -> None:
     attachment descriptor, so a file accepted here would reach the agent as a path to
     something that was never delivered. Both write routes ask this (CLS-1)."""
     if (row.get("channel") or PANEL_CHANNEL) != PANEL_CHANNEL:
-        raise SubmissionError(400, "this conversation takes no files")
+        raise SubmissionError(400, "this conversation takes no files", code="FILES_NOT_ACCEPTED")
 
 
 def submit_message(conn, *, conversation_id: int, user_id: int, client_message_id: str,
@@ -1159,7 +1161,7 @@ def submit_message(conn, *, conversation_id: int, user_id: int, client_message_i
                                   reactivate_actor_id=reactivate_actor_id, writer=writer,
                                   seen=seen, upload_ids=upload_ids, uploads_json=uploads_json)
     except uploads.UploadError as exc:
-        raise SubmissionError(exc.status, str(exc)) from None
+        raise SubmissionError(exc.status, str(exc), code=exc.code, params=exc.params) from None
 
 
 def _submit_locked(conn, *, conversation_id: int, user_id: int, client_message_id: str,
@@ -1211,7 +1213,7 @@ def _submit_locked(conn, *, conversation_id: int, user_id: int, client_message_i
         conn.commit()
     except uploads.UploadError as exc:
         conn.rollback()                 # the message is not written without its files
-        raise SubmissionError(exc.status, str(exc)) from None
+        raise SubmissionError(exc.status, str(exc), code=exc.code, params=exc.params) from None
     except SubmissionError:
         conn.rollback()                 # release the locks; nothing was written
         raise
@@ -1269,7 +1271,7 @@ def regenerate(conn, *, conversation_id: int, message_id: int, user_id: int,
         row = cur.fetchone()
     conn.commit()                        # the SELECT opened a transaction
     if row is None:
-        raise SubmissionError(404, "message not found")
+        raise SubmissionError(404, "message not found", code="MESSAGE_NOT_FOUND")
     return submit_message(conn, conversation_id=conversation_id, user_id=user_id,
                           client_message_id=client_message_id, content=row["content"],
                           reactivate_actor_id=user_id, writer=writer, seen=seen,
@@ -1309,7 +1311,7 @@ def complete_pending(conn, message_id: int) -> int:
         row = cur.fetchone()
     conn.commit()  # the SELECT opened a transaction
     if row is None:
-        raise SubmissionError(404, "message not found")
+        raise SubmissionError(404, "message not found", code="MESSAGE_NOT_FOUND")
     if row["job_state"] != "pending":
         return row["job_id"]              # already published: nothing happened here
 

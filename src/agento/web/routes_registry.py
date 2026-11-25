@@ -131,8 +131,9 @@ def load_module_observers(etc_dir: Path, module_dirs: Sequence[tuple[str, Path]]
 
 
 def _sequence(module_dir: Path) -> list[str]:
+    path = module_dir / "module.json"
     try:
-        sequence = json.loads((module_dir / "module.json").read_text()).get("sequence", [])
+        sequence = json.loads(path.read_text()).get("sequence", []) if path.is_file() else []
     except (OSError, ValueError, AttributeError):
         return []
     return [s for s in sequence if isinstance(s, str)] if isinstance(sequence, list) else []

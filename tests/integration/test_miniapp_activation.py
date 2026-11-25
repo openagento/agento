@@ -255,7 +255,7 @@ def test_a_reused_version_id_with_other_content_is_refused_and_the_row_removed(c
     else:
         store.artifacts[CODE]["versions"].clear()
     r = _launch(conn, world)
-    assert (r.status, r.body) == (409, {"error": "approved version gone"})
+    assert (r.status, r.body) == (409, {"error": "approved version gone", "code": "APPROVED_VERSION_GONE"})
     assert _activation(conn, world["view"]) is None
     assert not _rows(conn, "SELECT id FROM launch")
 
@@ -482,7 +482,7 @@ def test_an_approval_left_by_a_delete_with_miniapps_disabled_is_refused_at_launc
         cur.execute("INSERT INTO versioned_artifact (artifact_code, title) VALUES (%s, 'Notes app')", (CODE,))
         cur.execute("INSERT INTO miniapp_member (artifact_code, user_id) VALUES (%s, %s)", (CODE, world["user"].id))
     r = _launch(conn, world)
-    assert (r.status, r.body) == (409, {"error": "approved version gone"})
+    assert (r.status, r.body) == (409, {"error": "approved version gone", "code": "APPROVED_VERSION_GONE"})
     assert _activation(conn, world["view"]) is None
     assert not _rows(conn, "SELECT id FROM launch WHERE revoked_at IS NULL")
 

@@ -10,12 +10,12 @@ from __future__ import annotations
 from agento.framework.access import accounts, launches
 from agento.modules.versioned_artifacts.src import admin as va_admin
 from agento.web import api, app_path
-from agento.web.api import Request, Response, error
+from agento.web.api import Request, Response, error, refusal
 
 from . import activation, rights, settings
 
-_NOT_FOUND = error(404, "not found")
-_FORBIDDEN = error(403, "forbidden")
+_NOT_FOUND = error(404, "not found", code="NOT_FOUND")
+_FORBIDDEN = error(403, "forbidden", code="FORBIDDEN")
 
 
 def _user(req: Request) -> accounts.User:
@@ -26,12 +26,10 @@ def _user(req: Request) -> accounts.User:
 def _run(fn) -> Response:
     try:
         return fn()
-    except activation.ActivationError as exc:
-        return Response(exc.status, {"error": str(exc), **exc.extra})
-    except va_admin.AdminError as exc:
-        return Response(exc.status, {"error": str(exc), **exc.extra})
+    except (activation.ActivationError, va_admin.AdminError) as exc:
+        return refusal(exc)
     except launches.RetentionBusy:
-        return error(503, "artifact busy, try again")
+        return error(503, "artifact busy, try again", code="ARTIFACT_BUSY")
 
 
 def _may_approve_in(req: Request, view_id: int) -> tuple[int, int] | Response:
@@ -73,9 +71,9 @@ def approve(req: Request) -> Response:
     body = api._body(req)
     expected, actions = body.get("expected_version_id"), body.get("actions")
     if not isinstance(expected, str) or not app_path.VERSION_ID_RE.fullmatch(expected):
-        return error(400, "expected_version_id is required")
+        return error(400, "expected_version_id is required", code="INVALID_REQUEST")
     if actions is not None and (not isinstance(actions, list) or not all(isinstance(a, str) for a in actions)):
-        return error(400, "actions must be a list of tool names")
+        return error(400, "actions must be a list of tool names", code="INVALID_REQUEST")
     return _run(lambda: Response(200, activation.approve(req.conn, _user(req), *target, expected, actions)))
 
 
@@ -124,11 +122,11 @@ def _launch(req: Request, *, preview: bool) -> Response:
     body = api._body(req)
     view_id, code = body.get("agent_view_id"), body.get("artifact_code")
     if not api._positive_int(view_id) or body.get("workspace_id") is not None:
-        return error(400, "agent_view_id is required")
+        return error(400, "agent_view_id is required", code="INVALID_REQUEST")
     if not isinstance(code, str) or not app_path.ARTIFACT_CODE_RE.fullmatch(code):
-        return error(400, "artifact_code must match ^[a-z0-9][a-z0-9-]{0,63}$")
+        return error(400, "artifact_code must match ^[a-z0-9][a-z0-9-]{0,63}$", code="INVALID_REQUEST")
     if "preview" in body:
-        return error(400, "preview is a route of its own: POST /api/miniapps/previews")
+        return error(400, "preview is a route of its own: POST /api/miniapps/previews", code="INVALID_REQUEST")
     user = _user(req)
     scope = _may_approve_in(req, view_id) if preview else api._resolve_scope(req, {"agent_view_id": view_id})
     if isinstance(scope, Response):
@@ -139,16 +137,16 @@ def _launch(req: Request, *, preview: bool) -> Response:
         # member removed or a role changed in between gets no launch (D-MINIAPP-3).
         held = rights.rights(req.conn, user, code)
         if not held.view:
-            raise activation.ActivationError(404, "not found")
+            raise activation.ActivationError(404, "not found", code="NOT_FOUND")
         if not (held.edit if preview else rights.can_execute(req.conn, user, code, view_id)):
-            raise activation.ActivationError(403, "forbidden")
+            raise activation.ActivationError(403, "forbidden", code="FORBIDDEN")
 
     def go() -> Response:
         authorize()
         try:
             launch, exchange_code = activation.launch(req.conn, user, code, *scope, preview, authorize=authorize)
         except launches.AccessConfigError:
-            return error(503, "launches are not configured")
+            return error(503, "launches are not configured", code="LAUNCH_NOT_CONFIGURED")
         except accounts.AccessError:
             return _NOT_FOUND
         # The panel POSTs `fields` as a form to `url`: no URL ever carries the exchange code.
@@ -191,13 +189,13 @@ def update_app(req: Request) -> Response:
     changes = {k: body[k] for k in ("title", "icon") if k in body}
     title = changes.get("title")
     if title is not None and (not isinstance(title, str) or len(title) > 255):
-        return error(400, "title must be a string of at most 255 characters")
+        return error(400, "title must be a string of at most 255 characters", code="TITLE_INVALID")
     if "title" in changes:
         changes["title"] = (title or "").strip() or None  # empty: back to the store's title
     if "icon" in changes:
         icon = None if changes["icon"] == "" else changes["icon"]  # "" clears, as null does
         if icon is not None and (not isinstance(icon, str) or icon not in settings.ICONS):
-            return error(400, "icon must be one of the listed icons")
+            return error(400, "icon must be one of the listed icons", code="INVALID_REQUEST")
         changes["icon"] = icon
 
     def go() -> Response:
@@ -223,9 +221,9 @@ def put_member(req: Request) -> Response:
     username, role = body.get("username"), body.get("role")
     flags = body.get("can_edit"), body.get("can_remove")
     if not all(isinstance(f, bool) for f in flags):
-        return error(400, "can_edit and can_remove must be booleans")
+        return error(400, "can_edit and can_remove must be booleans", code="INVALID_REQUEST")
     if (username is None) == (role is None) or not isinstance(username or role, str):
-        return error(400, "set exactly one of username or role")
+        return error(400, "set exactly one of username or role", code="INVALID_REQUEST")
     user_id = None
     if username is not None:
         found = accounts.get_user_by_username(req.conn, username)
@@ -236,7 +234,7 @@ def put_member(req: Request) -> Response:
             cur.execute("SELECT code FROM role WHERE code = %s", (role,))
             missing = cur.fetchone() is None
     if missing:
-        return error(404, "no such user or role")
+        return error(404, "no such user or role", code="MEMBER_NOT_FOUND")
 
     def go() -> Response:
         settings.put_member(req.conn, _user(req), code, user_id=user_id, role=role, can_edit=flags[0],

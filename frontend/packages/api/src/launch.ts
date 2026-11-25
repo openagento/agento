@@ -3,9 +3,9 @@
 // `openLaunch()`, to build a form POST: it never enters a URL, React state, the query or
 // mutation cache, a log or the window name.
 import { apiFetch } from "./apiFetch";
-import { ApiError } from "./errors";
+import { ApiError, SessionChangedError } from "./errors";
 import { queryClient } from "./query";
-import { onEndSession } from "./session";
+import { getEpoch, onEndSession } from "./session";
 import { createLaunchBridge, type ActionResult } from "@agento/miniapp-bridge";
 
 /** `preview` (`edit` on the app): `current` with no actions, whether or not it is approved. */
@@ -100,12 +100,14 @@ function submitForm(url: string, target: string, fields: Record<string, string>,
 }
 
 async function create(req: LaunchRequest, appWindow: Window, name: string, w: Window): Promise<LaunchOutcome> {
+  const at = getEpoch();
   let created: Created;
   try {
     created = await apiFetch<Created>(req.preview ? "/api/miniapps/previews" : "/api/miniapps/launches", {
       method: "POST",
       json: { agent_view_id: req.agentViewId, artifact_code: req.artifactCode },
     });
+    if (at !== getEpoch()) throw new SessionChangedError();
   } catch (e) {
     appWindow.close();
     throw e;
@@ -147,7 +149,9 @@ export function openLaunch(req: LaunchRequest, liveIds: ReadonlySet<string>, w: 
 
 /** End a launch: the API revokes it, and its window and bridge are closed here. */
 export async function endLaunch(id: string): Promise<void> {
+  const at = getEpoch();
   await apiFetch(`/api/launches/${id}`, { method: "DELETE" });
+  if (at !== getEpoch()) throw new SessionChangedError();
   drop(id, true);
   void queryClient.invalidateQueries({ queryKey: ["launches"] });
 }

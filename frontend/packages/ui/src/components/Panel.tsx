@@ -3,6 +3,7 @@
 import { Accordion, Drawer, Group, Switch, Text } from "@mantine/core";
 import type { ReactNode } from "react";
 import css from "./Panel.module.css";
+import { useT } from "../i18n";
 
 /** Grouped form sections that open and close. `value` is the open ones (controlled), so a
  *  caller can open the section that holds an error. A closed section keeps its fields in the DOM
@@ -66,8 +67,9 @@ export function SwitchField({ label, description, checked, onChange, disabled, h
 export function SideDrawer({ opened, onClose, title, actions, children }: {
   opened: boolean; onClose: () => void; title: ReactNode; actions?: ReactNode; children: ReactNode;
 }) {
+  const t = useT("ui");
   return (
-    <Drawer opened={opened} onClose={onClose} position="right" size="lg" closeButtonProps={{ "aria-label": "Close" }}
+    <Drawer opened={opened} onClose={onClose} position="right" size="lg" closeButtonProps={{ "aria-label": t("action.close") }}
       title={<Group gap="xs" wrap="nowrap">{title}{actions}</Group>}>
       {children}
     </Drawer>

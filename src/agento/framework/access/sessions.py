@@ -12,7 +12,7 @@ from ..toolbox_capability import token_hash
 from .accounts import User, _in_transaction, authenticate_in
 
 _SESSION_SQL = (
-    "SELECT s.id, s.expires_at, u.id AS user_id, u.username, u.role, u.is_active"
+    "SELECT s.id, s.expires_at, u.id AS user_id, u.username, u.role, u.is_active, u.ui_locale"
     " FROM session s JOIN `user` u ON u.id = s.user_id"
     " WHERE s.token_hash = %s AND s.revoked_at IS NULL AND s.expires_at > NOW() AND u.is_active = 1"
 )
@@ -64,7 +64,8 @@ def lookup_session(conn, token: str | None) -> Session | None:
         row = cur.fetchone()
     if not row:
         return None
-    user = User(id=row["user_id"], username=row["username"], role=row["role"], is_active=bool(row["is_active"]))
+    user = User(id=row["user_id"], username=row["username"], role=row["role"], is_active=bool(row["is_active"]),
+                ui_locale=row["ui_locale"])
     return Session(id=row["id"], user=user, expires_at=row["expires_at"])
 
 
