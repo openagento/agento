@@ -147,8 +147,10 @@ describe("the schedule form", { timeout: 20_000 }, () => {
       harness: null, model: null, enabled: true,
     }));
     // After the create the page navigates to /schedules/42 and loads it; under a loaded
-    // CI runner that can take longer than 5 s.
-    expect(await screen.findByDisplayValue("Digest", {}, { timeout: 15000 })).toBeInTheDocument();
+    // CI runner that can take longer than 5 s. The new form shows "Digest" too, so wait for
+    // what only a saved schedule has: the title field of the new form goes away at the navigation.
+    expect(await screen.findByRole("button", { name: "Save changes" }, { timeout: 15000 })).toBeInTheDocument();
+    expect(screen.getByLabelText("Title")).toHaveValue("Digest");
   });
 
   const drop = (target: Element, ...names: string[]) => {
